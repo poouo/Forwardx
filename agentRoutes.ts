@@ -102,7 +102,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `iptables -t ${table} -C ${rule} 2>/dev/null || iptables -t ${table} -A ${rule}`;
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
-    const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string }[] = [];
+    const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
 
     for (const rule of rules) {
       // 收集所有已运行的规则映射（无论是否有 action 下发）
@@ -113,6 +113,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
           protocol: rule.protocol,
+          forwardType: rule.forwardType,
         });
       }
 
@@ -350,7 +351,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `rm -f /etc/systemd/system/${svcName}.service`,
               `systemctl daemon-reload`,
               `pkill -f "realm .*:${rule.sourcePort}" 2>/dev/null || true`,
-              // 清理 realm 的流量计数链
+              // 清理 realm 的流量计数链（realm 是用户态代理，计数链在 INPUT/OUTPUT 上）
+              `iptables -D INPUT -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
+              `iptables -D INPUT -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
+              `iptables -D OUTPUT -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
+              `iptables -D OUTPUT -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
+              // 兼容清理：旧版可能在 FORWARD 链上
               `iptables -D FORWARD -p tcp -d ${rule.targetIp} --dport ${rule.targetPort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
               `iptables -D FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
               `iptables -D FORWARD -p tcp -s ${rule.targetIp} --sport ${rule.targetPort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
@@ -881,10 +887,10 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '}',
     '',
     '# ============ 流量采集 ============',
-    '# iptables/realm 转发：数据包走 FORWARD 链（DNAT 后 dst 已变为 targetIp:targetPort）',
-    '# socat 转发：数据包走 INPUT 链（用户态进程接收后转发），出站走 OUTPUT 链',
+    '# iptables 转发：数据包走 FORWARD 链（DNAT 后 dst 已变为 targetIp:targetPort）',
+    '# socat/realm 转发：数据包走 INPUT 链（用户态进程接收后转发），出站走 OUTPUT 链',
     '',
-    '# 为 iptables/realm 转发规则创建计数链（挂在 FORWARD 链上）',
+    '# 为 iptables 转发规则创建计数链（挂在 FORWARD 链上）',
     'ensure_traffic_chain_forward() {',
     '  PORT="$1"',
     '  PROTO="$2"',
@@ -1152,14 +1158,14 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '      sleep 1',
     '      if [ "$ALL_OK" -eq 1 ] && check_port_listen "$SP" "$PR" "$FT"; then',
     '        # 建立流量计数链',
-    '        if [ "$FT" = "socat" ]; then',
-    '          # socat 是用户态转发，流量走 INPUT/OUTPUT',
-    '          ensure_traffic_chain_socat "$SP" "$PR"',
-    '        else',
-    '          # iptables/realm 走 FORWARD 链',
+    '        if [ "$FT" = "iptables" ]; then',
+    '          # iptables 转发走 FORWARD 链（DNAT 后匹配目标地址）',
     '          if [ -n "$TIP" ] && [ -n "$TPT" ]; then',
     '            ensure_traffic_chain_forward "$SP" "$PR" "$TIP" "$TPT"',
     '          fi',
+    '        else',
+    '          # socat/realm 都是用户态代理，流量走 INPUT/OUTPUT',
+    '          ensure_traffic_chain_socat "$SP" "$PR"',
     '        fi',
     '        report_rule_status "$RID" true',
     '        echo "[$(date)] [rule=$RID] apply 成功，已上报 isRunning=true"',
@@ -1268,10 +1274,15 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '        PR=$(echo "$RESPONSE" | jq -r ".runningRules[$i].protocol // empty")',
     '        echo "$RID" > "$STATE_DIR/port_${SP}.rule"',
     '        # 同时确保流量计数链存在（agent 重启后 iptables 规则可能丢失）',
-    '        if [ -n "$TIP" ] && [ -n "$TPT" ]; then',
-    '          # 检查是否有 FORWARD 链上的计数规则，如果没有则重建',
-    '          if ! iptables -L "FWX_IN_${SP}" -n 2>/dev/null | grep -q "Chain"; then',
-    '            ensure_traffic_chain_forward "$SP" "$PR" "$TIP" "$TPT"',
+    '        FT_RR=$(echo "$RESPONSE" | jq -r ".runningRules[$i].forwardType // empty")',
+    '        if ! iptables -L "FWX_IN_${SP}" -n 2>/dev/null | grep -q "Chain"; then',
+    '          if [ "$FT_RR" = "iptables" ]; then',
+    '            if [ -n "$TIP" ] && [ -n "$TPT" ]; then',
+    '              ensure_traffic_chain_forward "$SP" "$PR" "$TIP" "$TPT"',
+    '            fi',
+    '          else',
+    '            # socat/realm 都是用户态代理，用 INPUT/OUTPUT 链',
+    '            ensure_traffic_chain_socat "$SP" "$PR"',
     '          fi',
     '        fi',
     '      done',

@@ -156,11 +156,19 @@ function RulesContent() {
   const trafficByRule = useMemo(() => {
     const m = new Map<number, { bytesIn: number; bytesOut: number; connections: number }>();
     (trafficSummary || []).forEach((t: any) => {
-      m.set(Number(t.ruleId), {
-        bytesIn: Number(t.bytesIn) || 0,
-        bytesOut: Number(t.bytesOut) || 0,
-        connections: Number(t.connections) || 0,
-      });
+      const rid = Number(t.ruleId);
+      const prev = m.get(rid);
+      if (prev) {
+        prev.bytesIn += Number(t.bytesIn) || 0;
+        prev.bytesOut += Number(t.bytesOut) || 0;
+        prev.connections += Number(t.connections) || 0;
+      } else {
+        m.set(rid, {
+          bytesIn: Number(t.bytesIn) || 0,
+          bytesOut: Number(t.bytesOut) || 0,
+          connections: Number(t.connections) || 0,
+        });
+      }
     });
     return m;
   }, [trafficSummary]);
@@ -316,33 +324,33 @@ function RulesContent() {
         </div>
       )}
 
-      {/* 近 24 小时转发流量汇总 - Agent 流量统计暂不可用 */}
+      {/* 近 24 小时转发流量汇总 */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card className="border-border/40 opacity-60">
+        <Card className="border-border/40">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground">近 24h 入向流量</p>
-              <p className="text-sm font-medium mt-1 text-muted-foreground">暂不可用</p>
+              <p className="text-xl font-semibold mt-1">{formatBytes(trafficTotals.bytesIn)}</p>
             </div>
-            <ArrowDownToLine className="h-6 w-6 text-muted-foreground/40" />
+            <ArrowDownToLine className="h-6 w-6 text-chart-2" />
           </CardContent>
         </Card>
-        <Card className="border-border/40 opacity-60">
+        <Card className="border-border/40">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground">近 24h 出向流量</p>
-              <p className="text-sm font-medium mt-1 text-muted-foreground">暂不可用</p>
+              <p className="text-xl font-semibold mt-1">{formatBytes(trafficTotals.bytesOut)}</p>
             </div>
-            <ArrowUpFromLine className="h-6 w-6 text-muted-foreground/40" />
+            <ArrowUpFromLine className="h-6 w-6 text-chart-4" />
           </CardContent>
         </Card>
-        <Card className="border-border/40 opacity-60">
+        <Card className="border-border/40">
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-xs text-muted-foreground">近 24h 连接数</p>
-              <p className="text-sm font-medium mt-1 text-muted-foreground">暂不可用</p>
+              <p className="text-xl font-semibold mt-1">{trafficTotals.connections.toLocaleString()}</p>
             </div>
-            <Activity className="h-6 w-6 text-muted-foreground/40" />
+            <Activity className="h-6 w-6 text-chart-3" />
           </CardContent>
         </Card>
       </div>
@@ -367,7 +375,7 @@ function RulesContent() {
                     <TableHead>工具</TableHead>
                     <TableHead>协议</TableHead>
                     <TableHead>限速</TableHead>
-                    <TableHead>流量</TableHead>
+                    <TableHead>近 24h 流量</TableHead>
                     <TableHead>开关</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -439,7 +447,22 @@ function RulesContent() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs text-muted-foreground/50">暂不可用</span>
+                        {(() => {
+                          const t = trafficByRule.get(rule.id);
+                          if (!t || (t.bytesIn === 0 && t.bytesOut === 0)) {
+                            return <span className="text-xs text-muted-foreground">—</span>;
+                          }
+                          return (
+                            <div className="flex flex-col gap-0.5 text-xs">
+                              <span className="flex items-center gap-1 text-chart-2">
+                                <ArrowDownToLine className="h-3 w-3" /> {formatBytes(t.bytesIn)}
+                              </span>
+                              <span className="flex items-center gap-1 text-chart-4">
+                                <ArrowUpFromLine className="h-3 w-3" /> {formatBytes(t.bytesOut)}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Switch
@@ -455,9 +478,9 @@ function RulesContent() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 opacity-30 cursor-not-allowed"
-                            disabled
-                            title="流量统计暂不可用"
+                            className="h-8 w-8"
+                            onClick={() => setTrafficDetailRule({ id: rule.id, name: rule.name })}
+                            title="查看流量趋势"
                           >
                             <Activity className="h-3.5 w-3.5" />
                           </Button>
@@ -820,27 +843,24 @@ function SelfTestDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>转发链路自测·{ruleName}</DialogTitle>
-          <DialogDescription>Agent 会检测目标可达和本机贯穿两项来判定连通性。</DialogDescription>
+          <DialogDescription>Agent 会检测本地端口监听和目标TCP连通性来判定转发链路状态。</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">状态</span>
             {renderStatus()}
           </div>
-          <div className="flex items-center justify-between py-1">
-            <span className="text-muted-foreground">本地监听检测·<span className="text-xs">仅供参考</span></span>
-            {latest?.listenOk ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-            ) : (
-              <XCircle className="h-4 w-4 text-muted-foreground" />
-            )}
-          </div>
-          {renderItem("目标可达", !!latest?.targetReachable)}
-          {renderItem("本机 127.0.0.1 贯穿", !!latest?.forwardOk)}
-          {typeof latest?.latencyMs === "number" && (
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">耗时</span>
-              <span>{latest.latencyMs} ms</span>
+          {renderItem("本地端口监听", !!latest?.listenOk)}
+          {renderItem("目标TCP可达", !!latest?.targetReachable)}
+          {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 && (
+            <div className="flex items-center justify-between py-1">
+              <span className="text-muted-foreground">TCP延迟</span>
+              <span className={`font-mono ${
+                latest.latencyMs < 50 ? "text-emerald-600" :
+                latest.latencyMs < 100 ? "text-chart-3" :
+                latest.latencyMs < 200 ? "text-amber-600" :
+                "text-destructive"
+              }`}>{latest.latencyMs} ms</span>
             </div>
           )}
           {latest?.message && (

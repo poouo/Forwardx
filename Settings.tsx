@@ -678,25 +678,7 @@ function SettingsContent() {
                 </Button>
               </div>
             </div>
-            {scriptData?.script && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs text-muted-foreground">完整脚本</Label>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs gap-1.5"
-                    onClick={() => copyToClipboard(scriptData.script)}
-                  >
-                    <Copy className="h-3 w-3" />
-                    复制脚本
-                  </Button>
-                </div>
-                <pre className="text-xs font-mono bg-muted/20 p-4 rounded-lg border max-h-80 overflow-auto whitespace-pre-wrap">
-                  {scriptData.script}
-                </pre>
-              </div>
-            )}
+
           </div>
           <DialogFooter>
             <Button onClick={() => setShowScript(false)}>关闭</Button>
