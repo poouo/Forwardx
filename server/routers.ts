@@ -248,7 +248,6 @@ export const appRouter = router({
         password: z.string().min(6),
         name: z.string().optional(),
         email: z.string().email().optional(),
-        role: z.enum(["user", "admin"]).default("user"),
         canAddRules: z.boolean().default(false),
       }))
       .mutation(async ({ input }) => {
@@ -256,12 +255,21 @@ export const appRouter = router({
         if (existing) {
           throw new Error("用户名已存在");
         }
-        const id = await db.createUser(input);
+        // 安全限制：通过后台创建的用户一律为普通用户，不允许创建新管理员
+        const id = await db.createUser({ ...input, role: "user" });
         return { id };
       }),
     updateRole: adminProcedure
       .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
       .mutation(async ({ input }) => {
+        // 安全限制：不允许提升用户为管理员，也不允许修改已有管理员的角色
+        if (input.role === "admin") {
+          throw new Error("出于安全考虑，不允许将用户提升为管理员");
+        }
+        const target = await db.getUserById(input.userId);
+        if (target?.role === "admin") {
+          throw new Error("不允许修改管理员账户的角色");
+        }
         await db.updateUserRole(input.userId, input.role);
         return { success: true };
       }),
@@ -364,6 +372,7 @@ export const appRouter = router({
         ip: z.string().min(1).max(64),
         hostType: z.enum(["master", "slave"]).default("slave"),
         networkInterface: z.string().max(32).optional(),
+        entryIp: z.string().max(128).nullable().optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))
@@ -392,6 +401,7 @@ export const appRouter = router({
         ip: z.string().min(1).max(64).optional(),
         hostType: z.enum(["master", "slave"]).optional(),
         networkInterface: z.string().max(32).nullable().optional(),
+        entryIp: z.string().max(128).nullable().optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))

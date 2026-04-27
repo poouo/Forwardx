@@ -60,16 +60,11 @@ function formatBytes(bytes: number | string | null | undefined): string {
   return parseFloat((num / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
-function parseTrafficInput(value: string): number {
-  // 支持 GB / TB 输入，返回字节数
-  const v = value.trim().toUpperCase();
-  const num = parseFloat(v);
-  if (isNaN(num) || num < 0) return 0;
-  if (v.endsWith("TB") || v.endsWith("T")) return num * 1024 * 1024 * 1024 * 1024;
-  if (v.endsWith("GB") || v.endsWith("G")) return num * 1024 * 1024 * 1024;
-  if (v.endsWith("MB") || v.endsWith("M")) return num * 1024 * 1024;
-  // 默认 GB
-  return num * 1024 * 1024 * 1024;
+function parseTrafficInputGB(value: string): number {
+  // 纯数字输入，单位 GB，0 表示不限制
+  const num = parseFloat(String(value).trim());
+  if (isNaN(num) || num <= 0) return 0;
+  return Math.floor(num * 1024 * 1024 * 1024);
 }
 
 function UsersContent() {
@@ -82,7 +77,7 @@ function UsersContent() {
   const [newUsername, setNewUsername] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserName, setNewUserName] = useState("");
-  const [newUserRole, setNewUserRole] = useState<"user" | "admin">("user");
+  // 出于安全考虑，后台创建的用户一律为普通用户
   const [newCanAddRules, setNewCanAddRules] = useState(false);
 
   // Reset password dialog
@@ -110,10 +105,9 @@ function UsersContent() {
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
-  const updateHostPermsMutation = trpc.users.updateHostPermissions.useMutation({
+  const updateHostPermsMutation = trpc.users.setHostPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
-      toast.success("主机权限已更新");
     },
     onError: (err) => toast.error(err.message || "更新主机权限失败"),
   });
@@ -143,7 +137,6 @@ function UsersContent() {
       setNewUsername("");
       setNewUserPassword("");
       setNewUserName("");
-      setNewUserRole("user");
       setNewCanAddRules(false);
     },
     onError: (err) => toast.error(err.message || "创建用户失败"),
@@ -209,7 +202,6 @@ function UsersContent() {
       username: newUsername.trim(),
       password: newUserPassword,
       name: newUserName.trim() || undefined,
-      role: newUserRole,
       canAddRules: newCanAddRules,
     });
   };
@@ -224,18 +216,19 @@ function UsersContent() {
   };
 
   const openTrafficSettings = (u: any) => {
+    if (u.role === "admin") {
+      toast.info("管理员默认拥有全部权限，且不受流量/资源限制");
+      return;
+    }
     setTrafficUserId(u.id);
     setTrafficUserName(u.name || u.username);
     const limitBytes = Number(u.trafficLimit) || 0;
     if (limitBytes > 0) {
       const gb = limitBytes / (1024 * 1024 * 1024);
-      if (gb >= 1024) {
-        setTrafficLimitInput(`${(gb / 1024).toFixed(1)}TB`);
-      } else {
-        setTrafficLimitInput(`${gb.toFixed(0)}GB`);
-      }
+      // 以 GB 为单位、保留最多 2 位小数（去尾零）
+      setTrafficLimitInput(parseFloat(gb.toFixed(2)).toString());
     } else {
-      setTrafficLimitInput("");
+      setTrafficLimitInput("0");
     }
     setExpiresAtInput(u.expiresAt ? new Date(u.expiresAt).toISOString().slice(0, 10) : "");
     setTrafficAutoReset(!!u.trafficAutoReset);
@@ -249,7 +242,7 @@ function UsersContent() {
 
   const handleSaveTrafficSettings = () => {
     if (!trafficUserId) return;
-    const limitBytes = trafficLimitInput.trim() ? parseTrafficInput(trafficLimitInput) : 0;
+    const limitBytes = parseTrafficInputGB(trafficLimitInput);
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       trafficLimit: limitBytes,
@@ -260,7 +253,7 @@ function UsersContent() {
       maxRules,
       maxPorts,
     });
-    // 同时保存主机权限
+    // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
     updateHostPermsMutation.mutate({
       userId: trafficUserId,
       hostIds: allowedHostIds,
@@ -549,30 +542,16 @@ function UsersContent() {
                 placeholder="请输入显示名称"
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>角色</Label>
-                <Select value={newUserRole} onValueChange={(v: "user" | "admin") => setNewUserRole(v)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="user">普通用户</SelectItem>
-                    <SelectItem value="admin">管理员</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>允许添加规则</Label>
-                <div className="flex items-center gap-2 h-10">
-                  <Switch
-                    checked={newCanAddRules}
-                    onCheckedChange={setNewCanAddRules}
-                  />
-                  <span className="text-xs text-muted-foreground">
-                    {newCanAddRules ? "是" : "否"}
-                  </span>
+            <div className="space-y-2">
+              <Label>允许添加规则</Label>
+              <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
+                <div className="min-w-0 pr-3">
+                  <p className="text-xs text-muted-foreground">新用户默认为普通用户，可控制其是否可创建转发规则</p>
                 </div>
+                <Switch
+                  checked={newCanAddRules}
+                  onCheckedChange={setNewCanAddRules}
+                />
               </div>
             </div>
           </div>
@@ -677,13 +656,21 @@ function UsersContent() {
                   <Database className="h-3.5 w-3.5" />
                   流量限额
                 </Label>
-                <Input
-                  value={trafficLimitInput}
-                  onChange={(e) => setTrafficLimitInput(e.target.value)}
-                  placeholder="例如: 100GB, 1TB（留空不限制）"
-                />
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step="0.01"
+                    value={trafficLimitInput}
+                    onChange={(e) => setTrafficLimitInput(e.target.value)}
+                    placeholder="0"
+                    className="flex-1"
+                  />
+                  <span className="text-sm text-muted-foreground select-none">GB</span>
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  支持格式: 100GB, 1.5TB, 500MB。留空或填 0 表示不限制
+                  请输入数字，默认单位为 GB。填 0 表示不限制
                 </p>
               </div>
 
@@ -694,13 +681,26 @@ function UsersContent() {
                   <CalendarClock className="h-3.5 w-3.5" />
                   到期日期
                 </Label>
-                <Input
-                  type="date"
-                  value={expiresAtInput}
-                  onChange={(e) => setExpiresAtInput(e.target.value)}
-                />
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="date"
+                    value={expiresAtInput}
+                    onChange={(e) => setExpiresAtInput(e.target.value)}
+                    className="flex-1"
+                  />
+                  {expiresAtInput && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setExpiresAtInput("")}
+                    >
+                      清空
+                    </Button>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  到期后将自动禁用该用户的所有转发规则。留空表示永不过期
+                  不填写到期日期表示永久有效；到期后将自动禁用该用户的所有转发规则
                 </p>
               </div>
 
@@ -715,7 +715,17 @@ function UsersContent() {
                     </p>
                     <p className="text-xs text-muted-foreground">每月指定日期自动将已用流量归零</p>
                   </div>
-                  <Switch checked={trafficAutoReset} onCheckedChange={setTrafficAutoReset} />
+                  <Switch
+                    checked={trafficAutoReset}
+                    onCheckedChange={(checked) => {
+                      setTrafficAutoReset(checked);
+                      // 启用时默认以当前日期作为重置日（最大 28）
+                      if (checked) {
+                        const today = Math.min(new Date().getDate(), 28);
+                        setTrafficResetDay(today);
+                      }
+                    }}
+                  />
                 </div>
                 {trafficAutoReset && (
                   <div className="space-y-2 pt-1">
@@ -731,10 +741,14 @@ function UsersContent() {
                         {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
                           <SelectItem key={d} value={String(d)}>
                             每月 {d} 日
+                            {d === Math.min(new Date().getDate(), 28) ? "（今日）" : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">
+                      默认以启用当天作为重置日，可修改为每月 1–28 号中任意一天
+                    </p>
                   </div>
                 )}
               </div>

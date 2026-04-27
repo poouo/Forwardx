@@ -49,6 +49,7 @@ import {
   Loader2,
   Shuffle,
   AlertCircle,
+  Copy,
 } from "lucide-react";
 import {
   LineChart,
@@ -338,6 +339,41 @@ function RulesContent() {
     return hosts?.find((h) => h.id === hostId)?.name || `主机 #${hostId}`;
   };
 
+  /** 获取主机的入口地址：优先用用户自定义的 entryIp，未填则回退 ip */
+  const getHostEntry = (hostId: number): string => {
+    const h: any = hosts?.find((x) => x.id === hostId);
+    if (!h) return "";
+    return (h.entryIp && String(h.entryIp).trim()) || h.ip || "";
+  };
+
+  /** 复制入口 IP:端口 到剪贴板 */
+  const copyEntryAddress = async (rule: any) => {
+    const entry = getHostEntry(rule.hostId);
+    if (!entry) {
+      toast.error("未获取到主机入口地址");
+      return;
+    }
+    const text = `${entry}:${rule.sourcePort}`;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // 回退方案：临时 textarea
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      toast.success(`已复制入口地址: ${text}`);
+    } catch {
+      toast.error("复制失败，请手动复制");
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -481,7 +517,15 @@ function RulesContent() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1.5 font-mono text-xs">
-                          <code className="bg-muted/40 px-1.5 py-0.5 rounded">:{rule.sourcePort}</code>
+                          <button
+                            type="button"
+                            onClick={() => copyEntryAddress(rule)}
+                            className="group inline-flex items-center gap-1 bg-muted/40 px-1.5 py-0.5 rounded hover:bg-muted/70 transition-colors"
+                            title={`复制入口地址: ${getHostEntry(rule.hostId)}:${rule.sourcePort}`}
+                          >
+                            <code>:{rule.sourcePort}</code>
+                            <Copy className="h-3 w-3 text-muted-foreground opacity-60 group-hover:opacity-100" />
+                          </button>
                           <ArrowRight className="h-3 w-3 text-muted-foreground" />
                           <code className="bg-muted/40 px-1.5 py-0.5 rounded">{rule.targetIp}:{rule.targetPort}</code>
                         </div>

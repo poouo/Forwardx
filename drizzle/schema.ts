@@ -44,6 +44,8 @@ export const hosts = sqliteTable("hosts", {
   ip: text("ip").notNull(),
   hostType: text("hostType").notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
+  // 用户自定义的入口 IP/域名，为空时回退使用 ip
+  entryIp: text("entryIp"),
   osInfo: text("osInfo"),
   cpuInfo: text("cpuInfo"),
   memoryTotal: integer("memoryTotal"),
@@ -133,6 +135,15 @@ export const forwardTests = sqliteTable("forward_tests", {
 });
 export type ForwardTest = typeof forwardTests.$inferSelect;
 export type InsertForwardTest = typeof forwardTests.$inferInsert;
+
+// ===== 系统设置表（键值存储） =====
+export const systemSettings = sqliteTable("system_settings", {
+  key: text("key").primaryKey(),
+  value: text("value"),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type SystemSetting = typeof systemSettings.$inferSelect;
+export type InsertSystemSetting = typeof systemSettings.$inferInsert;
 
 // ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = sqliteTable("user_host_permissions", {

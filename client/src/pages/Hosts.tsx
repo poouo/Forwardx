@@ -74,6 +74,7 @@ type HostFormData = {
   ip: string;
   hostType: "master" | "slave";
   networkInterface: string;
+  entryIp: string;
   portRangeStart: number | null;
   portRangeEnd: number | null;
 };
@@ -83,6 +84,7 @@ const defaultFormData: HostFormData = {
   ip: "",
   hostType: "slave",
   networkInterface: "",
+  entryIp: "",
   portRangeStart: null,
   portRangeEnd: null,
 };
@@ -245,6 +247,8 @@ function HostsContent() {
       ip: host.ip,
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
+      // 默认将入口 IP 填充为主机原始 IP，用户可覆盖为域名/反代地址
+      entryIp: host.entryIp || host.ip || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
     });
@@ -253,29 +257,69 @@ function HostsContent() {
   };
 
   const handleSubmit = () => {
-    // 验证端口区间
-    if (form.portRangeStart != null && form.portRangeEnd != null) {
-      if (form.portRangeStart > form.portRangeEnd) {
+    // 基础必填校验
+    const name = (form.name || "").trim();
+    const ip = (form.ip || "").trim();
+    if (!name) {
+      toast.error("请输入主机名称");
+      return;
+    }
+    if (!ip) {
+      toast.error("请输入主机 IP 地址");
+      return;
+    }
+    if (name.length > 128) {
+      toast.error("主机名称不能超过 128 个字符");
+      return;
+    }
+    if (ip.length > 64) {
+      toast.error("主机 IP/域名不能超过 64 个字符");
+      return;
+    }
+
+    // 端口区间校验
+    const ps = form.portRangeStart;
+    const pe = form.portRangeEnd;
+    if ((ps != null && pe == null) || (ps == null && pe != null)) {
+      toast.error("请同时填写端口区间的起始和结束值，或同时留空");
+      return;
+    }
+    if (ps != null && pe != null) {
+      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) {
+        toast.error("端口区间必须在 1–65535 之间");
+        return;
+      }
+      if (ps > pe) {
         toast.error("端口区间起始值不能大于结束值");
         return;
       }
     }
-    if ((form.portRangeStart != null && form.portRangeEnd == null) ||
-        (form.portRangeStart == null && form.portRangeEnd != null)) {
-      toast.error("请同时填写端口区间的起始和结束值，或同时留空");
-      return;
-    }
 
-    const payload: any = { ...form };
-    if (!payload.networkInterface) payload.networkInterface = undefined;
-    // 端口区间
-    payload.portRangeStart = form.portRangeStart || null;
-    payload.portRangeEnd = form.portRangeEnd || null;
+    const ni = (form.networkInterface || "").trim();
+    const entry = (form.entryIp || "").trim();
 
     if (editingId) {
-      updateMutation.mutate({ id: editingId, ...payload });
+      // 编辑：只传需要更新的字段，避免空字符串导致 zod min(1) 报错
+      updateMutation.mutate({
+        id: editingId,
+        name,
+        ip,
+        hostType: form.hostType,
+        networkInterface: ni || null,
+        entryIp: entry || null,
+        portRangeStart: ps ?? null,
+        portRangeEnd: pe ?? null,
+      });
     } else {
-      createMutation.mutate(payload);
+      createMutation.mutate({
+        name,
+        ip,
+        hostType: form.hostType,
+        networkInterface: ni || undefined,
+        entryIp: entry || null,
+        portRangeStart: ps ?? null,
+        portRangeEnd: pe ?? null,
+      });
     }
   };
 
@@ -484,6 +528,20 @@ function HostsContent() {
                     <SelectItem value="slave">被控机</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  入口 IP / 域名
+                  <span className="ml-1 text-xs text-muted-foreground">(默认同 IP 地址，可自定义)</span>
+                </Label>
+                <Input
+                  placeholder="例如: example.com 或 1.2.3.4"
+                  value={form.entryIp}
+                  onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  用于向最终用户展示与复制的转发入口地址。可以是反代域名、CDN 域名或公网 IP；留空时使用上方 IP 地址
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>

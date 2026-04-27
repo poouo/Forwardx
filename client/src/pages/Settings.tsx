@@ -36,6 +36,11 @@ import {
   Download,
   Upload,
   DatabaseBackup,
+  Github,
+  Send,
+  Globe,
+  ShieldCheck,
+  ExternalLink,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -201,6 +206,10 @@ function SettingsContent() {
           <TabsTrigger value="backup" className="gap-1.5">
             <DatabaseBackup className="h-3.5 w-3.5" />
             备份与恢复
+          </TabsTrigger>
+          <TabsTrigger value="system" className="gap-1.5">
+            <Settings2 className="h-3.5 w-3.5" />
+            系统信息
           </TabsTrigger>
         </TabsList>
 
@@ -549,6 +558,11 @@ function SettingsContent() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* System Info Tab */}
+        <TabsContent value="system" className="space-y-4">
+          <SystemInfoSection />
+        </TabsContent>
       </Tabs>
 
       {/* Create Token Dialog */}
@@ -685,6 +699,161 @@ function SettingsContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function SystemInfoSection() {
+  const utils = trpc.useUtils();
+  const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
+  const [panelUrlInput, setPanelUrlInput] = useState("");
+
+  useEffect(() => {
+    if (settings) {
+      setPanelUrlInput(settings.panelPublicUrl || "");
+    }
+  }, [settings]);
+
+  const updateSettingsMutation = trpc.system.updateSettings.useMutation({
+    onSuccess: () => {
+      utils.system.getSettings.invalidate();
+      toast.success("面板设置已保存");
+    },
+    onError: (err) => toast.error(err.message || "保存失败"),
+  });
+
+  const handleSavePanelUrl = () => {
+    const v = panelUrlInput.trim();
+    if (v && !/^https?:\/\//i.test(v)) {
+      toast.error("面板公开地址必须以 http:// 或 https:// 开头");
+      return;
+    }
+    updateSettingsMutation.mutate({ panelPublicUrl: v });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 面板公开访问地址 */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Globe className="h-4 w-4 text-primary" />
+            面板公开访问地址
+          </CardTitle>
+          <CardDescription>
+            设置后，Agent 安装脚本、一键安装命令、心跳回调都会使用此地址。可以是反代域名、域名加端口或货真价实的 IP。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input
+              placeholder="例如: https://forwardx.example.com 或 http://1.2.3.4:3000"
+              value={panelUrlInput}
+              onChange={(e) => setPanelUrlInput(e.target.value)}
+              className="flex-1"
+            />
+            <Button
+              onClick={handleSavePanelUrl}
+              disabled={updateSettingsMutation.isPending}
+            >
+              {updateSettingsMutation.isPending ? "保存中..." : "保存"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            留空使用面板访问请求中的 host 作为默认值。必须以 http:// 或 https:// 开头。
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Agent 加密状态 */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            Agent 通讯加密
+          </CardTitle>
+          <CardDescription>
+            面板与 Agent 之间的请求身体均使用 AES-256-CTR + HMAC-SHA256（Encrypt-then-MAC）加密，由 Agent Token 派生密钥，含时间戳防重放。老版本 Agent 仍可明文工作以保证向后兼容。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 text-sm">
+            <Badge variant="outline" className="gap-1.5 border-emerald-500/30 text-emerald-500">
+              <CheckCircle2 className="h-3 w-3" />
+              已启用
+            </Badge>
+            <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded">
+              {settings?.agentEncryption || "aes-256-ctr+hmac-sha256"}
+            </code>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 开源与社区 */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Settings2 className="h-4 w-4 text-primary" />
+            开源与联系
+          </CardTitle>
+          <CardDescription>
+            ForwardX 是开源项目，欢迎提交 Issue 与 PR，也可通过以下渠道联系作者。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* GitHub 开源地址 */}
+          <a
+            href={settings?.repoUrl || "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
+                <Github className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium">GitHub 仓库</p>
+                <p className="text-xs text-muted-foreground truncate font-mono">{settings?.repoUrl}</p>
+              </div>
+            </div>
+            <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+          </a>
+
+          {/* Telegram 双向消息机器人 */}
+          <a
+            href={settings?.telegramBotUrl || "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
+                <Send className="h-4 w-4 text-sky-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium">Telegram 双向消息机器人</p>
+                <p className="text-xs text-muted-foreground truncate font-mono">{settings?.telegramBotUrl}</p>
+              </div>
+            </div>
+            <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+          </a>
+
+          <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">
+            <span>当前版本</span>
+            <code className="font-mono">v{settings?.version}</code>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

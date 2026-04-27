@@ -1,7 +1,72 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import * as db from "./db";
+import {
+  encryptPayload,
+  decryptPayload,
+  isEncryptedEnvelope,
+} from "./agentCrypto";
 
 const agentRouter = Router();
+
+/**
+ * Agent 加密中间件
+ *
+ * 请求处理：
+ *   - 检测请求头 X-Agent-Encrypted: 1 与 body 结构是否为加密信封
+ *   - 从 body.token 或 Authorization: Bearer 提取 token 作为密钥材料
+ *   - 解密后覆盖 req.body，让后续业务代码透明处理
+ * 响应处理：
+ *   - 若请求是加密请求，拦截 res.json/res.send，对响应 body 加密后发送
+ *   - 未加密请求从原路走（向后兼容老 Agent）
+ */
+function agentEncryptionMiddleware(req: Request, res: Response, next: NextFunction) {
+  const encHeader = req.header("X-Agent-Encrypted");
+  const isEnc = encHeader === "1" && isEncryptedEnvelope(req.body);
+  if (!isEnc) {
+    next();
+    return;
+  }
+
+  // 提取 token：优先从 Authorization: Bearer（后多数接口使用），其次从加密信封附加字段
+  let token: string | undefined;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    token = authHeader.substring(7);
+  } else if ((req.body as any).k && typeof (req.body as any).k === "string") {
+    // register 接口没有 Authorization，允许在信封外层携带 "k" 字段带 token
+    token = (req.body as any).k;
+  }
+  if (!token) {
+    res.status(401).json({ error: "Encrypted request missing token" });
+    return;
+  }
+
+  try {
+    const plain = decryptPayload(req.body, token);
+    req.body = plain;
+  } catch (err: any) {
+    res.status(400).json({ error: "Decryption failed", message: err?.message });
+    return;
+  }
+
+  // 拦截响应，自动加密 JSON 返回
+  const tokenForResp = token;
+  const originalJson = res.json.bind(res);
+  res.json = (body?: any) => {
+    const env = encryptPayload(body, tokenForResp);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("X-Agent-Encrypted", "1");
+    return originalJson(env);
+  };
+
+  next();
+}
+
+// 为所有 /api/agent/* POST 接口启用加密中间件（GET install.sh 等不需要）
+agentRouter.use("/api/agent", (req, res, next) => {
+  if (req.method !== "POST") return next();
+  return agentEncryptionMiddleware(req, res, next);
+});
 
 // Agent 注册接口
 agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
@@ -615,7 +680,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 });
 
 // Generate install.sh bootstrap script as a plain string
-function generateInstallScript(): string {
+function generateInstallScript(defaultPanelUrl: string): string {
   const lines = [
     '#!/bin/bash',
     '# ForwardX Agent 管理脚本',
@@ -626,7 +691,9 @@ function generateInstallScript(): string {
     '',
     'ACTION="${1:-}"',
     'TOKEN="${2:-}"',
-    'PANEL_URL="${PANEL_URL:-http://localhost:3000}"',
+    `PANEL_URL="\${PANEL_URL:-${defaultPanelUrl}}"`,
+    '# GitHub 仓库脚本镜像，安装时优先从 GitHub 获取，失败后回退面板',
+    'GITHUB_INSTALL_URL="https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh"',
     '',
     'show_help() {',
     '  echo "======================================"',
@@ -770,12 +837,22 @@ function generateInstallScript(): string {
     '    exit 1',
     '  fi',
     '',
-    '  echo "正在从面板获取完整安装脚本..."',
     '  echo "面板地址: $PANEL_URL"',
     '  echo "Token: $AGENT_TOKEN"',
     '  echo ""',
     '',
-    '  curl -s "$PANEL_URL/api/agent/full-install.sh?token=$AGENT_TOKEN" | bash',
+    '  # 优先尝试从 GitHub 获取安装脚本，失败后回退面板',
+    '  echo "[信息] 尝试从 GitHub 获取安装脚本：$GITHUB_INSTALL_URL"',
+    '  TMP_SCRIPT=$(mktemp)',
+    '  if curl -fsSL --max-time 15 "$GITHUB_INSTALL_URL" -o "$TMP_SCRIPT" 2>/dev/null && [ -s "$TMP_SCRIPT" ]; then',
+    '    echo "[信息] 从 GitHub 获取成功，开始安装..."',
+    '    PANEL_URL="$PANEL_URL" AGENT_TOKEN="$AGENT_TOKEN" bash "$TMP_SCRIPT"',
+    '    rm -f "$TMP_SCRIPT"',
+    '  else',
+    '    echo "[信息] GitHub 不可达或返回为空，回退从面板获取"',
+    '    rm -f "$TMP_SCRIPT"',
+    '    curl -fsSL --max-time 30 "$PANEL_URL/api/agent/full-install.sh?token=$AGENT_TOKEN" | bash',
+    '  fi',
     '}',
     '',
     'case "$ACTION" in',
@@ -944,6 +1021,70 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  echo "$MSG" >> "$LOG_FILE" 2>/dev/null || true',
     '}',
     '',
+    '# ============ 加密通讯辅助函数 (AES-256-CTR + HMAC-SHA256) ============',
+    '# 与服务端 agentCrypto.ts 实现保持一致：',
+    '#   key_enc = SHA-256(token | "forwardx-agent-v1")',
+    '#   key_mac = SHA-256(token | "forwardx-agent-mac")',
+    '# 依赖 openssl + xxd（主流 Linux 发行版默认提供）',
+    'ENCRYPTION_AVAILABLE=0',
+    'if command -v openssl >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then',
+    '  ENCRYPTION_AVAILABLE=1',
+    'fi',
+    '',
+    'fwx_key_enc_hex() {',
+    '  printf "%s|forwardx-agent-v1" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\'',
+    '}',
+    'fwx_key_mac_hex() {',
+    '  printf "%s|forwardx-agent-mac" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\'',
+    '}',
+    '',
+    '# 将整数转 8 字节大端 hex',
+    'fwx_int64be_hex() {',
+    '  printf "%016x" "$1"',
+    '}',
+    '',
+    '# 将明文 JSON 包装为加密信封，输出为一行 JSON',
+    '# 用法: fwx_encrypt_envelope <plaintext>',
+    'fwx_encrypt_envelope() {',
+    '  local PLAIN="$1"',
+    '  local KEY_ENC_HEX=$(fwx_key_enc_hex)',
+    '  local KEY_MAC_HEX=$(fwx_key_mac_hex)',
+    '  local IV_HEX=$(openssl rand -hex 16)',
+    '  local CT_HEX=$(printf "%s" "$PLAIN" | openssl enc -aes-256-ctr -K "$KEY_ENC_HEX" -iv "$IV_HEX" 2>/dev/null | xxd -p -c 99999 | tr -d "\n")',
+    '  local TS_MS=$(($(date +%s%N) / 1000000))',
+    '  local TS_HEX=$(fwx_int64be_hex "$TS_MS")',
+    '  # MAC 输入："v1"(2B) + IV(16B) + CT + TS(8B)',
+    '  local V1_HEX="7631"',
+    '  local MAC_INPUT_HEX="${V1_HEX}${IV_HEX}${CT_HEX}${TS_HEX}"',
+    '  local MAC_HEX=$(printf "%s" "$MAC_INPUT_HEX" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$KEY_MAC_HEX" 2>/dev/null | awk \'{print $NF}\')',
+    '  printf \'{"v":1,"iv":"%s","ct":"%s","mac":"%s","ts":%s}\' "$IV_HEX" "$CT_HEX" "$MAC_HEX" "$TS_MS"',
+    '}',
+    '',
+    '# 发送 POST 请求。优先加密，不可用或失败时回退明文。',
+    '# 用法: agent_post <path> <plaintext_json> [extra_curl_args...]',
+    'agent_post() {',
+    '  local PATH_="$1"; shift',
+    '  local PLAIN="$1"; shift',
+    '  local URL="${PANEL_URL}${PATH_}"',
+    '  if [ "$ENCRYPTION_AVAILABLE" = "1" ]; then',
+    '    local ENV_JSON',
+    '    ENV_JSON=$(fwx_encrypt_envelope "$PLAIN" 2>/dev/null) || ENV_JSON=""',
+    '    if [ -n "$ENV_JSON" ]; then',
+    '      curl -s --max-time 10 -X POST "$URL" \\',
+    '        -H "Content-Type: application/json" \\',
+    '        -H "Authorization: Bearer $AGENT_TOKEN" \\',
+    '        -H "X-Agent-Encrypted: 1" \\',
+    '        -d "$ENV_JSON" "$@"',
+    '      return $?',
+    '    fi',
+    '  fi',
+    '  # 明文回退（为老面板或 openssl 不可用时兼容）',
+    '  curl -s --max-time 10 -X POST "$URL" \\',
+    '    -H "Content-Type: application/json" \\',
+    '    -H "Authorization: Bearer $AGENT_TOKEN" \\',
+    '    -d "$PLAIN" "$@"',
+    '}',
+    '',
     '# 自动检测默认出口网卡',
     'detect_default_iface() {',
     '  DEV=$(ip route show default 2>/dev/null | awk \'{print $5; exit}\')',
@@ -954,10 +1095,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'report_rule_status() {',
     '  RULE_ID="$1"',
     '  RUNNING="$2"',
-    '  curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/rule-status" \\',
-    '    -H "Content-Type: application/json" \\',
-    '    -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '    -d "{\\"ruleId\\":$RULE_ID,\\"isRunning\\":$RUNNING}" >/dev/null 2>&1',
+    '  agent_post "/api/agent/rule-status" "{\\"ruleId\\":$RULE_ID,\\"isRunning\\":$RUNNING}" >/dev/null 2>&1',
     '}',
     '',
     '# 检测本机是否在监听指定端口',
@@ -1106,7 +1244,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'report_selftest() {',
     '  TID="$1"; TR="$2"; LAT="$3"; MSG="$4"',
     '  PAYLOAD=$(jq -n --argjson tid "$TID" --argjson t "$TR" --argjson lat "${LAT:-0}" --arg msg "$MSG" \'{testId:$tid,targetReachable:($t==1),latencyMs:$lat,message:$msg}\')',
-    '  curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/selftest-result" -H "Content-Type: application/json" -H "Authorization: Bearer $AGENT_TOKEN" -d "$PAYLOAD" >/dev/null 2>&1',
+    '  agent_post "/api/agent/selftest-result" "$PAYLOAD" >/dev/null 2>&1',
     '}',
     '',
     'run_selftests() {',
@@ -1315,10 +1453,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  done',
     '  if [ "$STATS_JSON" != "[]" ]; then',
     '    log INFO "[traffic] 上报流量数据: $STATS_JSON"',
-    '    TRAFFIC_RESP=$(curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/traffic" \\',
-    '      -H "Content-Type: application/json" \\',
-    '      -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '      -d "{\\"stats\\":$STATS_JSON}" 2>&1)',
+    '    TRAFFIC_RESP=$(agent_post "/api/agent/traffic" "{\\"stats\\":$STATS_JSON}" 2>&1)',
     '    log DEBUG "[traffic] 上报响应: $TRAFFIC_RESP"',
     '  else',
     '    log DEBUG "[traffic] 无流量增量，跳过上报"',
@@ -1347,10 +1482,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     "    '{cpuUsage: ($cpu|tonumber), memoryUsage: ($memUsage|tonumber), memoryUsed: ($memUsed|tonumber), networkIn: ($netIn|tonumber), networkOut: ($netOut|tonumber), diskUsage: ($disk|tonumber), uptime: ($uptime|tonumber)}')",
     '',
     '  log DEBUG "[heartbeat] 发送心跳请求: $PAYLOAD"',
-    '  RESPONSE=$(curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/heartbeat" \\',
-    '    -H "Content-Type: application/json" \\',
-    '    -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '    -d "$PAYLOAD" 2>/dev/null)',
+    '  RESPONSE=$(agent_post "/api/agent/heartbeat" "$PAYLOAD" 2>/dev/null)',
     '',
     '  if [ -n "$RESPONSE" ]; then',
     '    log INFO "[heartbeat] 收到响应 (${#RESPONSE} bytes)"',
@@ -1410,7 +1542,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '',
     '# 主循环：心跳 30s，期间每 3s 轮询一次软任务下发（转发自测等）',
     'pull_selftests_once() {',
-    '  RESPONSE=$(curl -s --max-time 5 -X POST "$PANEL_URL/api/agent/selftest-pull" -H "Authorization: Bearer $AGENT_TOKEN" -d "{}" 2>/dev/null)',
+    '  RESPONSE=$(agent_post "/api/agent/selftest-pull" "{}" 2>/dev/null)',
     '  if [ -n "$RESPONSE" ]; then run_selftests "$RESPONSE"; fi',
     '}',
     '',
@@ -1459,9 +1591,31 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  --arg mem "$MEM_TOTAL_BYTES" \\',
     "  '{token: $token, ip: $ip, osInfo: $os, cpuInfo: $cpu, memoryTotal: ($mem|tonumber)}')",
     '',
-    'curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/register" \\',
-    '  -H "Content-Type: application/json" \\',
-    '  -d "$REGISTER_PAYLOAD"',
+    '# 注册接口同样走加密会话',
+    'register_with_panel() {',
+    '  if command -v openssl >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then',
+    '    KEY_ENC_HEX=$(printf "%s|forwardx-agent-v1" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
+    '    KEY_MAC_HEX=$(printf "%s|forwardx-agent-mac" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
+    '    IV_HEX=$(openssl rand -hex 16)',
+    '    CT_HEX=$(printf "%s" "$REGISTER_PAYLOAD" | openssl enc -aes-256-ctr -K "$KEY_ENC_HEX" -iv "$IV_HEX" 2>/dev/null | xxd -p -c 99999 | tr -d "\n")',
+    '    TS_MS=$(($(date +%s%N) / 1000000))',
+    '    TS_HEX=$(printf "%016x" "$TS_MS")',
+    '    MAC_HEX=$(printf "7631%s%s%s" "$IV_HEX" "$CT_HEX" "$TS_HEX" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$KEY_MAC_HEX" 2>/dev/null | awk \'{print $NF}\')',
+    '    ENV_JSON=$(printf \'{"v":1,"iv":"%s","ct":"%s","mac":"%s","ts":%s}\' "$IV_HEX" "$CT_HEX" "$MAC_HEX" "$TS_MS")',
+    '    if [ -n "$ENV_JSON" ]; then',
+    '      curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/register" \\',
+    '        -H "Content-Type: application/json" \\',
+    '        -H "Authorization: Bearer $AGENT_TOKEN" \\',
+    '        -H "X-Agent-Encrypted: 1" \\',
+    '        -d "$ENV_JSON"',
+    '      return',
+    '    fi',
+    '  fi',
+    '  curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/register" \\',
+    '    -H "Content-Type: application/json" \\',
+    '    -d "$REGISTER_PAYLOAD"',
+    '}',
+    'register_with_panel',
     '',
     'echo ""',
     'echo "======================================"',
@@ -1478,10 +1632,21 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
   return lines.join('\n') + '\n';
 }
 
+/** 计算当前会话可用的 panel URL：优先使用管理员在设置中配置的 panelPublicUrl */
+async function resolvePanelUrl(req: Request): Promise<string> {
+  const configured = (await db.getSetting("panelPublicUrl")) || "";
+  if (configured && /^https?:\/\//.test(configured)) {
+    return configured.replace(/\/+$/, "");
+  }
+  // 回退到请求中的 host
+  return `${req.protocol}://${req.get("host")}`;
+}
+
 // 安装/卸载引导脚本
-agentRouter.get("/api/agent/install.sh", async (_req: Request, res: Response) => {
+agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
+  const panelUrl = await resolvePanelUrl(req);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(generateInstallScript());
+  res.send(generateInstallScript(panelUrl));
 });
 
 // 完整安装脚本（由 Agent 引导脚本调用）
@@ -1492,7 +1657,7 @@ agentRouter.get("/api/agent/full-install.sh", async (req: Request, res: Response
     return;
   }
 
-  const panelUrl = `${req.protocol}://${req.get("host")}`;
+  const panelUrl = await resolvePanelUrl(req);
 
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.send(generateFullInstallScript(panelUrl, token));
