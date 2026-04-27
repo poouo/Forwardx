@@ -1,0 +1,22 @@
+services:
+  forwardx:
+    build: .
+    image: forwardx:latest
+    container_name: forwardx-panel
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # 单容器内置 SQLite，数据库文件持久化到下方 volume
+      - SQLITE_PATH=/data/forwardx.db
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-string}
+      # 默认管理员密码（每次启动自动重置，可自定义）
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+    volumes:
+      - forwardx-data:/data
+
+volumes:
+  forwardx-data:
+    driver: local

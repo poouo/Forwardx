@@ -1,0 +1,6 @@
+node_modules
+dist
+client/dist
+.env
+.git
+*.md

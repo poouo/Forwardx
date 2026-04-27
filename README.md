@@ -39,9 +39,10 @@ ForwardX 支持三种主流端口转发工具，可根据场景灵活选择：
 | **转发规则** | 可视化创建/编辑/启停转发规则，支持三种引擎和 TCP/UDP/Both 协议 |
 | **实时监控** | Agent 周期性上报 CPU、内存、网络、磁盘等主机指标 |
 | **流量统计** | 基于 iptables 计数链精确统计每条规则的入向/出向流量，支持趋势图表 |
-| **带宽限速** | 基于 tc (Traffic Control) 实现每条规则独立的上传/下载限速 |
+| **流量管理** | 支持用户流量额度限制、到期时间设置、流量自动/手动重置 |
 | **连通性检测** | 一键自测转发链路，检测目标可达性和 ping 延迟 |
-| **多用户权限** | 管理员/普通用户角色分离，资源隔离 |
+| **多用户权限** | 管理员/普通用户角色分离，支持开放注册和细粒度权限控制（如限制添加规则） |
+| **端口管理** | 支持主机端口区间限制，添加规则时自动检测端口占用并支持随机分配 |
 | **配置导入导出** | 支持 JSON 格式的规则和主机配置备份与恢复 |
 | **暗色主题** | 内置亮色/暗色主题切换，跟随系统偏好 |
 
@@ -166,17 +167,17 @@ curl -fsSL http://your-panel:3000/api/agent/install.sh | bash
 1. 进入 **转发规则** 页面，点击 **添加规则**
 2. 选择目标主机、转发工具（iptables / realm / socat）
 3. 配置源端口、目标 IP、目标端口、协议类型
-4. 可选设置上行/下行限速（kbps）
+4. 默认随机分配源端口，也可手动指定（会自动检测端口占用）
 5. 保存后规则将在下次 Agent 心跳时自动下发执行
 
-### 3. 限速配置
+### 3. 流量与权限管理
 
-每条转发规则支持独立的带宽限制：
+管理员可在 **用户管理** 页面对用户进行详细配置：
 
-- **上行限速** — 限制从源端口发出的流量速率
-- **下行限速** — 限制到达源端口的流量速率
-- 单位为 kbps，设置为 0 表示不限速
-- 基于 Linux tc (Traffic Control) 实现
+- **流量限额** — 支持 GB/TB 级别设置，超额后自动禁用该用户的所有规则
+- **到期时间** — 到期后自动禁用规则
+- **自动重置** — 可设置每月指定日期自动清零已用流量
+- **权限控制** — 可单独控制用户是否允许添加新规则
 
 ### 4. 连通性检测
 
@@ -235,7 +236,7 @@ pnpm db:migrate
 |------|------|
 | `users` | 用户信息，含角色权限 |
 | `hosts` | 主机信息，含连接方式和在线状态 |
-| `forward_rules` | 转发规则，含限速和运行状态 |
+| `forward_rules` | 转发规则，含运行状态 |
 | `host_metrics` | 主机监控指标时序数据 |
 | `traffic_stats` | 转发规则流量统计 |
 | `agent_tokens` | Agent 认证令牌 |
@@ -288,7 +289,7 @@ forwardx/
 - 需要 `curl`、`jq`、`iptables` 命令
 - 使用 realm 引擎时 Agent 自动下载安装 realm 二进制
 - 使用 socat 引擎时需预装 `socat`
-- 使用限速功能时需要 `tc` (iproute2)
+
 
 ## 常见问题
 
@@ -335,7 +336,8 @@ ForwardX is a lightweight, modern, and self-hosted **Linux port forwarding manag
 - **Multi-engine support** — iptables (kernel-level DNAT), realm (high-performance userspace proxy), and socat (universal network tool)
 - **Multi-host management** — Manage forwarding rules on multiple servers through a unified dashboard
 - **Real-time monitoring** — CPU, memory, network metrics and per-rule traffic statistics with trend charts
-- **Bandwidth limiting** — Independent upload/download rate limiting per rule via Linux tc
+- **Traffic management** — User traffic quotas, expiration dates, and auto/manual traffic reset
+- **Port management** — Host port range limits, automatic port conflict detection, and random port assignment
 - **Connectivity testing** — One-click link testing with target reachability and ping latency detection
 - **Multi-user RBAC** — Admin and regular user roles with resource isolation
 - **Config backup** — JSON-based import/export for rules and host configurations
