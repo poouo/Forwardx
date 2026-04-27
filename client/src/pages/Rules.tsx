@@ -52,8 +52,9 @@ import {
   Copy,
 } from "lucide-react";
 import {
-  LineChart,
+  ComposedChart,
   Line,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -883,18 +884,32 @@ function TrafficDetailDialog({
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={32} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => formatBytes(v)} width={70} />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(v) => formatBytes(v)}
+                  width={70}
+                  domain={[0, (dataMax: number) => Math.ceil((dataMax || 1) * 1.15)]}
+                  allowDecimals={false}
+                />
                 <RTooltip
                   formatter={(value: any) => formatBytes(Number(value) || 0)}
                   labelFormatter={(l) => l}
+                  contentStyle={{
+                    backgroundColor: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
+                    borderRadius: "8px",
+                    fontSize: "12px",
+                  }}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="bytesIn" name="入向" stroke="hsl(var(--chart-2))" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="bytesOut" name="出向" stroke="hsl(var(--chart-4))" dot={false} strokeWidth={2} />
-              </LineChart>
+                <Bar dataKey="bytesIn" name="入向" fill="hsl(var(--chart-2))" fillOpacity={0.35} barSize={12} />
+                <Bar dataKey="bytesOut" name="出向" fill="hsl(var(--chart-4))" fillOpacity={0.35} barSize={12} />
+                <Line type="monotone" dataKey="bytesIn" name="入向趋势" stroke="hsl(var(--chart-2))" dot={false} strokeWidth={2} legendType="none" />
+                <Line type="monotone" dataKey="bytesOut" name="出向趋势" stroke="hsl(var(--chart-4))" dot={false} strokeWidth={2} legendType="none" />
+              </ComposedChart>
             </ResponsiveContainer>
           )}
         </div>

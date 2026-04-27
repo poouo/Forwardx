@@ -23,16 +23,15 @@ import {
   BarChart3,
 } from "lucide-react";
 import {
-  LineChart,
+  ComposedChart,
   Line,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip as RTooltip,
   Legend,
   ResponsiveContainer,
-  AreaChart,
-  Area,
 } from "recharts";
 import { useMemo, useState } from "react";
 
@@ -245,20 +244,16 @@ function DashboardContent() {
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                <ComposedChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
                   <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={30} />
-                  <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => formatBytes(v)} width={55} hide={false} />
+                  <YAxis
+                    tick={{ fontSize: 9 }}
+                    tickFormatter={(v) => formatBytes(v)}
+                    width={60}
+                    domain={[0, (dataMax: number) => Math.ceil((dataMax || 1) * 1.15)]}
+                    allowDecimals={false}
+                  />
                   <RTooltip
                     formatter={(value: any) => formatBytes(Number(value) || 0)}
                     labelFormatter={(l) => l}
@@ -270,9 +265,11 @@ function DashboardContent() {
                     }}
                   />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Area type="monotone" dataKey="bytesIn" name="入向" stroke="hsl(var(--chart-2))" fill="url(#gradIn)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="bytesOut" name="出向" stroke="hsl(var(--chart-4))" fill="url(#gradOut)" strokeWidth={2} />
-                </AreaChart>
+                  <Bar dataKey="bytesIn" name="入向" fill="hsl(var(--chart-2))" fillOpacity={0.35} barSize={10} />
+                  <Bar dataKey="bytesOut" name="出向" fill="hsl(var(--chart-4))" fillOpacity={0.35} barSize={10} />
+                  <Line type="monotone" dataKey="bytesIn" name="入向趋势" stroke="hsl(var(--chart-2))" dot={false} strokeWidth={2} legendType="none" />
+                  <Line type="monotone" dataKey="bytesOut" name="出向趋势" stroke="hsl(var(--chart-4))" dot={false} strokeWidth={2} legendType="none" />
+                </ComposedChart>
               </ResponsiveContainer>
             )}
           </div>
