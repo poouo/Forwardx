@@ -655,9 +655,27 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   return db.select().from(trafficStats).where(eq(trafficStats.ruleId, ruleId)).orderBy(desc(trafficStats.recordedAt)).limit(limit);
 }
 
-export async function getTotalTraffic() {
+export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
+
+  if (userId) {
+    // 通过 hosts 表关联过滤当前用户的流量
+    const userHosts = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId));
+    const hostIds = userHosts.map(h => h.id);
+    if (hostIds.length === 0) return { totalIn: 0, totalOut: 0 };
+    const r = await db.select({
+      totalIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
+      totalOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
+    }).from(trafficStats)
+      .where(sql`${trafficStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
+    const row = r[0];
+    return {
+      totalIn: Number(row?.totalIn) || 0,
+      totalOut: Number(row?.totalOut) || 0,
+    };
+  }
+
   const r = await db.select({
     totalIn: sql<number>`COALESCE(SUM(bytesIn), 0)`,
     totalOut: sql<number>`COALESCE(SUM(bytesOut), 0)`,
@@ -841,7 +859,7 @@ export async function getDashboardStats(userId?: number) {
 
   const hostStats = hostStatsRows[0];
   const ruleStats = ruleStatsRows[0];
-  const traffic = await getTotalTraffic();
+  const traffic = await getTotalTraffic(userId);
 
   return {
     totalHosts: Number(hostStats?.totalHosts) || 0,

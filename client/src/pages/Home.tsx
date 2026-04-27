@@ -202,15 +202,17 @@ function DashboardContent() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-4">
-        <StatCard
-          title="主机总数"
-          value={stats?.totalHosts ?? 0}
-          subtitle={`${stats?.onlineHosts ?? 0} 台在线`}
-          icon={Server}
-          gradient="bg-gradient-to-br from-blue-500 to-blue-600"
-          loading={isLoading}
-        />
+      <div className={`grid grid-cols-2 ${user?.role === "admin" ? "lg:grid-cols-4" : "lg:grid-cols-3"} gap-2 sm:gap-4`}>
+        {user?.role === "admin" && (
+          <StatCard
+            title="主机总数"
+            value={stats?.totalHosts ?? 0}
+            subtitle={`${stats?.onlineHosts ?? 0} 台在线`}
+            icon={Server}
+            gradient="bg-gradient-to-br from-blue-500 to-blue-600"
+            loading={isLoading}
+          />
+        )}
         <StatCard
           title="转发规则"
           value={stats?.totalRules ?? 0}
@@ -404,8 +406,9 @@ function DashboardContent() {
       </Card>
 
       {/* Health Overview */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-        {/* Online Rate */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${user?.role === "admin" ? "lg:grid-cols-3" : "lg:grid-cols-2"} gap-3 sm:gap-4`}>
+        {/* Online Rate - Admin only */}
+        {user?.role === "admin" && (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -433,6 +436,7 @@ function DashboardContent() {
             </div>
           </CardContent>
         </Card>
+        )}
 
         {/* Active Rules Rate */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -501,8 +505,9 @@ function DashboardContent() {
       </div>
 
       {/* Recent Lists */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-        {/* Recent Hosts */}
+      <div className={`grid grid-cols-1 ${user?.role === "admin" ? "lg:grid-cols-2" : ""} gap-3 sm:gap-4`}>
+        {/* Recent Hosts - Admin only */}
+        {user?.role === "admin" && (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -540,6 +545,7 @@ function DashboardContent() {
             )}
           </CardContent>
         </Card>
+        )}
 
         {/* Recent Rules */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
