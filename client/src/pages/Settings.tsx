@@ -103,7 +103,13 @@ function SettingsContent() {
   });
   const [newToken, setNewToken] = useState("");
   const [description, setDescription] = useState("");
-  const [panelUrl, setPanelUrl] = useState(window.location.origin);
+  // 面板地址统一使用「系统信息」Tab 中配置的 panelPublicUrl；未配置时回退 window.location.origin
+  const { data: systemSettings } = trpc.system.getSettings.useQuery();
+  const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
+    || (typeof window !== "undefined" ? window.location.origin : "");
+  const repoUrl = systemSettings?.repoUrl || "https://github.com/poouo/Forwardx";
+  // GitHub 官方 install-agent.sh 的 raw 地址
+  const githubScriptUrl = `${repoUrl.replace(/\/+$/, "").replace("github.com", "raw.githubusercontent.com")}/main/scripts/install-agent.sh`;
 
   const { data: scriptData } = trpc.agentTokens.getInstallScript.useQuery(
     { token: scriptToken },
@@ -168,12 +174,17 @@ function SettingsContent() {
     }
   };
 
+  /**
+   * 生成一条「GitHub 优先 + 面板回退」的安装命令。
+   * 该命令在 shell 内联决定从哪里拉取脚本，GitHub 不可达时自动转发面板。
+   */
   const getInstallCommand = (token: string) => {
-    return `curl -sL ${panelUrl}/api/agent/install.sh | PANEL_URL="${panelUrl}" bash -s -- install ${token}`;
+    return `bash -c 'S=$(curl -fsSL --max-time 10 ${githubScriptUrl} 2>/dev/null) || S=$(curl -fsSL --max-time 30 "${panelUrl}/api/agent/install.sh"); PANEL_URL="${panelUrl}" bash -c "$S" _ install ${token}'`;
   };
 
+  /** 卸载命令也采用同样的「GitHub 优先 + 面板回退」策略 */
   const getUninstallCommand = () => {
-    return `curl -sL ${panelUrl}/api/agent/install.sh | bash -s -- uninstall`;
+    return `bash -c 'S=$(curl -fsSL --max-time 10 ${githubScriptUrl} 2>/dev/null) || S=$(curl -fsSL --max-time 30 "${panelUrl}/api/agent/install.sh"); bash -c "$S" _ uninstall'`;
   };
 
   if (user?.role !== "admin") return null;
@@ -351,14 +362,17 @@ function SettingsContent() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
-              <div className="space-y-2">
-                <Label className="text-sm">面板地址</Label>
-                <Input
-                  value={panelUrl}
-                  onChange={(e) => setPanelUrl(e.target.value)}
-                  placeholder="https://your-panel.com"
-                  className="font-mono text-sm"
-                />
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/30 border border-border/40">
+                <Settings2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                <div className="text-xs space-y-1">
+                  <p>
+                    <span className="font-medium">当前面板地址：</span>
+                    <code className="ml-1 font-mono text-foreground">{panelUrl}</code>
+                  </p>
+                  <p className="text-muted-foreground">
+                    该地址从「系统信息」Tab 读取。未配置时默认使用当前浏览器访问的 origin，请确认 Agent 能访问该地址。
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -385,21 +399,17 @@ function SettingsContent() {
                 <div>
                   <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
                     <Download className="h-3 w-3" />
-                    安装命令（替换 YOUR_TOKEN）：
+                    安装命令（替换 YOUR_TOKEN，GitHub 优先，不可达时自动回退面板）：
                   </p>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 text-xs font-mono bg-background/50 p-3 rounded border overflow-x-auto">
-                      curl -sL {panelUrl}/api/agent/install.sh | PANEL_URL="{panelUrl}" bash -s -- install YOUR_TOKEN
+                    <code className="flex-1 text-xs font-mono bg-background/50 p-3 rounded border overflow-x-auto break-all">
+                      {getInstallCommand("YOUR_TOKEN")}
                     </code>
                     <Button
                       variant="ghost"
                       size="icon"
                       className="shrink-0"
-                      onClick={() =>
-                        copyToClipboard(
-                          `curl -sL ${panelUrl}/api/agent/install.sh | PANEL_URL="${panelUrl}" bash -s -- install YOUR_TOKEN`
-                        )
-                      }
+                      onClick={() => copyToClipboard(getInstallCommand("YOUR_TOKEN"))}
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -408,11 +418,11 @@ function SettingsContent() {
                 <div>
                   <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
                     <Trash2 className="h-3 w-3" />
-                    卸载命令：
+                    卸载命令（同样 GitHub 优先，不可达时回退面板）：
                   </p>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 text-xs font-mono bg-background/50 p-3 rounded border overflow-x-auto">
-                      curl -sL {panelUrl}/api/agent/install.sh | bash -s -- uninstall
+                    <code className="flex-1 text-xs font-mono bg-background/50 p-3 rounded border overflow-x-auto break-all">
+                      {getUninstallCommand()}
                     </code>
                     <Button
                       variant="ghost"

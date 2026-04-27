@@ -262,7 +262,7 @@ function DashboardLayoutContent({
 
         <SidebarFooter className="p-3">
           <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
-            <span className="text-[10px] text-muted-foreground/50">v2.1.3</span>
+            <span className="text-[10px] text-muted-foreground/50">v2.1.4</span>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
