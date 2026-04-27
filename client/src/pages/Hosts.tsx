@@ -31,7 +31,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
-import { Separator } from "@/components/ui/separator";
 import { trpc } from "@/lib/trpc";
 import {
   Plus,
@@ -45,7 +44,8 @@ import {
   Clock,
   ArrowDownToLine,
   ArrowUpFromLine,
-  X,
+  LayoutGrid,
+  List,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { toast } from "sonner";
@@ -89,32 +89,55 @@ const defaultFormData: HostFormData = {
   portRangeEnd: null,
 };
 
-function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => void }) {
-  const { data: host } = trpc.hosts.getById.useQuery({ id: hostId });
+/** 单个主机卡片组件 */
+function HostCard({
+  host,
+  onEdit,
+  onDelete,
+}: {
+  host: any;
+  onEdit: (host: any) => void;
+  onDelete: (id: number) => void;
+}) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
-    { hostId, limit: 1 },
+    { hostId: host.id, limit: 1 },
     { refetchInterval: 15000 }
   );
-
   const latestMetric = metrics?.[0];
 
-  if (!host) return null;
-
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+    <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <Monitor className="h-4 w-4" />
             {host.name}
           </CardTitle>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => onEdit(host)}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-destructive hover:text-destructive"
+              onClick={() => {
+                if (confirm("确定要删除此主机吗？")) onDelete(host.id);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {/* 基本信息 */}
+        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">IP 地址</p>
             <p className="text-sm font-mono">{host.ip}</p>
@@ -126,21 +149,16 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
               <span className="text-sm">{host.isOnline ? "在线" : "离线"}</span>
             </div>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 col-span-2">
             <p className="text-xs text-muted-foreground">系统</p>
             <p className="text-sm truncate">{host.osInfo || "-"}</p>
           </div>
-
-          {((host as any).portRangeStart != null && (host as any).portRangeEnd != null) && (
-            <div className="space-y-1 col-span-2">
-              <p className="text-xs text-muted-foreground">端口区间</p>
-              <p className="text-sm font-mono">{(host as any).portRangeStart} - {(host as any).portRangeEnd}</p>
-            </div>
-          )}
         </div>
 
+        {/* 监控数据 */}
         {latestMetric ? (
           <div className="space-y-3 pt-2 border-t border-border/30">
+            {/* CPU */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
@@ -148,13 +166,19 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
               </div>
               <Progress value={latestMetric.cpuUsage ?? 0} className="h-1.5" />
             </div>
+            {/* 内存 - 显示具体数据和百分比 */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
-                <span className="font-medium tabular-nums">{latestMetric.memoryUsage ?? 0}%</span>
+                <span className="font-medium tabular-nums">
+                  {latestMetric.memoryUsed && host.memoryTotal
+                    ? `${formatBytes(latestMetric.memoryUsed)} / ${formatBytes(host.memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
+                    : `${latestMetric.memoryUsage ?? 0}%`}
+                </span>
               </div>
               <Progress value={latestMetric.memoryUsage ?? 0} className="h-1.5" />
             </div>
+            {/* 磁盘 */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
@@ -162,6 +186,7 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
               </div>
               <Progress value={latestMetric.diskUsage ?? 0} className="h-1.5" />
             </div>
+            {/* 流量 */}
             <div className="grid grid-cols-2 gap-3 pt-1">
               <div className="flex items-center gap-2 text-xs">
                 <ArrowDownToLine className="h-3 w-3 text-muted-foreground" />
@@ -174,6 +199,7 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
                 <span className="font-medium ml-auto">{formatBytes(latestMetric.networkOut)}</span>
               </div>
             </div>
+            {/* 运行时间 */}
             <div className="flex items-center gap-2 text-xs pt-1">
               <Clock className="h-3 w-3 text-muted-foreground" />
               <span className="text-muted-foreground">运行时间</span>
@@ -199,7 +225,7 @@ function HostsContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [selectedHostId, setSelectedHostId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"card" | "table">("card");
   const [form, setForm] = useState<HostFormData>(defaultFormData);
 
   const createMutation = trpc.hosts.create.useMutation({
@@ -225,7 +251,6 @@ function HostsContent() {
   const deleteMutation = trpc.hosts.delete.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
-      setSelectedHostId(null);
       toast.success("主机已删除");
     },
     onError: (err) => toast.error(err.message || "删除失败"),
@@ -247,7 +272,6 @@ function HostsContent() {
       ip: host.ip,
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
-      // 默认将入口 IP 填充为主机原始 IP，用户可覆盖为域名/反代地址
       entryIp: host.entryIp || host.ip || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
@@ -257,49 +281,27 @@ function HostsContent() {
   };
 
   const handleSubmit = () => {
-    // 基础必填校验
     const name = (form.name || "").trim();
     const ip = (form.ip || "").trim();
-    if (!name) {
-      toast.error("请输入主机名称");
-      return;
-    }
-    if (!ip) {
-      toast.error("请输入主机 IP 地址");
-      return;
-    }
-    if (name.length > 128) {
-      toast.error("主机名称不能超过 128 个字符");
-      return;
-    }
-    if (ip.length > 64) {
-      toast.error("主机 IP/域名不能超过 64 个字符");
-      return;
-    }
+    if (!name) { toast.error("请输入主机名称"); return; }
+    if (!ip) { toast.error("请输入主机 IP 地址"); return; }
+    if (name.length > 128) { toast.error("主机名称不能超过 128 个字符"); return; }
+    if (ip.length > 64) { toast.error("主机 IP/域名不能超过 64 个字符"); return; }
 
-    // 端口区间校验
     const ps = form.portRangeStart;
     const pe = form.portRangeEnd;
     if ((ps != null && pe == null) || (ps == null && pe != null)) {
-      toast.error("请同时填写端口区间的起始和结束值，或同时留空");
-      return;
+      toast.error("请同时填写端口区间的起始和结束值，或同时留空"); return;
     }
     if (ps != null && pe != null) {
-      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) {
-        toast.error("端口区间必须在 1–65535 之间");
-        return;
-      }
-      if (ps > pe) {
-        toast.error("端口区间起始值不能大于结束值");
-        return;
-      }
+      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error("端口区间必须在 1–65535 之间"); return; }
+      if (ps > pe) { toast.error("端口区间起始值不能大于结束值"); return; }
     }
 
     const ni = (form.networkInterface || "").trim();
     const entry = (form.entryIp || "").trim();
 
     if (editingId) {
-      // 编辑：只传需要更新的字段，避免空字符串导致 zod min(1) 报错
       updateMutation.mutate({
         id: editingId,
         name,
@@ -324,11 +326,11 @@ function HostsContent() {
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;
-
   const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">主机管理</h1>
@@ -341,6 +343,25 @@ function HostsContent() {
             <Server className="h-3 w-3 text-chart-2" />
             {onlineCount} / {hosts?.length ?? 0} 在线
           </Badge>
+          {/* 布局切换按钮 */}
+          <div className="flex items-center border border-border/40 rounded-md overflow-hidden">
+            <Button
+              variant={viewMode === "card" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              onClick={() => setViewMode("card")}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === "table" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              onClick={() => setViewMode("table")}
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
           <Button onClick={openCreate} className="gap-2">
             <Plus className="h-4 w-4" />
             添加主机
@@ -348,144 +369,146 @@ function HostsContent() {
         </div>
       </div>
 
-      <div className={`grid gap-4 ${selectedHostId ? "grid-cols-1 lg:grid-cols-3" : "grid-cols-1"}`}>
-        <div className={selectedHostId ? "lg:col-span-2" : ""}>
+      {/* Content */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {[1, 2, 3].map((i) => (
+            <Skeleton key={i} className="h-64 w-full rounded-xl" />
+          ))}
+        </div>
+      ) : hosts && hosts.length > 0 ? (
+        viewMode === "card" ? (
+          /* ========== 卡片式布局 ========== */
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {hosts.map((host) => (
+              <HostCard
+                key={host.id}
+                host={host}
+                onEdit={openEdit}
+                onDelete={(id) => deleteMutation.mutate({ id })}
+              />
+            ))}
+          </div>
+        ) : (
+          /* ========== 表格式布局 ========== */
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardContent className="p-0">
-              {isLoading ? (
-                <div className="p-6 space-y-3">
-                  {[1, 2, 3, 4].map((i) => (
-                    <Skeleton key={i} className="h-14 w-full" />
-                  ))}
-                </div>
-              ) : hosts && hosts.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="hover:bg-transparent">
-                        <TableHead className="w-[50px]">状态</TableHead>
-                        <TableHead>名称</TableHead>
-                        <TableHead>IP 地址</TableHead>
-                        <TableHead className="hidden md:table-cell">类型</TableHead>
-                        <TableHead className="hidden lg:table-cell">端口区间</TableHead>
-                        <TableHead className="hidden md:table-cell">系统</TableHead>
-                        <TableHead className="hidden sm:table-cell">最后心跳</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {hosts.map((host) => (
-                        <TableRow
-                          key={host.id}
-                          className={`cursor-pointer transition-colors ${selectedHostId === host.id ? "bg-muted/30" : ""}`}
-                          onClick={() => setSelectedHostId(selectedHostId === host.id ? null : host.id)}
-                        >
-                          <TableCell>
-                            <div className="flex items-center justify-center">
-                              {host.isOnline ? (
-                                <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
-                              ) : (
-                                <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Server className="h-4 w-4 text-muted-foreground" />
-                              <span className="font-medium">{host.name}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <code className="text-xs font-mono bg-muted/40 px-2 py-0.5 rounded">
-                              {host.ip}
-                            </code>
-                          </TableCell>
-                          <TableCell className="hidden md:table-cell">
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] ${
-                                host.hostType === "master"
-                                  ? "border-amber-500/30 text-amber-400"
-                                  : "border-blue-500/30 text-blue-400"
-                              }`}
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-[50px]">状态</TableHead>
+                      <TableHead>名称</TableHead>
+                      <TableHead>IP 地址</TableHead>
+                      <TableHead className="hidden md:table-cell">类型</TableHead>
+                      <TableHead className="hidden lg:table-cell">端口区间</TableHead>
+                      <TableHead className="hidden md:table-cell">系统</TableHead>
+                      <TableHead className="hidden sm:table-cell">最后心跳</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {hosts.map((host) => (
+                      <TableRow key={host.id}>
+                        <TableCell>
+                          <div className="flex items-center justify-center">
+                            {host.isOnline ? (
+                              <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
+                            ) : (
+                              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Server className="h-4 w-4 text-muted-foreground" />
+                            <span className="font-medium">{host.name}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <code className="text-xs font-mono bg-muted/40 px-2 py-0.5 rounded">
+                            {host.ip}
+                          </code>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell">
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] ${
+                              host.hostType === "master"
+                                ? "border-amber-500/30 text-amber-400"
+                                : "border-blue-500/30 text-blue-400"
+                            }`}
+                          >
+                            {host.hostType === "master" ? "主控" : "被控"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          <span className="text-xs text-muted-foreground font-mono">
+                            {(host as any).portRangeStart != null && (host as any).portRangeEnd != null
+                              ? `${(host as any).portRangeStart}-${(host as any).portRangeEnd}`
+                              : "不限制"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell">
+                          <span className="text-xs text-muted-foreground truncate max-w-[120px] block">
+                            {host.osInfo || "-"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden sm:table-cell">
+                          <span className="text-xs text-muted-foreground">
+                            {host.lastHeartbeat
+                              ? new Date(host.lastHeartbeat).toLocaleString()
+                              : "-"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => openEdit(host)}
                             >
-                              {host.hostType === "master" ? "主控" : "被控"}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="hidden lg:table-cell">
-                            <span className="text-xs text-muted-foreground font-mono">
-                              {(host as any).portRangeStart != null && (host as any).portRangeEnd != null
-                                ? `${(host as any).portRangeStart}-${(host as any).portRangeEnd}`
-                                : "不限制"}
-                            </span>
-                          </TableCell>
-                          <TableCell className="hidden md:table-cell">
-                            <span className="text-xs text-muted-foreground truncate max-w-[120px] block">
-                              {host.osInfo || "-"}
-                            </span>
-                          </TableCell>
-                          <TableCell className="hidden sm:table-cell">
-                            <span className="text-xs text-muted-foreground">
-                              {host.lastHeartbeat
-                                ? new Date(host.lastHeartbeat).toLocaleString()
-                                : "-"}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={() => openEdit(host)}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:text-destructive"
-                                onClick={() => {
-                                  if (confirm("确定要删除此主机吗？"))
-                                    deleteMutation.mutate({ id: host.id });
-                                }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-                  <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
-                    <Server className="h-8 w-8 opacity-40" />
-                  </div>
-                  <p className="text-lg font-medium">暂无主机</p>
-                  <p className="text-sm mt-1 text-muted-foreground/60">
-                    添加主控机或被控机开始管理
-                  </p>
-                  <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
-                    <Plus className="h-4 w-4" />
-                    添加第一台主机
-                  </Button>
-                </div>
-              )}
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              onClick={() => {
+                                if (confirm("确定要删除此主机吗？"))
+                                  deleteMutation.mutate({ id: host.id });
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
+        )
+      ) : (
+        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+          <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
+            <Server className="h-8 w-8 opacity-40" />
+          </div>
+          <p className="text-lg font-medium">暂无主机</p>
+          <p className="text-sm mt-1 text-muted-foreground/60">
+            添加主控机或被控机开始管理
+          </p>
+          <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
+            <Plus className="h-4 w-4" />
+            添加第一台主机
+          </Button>
         </div>
+      )}
 
-        {selectedHostId && (
-          <HostDetailPanel
-            hostId={selectedHostId}
-            onClose={() => setSelectedHostId(null)}
-          />
-        )}
-      </div>
-
+      {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -498,7 +521,6 @@ function HostsContent() {
             <TabsList className="w-full bg-muted/50">
               <TabsTrigger value="basic" className="flex-1">基本信息</TabsTrigger>
               <TabsTrigger value="port" className="flex-1">端口限制</TabsTrigger>
-
             </TabsList>
             <TabsContent value="basic" className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -604,7 +626,6 @@ function HostsContent() {
                 )}
               </div>
             </TabsContent>
-
           </Tabs>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>
