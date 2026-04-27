@@ -160,7 +160,11 @@ function DashboardLayoutContent({
             {!isCollapsed ? (
               <div className="flex items-center justify-between flex-1 min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Network className="h-5 w-5 text-primary shrink-0" />
+                  <img
+                    src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+                    alt="ForwardX"
+                    className="h-7 w-7 shrink-0 object-contain"
+                  />
                   <span className="font-bold tracking-tight truncate text-base">
                     ForwardX
                   </span>

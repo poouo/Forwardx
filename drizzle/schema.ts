@@ -138,6 +138,18 @@ export const forwardTests = sqliteTable("forward_tests", {
 export type ForwardTest = typeof forwardTests.$inferSelect;
 export type InsertForwardTest = typeof forwardTests.$inferInsert;
 
+// ===== TCPing 延迟统计表 =====
+export const tcpingStats = sqliteTable("tcping_stats", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  ruleId: integer("ruleId").notNull(),
+  hostId: integer("hostId").notNull(),
+  latencyMs: integer("latencyMs"),           // 延迟毫秒数，null 表示超时/不可达
+  isTimeout: integer("isTimeout", { mode: "boolean" }).notNull().default(false),
+  recordedAt: integer("recordedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type TcpingStat = typeof tcpingStats.$inferSelect;
+export type InsertTcpingStat = typeof tcpingStats.$inferInsert;
+
 // ===== 系统设置表（键值存储） =====
 export const systemSettings = sqliteTable("system_settings", {
   key: text("key").primaryKey(),

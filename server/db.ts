@@ -15,6 +15,7 @@ import {
   forwardTests, InsertForwardTest,
   userHostPermissions, InsertUserHostPermission,
   systemSettings,
+  tcpingStats, InsertTcpingStat,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import fs from "fs";
@@ -167,6 +168,17 @@ export async function initDatabase() {
         createdAt INTEGER NOT NULL DEFAULT (unixepoch())
       );
       CREATE INDEX IF NOT EXISTS idx_agent_tokens_user ON agent_tokens(userId);
+
+      CREATE TABLE IF NOT EXISTS tcping_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ruleId INTEGER NOT NULL,
+        hostId INTEGER NOT NULL,
+        latencyMs INTEGER,
+        isTimeout INTEGER NOT NULL DEFAULT 0,
+        recordedAt INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_tcping_rule_time ON tcping_stats(ruleId, recordedAt DESC);
+      CREATE INDEX IF NOT EXISTS idx_tcping_host_time ON tcping_stats(hostId, recordedAt DESC);
 
       CREATE TABLE IF NOT EXISTS forward_tests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1031,6 +1043,93 @@ export async function setSettings(map: Record<string, string | null>): Promise<v
  * - running 超过 ttlSeconds：Agent 拉走但没回报结果（可能 Agent 崩溃 / 上报被拒 / 网络中断）
  * 返回被超时清理的任务数量。
  */
+// ==================== TCPing Stats ====================
+
+export async function insertTcpingStat(stat: InsertTcpingStat) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(tcpingStats).values(stat);
+}
+
+export async function insertTcpingStats(stats: InsertTcpingStat[]) {
+  const db = await getDb();
+  if (!db) return;
+  if (stats.length === 0) return;
+  await db.insert(tcpingStats).values(stats);
+}
+
+/** 获取某条规则的 TCPing 延迟序列（按时间升序） */
+export async function getTcpingSeriesByRule(
+  ruleId: number,
+  opts: { since?: Date; limit?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const limit = opts.limit ?? 2880; // 24h * 120 per hour max
+  const rows = await db
+    .select({
+      latencyMs: tcpingStats.latencyMs,
+      isTimeout: tcpingStats.isTimeout,
+      recordedAt: tcpingStats.recordedAt,
+    })
+    .from(tcpingStats)
+    .where(and(eq(tcpingStats.ruleId, ruleId), gte(tcpingStats.recordedAt, since)))
+    .orderBy(asc(tcpingStats.recordedAt))
+    .limit(limit);
+  return rows;
+}
+
+/** 获取全局 TCPing 延迟序列（所有规则的平均延迟，按时间分桶） */
+export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; since?: Date; userId?: number } = {}) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ bucket: Date; avgLatency: number; maxLatency: number; minLatency: number; timeoutCount: number; totalCount: number }>;
+  const bucket = Math.max(1, opts.bucketMinutes ?? 1);
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const bucketSec = bucket * 60;
+
+  const conds: any[] = [gte(tcpingStats.recordedAt, since)];
+  if (opts.userId) {
+    const allowed = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, opts.userId));
+    const hostIds = allowed.map(h => h.id);
+    if (hostIds.length === 0) return [];
+    conds.push(sql`${tcpingStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
+  }
+
+  const rows = await db
+    .select({
+      bucket: sql<number>`(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
+      avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      timeoutCount: sql<number>`SUM(CASE WHEN ${tcpingStats.isTimeout} = 1 THEN 1 ELSE 0 END)`,
+      totalCount: sql<number>`COUNT(*)`,
+    })
+    .from(tcpingStats)
+    .where(and(...conds))
+    .groupBy(sql`bucket`)
+    .orderBy(asc(sql`bucket`));
+
+  return rows.map((r) => ({
+    bucket: new Date(Number(r.bucket) * 1000),
+    avgLatency: Math.round(Number(r.avgLatency) || 0),
+    maxLatency: Number(r.maxLatency) || 0,
+    minLatency: Number(r.minLatency) || 0,
+    timeoutCount: Number(r.timeoutCount) || 0,
+    totalCount: Number(r.totalCount) || 0,
+  }));
+}
+
+/** 清理过期的 TCPing 数据（保留最近 N 小时） */
+export async function cleanOldTcpingStats(retainHours: number = 48) {
+  const db = await getDb();
+  if (!db) return;
+  const cutoff = new Date(Date.now() - retainHours * 3600 * 1000);
+  if (!_sqlite) return;
+  const cutoffSec = Math.floor(cutoff.getTime() / 1000);
+  _sqlite.prepare(`DELETE FROM tcping_stats WHERE recordedAt < ?`).run(cutoffSec);
+}
+
 export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise<number> {
   const db = await getDb();
   if (!db) return 0;

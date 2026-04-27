@@ -85,6 +85,15 @@ async function runSelfTestTimeoutSweep() {
   }
 }
 
+/** TCPing 数据清理：保留最近 48 小时的数据 */
+async function runTcpingCleanup() {
+  try {
+    await db.cleanOldTcpingStats(48);
+  } catch (error) {
+    console.error("[Scheduler] TCPing cleanup error:", error);
+  }
+}
+
 function startScheduler() {
   // 月度流量重置：每小时检查一次（在整点的第5分钟）
   setInterval(async () => {
@@ -105,14 +114,20 @@ function startScheduler() {
     await runSelfTestTimeoutSweep();
   }, 30 * 1000);
 
+  // TCPing 数据清理：每小时清理一次
+  setInterval(async () => {
+    await runTcpingCleanup();
+  }, 60 * 60 * 1000);
+
   // 启动时立即执行一次
   setTimeout(async () => {
     await runMonthlyTrafficReset();
     await runExpirationCheck();
     await runSelfTestTimeoutSweep();
+    await runTcpingCleanup();
   }, 5000); // 延迟5秒等数据库初始化完成
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep + tcping cleanup)");
 }
 
 // ==================== 启动服务器 ====================

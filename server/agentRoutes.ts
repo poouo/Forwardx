@@ -710,6 +710,46 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
   }
 });
 
+// Agent TCPing 上报接口
+agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const token = authHeader.substring(7);
+    const host = await db.getHostByAgentToken(token);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+
+    const { results } = req.body;
+    if (!Array.isArray(results)) {
+      res.status(400).json({ error: "results array is required" });
+      return;
+    }
+
+    const stats = results.map((r: any) => ({
+      ruleId: Number(r.ruleId),
+      hostId: host.id,
+      latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+      isTimeout: !!r.isTimeout,
+    }));
+
+    if (stats.length > 0) {
+      await db.insertTcpingStats(stats);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("[Agent TCPing] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Generate install.sh bootstrap script as a plain string
 function generateInstallScript(defaultPanelUrl: string): string {
   const lines = [
@@ -1507,7 +1547,45 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    TRAFFIC_RESP=$(agent_post "/api/agent/traffic" "{\\"stats\\":$STATS_JSON}" 2>&1)',
     '    log DEBUG "[traffic] 上报响应: $TRAFFIC_RESP"',
     '  else',
-    '    log DEBUG "[traffic] 无流量增量，跳过上报"',
+    '    log DEBUG "[traffic] \u65e0\u6d41\u91cf\u589e\u91cf\uff0c\u8df3\u8fc7\u4e0a\u62a5"',
+    '  fi',
+    '}',
+    '',
+    '# TCPing \u5ef6\u8fdf\u91c7\u96c6\uff1a\u5bf9\u6240\u6709\u8fd0\u884c\u4e2d\u7684\u89c4\u5219\u7684\u76ee\u6807 IP:Port \u6267\u884c TCP \u8fde\u63a5\u5ef6\u8fdf\u68c0\u6d4b',
+    'collect_tcping() {',
+    '  PORTS=$(ls "$STATE_DIR"/port_*.rule 2>/dev/null | sed "s|.*/port_||;s|\\.rule||" | sort -n)',
+    '  PORT_COUNT=$(echo "$PORTS" | grep -c "[0-9]" 2>/dev/null || echo 0)',
+    '  if [ "$PORT_COUNT" -eq 0 ] 2>/dev/null; then',
+    '    return',
+    '  fi',
+    '  TCPING_JSON="[]"',
+    '  for PORT in $PORTS; do',
+    '    RID_FILE="$STATE_DIR/port_${PORT}.rule"',
+    '    [ -f "$RID_FILE" ] || continue',
+    '    RID=$(cat "$RID_FILE")',
+    '    # \u8bfb\u53d6\u89c4\u5219\u5bf9\u5e94\u7684\u76ee\u6807 IP \u548c\u7aef\u53e3\uff08\u4ece runningRules \u7f13\u5b58\u6587\u4ef6\u4e2d\u83b7\u53d6\uff09',
+    '    TARGET_FILE="$STATE_DIR/target_${PORT}.info"',
+    '    if [ ! -f "$TARGET_FILE" ]; then',
+    '      # \u65e0\u76ee\u6807\u4fe1\u606f\uff0c\u8df3\u8fc7',
+    '      continue',
+    '    fi',
+    '    TIP=$(awk "NR==1" "$TARGET_FILE" 2>/dev/null)',
+    '    TPT=$(awk "NR==2" "$TARGET_FILE" 2>/dev/null)',
+    '    if [ -z "$TIP" ] || [ -z "$TPT" ]; then continue; fi',
+    '    # \u6267\u884c TCP \u5ef6\u8fdf\u68c0\u6d4b',
+    '    LAT=$(tcp_latency "$TIP" "$TPT")',
+    '    RC=$?',
+    '    if [ $RC -eq 0 ] && [ "${LAT:-0}" -gt 0 ] 2>/dev/null; then',
+    '      TCPING_JSON=$(echo "$TCPING_JSON" | jq --argjson rid "$RID" --argjson lat "$LAT" \'. + [{ruleId:$rid,latencyMs:$lat,isTimeout:false}]\')',
+    '      log DEBUG "[tcping] rule=$RID target=$TIP:$TPT latency=${LAT}ms"',
+    '    else',
+    '      TCPING_JSON=$(echo "$TCPING_JSON" | jq --argjson rid "$RID" \'. + [{ruleId:$rid,latencyMs:0,isTimeout:true}]\')',
+    '      log DEBUG "[tcping] rule=$RID target=$TIP:$TPT TIMEOUT"',
+    '    fi',
+    '  done',
+    '  if [ "$TCPING_JSON" != "[]" ]; then',
+    '    log INFO "[tcping] \u4e0a\u62a5 TCPing \u6570\u636e: $TCPING_JSON"',
+    '    agent_post "/api/agent/tcping" "{\\"results\\":$TCPING_JSON}" >/dev/null 2>&1',
     '  fi',
     '}',
     '',
@@ -1552,10 +1630,14 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '        RID=$(echo "$RESPONSE" | jq -r ".actions[$i].ruleId")',
     '        SP=$(echo "$RESPONSE" | jq -r ".actions[$i].sourcePort")',
     '        OP=$(echo "$RESPONSE" | jq -r ".actions[$i].op")',
+    '        A_TIP=$(echo "$RESPONSE" | jq -r ".actions[$i].targetIp // empty")',
+    '        A_TPT=$(echo "$RESPONSE" | jq -r ".actions[$i].targetPort // empty")',
     '        if [ "$OP" = "apply" ]; then',
     '          echo "$RID" > "$STATE_DIR/port_${SP}.rule"',
+    '          echo -e "${A_TIP}\\n${A_TPT}" > "$STATE_DIR/target_${SP}.info"',
     '        else',
     '          rm -f "$STATE_DIR/port_${SP}.rule"',
+    '          rm -f "$STATE_DIR/target_${SP}.info"',
     '        fi',
     '      done',
     '    fi',
@@ -1571,6 +1653,8 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '        TPT=$(echo "$RESPONSE" | jq -r ".runningRules[$i].targetPort // empty")',
     '        PR=$(echo "$RESPONSE" | jq -r ".runningRules[$i].protocol // empty")',
     '        echo "$RID" > "$STATE_DIR/port_${SP}.rule"',
+    '        # \u4fdd\u5b58\u76ee\u6807\u4fe1\u606f\u4f9b TCPing \u91c7\u96c6\u4f7f\u7528',
+    '        echo -e "${TIP}\\n${TPT}" > "$STATE_DIR/target_${SP}.info"',
     '        log DEBUG "[runningRules] rule[$i]: ruleId=$RID port=$SP target=$TIP:$TPT proto=$PR"',
     '      done',
     '    fi',
@@ -1581,6 +1665,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    log WARN "[heartbeat] 心跳无响应，面板可能不可达: $PANEL_URL"',
     '  fi',
     '  collect_traffic',
+    '  collect_tcping',
     '}',
     '',
     'log INFO "========================================"',

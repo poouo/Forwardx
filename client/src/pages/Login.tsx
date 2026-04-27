@@ -159,9 +159,11 @@ export default function Login() {
       <Card className="w-full max-w-md shadow-xl border-border/50">
         <CardHeader className="text-center pb-2">
           <div className="flex items-center justify-center gap-3 mb-4">
-            <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center">
-              <Network className="h-6 w-6 text-primary" />
-            </div>
+            <img
+              src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+              alt="ForwardX"
+              className="h-12 w-12 object-contain"
+            />
           </div>
           <CardTitle className="text-xl sm:text-2xl font-bold tracking-tight">ForwardX</CardTitle>
           <CardDescription className="text-muted-foreground">

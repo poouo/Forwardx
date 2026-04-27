@@ -215,6 +215,23 @@ export const appRouter = router({
           userId: isAdmin ? undefined : ctx.user.id,
         });
       }),
+    /** 全局 TCPing 延迟走势（仪表盘图表） */
+    tcpingSeries: protectedProcedure
+      .input(z.object({
+        hours: z.number().min(1).max(24 * 30).default(24),
+        bucketMinutes: z.number().min(1).max(60).default(1),
+      }).optional())
+      .query(async ({ input, ctx }) => {
+        const hours = input?.hours ?? 24;
+        const bucketMinutes = input?.bucketMinutes ?? 1;
+        const since = new Date(Date.now() - hours * 3600 * 1000);
+        const isAdmin = ctx.user.role === "admin";
+        return db.getGlobalTcpingSeries({
+          bucketMinutes,
+          since,
+          userId: isAdmin ? undefined : ctx.user.id,
+        });
+      }),
     /** 用户流量汇总（管理员看全部，普通用户看自己） */
     userTraffic: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";

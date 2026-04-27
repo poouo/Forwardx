@@ -26,6 +26,8 @@ import {
   ComposedChart,
   Line,
   Bar,
+  Area,
+  AreaChart,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -33,7 +35,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -100,6 +102,52 @@ function CircularProgress({ value, size = 80, strokeWidth = 6, color }: { value:
   );
 }
 
+/** 格式化时间标签：短时间范围只显示时间，长时间范围显示日期+时间 */
+function formatTimeLabel(dateStr: string | Date, showDate: boolean): string {
+  const d = new Date(dateStr);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hour = String(d.getHours()).padStart(2, "0");
+  const minute = String(d.getMinutes()).padStart(2, "0");
+  if (showDate) {
+    return `${month}/${day} ${hour}:${minute}`;
+  }
+  return `${hour}:${minute}`;
+}
+
+/** TCPing 延迟图自定义 Tooltip */
+function TcpingTooltipContent({ active, payload, label }: any) {
+  if (!active || !payload || payload.length === 0) return null;
+  const data = payload[0]?.payload;
+  if (!data) return null;
+
+  const latency = data.avgLatency;
+  const timeoutCount = data.timeoutCount || 0;
+  const totalCount = data.totalCount || 0;
+
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+      <p className="text-xs text-muted-foreground mb-1">{data.fullLabel || label}</p>
+      {latency > 0 ? (
+        <p className="text-sm font-semibold tabular-nums">
+          <span className={latency < 50 ? "text-chart-2" : latency < 100 ? "text-chart-3" : latency < 200 ? "text-amber-500" : "text-destructive"}>
+            {latency}ms
+          </span>
+        </p>
+      ) : timeoutCount > 0 ? (
+        <p className="text-sm font-semibold text-destructive">超时</p>
+      ) : (
+        <p className="text-sm text-muted-foreground">无数据</p>
+      )}
+      {totalCount > 0 && timeoutCount > 0 && (
+        <p className="text-[10px] text-muted-foreground mt-0.5">
+          超时 {timeoutCount}/{totalCount}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function DashboardContent() {
   const { user } = useAuth();
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, {
@@ -119,15 +167,45 @@ function DashboardContent() {
     { hours: trendHours, bucketMinutes: trendBucket },
     { refetchInterval: 60000 }
   );
+  const showDateInTraffic = trendHours > 6;
   const chartData = useMemo(
     () =>
       (trafficSeries || []).map((d: any) => ({
-        label: new Date(d.bucket).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        label: formatTimeLabel(d.bucket, showDateInTraffic),
         bytesIn: Number(d.bytesIn) || 0,
         bytesOut: Number(d.bytesOut) || 0,
       })),
-    [trafficSeries]
+    [trafficSeries, showDateInTraffic]
   );
+
+  // TCPing 延迟走势 - 固定24小时，1分钟分桶
+  const { data: tcpingSeries, isLoading: tcpingLoading } = trpc.dashboard.tcpingSeries.useQuery(
+    { hours: 24, bucketMinutes: 1 },
+    { refetchInterval: 30000 }
+  );
+  const tcpingChartData = useMemo(() => {
+    if (!tcpingSeries || tcpingSeries.length === 0) return [];
+    return tcpingSeries.map((d: any) => ({
+      label: formatTimeLabel(d.bucket, true),
+      fullLabel: formatTimeLabel(d.bucket, true),
+      avgLatency: Number(d.avgLatency) || 0,
+      maxLatency: Number(d.maxLatency) || 0,
+      minLatency: Number(d.minLatency) || 0,
+      timeoutCount: Number(d.timeoutCount) || 0,
+      totalCount: Number(d.totalCount) || 0,
+    }));
+  }, [tcpingSeries]);
+
+  // 动态计算 TCPing Y轴最大值：取数据最大值的 2 倍，最小 120ms，最大 500ms
+  const tcpingYMax = useMemo(() => {
+    if (!tcpingChartData || tcpingChartData.length === 0) return 120;
+    const maxVal = Math.max(...tcpingChartData.map((d) => d.avgLatency));
+    if (maxVal <= 0) return 120;
+    // 取数据最大值的 2 倍作为标尺上限
+    const dynamicMax = Math.ceil(maxVal * 2);
+    // 最小 120ms，最大 500ms
+    return Math.min(500, Math.max(120, dynamicMax));
+  }, [tcpingChartData]);
 
   // 用户流量汇总
   const { data: userTraffic, isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, {
@@ -205,6 +283,80 @@ function DashboardContent() {
           loading={isLoading}
         />
       </div>
+
+      {/* TCPing Latency Chart */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              转发链路延迟 (TCPing)
+            </CardTitle>
+            <Badge variant="outline" className="text-[10px] px-2 py-0.5 border-muted-foreground/30">
+              最近 24 小时
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="h-48 sm:h-64 w-full">
+            {tcpingLoading ? (
+              <Skeleton className="h-full w-full" />
+            ) : tcpingChartData.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                暂无 TCPing 数据
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={tcpingChartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="tcpingGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 9 }}
+                    minTickGap={60}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9 }}
+                    tickFormatter={(v) => `${v}ms`}
+                    width={50}
+                    domain={[0, tcpingYMax]}
+                    allowDecimals={false}
+                    ticks={(() => {
+                      const step = tcpingYMax <= 120 ? 20 : tcpingYMax <= 200 ? 40 : tcpingYMax <= 300 ? 50 : 100;
+                      const ticks = [];
+                      for (let i = 0; i <= tcpingYMax; i += step) {
+                        ticks.push(i);
+                      }
+                      if (ticks[ticks.length - 1] !== tcpingYMax) ticks.push(tcpingYMax);
+                      return ticks;
+                    })()}
+                  />
+                  <RTooltip
+                    content={<TcpingTooltipContent />}
+                    cursor={{ stroke: "hsl(var(--muted-foreground) / 0.3)", strokeDasharray: "3 3" }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="avgLatency"
+                    name="平均延迟"
+                    stroke="hsl(var(--chart-2))"
+                    strokeWidth={2}
+                    fill="url(#tcpingGradient)"
+                    dot={false}
+                    activeDot={{ r: 4, fill: "hsl(var(--chart-2))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Traffic Trend Chart */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
