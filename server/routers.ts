@@ -704,6 +704,21 @@ export const appRouter = router({
         });
       }),
 
+    tcpingSeries: protectedProcedure
+      .input(z.object({
+        ruleId: z.number(),
+        hours: z.number().min(1).max(48).default(24),
+      }))
+      .query(async ({ input, ctx }) => {
+        const rule = await db.getForwardRuleById(input.ruleId);
+        if (!rule) throw new Error("规则不存在");
+        if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) {
+          throw new Error("无权查看此规则");
+        }
+        const since = new Date(Date.now() - input.hours * 3600 * 1000);
+        return db.getTcpingSeriesByRule(input.ruleId, { since });
+      }),
+
     startSelfTest: protectedProcedure
       .input(z.object({ ruleId: z.number() }))
       .mutation(async ({ input, ctx }) => {
