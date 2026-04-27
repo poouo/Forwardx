@@ -719,6 +719,8 @@ export async function getTrafficSeriesByRule(
   const sinceSec = Math.floor(since.getTime() / 1000);
   const bucketSec = bucket * 60;
 
+  const bucketExpr = sql`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+
   const rows = await db
     .select({
       bucket: sql<number>`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
@@ -728,8 +730,8 @@ export async function getTrafficSeriesByRule(
     })
     .from(trafficStats)
     .where(and(eq(trafficStats.ruleId, ruleId), gte(trafficStats.recordedAt, since)))
-    .groupBy(sql`bucket`)
-    .orderBy(asc(sql`bucket`));
+    .groupBy(bucketExpr)
+    .orderBy(asc(bucketExpr));
 
   return rows.map((r) => ({
     bucket: new Date(Number(r.bucket) * 1000),
@@ -755,6 +757,8 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
     conds.push(sql`${trafficStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
+  const bucketExpr = sql`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+
   const rows = await db
     .select({
       bucket: sql<number>`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
@@ -763,8 +767,8 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
     })
     .from(trafficStats)
     .where(and(...conds))
-    .groupBy(sql`bucket`)
-    .orderBy(asc(sql`bucket`));
+    .groupBy(bucketExpr)
+    .orderBy(asc(bucketExpr));
 
   return rows.map((r) => ({
     bucket: new Date(Number(r.bucket) * 1000),
@@ -1096,6 +1100,8 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     conds.push(sql`${tcpingStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
+  const bucketExpr = sql`(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+
   const rows = await db
     .select({
       bucket: sql<number>`(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
@@ -1107,8 +1113,8 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     })
     .from(tcpingStats)
     .where(and(...conds))
-    .groupBy(sql`bucket`)
-    .orderBy(asc(sql`bucket`));
+    .groupBy(bucketExpr)
+    .orderBy(asc(bucketExpr));
 
   return rows.map((r) => ({
     bucket: new Date(Number(r.bucket) * 1000),

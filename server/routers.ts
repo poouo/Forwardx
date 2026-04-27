@@ -809,6 +809,7 @@ export const appRouter = router({
           userId: h.userId,
           name: h.name,
           ip: h.ip,
+          entryIp: h.entryIp,
           hostType: h.hostType,
           agentToken: h.agentToken,
           osInfo: h.osInfo,
@@ -908,6 +909,7 @@ export const appRouter = router({
           const newId = await db.createHost({
             name: h.name,
             ip: h.ip || "unknown",
+            entryIp: h.entryIp ?? null,
             hostType: h.hostType || "slave",
             agentToken: h.agentToken ?? null,
             osInfo: h.osInfo ?? null,

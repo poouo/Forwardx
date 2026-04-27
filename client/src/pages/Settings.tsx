@@ -99,6 +99,9 @@ function SettingsContent() {
   const importMutation = trpc.config.importAll.useMutation({
     onSuccess: () => {
       utils.agentTokens.list.invalidate();
+      utils.hosts.list.invalidate();
+      utils.rules.list.invalidate();
+      utils.dashboard.stats.invalidate();
     },
   });
   const [newToken, setNewToken] = useState("");
