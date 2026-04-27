@@ -5,6 +5,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.1.1] - 2026-04-27
+
+### 修复
+
+- **UI 优化**：使用 Tabs 标签页重构了用户流量和权限设定弹窗，解决选项过多导致在部分浏览器中无法完整展示的问题
+
 ## [2.1.0] - 2026-04-27
 
 ### 新增

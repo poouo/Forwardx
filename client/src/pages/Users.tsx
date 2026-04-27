@@ -31,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import {
   KeyRound,
@@ -44,6 +45,7 @@ import {
   RotateCcw,
   CalendarClock,
   Database,
+  Server,
 } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
@@ -616,18 +618,29 @@ function UsersContent() {
 
       {/* Traffic & Permission Settings Dialog */}
       <Dialog open={showTrafficSettings} onOpenChange={setShowTrafficSettings}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
           <DialogTitle>流量与权限设置</DialogTitle>
           <DialogDescription>管理用户 "{trafficUserName}" 的流量配额和权限</DialogDescription>
-          <div className="space-y-5 py-2">
-            {/* 权限设置 */}
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium flex items-center gap-2">
-                <Shield className="h-4 w-4" />
-                权限设置
-              </h4>
+          <Tabs defaultValue="permission" className="flex-1 min-h-0 flex flex-col">
+            <TabsList className="grid grid-cols-3 w-full">
+              <TabsTrigger value="permission" className="gap-1.5">
+                <Shield className="h-3.5 w-3.5" />
+                <span>权限</span>
+              </TabsTrigger>
+              <TabsTrigger value="traffic" className="gap-1.5">
+                <Database className="h-3.5 w-3.5" />
+                <span>流量</span>
+              </TabsTrigger>
+              <TabsTrigger value="hosts" className="gap-1.5">
+                <Server className="h-3.5 w-3.5" />
+                <span>主机</span>
+              </TabsTrigger>
+            </TabsList>
+
+            {/* 权限标签页 */}
+            <TabsContent value="permission" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
               <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
-                <div>
+                <div className="min-w-0 pr-3">
                   <p className="text-sm font-medium">允许添加转发规则</p>
                   <p className="text-xs text-muted-foreground">关闭后用户将无法创建新的转发规则</p>
                 </div>
@@ -655,24 +668,90 @@ function UsersContent() {
                   <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
                 </div>
               </div>
-            </div>
+            </TabsContent>
 
-            <Separator />
+            {/* 流量标签页 */}
+            <TabsContent value="traffic" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-sm">
+                  <Database className="h-3.5 w-3.5" />
+                  流量限额
+                </Label>
+                <Input
+                  value={trafficLimitInput}
+                  onChange={(e) => setTrafficLimitInput(e.target.value)}
+                  placeholder="例如: 100GB, 1TB（留空不限制）"
+                />
+                <p className="text-xs text-muted-foreground">
+                  支持格式: 100GB, 1.5TB, 500MB。留空或填 0 表示不限制
+                </p>
+              </div>
 
-            {/* 主机使用权限 */}
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium flex items-center gap-2">
-                <Shield className="h-4 w-4" />
-                主机使用权限
-              </h4>
-              <p className="text-xs text-muted-foreground">指定用户可以使用哪些主机进行转发，未勾选的主机将无法添加规则</p>
+              <Separator />
+
+              <div className="space-y-2">
+                <Label className="flex items-center gap-1.5 text-sm">
+                  <CalendarClock className="h-3.5 w-3.5" />
+                  到期日期
+                </Label>
+                <Input
+                  type="date"
+                  value={expiresAtInput}
+                  onChange={(e) => setExpiresAtInput(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  到期后将自动禁用该用户的所有转发规则。留空表示永不过期
+                </p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
+                  <div className="min-w-0 pr-3">
+                    <p className="text-sm font-medium flex items-center gap-1.5">
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      启用月度自动重置
+                    </p>
+                    <p className="text-xs text-muted-foreground">每月指定日期自动将已用流量归零</p>
+                  </div>
+                  <Switch checked={trafficAutoReset} onCheckedChange={setTrafficAutoReset} />
+                </div>
+                {trafficAutoReset && (
+                  <div className="space-y-2 pt-1">
+                    <Label>重置日期（每月第几天）</Label>
+                    <Select
+                      value={String(trafficResetDay)}
+                      onValueChange={(v) => setTrafficResetDay(parseInt(v))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+                          <SelectItem key={d} value={String(d)}>
+                            每月 {d} 日
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+            </TabsContent>
+
+            {/* 主机标签页 */}
+            <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
+              <p className="text-xs text-muted-foreground">
+                指定用户可以使用哪些主机进行转发，未勾选的主机将无法添加规则。
+              </p>
               {allHosts && allHosts.length > 0 ? (
-                <div className="space-y-2 max-h-40 overflow-y-auto">
+                <div className="space-y-2">
                   {allHosts.map((h: any) => (
                     <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{h.name}</span>
-                        <span className="text-[10px] text-muted-foreground font-mono">{h.ip}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-sm font-medium truncate">{h.name}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono truncate">{h.ip}</span>
                       </div>
                       <Switch
                         checked={allowedHostIds.includes(h.id)}
@@ -684,88 +763,9 @@ function UsersContent() {
               ) : (
                 <p className="text-xs text-muted-foreground">暂无可用主机</p>
               )}
-            </div>
-
-            <Separator />
-
-            {/* 流量配额 */}
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium flex items-center gap-2">
-                <Database className="h-4 w-4" />
-                流量配额
-              </h4>
-              <div className="space-y-2">
-                <Label>流量限额</Label>
-                <Input
-                  value={trafficLimitInput}
-                  onChange={(e) => setTrafficLimitInput(e.target.value)}
-                  placeholder="例如: 100GB, 1TB（留空不限制）"
-                />
-                <p className="text-xs text-muted-foreground">
-                  支持格式: 100GB, 1.5TB, 500MB。留空或填 0 表示不限制
-                </p>
-              </div>
-            </div>
-
-            <Separator />
-
-            {/* 到期时间 */}
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium flex items-center gap-2">
-                <CalendarClock className="h-4 w-4" />
-                到期时间
-              </h4>
-              <div className="space-y-2">
-                <Label>到期日期</Label>
-                <Input
-                  type="date"
-                  value={expiresAtInput}
-                  onChange={(e) => setExpiresAtInput(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  到期后将自动禁用该用户的所有转发规则。留空表示永不过期
-                </p>
-              </div>
-            </div>
-
-            <Separator />
-
-            {/* 自动重置 */}
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium flex items-center gap-2">
-                <RotateCcw className="h-4 w-4" />
-                流量自动重置
-              </h4>
-              <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
-                <div>
-                  <p className="text-sm font-medium">启用月度自动重置</p>
-                  <p className="text-xs text-muted-foreground">每月指定日期自动将已用流量归零</p>
-                </div>
-                <Switch checked={trafficAutoReset} onCheckedChange={setTrafficAutoReset} />
-              </div>
-              {trafficAutoReset && (
-                <div className="space-y-2">
-                  <Label>重置日期（每月第几天）</Label>
-                  <Select
-                    value={String(trafficResetDay)}
-                    onValueChange={(v) => setTrafficResetDay(parseInt(v))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
-                        <SelectItem key={d} value={String(d)}>
-                          每月 {d} 日
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-          </div>
-          <DialogFooter>
+            </TabsContent>
+          </Tabs>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setShowTrafficSettings(false)}>
               取消
             </Button>
