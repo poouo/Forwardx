@@ -144,9 +144,9 @@ function DashboardContent() {
     refetchInterval: 30000,
   });
 
-  // 流量走势：固定查询最近 7 天，15 分钟分桶
+  // 流量走势：固定查询最近 7 天，30 分钟分桶（每半小时累加为一个点位）
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
-    { hours: 168, bucketMinutes: 15 },
+    { hours: 168, bucketMinutes: 30 },
     { refetchInterval: 30000 }
   );
   const chartData = useMemo(
