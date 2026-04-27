@@ -118,12 +118,12 @@ function TrafficTooltipContent({ active, payload, label }: any) {
       <p className="text-xs text-muted-foreground mb-1.5">{data.fullLabel || label}</p>
       <div className="space-y-1">
         <p className="text-xs tabular-nums flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-2))" }} />
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--color-chart-2)" }} />
           <span className="text-muted-foreground">入站</span>
           <span className="font-semibold ml-auto">{formatBytes(data.bytesIn)}</span>
         </p>
         <p className="text-xs tabular-nums flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-4))" }} />
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--color-chart-4)" }} />
           <span className="text-muted-foreground">出站</span>
           <span className="font-semibold ml-auto">{formatBytes(data.bytesOut)}</span>
         </p>
@@ -250,11 +250,11 @@ function DashboardContent() {
             </CardTitle>
             <div className="flex items-center gap-3 text-[10px]">
               <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-2))" }} />
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--color-chart-2)" }} />
                 入站
               </span>
               <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-4))" }} />
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "var(--color-chart-4)" }} />
                 出站
               </span>
             </div>
@@ -277,15 +277,15 @@ function DashboardContent() {
                 <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="trafficInGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.02} />
+                      <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="trafficOutGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0.02} />
+                      <stop offset="5%" stopColor="var(--color-chart-4)" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="var(--color-chart-4)" stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
                     dataKey="label"
                     tick={{ fontSize: 9 }}
@@ -301,27 +301,27 @@ function DashboardContent() {
                   />
                   <RTooltip
                     content={<TrafficTooltipContent />}
-                    cursor={{ stroke: "hsl(var(--muted-foreground) / 0.3)", strokeDasharray: "3 3" }}
+                    cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
                   />
                   <Area
                     type="monotone"
                     dataKey="bytesIn"
                     name="入站"
-                    stroke="hsl(var(--chart-2))"
+                    stroke="var(--color-chart-2)"
                     strokeWidth={2}
                     fill="url(#trafficInGradient)"
                     dot={false}
-                    activeDot={{ r: 4, fill: "hsl(var(--chart-2))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
+                    activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }}
                   />
                   <Area
                     type="monotone"
                     dataKey="bytesOut"
                     name="出站"
-                    stroke="hsl(var(--chart-4))"
+                    stroke="var(--color-chart-4)"
                     strokeWidth={2}
                     fill="url(#trafficOutGradient)"
                     dot={false}
-                    activeDot={{ r: 4, fill: "hsl(var(--chart-4))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
+                    activeDot={{ r: 4, fill: "var(--color-chart-4)", stroke: "var(--color-background)", strokeWidth: 2 }}
                   />
                 </AreaChart>
               </ResponsiveContainer>
