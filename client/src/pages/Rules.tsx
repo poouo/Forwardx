@@ -229,8 +229,27 @@ function RulesContent() {
     }
   );
 
+  // 获取当前选中主机的端口区间
+  const selectedHost = useMemo(() => {
+    if (!form.hostId || !hosts) return null;
+    return hosts.find(h => h.id === form.hostId) || null;
+  }, [form.hostId, hosts]);
+
+  const [portRangeError, setPortRangeError] = useState<string | null>(null);
+
   const checkPort = useCallback(async () => {
     if (!form.hostId || !form.sourcePort || form.sourcePort < 1) return;
+    // 先检查端口范围
+    if (selectedHost) {
+      const pStart = (selectedHost as any).portRangeStart;
+      const pEnd = (selectedHost as any).portRangeEnd;
+      if (pStart != null && pEnd != null && (form.sourcePort < pStart || form.sourcePort > pEnd)) {
+        setPortRangeError(`端口必须在 ${pStart}-${pEnd} 区间内`);
+        setPortStatus("used");
+        return;
+      }
+    }
+    setPortRangeError(null);
     setPortStatus("checking");
     try {
       const result = await utils.rules.checkPort.fetch({
@@ -242,7 +261,7 @@ function RulesContent() {
     } catch {
       setPortStatus("idle");
     }
-  }, [form.hostId, form.sourcePort, editingId, utils]);
+  }, [form.hostId, form.sourcePort, editingId, utils, selectedHost]);
 
   // 源端口变化时自动检测
   useEffect(() => {
@@ -321,14 +340,14 @@ function RulesContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">转发规则</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">转发规则</h1>
+          <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
             管理端口转发规则，支持 iptables、realm 和 socat
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
             {activeCount} / {rules?.length ?? 0} 活跃
@@ -355,7 +374,7 @@ function RulesContent() {
       )}
 
       {rules && rules.length > 0 && (
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">筛选:</span>
@@ -386,32 +405,32 @@ function RulesContent() {
       )}
 
       {/* 近 24 小时转发流量汇总 */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <Card className="border-border/40">
-          <CardContent className="p-4 flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-muted-foreground">近 24h 入向流量</p>
-              <p className="text-xl font-semibold mt-1">{formatBytes(trafficTotals.bytesIn)}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 入向</p>
+              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{formatBytes(trafficTotals.bytesIn)}</p>
             </div>
-            <ArrowDownToLine className="h-6 w-6 text-chart-2" />
+            <ArrowDownToLine className="h-4 w-4 sm:h-6 sm:w-6 text-chart-2" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="p-4 flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-muted-foreground">近 24h 出向流量</p>
-              <p className="text-xl font-semibold mt-1">{formatBytes(trafficTotals.bytesOut)}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 出向</p>
+              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{formatBytes(trafficTotals.bytesOut)}</p>
             </div>
-            <ArrowUpFromLine className="h-6 w-6 text-chart-4" />
+            <ArrowUpFromLine className="h-4 w-4 sm:h-6 sm:w-6 text-chart-4" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="p-4 flex items-center justify-between">
+          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-muted-foreground">近 24h 连接数</p>
-              <p className="text-xl font-semibold mt-1">{trafficTotals.connections.toLocaleString()}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 连接</p>
+              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{trafficTotals.connections.toLocaleString()}</p>
             </div>
-            <Activity className="h-6 w-6 text-chart-3" />
+            <Activity className="h-4 w-4 sm:h-6 sm:w-6 text-chart-3" />
           </CardContent>
         </Card>
       </div>
@@ -431,11 +450,11 @@ function RulesContent() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[60px]">状态</TableHead>
                     <TableHead>规则名称</TableHead>
-                    <TableHead>所属主机</TableHead>
+                    <TableHead className="hidden md:table-cell">所属主机</TableHead>
                     <TableHead>转发配置</TableHead>
-                    <TableHead>工具</TableHead>
-                    <TableHead>协议</TableHead>
-                    <TableHead>近 24h 流量</TableHead>
+                    <TableHead className="hidden lg:table-cell">工具</TableHead>
+                    <TableHead className="hidden lg:table-cell">协议</TableHead>
+                    <TableHead className="hidden sm:table-cell">近 24h 流量</TableHead>
                     <TableHead>开关</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -457,7 +476,7 @@ function RulesContent() {
                       <TableCell>
                         <span className="font-medium">{rule.name}</span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden md:table-cell">
                         <span className="text-sm text-muted-foreground">{getHostName(rule.hostId)}</span>
                       </TableCell>
                       <TableCell>
@@ -467,7 +486,7 @@ function RulesContent() {
                           <code className="bg-muted/40 px-1.5 py-0.5 rounded">{rule.targetIp}:{rule.targetPort}</code>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden lg:table-cell">
                         <Badge
                           variant="outline"
                           className={`text-[10px] ${
@@ -487,12 +506,12 @@ function RulesContent() {
                           )}
                         </Badge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden lg:table-cell">
                         <Badge variant="secondary" className="text-[10px] uppercase">
                           {rule.protocol}
                         </Badge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="hidden sm:table-cell">
                         {(() => {
                           const t = trafficByRule.get(rule.id);
                           if (!t || (t.bytesIn === 0 && t.bytesOut === 0)) {
@@ -622,7 +641,7 @@ function RulesContent() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>规则名称</Label>
                 <Input
@@ -648,7 +667,7 @@ function RulesContent() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>转发工具</Label>
                 <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any })}>
@@ -697,7 +716,7 @@ function RulesContent() {
                 </div>
                 {portStatus === "used" && (
                   <p className="text-xs text-destructive flex items-center gap-1">
-                    <XCircle className="h-3 w-3" /> 端口已被占用
+                    <XCircle className="h-3 w-3" /> {portRangeError || "端口已被占用"}
                   </p>
                 )}
                 {portStatus === "available" && (
@@ -712,11 +731,16 @@ function RulesContent() {
                 )}
                 <p className="text-[10px] text-muted-foreground">
                   留空或输入 0 将自动随机分配端口
+                  {selectedHost && (selectedHost as any).portRangeStart && (selectedHost as any).portRangeEnd && (
+                    <span className="block text-[10px] text-amber-600 mt-0.5">
+                      允许端口范围: {(selectedHost as any).portRangeStart}-{(selectedHost as any).portRangeEnd}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>目标 IP</Label>
                 <Input
@@ -783,9 +807,9 @@ function TrafficDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>流量趋势 - {ruleName}</DialogTitle>
+          <DialogTitle className="text-base sm:text-lg">流量趋势 - {ruleName}</DialogTitle>
           <DialogDescription>基于 Agent 上报的流量数据绘制</DialogDescription>
         </DialogHeader>
         <div className="flex items-center gap-2 text-xs">
@@ -886,15 +910,14 @@ function SelfTestDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>转发链路自测 - {ruleName}</DialogTitle>
-          <DialogDescription>Agent 会检测本地端口监听和目标TCP连通性来判定转发链路状态</DialogDescription>
+          <DialogDescription>Agent 会检测目标端口 TCP 可达性和延迟来判定转发链路状态</DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">状态</span>
             {renderStatus()}
           </div>
-          {renderItem("本地端口监听", !!latest?.listenOk)}
-          {renderItem("目标TCP可达", !!latest?.targetReachable)}
+          {renderItem("目标端口TCP可达", !!latest?.targetReachable)}
           {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 && (
             <div className="flex items-center justify-between py-1">
               <span className="text-muted-foreground">TCP延迟</span>

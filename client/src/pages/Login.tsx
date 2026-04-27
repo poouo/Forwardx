@@ -141,7 +141,7 @@ export default function Login() {
   const isPending = loginMutation.isPending || registerMutation.isPending;
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background relative">
+    <div className="flex items-center justify-center min-h-screen bg-background relative px-3 sm:px-4">
       {/* Theme toggle */}
       <button
         onClick={toggleTheme}
@@ -156,14 +156,14 @@ export default function Login() {
         )}
       </button>
 
-      <Card className="w-full max-w-md mx-4 shadow-xl border-border/50">
+      <Card className="w-full max-w-md shadow-xl border-border/50">
         <CardHeader className="text-center pb-2">
           <div className="flex items-center justify-center gap-3 mb-4">
             <div className="h-12 w-12 rounded-xl bg-primary/10 flex items-center justify-center">
               <Network className="h-6 w-6 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight">ForwardX</CardTitle>
+          <CardTitle className="text-xl sm:text-2xl font-bold tracking-tight">ForwardX</CardTitle>
           <CardDescription className="text-muted-foreground">
             {mode === "login" ? "端口转发集中管理面板" : "注册新账号"}
           </CardDescription>

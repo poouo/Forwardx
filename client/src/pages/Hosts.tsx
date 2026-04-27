@@ -30,7 +30,6 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { trpc } from "@/lib/trpc";
@@ -73,12 +72,7 @@ function formatUptime(seconds: number | null | undefined): string {
 type HostFormData = {
   name: string;
   ip: string;
-  port: number;
   hostType: "master" | "slave";
-  connectionType: "ssh" | "agent";
-  sshUser: string;
-  sshPassword: string;
-  sshKeyContent: string;
   networkInterface: string;
   portRangeStart: number | null;
   portRangeEnd: number | null;
@@ -87,12 +81,7 @@ type HostFormData = {
 const defaultFormData: HostFormData = {
   name: "",
   ip: "",
-  port: 22,
   hostType: "slave",
-  connectionType: "agent",
-  sshUser: "root",
-  sshPassword: "",
-  sshKeyContent: "",
   networkInterface: "",
   portRangeStart: null,
   portRangeEnd: null,
@@ -123,7 +112,7 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">IP 地址</p>
             <p className="text-sm font-mono">{host.ip}</p>
@@ -139,12 +128,7 @@ function HostDetailPanel({ hostId, onClose }: { hostId: number; onClose: () => v
             <p className="text-xs text-muted-foreground">系统</p>
             <p className="text-sm truncate">{host.osInfo || "-"}</p>
           </div>
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">连接方式</p>
-            <Badge variant="outline" className="text-[10px]">
-              {host.connectionType === "ssh" ? "SSH" : "Agent"}
-            </Badge>
-          </div>
+
           {((host as any).portRangeStart != null && (host as any).portRangeEnd != null) && (
             <div className="space-y-1 col-span-2">
               <p className="text-xs text-muted-foreground">端口区间</p>
@@ -259,12 +243,7 @@ function HostsContent() {
     setForm({
       name: host.name,
       ip: host.ip,
-      port: host.port ?? 22,
       hostType: host.hostType,
-      connectionType: host.connectionType,
-      sshUser: host.sshUser || "root",
-      sshPassword: "",
-      sshKeyContent: host.sshKeyContent || "",
       networkInterface: host.networkInterface || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
@@ -289,12 +268,6 @@ function HostsContent() {
 
     const payload: any = { ...form };
     if (!payload.networkInterface) payload.networkInterface = undefined;
-    if (payload.connectionType !== "ssh") {
-      payload.port = undefined;
-      payload.sshUser = undefined;
-      payload.sshPassword = undefined;
-      payload.sshKeyContent = undefined;
-    }
     // 端口区间
     payload.portRangeStart = form.portRangeStart || null;
     payload.portRangeEnd = form.portRangeEnd || null;
@@ -314,7 +287,7 @@ function HostsContent() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">主机管理</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">主机管理</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             管理主控机和被控机，监控运行状态
           </p>
@@ -349,11 +322,10 @@ function HostsContent() {
                         <TableHead className="w-[50px]">状态</TableHead>
                         <TableHead>名称</TableHead>
                         <TableHead>IP 地址</TableHead>
-                        <TableHead>类型</TableHead>
-                        <TableHead>连接方式</TableHead>
-                        <TableHead>端口区间</TableHead>
-                        <TableHead>系统</TableHead>
-                        <TableHead>最后心跳</TableHead>
+                        <TableHead className="hidden md:table-cell">类型</TableHead>
+                        <TableHead className="hidden lg:table-cell">端口区间</TableHead>
+                        <TableHead className="hidden md:table-cell">系统</TableHead>
+                        <TableHead className="hidden sm:table-cell">最后心跳</TableHead>
                         <TableHead className="text-right">操作</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -384,7 +356,7 @@ function HostsContent() {
                               {host.ip}
                             </code>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden md:table-cell">
                             <Badge
                               variant="outline"
                               className={`text-[10px] ${
@@ -396,24 +368,19 @@ function HostsContent() {
                               {host.hostType === "master" ? "主控" : "被控"}
                             </Badge>
                           </TableCell>
-                          <TableCell>
-                            <Badge variant="secondary" className="text-[10px]">
-                              {host.connectionType === "ssh" ? "SSH" : "Agent"}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden lg:table-cell">
                             <span className="text-xs text-muted-foreground font-mono">
                               {(host as any).portRangeStart != null && (host as any).portRangeEnd != null
                                 ? `${(host as any).portRangeStart}-${(host as any).portRangeEnd}`
                                 : "不限制"}
                             </span>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden md:table-cell">
                             <span className="text-xs text-muted-foreground truncate max-w-[120px] block">
                               {host.osInfo || "-"}
                             </span>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden sm:table-cell">
                             <span className="text-xs text-muted-foreground">
                               {host.lastHeartbeat
                                 ? new Date(host.lastHeartbeat).toLocaleString()
@@ -487,12 +454,10 @@ function HostsContent() {
             <TabsList className="w-full bg-muted/50">
               <TabsTrigger value="basic" className="flex-1">基本信息</TabsTrigger>
               <TabsTrigger value="port" className="flex-1">端口限制</TabsTrigger>
-              {form.connectionType === "ssh" && (
-                <TabsTrigger value="ssh" className="flex-1">SSH 配置</TabsTrigger>
-              )}
+
             </TabsList>
             <TabsContent value="basic" className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>主机名称</Label>
                   <Input
@@ -510,51 +475,15 @@ function HostsContent() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <Label>
-                    端口
-                    {form.connectionType !== "ssh" && (
-                      <span className="ml-1 text-xs text-muted-foreground">(仅 SSH 可改)</span>
-                    )}
-                  </Label>
-                  <Input
-                    type="number"
-                    value={form.connectionType === "ssh" ? form.port : 22}
-                    disabled={form.connectionType !== "ssh"}
-                    onChange={(e) => setForm({ ...form, port: parseInt(e.target.value) || 22 })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>主机类型</Label>
-                  <Select value={form.hostType} onValueChange={(v) => setForm({ ...form, hostType: v as any })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="master">主控机</SelectItem>
-                      <SelectItem value="slave">被控机</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>连接方式</Label>
-                  <Select
-                    value={form.connectionType}
-                    onValueChange={(v) => {
-                      const next = v as "ssh" | "agent";
-                      setForm({
-                        ...form,
-                        connectionType: next,
-                        port: next === "ssh" ? (form.port || 22) : 22,
-                      });
-                    }}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="agent">Agent</SelectItem>
-                      <SelectItem value="ssh">SSH</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-2">
+                <Label>主机类型</Label>
+                <Select value={form.hostType} onValueChange={(v) => setForm({ ...form, hostType: v as any })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="master">主控机</SelectItem>
+                    <SelectItem value="slave">被控机</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label>
@@ -579,7 +508,7 @@ function HostsContent() {
                     限制该主机上转发规则的源端口范围，留空则不限制
                   </p>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">起始端口</Label>
                     <Input
@@ -617,37 +546,7 @@ function HostsContent() {
                 )}
               </div>
             </TabsContent>
-            {form.connectionType === "ssh" && (
-              <TabsContent value="ssh" className="space-y-4">
-                <div className="space-y-2">
-                  <Label>SSH 用户名</Label>
-                  <Input
-                    placeholder="root"
-                    value={form.sshUser}
-                    onChange={(e) => setForm({ ...form, sshUser: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>SSH 密码</Label>
-                  <Input
-                    type="password"
-                    placeholder="留空则使用密钥认证"
-                    value={form.sshPassword}
-                    onChange={(e) => setForm({ ...form, sshPassword: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>SSH 私钥（可选）</Label>
-                  <Textarea
-                    placeholder="粘贴 SSH 私钥内容..."
-                    rows={4}
-                    value={form.sshKeyContent}
-                    onChange={(e) => setForm({ ...form, sshKeyContent: e.target.value })}
-                    className="font-mono text-xs"
-                  />
-                </div>
-              </TabsContent>
-            )}
+
           </Tabs>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>

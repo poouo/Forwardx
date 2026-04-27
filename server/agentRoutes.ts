@@ -38,9 +38,7 @@ agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
     const hostId = await db.createHost({
       name: `Agent-${token.substring(0, 8)}`,
       ip: ip || "unknown",
-      port: 0,
       hostType: "slave",
-      connectionType: "agent",
       agentToken: token,
       osInfo: osInfo || null,
       cpuInfo: cpuInfo || null,
@@ -489,7 +487,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       res.status(401).json({ error: "Invalid token" });
       return;
     }
-    const { testId, listenOk, targetReachable, forwardOk, latencyMs, message } = req.body || {};
+    const { testId, targetReachable, latencyMs, message } = req.body || {};
     if (typeof testId !== "number") {
       res.status(400).json({ error: "testId is required" });
       return;
@@ -499,13 +497,13 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       res.status(404).json({ error: "test not found" });
       return;
     }
-    // 连通性综合判定：本地监听正常 + 目标TCP可达 = 转发链路正常
-    const success = !!forwardOk;
+    // 连通性判定：仅检测目标端口TCP可达性
+    const success = !!targetReachable;
     await db.updateForwardTestResult(testId, {
       status: success ? "success" : "failed",
-      listenOk: !!listenOk,
+      listenOk: true, // 不再检测本地监听，默认为true
       targetReachable: !!targetReachable,
-      forwardOk: !!forwardOk,
+      forwardOk: success, // 目标可达即视为转发正常
       latencyMs: typeof latencyMs === "number" ? latencyMs : null,
       message: typeof message === "string" ? message.slice(0, 4000) : null,
     });
@@ -1106,8 +1104,8 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '}',
     '',
     'report_selftest() {',
-    '  TID="$1"; LOK="$2"; TR="$3"; FOK="$4"; LAT="$5"; MSG="$6"',
-    '  PAYLOAD=$(jq -n --argjson tid "$TID" --argjson l "$LOK" --argjson t "$TR" --argjson f "$FOK" --argjson lat "${LAT:-0}" --arg msg "$MSG" \'{testId:$tid,listenOk:($l==1),targetReachable:($t==1),forwardOk:($f==1),latencyMs:$lat,message:$msg}\')',
+    '  TID="$1"; TR="$2"; LAT="$3"; MSG="$4"',
+    '  PAYLOAD=$(jq -n --argjson tid "$TID" --argjson t "$TR" --argjson lat "${LAT:-0}" --arg msg "$MSG" \'{testId:$tid,targetReachable:($t==1),latencyMs:$lat,message:$msg}\')',
     '  curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/selftest-result" -H "Content-Type: application/json" -H "Authorization: Bearer $AGENT_TOKEN" -d "$PAYLOAD" >/dev/null 2>&1',
     '}',
     '',
@@ -1123,20 +1121,10 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    TIP=$(echo "$RESPONSE" | jq -r ".selfTests[$i].targetIp")',
     '    TPT=$(echo "$RESPONSE" | jq -r ".selfTests[$i].targetPort")',
     '    LOG=""',
-    '    LOK=0; TR=0; FOK=0; LAT=0',
+    '    TR=0; LAT=0',
     '',
-    '    # 1) 本地端口监听检测',
-    '    log INFO "[selftest] test=$TID 开始: forwardType=$FT port=$SP target=$TIP:$TPT proto=$PR"',
-    '    if check_port_listen "$SP" "$PR" "$FT"; then',
-    '      LOK=1',
-    '      LOG="${LOG}本地端口 $SP 监听正常;"',
-    '      log INFO "[selftest] test=$TID 本地端口 $SP 监听正常"',
-    '    else',
-    '      LOG="${LOG}本地端口 $SP 未监听;"',
-    '      log WARN "[selftest] test=$TID 本地端口 $SP 未监听"',
-    '    fi',
-    '',
-    '    # 2) TCP 延迟检测：测试转发机器到目标 IP:Port 的 TCP 连接',
+    '    # 仅检测目标端口 TCP 可达性和 tcping 延迟',
+    '    log INFO "[selftest] test=$TID 开始: target=$TIP:$TPT proto=$PR"',
     '    log DEBUG "[selftest] test=$TID 开始 TCP 延迟检测: $TIP:$TPT"',
     '    TCP_LAT=$(tcp_latency "$TIP" "$TPT")',
     '    TCP_RC=$?',
@@ -1159,18 +1147,8 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '      fi',
     '    fi',
     '',
-    '    # 3) 综合判定: 本地监听正常 + 目标TCP可达 = 转发链路正常',
-    '    if [ "$LOK" -eq 1 ] && [ "$TR" -eq 1 ]; then',
-    '      FOK=1',
-    '      LOG="${LOG}转发链路正常;"',
-    '      log INFO "[selftest] test=$TID 结果: 转发链路正常 (listen=OK target=OK latency=${LAT}ms)"',
-    '    else',
-    '      LOG="${LOG}转发链路异常;"',
-    '      log WARN "[selftest] test=$TID 结果: 转发链路异常 (listen=$LOK target=$TR latency=${LAT}ms)"',
-    '    fi',
-    '',
-    '    report_selftest "$TID" "$LOK" "$TR" "$FOK" "$LAT" "$LOG"',
-    '    log DEBUG "[selftest] test=$TID 结果已上报: LOK=$LOK TR=$TR FOK=$FOK LAT=${LAT}ms"',
+    '    report_selftest "$TID" "$TR" "$LAT" "$LOG"',
+    '    log DEBUG "[selftest] test=$TID 结果已上报: TR=$TR LAT=${LAT}ms"',
     '  done',
     '}',
     '',

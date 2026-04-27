@@ -22,6 +22,8 @@ export const users = sqliteTable("users", {
   role: text("role").notNull().default("user"), // 'user' | 'admin'
   // ===== 权限控制 =====
   canAddRules: integer("canAddRules", { mode: "boolean" }).notNull().default(false), // 是否允许添加转发规则
+  maxRules: integer("maxRules").notNull().default(0),       // 最大规则条数，0 = 不限制
+  maxPorts: integer("maxPorts").notNull().default(0),       // 最大端口数，0 = 不限制（与 maxRules 相同概念，但可独立控制）
   // ===== 流量管理字段 =====
   trafficLimit: integer("trafficLimit").notNull().default(0),           // 流量额度（字节），0 = 不限制
   trafficUsed: integer("trafficUsed").notNull().default(0),             // 已用流量（字节）
@@ -40,12 +42,7 @@ export const hosts = sqliteTable("hosts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   ip: text("ip").notNull(),
-  port: integer("port").default(22),
   hostType: text("hostType").notNull().default("slave"), // 'master' | 'slave'
-  connectionType: text("connectionType").notNull().default("agent"), // 'ssh' | 'agent'
-  sshUser: text("sshUser"),
-  sshPassword: text("sshPassword"),
-  sshKeyContent: text("sshKeyContent"),
   agentToken: text("agentToken"),
   osInfo: text("osInfo"),
   cpuInfo: text("cpuInfo"),
@@ -136,3 +133,13 @@ export const forwardTests = sqliteTable("forward_tests", {
 });
 export type ForwardTest = typeof forwardTests.$inferSelect;
 export type InsertForwardTest = typeof forwardTests.$inferInsert;
+
+// ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
+export const userHostPermissions = sqliteTable("user_host_permissions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("userId").notNull(),
+  hostId: integer("hostId").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type UserHostPermission = typeof userHostPermissions.$inferSelect;
+export type InsertUserHostPermission = typeof userHostPermissions.$inferInsert;

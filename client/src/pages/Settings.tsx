@@ -177,7 +177,7 @@ function SettingsContent() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">系统设置</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">系统设置</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             管理 Agent Token 和一键安装脚本
           </p>
@@ -230,9 +230,9 @@ function SettingsContent() {
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
                         <TableHead>Token</TableHead>
-                        <TableHead>描述</TableHead>
+                        <TableHead className="hidden sm:table-cell">描述</TableHead>
                         <TableHead>状态</TableHead>
-                        <TableHead>创建时间</TableHead>
+                        <TableHead className="hidden md:table-cell">创建时间</TableHead>
                         <TableHead className="text-right">操作</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -254,7 +254,7 @@ function SettingsContent() {
                               </Button>
                             </div>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden sm:table-cell">
                             <span className="text-sm text-muted-foreground">{t.description || "-"}</span>
                           </TableCell>
                           <TableCell>
@@ -269,7 +269,7 @@ function SettingsContent() {
                               </Badge>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="hidden md:table-cell">
                             <span className="text-xs text-muted-foreground">
                               {new Date(t.createdAt).toLocaleString()}
                             </span>

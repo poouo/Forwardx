@@ -13,6 +13,7 @@ import {
   trafficStats, InsertTrafficStat,
   agentTokens, InsertAgentToken,
   forwardTests, InsertForwardTest,
+  userHostPermissions, InsertUserHostPermission,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import fs from "fs";
@@ -94,12 +95,7 @@ export async function initDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         ip TEXT NOT NULL,
-        port INTEGER DEFAULT 22,
         hostType TEXT NOT NULL DEFAULT 'slave',
-        connectionType TEXT NOT NULL DEFAULT 'agent',
-        sshUser TEXT,
-        sshPassword TEXT,
-        sshKeyContent TEXT,
         agentToken TEXT,
         osInfo TEXT,
         cpuInfo TEXT,
@@ -201,7 +197,22 @@ export async function initDatabase() {
       `ALTER TABLE users ADD COLUMN trafficAutoReset INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficResetDay INTEGER NOT NULL DEFAULT 1`,
       `ALTER TABLE users ADD COLUMN lastTrafficReset INTEGER`,
+      `ALTER TABLE users ADD COLUMN maxRules INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN maxPorts INTEGER NOT NULL DEFAULT 0`,
     ];
+
+    // 创建用户-主机权限表
+    _sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS user_host_permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId INTEGER NOT NULL,
+        hostId INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(userId, hostId)
+      );
+      CREATE INDEX IF NOT EXISTS idx_uhp_user ON user_host_permissions(userId);
+      CREATE INDEX IF NOT EXISTS idx_uhp_host ON user_host_permissions(hostId);
+    `);
     for (const m of migrations) {
       try { _sqlite.exec(m); } catch { /* column already exists */ }
     }
@@ -329,6 +340,8 @@ export async function getAllUsers() {
       email: users.email,
       role: users.role,
       canAddRules: users.canAddRules,
+      maxRules: users.maxRules,
+      maxPorts: users.maxPorts,
       trafficLimit: users.trafficLimit,
       trafficUsed: users.trafficUsed,
       expiresAt: users.expiresAt,
@@ -361,6 +374,8 @@ export async function updateUserTrafficSettings(userId: number, data: {
   trafficAutoReset?: boolean;
   trafficResetDay?: number;
   canAddRules?: boolean;
+  maxRules?: number;
+  maxPorts?: number;
 }) {
   const db = await getDb();
   if (!db) return;
@@ -866,4 +881,94 @@ export async function getForwardTestById(id: number) {
   if (!db) return undefined;
   const rows = await db.select().from(forwardTests).where(eq(forwardTests.id, id)).limit(1);
   return rows[0];
+}
+
+// ==================== User-Host Permissions ====================
+
+/** 获取某用户被授权的主机ID列表 */
+export async function getUserAllowedHostIds(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ hostId: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+  return rows.map(r => r.hostId);
+}
+
+/** 获取某用户被授权的主机列表（含主机信息） */
+export async function getUserAllowedHosts(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const permRows = await db.select({ hostId: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+  if (permRows.length === 0) return [];
+  const hostIds = permRows.map(r => r.hostId);
+  const allHosts = await db.select().from(hosts);
+  return allHosts.filter(h => hostIds.includes(h.id));
+}
+
+/** 设置某用户的主机权限（全量替换） */
+export async function setUserHostPermissions(userId: number, hostIds: number[]) {
+  const db = await getDb();
+  if (!db) return;
+  // 先删除旧权限
+  await db.delete(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+  // 插入新权限
+  if (hostIds.length > 0) {
+    await db.insert(userHostPermissions).values(hostIds.map(hostId => ({ userId, hostId })));
+  }
+}
+
+/** 获取某主机被授权的用户ID列表 */
+export async function getHostAllowedUserIds(hostId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ userId: userHostPermissions.userId }).from(userHostPermissions).where(eq(userHostPermissions.hostId, hostId));
+  return rows.map(r => r.userId);
+}
+
+/** 检查用户是否有某主机的使用权限 */
+export async function checkUserHostPermission(userId: number, hostId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db.select().from(userHostPermissions).where(
+    and(eq(userHostPermissions.userId, userId), eq(userHostPermissions.hostId, hostId))
+  ).limit(1);
+  return rows.length > 0;
+}
+
+/** 删除主机时清理相关权限 */
+export async function deleteHostPermissions(hostId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(userHostPermissions).where(eq(userHostPermissions.hostId, hostId));
+}
+
+/** 删除用户时清理相关权限 */
+export async function deleteUserPermissions(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+}
+
+// ==================== User Rule/Port Count ====================
+
+/** 获取某用户的规则数量 */
+export async function getUserRuleCount(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const r = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(eq(forwardRules.userId, userId));
+  return Number(r[0]?.count) || 0;
+}
+
+/** 获取某用户使用的端口数量（去重） */
+export async function getUserPortCount(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const r = await db.select({ count: sql<number>`COUNT(DISTINCT sourcePort)` }).from(forwardRules).where(eq(forwardRules.userId, userId));
+  return Number(r[0]?.count) || 0;
+}
+
+/** 获取所有用户的主机权限映射 */
+export async function getAllUserHostPermissions(): Promise<Array<{ userId: number; hostId: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ userId: userHostPermissions.userId, hostId: userHostPermissions.hostId }).from(userHostPermissions);
 }

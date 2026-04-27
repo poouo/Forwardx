@@ -262,7 +262,7 @@ function DashboardLayoutContent({
 
         <SidebarFooter className="p-3">
           <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
-            <span className="text-[10px] text-muted-foreground/50">v2.0.0</span>
+            <span className="text-[10px] text-muted-foreground/50">v2.1.0</span>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -344,7 +344,7 @@ function DashboardLayoutContent({
             </button>
           </div>
         )}
-        <main className="flex-1 p-6">{children}</main>
+        <main className="flex-1 p-3 sm:p-6">{children}</main>
       </SidebarInset>
 
       {/* Change Password Dialog */}

@@ -98,6 +98,30 @@ function UsersContent() {
   const [trafficAutoReset, setTrafficAutoReset] = useState(false);
   const [trafficResetDay, setTrafficResetDay] = useState(1);
   const [canAddRules, setCanAddRules] = useState(false);
+  const [maxRules, setMaxRules] = useState(0);
+  const [maxPorts, setMaxPorts] = useState(0);
+
+  // Agent 权限
+  const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
+  const { data: allHosts } = trpc.hosts.list.useQuery();
+  const { data: userHostPerms } = trpc.users.getHostPermissions.useQuery(
+    { userId: trafficUserId! },
+    { enabled: showTrafficSettings && !!trafficUserId }
+  );
+  const updateHostPermsMutation = trpc.users.updateHostPermissions.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+      toast.success("主机权限已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新主机权限失败"),
+  });
+
+  // 当权限数据加载完成后同步到状态
+  useEffect(() => {
+    if (userHostPerms) {
+      setAllowedHostIds(userHostPerms.map((p: any) => p.hostId));
+    }
+  }, [userHostPerms]);
 
   useEffect(() => {
     if (currentUser && currentUser.role !== "admin") {
@@ -215,6 +239,9 @@ function UsersContent() {
     setTrafficAutoReset(!!u.trafficAutoReset);
     setTrafficResetDay(u.trafficResetDay || 1);
     setCanAddRules(!!u.canAddRules);
+    setMaxRules(u.maxRules || 0);
+    setMaxPorts(u.maxPorts || 0);
+    setAllowedHostIds([]);
     setShowTrafficSettings(true);
   };
 
@@ -228,14 +255,27 @@ function UsersContent() {
       trafficAutoReset,
       trafficResetDay,
       canAddRules,
+      maxRules,
+      maxPorts,
     });
+    // 同时保存主机权限
+    updateHostPermsMutation.mutate({
+      userId: trafficUserId,
+      hostIds: allowedHostIds,
+    });
+  };
+
+  const toggleHostPermission = (hostId: number) => {
+    setAllowedHostIds(prev =>
+      prev.includes(hostId) ? prev.filter(id => id !== hostId) : [...prev, hostId]
+    );
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">用户管理</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">用户管理</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             管理系统用户、权限和流量配额
           </p>
@@ -271,10 +311,11 @@ function UsersContent() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[60px]">ID</TableHead>
                     <TableHead>用户</TableHead>
-                    <TableHead>角色</TableHead>
+                    <TableHead className="hidden sm:table-cell">角色</TableHead>
                     <TableHead>流量使用</TableHead>
-                    <TableHead>到期时间</TableHead>
-                    <TableHead>权限</TableHead>
+                    <TableHead className="hidden md:table-cell">到期时间</TableHead>
+                    <TableHead className="hidden lg:table-cell">权限</TableHead>
+                    <TableHead className="hidden lg:table-cell">规则限制</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -309,7 +350,7 @@ function UsersContent() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="hidden sm:table-cell">
                           <Select
                             value={u.role}
                             onValueChange={(v: "user" | "admin") => {
@@ -358,7 +399,7 @@ function UsersContent() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="hidden md:table-cell">
                           <div className="flex items-center gap-1">
                             {u.expiresAt ? (
                               <>
@@ -375,7 +416,7 @@ function UsersContent() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="hidden lg:table-cell">
                           <div className="flex flex-col gap-0.5">
                             {u.canAddRules || u.role === "admin" ? (
                               <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-chart-2/30 text-chart-2 w-fit">
@@ -391,6 +432,12 @@ function UsersContent() {
                                 每月{u.trafficResetDay || 1}日重置
                               </span>
                             )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                            <span>规则: {u.maxRules ? `最多 ${u.maxRules} 条` : "不限"}</span>
+                            <span>端口: {u.maxPorts ? `最多 ${u.maxPorts} 个` : "不限"}</span>
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
@@ -586,6 +633,57 @@ function UsersContent() {
                 </div>
                 <Switch checked={canAddRules} onCheckedChange={setCanAddRules} />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>最大规则数</Label>
+                  <Input
+                    type="number"
+                    value={maxRules || ""}
+                    onChange={(e) => setMaxRules(parseInt(e.target.value) || 0)}
+                    placeholder="0=不限制"
+                  />
+                  <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>最大端口数</Label>
+                  <Input
+                    type="number"
+                    value={maxPorts || ""}
+                    onChange={(e) => setMaxPorts(parseInt(e.target.value) || 0)}
+                    placeholder="0=不限制"
+                  />
+                  <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* 主机使用权限 */}
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium flex items-center gap-2">
+                <Shield className="h-4 w-4" />
+                主机使用权限
+              </h4>
+              <p className="text-xs text-muted-foreground">指定用户可以使用哪些主机进行转发，未勾选的主机将无法添加规则</p>
+              {allHosts && allHosts.length > 0 ? (
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {allHosts.map((h: any) => (
+                    <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{h.name}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">{h.ip}</span>
+                      </div>
+                      <Switch
+                        checked={allowedHostIds.includes(h.id)}
+                        onCheckedChange={() => toggleHostPermission(h.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">暂无可用主机</p>
+              )}
             </div>
 
             <Separator />

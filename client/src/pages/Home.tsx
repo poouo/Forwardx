@@ -63,21 +63,21 @@ function StatCard({
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-all duration-300 hover:shadow-lg hover:shadow-primary/5">
       <div className={`absolute inset-0 opacity-[0.03] group-hover:opacity-[0.06] transition-opacity ${gradient}`} />
-      <CardContent className="p-5 relative">
+      <CardContent className="p-3 sm:p-5 relative">
         <div className="flex items-start justify-between">
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
+          <div className="space-y-1 sm:space-y-1.5">
+            <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
             {loading ? (
-              <Skeleton className="h-9 w-24" />
+              <Skeleton className="h-6 sm:h-9 w-16 sm:w-24" />
             ) : (
-              <p className="text-3xl font-bold tracking-tight tabular-nums">{value}</p>
+              <p className="text-lg sm:text-3xl font-bold tracking-tight tabular-nums">{value}</p>
             )}
             {subtitle && (
-              <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground/80">{subtitle}</p>
             )}
           </div>
-          <div className={`h-11 w-11 rounded-xl flex items-center justify-center ${gradient} shadow-sm`}>
-            <Icon className="h-5 w-5 text-white" />
+          <div className={`h-8 w-8 sm:h-11 sm:w-11 rounded-lg sm:rounded-xl flex items-center justify-center ${gradient} shadow-sm`}>
+            <Icon className="h-3.5 w-3.5 sm:h-5 sm:w-5 text-white" />
           </div>
         </div>
       </CardContent>
@@ -160,19 +160,19 @@ function DashboardContent() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">仪表盘</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">仪表盘</h1>
+          <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
             欢迎回来，{user?.name || "用户"}
           </p>
         </div>
-        <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs border-chart-2/30 text-chart-2">
+        <Badge variant="outline" className="gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-xs border-chart-2/30 text-chart-2">
           <span className="h-1.5 w-1.5 rounded-full bg-chart-2 animate-pulse" />
           系统在线
         </Badge>
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-4">
         <StatCard
           title="主机总数"
           value={stats?.totalHosts ?? 0}
@@ -236,7 +236,7 @@ function DashboardContent() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="h-64 w-full">
+          <div className="h-48 sm:h-64 w-full">
             {trendLoading ? (
               <Skeleton className="h-full w-full" />
             ) : chartData.length === 0 ? (
@@ -257,8 +257,8 @@ function DashboardContent() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={40} />
-                  <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => formatBytes(v)} width={70} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={30} />
+                  <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => formatBytes(v)} width={55} hide={false} />
                   <RTooltip
                     formatter={(value: any) => formatBytes(Number(value) || 0)}
                     labelFormatter={(l) => l}
@@ -355,7 +355,7 @@ function DashboardContent() {
       </Card>
 
       {/* Health Overview */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
         {/* Online Rate */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-2">
@@ -452,7 +452,7 @@ function DashboardContent() {
       </div>
 
       {/* Recent Lists */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
         {/* Recent Hosts */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="pb-3">
@@ -474,9 +474,6 @@ function DashboardContent() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
-                        {host.connectionType === "ssh" ? "SSH" : "Agent"}
-                      </Badge>
                       {host.isOnline ? (
                         <Wifi className="h-3.5 w-3.5 text-chart-2" />
                       ) : (

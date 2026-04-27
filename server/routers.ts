@@ -274,8 +274,36 @@ export const appRouter = router({
     delete: adminProcedure
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ input }) => {
+        await db.deleteUserPermissions(input.userId);
         await db.deleteUser(input.userId);
         return { success: true };
+      }),
+    /** 获取某用户的主机权限列表 */
+    getHostPermissions: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getUserAllowedHostIds(input.userId);
+      }),
+    /** 设置某用户的主机权限（全量替换） */
+    setHostPermissions: adminProcedure
+      .input(z.object({ userId: z.number(), hostIds: z.array(z.number()) }))
+      .mutation(async ({ input }) => {
+        await db.setUserHostPermissions(input.userId, input.hostIds);
+        return { success: true };
+      }),
+    /** 获取所有用户的主机权限映射 */
+    allHostPermissions: adminProcedure.query(async () => {
+      return db.getAllUserHostPermissions();
+    }),
+    /** 获取某用户的规则数和端口数 */
+    getUserQuotaUsage: protectedProcedure
+      .input(z.object({ userId: z.number() }))
+      .query(async ({ input }) => {
+        const [ruleCount, portCount] = await Promise.all([
+          db.getUserRuleCount(input.userId),
+          db.getUserPortCount(input.userId),
+        ]);
+        return { ruleCount, portCount };
       }),
     /** 更新用户流量管理和权限设置 */
     updateTrafficSettings: adminProcedure
@@ -286,6 +314,8 @@ export const appRouter = router({
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().min(1).max(28).optional(),
         canAddRules: z.boolean().optional(),
+        maxRules: z.number().min(0).optional(),
+        maxPorts: z.number().min(0).optional(),
       }))
       .mutation(async ({ input }) => {
         const { userId, expiresAt, ...rest } = input;
@@ -309,7 +339,16 @@ export const appRouter = router({
   hosts: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
-      return db.getHosts(isAdmin ? undefined : ctx.user.id);
+      if (isAdmin) return db.getHosts();
+      // 普通用户：返回管理员授权的主机列表
+      const allowedHostIds = await db.getUserAllowedHostIds(ctx.user.id);
+      if (allowedHostIds.length === 0) return [];
+      const allHosts = await db.getHosts();
+      return allHosts.filter(h => allowedHostIds.includes(h.id));
+    }),
+    /** 获取所有主机列表（管理员用，用于权限分配） */
+    listAll: adminProcedure.query(async () => {
+      return db.getHosts();
     }),
     getById: protectedProcedure
       .input(z.object({ id: z.number() }))
@@ -323,12 +362,7 @@ export const appRouter = router({
       .input(z.object({
         name: z.string().min(1).max(128),
         ip: z.string().min(1).max(64),
-        port: z.number().int().min(1).max(65535).nullable().optional(),
         hostType: z.enum(["master", "slave"]).default("slave"),
-        connectionType: z.enum(["ssh", "agent"]).default("agent"),
-        sshUser: z.string().optional(),
-        sshPassword: z.string().optional(),
-        sshKeyContent: z.string().optional(),
         networkInterface: z.string().max(32).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
@@ -340,12 +374,10 @@ export const appRouter = router({
             throw new Error("端口区间起始值不能大于结束值");
           }
         }
-        const safePort = input.connectionType === "ssh" ? (input.port ?? 22) : 22;
-        const agentToken = input.connectionType === "agent" ? nanoid(32) : undefined;
+        const agentToken = nanoid(32);
         const id = await db.createHost({
           ...input,
-          port: safePort,
-          agentToken: agentToken ?? null,
+          agentToken,
           networkInterface: input.networkInterface || null,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
@@ -358,12 +390,7 @@ export const appRouter = router({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
         ip: z.string().min(1).max(64).optional(),
-        port: z.number().int().min(1).max(65535).nullable().optional(),
         hostType: z.enum(["master", "slave"]).optional(),
-        connectionType: z.enum(["ssh", "agent"]).optional(),
-        sshUser: z.string().nullable().optional(),
-        sshPassword: z.string().nullable().optional(),
-        sshKeyContent: z.string().nullable().optional(),
         networkInterface: z.string().max(32).nullable().optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
@@ -379,12 +406,6 @@ export const appRouter = router({
           throw new Error("端口区间起始值不能大于结束值");
         }
         const { id, ...data } = input;
-        const effectiveType = data.connectionType ?? host.connectionType;
-        if (effectiveType !== "ssh") {
-          data.port = 22;
-        } else if (data.port == null) {
-          delete (data as any).port;
-        }
         await db.updateHost(id, data as any);
         return { success: true };
       }),
@@ -399,6 +420,7 @@ export const appRouter = router({
         if (ruleCount > 0) {
           throw new Error(`该主机下还有 ${ruleCount} 条转发规则，请先删除所有规则后再删除主机`);
         }
+        await db.deleteHostPermissions(input.id);
         await db.deleteHost(input.id);
         return { success: true };
       }),
@@ -463,7 +485,12 @@ export const appRouter = router({
         }
         const host = await db.getHostById(input.hostId);
         if (!host) throw new Error("主机不存在");
-        if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
+
+        // Agent 权限检查：非管理员需要有该主机的使用权限
+        if (ctx.user.role !== "admin") {
+          const hasPermission = await db.checkUserHostPermission(ctx.user.id, input.hostId);
+          if (!hasPermission) throw new Error("您没有使用该主机的权限，请联系管理员授权");
+        }
 
         // 检查用户是否已到期
         if (ctx.user.expiresAt && new Date(ctx.user.expiresAt) <= new Date()) {
@@ -472,6 +499,22 @@ export const appRouter = router({
         // 检查用户流量是否已超额
         if (ctx.user.trafficLimit > 0 && ctx.user.trafficUsed >= ctx.user.trafficLimit) {
           throw new Error("您的流量已用完，无法添加规则");
+        }
+
+        // 检查用户规则数量限制
+        const currentUser = await db.getUserById(ctx.user.id);
+        if (currentUser && currentUser.maxRules > 0) {
+          const ruleCount = await db.getUserRuleCount(ctx.user.id);
+          if (ruleCount >= currentUser.maxRules) {
+            throw new Error(`您已达到最大规则数量限制（${currentUser.maxRules} 条）`);
+          }
+        }
+        // 检查用户端口数量限制
+        if (currentUser && currentUser.maxPorts > 0) {
+          const portCount = await db.getUserPortCount(ctx.user.id);
+          if (portCount >= currentUser.maxPorts) {
+            throw new Error(`您已达到最大端口数量限制（${currentUser.maxPorts} 个）`);
+          }
         }
 
         let sourcePort = input.sourcePort;
@@ -706,12 +749,7 @@ export const appRouter = router({
           userId: h.userId,
           name: h.name,
           ip: h.ip,
-          port: h.port,
           hostType: h.hostType,
-          connectionType: h.connectionType,
-          sshUser: h.sshUser,
-          sshPassword: h.sshPassword,
-          sshKeyContent: h.sshKeyContent,
           agentToken: h.agentToken,
           osInfo: h.osInfo,
           cpuInfo: h.cpuInfo,
@@ -810,12 +848,7 @@ export const appRouter = router({
           const newId = await db.createHost({
             name: h.name,
             ip: h.ip || "unknown",
-            port: h.connectionType === "ssh" ? Number(h.port || 22) : 22,
             hostType: h.hostType || "slave",
-            connectionType: h.connectionType || "agent",
-            sshUser: h.sshUser ?? h.username ?? null,
-            sshPassword: h.sshPassword ?? h.password ?? null,
-            sshKeyContent: h.sshKeyContent ?? h.privateKey ?? null,
             agentToken: h.agentToken ?? null,
             osInfo: h.osInfo ?? null,
             cpuInfo: h.cpuInfo ?? null,
