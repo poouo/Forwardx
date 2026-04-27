@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import {
   Server,
@@ -21,19 +20,18 @@ import {
   Users,
   CalendarClock,
   BarChart3,
+  Info,
 } from "lucide-react";
 import {
-  ComposedChart,
-  Line,
-  Bar,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip as RTooltip,
-  Legend,
   ResponsiveContainer,
 } from "recharts";
-import { useMemo, useState, useCallback } from "react";
+import { useMemo } from "react";
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -100,20 +98,39 @@ function CircularProgress({ value, size = 80, strokeWidth = 6, color }: { value:
   );
 }
 
-/** 格式化时间标签：短时间范围只显示时间，长时间范围显示日期+时间 */
-function formatTimeLabel(dateStr: string | Date, showDate: boolean): string {
+/** 格式化时间标签：MM/DD HH:mm */
+function formatTrafficTime(dateStr: string | Date): string {
   const d = new Date(dateStr);
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   const hour = String(d.getHours()).padStart(2, "0");
   const minute = String(d.getMinutes()).padStart(2, "0");
-  if (showDate) {
-    return `${month}/${day} ${hour}:${minute}`;
-  }
-  return `${hour}:${minute}`;
+  return `${month}/${day} ${hour}:${minute}`;
 }
 
-
+/** 流量 Tooltip */
+function TrafficTooltipContent({ active, payload, label }: any) {
+  if (!active || !payload || payload.length === 0) return null;
+  const data = payload[0]?.payload;
+  if (!data) return null;
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+      <p className="text-xs text-muted-foreground mb-1.5">{data.fullLabel || label}</p>
+      <div className="space-y-1">
+        <p className="text-xs tabular-nums flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-2))" }} />
+          <span className="text-muted-foreground">入站</span>
+          <span className="font-semibold ml-auto">{formatBytes(data.bytesIn)}</span>
+        </p>
+        <p className="text-xs tabular-nums flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-4))" }} />
+          <span className="text-muted-foreground">出站</span>
+          <span className="font-semibold ml-auto">{formatBytes(data.bytesOut)}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function DashboardContent() {
   const { user } = useAuth();
@@ -127,25 +144,21 @@ function DashboardContent() {
     refetchInterval: 30000,
   });
 
-  // 流量走势
-  const [trendHours, setTrendHours] = useState(24);
-  const trendBucket = trendHours <= 1 ? 1 : trendHours <= 6 ? 5 : trendHours <= 24 ? 15 : 60;
+  // 流量走势：固定查询最近 7 天，15 分钟分桶
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
-    { hours: trendHours, bucketMinutes: trendBucket },
-    { refetchInterval: 60000 }
+    { hours: 168, bucketMinutes: 15 },
+    { refetchInterval: 30000 }
   );
-  const showDateInTraffic = trendHours > 6;
   const chartData = useMemo(
     () =>
       (trafficSeries || []).map((d: any) => ({
-        label: formatTimeLabel(d.bucket, showDateInTraffic),
+        label: formatTrafficTime(d.bucket),
+        fullLabel: formatTrafficTime(d.bucket),
         bytesIn: Number(d.bytesIn) || 0,
         bytesOut: Number(d.bytesOut) || 0,
       })),
-    [trafficSeries, showDateInTraffic]
+    [trafficSeries]
   );
-
-
 
   // 用户流量汇总
   const { data: userTraffic, isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, {
@@ -224,35 +237,30 @@ function DashboardContent() {
         />
       </div>
 
-
-
-      {/* Traffic Trend Chart */}
+      {/* Traffic Trend Chart - AreaChart style */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <BarChart3 className="h-4 w-4" />
               流量走势
+              <span className="text-[10px] text-muted-foreground/60 font-normal">最近 7 天</span>
             </CardTitle>
-            <div className="flex items-center gap-1">
-              {[
-                { label: "1h", v: 1 },
-                { label: "6h", v: 6 },
-                { label: "24h", v: 24 },
-                { label: "7d", v: 168 },
-              ].map((opt) => (
-                <Button
-                  key={opt.v}
-                  size="sm"
-                  variant={trendHours === opt.v ? "default" : "ghost"}
-                  className="h-6 px-2 text-[10px]"
-                  onClick={() => setTrendHours(opt.v)}
-                >
-                  {opt.label}
-                </Button>
-              ))}
+            <div className="flex items-center gap-3 text-[10px]">
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-2))" }} />
+                入站
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "hsl(var(--chart-4))" }} />
+                出站
+              </span>
             </div>
           </div>
+          <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1 mt-1">
+            <Info className="h-3 w-3" />
+            iptables 转发的流量统计最为准确，其他转发方式 (realm/socat) 的流量统计可能存在偏差
+          </p>
         </CardHeader>
         <CardContent>
           <div className="h-48 sm:h-64 w-full">
@@ -264,32 +272,56 @@ function DashboardContent() {
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="trafficInGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-2))" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="hsl(var(--chart-2))" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="trafficOutGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--chart-4))" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="hsl(var(--chart-4))" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border) / 0.4)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={30} />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 9 }}
+                    minTickGap={60}
+                    interval="preserveStartEnd"
+                  />
                   <YAxis
                     tick={{ fontSize: 9 }}
                     tickFormatter={(v) => formatBytes(v)}
-                    width={60}
-                    domain={[0, (dataMax: number) => Math.max(1024, Math.ceil((dataMax || 0) * 1.15))]}
+                    width={55}
+                    domain={[0, (dataMax: number) => Math.max(1024, Math.ceil((dataMax || 0) * 1.2))]}
                     allowDecimals={false}
                   />
                   <RTooltip
-                    formatter={(value: any) => formatBytes(Number(value) || 0)}
-                    labelFormatter={(l) => l}
-                    contentStyle={{
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "8px",
-                      fontSize: "12px",
-                    }}
+                    content={<TrafficTooltipContent />}
+                    cursor={{ stroke: "hsl(var(--muted-foreground) / 0.3)", strokeDasharray: "3 3" }}
                   />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="bytesIn" name="入向" fill="hsl(var(--chart-2))" fillOpacity={0.35} barSize={10} />
-                  <Bar dataKey="bytesOut" name="出向" fill="hsl(var(--chart-4))" fillOpacity={0.35} barSize={10} />
-                  <Line type="monotone" dataKey="bytesIn" name="入向趋势" stroke="hsl(var(--chart-2))" dot={false} strokeWidth={2} legendType="none" />
-                  <Line type="monotone" dataKey="bytesOut" name="出向趋势" stroke="hsl(var(--chart-4))" dot={false} strokeWidth={2} legendType="none" />
-                </ComposedChart>
+                  <Area
+                    type="monotone"
+                    dataKey="bytesIn"
+                    name="入站"
+                    stroke="hsl(var(--chart-2))"
+                    strokeWidth={2}
+                    fill="url(#trafficInGradient)"
+                    dot={false}
+                    activeDot={{ r: 4, fill: "hsl(var(--chart-2))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="bytesOut"
+                    name="出站"
+                    stroke="hsl(var(--chart-4))"
+                    strokeWidth={2}
+                    fill="url(#trafficOutGradient)"
+                    dot={false}
+                    activeDot={{ r: 4, fill: "hsl(var(--chart-4))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
+                  />
+                </AreaChart>
               </ResponsiveContainer>
             )}
           </div>
