@@ -73,6 +73,18 @@ async function runExpirationCheck() {
   }
 }
 
+/** 转发自测超时清理：每 30 秒扫一次，超过 60 秒未完成的任务标为 timeout */
+async function runSelfTestTimeoutSweep() {
+  try {
+    const n = await db.timeoutStaleForwardTests(60);
+    if (n > 0) {
+      console.log(`[Scheduler] Self-test timeout sweep: ${n} test(s) marked as timeout`);
+    }
+  } catch (error) {
+    console.error("[Scheduler] Self-test timeout sweep error:", error);
+  }
+}
+
 function startScheduler() {
   // 月度流量重置：每小时检查一次（在整点的第5分钟）
   setInterval(async () => {
@@ -88,13 +100,19 @@ function startScheduler() {
     await runExpirationCheck();
   }, 60 * 60 * 1000); // 每小时
 
+  // 转发自测超时扫描：每 30 秒一次
+  setInterval(async () => {
+    await runSelfTestTimeoutSweep();
+  }, 30 * 1000);
+
   // 启动时立即执行一次
   setTimeout(async () => {
     await runMonthlyTrafficReset();
     await runExpirationCheck();
+    await runSelfTestTimeoutSweep();
   }, 5000); // 延迟5秒等数据库初始化完成
 
-  console.log("[Scheduler] Scheduled tasks started (monthly traffic reset + expiration check)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep)");
 }
 
 // ==================== 启动服务器 ====================

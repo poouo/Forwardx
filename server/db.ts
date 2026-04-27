@@ -1022,3 +1022,30 @@ export async function setSettings(map: Record<string, string | null>): Promise<v
     await setSetting(k, v);
   }
 }
+
+// ==================== Forward Test 超时清理 ====================
+
+/**
+ * 将超时的转发自测任务标记为 timeout。
+ * - pending 超过 ttlSeconds：Agent 一直没拉到任务（可能 Agent 离线）
+ * - running 超过 ttlSeconds：Agent 拉走但没回报结果（可能 Agent 崩溃 / 上报被拒 / 网络中断）
+ * 返回被超时清理的任务数量。
+ */
+export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const cutoff = new Date(Date.now() - ttlSeconds * 1000);
+  // 用 SQL 直接 update，避免拉取后再写入的竞争
+  if (!_sqlite) return 0;
+  const cutoffSec = Math.floor(cutoff.getTime() / 1000);
+  const stmt = _sqlite.prepare(
+    `UPDATE forward_tests
+     SET status = 'timeout',
+         message = COALESCE(NULLIF(message, ''), '自测超时：Agent 未在' || ? || '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本'),
+         updatedAt = unixepoch()
+     WHERE status IN ('pending', 'running')
+       AND updatedAt < ?`
+  );
+  const info = stmt.run(ttlSeconds, cutoffSec);
+  return info.changes || 0;
+}

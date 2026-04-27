@@ -971,6 +971,7 @@ function SelfTestDialog({
     if (status === "pending") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />等待 Agent 拉取</span>;
     if (status === "running") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />Agent 执行中</span>;
     if (status === "success") return <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="h-4 w-4" />联通</span>;
+    if (status === "timeout") return <span className="flex items-center gap-1 text-amber-600"><AlertCircle className="h-4 w-4" />自测超时</span>;
     return <span className="flex items-center gap-1 text-destructive"><XCircle className="h-4 w-4" />联通失败</span>;
   };
   const renderItem = (label: string, ok: boolean | undefined) => (
