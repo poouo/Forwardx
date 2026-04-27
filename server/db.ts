@@ -719,11 +719,11 @@ export async function getTrafficSeriesByRule(
   const sinceSec = Math.floor(since.getTime() / 1000);
   const bucketSec = bucket * 60;
 
-  const bucketExpr = sql`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+  const bucketExpr = sql.raw(`("recordedAt" / ${bucketSec}) * ${bucketSec}`);
 
   const rows = await db
     .select({
-      bucket: sql<number>`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
+      bucket: sql<number>`${bucketExpr}`,
       bytesIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
       bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
       connections: sql<number>`COALESCE(SUM(${trafficStats.connections}), 0)`,
@@ -757,11 +757,11 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
     conds.push(sql`${trafficStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
-  const bucketExpr = sql`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+  const bucketExpr = sql.raw(`("recordedAt" / ${bucketSec}) * ${bucketSec}`);
 
   const rows = await db
     .select({
-      bucket: sql<number>`(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
+      bucket: sql<number>`${bucketExpr}`,
       bytesIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
       bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
     })
@@ -1100,11 +1100,11 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     conds.push(sql`${tcpingStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
-  const bucketExpr = sql`(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec}`;
+  const bucketExpr = sql.raw(`("recordedAt" / ${bucketSec}) * ${bucketSec}`);
 
   const rows = await db
     .select({
-      bucket: sql<number>`(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec}`,
+      bucket: sql<number>`${bucketExpr}`,
       avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
       maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
       minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
