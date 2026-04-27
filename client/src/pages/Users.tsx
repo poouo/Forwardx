@@ -97,6 +97,10 @@ function UsersContent() {
   const [canAddRules, setCanAddRules] = useState(false);
   const [maxRules, setMaxRules] = useState(0);
   const [maxPorts, setMaxPorts] = useState(0);
+  // 允许使用的转发方式：默认三种全部允许
+  const [allowIptables, setAllowIptables] = useState(true);
+  const [allowRealm, setAllowRealm] = useState(true);
+  const [allowSocat, setAllowSocat] = useState(true);
 
   // Agent 权限
   const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
@@ -236,6 +240,16 @@ function UsersContent() {
     setCanAddRules(!!u.canAddRules);
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
+    // 转发方式权限：allowedForwardTypes 为 null/空串 表示全部允许
+    const allowedRaw = (u.allowedForwardTypes as string | null) || "";
+    if (!allowedRaw.trim()) {
+      setAllowIptables(true); setAllowRealm(true); setAllowSocat(true);
+    } else {
+      const set = new Set(allowedRaw.split(",").map((s: string) => s.trim()));
+      setAllowIptables(set.has("iptables"));
+      setAllowRealm(set.has("realm"));
+      setAllowSocat(set.has("socat"));
+    }
     setAllowedHostIds([]);
     setShowTrafficSettings(true);
   };
@@ -243,6 +257,12 @@ function UsersContent() {
   const handleSaveTrafficSettings = () => {
     if (!trafficUserId) return;
     const limitBytes = parseTrafficInputGB(trafficLimitInput);
+    // 拼接转发方式权限：三种都允许时传 null（后端为 null 表示全部）
+    const allowed: string[] = [];
+    if (allowIptables) allowed.push("iptables");
+    if (allowRealm) allowed.push("realm");
+    if (allowSocat) allowed.push("socat");
+    const allowedForwardTypes = allowed.length === 3 ? null : allowed.join(",");
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       trafficLimit: limitBytes,
@@ -252,6 +272,7 @@ function UsersContent() {
       canAddRules,
       maxRules,
       maxPorts,
+      allowedForwardTypes,
     });
     // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
     updateHostPermsMutation.mutate({
@@ -645,6 +666,25 @@ function UsersContent() {
                     placeholder="0=不限制"
                   />
                   <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">允许使用的转发方式</Label>
+                <p className="text-xs text-muted-foreground">全部关闭会被视为「默认全部允许」。建议至少保留一种。</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
+                    <span className="text-xs font-medium">iptables</span>
+                    <Switch checked={allowIptables} onCheckedChange={setAllowIptables} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
+                    <span className="text-xs font-medium">realm</span>
+                    <Switch checked={allowRealm} onCheckedChange={setAllowRealm} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
+                    <span className="text-xs font-medium">socat</span>
+                    <Switch checked={allowSocat} onCheckedChange={setAllowSocat} />
+                  </div>
                 </div>
               </div>
             </TabsContent>

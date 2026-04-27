@@ -201,6 +201,7 @@ export async function initDatabase() {
       `ALTER TABLE users ADD COLUMN maxRules INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN maxPorts INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE hosts ADD COLUMN entryIp TEXT`,
+      `ALTER TABLE users ADD COLUMN allowedForwardTypes TEXT`,
     ];
 
     // 创建用户-主机权限表
@@ -387,6 +388,7 @@ export async function updateUserTrafficSettings(userId: number, data: {
   canAddRules?: boolean;
   maxRules?: number;
   maxPorts?: number;
+  allowedForwardTypes?: string | null;
 }) {
   const db = await getDb();
   if (!db) return;

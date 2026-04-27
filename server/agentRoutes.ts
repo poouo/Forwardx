@@ -20,20 +20,22 @@ const agentRouter = Router();
  *   - 未加密请求从原路走（向后兼容老 Agent）
  */
 function agentEncryptionMiddleware(req: Request, res: Response, next: NextFunction) {
+  // 严格要求：所有 /api/agent/* POST 请求必须为加密会话
   const encHeader = req.header("X-Agent-Encrypted");
-  const isEnc = encHeader === "1" && isEncryptedEnvelope(req.body);
-  if (!isEnc) {
-    next();
+  if (encHeader !== "1" || !isEncryptedEnvelope(req.body)) {
+    res.status(401).json({
+      error: "Encrypted communication required",
+      hint: "This server only accepts AES-256-CTR + HMAC-SHA256 encrypted requests. Please upgrade your Agent.",
+    });
     return;
   }
 
-  // 提取 token：优先从 Authorization: Bearer（后多数接口使用），其次从加密信封附加字段
+  // 提取 token：优先从 Authorization: Bearer，其次从加密信封附加字段
   let token: string | undefined;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     token = authHeader.substring(7);
   } else if ((req.body as any).k && typeof (req.body as any).k === "string") {
-    // register 接口没有 Authorization，允许在信封外层携带 "k" 字段带 token
     token = (req.body as any).k;
   }
   if (!token) {
@@ -164,6 +166,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const ipIfMissingT = (table: string, rule: string) =>
       `iptables -t ${table} -C ${rule} 2>/dev/null || iptables -t ${table} -A ${rule}`;
 
+    /**
+     * 为转发规则创建一对 mangle 计数链以跨转发方式采集准确流量。
+     * - FWX_IN_<port>：匹配 dport=<port> 的入站包（客户端→Agent）
+     * - FWX_OUT_<port>：匹配 sport=<port> 的出站包（Agent→客户端响应）
+     * 不设 RETURN，所以只作计数不影响路由。三种转发方式都会经过 mangle 表，覆盖 100% 路径。
+     */
+    const buildCountingChainCmds = (port: number): string[] => {
+      const inCh = `FWX_IN_${port}`;
+      const outCh = `FWX_OUT_${port}`;
+      return [
+        // 创建链（如已存在则忽略）
+        `iptables -t mangle -N ${inCh} 2>/dev/null || true`,
+        `iptables -t mangle -N ${outCh} 2>/dev/null || true`,
+        // 挂入（使用 -C 防重）
+        `iptables -t mangle -C PREROUTING -p tcp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p tcp --dport ${port} -j ${inCh}`,
+        `iptables -t mangle -C PREROUTING -p udp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p udp --dport ${port} -j ${inCh}`,
+        `iptables -t mangle -C POSTROUTING -p tcp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p tcp --sport ${port} -j ${outCh}`,
+        `iptables -t mangle -C POSTROUTING -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p udp --sport ${port} -j ${outCh}`,
+      ];
+    };
+
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
 
@@ -203,6 +226,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             cmds.push(ipIfMissing(`FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT`));
             cmds.push(ipIfMissing(`FORWARD -p udp -s ${rule.targetIp} --sport ${rule.targetPort} -j ACCEPT`));
           }
+          // 挂入 mangle 计数链，为 Agent 采样提供准确流量计数器
+          for (const c of buildCountingChainCmds(rule.sourcePort)) cmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "apply",
@@ -251,6 +276,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `systemctl daemon-reload`,
               `systemctl enable ${svcName}.service`,
               `systemctl restart ${svcName}.service`,
+              // 同时为该端口挂入 mangle 计数链，保证 realm 转发也能被准确统计
+              ...buildCountingChainCmds(rule.sourcePort),
             ],
           });
         } else if (rule.forwardType === "socat") {
@@ -300,6 +327,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "WantedBy=multi-user.target",
               "",
             ].join("\n");
+            // socat both 模式下为该端口挂入 mangle 计数链
+            for (const c of buildCountingChainCmds(rule.sourcePort)) socatCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -334,6 +363,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "WantedBy=multi-user.target",
               "",
             ].join("\n");
+            // socat 单协议模式下为该端口挂入 mangle 计数链
+            for (const c of buildCountingChainCmds(rule.sourcePort)) socatCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -939,18 +970,19 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'if [ "$(id -u)" -ne 0 ]; then echo "[错误] 必须以 root 运行"; exit 1; fi',
     'if command -v apt-get >/dev/null 2>&1; then',
     '  export DEBIAN_FRONTEND=noninteractive',
-    '  apt-get update -qq && apt-get install -y -qq curl jq socat iptables iproute2 coreutils tar systemd >/dev/null 2>&1 || true',
+    '  apt-get update -qq && apt-get install -y -qq curl jq socat iptables iproute2 coreutils tar systemd openssl xxd >/dev/null 2>&1 || \\',
+    '    apt-get install -y -qq curl jq socat iptables iproute2 coreutils tar systemd openssl vim-common >/dev/null 2>&1 || true',
     'elif command -v dnf >/dev/null 2>&1; then',
-    '  dnf install -y -q curl jq socat iptables iproute coreutils tar systemd >/dev/null 2>&1 || true',
+    '  dnf install -y -q curl jq socat iptables iproute coreutils tar systemd openssl vim-common >/dev/null 2>&1 || true',
     'elif command -v yum >/dev/null 2>&1; then',
-    '  yum install -y -q curl jq socat iptables iproute coreutils tar systemd >/dev/null 2>&1 || true',
+    '  yum install -y -q curl jq socat iptables iproute coreutils tar systemd openssl vim-common >/dev/null 2>&1 || true',
     'elif command -v zypper >/dev/null 2>&1; then',
-    '  zypper -n install curl jq socat iptables iproute2 coreutils tar systemd >/dev/null 2>&1 || true',
+    '  zypper -n install curl jq socat iptables iproute2 coreutils tar systemd openssl vim >/dev/null 2>&1 || true',
     'elif command -v apk >/dev/null 2>&1; then',
-    '  apk add --no-cache curl jq socat iptables iproute2 coreutils tar openrc >/dev/null 2>&1 || true',
+    '  apk add --no-cache curl jq socat iptables iproute2 coreutils tar openrc openssl xxd >/dev/null 2>&1 || true',
     'fi',
-    'for B in curl jq iptables base64; do',
-    '  if ! command -v $B >/dev/null 2>&1; then echo "[错误] 未能安装依赖: $B"; exit 1; fi',
+    'for B in curl jq iptables base64 openssl xxd; do',
+    '  if ! command -v $B >/dev/null 2>&1; then echo "[错误] 未能安装依赖: $B，该依赖是加密通讯必需"; exit 1; fi',
     'done',
     '',
     'echo "[步骤 2/5] 安装 realm 与启用内核转发..."',
@@ -1060,29 +1092,27 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  printf \'{"v":1,"iv":"%s","ct":"%s","mac":"%s","ts":%s}\' "$IV_HEX" "$CT_HEX" "$MAC_HEX" "$TS_MS"',
     '}',
     '',
-    '# 发送 POST 请求。优先加密，不可用或失败时回退明文。',
+    '# 发送 POST 请求（强制加密，不提供明文回退）。',
     '# 用法: agent_post <path> <plaintext_json> [extra_curl_args...]',
     'agent_post() {',
     '  local PATH_="$1"; shift',
     '  local PLAIN="$1"; shift',
     '  local URL="${PANEL_URL}${PATH_}"',
-    '  if [ "$ENCRYPTION_AVAILABLE" = "1" ]; then',
-    '    local ENV_JSON',
-    '    ENV_JSON=$(fwx_encrypt_envelope "$PLAIN" 2>/dev/null) || ENV_JSON=""',
-    '    if [ -n "$ENV_JSON" ]; then',
-    '      curl -s --max-time 10 -X POST "$URL" \\',
-    '        -H "Content-Type: application/json" \\',
-    '        -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '        -H "X-Agent-Encrypted: 1" \\',
-    '        -d "$ENV_JSON" "$@"',
-    '      return $?',
-    '    fi',
+    '  if [ "$ENCRYPTION_AVAILABLE" != "1" ]; then',
+    '    log ERROR "[crypto] openssl/xxd 不可用，无法加密。Agent 必须在加密模式下运行。"',
+    '    return 1',
     '  fi',
-    '  # 明文回退（为老面板或 openssl 不可用时兼容）',
+    '  local ENV_JSON',
+    '  ENV_JSON=$(fwx_encrypt_envelope "$PLAIN" 2>/dev/null) || ENV_JSON=""',
+    '  if [ -z "$ENV_JSON" ]; then',
+    '    log ERROR "[crypto] 加密信封生成失败"',
+    '    return 1',
+    '  fi',
     '  curl -s --max-time 10 -X POST "$URL" \\',
     '    -H "Content-Type: application/json" \\',
     '    -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '    -d "$PLAIN" "$@"',
+    '    -H "X-Agent-Encrypted: 1" \\',
+    '    -d "$ENV_JSON" "$@"',
     '}',
     '',
     '# 自动检测默认出口网卡',
@@ -1146,7 +1176,21 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  fi',
     '}',
     '',
-    '# 从 conntrack 表中采集指定端口的流量（累计值）',
+    '# 从 iptables mangle 计数链采集指定端口的累计流量',
+    '# 返回: bytesIn bytesOut（connections 从 conntrack 补充）',
+    '# 友于 mangle 链上包含 TCP+UDP 两条规则，其 packet/byte counter 是内核累计值，',
+    '# 不受 conntrack 过期/重启影响，三种转发方式都能被覆盖。',
+    'sample_iptables_counters() {',
+    '  PORT="$1"',
+    '  IN_CH="FWX_IN_${PORT}"',
+    '  OUT_CH="FWX_OUT_${PORT}"',
+    '  # iptables -nvxL 输出中，某条规则的中衡量以 "pkts bytes" 开头，取 $2 为 bytes',
+    '  IN_BYTES=$(iptables -t mangle -nvxL "$IN_CH" 2>/dev/null | awk \'NR>2 {s+=$2} END {print s+0}\')',
+    '  OUT_BYTES=$(iptables -t mangle -nvxL "$OUT_CH" 2>/dev/null | awk \'NR>2 {s+=$2} END {print s+0}\')',
+    '  echo "${IN_BYTES:-0} ${OUT_BYTES:-0}"',
+    '}',
+    '',
+    '# 从 conntrack 表中采集指定端口的流量（累计值，作为备用源与 connections 计数源）',
     '# 返回: bytesIn bytesOut conns',
     'sample_conntrack() {',
     '  PORT="$1"',
@@ -1414,11 +1458,18 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    RID_FILE="$STATE_DIR/port_${PORT}.rule"',
     '    [ -f "$RID_FILE" ] || continue',
     '    RID=$(cat "$RID_FILE")',
-    '    # 采集当前累计值',
-    '    SAMPLE=$(sample_conntrack "$PORT")',
-    '    CUR_IN=$(echo "$SAMPLE" | awk \'{print $1}\')',
-    '    CUR_OUT=$(echo "$SAMPLE" | awk \'{print $2}\')',
-    '    CUR_CONNS=$(echo "$SAMPLE" | awk \'{print $3}\')',
+    '    # 采集当前累计值：优先使用 iptables 计数链（跨转发方式准确），conntrack 补充连接数与作为双保险',
+    '    IPT_SAMPLE=$(sample_iptables_counters "$PORT")',
+    '    IPT_IN=$(echo "$IPT_SAMPLE" | awk \'{print $1+0}\')',
+    '    IPT_OUT=$(echo "$IPT_SAMPLE" | awk \'{print $2+0}\')',
+    '    CT_SAMPLE=$(sample_conntrack "$PORT")',
+    '    CT_IN=$(echo "$CT_SAMPLE" | awk \'{print $1+0}\')',
+    '    CT_OUT=$(echo "$CT_SAMPLE" | awk \'{print $2+0}\')',
+    '    CT_CONNS=$(echo "$CT_SAMPLE" | awk \'{print $3+0}\')',
+    '    # 取两源较大值作为实际累计：安全底、不漏流量',
+    '    if [ "$IPT_IN" -ge "$CT_IN" ] 2>/dev/null; then CUR_IN=$IPT_IN; else CUR_IN=$CT_IN; fi',
+    '    if [ "$IPT_OUT" -ge "$CT_OUT" ] 2>/dev/null; then CUR_OUT=$IPT_OUT; else CUR_OUT=$CT_OUT; fi',
+    '    CUR_CONNS=$CT_CONNS',
     '    # 读取上次累计值',
     '    PREV_FILE="$STATE_DIR/traffic_${PORT}.prev"',
     '    PREV_IN=0; PREV_OUT=0; PREV_CONNS=0',
@@ -1591,29 +1642,29 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  --arg mem "$MEM_TOTAL_BYTES" \\',
     "  '{token: $token, ip: $ip, osInfo: $os, cpuInfo: $cpu, memoryTotal: ($mem|tonumber)}')",
     '',
-    '# 注册接口同样走加密会话',
+    '# 注册接口必须使用加密会话，不提供明文回退',
     'register_with_panel() {',
-    '  if command -v openssl >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then',
-    '    KEY_ENC_HEX=$(printf "%s|forwardx-agent-v1" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
-    '    KEY_MAC_HEX=$(printf "%s|forwardx-agent-mac" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
-    '    IV_HEX=$(openssl rand -hex 16)',
-    '    CT_HEX=$(printf "%s" "$REGISTER_PAYLOAD" | openssl enc -aes-256-ctr -K "$KEY_ENC_HEX" -iv "$IV_HEX" 2>/dev/null | xxd -p -c 99999 | tr -d "\n")',
-    '    TS_MS=$(($(date +%s%N) / 1000000))',
-    '    TS_HEX=$(printf "%016x" "$TS_MS")',
-    '    MAC_HEX=$(printf "7631%s%s%s" "$IV_HEX" "$CT_HEX" "$TS_HEX" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$KEY_MAC_HEX" 2>/dev/null | awk \'{print $NF}\')',
-    '    ENV_JSON=$(printf \'{"v":1,"iv":"%s","ct":"%s","mac":"%s","ts":%s}\' "$IV_HEX" "$CT_HEX" "$MAC_HEX" "$TS_MS")',
-    '    if [ -n "$ENV_JSON" ]; then',
-    '      curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/register" \\',
-    '        -H "Content-Type: application/json" \\',
-    '        -H "Authorization: Bearer $AGENT_TOKEN" \\',
-    '        -H "X-Agent-Encrypted: 1" \\',
-    '        -d "$ENV_JSON"',
-    '      return',
-    '    fi',
+    '  if ! command -v openssl >/dev/null 2>&1 || ! command -v xxd >/dev/null 2>&1; then',
+    '    echo "[错误] openssl/xxd 不可用，无法以加密模式注册。请先安装依赖。"',
+    '    exit 1',
+    '  fi',
+    '  KEY_ENC_HEX=$(printf "%s|forwardx-agent-v1" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
+    '  KEY_MAC_HEX=$(printf "%s|forwardx-agent-mac" "$AGENT_TOKEN" | openssl dgst -sha256 -hex 2>/dev/null | awk \'{print $NF}\')',
+    '  IV_HEX=$(openssl rand -hex 16)',
+    '  CT_HEX=$(printf "%s" "$REGISTER_PAYLOAD" | openssl enc -aes-256-ctr -K "$KEY_ENC_HEX" -iv "$IV_HEX" 2>/dev/null | xxd -p -c 99999 | tr -d "\n")',
+    '  TS_MS=$(($(date +%s%N) / 1000000))',
+    '  TS_HEX=$(printf "%016x" "$TS_MS")',
+    '  MAC_HEX=$(printf "7631%s%s%s" "$IV_HEX" "$CT_HEX" "$TS_HEX" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$KEY_MAC_HEX" 2>/dev/null | awk \'{print $NF}\')',
+    '  ENV_JSON=$(printf \'{"v":1,"iv":"%s","ct":"%s","mac":"%s","ts":%s}\' "$IV_HEX" "$CT_HEX" "$MAC_HEX" "$TS_MS")',
+    '  if [ -z "$ENV_JSON" ]; then',
+    '    echo "[错误] 注册加密信封生成失败"',
+    '    exit 1',
     '  fi',
     '  curl -s --max-time 10 -X POST "$PANEL_URL/api/agent/register" \\',
     '    -H "Content-Type: application/json" \\',
-    '    -d "$REGISTER_PAYLOAD"',
+    '    -H "Authorization: Bearer $AGENT_TOKEN" \\',
+    '    -H "X-Agent-Encrypted: 1" \\',
+    '    -d "$ENV_JSON"',
     '}',
     'register_with_panel',
     '',

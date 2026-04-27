@@ -251,7 +251,7 @@ function DashboardContent() {
                     tick={{ fontSize: 9 }}
                     tickFormatter={(v) => formatBytes(v)}
                     width={60}
-                    domain={[0, (dataMax: number) => Math.ceil((dataMax || 1) * 1.15)]}
+                    domain={[0, (dataMax: number) => Math.max(1024, Math.ceil((dataMax || 0) * 1.15))]}
                     allowDecimals={false}
                   />
                   <RTooltip

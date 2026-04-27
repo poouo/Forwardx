@@ -340,6 +340,21 @@ function RulesContent() {
     return hosts?.find((h) => h.id === hostId)?.name || `主机 #${hostId}`;
   };
 
+  /**
+   * 当前用户被允许使用的转发方式。
+   * - 管理员：不受限制（返回全部）
+   * - 普通用户：读 (user as any).allowedForwardTypes，空表示全部
+   */
+  const allowedForwardTypes: Array<"iptables" | "realm" | "socat"> = useMemo(() => {
+    const all: Array<"iptables" | "realm" | "socat"> = ["iptables", "realm", "socat"];
+    if (!user || user.role === "admin") return all;
+    const raw = (user as any).allowedForwardTypes as string | null | undefined;
+    if (!raw || !raw.trim()) return all;
+    const set = new Set(raw.split(",").map((s: string) => s.trim()));
+    const filtered = all.filter(t => set.has(t));
+    return filtered.length > 0 ? filtered : all;
+  }, [user]);
+
   /** 获取主机的入口地址：优先用用户自定义的 entryIp，未填则回退 ip */
   const getHostEntry = (hostId: number): string => {
     const h: any = hosts?.find((x) => x.id === hostId);
@@ -718,9 +733,9 @@ function RulesContent() {
                 <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="iptables">iptables</SelectItem>
-                    <SelectItem value="realm">realm</SelectItem>
-                    <SelectItem value="socat">socat</SelectItem>
+                    {allowedForwardTypes.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -891,7 +906,7 @@ function TrafficDetailDialog({
                   tick={{ fontSize: 10 }}
                   tickFormatter={(v) => formatBytes(v)}
                   width={70}
-                  domain={[0, (dataMax: number) => Math.ceil((dataMax || 1) * 1.15)]}
+                  domain={[0, (dataMax: number) => Math.max(1024, Math.ceil((dataMax || 0) * 1.15))]}
                   allowDecimals={false}
                 />
                 <RTooltip

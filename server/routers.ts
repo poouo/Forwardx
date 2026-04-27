@@ -324,12 +324,20 @@ export const appRouter = router({
         canAddRules: z.boolean().optional(),
         maxRules: z.number().min(0).optional(),
         maxPorts: z.number().min(0).optional(),
+        // 逗号分隔的转发方式列表；null 为全部允许
+        allowedForwardTypes: z.string().nullable().optional(),
       }))
       .mutation(async ({ input }) => {
-        const { userId, expiresAt, ...rest } = input;
+        const { userId, expiresAt, allowedForwardTypes, ...rest } = input;
         const data: any = { ...rest };
         if (expiresAt !== undefined) {
           data.expiresAt = expiresAt ? new Date(expiresAt) : null;
+        }
+        if (allowedForwardTypes !== undefined) {
+          // 所有三种都允许时存 null 表示默认全部
+          const set = new Set((allowedForwardTypes || "").split(",").map(s => s.trim()).filter(Boolean));
+          const valid = ["iptables", "realm", "socat"].filter(t => set.has(t));
+          data.allowedForwardTypes = valid.length === 0 || valid.length === 3 ? null : valid.join(",");
         }
         await db.updateUserTrafficSettings(userId, data);
         return { success: true };
@@ -492,6 +500,16 @@ export const appRouter = router({
         // 权限检查：管理员或有 canAddRules 权限的用户
         if (ctx.user.role !== "admin" && !ctx.user.canAddRules) {
           throw new Error("您没有添加转发规则的权限，请联系管理员开通");
+        }
+        // 转发方式权限检查：非管理员需在 allowedForwardTypes 列表中
+        if (ctx.user.role !== "admin") {
+          const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
+          if (allowedRaw && allowedRaw.trim()) {
+            const allowed = new Set(allowedRaw.split(",").map(s => s.trim()).filter(Boolean));
+            if (!allowed.has(input.forwardType)) {
+              throw new Error(`您没有使用 ${input.forwardType} 转发方式的权限，请联系管理员`);
+            }
+          }
         }
         const host = await db.getHostById(input.hostId);
         if (!host) throw new Error("主机不存在");
