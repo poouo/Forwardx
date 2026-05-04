@@ -373,11 +373,11 @@ export const appRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       if (isAdmin) return db.getHosts();
-      // 普通用户：返回管理员授权的主机列表
+      // 普通用户：返回自己创建的主机 + 管理员授权的主机
       const allowedHostIds = await db.getUserAllowedHostIds(ctx.user.id);
-      if (allowedHostIds.length === 0) return [];
       const allHosts = await db.getHosts();
-      return allHosts.filter(h => allowedHostIds.includes(h.id));
+      const allowedSet = new Set(allowedHostIds);
+      return allHosts.filter(h => allowedSet.has(h.id) || h.userId === ctx.user.id);
     }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
     listAll: adminProcedure.query(async () => {
@@ -388,7 +388,12 @@ export const appRouter = router({
       .query(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);
         if (!host) return null;
-        if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) return null;
+        if (ctx.user.role !== "admin") {
+          if (host.userId !== ctx.user.id) {
+            const hasPermission = await db.checkUserHostPermission(ctx.user.id, host.id);
+            if (!hasPermission) return null;
+          }
+        }
         return host;
       }),
     create: protectedProcedure

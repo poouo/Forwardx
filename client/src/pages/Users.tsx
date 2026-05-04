@@ -119,7 +119,7 @@ function UsersContent() {
   // 当权限数据加载完成后同步到状态
   useEffect(() => {
     if (userHostPerms) {
-      setAllowedHostIds(userHostPerms.map((p: any) => p.hostId));
+      setAllowedHostIds([...userHostPerms]);
     }
   }, [userHostPerms]);
 

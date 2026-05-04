@@ -48,6 +48,7 @@ import {
   List,
 } from "lucide-react";
 import { useState, useMemo } from "react";
+import { useLocation } from "wouter";
 import { toast } from "sonner";
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -218,6 +219,7 @@ function HostCard({
 
 function HostsContent() {
   const { user } = useAuth();
+  const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const { data: hosts, isLoading } = trpc.hosts.list.useQuery(undefined, {
     refetchInterval: 15000,
@@ -362,7 +364,7 @@ function HostsContent() {
               <List className="h-4 w-4" />
             </Button>
           </div>
-          <Button onClick={openCreate} className="gap-2">
+          <Button onClick={() => setLocation("/settings")} className="gap-2">
             <Plus className="h-4 w-4" />
             添加主机
           </Button>
@@ -499,12 +501,8 @@ function HostsContent() {
           </div>
           <p className="text-lg font-medium">暂无主机</p>
           <p className="text-sm mt-1 text-muted-foreground/60">
-            添加主控机或被控机开始管理
+            请联系管理员添加主机
           </p>
-          <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
-            <Plus className="h-4 w-4" />
-            添加第一台主机
-          </Button>
         </div>
       )}
 
