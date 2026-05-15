@@ -261,7 +261,7 @@ function DashboardContent() {
           </div>
           <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1 mt-1">
             <Info className="h-3 w-3" />
-            iptables 转发的流量统计最为准确，其他转发方式 (realm/socat) 的流量统计可能存在偏差
+            iptables 转发的流量统计最为准确，其他转发方式 (realm/socat/gost) 的流量统计可能存在偏差
           </p>
         </CardHeader>
         <CardContent>

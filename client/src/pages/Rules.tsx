@@ -50,7 +50,9 @@ import {
   Shuffle,
   AlertCircle,
   Copy,
+  Network,
 } from "lucide-react";
+import { FORWARD_TYPES, FORWARD_TYPE_LABELS, type ForwardType } from "@shared/forwardTypes";
 import {
   ComposedChart,
   Line,
@@ -82,7 +84,7 @@ function formatBytes(n: number): string {
 type RuleFormData = {
   hostId: number | null;
   name: string;
-  forwardType: "iptables" | "realm" | "socat";
+  forwardType: ForwardType;
   protocol: "tcp" | "udp" | "both";
   sourcePort: number;
   targetIp: string;
@@ -347,8 +349,8 @@ function RulesContent() {
    * - 管理员：不受限制（返回全部）
    * - 普通用户：读 (user as any).allowedForwardTypes，空表示全部
    */
-  const allowedForwardTypes: Array<"iptables" | "realm" | "socat"> = useMemo(() => {
-    const all: Array<"iptables" | "realm" | "socat"> = ["iptables", "realm", "socat"];
+  const allowedForwardTypes: ForwardType[] = useMemo(() => {
+    const all = [...FORWARD_TYPES];
     if (!user || user.role === "admin") return all;
     const raw = (user as any).allowedForwardTypes as string | null | undefined;
     if (!raw || !raw.trim()) return all;
@@ -398,7 +400,7 @@ function RulesContent() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">转发规则</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
-            管理端口转发规则，支持 iptables、realm 和 socat
+            管理端口转发规则，支持 iptables、realm、socat 和 gost
           </p>
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
@@ -453,6 +455,7 @@ function RulesContent() {
               <SelectItem value="iptables">iptables</SelectItem>
               <SelectItem value="realm">realm</SelectItem>
               <SelectItem value="socat">socat</SelectItem>
+              <SelectItem value="gost">gost</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -556,6 +559,8 @@ function RulesContent() {
                               ? "border-primary/30 text-primary"
                               : rule.forwardType === "socat"
                               ? "border-chart-5/30 text-chart-5"
+                              : rule.forwardType === "gost"
+                              ? "border-chart-4/30 text-chart-4"
                               : "border-chart-3/30 text-chart-3"
                           }`}
                         >
@@ -563,6 +568,8 @@ function RulesContent() {
                             <><Shield className="h-3 w-3 mr-1" />iptables</>
                           ) : rule.forwardType === "socat" ? (
                             <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
+                          ) : rule.forwardType === "gost" ? (
+                            <><Network className="h-3 w-3 mr-1" />gost</>
                           ) : (
                             <><Zap className="h-3 w-3 mr-1" />realm</>
                           )}
@@ -736,7 +743,7 @@ function RulesContent() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {allowedForwardTypes.map((t) => (
-                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                      <SelectItem key={t} value={t}>{FORWARD_TYPE_LABELS[t]}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

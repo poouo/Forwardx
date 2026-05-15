@@ -8,6 +8,9 @@ import jwt from "jsonwebtoken";
 import { ENV } from "./env";
 import * as db from "./db";
 import { generateFullInstallScript } from "./agentRoutes";
+import { FORWARD_TYPES } from "../shared/forwardTypes";
+
+const forwardTypeSchema = z.enum(FORWARD_TYPES);
 
 // ==================== 验证码系统 ====================
 interface CaptchaEntry { question: string; answer: number; expiresAt: number; }
@@ -385,8 +388,8 @@ export const appRouter = router({
         if (allowedForwardTypes !== undefined) {
           // null 表示全部允许；空字符串表示全部禁用。
           const set = new Set((allowedForwardTypes ?? "").split(",").map(s => s.trim()).filter(Boolean));
-          const valid = ["iptables", "realm", "socat"].filter(t => set.has(t));
-          data.allowedForwardTypes = allowedForwardTypes === null || valid.length === 3 ? null : valid.join(",");
+          const valid = FORWARD_TYPES.filter(t => set.has(t));
+          data.allowedForwardTypes = allowedForwardTypes === null || valid.length === FORWARD_TYPES.length ? null : valid.join(",");
         }
         await db.updateUserTrafficSettings(userId, data);
         return { success: true };
@@ -556,7 +559,7 @@ export const appRouter = router({
       .input(z.object({
         hostId: z.number(),
         name: z.string().min(1).max(128),
-        forwardType: z.enum(["iptables", "realm", "socat"]).default("iptables"),
+        forwardType: forwardTypeSchema.default("iptables"),
         protocol: z.enum(["tcp", "udp", "both"]).default("tcp"),
         sourcePort: z.number().min(0).max(65535), // 0 = 随机分配
         targetIp: z.string().min(1).max(64),
@@ -638,7 +641,7 @@ export const appRouter = router({
       .input(z.object({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
-        forwardType: z.enum(["iptables", "realm", "socat"]).optional(),
+        forwardType: forwardTypeSchema.optional(),
         protocol: z.enum(["tcp", "udp", "both"]).optional(),
         sourcePort: z.number().min(1).max(65535).optional(),
         targetIp: z.string().min(1).max(64).optional(),

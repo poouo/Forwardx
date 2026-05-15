@@ -204,6 +204,26 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `iptables -t mangle -C POSTROUTING -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p udp --sport ${port} -j ${outCh}`,
       ];
     };
+    const buildCountingCleanupCmds = (port: number): string[] => [
+      `iptables -t mangle -D PREROUTING -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D PREROUTING -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -t mangle -X FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -F FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -X FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -F FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -X FWX_OUT_${port} 2>/dev/null || true`,
+    ];
+    const writeUnitCmd = (svcName: string, unit: string) =>
+      `printf '%s' '${Buffer.from(unit, "utf8").toString("base64")}' | base64 -d > /etc/systemd/system/${svcName}.service`;
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
@@ -397,6 +417,73 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               commands: socatCmds,
             });
           }
+        } else if (rule.forwardType === "gost") {
+          const gostCmds: string[] = [`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`];
+          const buildGostUnit = (svcName: string, proto: "tcp" | "udp") => [
+            "[Unit]",
+            `Description=ForwardX gost ${proto.toUpperCase()} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
+            "After=network.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            `ExecStart=/usr/local/bin/gost -L=${proto}://:${rule.sourcePort}/${rule.targetIp}:${rule.targetPort}`,
+            "Restart=always",
+            "RestartSec=5",
+            "LimitNOFILE=65535",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+          ].join("\n");
+
+          if (rule.protocol === "both") {
+            const svcNameTcp = `forwardx-gost-tcp-${rule.sourcePort}`;
+            const svcNameUdp = `forwardx-gost-udp-${rule.sourcePort}`;
+            const unitTcp = buildGostUnit(svcNameTcp, "tcp");
+            const unitUdp = buildGostUnit(svcNameUdp, "udp");
+            gostCmds.push(writeUnitCmd(svcNameTcp, unitTcp));
+            gostCmds.push(writeUnitCmd(svcNameUdp, unitUdp));
+            gostCmds.push(`systemctl daemon-reload`);
+            gostCmds.push(`systemctl enable ${svcNameTcp}.service 2>/dev/null || true`);
+            gostCmds.push(`systemctl restart ${svcNameTcp}.service`);
+            gostCmds.push(`systemctl enable ${svcNameUdp}.service 2>/dev/null || true`);
+            gostCmds.push(`systemctl restart ${svcNameUdp}.service`);
+            gostCmds.push(...buildCountingChainCmds(rule.sourcePort));
+            actions.push({
+              ruleId: rule.id,
+              op: "apply",
+              forwardType: rule.forwardType,
+              sourcePort: rule.sourcePort,
+              targetIp: rule.targetIp,
+              targetPort: rule.targetPort,
+              protocol: rule.protocol,
+              networkInterface: hostInterface,
+              svcName: svcNameTcp,
+              svcNameExtra: svcNameUdp,
+              commands: gostCmds,
+            });
+          } else {
+            const proto = rule.protocol === "udp" ? "udp" : "tcp";
+            const svcName = `forwardx-gost-${rule.sourcePort}`;
+            const unit = buildGostUnit(svcName, proto);
+            gostCmds.push(writeUnitCmd(svcName, unit));
+            gostCmds.push(`systemctl daemon-reload`);
+            gostCmds.push(`systemctl enable ${svcName}.service 2>/dev/null || true`);
+            gostCmds.push(`systemctl restart ${svcName}.service`);
+            gostCmds.push(...buildCountingChainCmds(rule.sourcePort));
+            actions.push({
+              ruleId: rule.id,
+              op: "apply",
+              forwardType: rule.forwardType,
+              sourcePort: rule.sourcePort,
+              targetIp: rule.targetIp,
+              targetPort: rule.targetPort,
+              protocol: rule.protocol,
+              networkInterface: hostInterface,
+              svcName,
+              commands: gostCmds,
+            });
+          }
         }
       } else if (!rule.isEnabled && rule.isRunning) {
         const cmds: string[] = [];
@@ -518,6 +605,38 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(`iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
           removeCmds.push(`iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
           removeCmds.push(`iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
+          actions.push({
+            ruleId: rule.id,
+            op: "remove",
+            forwardType: rule.forwardType,
+            sourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            protocol: rule.protocol,
+            commands: removeCmds,
+          });
+        } else if (rule.forwardType === "gost") {
+          const removeCmds: string[] = [];
+          if (rule.protocol === "both") {
+            const svcTcp = `forwardx-gost-tcp-${rule.sourcePort}`;
+            const svcUdp = `forwardx-gost-udp-${rule.sourcePort}`;
+            removeCmds.push(`systemctl stop ${svcTcp}.service 2>/dev/null || true`);
+            removeCmds.push(`systemctl disable ${svcTcp}.service 2>/dev/null || true`);
+            removeCmds.push(`rm -f /etc/systemd/system/${svcTcp}.service`);
+            removeCmds.push(`systemctl stop ${svcUdp}.service 2>/dev/null || true`);
+            removeCmds.push(`systemctl disable ${svcUdp}.service 2>/dev/null || true`);
+            removeCmds.push(`rm -f /etc/systemd/system/${svcUdp}.service`);
+          } else {
+            const svcName = `forwardx-gost-${rule.sourcePort}`;
+            removeCmds.push(`systemctl stop ${svcName}.service 2>/dev/null || true`);
+            removeCmds.push(`systemctl disable ${svcName}.service 2>/dev/null || true`);
+            removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
+          }
+          removeCmds.push(`systemctl daemon-reload`);
+          removeCmds.push(`pkill -f "gost .*:${rule.sourcePort}" 2>/dev/null || true`);
+          removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
+          removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
+          removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort));
           actions.push({
             ruleId: rule.id,
             op: "remove",
@@ -863,8 +982,9 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  # 停止转发进程',
     '  pkill -f "realm -l" 2>/dev/null && echo "[信息] 已停止所有 realm 转发进程" || echo "[信息] 无 realm 进程需要停止"',
     '  pkill -f "socat.*LISTEN" 2>/dev/null && echo "[信息] 已停止所有 socat 转发进程" || echo "[信息] 无 socat 进程需要停止"',
-    '  # 清理 socat/realm systemd 服务',
-    '  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service; do',
+    '  pkill -f "gost .*:" 2>/dev/null && echo "[信息] 已停止所有 gost 转发进程" || echo "[信息] 无 gost 进程需要停止"',
+    '  # 清理 socat/realm/gost systemd 服务',
+    '  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service; do',
     '    if [ -f "$SVC" ]; then',
     '      SVCNAME=$(basename "$SVC" .service)',
     '      systemctl stop "$SVCNAME" 2>/dev/null || true',
@@ -928,7 +1048,7 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  echo "  已清理内容:"',
     '  echo "    - Agent 服务和安装目录"',
     '  echo "    - ForwardX 转发规则和流量统计数据"',
-    '  echo "    - realm/socat 转发进程和服务"',
+    '  echo "    - realm/socat/gost 转发进程和服务"',
     '  echo "    - 日志和状态文件"',
     '  echo ""',
     '  echo "  如需重新安装，请使用 install 命令"',
@@ -1107,7 +1227,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '  if ! command -v $B >/dev/null 2>&1; then echo "[错误] 未能安装依赖: $B，该依赖是加密通讯必需"; exit 1; fi',
     'done',
     '',
-    'echo "[步骤 2/5] 安装 realm 与启用内核转发..."',
+    'echo "[步骤 2/5] 安装 realm/gost 与启用内核转发..."',
     '# 开启 conntrack 计数器（流量统计依赖）',
     'sysctl -w net.netfilter.nf_conntrack_acct=1 >/dev/null 2>&1 || true',
     'if ! grep -qE "^\\s*net\\.netfilter\\.nf_conntrack_acct\\s*=\\s*1" /etc/sysctl.conf 2>/dev/null; then',
@@ -1132,11 +1252,38 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    tar -xzf /tmp/realm.tar.gz -C /usr/local/bin/ && \\',
     '    chmod +x /usr/local/bin/realm && \\',
     '    rm -f /tmp/realm.tar.gz && \\',
-    '    echo "[信息] realm 安装成功" || echo "[警告] realm 安装失败，将仅使用 iptables/socat"',
+    '    echo "[信息] realm 安装成功" || echo "[警告] realm 安装失败，将仅使用 iptables/socat/gost"',
     '  fi',
     'else',
     '  echo "[信息] realm 已安装"',
     'fi',
+    'install_gost() {',
+    '  if [ -x /usr/local/bin/gost ] || command -v gost >/dev/null 2>&1; then echo "[信息] gost 已安装"; return 0; fi',
+    '  GOST_VERSION="${GOST_VERSION:-3.2.6}"',
+    '  GOST_VERSION="${GOST_VERSION#v}"',
+    '  ARCH=$(uname -m)',
+    '  case "$ARCH" in',
+    '    x86_64|amd64) GOST_ASSETS="amd64v3 amd64v2 amd64v1 amd64" ;;',
+    '    aarch64|arm64) GOST_ASSETS="arm64" ;;',
+    '    i386|i686) GOST_ASSETS="386" ;;',
+    '    *) echo "[警告] 不支持的架构: $ARCH, 跳过 gost 安装"; return 1 ;;',
+    '  esac',
+    '  TMP=$(mktemp -d)',
+    '  for GOST_ARCH in $GOST_ASSETS; do',
+    '    GOST_URL="https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz"',
+    '    if curl -fsSL --max-time 90 "$GOST_URL" -o "$TMP/gost.tgz"; then',
+    '      tar -xzf "$TMP/gost.tgz" -C "$TMP" && \\',
+    '        GOST_BIN=$(find "$TMP" -type f -name gost | head -n1) && \\',
+    '        [ -n "$GOST_BIN" ] && install -m 0755 "$GOST_BIN" /usr/local/bin/gost && \\',
+    '        rm -rf "$TMP" && \\',
+    '        echo "[信息] gost 安装成功" && return 0',
+    '    fi',
+    '  done',
+    '  rm -rf "$TMP"',
+    '  echo "[警告] gost 安装失败，将仅使用 iptables/realm/socat"',
+    '  return 1',
+    '}',
+    'install_gost || true',
     '',
     'echo "[步骤 3/5] 创建 Agent 程序..."',
     'mkdir -p "$INSTALL_DIR"',
@@ -1271,14 +1418,14 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'check_port_listen() {',
     '  PORT="$1"',
     '  PROTO="$2"   # tcp/udp/both',
-    '  FORWARD_TYPE="$3"  # iptables/realm/socat',
+    '  FORWARD_TYPE="$3"  # iptables/realm/socat/gost',
     '  if [ "$FORWARD_TYPE" = "iptables" ]; then',
     '    if iptables -t nat -S PREROUTING 2>/dev/null | grep -E " --dport ${PORT} " >/dev/null 2>&1; then',
     '      return 0',
     '    fi',
     '    return 1',
     '  fi',
-    '  # realm/socat: 用户态监听检测',
+    '  # realm/socat/gost: 用户态监听检测',
     '  if command -v ss >/dev/null 2>&1; then',
     '    if [ "$PROTO" = "udp" ]; then',
     '      ss -lun 2>/dev/null | awk \'{print $5}\' | grep -E "[:.]${PORT}$" >/dev/null 2>&1 && return 0',
@@ -1618,7 +1765,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    CT_OUT=$(echo "$CT_SAMPLE" | awk \'{print $2+0}\')',
     '    CT_CONNS=$(echo "$CT_SAMPLE" | awk \'{print $3+0}\')',
     '    # iptables 转发方式：直接使用 iptables mangle 计数链数据（官方接口，最准确）',
-    '    # 其他转发方式（realm/socat）：取 iptables 和 conntrack 两源较大值',
+    '    # 其他转发方式（realm/socat/gost）：取 iptables 和 conntrack 两源较大值',
     '    if [ "$FWT" = "iptables" ]; then',
     '      CUR_IN=$IPT_IN',
     '      CUR_OUT=$IPT_OUT',

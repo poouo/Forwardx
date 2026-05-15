@@ -50,6 +50,7 @@ import {
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { FORWARD_TYPES } from "@shared/forwardTypes";
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -101,6 +102,7 @@ function UsersContent() {
   const [allowIptables, setAllowIptables] = useState(true);
   const [allowRealm, setAllowRealm] = useState(true);
   const [allowSocat, setAllowSocat] = useState(true);
+  const [allowGost, setAllowGost] = useState(true);
 
   // Agent 权限
   const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
@@ -243,12 +245,13 @@ function UsersContent() {
     // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
     if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
-      setAllowIptables(true); setAllowRealm(true); setAllowSocat(true);
+      setAllowIptables(true); setAllowRealm(true); setAllowSocat(true); setAllowGost(true);
     } else {
       const set = new Set(allowedRaw.split(",").map((s: string) => s.trim()));
       setAllowIptables(set.has("iptables"));
       setAllowRealm(set.has("realm"));
       setAllowSocat(set.has("socat"));
+      setAllowGost(set.has("gost"));
     }
     setAllowedHostIds([]);
     setShowTrafficSettings(true);
@@ -262,7 +265,8 @@ function UsersContent() {
     if (allowIptables) allowed.push("iptables");
     if (allowRealm) allowed.push("realm");
     if (allowSocat) allowed.push("socat");
-    const allowedForwardTypes = allowed.length === 3 ? null : allowed.join(",");
+    if (allowGost) allowed.push("gost");
+    const allowedForwardTypes = allowed.length === FORWARD_TYPES.length ? null : allowed.join(",");
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       trafficLimit: limitBytes,
@@ -672,7 +676,7 @@ function UsersContent() {
               <div className="space-y-2">
                 <Label className="text-sm font-medium">允许使用的转发方式</Label>
                 <p className="text-xs text-muted-foreground">全部关闭将禁止创建任何转发方式；留空权限时才表示默认全部允许。</p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
                     <span className="text-xs font-medium">iptables</span>
                     <Switch checked={allowIptables} onCheckedChange={setAllowIptables} />
@@ -684,6 +688,10 @@ function UsersContent() {
                   <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
                     <span className="text-xs font-medium">socat</span>
                     <Switch checked={allowSocat} onCheckedChange={setAllowSocat} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
+                    <span className="text-xs font-medium">gost</span>
+                    <Switch checked={allowGost} onCheckedChange={setAllowGost} />
                   </div>
                 </div>
               </div>

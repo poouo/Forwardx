@@ -4,7 +4,7 @@
 
 **Linux 端口转发集中管理面板**
 
-轻量、现代、开箱即用的端口转发管理方案，支持 `iptables`、`realm`、`socat` 三种转发引擎，并通过 Agent 实现多主机统一管理。
+轻量、现代、开箱即用的端口转发管理方案，支持 `iptables`、`realm`、`socat`、`gost` 四种转发引擎，并通过 Agent 实现多主机统一管理。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -17,7 +17,7 @@
 
 ## 功能特性
 
-- 多引擎端口转发：支持 `iptables`、`realm`、`socat`
+- 多引擎端口转发：支持 `iptables`、`realm`、`socat`、`gost`
 - 多主机 Agent 管理：面板通过 Agent 心跳下发规则，不需要 SSH 密钥
 - TCP / UDP / Both 协议支持
 - 规则启停、编辑、删除和运行状态同步
@@ -163,7 +163,7 @@ pnpm dev
 ## 构建 Agent 发布二进制
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.13
+bash scripts/build-agent-release.sh v2.1.14
 ```
 
 产物位于：
