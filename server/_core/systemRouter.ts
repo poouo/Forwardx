@@ -15,8 +15,9 @@ import fs from "fs";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.20";
+export const APP_VERSION = "2.1.21";
 export const AGENT_VERSION = "2.1.19";
+const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 
 type UpdateInfo = {
   currentVersion: string;
@@ -39,6 +40,7 @@ type UpgradeJob = {
 };
 
 let lastUpdateInfo: UpdateInfo | null = null;
+let updateCheckInFlight: Promise<UpdateInfo> | null = null;
 let upgradeJob: UpgradeJob = {
   status: "idle",
   startedAt: null,
@@ -134,6 +136,27 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   }
 }
 
+async function getLatestUpdateInfoCached(): Promise<UpdateInfo> {
+  if (lastUpdateInfo) {
+    const checkedAt = new Date(lastUpdateInfo.checkedAt).getTime();
+    if (Number.isFinite(checkedAt) && Date.now() - checkedAt < UPDATE_CHECK_COOLDOWN_MS) {
+      return lastUpdateInfo;
+    }
+  }
+  if (updateCheckInFlight) {
+    return updateCheckInFlight;
+  }
+  updateCheckInFlight = fetchLatestUpdateInfo()
+    .then((info) => {
+      lastUpdateInfo = info;
+      return info;
+    })
+    .finally(() => {
+      updateCheckInFlight = null;
+    });
+  return updateCheckInFlight;
+}
+
 function appendUpgradeLog(line: string) {
   const text = line.trimEnd();
   if (!text) return;
@@ -210,8 +233,7 @@ export const systemRouter = router({
 
   /** 检查 GitHub 是否有新版本 */
   checkUpdate: adminProcedure.query(async () => {
-    lastUpdateInfo = await fetchLatestUpdateInfo();
-    return lastUpdateInfo;
+    return getLatestUpdateInfoCached();
   }),
 
   /** 获取上次检查结果和升级任务状态 */
@@ -239,7 +261,7 @@ export const systemRouter = router({
         throw new Error("已有升级任务正在执行");
       }
 
-      const update = lastUpdateInfo ?? await fetchLatestUpdateInfo();
+      const update = lastUpdateInfo ?? await getLatestUpdateInfoCached();
       lastUpdateInfo = update;
       const targetVersion = input?.targetVersion || update.latestVersion;
       if (!targetVersion) throw new Error("未找到可升级的目标版本");

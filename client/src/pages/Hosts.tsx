@@ -49,6 +49,7 @@ import {
   Download,
   AlertTriangle,
   Loader2,
+  RefreshCw,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -289,6 +290,8 @@ function HostsContent() {
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
+  const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
+  const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
 
   const createMutation = trpc.hosts.create.useMutation({
@@ -427,6 +430,30 @@ function HostsContent() {
     setUpgradeHost(host);
   };
 
+  const handleCheckAgentUpdate = async () => {
+    const now = Date.now();
+    const cooldownMs = 30 * 1000;
+    const waitMs = cooldownMs - (now - lastAgentUpdateCheck.current);
+    if (waitMs > 0) {
+      toast.info(`检查太频繁，请 ${Math.ceil(waitMs / 1000)} 秒后再试`);
+      return;
+    }
+    try {
+      setCheckingAgentUpdate(true);
+      lastAgentUpdateCheck.current = now;
+      await utils.system.getSettings.invalidate();
+      const latestHosts = await utils.hosts.list.fetch();
+      const latestSettings = await utils.system.getSettings.fetch();
+      const agentVersion = latestSettings?.agentVersion || latestSettings?.version;
+      const count = latestHosts.filter((host: any) => host.agentVersion && agentVersion && compareVersions(host.agentVersion, agentVersion) < 0).length;
+      toast.success(count > 0 ? `发现 ${count} 台 Agent 有新版本` : "Agent 版本检查完成，暂无新版本");
+    } catch (err: any) {
+      toast.error(err?.message || "检查 Agent 更新失败");
+    } finally {
+      setCheckingAgentUpdate(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -449,6 +476,16 @@ function HostsContent() {
               {updateCount} 台发现新版本
             </Badge>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            disabled={checkingAgentUpdate}
+            onClick={handleCheckAgentUpdate}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
+            检查 Agent 更新
+          </Button>
           <div className="flex items-center border border-border/40 rounded-md overflow-hidden">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}

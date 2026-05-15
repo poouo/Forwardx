@@ -854,6 +854,7 @@ function SystemInfoSection() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
   const previousUpgradeStatus = useRef<string | null>(null);
+  const lastPanelUpdateCheck = useRef(0);
 
   useEffect(() => {
     if (settings) {
@@ -900,8 +901,16 @@ function SystemInfoSection() {
   });
 
   const handleCheckUpdate = async () => {
+    const now = Date.now();
+    const cooldownMs = 60 * 1000;
+    const waitMs = cooldownMs - (now - lastPanelUpdateCheck.current);
+    if (waitMs > 0) {
+      toast.info(`检查太频繁，请 ${Math.ceil(waitMs / 1000)} 秒后再试`);
+      return;
+    }
     try {
       setCheckingUpdate(true);
+      lastPanelUpdateCheck.current = now;
       await utils.system.checkUpdate.fetch();
       await refetchUpgradeStatus();
       toast.success("版本检查完成");
