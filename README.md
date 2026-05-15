@@ -160,7 +160,7 @@ pnpm start
 Agent 是 Go 常驻程序。发布新版本前可以本地构建 Linux x86_64 / ARM64 二进制：
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.10
+bash scripts/build-agent-release.sh v2.1.11
 ```
 
 产物位于：
