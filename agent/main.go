@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.19"
+var Version = "2.1.27"
 var upgradeStarted int32
 
 type Config struct {
@@ -336,13 +336,24 @@ func collectTraffic(cfg Config) {
 		prevIn, prevOut := readPrev(port)
 		din, dout := delta(in, prevIn), delta(out, prevOut)
 		writePrev(port, in, out)
-		if din > 0 || dout > 0 {
-			stats = append(stats, map[string]any{"ruleId": ruleID, "bytesIn": din, "bytesOut": dout, "connections": 0})
+		conns := conntrackConnections(port)
+		if din > 0 || dout > 0 || conns > 0 {
+			stats = append(stats, map[string]any{"ruleId": ruleID, "bytesIn": din, "bytesOut": dout, "connections": conns})
 		}
 	}
 	if len(stats) > 0 {
 		_ = post(cfg, "/api/agent/traffic", map[string]any{"stats": stats}, &map[string]any{})
 	}
+}
+
+func conntrackConnections(port string) uint64 {
+	cmd := fmt.Sprintf(`awk -v p="dport=%s" 'index($0,p" ")>0 {c++} END{print c+0}' /proc/net/nf_conntrack 2>/dev/null`, port)
+	out, err := exec.Command("sh", "-lc", cmd).Output()
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+	return v
 }
 
 func iptablesBytes(chain string) uint64 {

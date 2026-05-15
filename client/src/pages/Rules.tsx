@@ -86,6 +86,9 @@ type RuleFormData = {
   name: string;
   forwardType: ForwardType;
   protocol: "tcp" | "udp" | "both";
+  gostMode: "direct" | "reverse";
+  gostRelayHost: string;
+  gostRelayPort: number;
   sourcePort: number;
   targetIp: string;
   targetPort: number;
@@ -96,6 +99,9 @@ const defaultForm: RuleFormData = {
   name: "",
   forwardType: "iptables",
   protocol: "tcp",
+  gostMode: "direct",
+  gostRelayHost: "",
+  gostRelayPort: 0,
   sourcePort: 0,
   targetIp: "",
   targetPort: 0,
@@ -214,6 +220,9 @@ function RulesContent() {
       name: rule.name,
       forwardType: rule.forwardType,
       protocol: rule.protocol,
+      gostMode: rule.gostMode || "direct",
+      gostRelayHost: rule.gostRelayHost || "",
+      gostRelayPort: rule.gostRelayPort || 0,
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
@@ -300,6 +309,10 @@ function RulesContent() {
       toast.error("请填写所有必填字段（目标端口必须填写）");
       return;
     }
+    if (form.forwardType === "gost" && form.gostMode === "reverse" && (!form.gostRelayHost || !form.gostRelayPort)) {
+      toast.error("请填写 gost 反向隧道的中继地址和端口");
+      return;
+    }
     if (portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
       return;
@@ -310,6 +323,9 @@ function RulesContent() {
         name: form.name,
         forwardType: form.forwardType,
         protocol: form.protocol,
+        gostMode: form.forwardType === "gost" ? form.gostMode : "direct",
+        gostRelayHost: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayHost : null,
+        gostRelayPort: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayPort : null,
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
@@ -320,6 +336,9 @@ function RulesContent() {
         name: form.name,
         forwardType: form.forwardType,
         protocol: form.protocol,
+        gostMode: form.forwardType === "gost" ? form.gostMode : "direct",
+        gostRelayHost: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayHost : null,
+        gostRelayPort: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayPort : null,
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
@@ -739,7 +758,7 @@ function RulesContent() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>转发工具</Label>
-                <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any })}>
+                <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: v === "gost" ? form.gostMode : "direct" })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {allowedForwardTypes.map((t) => (
@@ -808,6 +827,49 @@ function RulesContent() {
                 </p>
               </div>
             </div>
+
+            {form.forwardType === "gost" && (
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>gost 模式</Label>
+                    <Select value={form.gostMode} onValueChange={(v) => setForm({ ...form, gostMode: v as any })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="direct">端口转发</SelectItem>
+                        <SelectItem value="reverse">反向隧道</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.gostMode === "reverse" && (
+                    <>
+                      <div className="space-y-2">
+                        <Label>中继地址</Label>
+                        <Input
+                          placeholder="例如: relay.example.com"
+                          value={form.gostRelayHost}
+                          onChange={(e) => setForm({ ...form, gostRelayHost: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>中继端口</Label>
+                        <Input
+                          type="number"
+                          placeholder="例如: 8443"
+                          value={form.gostRelayPort || ""}
+                          onChange={(e) => setForm({ ...form, gostRelayPort: parseInt(e.target.value) || 0 })}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+                {form.gostMode === "reverse" && (
+                  <p className="text-xs text-muted-foreground">
+                    反向隧道会保存中继参数并下发到 Agent，适合内网主机主动连出到公网中继。
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">

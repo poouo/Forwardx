@@ -564,6 +564,9 @@ export const appRouter = router({
         name: z.string().min(1).max(128),
         forwardType: forwardTypeSchema.default("iptables"),
         protocol: z.enum(["tcp", "udp", "both"]).default("tcp"),
+        gostMode: z.enum(["direct", "reverse"]).default("direct"),
+        gostRelayHost: z.string().max(128).nullable().optional(),
+        gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
         sourcePort: z.number().min(0).max(65535), // 0 = 随机分配
         targetIp: z.string().min(1).max(64),
         targetPort: z.number().min(1).max(65535),
@@ -637,7 +640,14 @@ export const appRouter = router({
           }
         }
 
-        const id = await db.createForwardRule({ ...input, sourcePort, userId: ctx.user.id });
+        const gostRelayHost = input.forwardType === "gost" && input.gostMode === "reverse" ? (input.gostRelayHost || "").trim() : null;
+        const gostRelayPort = input.forwardType === "gost" && input.gostMode === "reverse" ? input.gostRelayPort : null;
+        if (input.forwardType === "gost" && input.gostMode === "reverse") {
+          if (!gostRelayHost) throw new Error("反向隧道需要填写中继地址");
+          if (!gostRelayPort) throw new Error("反向隧道需要填写中继端口");
+        }
+
+        const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, userId: ctx.user.id });
         return { id, sourcePort };
       }),
     update: protectedProcedure
@@ -646,6 +656,9 @@ export const appRouter = router({
         name: z.string().min(1).max(128).optional(),
         forwardType: forwardTypeSchema.optional(),
         protocol: z.enum(["tcp", "udp", "both"]).optional(),
+        gostMode: z.enum(["direct", "reverse"]).optional(),
+        gostRelayHost: z.string().max(128).nullable().optional(),
+        gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
         sourcePort: z.number().min(1).max(65535).optional(),
         targetIp: z.string().min(1).max(64).optional(),
         targetPort: z.number().min(1).max(65535).optional(),
@@ -675,6 +688,19 @@ export const appRouter = router({
         }
 
         const { id, ...data } = input;
+        if ((data.forwardType ?? rule.forwardType) !== "gost") {
+          (data as any).gostMode = "direct";
+          (data as any).gostRelayHost = null;
+          (data as any).gostRelayPort = null;
+        } else if ((data.gostMode ?? (rule as any).gostMode ?? "direct") === "reverse") {
+          const relayHost = data.gostRelayHost !== undefined ? data.gostRelayHost : (rule as any).gostRelayHost;
+          const relayPort = data.gostRelayPort !== undefined ? data.gostRelayPort : (rule as any).gostRelayPort;
+          if (!relayHost) throw new Error("反向隧道需要填写中继地址");
+          if (!relayPort) throw new Error("反向隧道需要填写中继端口");
+        } else {
+          (data as any).gostRelayHost = null;
+          (data as any).gostRelayPort = null;
+        }
         // 关键字段变更时重置 isRunning
         const watchedFields: (keyof typeof data)[] = [
           "sourcePort",
@@ -682,6 +708,9 @@ export const appRouter = router({
           "targetPort",
           "forwardType",
           "protocol",
+          "gostMode",
+          "gostRelayHost",
+          "gostRelayPort",
         ];
         const keyFieldChanged = watchedFields.some((f) => {
           const v = data[f];

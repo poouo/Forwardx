@@ -124,6 +124,9 @@ export async function initDatabase() {
         name TEXT NOT NULL,
         forwardType TEXT NOT NULL DEFAULT 'iptables',
         protocol TEXT NOT NULL DEFAULT 'tcp',
+        gostMode TEXT NOT NULL DEFAULT 'direct',
+        gostRelayHost TEXT,
+        gostRelayPort INTEGER,
         sourcePort INTEGER NOT NULL,
         targetIp TEXT NOT NULL,
         targetPort INTEGER NOT NULL,
@@ -222,6 +225,9 @@ export async function initDatabase() {
       `ALTER TABLE users ADD COLUMN maxPorts INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE hosts ADD COLUMN entryIp TEXT`,
       `ALTER TABLE users ADD COLUMN allowedForwardTypes TEXT`,
+      `ALTER TABLE forward_rules ADD COLUMN gostMode TEXT NOT NULL DEFAULT 'direct'`,
+      `ALTER TABLE forward_rules ADD COLUMN gostRelayHost TEXT`,
+      `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
     ];
 
     // 创建用户-主机权限表

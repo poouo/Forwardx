@@ -294,6 +294,95 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     ];
     const writeUnitCmd = (svcName: string, unit: string) =>
       `printf '%s' '${Buffer.from(unit, "utf8").toString("base64")}' | base64 -d > /etc/systemd/system/${svcName}.service`;
+    const gostServiceName = "forwardx-gost";
+    const gostServiceUnit = [
+      "[Unit]",
+      "Description=ForwardX unified gost forwarder",
+      "After=network.target",
+      "",
+      "[Service]",
+      "Type=simple",
+      "ExecStart=/usr/local/bin/gost -C /etc/forwardx-gost/config.json",
+      "Restart=always",
+      "RestartSec=5",
+      "LimitNOFILE=65535",
+      "",
+      "[Install]",
+      "WantedBy=multi-user.target",
+      "",
+    ].join("\n");
+    const gostServiceConfig = (await db.getForwardRules(undefined, host.id))
+      .filter((r: any) => r.isEnabled && r.forwardType === "gost")
+      .flatMap((r: any) => {
+        const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
+        return protos.map((proto) => {
+          if ((r as any).gostMode === "reverse") {
+            return {
+              name: `fwx-${r.id}-${proto}`,
+              addr: ":0",
+              handler: { type: proto === "udp" ? "rudp" : "rtcp" },
+              listener: { type: proto === "udp" ? "rudp" : "rtcp", chain: `chain-${r.id}-${proto}` },
+              forwarder: {
+                nodes: [{
+                  name: `target-${r.id}`,
+                  addr: `${r.targetIp}:${r.targetPort}`,
+                }],
+              },
+            };
+          }
+          const service: any = {
+            name: `fwx-${r.id}-${proto}`,
+            addr: `:${r.sourcePort}`,
+            handler: { type: proto },
+            listener: { type: proto },
+            forwarder: { nodes: [] as any[] },
+          };
+          service.forwarder.nodes.push({
+            name: `target-${r.id}`,
+            addr: `${r.targetIp}:${r.targetPort}`,
+            connector: { type: proto },
+            dialer: { type: proto },
+          });
+          return service;
+        });
+      });
+    const gostChains = (await db.getForwardRules(undefined, host.id))
+      .filter((r: any) => r.isEnabled && r.forwardType === "gost" && (r as any).gostMode === "reverse")
+      .flatMap((r: any) => {
+        const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
+        return protos.map((proto) => {
+          const tunnelId = `00000000-0000-4000-8000-${String(r.id).padStart(12, "0").slice(-12)}`;
+          return {
+            name: `chain-${r.id}-${proto}`,
+            hops: [{
+              name: `hop-${r.id}-${proto}`,
+              nodes: [{
+                name: `relay-${r.id}-${proto}`,
+                addr: `${(r as any).gostRelayHost}:${(r as any).gostRelayPort}`,
+                connector: {
+                  type: "tunnel",
+                  metadata: { "tunnel.id": tunnelId },
+                },
+                dialer: { type: "tcp" },
+              }],
+            }],
+          };
+        });
+      });
+    const buildGostReloadCmds = () => {
+      const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains }, null, 2), "utf8").toString("base64");
+      return [
+        `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
+        `mkdir -p /etc/forwardx-gost`,
+        `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-gost/config.json`,
+        writeUnitCmd(gostServiceName, gostServiceUnit),
+        `systemctl daemon-reload`,
+        `systemctl enable ${gostServiceName}.service 2>/dev/null || true`,
+        gostServiceConfig.length > 0
+          ? `systemctl restart ${gostServiceName}.service`
+          : `systemctl stop ${gostServiceName}.service 2>/dev/null || true`,
+      ];
+    };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
@@ -488,72 +577,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             });
           }
         } else if (rule.forwardType === "gost") {
-          const gostCmds: string[] = [`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`];
-          const buildGostUnit = (svcName: string, proto: "tcp" | "udp") => [
-            "[Unit]",
-            `Description=ForwardX gost ${proto.toUpperCase()} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
-            "After=network.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            `ExecStart=/usr/local/bin/gost -L=${proto}://:${rule.sourcePort}/${rule.targetIp}:${rule.targetPort}`,
-            "Restart=always",
-            "RestartSec=5",
-            "LimitNOFILE=65535",
-            "",
-            "[Install]",
-            "WantedBy=multi-user.target",
-            "",
-          ].join("\n");
-
-          if (rule.protocol === "both") {
-            const svcNameTcp = `forwardx-gost-tcp-${rule.sourcePort}`;
-            const svcNameUdp = `forwardx-gost-udp-${rule.sourcePort}`;
-            const unitTcp = buildGostUnit(svcNameTcp, "tcp");
-            const unitUdp = buildGostUnit(svcNameUdp, "udp");
-            gostCmds.push(writeUnitCmd(svcNameTcp, unitTcp));
-            gostCmds.push(writeUnitCmd(svcNameUdp, unitUdp));
-            gostCmds.push(`systemctl daemon-reload`);
-            gostCmds.push(`systemctl enable ${svcNameTcp}.service 2>/dev/null || true`);
-            gostCmds.push(`systemctl restart ${svcNameTcp}.service`);
-            gostCmds.push(`systemctl enable ${svcNameUdp}.service 2>/dev/null || true`);
-            gostCmds.push(`systemctl restart ${svcNameUdp}.service`);
-            gostCmds.push(...buildCountingChainCmds(rule.sourcePort));
-            actions.push({
-              ruleId: rule.id,
-              op: "apply",
-              forwardType: rule.forwardType,
-              sourcePort: rule.sourcePort,
-              targetIp: rule.targetIp,
-              targetPort: rule.targetPort,
-              protocol: rule.protocol,
-              networkInterface: hostInterface,
-              svcName: svcNameTcp,
-              svcNameExtra: svcNameUdp,
-              commands: gostCmds,
-            });
-          } else {
-            const proto = rule.protocol === "udp" ? "udp" : "tcp";
-            const svcName = `forwardx-gost-${rule.sourcePort}`;
-            const unit = buildGostUnit(svcName, proto);
-            gostCmds.push(writeUnitCmd(svcName, unit));
-            gostCmds.push(`systemctl daemon-reload`);
-            gostCmds.push(`systemctl enable ${svcName}.service 2>/dev/null || true`);
-            gostCmds.push(`systemctl restart ${svcName}.service`);
-            gostCmds.push(...buildCountingChainCmds(rule.sourcePort));
-            actions.push({
-              ruleId: rule.id,
-              op: "apply",
-              forwardType: rule.forwardType,
-              sourcePort: rule.sourcePort,
-              targetIp: rule.targetIp,
-              targetPort: rule.targetPort,
-              protocol: rule.protocol,
-              networkInterface: hostInterface,
-              svcName,
-              commands: gostCmds,
-            });
-          }
+          actions.push({
+            ruleId: rule.id,
+            op: "apply",
+            forwardType: rule.forwardType,
+            sourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            protocol: rule.protocol,
+            networkInterface: hostInterface,
+            commands: [...buildGostReloadCmds(), ...buildCountingChainCmds(rule.sourcePort)],
+          });
         }
       } else if (!rule.isEnabled && rule.isRunning) {
         const cmds: string[] = [];
@@ -686,23 +720,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: removeCmds,
           });
         } else if (rule.forwardType === "gost") {
-          const removeCmds: string[] = [];
-          if (rule.protocol === "both") {
-            const svcTcp = `forwardx-gost-tcp-${rule.sourcePort}`;
-            const svcUdp = `forwardx-gost-udp-${rule.sourcePort}`;
-            removeCmds.push(`systemctl stop ${svcTcp}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcTcp}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcTcp}.service`);
-            removeCmds.push(`systemctl stop ${svcUdp}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcUdp}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcUdp}.service`);
-          } else {
-            const svcName = `forwardx-gost-${rule.sourcePort}`;
-            removeCmds.push(`systemctl stop ${svcName}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcName}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
-          }
-          removeCmds.push(`systemctl daemon-reload`);
+          const removeCmds: string[] = [...buildGostReloadCmds()];
           removeCmds.push(`pkill -f "gost .*:${rule.sourcePort}" 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
