@@ -129,6 +129,7 @@ export async function initDatabase() {
         gostRelayHost TEXT,
         gostRelayPort INTEGER,
         tunnelId INTEGER,
+        tunnelExitPort INTEGER,
         sourcePort INTEGER NOT NULL,
         targetIp TEXT NOT NULL,
         targetPort INTEGER NOT NULL,
@@ -146,7 +147,7 @@ export async function initDatabase() {
         name TEXT NOT NULL,
         entryHostId INTEGER NOT NULL,
         exitHostId INTEGER NOT NULL,
-        mode TEXT NOT NULL DEFAULT 'socks5',
+        mode TEXT NOT NULL DEFAULT 'tls',
         listenPort INTEGER NOT NULL,
         isEnabled INTEGER NOT NULL DEFAULT 1,
         isRunning INTEGER NOT NULL DEFAULT 0,
@@ -252,6 +253,7 @@ export async function initDatabase() {
       `ALTER TABLE forward_rules ADD COLUMN gostRelayHost TEXT`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelId INTEGER`,
+      `ALTER TABLE forward_rules ADD COLUMN tunnelExitPort INTEGER`,
     ];
 
     // 创建用户-主机权限表
@@ -695,6 +697,31 @@ export async function resetForwardRulesByTunnel(tunnelId: number) {
   const db = await getDb();
   if (!db) return;
   await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
+}
+
+export async function findAvailableTunnelExitPort(
+  exitHostId: number,
+  preferredStart?: number | null,
+  preferredEnd?: number | null,
+): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const start = preferredStart ?? 20000;
+  const end = preferredEnd ?? 65535;
+  if (start > end) return null;
+  const usedRulePorts = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(eq(forwardRules.hostId, exitHostId));
+  const usedTunnelPorts = await db.select({ port: tunnels.listenPort }).from(tunnels).where(eq(tunnels.exitHostId, exitHostId));
+  const usedExitPorts = await db.select({ port: forwardRules.tunnelExitPort }).from(forwardRules);
+  const used = new Set<number>();
+  usedRulePorts.forEach((r) => used.add(Number(r.port)));
+  usedTunnelPorts.forEach((r) => used.add(Number(r.port)));
+  usedExitPorts.forEach((r) => {
+    if (r.port != null) used.add(Number(r.port));
+  });
+  for (let port = start; port <= end; port++) {
+    if (!used.has(port)) return port;
+  }
+  return null;
 }
 
 export async function updateTunnelRunningStatus(id: number, isRunning: boolean) {

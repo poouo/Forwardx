@@ -111,6 +111,19 @@ function getUpgradeProgress(job: any) {
   return { percent: 0, label: "等待升级", steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
+const manualPanelUpgradeCommands = [
+  {
+    label: "本地部署",
+    command:
+      "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade",
+  },
+  {
+    label: "Docker 部署",
+    command:
+      "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade",
+  },
+];
+
 function SettingsContent() {
   const { user } = useAuth();
   const [location, setLocation] = useLocation();
@@ -1179,6 +1192,19 @@ function SystemInfoSection() {
                   <pre className="max-h-64 overflow-auto rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">
                     {upgradeErrorLogs || "暂无异常日志"}
                   </pre>
+                  <div className="rounded-lg border border-destructive/25 bg-background/80 p-3 text-xs">
+                    <p className="font-medium text-destructive">自动升级失败时，可以在服务器执行对应的一键脚本手动升级：</p>
+                    <div className="mt-2 space-y-2">
+                      {manualPanelUpgradeCommands.map((item) => (
+                        <div key={item.label} className="space-y-1">
+                          <span className="text-muted-foreground">{item.label}</span>
+                          <code className="block overflow-x-auto rounded border bg-muted/30 p-2 font-mono text-[11px] text-foreground">
+                            {item.command}
+                          </code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

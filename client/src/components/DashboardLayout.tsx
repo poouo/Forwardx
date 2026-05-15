@@ -40,6 +40,7 @@ import {
   Moon,
   Rocket,
   Route,
+  Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -102,6 +103,20 @@ function DashboardLayoutContent({
   const isMobile = useIsMobile();
   const isAdmin = user?.role === "admin";
   const { resolvedTheme, setTheme } = useTheme();
+  const logoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+  const logoMark = logoLoadFailed ? (
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+      <Zap className="h-4 w-4" />
+    </div>
+  ) : (
+    <img
+      src={logoSrc}
+      alt="ForwardX"
+      className="h-7 w-7 shrink-0 object-contain"
+      onError={() => setLogoLoadFailed(true)}
+    />
+  );
   const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
     enabled: isAdmin,
     refetchInterval: 30 * 60 * 1000,
@@ -159,39 +174,46 @@ function DashboardLayoutContent({
       <Sidebar collapsible="icon" className="border-r border-sidebar-border/60 bg-sidebar/75 backdrop-blur-2xl">
         <SidebarHeader className="h-16 justify-center">
           <div className="flex items-center gap-3 px-2 transition-all w-full">
-            <button
-              onClick={toggleSidebar}
-              className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-              aria-label="Toggle navigation"
-            >
-              <PanelLeft className="h-4 w-4 text-muted-foreground" />
-            </button>
             {!isCollapsed ? (
               <div className="flex items-center justify-between flex-1 min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
-                  <img
-                    src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
-                    alt="ForwardX"
-                    className="h-7 w-7 shrink-0 object-contain"
-                  />
+                  {logoMark}
                   <span className="font-bold tracking-tight truncate text-base">
                     ForwardX
                   </span>
                 </div>
-                <button
-                  onClick={toggleTheme}
-                  className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                  aria-label="Toggle theme"
-                  title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
-                >
-                  {resolvedTheme === "dark" ? (
-                    <Sun className="h-4 w-4 text-muted-foreground" />
-                  ) : (
-                    <Moon className="h-4 w-4 text-muted-foreground" />
-                  )}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={toggleTheme}
+                    className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+                    aria-label="Toggle theme"
+                    title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
+                  >
+                    {resolvedTheme === "dark" ? (
+                      <Sun className="h-4 w-4 text-muted-foreground" />
+                    ) : (
+                      <Moon className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </button>
+                  <button
+                    onClick={toggleSidebar}
+                    className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
+                    aria-label="Toggle navigation"
+                  >
+                    <PanelLeft className="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </div>
               </div>
-            ) : null}
+            ) : (
+              <button
+                onClick={toggleSidebar}
+                className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="Toggle navigation"
+                title="ForwardX"
+              >
+                {logoMark}
+              </button>
+            )}
           </div>
         </SidebarHeader>
 

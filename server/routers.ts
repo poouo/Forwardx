@@ -654,6 +654,7 @@ export const appRouter = router({
         const gostRelayHost = input.forwardType === "gost" && input.gostMode === "reverse" ? (input.gostRelayHost || "").trim() : null;
         const gostRelayPort = input.forwardType === "gost" && input.gostMode === "reverse" ? input.gostRelayPort : null;
         const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
+        let tunnelExitPort: number | null = null;
         if (input.forwardType === "gost" && input.gostMode === "reverse") {
           if (!gostRelayHost) throw new Error("反向隧道需要填写中继地址");
           if (!gostRelayPort) throw new Error("反向隧道需要填写中继端口");
@@ -665,9 +666,17 @@ export const appRouter = router({
           if (tunnel.entryHostId !== input.hostId) {
             throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
           }
+          const exit = await db.getHostById(tunnel.exitHostId);
+          tunnelExitPort = await db.findAvailableTunnelExitPort(
+            tunnel.exitHostId,
+            (exit as any)?.portRangeStart,
+            (exit as any)?.portRangeEnd,
+          );
+          if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
 
-        const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, tunnelId, userId: ctx.user.id });
+        const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, tunnelId, tunnelExitPort, userId: ctx.user.id });
+        if (tunnelId) await db.updateTunnel(tunnelId, { isRunning: false } as any);
         return { id, sourcePort };
       }),
     update: protectedProcedure
@@ -730,6 +739,17 @@ export const appRouter = router({
             if (tunnel.entryHostId !== rule.hostId) {
               throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
             }
+            if (nextTunnelId !== (rule as any).tunnelId || !(rule as any).tunnelExitPort) {
+              const exit = await db.getHostById(tunnel.exitHostId);
+              (data as any).tunnelExitPort = await db.findAvailableTunnelExitPort(
+                tunnel.exitHostId,
+                (exit as any)?.portRangeStart,
+                (exit as any)?.portRangeEnd,
+              );
+              if (!(data as any).tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
+            }
+          } else {
+            (data as any).tunnelExitPort = null;
           }
         }
         // 关键字段变更时重置 isRunning
@@ -743,6 +763,7 @@ export const appRouter = router({
           "gostRelayHost",
           "gostRelayPort",
           "tunnelId",
+          "tunnelExitPort",
         ];
         const keyFieldChanged = watchedFields.some((f) => {
           const v = data[f];
@@ -750,6 +771,12 @@ export const appRouter = router({
         });
         if (keyFieldChanged) {
           (data as any).isRunning = false;
+          const affectedTunnelIds = new Set<number>();
+          if ((rule as any).tunnelId) affectedTunnelIds.add((rule as any).tunnelId);
+          if ((data as any).tunnelId) affectedTunnelIds.add((data as any).tunnelId);
+          for (const affectedTunnelId of affectedTunnelIds) {
+            await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
+          }
         }
         await db.updateForwardRule(id, data);
         return { success: true, reset: keyFieldChanged };
@@ -760,6 +787,7 @@ export const appRouter = router({
         const rule = await db.getForwardRuleById(input.id);
         if (!rule) throw new Error("规则不存在");
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
+        if ((rule as any).tunnelId) await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
         await db.deleteForwardRule(input.id);
         return { success: true };
       }),
@@ -769,6 +797,7 @@ export const appRouter = router({
         const rule = await db.getForwardRuleById(input.id);
         if (!rule) throw new Error("规则不存在");
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
+        if ((rule as any).tunnelId) await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
         if (input.isEnabled) {
           await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false });
         } else {
@@ -879,7 +908,7 @@ export const appRouter = router({
         name: z.string().min(1).max(128),
         entryHostId: z.number(),
         exitHostId: z.number(),
-        mode: z.enum(["socks5", "http", "relay"]).default("socks5"),
+        mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("tls"),
         listenPort: z.number().min(1).max(65535),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -898,7 +927,7 @@ export const appRouter = router({
         name: z.string().min(1).max(128).optional(),
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
-        mode: z.enum(["socks5", "http", "relay"]).optional(),
+        mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
         listenPort: z.number().min(1).max(65535).optional(),
         isEnabled: z.boolean().optional(),
       }))

@@ -49,7 +49,7 @@ type TunnelForm = {
   name: string;
   entryHostId: number | null;
   exitHostId: number | null;
-  mode: "socks5" | "http" | "relay";
+  mode: "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   listenPort: number;
 };
 
@@ -57,8 +57,17 @@ const defaultForm: TunnelForm = {
   name: "",
   entryHostId: null,
   exitHostId: null,
-  mode: "socks5",
+  mode: "tls",
   listenPort: 0,
+};
+
+const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
+  tls: "TLS",
+  wss: "WSS",
+  tcp: "TCP",
+  mtls: "MTLS",
+  mwss: "MWSS",
+  mtcp: "MTCP",
 };
 
 function TunnelsContent() {
@@ -90,7 +99,7 @@ function TunnelsContent() {
       name: tunnel.name,
       entryHostId: tunnel.entryHostId,
       exitHostId: tunnel.exitHostId,
-      mode: tunnel.mode || "socks5",
+      mode: tunnel.mode || "tls",
       listenPort: tunnel.listenPort,
     });
     setEditingId(tunnel.id);
@@ -224,7 +233,7 @@ function TunnelsContent() {
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
                         <Badge variant="outline" className="text-[10px]">
-                          {tunnel.mode}
+                          {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
                         </Badge>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
@@ -327,13 +336,16 @@ function TunnelsContent() {
             </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label>隧道方式</Label>
+                <Label>协议类型</Label>
                 <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="socks5">SOCKS5</SelectItem>
-                    <SelectItem value="http">HTTP</SelectItem>
-                    <SelectItem value="relay">Relay</SelectItem>
+                    <SelectItem value="tls">TLS</SelectItem>
+                    <SelectItem value="wss">WSS</SelectItem>
+                    <SelectItem value="tcp">TCP</SelectItem>
+                    <SelectItem value="mtls">MTLS</SelectItem>
+                    <SelectItem value="mwss">MWSS</SelectItem>
+                    <SelectItem value="mtcp">MTCP</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

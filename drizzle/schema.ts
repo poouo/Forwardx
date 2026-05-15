@@ -78,6 +78,7 @@ export const forwardRules = sqliteTable("forward_rules", {
   gostRelayHost: text("gostRelayHost"),
   gostRelayPort: integer("gostRelayPort"),
   tunnelId: integer("tunnelId"),
+  tunnelExitPort: integer("tunnelExitPort"),
   sourcePort: integer("sourcePort").notNull(),
   targetIp: text("targetIp").notNull(),
   targetPort: integer("targetPort").notNull(),
@@ -96,7 +97,7 @@ export const tunnels = sqliteTable("tunnels", {
   name: text("name").notNull(),
   entryHostId: integer("entryHostId").notNull(),
   exitHostId: integer("exitHostId").notNull(),
-  mode: text("mode").notNull().default("socks5"), // socks5 | http | relay
+  mode: text("mode").notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
   listenPort: integer("listenPort").notNull(),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
   isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),

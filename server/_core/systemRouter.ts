@@ -15,9 +15,13 @@ import fs from "fs";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.29";
-export const AGENT_VERSION = "2.1.29";
+export const APP_VERSION = "2.1.30";
+export const AGENT_VERSION = "2.1.30";
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
+const MANUAL_LOCAL_UPGRADE_COMMAND =
+  "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
+const MANUAL_DOCKER_UPGRADE_COMMAND =
+  "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
 
 type UpdateInfo = {
   currentVersion: string;
@@ -178,6 +182,11 @@ function normalizeUpgradeCommand(command: string) {
   return trimmed;
 }
 
+function appendManualUpgradeHint() {
+  appendUpgradeLog("[ForwardX] Automatic upgrade failed. Run a one-click script on the server to upgrade manually:");
+  appendUpgradeLog(`[ForwardX] Local: ${MANUAL_LOCAL_UPGRADE_COMMAND}`);
+  appendUpgradeLog(`[ForwardX] Docker: ${MANUAL_DOCKER_UPGRADE_COMMAND}`);
+}
 export const systemRouter = router({
   health: publicProcedure.query(() => {
     return { status: "ok", timestamp: new Date().toISOString() };
@@ -261,20 +270,33 @@ export const systemRouter = router({
         throw new Error("已有升级任务正在执行");
       }
 
-      const update = lastUpdateInfo ?? await getLatestUpdateInfoCached();
+      let update = await fetchLatestUpdateInfo();
+      if (update.error && lastUpdateInfo) {
+        update = lastUpdateInfo;
+      }
       lastUpdateInfo = update;
-      const targetVersion = input?.targetVersion || update.latestVersion;
-      if (!targetVersion) throw new Error("未找到可升级的目标版本");
+      const requestedVersion = input?.targetVersion;
+      const targetVersion =
+        update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
+          ? update.latestVersion
+          : requestedVersion;
+      if (!targetVersion) throw new Error("No upgrade target version found");
+      if (compareVersions(targetVersion, APP_VERSION) <= 0) {
+        throw new Error("Already on the latest version");
+      }
 
       upgradeJob = {
         status: "running",
         startedAt: new Date().toISOString(),
         finishedAt: null,
         targetVersion,
-        logs: [`[ForwardX] 开始升级到 ${targetVersion}`],
+        logs: [
+          `[ForwardX] Current version v${APP_VERSION}`,
+          `[ForwardX] Selected latest upgrade target ${targetVersion}`,
+          `[ForwardX] Starting upgrade to ${targetVersion}`,
+        ],
         error: null,
       };
-
       const child = spawn(command, {
         shell: true,
         cwd: process.cwd(),
@@ -291,19 +313,21 @@ export const systemRouter = router({
       child.stderr?.on("data", (chunk) => appendUpgradeLog(String(chunk)));
       child.on("error", (err) => {
         upgradeJob.status = "error";
-        upgradeJob.error = err.message;
+        upgradeJob.error = `${err.message}. Please run the one-click script manually.`;
         upgradeJob.finishedAt = new Date().toISOString();
-        appendUpgradeLog(`[ForwardX] 升级命令启动失败：${err.message}`);
+        appendUpgradeLog(`[ForwardX] Upgrade command failed to start: ${err.message}`);
+        appendManualUpgradeHint();
       });
       child.on("close", (code) => {
         upgradeJob.finishedAt = new Date().toISOString();
         if (code === 0) {
           upgradeJob.status = "success";
-          appendUpgradeLog("[ForwardX] 升级命令已完成。如果运行在 Docker Compose 中，容器可能正在重建或重启。");
+          appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
         } else {
           upgradeJob.status = "error";
-          upgradeJob.error = `升级命令退出码：${code}`;
-          appendUpgradeLog(`[ForwardX] 升级失败，退出码：${code}`);
+          upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;
+          appendUpgradeLog(`[ForwardX] Upgrade failed, exit code: ${code}`);
+          appendManualUpgradeHint();
         }
       });
 

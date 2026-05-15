@@ -899,7 +899,7 @@ function RulesContent() {
                         <SelectItem value="none">不使用隧道</SelectItem>
                         {availableTunnels.map((t: any) => (
                           <SelectItem key={t.id} value={String(t.id)}>
-                            {t.name} / {t.mode} / :{t.listenPort}
+                            {t.name} / {String(t.mode).toUpperCase()} / :{t.listenPort}
                           </SelectItem>
                         ))}
                       </SelectContent>
