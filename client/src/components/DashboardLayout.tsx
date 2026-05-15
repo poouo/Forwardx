@@ -39,6 +39,7 @@ import {
   Sun,
   Moon,
   Rocket,
+  Route,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -54,6 +55,7 @@ const mainMenuItems = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
+  { icon: Route, label: "隧道管理", path: "/tunnels" },
 ];
 
 const adminMenuItems = [

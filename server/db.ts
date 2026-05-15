@@ -9,6 +9,7 @@ import {
   InsertUser, users,
   hosts, InsertHost, Host,
   forwardRules, InsertForwardRule, ForwardRule,
+  tunnels, InsertTunnel,
   hostMetrics, InsertHostMetric,
   trafficStats, InsertTrafficStat,
   agentTokens, InsertAgentToken,
@@ -127,6 +128,7 @@ export async function initDatabase() {
         gostMode TEXT NOT NULL DEFAULT 'direct',
         gostRelayHost TEXT,
         gostRelayPort INTEGER,
+        tunnelId INTEGER,
         sourcePort INTEGER NOT NULL,
         targetIp TEXT NOT NULL,
         targetPort INTEGER NOT NULL,
@@ -138,6 +140,27 @@ export async function initDatabase() {
       );
       CREATE INDEX IF NOT EXISTS idx_rules_host ON forward_rules(hostId);
       CREATE INDEX IF NOT EXISTS idx_rules_user ON forward_rules(userId);
+
+      CREATE TABLE IF NOT EXISTS tunnels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        entryHostId INTEGER NOT NULL,
+        exitHostId INTEGER NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'socks5',
+        listenPort INTEGER NOT NULL,
+        isEnabled INTEGER NOT NULL DEFAULT 1,
+        isRunning INTEGER NOT NULL DEFAULT 0,
+        lastLatencyMs INTEGER,
+        lastTestStatus TEXT,
+        lastTestMessage TEXT,
+        lastTestAt INTEGER,
+        userId INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
+        updatedAt INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_tunnels_entry_host ON tunnels(entryHostId);
+      CREATE INDEX IF NOT EXISTS idx_tunnels_exit_host ON tunnels(exitHostId);
+      CREATE INDEX IF NOT EXISTS idx_tunnels_user ON tunnels(userId);
 
       CREATE TABLE IF NOT EXISTS host_metrics (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,6 +251,7 @@ export async function initDatabase() {
       `ALTER TABLE forward_rules ADD COLUMN gostMode TEXT NOT NULL DEFAULT 'direct'`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayHost TEXT`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
+      `ALTER TABLE forward_rules ADD COLUMN tunnelId INTEGER`,
     ];
 
     // 创建用户-主机权限表
@@ -621,6 +645,78 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
   const db = await getDb();
   if (!db) return;
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+}
+
+// ==================== Tunnel Queries ====================
+
+export async function getTunnels(userId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  if (userId) return db.select().from(tunnels).where(eq(tunnels.userId, userId)).orderBy(desc(tunnels.createdAt));
+  return db.select().from(tunnels).orderBy(desc(tunnels.createdAt));
+}
+
+export async function getTunnelsByHost(hostId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(tunnels).where(
+    sql`${tunnels.entryHostId} = ${hostId} OR ${tunnels.exitHostId} = ${hostId}`
+  ).orderBy(desc(tunnels.createdAt));
+}
+
+export async function getTunnelById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const r = await db.select().from(tunnels).where(eq(tunnels.id, id)).limit(1);
+  return r[0];
+}
+
+export async function createTunnel(data: InsertTunnel) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(tunnels).values(data);
+  return lastRowId();
+}
+
+export async function updateTunnel(id: number, data: Partial<InsertTunnel>) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(tunnels).set({ ...data, updatedAt: nowDate() }).where(eq(tunnels.id, id));
+}
+
+export async function deleteTunnel(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({ tunnelId: null, isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, id));
+  await db.delete(tunnels).where(eq(tunnels.id, id));
+}
+
+export async function resetForwardRulesByTunnel(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
+}
+
+export async function updateTunnelRunningStatus(id: number, isRunning: boolean) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(tunnels).set({ isRunning, updatedAt: nowDate() }).where(eq(tunnels.id, id));
+}
+
+export async function updateTunnelTestResult(id: number, data: {
+  status: string;
+  latencyMs?: number | null;
+  message?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(tunnels).set({
+    lastTestStatus: data.status,
+    lastLatencyMs: data.latencyMs ?? null,
+    lastTestMessage: data.message ?? null,
+    lastTestAt: nowDate(),
+    updatedAt: nowDate(),
+  }).where(eq(tunnels.id, id));
 }
 
 /** 检查某主机上某端口是否已被占用 */

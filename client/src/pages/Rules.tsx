@@ -89,6 +89,7 @@ type RuleFormData = {
   gostMode: "direct" | "reverse";
   gostRelayHost: string;
   gostRelayPort: number;
+  tunnelId: number | null;
   sourcePort: number;
   targetIp: string;
   targetPort: number;
@@ -102,6 +103,7 @@ const defaultForm: RuleFormData = {
   gostMode: "direct",
   gostRelayHost: "",
   gostRelayPort: 0,
+  tunnelId: null,
   sourcePort: 0,
   targetIp: "",
   targetPort: 0,
@@ -114,6 +116,7 @@ function RulesContent() {
     refetchInterval: 15000,
   });
   const { data: hosts } = trpc.hosts.list.useQuery();
+  const { data: tunnels } = trpc.tunnels.list.useQuery();
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -223,6 +226,7 @@ function RulesContent() {
       gostMode: rule.gostMode || "direct",
       gostRelayHost: rule.gostRelayHost || "",
       gostRelayPort: rule.gostRelayPort || 0,
+      tunnelId: rule.tunnelId || null,
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
@@ -249,6 +253,10 @@ function RulesContent() {
     if (!form.hostId || !hosts) return null;
     return hosts.find(h => h.id === form.hostId) || null;
   }, [form.hostId, hosts]);
+  const availableTunnels = useMemo(() => {
+    if (!form.hostId || !tunnels) return [];
+    return tunnels.filter((t: any) => t.entryHostId === form.hostId);
+  }, [form.hostId, tunnels]);
 
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
 
@@ -326,6 +334,7 @@ function RulesContent() {
         gostMode: form.forwardType === "gost" ? form.gostMode : "direct",
         gostRelayHost: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayHost : null,
         gostRelayPort: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayPort : null,
+        tunnelId: form.forwardType === "gost" && form.gostMode === "direct" ? form.tunnelId : null,
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
@@ -339,6 +348,7 @@ function RulesContent() {
         gostMode: form.forwardType === "gost" ? form.gostMode : "direct",
         gostRelayHost: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayHost : null,
         gostRelayPort: form.forwardType === "gost" && form.gostMode === "reverse" ? form.gostRelayPort : null,
+        tunnelId: form.forwardType === "gost" && form.gostMode === "direct" ? form.tunnelId : null,
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
@@ -758,7 +768,7 @@ function RulesContent() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>转发工具</Label>
-                <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: v === "gost" ? form.gostMode : "direct" })}>
+                <Select value={form.forwardType} onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: v === "gost" ? form.gostMode : "direct", tunnelId: v === "gost" ? form.tunnelId : null })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {allowedForwardTypes.map((t) => (
@@ -836,12 +846,15 @@ function RulesContent() {
               </div>
             </div>
 
-            {form.forwardType === "gost" && (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3">
+            <div className={`rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3 ${form.forwardType !== "gost" ? "opacity-60" : ""}`}>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-2">
                     <Label>gost 模式</Label>
-                    <Select value={form.gostMode} onValueChange={(v) => setForm({ ...form, gostMode: v as any })}>
+                    <Select
+                      value={form.gostMode}
+                      disabled={form.forwardType !== "gost"}
+                      onValueChange={(v) => setForm({ ...form, gostMode: v as any, tunnelId: v === "direct" ? form.tunnelId : null })}
+                    >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="direct">端口转发</SelectItem>
@@ -855,6 +868,7 @@ function RulesContent() {
                         <Label>中继地址</Label>
                         <Input
                           placeholder="例如: relay.example.com"
+                          disabled={form.forwardType !== "gost" || form.gostMode !== "reverse"}
                           value={form.gostRelayHost}
                           onChange={(e) => setForm({ ...form, gostRelayHost: e.target.value })}
                         />
@@ -864,6 +878,7 @@ function RulesContent() {
                         <Input
                           type="number"
                           placeholder="例如: 8443"
+                          disabled={form.forwardType !== "gost" || form.gostMode !== "reverse"}
                           value={form.gostRelayPort || ""}
                           onChange={(e) => setForm({ ...form, gostRelayPort: parseInt(e.target.value) || 0 })}
                         />
@@ -871,13 +886,37 @@ function RulesContent() {
                     </>
                   )}
                 </div>
+                {form.gostMode === "direct" && (
+                  <div className="space-y-2">
+                    <Label>使用隧道</Label>
+                    <Select
+                      value={form.tunnelId ? String(form.tunnelId) : "none"}
+                      disabled={form.forwardType !== "gost" || availableTunnels.length === 0}
+                      onValueChange={(v) => setForm({ ...form, tunnelId: v === "none" ? null : Number(v) })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">不使用隧道</SelectItem>
+                        {availableTunnels.map((t: any) => (
+                          <SelectItem key={t.id} value={String(t.id)}>
+                            {t.name} / {t.mode} / :{t.listenPort}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 {form.gostMode === "reverse" && (
                   <p className="text-xs text-muted-foreground">
                     反向隧道会保存中继参数并下发到 Agent，适合内网主机主动连出到公网中继。
                   </p>
                 )}
+                {form.forwardType !== "gost" && (
+                  <p className="text-xs text-muted-foreground">
+                    选择 gost 转发工具后可配置 gost 模式。
+                  </p>
+                )}
               </div>
-            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">

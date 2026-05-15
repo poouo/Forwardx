@@ -53,6 +53,8 @@ type selfTestResp struct {
 }
 
 type action struct {
+	TunnelID         int      `json:"tunnelId"`
+	StatusType       string   `json:"statusType"`
 	RuleID           int      `json:"ruleId"`
 	Op               string   `json:"op"`
 	ForwardType      string   `json:"forwardType"`
@@ -289,7 +291,8 @@ func handleAction(cfg Config, a action) {
 		}
 		removeState(a.SourcePort)
 	}
-	_ = post(cfg, "/api/agent/rule-status", map[string]any{"ruleId": a.RuleID, "isRunning": ok && a.Op == "apply"}, &map[string]any{})
+	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": ok && a.Op == "apply"}
+	_ = post(cfg, "/api/agent/rule-status", payload, &map[string]any{})
 }
 
 func writeUnitAndRestart(name, unit string) bool {

@@ -77,6 +77,7 @@ export const forwardRules = sqliteTable("forward_rules", {
   gostMode: text("gostMode").notNull().default("direct"), // 'direct' | 'reverse'
   gostRelayHost: text("gostRelayHost"),
   gostRelayPort: integer("gostRelayPort"),
+  tunnelId: integer("tunnelId"),
   sourcePort: integer("sourcePort").notNull(),
   targetIp: text("targetIp").notNull(),
   targetPort: integer("targetPort").notNull(),
@@ -88,6 +89,27 @@ export const forwardRules = sqliteTable("forward_rules", {
 });
 export type ForwardRule = typeof forwardRules.$inferSelect;
 export type InsertForwardRule = typeof forwardRules.$inferInsert;
+
+// ===== gost 隧道配置（两台公网 Agent 组建链路） =====
+export const tunnels = sqliteTable("tunnels", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  entryHostId: integer("entryHostId").notNull(),
+  exitHostId: integer("exitHostId").notNull(),
+  mode: text("mode").notNull().default("socks5"), // socks5 | http | relay
+  listenPort: integer("listenPort").notNull(),
+  isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
+  isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),
+  lastLatencyMs: integer("lastLatencyMs"),
+  lastTestStatus: text("lastTestStatus"),
+  lastTestMessage: text("lastTestMessage"),
+  lastTestAt: integer("lastTestAt", { mode: "timestamp" }),
+  userId: integer("userId").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type Tunnel = typeof tunnels.$inferSelect;
+export type InsertTunnel = typeof tunnels.$inferInsert;
 
 export const hostMetrics = sqliteTable("host_metrics", {
   id: integer("id").primaryKey({ autoIncrement: true }),

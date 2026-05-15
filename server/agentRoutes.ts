@@ -244,6 +244,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     // 获取该主机的转发规则
     const rules = await db.getForwardRules(undefined, host.id);
+    const hostTunnels = await db.getTunnelsByHost(host.id);
     const actions: any[] = [];
 
     // 获取主机配置的网卡名称（用于 realm --interface）
@@ -311,8 +312,23 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       "WantedBy=multi-user.target",
       "",
     ].join("\n");
-    const gostServiceConfig = (await db.getForwardRules(undefined, host.id))
-      .filter((r: any) => r.isEnabled && r.forwardType === "gost")
+    const gostRules = (await db.getForwardRules(undefined, host.id))
+      .filter((r: any) => r.isEnabled && r.forwardType === "gost");
+    const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
+    const tunnelConnectorType = (mode: string) => mode === "http" ? "http" : mode === "relay" ? "relay" : "socks5";
+    const tunnelTargetAddress = async (tunnel: any) => {
+      const exit = await db.getHostById(tunnel.exitHostId);
+      if (!exit) return "";
+      return `${((exit as any).entryIp && String((exit as any).entryIp).trim()) || exit.ip}:${tunnel.listenPort}`;
+    };
+    const tunnelAddressById = new Map<number, string>();
+    for (const tunnel of hostTunnels as any[]) {
+      if (tunnel.entryHostId === host.id && tunnel.isEnabled) {
+        tunnelAddressById.set(tunnel.id, await tunnelTargetAddress(tunnel));
+      }
+    }
+
+    const gostServiceConfig = gostRules
       .flatMap((r: any) => {
         const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
         return protos.map((proto) => {
@@ -341,13 +357,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             name: `target-${r.id}`,
             addr: `${r.targetIp}:${r.targetPort}`,
             connector: { type: proto },
-            dialer: { type: proto },
+            dialer: (r as any).tunnelId ? { type: proto, chain: `chain-tunnel-${(r as any).tunnelId}-${r.id}-${proto}` } : { type: proto },
           });
           return service;
         });
       });
-    const gostChains = (await db.getForwardRules(undefined, host.id))
-      .filter((r: any) => r.isEnabled && r.forwardType === "gost" && (r as any).gostMode === "reverse")
+    const reverseGostChains = gostRules
+      .filter((r: any) => (r as any).gostMode === "reverse")
       .flatMap((r: any) => {
         const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
         return protos.map((proto) => {
@@ -369,6 +385,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           };
         });
       });
+    const tunnelGostChains = gostRules
+      .filter((r: any) => (r as any).gostMode !== "reverse" && (r as any).tunnelId && tunnelById.has((r as any).tunnelId))
+      .flatMap((r: any) => {
+        const tunnel = tunnelById.get((r as any).tunnelId) as any;
+        const addr = tunnelAddressById.get(tunnel.id);
+        if (!addr) return [];
+        const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
+        return protos.map((proto) => ({
+          name: `chain-tunnel-${tunnel.id}-${r.id}-${proto}`,
+          hops: [{
+            name: `hop-tunnel-${tunnel.id}-${r.id}-${proto}`,
+            nodes: [{
+              name: `exit-${tunnel.id}-${proto}`,
+              addr,
+              connector: { type: tunnelConnectorType(tunnel.mode) },
+              dialer: { type: "tcp" },
+            }],
+          }],
+        }));
+      });
+    const gostChains = [...reverseGostChains, ...tunnelGostChains];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains }, null, 2), "utf8").toString("base64");
       return [
@@ -383,9 +420,79 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           : `systemctl stop ${gostServiceName}.service 2>/dev/null || true`,
       ];
     };
+    const buildTunnelService = (tunnel: any) => {
+      const proto = tunnel.mode === "http" ? "http" : tunnel.mode === "relay" ? "relay" : "socks5";
+      return {
+        name: `fwx-tunnel-exit-${tunnel.id}`,
+        addr: `:${tunnel.listenPort}`,
+        handler: { type: proto },
+        listener: { type: "tcp" },
+      };
+    };
+    const buildTunnelReloadCmds = () => {
+      const services = hostTunnels
+        .filter((t: any) => t.isEnabled && t.exitHostId === host.id)
+        .map(buildTunnelService);
+      const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
+      return [
+        `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
+        `mkdir -p /etc/forwardx-tunnels`,
+        `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-tunnels/config.json`,
+        writeUnitCmd("forwardx-tunnels", [
+          "[Unit]",
+          "Description=ForwardX managed gost tunnels",
+          "After=network.target",
+          "",
+          "[Service]",
+          "Type=simple",
+          "ExecStart=/usr/local/bin/gost -C /etc/forwardx-tunnels/config.json",
+          "Restart=always",
+          "RestartSec=5",
+          "LimitNOFILE=65535",
+          "",
+          "[Install]",
+          "WantedBy=multi-user.target",
+          "",
+        ].join("\n")),
+        `systemctl daemon-reload`,
+        `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
+        services.length > 0 ? `systemctl restart forwardx-tunnels.service` : `systemctl stop forwardx-tunnels.service 2>/dev/null || true`,
+      ];
+    };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
+
+    for (const tunnel of hostTunnels as any[]) {
+      if (tunnel.exitHostId !== host.id) continue;
+      if (tunnel.isEnabled && !tunnel.isRunning) {
+        actions.push({
+          tunnelId: tunnel.id,
+          statusType: "tunnel",
+          ruleId: 0,
+          op: "apply",
+          forwardType: "gost-tunnel",
+          sourcePort: tunnel.listenPort,
+          targetIp: host.ip,
+          targetPort: tunnel.listenPort,
+          protocol: "tcp",
+          commands: buildTunnelReloadCmds(),
+        });
+      } else if (!tunnel.isEnabled && tunnel.isRunning) {
+        actions.push({
+          tunnelId: tunnel.id,
+          statusType: "tunnel",
+          ruleId: 0,
+          op: "remove",
+          forwardType: "gost-tunnel",
+          sourcePort: tunnel.listenPort,
+          targetIp: host.ip,
+          targetPort: tunnel.listenPort,
+          protocol: "tcp",
+          commands: buildTunnelReloadCmds(),
+        });
+      }
+    }
 
     for (const rule of rules) {
       // 收集所有已运行的规则映射（无论是否有 action 下发）
@@ -792,7 +899,21 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
 
-    const { ruleId, isRunning } = req.body;
+    const { ruleId, tunnelId, statusType, isRunning } = req.body;
+    if (statusType === "tunnel") {
+      if (typeof tunnelId !== "number") {
+        res.status(400).json({ error: "tunnelId is required" });
+        return;
+      }
+      const tunnel = await db.getTunnelById(tunnelId);
+      if (!tunnel || (tunnel.entryHostId !== host.id && tunnel.exitHostId !== host.id)) {
+        res.status(404).json({ error: "tunnel not found" });
+        return;
+      }
+      await db.updateTunnelRunningStatus(tunnelId, !!isRunning);
+      res.json({ success: true });
+      return;
+    }
     if (typeof ruleId !== "number") {
       res.status(400).json({ error: "ruleId is required" });
       return;

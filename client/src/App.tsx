@@ -8,6 +8,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Hosts from "./pages/Hosts";
 import Rules from "./pages/Rules";
+import Tunnels from "./pages/Tunnels";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
 
@@ -18,6 +19,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/hosts" component={Hosts} />
       <Route path="/rules" component={Rules} />
+      <Route path="/tunnels" component={Tunnels} />
       <Route path="/users" component={Users} />
       <Route path="/settings" component={Settings} />
       <Route path="/404" component={NotFound} />

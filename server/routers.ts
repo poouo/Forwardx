@@ -5,6 +5,7 @@ import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
+import net from "net";
 import { ENV } from "./env";
 import * as db from "./db";
 import { generateFullInstallScript, pushAgentUpgrade } from "./agentRoutes";
@@ -103,6 +104,15 @@ async function requireRuleAccess(ctx: { user: { id: number; role: string } }, ru
     throw new Error("无权访问该规则");
   }
   return rule;
+}
+
+async function requireTunnelAccess(ctx: { user: { id: number; role: string } }, tunnelId: number) {
+  const tunnel = await db.getTunnelById(tunnelId);
+  if (!tunnel) throw new Error("隧道不存在");
+  if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) {
+    throw new Error("无权访问该隧道");
+  }
+  return tunnel;
 }
 
 function maskToken(token: string) {
@@ -567,6 +577,7 @@ export const appRouter = router({
         gostMode: z.enum(["direct", "reverse"]).default("direct"),
         gostRelayHost: z.string().max(128).nullable().optional(),
         gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
+        tunnelId: z.number().nullable().optional(),
         sourcePort: z.number().min(0).max(65535), // 0 = 随机分配
         targetIp: z.string().min(1).max(64),
         targetPort: z.number().min(1).max(65535),
@@ -642,12 +653,21 @@ export const appRouter = router({
 
         const gostRelayHost = input.forwardType === "gost" && input.gostMode === "reverse" ? (input.gostRelayHost || "").trim() : null;
         const gostRelayPort = input.forwardType === "gost" && input.gostMode === "reverse" ? input.gostRelayPort : null;
+        const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
         if (input.forwardType === "gost" && input.gostMode === "reverse") {
           if (!gostRelayHost) throw new Error("反向隧道需要填写中继地址");
           if (!gostRelayPort) throw new Error("反向隧道需要填写中继端口");
         }
 
-        const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, userId: ctx.user.id });
+        if (tunnelId) {
+          const tunnel = await requireTunnelAccess(ctx, tunnelId);
+          if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
+          if (tunnel.entryHostId !== input.hostId) {
+            throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
+          }
+        }
+
+        const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, tunnelId, userId: ctx.user.id });
         return { id, sourcePort };
       }),
     update: protectedProcedure
@@ -659,6 +679,7 @@ export const appRouter = router({
         gostMode: z.enum(["direct", "reverse"]).optional(),
         gostRelayHost: z.string().max(128).nullable().optional(),
         gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
+        tunnelId: z.number().nullable().optional(),
         sourcePort: z.number().min(1).max(65535).optional(),
         targetIp: z.string().min(1).max(64).optional(),
         targetPort: z.number().min(1).max(65535).optional(),
@@ -692,14 +713,24 @@ export const appRouter = router({
           (data as any).gostMode = "direct";
           (data as any).gostRelayHost = null;
           (data as any).gostRelayPort = null;
+          (data as any).tunnelId = null;
         } else if ((data.gostMode ?? (rule as any).gostMode ?? "direct") === "reverse") {
           const relayHost = data.gostRelayHost !== undefined ? data.gostRelayHost : (rule as any).gostRelayHost;
           const relayPort = data.gostRelayPort !== undefined ? data.gostRelayPort : (rule as any).gostRelayPort;
           if (!relayHost) throw new Error("反向隧道需要填写中继地址");
           if (!relayPort) throw new Error("反向隧道需要填写中继端口");
+          (data as any).tunnelId = null;
         } else {
           (data as any).gostRelayHost = null;
           (data as any).gostRelayPort = null;
+          const nextTunnelId = data.tunnelId !== undefined ? data.tunnelId : (rule as any).tunnelId;
+          if (nextTunnelId) {
+            const tunnel = await requireTunnelAccess(ctx, nextTunnelId);
+            if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
+            if (tunnel.entryHostId !== rule.hostId) {
+              throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
+            }
+          }
         }
         // 关键字段变更时重置 isRunning
         const watchedFields: (keyof typeof data)[] = [
@@ -711,6 +742,7 @@ export const appRouter = router({
           "gostMode",
           "gostRelayHost",
           "gostRelayPort",
+          "tunnelId",
         ];
         const keyFieldChanged = watchedFields.some((f) => {
           const v = data[f];
@@ -833,6 +865,97 @@ export const appRouter = router({
         }
         const t = await db.getLatestForwardTest(input.ruleId);
         return t || null;
+      }),
+  }),
+
+  // ==================== Gost Tunnels ====================
+  tunnels: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const isAdmin = ctx.user.role === "admin";
+      return db.getTunnels(isAdmin ? undefined : ctx.user.id);
+    }),
+    create: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(128),
+        entryHostId: z.number(),
+        exitHostId: z.number(),
+        mode: z.enum(["socks5", "http", "relay"]).default("socks5"),
+        listenPort: z.number().min(1).max(65535),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (input.entryHostId === input.exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
+        const entry = await requireHostAccess(ctx, input.entryHostId);
+        const exit = await requireHostAccess(ctx, input.exitHostId);
+        if (!entry || !exit) throw new Error("主机不存在");
+        const used = await db.isPortUsedOnHost(input.exitHostId, input.listenPort);
+        if (used) throw new Error(`出口 Agent 端口 ${input.listenPort} 已被转发规则占用`);
+        const id = await db.createTunnel({ ...input, userId: ctx.user.id });
+        return { id };
+      }),
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        name: z.string().min(1).max(128).optional(),
+        entryHostId: z.number().optional(),
+        exitHostId: z.number().optional(),
+        mode: z.enum(["socks5", "http", "relay"]).optional(),
+        listenPort: z.number().min(1).max(65535).optional(),
+        isEnabled: z.boolean().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.id);
+        if (!tunnel) throw new Error("隧道不存在");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        const entryHostId = input.entryHostId ?? tunnel.entryHostId;
+        const exitHostId = input.exitHostId ?? tunnel.exitHostId;
+        if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
+        await requireHostAccess(ctx, entryHostId);
+        await requireHostAccess(ctx, exitHostId);
+        const { id, ...data } = input;
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
+        if (keyChanged) (data as any).isRunning = false;
+        await db.updateTunnel(id, data as any);
+        if (keyChanged) await db.resetForwardRulesByTunnel(id);
+        return { success: true, reset: keyChanged };
+      }),
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.id);
+        if (!tunnel) throw new Error("隧道不存在");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        await db.deleteTunnel(input.id);
+        return { success: true };
+      }),
+    test: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.id);
+        if (!tunnel) throw new Error("隧道不存在");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        const exit = await db.getHostById(tunnel.exitHostId);
+        if (!exit) throw new Error("出口 Agent 不存在");
+        const target = (exit as any).entryIp || exit.ip;
+        const start = Date.now();
+        const reachable = await new Promise<boolean>((resolve) => {
+          const socket = new net.Socket();
+          const done = (ok: boolean) => {
+            socket.destroy();
+            resolve(ok);
+          };
+          socket.setTimeout(3000);
+          socket.once("connect", () => done(true));
+          socket.once("timeout", () => done(false));
+          socket.once("error", () => done(false));
+          socket.connect(tunnel.listenPort, target);
+        });
+        const latencyMs = reachable ? Math.max(1, Date.now() - start) : null;
+        await db.updateTunnelTestResult(tunnel.id, {
+          status: reachable ? "success" : "failed",
+          latencyMs,
+          message: reachable ? `出口 ${target}:${tunnel.listenPort} 可达` : `出口 ${target}:${tunnel.listenPort} 不可达`,
+        });
+        return { success: reachable, latencyMs };
       }),
   }),
 
