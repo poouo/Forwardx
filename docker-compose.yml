@@ -1,14 +1,18 @@
+name: ${COMPOSE_PROJECT_NAME:-forwardx}
+
 services:
   forwardx:
     build: .
     image: forwardx:latest
-    container_name: forwardx-panel
+    container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-forwardx}
+      FORWARDX_CONTAINER_NAME: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
       # 单容器内置 SQLite，数据库文件持久化到下方 volume
       SQLITE_PATH: /data/forwardx.db
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
@@ -29,7 +33,9 @@ services:
           cp -a "$$TMP_DIR"/. /deploy/;
           rm -rf "$$TMP_DIR" "$$ARCHIVE";
         fi;
-        docker compose up -d --build forwardx'
+        EXISTING_PROJECT=$$(docker inspect "$${FORWARDX_CONTAINER_NAME:-forwardx-panel}" --format "{{ index .Config.Labels \"com.docker.compose.project\" }}" 2>/dev/null || true);
+        PROJECT_NAME="$${EXISTING_PROJECT:-$${COMPOSE_PROJECT_NAME:-forwardx}}";
+        docker compose -p "$$PROJECT_NAME" up -d --build --force-recreate --remove-orphans forwardx'
     volumes:
       - forwardx-data:/data
       # 一键升级需要访问宿主机 Docker 和部署目录；如不需要后台升级，可删除下面两行

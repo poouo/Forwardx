@@ -9,6 +9,21 @@ import { APP_VERSION } from "./_core/systemRouter";
 
 const agentRouter = Router();
 
+function normalizeVersion(version: string | null | undefined) {
+  return String(version || "").trim().replace(/^v/i, "");
+}
+
+function compareVersions(a: string | null | undefined, b: string | null | undefined) {
+  const pa = normalizeVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const pb = normalizeVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
 /**
  * Agent 加密中间件
  *
@@ -535,13 +550,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     }
 
-    const agentUpgrade = (host as any).agentUpgradeRequested ? {
-      targetVersion: (host as any).agentUpgradeTargetVersion || null,
-      panelUrl: await resolvePanelUrl(req),
-    } : null;
-    if (agentUpgrade) {
+    const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || APP_VERSION;
+    const agentUpgradeCompleted = (host as any).agentUpgradeRequested
+      && agentVersion
+      && compareVersions(agentVersion, requestedTargetVersion) >= 0;
+    if (agentUpgradeCompleted) {
       await db.clearHostAgentUpgradeRequest(host.id);
     }
+    const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted ? {
+      targetVersion: requestedTargetVersion,
+      panelUrl: await resolvePanelUrl(req),
+    } : null;
 
     res.json({ success: true, actions, selfTests, runningRules, agentUpgrade });
   } catch (error) {
