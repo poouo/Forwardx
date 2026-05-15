@@ -163,7 +163,7 @@ pnpm dev
 ## 构建 Agent 发布二进制
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.17
+bash scripts/build-agent-release.sh v2.1.18
 ```
 
 产物位于：

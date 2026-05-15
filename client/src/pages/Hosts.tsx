@@ -46,10 +46,11 @@ import {
   ArrowUpFromLine,
   LayoutGrid,
   List,
-  RefreshCw,
+  Download,
   AlertTriangle,
+  Loader2,
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -129,6 +130,7 @@ function HostCard({
   );
   const latestMetric = metrics?.[0];
   const agentNeedsUpdate = !!host.agentVersion && !!panelVersion && compareVersions(host.agentVersion, panelVersion) < 0;
+  const agentUpgrading = !!host.agentUpgradeRequested;
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
@@ -147,7 +149,7 @@ function HostCard({
               title="升级 Agent"
               onClick={() => onUpgrade(host)}
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
             </Button>
             <Button
               variant="ghost"
@@ -194,7 +196,12 @@ function HostCard({
               <p className="text-sm font-mono">{host.agentVersion ? `v${host.agentVersion}` : "-"}</p>
               {agentNeedsUpdate && (
                 <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
-                  需更新
+                  发现新版本
+                </Badge>
+              )}
+              {agentUpgrading && (
+                <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-500">
+                  升级中
                 </Badge>
               )}
               {!host.agentVersion && (
@@ -272,10 +279,11 @@ function HostsContent() {
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const { data: hosts, isLoading } = trpc.hosts.list.useQuery(undefined, {
-    refetchInterval: 15000,
+    refetchInterval: 5000,
   });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelVersion = systemSettings?.version;
+  const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
   const [showDialog, setShowDialog] = useState(false);
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
@@ -312,13 +320,33 @@ function HostsContent() {
   });
 
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       utils.hosts.list.invalidate();
       setUpgradeHost(null);
-      toast.success("已下发 Agent 升级任务，等待下次心跳执行");
+      toast.success(data?.pushed ? "Agent 升级任务已推送，正在升级" : "Agent 升级任务已记录，等待 Agent 回连后执行");
     },
     onError: (err) => toast.error(err.message || "下发升级任务失败"),
   });
+
+  useEffect(() => {
+    if (!hosts) return;
+    const tracked = upgradingHosts.current;
+    const currentIds = new Set<number>();
+    for (const host of hosts as any[]) {
+      currentIds.add(host.id);
+      if (host.agentUpgradeRequested) {
+        tracked.set(host.id, host.agentUpgradeTargetVersion || panelVersion || null);
+        continue;
+      }
+      if (tracked.has(host.id)) {
+        tracked.delete(host.id);
+        toast.success(`${host.name} Agent 升级成功，当前版本 ${host.agentVersion ? `v${host.agentVersion}` : "已上报"}`);
+      }
+    }
+    for (const hostId of Array.from(tracked.keys())) {
+      if (!currentIds.has(hostId)) tracked.delete(hostId);
+    }
+  }, [hosts, panelVersion]);
 
   const resetForm = () => {
     setForm(defaultFormData);
@@ -418,7 +446,7 @@ function HostsContent() {
           {updateCount > 0 && (
             <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs border-amber-500/30 text-amber-500">
               <AlertTriangle className="h-3 w-3" />
-              {updateCount} 台需更新
+              {updateCount} 台发现新版本
             </Badge>
           )}
           <div className="flex items-center border border-border/40 rounded-md overflow-hidden">
@@ -542,7 +570,12 @@ function HostsContent() {
                             </span>
                             {host.agentVersion && panelVersion && compareVersions(host.agentVersion, panelVersion) < 0 && (
                               <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
-                                需更新
+                                发现新版本
+                              </Badge>
+                            )}
+                            {host.agentUpgradeRequested && (
+                              <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-500">
+                                升级中
                               </Badge>
                             )}
                           </div>
@@ -564,7 +597,7 @@ function HostsContent() {
                               title="升级 Agent"
                               onClick={() => requestAgentUpgrade(host)}
                             >
-                              <RefreshCw className="h-3.5 w-3.5" />
+                              {host.agentUpgradeRequested ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                             </Button>
                             <Button
                               variant="ghost"
@@ -612,11 +645,11 @@ function HostsContent() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <RefreshCw className="h-5 w-5 text-primary" />
+              <Download className="h-5 w-5 text-primary" />
               升级 Agent
             </DialogTitle>
             <DialogDescription>
-              面板会在该主机下次心跳时下发升级任务，Agent 将重新拉取安装脚本并重启自身服务。
+              面板会通过 Agent 长连接立即推送升级任务；如果 Agent 暂时离线，会在回连后继续执行。
             </DialogDescription>
           </DialogHeader>
           {upgradeHost && (
@@ -644,7 +677,7 @@ function HostsContent() {
               disabled={!upgradeHost || upgradeAgentMutation.isPending}
               onClick={() => upgradeHost && upgradeAgentMutation.mutate({ hostId: upgradeHost.id })}
             >
-              <RefreshCw className={`h-4 w-4 ${upgradeAgentMutation.isPending ? "animate-spin" : ""}`} />
+              {upgradeAgentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               {upgradeAgentMutation.isPending ? "下发中..." : "确认升级"}
             </Button>
           </DialogFooter>

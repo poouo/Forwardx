@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
@@ -20,10 +21,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
-var Version = "2.1.17"
+var Version = "2.1.18"
+var upgradeStarted int32
 
 type Config struct {
 	PanelURL string `json:"panelUrl"`
@@ -100,6 +103,7 @@ func main() {
 
 	_ = register(cfg)
 	go selfTestPoller(cfg)
+	go agentEventStream(cfg)
 	for {
 		if err := heartbeat(cfg); err != nil {
 			logf("heartbeat error: %v", err)
@@ -206,6 +210,64 @@ func handleSelfTest(cfg Config, t selfTest) {
 	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
 		logf("selftest report failed test=%d target=%s: %v", t.TestID, target, err)
 	}
+}
+
+func agentEventStream(cfg Config) {
+	for {
+		if err := runAgentEventStream(cfg); err != nil {
+			logf("agent event stream error: %v", err)
+			time.Sleep(3 * time.Second)
+		}
+	}
+}
+
+func runAgentEventStream(cfg Config) error {
+	req, err := http.NewRequest("GET", cfg.PanelURL+"/api/agent/events", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("X-Agent-Version", Version)
+
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("event stream status: %s", resp.Status)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var eventName string
+	var data strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if eventName == "agent-upgrade" && data.Len() > 0 {
+				var up agentUpgrade
+				if err := json.Unmarshal([]byte(data.String()), &up); err != nil {
+					logf("decode agent upgrade event: %v", err)
+				} else {
+					go selfUpgrade(cfg, &up)
+				}
+			}
+			eventName = ""
+			data.Reset()
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	return scanner.Err()
 }
 
 func handleAction(cfg Config, a action) {
@@ -319,6 +381,10 @@ func delta(cur, prev uint64) uint64 {
 }
 
 func selfUpgrade(cfg Config, up *agentUpgrade) {
+	if !atomic.CompareAndSwapInt32(&upgradeStarted, 0, 1) {
+		logf("self-upgrade already started, ignoring duplicate request")
+		return
+	}
 	panel := strings.TrimRight(up.PanelURL, "/")
 	if panel == "" {
 		panel = cfg.PanelURL

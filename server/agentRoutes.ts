@@ -9,6 +9,22 @@ import { APP_VERSION } from "./_core/systemRouter";
 
 const agentRouter = Router();
 
+type AgentEventClient = {
+  hostId: number;
+  token: string;
+  res: Response;
+};
+
+const agentEventClients = new Map<number, AgentEventClient>();
+
+function sendAgentEvent(hostId: number, event: string, data: any) {
+  const client = agentEventClients.get(hostId);
+  if (!client) return false;
+  client.res.write(`event: ${event}\n`);
+  client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+  return true;
+}
+
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }
@@ -84,6 +100,60 @@ function agentEncryptionMiddleware(req: Request, res: Response, next: NextFuncti
 agentRouter.use("/api/agent", (req, res, next) => {
   if (req.method !== "POST") return next();
   return agentEncryptionMiddleware(req, res, next);
+});
+
+agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const token = authHeader.substring(7);
+    const host = await db.getHostByAgentToken(token);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const agentVersion = req.header("X-Agent-Version");
+    if (agentVersion) {
+      await db.updateHostHeartbeat(host.id, { agentVersion } as any);
+      const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || APP_VERSION;
+      const agentUpgradeCompleted = (host as any).agentUpgradeRequested
+        && compareVersions(agentVersion, requestedTargetVersion) >= 0;
+      if (agentUpgradeCompleted) {
+        await db.clearHostAgentUpgradeRequest(host.id);
+      }
+    }
+
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    const previous = agentEventClients.get(host.id);
+    previous?.res.end();
+    agentEventClients.set(host.id, { hostId: host.id, token, res });
+    res.write(`event: ready\n`);
+    res.write(`data: {"success":true}\n\n`);
+
+    const heartbeat = setInterval(() => {
+      res.write(`event: ping\n`);
+      res.write(`data: {}\n\n`);
+    }, 25000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      const current = agentEventClients.get(host.id);
+      if (current?.res === res) {
+        agentEventClients.delete(host.id);
+      }
+    });
+  } catch (error) {
+    console.error("[Agent Events] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // Agent 注册接口
@@ -2098,6 +2168,13 @@ async function resolvePanelUrl(req: Request): Promise<string> {
 }
 
 // 安装/卸载引导脚本
+export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string) {
+  return sendAgentEvent(hostId, "agent-upgrade", {
+    targetVersion: targetVersion || APP_VERSION,
+    panelUrl,
+  });
+}
+
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
   const panelUrl = await resolvePanelUrl(req);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");

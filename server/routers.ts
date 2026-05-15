@@ -7,7 +7,7 @@ import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
 import { ENV } from "./env";
 import * as db from "./db";
-import { generateFullInstallScript } from "./agentRoutes";
+import { generateFullInstallScript, pushAgentUpgrade } from "./agentRoutes";
 import { FORWARD_TYPES } from "../shared/forwardTypes";
 
 const forwardTypeSchema = z.enum(FORWARD_TYPES);
@@ -511,7 +511,10 @@ export const appRouter = router({
         const host = await db.getHostById(input.hostId);
         if (!host) throw new Error("主机不存在");
         await db.requestHostAgentUpgrade(input.hostId, input.targetVersion ?? null);
-        return { success: true };
+        const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
+        const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
+        const pushed = pushAgentUpgrade(input.hostId, input.targetVersion ?? null, panelUrl);
+        return { success: true, pushed };
       }),
   }),
 
