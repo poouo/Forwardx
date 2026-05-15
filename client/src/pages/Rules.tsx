@@ -781,16 +781,27 @@ function RulesContent() {
               <div className="space-y-2">
                 <Label>源端口</Label>
                 <div className="flex items-center gap-1">
-                  <Input
-                    type="number"
-                    placeholder="0=随机"
-                    value={form.sourcePort || ""}
-                    onChange={(e) => setForm({ ...form, sourcePort: parseInt(e.target.value) || 0 })}
-                    className={`flex-1 ${
-                      portStatus === "used" ? "border-destructive" :
-                      portStatus === "available" ? "border-emerald-500" : ""
-                    }`}
-                  />
+                  <div className="relative flex-1">
+                    <Input
+                      type="number"
+                      placeholder="0=随机"
+                      value={form.sourcePort || ""}
+                      onChange={(e) => setForm({ ...form, sourcePort: parseInt(e.target.value) || 0 })}
+                      className={`pr-8 ${
+                        portStatus === "used" ? "border-destructive" :
+                        portStatus === "available" ? "border-emerald-500" : ""
+                      }`}
+                    />
+                    {portStatus === "used" && (
+                      <XCircle className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-destructive" />
+                    )}
+                    {portStatus === "available" && (
+                      <CheckCircle2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-500" />
+                    )}
+                    {portStatus === "checking" && (
+                      <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+                    )}
+                  </div>
                   <Button
                     type="button"
                     variant="outline"
@@ -802,29 +813,26 @@ function RulesContent() {
                     <Shuffle className="h-4 w-4" />
                   </Button>
                 </div>
-                {portStatus === "used" && (
-                  <p className="text-xs text-destructive flex items-center gap-1">
-                    <XCircle className="h-3 w-3" /> {portRangeError || "端口已被占用"}
+                {(portStatus !== "idle" || (selectedHost && (selectedHost as any).portRangeStart && (selectedHost as any).portRangeEnd)) && (
+                  <p className={`text-[10px] leading-4 ${
+                    portStatus === "used" ? "text-destructive" :
+                    portStatus === "available" ? "text-emerald-600" :
+                    "text-muted-foreground"
+                  }`}>
+                    {portStatus === "used"
+                      ? (portRangeError || "端口已被占用")
+                      : portStatus === "available"
+                        ? "端口可用"
+                        : portStatus === "checking"
+                          ? "检测中..."
+                          : null}
+                    {selectedHost && (selectedHost as any).portRangeStart && (selectedHost as any).portRangeEnd && (
+                      <span className={portStatus === "idle" ? "text-amber-600" : "ml-1 text-amber-600"}>
+                        允许端口范围: {(selectedHost as any).portRangeStart}-{(selectedHost as any).portRangeEnd}
+                      </span>
+                    )}
                   </p>
                 )}
-                {portStatus === "available" && (
-                  <p className="text-xs text-emerald-600 flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3" /> 端口可用
-                  </p>
-                )}
-                {portStatus === "checking" && (
-                  <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    <Loader2 className="h-3 w-3 animate-spin" /> 检测中...
-                  </p>
-                )}
-                <p className="text-[10px] text-muted-foreground">
-                  留空或输入 0 将自动随机分配端口
-                  {selectedHost && (selectedHost as any).portRangeStart && (selectedHost as any).portRangeEnd && (
-                    <span className="block text-[10px] text-amber-600 mt-0.5">
-                      允许端口范围: {(selectedHost as any).portRangeStart}-{(selectedHost as any).portRangeEnd}
-                    </span>
-                  )}
-                </p>
               </div>
             </div>
 
