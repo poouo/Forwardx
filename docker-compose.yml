@@ -14,8 +14,22 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
       # 默认管理员密码（每次启动自动重置，可自定义）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
-      # 后台一键升级命令：容器内拉取 GitHub tag，并通过 Docker Compose 重建/重启本服务
-      FORWARDX_UPGRADE_COMMAND: sh -lc 'cd /deploy && git fetch --tags origin && git checkout "$$FORWARDX_TARGET_VERSION" && docker compose up -d --build forwardx'
+      # 后台一键升级命令：/deploy 是 Git 仓库时走 git；否则下载 GitHub tag 源码包覆盖部署目录。
+      FORWARDX_UPGRADE_COMMAND: >
+        sh -lc 'set -e;
+        cd /deploy;
+        if [ -d .git ]; then
+          git fetch --tags origin;
+          git checkout -f "$$FORWARDX_TARGET_VERSION";
+        else
+          TMP_DIR=$$(mktemp -d);
+          ARCHIVE="/tmp/forwardx-$$FORWARDX_TARGET_VERSION.tar.gz";
+          curl -fsSL "$${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx}/archive/refs/tags/$$FORWARDX_TARGET_VERSION.tar.gz" -o "$$ARCHIVE";
+          tar -xzf "$$ARCHIVE" -C "$$TMP_DIR" --strip-components=1;
+          cp -a "$$TMP_DIR"/. /deploy/;
+          rm -rf "$$TMP_DIR" "$$ARCHIVE";
+        fi;
+        docker compose up -d --build forwardx'
     volumes:
       - forwardx-data:/data
       # 一键升级需要访问宿主机 Docker 和部署目录；如不需要后台升级，可删除下面两行

@@ -26,8 +26,8 @@ ENV NODE_ENV=production \
     PORT=3000 \
     SQLITE_PATH=/data/forwardx.db
 
-# 运行阶段保留 sqlite 命令行便于排障；docker/git 用于可选的后台一键升级；tini 接管 PID 1 让信号正常传递
-RUN apk add --no-cache sqlite tini git docker-cli docker-cli-compose && mkdir -p /data
+# 运行阶段保留 sqlite 命令行便于排障；docker/git/curl 用于可选的后台一键升级；tini 接管 PID 1 让信号正常传递
+RUN apk add --no-cache sqlite tini git curl docker-cli docker-cli-compose && mkdir -p /data
 VOLUME ["/data"]
 
 COPY --from=prod-deps /app/node_modules ./node_modules

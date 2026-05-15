@@ -117,15 +117,25 @@ docker compose up -d
 默认 `docker-compose.yml` 已配置：
 
 - 挂载 `/var/run/docker.sock`，让容器内的 `docker compose` 可以重建宿主机上的服务。
-- 挂载当前部署目录到 `/deploy`，升级时会进入该目录拉取 GitHub tag。
+- 挂载当前部署目录到 `/deploy`。
 - 设置 `FORWARDX_UPGRADE_COMMAND`，点击「升级并重启」后会执行：
 
 ```bash
 cd /deploy
-git fetch --tags origin
-git checkout "$FORWARDX_TARGET_VERSION"
+if [ -d .git ]; then
+  git fetch --tags origin
+  git checkout -f "$FORWARDX_TARGET_VERSION"
+else
+  # 非 Git 部署目录会下载 GitHub tag 源码包覆盖到 /deploy
+  TMP_DIR=$(mktemp -d)
+  curl -fsSL "$FORWARDX_REPO_URL/archive/refs/tags/$FORWARDX_TARGET_VERSION.tar.gz" -o /tmp/forwardx.tgz
+  tar -xzf /tmp/forwardx.tgz -C "$TMP_DIR" --strip-components=1
+  cp -a "$TMP_DIR"/. /deploy/
+fi
 docker compose up -d --build forwardx
 ```
+
+也就是说：如果你是 `git clone` 后部署，会使用 Git 更新；如果你是宝塔、SSH 上传目录、`docker/Forwardx` 自包含目录这类非 Git 部署，会自动走源码包覆盖升级。
 
 如果你不希望面板具备控制宿主机 Docker 的能力，可以删除 compose 中的 Docker socket、`/deploy` 挂载和 `FORWARDX_UPGRADE_COMMAND`。删除后后台仍可检查新版本，但不会执行自动升级。
 
@@ -150,7 +160,7 @@ pnpm start
 Agent 是 Go 常驻程序。发布新版本前可以本地构建 Linux x86_64 / ARM64 二进制：
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.8
+bash scripts/build-agent-release.sh v2.1.9
 ```
 
 产物位于：
