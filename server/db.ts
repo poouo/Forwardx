@@ -875,6 +875,14 @@ export async function updateAgentTokenDescription(id: number, description: strin
 export async function deleteAgentToken(id: number) {
   const db = await getDb();
   if (!db) return;
+  const token = await getAgentTokenById(id);
+  if (token?.token) {
+    await db.update(hosts).set({
+      agentToken: null,
+      isOnline: false,
+      updatedAt: nowDate(),
+    }).where(eq(hosts.agentToken, token.token));
+  }
   await db.delete(agentTokens).where(eq(agentTokens.id, id));
 }
 

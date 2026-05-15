@@ -141,7 +141,8 @@ function SettingsContent() {
   const deleteTokenMutation = trpc.agentTokens.delete.useMutation({
     onSuccess: () => {
       utils.agentTokens.list.invalidate();
-      toast.success("Token 已删除");
+      utils.hosts.list.invalidate();
+      toast.success("Token 已删除，关联主机已解除绑定");
     },
     onError: (err) => toast.error(err.message || "删除 Token 失败"),
   });
@@ -394,7 +395,7 @@ function SettingsContent() {
                                 size="icon"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
                                 onClick={() => {
-                                  if (confirm("确定要删除此 Token 吗？"))
+                                  if (confirm("确定要删除此 Token 吗？已使用的 Token 会从关联主机解除绑定，但不会删除主机。"))
                                     deleteTokenMutation.mutate({ id: t.id });
                                 }}
                               >
