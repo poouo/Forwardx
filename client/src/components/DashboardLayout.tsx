@@ -275,7 +275,7 @@ function DashboardLayoutContent({
           {isAdmin && updateInfo?.hasUpdate && (
             <button
               type="button"
-              onClick={() => setLocation("/settings")}
+              onClick={() => setLocation("/settings?tab=system")}
               className="mb-2 flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-2 text-left text-primary transition-colors hover:bg-primary/15 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2"
               title={`发现新版本 ${updateInfo.latestVersion}`}
             >

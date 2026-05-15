@@ -113,14 +113,28 @@ function getUpgradeProgress(job: any) {
 
 function SettingsContent() {
   const { user } = useAuth();
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const utils = trpc.useUtils();
+  const initialTab = (() => {
+    const query = location.split("?")[1] || "";
+    const tab = new URLSearchParams(query).get("tab");
+    return tab === "system" || tab === "install" || tab === "backup" || tab === "tokens" ? tab : "tokens";
+  })();
+  const [activeTab, setActiveTab] = useState(initialTab);
 
   useEffect(() => {
     if (user && user.role !== "admin") {
       setLocation("/");
     }
   }, [user, setLocation]);
+
+  useEffect(() => {
+    const query = location.split("?")[1] || "";
+    const tab = new URLSearchParams(query).get("tab");
+    if (tab === "system" || tab === "install" || tab === "backup" || tab === "tokens") {
+      setActiveTab(tab);
+    }
+  }, [location]);
 
   const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(
     undefined,
@@ -282,7 +296,7 @@ function SettingsContent() {
         </Badge>
       </div>
 
-      <Tabs defaultValue="tokens" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="bg-muted/30 border border-border/30">
           <TabsTrigger value="tokens" className="gap-1.5">
             <Key className="h-3.5 w-3.5" />
