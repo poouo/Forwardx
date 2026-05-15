@@ -7,56 +7,15 @@ services:
     container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
-      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-forwardx}
-      FORWARDX_CONTAINER_NAME: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
-      # 单容器内置 SQLite，数据库文件持久化到下方 volume
       SQLITE_PATH: /data/forwardx.db
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
-      # 默认管理员密码（每次启动自动重置，可自定义）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
-      # 后台一键升级命令：/deploy 是 Git 仓库时走 git；否则下载 GitHub tag 源码包覆盖部署目录。
-      FORWARDX_UPGRADE_COMMAND: >
-        sh -lc 'set -e;
-        cd /deploy;
-        if [ -d .git ]; then
-          git fetch --tags origin;
-          git checkout -f "$$FORWARDX_TARGET_VERSION";
-        else
-          TMP_DIR=$$(mktemp -d);
-          ARCHIVE="/tmp/forwardx-$$FORWARDX_TARGET_VERSION.tar.gz";
-          curl -fsSL "$${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx}/archive/refs/tags/$$FORWARDX_TARGET_VERSION.tar.gz" -o "$$ARCHIVE";
-          tar -xzf "$$ARCHIVE" -C "$$TMP_DIR" --strip-components=1;
-          cp -a "$$TMP_DIR"/. /deploy/;
-          rm -rf "$$TMP_DIR" "$$ARCHIVE";
-        fi;
-        CONTAINER_NAME="$${FORWARDX_CONTAINER_NAME:-forwardx-panel}";
-        EXISTING_PROJECT=$$(docker inspect "$$CONTAINER_NAME" --format "{{ index .Config.Labels \"com.docker.compose.project\" }}" 2>/dev/null || true);
-        PROJECT_NAME="$${EXISTING_PROJECT:-$${COMPOSE_PROJECT_NAME:-forwardx}}";
-        DEPLOY_SOURCE=$$(docker inspect "$$CONTAINER_NAME" --format "{{ range .Mounts }}{{ if eq .Destination \"/deploy\" }}{{ .Source }}{{ end }}{{ end }}" 2>/dev/null || true);
-        DEPLOY_SOURCE="$${DEPLOY_SOURCE:-/deploy}";
-        HELPER_IMAGE="$${FORWARDX_UPGRADE_HELPER_IMAGE:-forwardx:latest}";
-        cat > /deploy/.forwardx-upgrade-helper.sh <<\EOF
-        set -e
-        sleep 2
-        cd /deploy
-        docker compose -p "$PROJECT_NAME" build forwardx
-        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-        docker compose -p "$PROJECT_NAME" up -d --no-build --remove-orphans forwardx
-        rm -f /deploy/.forwardx-upgrade-helper.sh
-        EOF
-        chmod +x /deploy/.forwardx-upgrade-helper.sh;
-        docker rm -f "$$CONTAINER_NAME-upgrade" 2>/dev/null || true;
-        docker run -d --rm --name "$$CONTAINER_NAME-upgrade" -e PROJECT_NAME="$$PROJECT_NAME" -e CONTAINER_NAME="$$CONTAINER_NAME" -v /var/run/docker.sock:/var/run/docker.sock -v "$$DEPLOY_SOURCE":/deploy -w /deploy --entrypoint sh "$$HELPER_IMAGE" /deploy/.forwardx-upgrade-helper.sh;
-        echo "[ForwardX] 升级助手容器已启动，面板容器将由助手重建。后台日志会在当前容器停止后中断，请稍后刷新页面查看新版本。"'
     volumes:
       - forwardx-data:/data
-      # 一键升级需要访问宿主机 Docker 和部署目录；如不需要后台升级，可删除下面两行
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/deploy
 
 volumes:
   forwardx-data:

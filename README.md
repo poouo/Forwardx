@@ -1,143 +1,144 @@
-<div align="center">
+﻿<div align="center">
 
 # ForwardX
 
-**Linux 端口转发集中管理面板**
+**Linux 绔彛杞彂闆嗕腑绠＄悊闈㈡澘**
 
-轻量、现代、开箱即用的端口转发管理方案，支持 iptables / realm / socat 三种转发引擎，
-通过 Agent 实现多主机统一管控。
+杞婚噺銆佺幇浠ｃ€佸紑绠卞嵆鐢ㄧ殑绔彛杞彂绠＄悊鏂规锛屾敮鎸?iptables / realm / socat 涓夌杞彂寮曟搸锛?
+閫氳繃 Agent 瀹炵幇澶氫富鏈虹粺涓€绠℃帶銆?
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-[English](#english) · [功能特性](#功能特性) · [快速开始](#快速开始) · [使用指南](#使用指南) · [项目架构](#项目架构) · [贡献指南](CONTRIBUTING.md)
+[English](#english) 路 [鍔熻兘鐗规€(#鍔熻兘鐗规€? 路 [蹇€熷紑濮媇(#蹇€熷紑濮? 路 [浣跨敤鎸囧崡](#浣跨敤鎸囧崡) 路 [椤圭洰鏋舵瀯](#椤圭洰鏋舵瀯) 路 [璐＄尞鎸囧崡](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-## 功能特性
+## 鍔熻兘鐗规€?
 
-### 多引擎转发
+### 澶氬紩鎿庤浆鍙?
 
-ForwardX 支持三种主流端口转发工具，可根据场景灵活选择：
+ForwardX 鏀寔涓夌涓绘祦绔彛杞彂宸ュ叿锛屽彲鏍规嵁鍦烘櫙鐏垫椿閫夋嫨锛?
 
-| 转发引擎 | 协议支持 | 特点 |
+| 杞彂寮曟搸 | 鍗忚鏀寔 | 鐗圭偣 |
 |---------|---------|------|
-| **iptables** | TCP / UDP / Both | 内核级 DNAT 转发，性能最优，零额外依赖 |
-| **realm** | TCP / UDP / Both | 用户态高性能代理，支持零拷贝，Agent 自动下载安装 |
-| **socat** | TCP / UDP / Both | 通用网络瑞士军刀，兼容性最广 |
+| **iptables** | TCP / UDP / Both | 鍐呮牳绾?DNAT 杞彂锛屾€ц兘鏈€浼橈紝闆堕澶栦緷璧?|
+| **realm** | TCP / UDP / Both | 鐢ㄦ埛鎬侀珮鎬ц兘浠ｇ悊锛屾敮鎸侀浂鎷疯礉锛孉gent 鑷姩涓嬭浇瀹夎 |
+| **socat** | TCP / UDP / Both | 閫氱敤缃戠粶鐟炲＋鍐涘垁锛屽吋瀹规€ф渶骞?|
 
-### 核心能力
+### 鏍稿績鑳藉姏
 
-| 功能模块 | 说明 |
+| 鍔熻兘妯″潡 | 璇存槑 |
 |---------|------|
-| **仪表盘** | 关键指标总览、主机在线率/规则活跃率环形图、最近主机与规则列表 |
-| **多主机管理** | 通过 Agent 统一管控多台 Linux 服务器，支持主控机/被控机角色 |
-| **转发规则** | 可视化创建/编辑/启停转发规则，支持三种引擎和 TCP/UDP/Both 协议 |
-| **实时监控** | Agent 周期性上报 CPU、内存、网络、磁盘等主机指标 |
-| **流量统计** | 基于 iptables 计数链精确统计每条规则的入向/出向流量，支持趋势图表 |
-| **流量管理** | 支持用户流量额度限制、到期时间设置、流量自动/手动重置 |
-| **连通性检测** | 一键自测转发链路，检测目标端口 TCP 可达性和 tcping 延迟 |
-| **多用户权限** | 管理员/普通用户角色分离，支持开放注册、细粒度权限控制、用户规则条数/端口数限制 |
-| **Agent 权限** | 支持管理员为每个用户分配可使用的 Agent 主机权限，实现资源隔离 |
-| **端口管理** | 支持主机端口区间限制，添加规则时自动检测端口占用并支持随机分配 |
-| **移动端适配** | 全局响应式布局，完美适配手机端浏览器操作 |
-| **配置导入导出** | 支持 JSON 格式的规则和主机配置备份与恢复 |
-| **暗色主题** | 内置亮色/暗色主题切换，跟随系统偏好 |
+| **浠〃鐩?* | 鍏抽敭鎸囨爣鎬昏銆佷富鏈哄湪绾跨巼/瑙勫垯娲昏穬鐜囩幆褰㈠浘銆佹渶杩戜富鏈轰笌瑙勫垯鍒楄〃 |
+| **澶氫富鏈虹鐞?* | 閫氳繃 Agent 缁熶竴绠℃帶澶氬彴 Linux 鏈嶅姟鍣紝鏀寔涓绘帶鏈?琚帶鏈鸿鑹?|
+| **杞彂瑙勫垯** | 鍙鍖栧垱寤?缂栬緫/鍚仠杞彂瑙勫垯锛屾敮鎸佷笁绉嶅紩鎿庡拰 TCP/UDP/Both 鍗忚 |
+| **瀹炴椂鐩戞帶** | Agent 鍛ㄦ湡鎬т笂鎶?CPU銆佸唴瀛樸€佺綉缁溿€佺鐩樼瓑涓绘満鎸囨爣 |
+| **娴侀噺缁熻** | 鍩轰簬 iptables 璁℃暟閾剧簿纭粺璁℃瘡鏉¤鍒欑殑鍏ュ悜/鍑哄悜娴侀噺锛屾敮鎸佽秼鍔垮浘琛?|
+| **娴侀噺绠＄悊** | 鏀寔鐢ㄦ埛娴侀噺棰濆害闄愬埗銆佸埌鏈熸椂闂磋缃€佹祦閲忚嚜鍔?鎵嬪姩閲嶇疆 |
+| **杩為€氭€ф娴?* | 涓€閿嚜娴嬭浆鍙戦摼璺紝妫€娴嬬洰鏍囩鍙?TCP 鍙揪鎬у拰 tcping 寤惰繜 |
+| **澶氱敤鎴锋潈闄?* | 绠＄悊鍛?鏅€氱敤鎴疯鑹插垎绂伙紝鏀寔寮€鏀炬敞鍐屻€佺粏绮掑害鏉冮檺鎺у埗銆佺敤鎴疯鍒欐潯鏁?绔彛鏁伴檺鍒?|
+| **Agent 鏉冮檺** | 鏀寔绠＄悊鍛樹负姣忎釜鐢ㄦ埛鍒嗛厤鍙娇鐢ㄧ殑 Agent 涓绘満鏉冮檺锛屽疄鐜拌祫婧愰殧绂?|
+| **绔彛绠＄悊** | 鏀寔涓绘満绔彛鍖洪棿闄愬埗锛屾坊鍔犺鍒欐椂鑷姩妫€娴嬬鍙ｅ崰鐢ㄥ苟鏀寔闅忔満鍒嗛厤 |
+| **绉诲姩绔€傞厤** | 鍏ㄥ眬鍝嶅簲寮忓竷灞€锛屽畬缇庨€傞厤鎵嬫満绔祻瑙堝櫒鎿嶄綔 |
+| **閰嶇疆瀵煎叆瀵煎嚭** | 鏀寔 JSON 鏍煎紡鐨勮鍒欏拰涓绘満閰嶇疆澶囦唤涓庢仮澶?|
+| **鏆楄壊涓婚** | 鍐呯疆浜壊/鏆楄壊涓婚鍒囨崲锛岃窡闅忕郴缁熷亸濂?|
 
-### Agent 架构
+### Agent 鏋舵瀯
 
-ForwardX 采用 **Agent 轮询架构**，无需在面板服务器上配置 SSH 密钥：
+ForwardX 閲囩敤 **Agent 杞鏋舵瀯**锛屾棤闇€鍦ㄩ潰鏉挎湇鍔″櫒涓婇厤缃?SSH 瀵嗛挜锛?
 
 ```
-┌─────────────┐    心跳/上报     ┌──────────────┐
-│  Agent 主机  │ ──────────────→ │  ForwardX    │
-│  (Go Agent)  │ ←────────────── │  面板服务器   │
-└─────────────┘   规则下发/响应   └──────────────┘
-                                       │
-                                  SQLite 存储
-                                       │
-                                 ┌─────────────┐
-                                 │  Web 浏览器  │
-                                 │  (React SPA) │
-                                 └─────────────┘
+鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?   蹇冭烦/涓婃姤     鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+鈹? Agent 涓绘満  鈹?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈫?鈹? ForwardX    鈹?
+鈹? (Go Agent)  鈹?鈫愨攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ 鈹? 闈㈡澘鏈嶅姟鍣?  鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?  瑙勫垯涓嬪彂/鍝嶅簲   鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+                                       鈹?
+                                  SQLite 瀛樺偍
+                                       鈹?
+                                 鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
+                                 鈹? Web 娴忚鍣? 鈹?
+                                 鈹? (React SPA) 鈹?
+                                 鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?
 ```
 
-1. 面板生成 Agent Token，通过一键安装脚本部署到目标主机
-2. Go Agent 以 systemd 服务运行，每 30 秒向面板心跳上报状态
-3. 面板通过心跳响应下发转发规则变更，Agent 本地执行
-4. 流量数据、主机指标、自测结果均通过 Agent 主动上报
+1. 闈㈡澘鐢熸垚 Agent Token锛岄€氳繃涓€閿畨瑁呰剼鏈儴缃插埌鐩爣涓绘満
+2. Go Agent 浠?systemd 鏈嶅姟杩愯锛屾瘡 30 绉掑悜闈㈡澘蹇冭烦涓婃姤鐘舵€?3. 闈㈡澘閫氳繃蹇冭烦鍝嶅簲涓嬪彂杞彂瑙勫垯鍙樻洿锛孉gent 鏈湴鎵ц
+4. 娴侀噺鏁版嵁銆佷富鏈烘寚鏍囥€佽嚜娴嬬粨鏋滃潎閫氳繃 Agent 涓诲姩涓婃姤
 
-## 技术栈
+## 鎶€鏈爤
 
-| 层级 | 技术 |
+| 灞傜骇 | 鎶€鏈?|
 |------|------|
-| **前端** | React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui + Recharts |
-| **后端** | Node.js 22 + Express + tRPC 11 |
-| **数据库** | SQLite (better-sqlite3) + Drizzle ORM |
-| **构建** | Vite 6 (前端) + esbuild (后端) |
-| **部署** | Docker + Docker Compose |
-| **Agent** | Go 常驻程序 + Shell 安装/升级器 |
+| **鍓嶇** | React 19 + TypeScript + Tailwind CSS 4 + shadcn/ui + Recharts |
+| **鍚庣** | Node.js 22 + Express + tRPC 11 |
+| **鏁版嵁搴?* | SQLite (better-sqlite3) + Drizzle ORM |
+| **鏋勫缓** | Vite 6 (鍓嶇) + esbuild (鍚庣) |
+| **閮ㄧ讲** | Docker + Docker Compose |
+| **Agent** | Go 甯搁┗绋嬪簭 + Shell 瀹夎/鍗囩骇鍣?|
 
 ## 快速开始
 
-### Docker 部署（推荐）
+ForwardX 面板提供两种部署方式：
+
+- **本地部署**：面板运行在宿主机 systemd 中，适合希望后台直接执行一键升级的场景。
+- **Docker 部署**：面板运行在 Docker Compose 中，升级脚本需要在宿主机执行，会覆盖旧容器并以同名容器重新启动。
+
+### 本地部署（一键脚本）
+
+安装：
 
 ```bash
-# 克隆项目
-git clone https://github.com/your-username/forwardx.git
-cd forwardx
-
-# 复制环境变量配置
-cp .env.example .env
-
-# 编辑配置（建议修改 JWT_SECRET）
-nano .env
-
-# 启动服务
-docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- install
 ```
 
-面板默认运行在 `http://your-server-ip:3000`，默认管理员账户：
+升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade
+```
+
+卸载：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- uninstall
+```
+
+本地部署默认安装到 `/opt/forwardx-panel`，创建 `forwardx-panel.service`，数据库位于 `/opt/forwardx-panel/data/forwardx.db`。脚本会写入 `FORWARDX_UPGRADE_COMMAND`，因此后台「版本升级」可以直接执行一键升级并重启面板服务。
+
+### Docker 部署（一键脚本）
+
+安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- install
+```
+
+升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade
+```
+
+卸载：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- uninstall
+```
+
+Docker 部署默认安装到 `/opt/forwardx-docker`，使用 Compose 项目名 `forwardx` 和容器名 `forwardx-panel`。升级脚本会拉取最新 tag，执行 `docker rm -f forwardx-panel`，然后 `docker compose -p forwardx up -d --build --remove-orphans forwardx`，从而覆盖旧容器并重新启动；默认不会删除 `forwardx-data` 数据卷。
+
+面板默认运行在 `http://your-server-ip:3000`，默认管理员账号：
 
 | 字段 | 值 |
 |------|-----|
 | 用户名 | `admin` |
 | 密码 | `admin123` |
 
-> **安全提示**：首次登录后请立即修改管理员密码，或通过环境变量 `ADMIN_PASSWORD` 自定义默认密码。每次服务启动时，admin 账户的密码会自动重置为 `ADMIN_PASSWORD` 的值。
-
-### 后台一键升级
-
-管理后台「系统设置 -> 系统信息 -> 版本升级」支持检查 GitHub 新版本，并在 Docker Compose 环境中执行升级命令。
-
-默认 `docker-compose.yml` 已配置：
-
-- 挂载 `/var/run/docker.sock`，让容器内的 `docker compose` 可以重建宿主机上的服务。
-- 挂载当前部署目录到 `/deploy`。
-- 设置 `FORWARDX_UPGRADE_COMMAND`，点击「升级并重启」后会执行：
-
-```bash
-cd /deploy
-if [ -d .git ]; then
-  git fetch --tags origin
-  git checkout -f "$FORWARDX_TARGET_VERSION"
-else
-  # 非 Git 部署目录会下载 GitHub tag 源码包覆盖到 /deploy
-  TMP_DIR=$(mktemp -d)
-  curl -fsSL "$FORWARDX_REPO_URL/archive/refs/tags/$FORWARDX_TARGET_VERSION.tar.gz" -o /tmp/forwardx.tgz
-  tar -xzf /tmp/forwardx.tgz -C "$TMP_DIR" --strip-components=1
-  cp -a "$TMP_DIR"/. /deploy/
-fi
-docker compose up -d --build forwardx
-```
-
-也就是说：如果你是 `git clone` 后部署，会使用 Git 更新；如果你是宝塔、SSH 上传目录、`docker/Forwardx` 自包含目录这类非 Git 部署，会自动走源码包覆盖升级。
-
-如果你不希望面板具备控制宿主机 Docker 的能力，可以删除 compose 中的 Docker socket、`/deploy` 挂载和 `FORWARDX_UPGRADE_COMMAND`。删除后后台仍可检查新版本，但不会执行自动升级。
+> **安全提示**：首次登录后请立即修改管理员密码，或安装前通过环境变量 `ADMIN_PASSWORD` 自定义默认密码；生产环境也建议设置 `JWT_SECRET`。
 
 ### 从源码构建
 
@@ -155,229 +156,219 @@ pnpm build
 pnpm start
 ```
 
-### 构建 Agent 发布二进制
-
-Agent 是 Go 常驻程序。发布新版本前可以本地构建 Linux x86_64 / ARM64 二进制：
+### 鏋勫缓 Agent 鍙戝竷浜岃繘鍒?
+Agent 鏄?Go 甯搁┗绋嬪簭銆傚彂甯冩柊鐗堟湰鍓嶅彲浠ユ湰鍦版瀯寤?Linux x86_64 / ARM64 浜岃繘鍒讹細
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.12
+bash scripts/build-agent-release.sh v2.1.13
 ```
 
-产物位于：
-
+浜х墿浣嶄簬锛?
 ```text
 dist/agent/forwardx-agent-linux-amd64
 dist/agent/forwardx-agent-linux-arm64
 dist/agent/SHA256SUMS
 ```
 
-仓库已包含 GitHub Actions 工作流：推送 `v*.*.*` tag 时，会自动构建上述两个 Linux 常规发行版二进制并上传到对应 GitHub Release。被控机安装/升级脚本会按机器架构优先下载：
-
+浠撳簱宸插寘鍚?GitHub Actions 宸ヤ綔娴侊細鎺ㄩ€?`v*.*.*` tag 鏃讹紝浼氳嚜鍔ㄦ瀯寤轰笂杩颁袱涓?Linux 甯歌鍙戣鐗堜簩杩涘埗骞朵笂浼犲埌瀵瑰簲 GitHub Release銆傝鎺ф満瀹夎/鍗囩骇鑴氭湰浼氭寜鏈哄櫒鏋舵瀯浼樺厛涓嬭浇锛?
 - `forwardx-agent-linux-amd64`
 - `forwardx-agent-linux-arm64`
 
-如果 Release 中没有对应二进制，安装脚本会尝试在被控机上临时安装 Go 并从源码构建；仍失败时才回退到旧 Shell Agent。
+濡傛灉 Release 涓病鏈夊搴斾簩杩涘埗锛屽畨瑁呰剼鏈細灏濊瘯鍦ㄨ鎺ф満涓婁复鏃跺畨瑁?Go 骞朵粠婧愮爜鏋勫缓锛涗粛澶辫触鏃舵墠鍥為€€鍒版棫 Shell Agent銆?
+### 鐜鍙橀噺
 
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
+| 鍙橀噺 | 榛樿鍊?| 璇存槑 |
 |------|--------|------|
-| `PORT` | `3000` | 面板监听端口 |
-| `SQLITE_PATH` | `/data/forwardx.db` | SQLite 数据库文件路径 |
-| `JWT_SECRET` | `change-me-to-a-random-string` | JWT 签名密钥（**生产环境必须修改**） |
-| `ADMIN_PASSWORD` | `admin123` | 管理员默认密码（每次启动自动重置） |
-| `NODE_ENV` | `production` | 运行环境 |
+| `PORT` | `3000` | 闈㈡澘鐩戝惉绔彛 |
+| `SQLITE_PATH` | `/data/forwardx.db` | SQLite 鏁版嵁搴撴枃浠惰矾寰?|
+| `JWT_SECRET` | `change-me-to-a-random-string` | JWT 绛惧悕瀵嗛挜锛?*鐢熶骇鐜蹇呴』淇敼**锛?|
+| `ADMIN_PASSWORD` | `admin123` | 绠＄悊鍛橀粯璁ゅ瘑鐮侊紙姣忔鍚姩鑷姩閲嶇疆锛?|
+| `NODE_ENV` | `production` | 杩愯鐜 |
 
-## 使用指南
+## 浣跨敤鎸囧崡
 
-### 1. 部署 Agent
+### 1. 閮ㄧ讲 Agent
 
-在面板的 **设置 → Agent Token** 页面生成 Token，然后在目标主机上执行一键安装命令：
+鍦ㄩ潰鏉跨殑 **璁剧疆 鈫?Agent Token** 椤甸潰鐢熸垚 Token锛岀劧鍚庡湪鐩爣涓绘満涓婃墽琛屼竴閿畨瑁呭懡浠わ細
 
 ```bash
-# 安装 Agent（GitHub 优先，不可达时可直接使用面板地址）
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
+# 瀹夎 Agent锛圙itHub 浼樺厛锛屼笉鍙揪鏃跺彲鐩存帴浣跨敤闈㈡澘鍦板潃锛?curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
   PANEL_URL="http://your-panel:3000" bash -s -- install YOUR_AGENT_TOKEN
 ```
 
-安装脚本会自动完成以下操作：
+瀹夎鑴氭湰浼氳嚜鍔ㄥ畬鎴愪互涓嬫搷浣滐細
 
-- 安装依赖（curl、jq、iptables、iproute2）
-- 下载并安装 realm 转发工具
-- 安装 Go Agent 程序并配置 systemd 服务（`forwardx-agent.service`）
-- 注册到面板并开始心跳上报
+- 瀹夎渚濊禆锛坈url銆乯q銆乮ptables銆乮proute2锛?
+- 涓嬭浇骞跺畨瑁?realm 杞彂宸ュ叿
+- 瀹夎 Go Agent 绋嬪簭骞堕厤缃?systemd 鏈嶅姟锛坄forwardx-agent.service`锛?- 娉ㄥ唽鍒伴潰鏉垮苟寮€濮嬪績璺充笂鎶?
 
 ```bash
-# 升级 Agent（复用已安装 Agent 中的面板地址和 Token）
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | bash -s -- upgrade
+# 鍗囩骇 Agent锛堝鐢ㄥ凡瀹夎 Agent 涓殑闈㈡澘鍦板潃鍜?Token锛?curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | bash -s -- upgrade
 
-# 如果需要手动指定面板地址或 Token
+# 濡傛灉闇€瑕佹墜鍔ㄦ寚瀹氶潰鏉垮湴鍧€鎴?Token
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
   PANEL_URL="http://your-panel:3000" bash -s -- upgrade YOUR_AGENT_TOKEN
 
-# 卸载 Agent
+# 鍗歌浇 Agent
 curl -fsSL http://your-panel:3000/api/agent/install.sh | bash -s -- uninstall
 
-# 交互模式（不带参数，可选择安装、升级或卸载）
-curl -fsSL http://your-panel:3000/api/agent/install.sh | bash
+# 浜や簰妯″紡锛堜笉甯﹀弬鏁帮紝鍙€夋嫨瀹夎銆佸崌绾ф垨鍗歌浇锛?curl -fsSL http://your-panel:3000/api/agent/install.sh | bash
 ```
 
-升级不会删除面板中的主机、规则或 Token。脚本会重新从面板拉取与当前面板版本匹配的完整 Agent 安装包，更新 `/usr/local/bin/forwardx-agent`、刷新 `/etc/forwardx-agent/config.json` 并重启 `forwardx-agent` 服务。已有转发规则会在下一次心跳中重新同步。
+鍗囩骇涓嶄細鍒犻櫎闈㈡澘涓殑涓绘満銆佽鍒欐垨 Token銆傝剼鏈細閲嶆柊浠庨潰鏉挎媺鍙栦笌褰撳墠闈㈡澘鐗堟湰鍖归厤鐨勫畬鏁?Agent 瀹夎鍖咃紝鏇存柊 `/usr/local/bin/forwardx-agent`銆佸埛鏂?`/etc/forwardx-agent/config.json` 骞堕噸鍚?`forwardx-agent` 鏈嶅姟銆傚凡鏈夎浆鍙戣鍒欎細鍦ㄤ笅涓€娆″績璺充腑閲嶆柊鍚屾銆?
+### 2. 鍒涘缓杞彂瑙勫垯
 
-### 2. 创建转发规则
+1. 杩涘叆 **杞彂瑙勫垯** 椤甸潰锛岀偣鍑?**娣诲姞瑙勫垯**
+2. 閫夋嫨鐩爣涓绘満銆佽浆鍙戝伐鍏凤紙iptables / realm / socat锛?
+3. 閰嶇疆婧愮鍙ｃ€佺洰鏍?IP銆佺洰鏍囩鍙ｃ€佸崗璁被鍨?
+4. 榛樿闅忔満鍒嗛厤婧愮鍙ｏ紝涔熷彲鎵嬪姩鎸囧畾锛堜細鑷姩妫€娴嬬鍙ｅ崰鐢級
+5. 淇濆瓨鍚庤鍒欏皢鍦ㄤ笅娆?Agent 蹇冭烦鏃惰嚜鍔ㄤ笅鍙戞墽琛?
 
-1. 进入 **转发规则** 页面，点击 **添加规则**
-2. 选择目标主机、转发工具（iptables / realm / socat）
-3. 配置源端口、目标 IP、目标端口、协议类型
-4. 默认随机分配源端口，也可手动指定（会自动检测端口占用）
-5. 保存后规则将在下次 Agent 心跳时自动下发执行
+### 3. 娴侀噺涓庢潈闄愮鐞?
 
-### 3. 流量与权限管理
+绠＄悊鍛樺彲鍦?**鐢ㄦ埛绠＄悊** 椤甸潰瀵圭敤鎴疯繘琛岃缁嗛厤缃細
 
-管理员可在 **用户管理** 页面对用户进行详细配置：
+- **娴侀噺闄愰** 鈥?鏀寔 GB/TB 绾у埆璁剧疆锛岃秴棰濆悗鑷姩绂佺敤璇ョ敤鎴风殑鎵€鏈夎鍒?
+- **鍒版湡鏃堕棿** 鈥?鍒版湡鍚庤嚜鍔ㄧ鐢ㄨ鍒?
+- **鑷姩閲嶇疆** 鈥?鍙缃瘡鏈堟寚瀹氭棩鏈熻嚜鍔ㄦ竻闆跺凡鐢ㄦ祦閲?
+- **鏉冮檺鎺у埗** 鈥?鍙崟鐙帶鍒剁敤鎴锋槸鍚﹀厑璁告坊鍔犳柊瑙勫垯
 
-- **流量限额** — 支持 GB/TB 级别设置，超额后自动禁用该用户的所有规则
-- **到期时间** — 到期后自动禁用规则
-- **自动重置** — 可设置每月指定日期自动清零已用流量
-- **权限控制** — 可单独控制用户是否允许添加新规则
+### 4. 杩為€氭€ф娴?
 
-### 4. 连通性检测
+鍦ㄨ鍒欏垪琛ㄤ腑鐐瑰嚮鑷祴鎸夐挳锛孉gent 浼氭墽琛屼互涓嬫娴嬶細
 
-在规则列表中点击自测按钮，Agent 会执行以下检测：
+- **鏈湴鐩戝惉妫€娴?*锛堜粎渚涘弬鑰冿級鈥?妫€鏌ョ鍙ｆ槸鍚﹀湪鐩戝惉
+- **鐩爣鍙揪** 鈥?妫€娴嬬洰鏍?IP:Port 鏄惁鍙揪锛屼綔涓鸿繛閫氭€у垽瀹氫緷鎹?
+- **鐩爣寤惰繜** 鈥?ping 鐩爣 IP 鐨勫钩鍧囧欢杩燂紙ms锛夛紝鎸夊欢杩熺潃鑹叉樉绀?
 
-- **本地监听检测**（仅供参考）— 检查端口是否在监听
-- **目标可达** — 检测目标 IP:Port 是否可达，作为连通性判定依据
-- **目标延迟** — ping 目标 IP 的平均延迟（ms），按延迟着色显示
+### 5. 鐢ㄦ埛绠＄悊
 
-### 5. 用户管理
+- 绠＄悊鍛樺彲鍦?**鐢ㄦ埛绠＄悊** 椤甸潰鍒涘缓鏂扮敤鎴凤紝鎴栨彁鍗?闄嶇骇鐢ㄦ埛瑙掕壊
+- 鏅€氱敤鎴峰彧鑳界鐞嗚嚜宸卞垱寤虹殑涓绘満鍜岃鍒?
+- 绠＄悊鍛樺彲鏌ョ湅鍜岀鐞嗘墍鏈夎祫婧?
 
-- 管理员可在 **用户管理** 页面创建新用户，或提升/降级用户角色
-- 普通用户只能管理自己创建的主机和规则
-- 管理员可查看和管理所有资源
+## Agent 閫氫俊鍗忚
 
-## Agent 通信协议
-
-| 接口 | 方法 | 说明 |
+| 鎺ュ彛 | 鏂规硶 | 璇存槑 |
 |------|------|------|
-| `/api/agent/register` | POST | Agent 注册，上报主机信息 |
-| `/api/agent/heartbeat` | POST | 心跳上报，获取待执行命令 |
-| `/api/agent/rule-status` | POST | 规则执行状态回调 |
-| `/api/agent/traffic` | POST | 流量数据周期上报 |
-| `/api/agent/selftest-result` | POST | 自测结果上报 |
-| `/api/agent/install.sh` | GET | 安装/卸载引导脚本下载 |
+| `/api/agent/register` | POST | Agent 娉ㄥ唽锛屼笂鎶ヤ富鏈轰俊鎭?|
+| `/api/agent/heartbeat` | POST | 蹇冭烦涓婃姤锛岃幏鍙栧緟鎵ц鍛戒护 |
+| `/api/agent/rule-status` | POST | 瑙勫垯鎵ц鐘舵€佸洖璋?|
+| `/api/agent/traffic` | POST | 娴侀噺鏁版嵁鍛ㄦ湡涓婃姤 |
+| `/api/agent/selftest-result` | POST | 鑷祴缁撴灉涓婃姤 |
+| `/api/agent/install.sh` | GET | 瀹夎/鍗歌浇寮曞鑴氭湰涓嬭浇 |
 
-## Agent 管理命令
+## Agent 绠＄悊鍛戒护
 
 ```bash
-# 查看 Agent 状态
+# 鏌ョ湅 Agent 鐘舵€?
 systemctl status forwardx-agent
 
-# 查看 Agent 日志
+# 鏌ョ湅 Agent 鏃ュ織
 journalctl -u forwardx-agent -f
 
-# 重启 Agent
+# 閲嶅惎 Agent
 systemctl restart forwardx-agent
 
-# 停止 Agent
+# 鍋滄 Agent
 systemctl stop forwardx-agent
 ```
 
-## 数据库
+## 鏁版嵁搴?
 
-项目使用 Drizzle ORM 管理 SQLite 数据库 Schema：
+椤圭洰浣跨敤 Drizzle ORM 绠＄悊 SQLite 鏁版嵁搴?Schema锛?
 
 ```bash
-# 生成迁移文件
+# 鐢熸垚杩佺Щ鏂囦欢
 pnpm db:generate
 
-# 应用迁移
+# 搴旂敤杩佺Щ
 pnpm db:migrate
 ```
 
-| 表名 | 说明 |
+| 琛ㄥ悕 | 璇存槑 |
 |------|------|
-| `users` | 用户信息，含角色权限 |
-| `hosts` | 主机信息，含连接方式和在线状态 |
-| `forward_rules` | 转发规则，含运行状态 |
-| `host_metrics` | 主机监控指标时序数据 |
-| `traffic_stats` | 转发规则流量统计 |
-| `agent_tokens` | Agent 认证令牌 |
-| `forward_tests` | 转发自测任务与结果 |
+| `users` | 鐢ㄦ埛淇℃伅锛屽惈瑙掕壊鏉冮檺 |
+| `hosts` | 涓绘満淇℃伅锛屽惈杩炴帴鏂瑰紡鍜屽湪绾跨姸鎬?|
+| `forward_rules` | 杞彂瑙勫垯锛屽惈杩愯鐘舵€?|
+| `host_metrics` | 涓绘満鐩戞帶鎸囨爣鏃跺簭鏁版嵁 |
+| `traffic_stats` | 杞彂瑙勫垯娴侀噺缁熻 |
+| `agent_tokens` | Agent 璁よ瘉浠ょ墝 |
+| `forward_tests` | 杞彂鑷祴浠诲姟涓庣粨鏋?|
 
-## 项目结构
+## 椤圭洰缁撴瀯
 
 ```
 forwardx/
-├── client/                  # 前端源码
-│   └── src/
-│       ├── components/      # UI 组件（shadcn/ui）
-│       │   └── ui/          # 基础 UI 组件库
-│       ├── pages/           # 页面组件
-│       │   ├── Home.tsx     #   仪表盘
-│       │   ├── Hosts.tsx    #   主机管理
-│       │   ├── Rules.tsx    #   转发规则管理
-│       │   ├── Users.tsx    #   用户管理
-│       │   ├── Settings.tsx #   系统设置
-│       │   └── Login.tsx    #   登录页
-│       ├── contexts/        # React Context（主题等）
-│       ├── hooks/           # 自定义 Hooks
-│       └── lib/             # 工具函数（tRPC 客户端等）
-├── server/                  # 后端源码
-│   ├── index.ts             # 入口文件（Express + tRPC）
-│   ├── routers.ts           # tRPC 路由定义
-│   ├── agentRoutes.ts       # Agent HTTP API + 脚本生成
-│   ├── db.ts                # SQLite 数据访问层
-│   └── env.ts               # 环境变量解析
-├── drizzle/                 # 数据库
-│   └── schema.ts            # Drizzle ORM Schema 定义
-├── shared/                  # 前后端共享代码
-│   └── const.ts             # 共享常量
-├── Dockerfile               # 多阶段 Docker 构建
-├── docker-compose.yml       # Docker Compose 编排
-├── .env.example             # 环境变量模板
-└── package.json
+鈹溾攢鈹€ client/                  # 鍓嶇婧愮爜
+鈹?  鈹斺攢鈹€ src/
+鈹?      鈹溾攢鈹€ components/      # UI 缁勪欢锛坰hadcn/ui锛?
+鈹?      鈹?  鈹斺攢鈹€ ui/          # 鍩虹 UI 缁勪欢搴?
+鈹?      鈹溾攢鈹€ pages/           # 椤甸潰缁勪欢
+鈹?      鈹?  鈹溾攢鈹€ Home.tsx     #   浠〃鐩?
+鈹?      鈹?  鈹溾攢鈹€ Hosts.tsx    #   涓绘満绠＄悊
+鈹?      鈹?  鈹溾攢鈹€ Rules.tsx    #   杞彂瑙勫垯绠＄悊
+鈹?      鈹?  鈹溾攢鈹€ Users.tsx    #   鐢ㄦ埛绠＄悊
+鈹?      鈹?  鈹溾攢鈹€ Settings.tsx #   绯荤粺璁剧疆
+鈹?      鈹?  鈹斺攢鈹€ Login.tsx    #   鐧诲綍椤?
+鈹?      鈹溾攢鈹€ contexts/        # React Context锛堜富棰樼瓑锛?
+鈹?      鈹溾攢鈹€ hooks/           # 鑷畾涔?Hooks
+鈹?      鈹斺攢鈹€ lib/             # 宸ュ叿鍑芥暟锛坱RPC 瀹㈡埛绔瓑锛?
+鈹溾攢鈹€ server/                  # 鍚庣婧愮爜
+鈹?  鈹溾攢鈹€ index.ts             # 鍏ュ彛鏂囦欢锛圗xpress + tRPC锛?
+鈹?  鈹溾攢鈹€ routers.ts           # tRPC 璺敱瀹氫箟
+鈹?  鈹溾攢鈹€ agentRoutes.ts       # Agent HTTP API + 鑴氭湰鐢熸垚
+鈹?  鈹溾攢鈹€ db.ts                # SQLite 鏁版嵁璁块棶灞?
+鈹?  鈹斺攢鈹€ env.ts               # 鐜鍙橀噺瑙ｆ瀽
+鈹溾攢鈹€ drizzle/                 # 鏁版嵁搴?
+鈹?  鈹斺攢鈹€ schema.ts            # Drizzle ORM Schema 瀹氫箟
+鈹溾攢鈹€ shared/                  # 鍓嶅悗绔叡浜唬鐮?
+鈹?  鈹斺攢鈹€ const.ts             # 鍏变韩甯搁噺
+鈹溾攢鈹€ Dockerfile               # 澶氶樁娈?Docker 鏋勫缓
+鈹溾攢鈹€ docker-compose.yml       # Docker Compose 缂栨帓
+鈹溾攢鈹€ .env.example             # 鐜鍙橀噺妯℃澘
+鈹斺攢鈹€ package.json
 ```
 
-## 系统要求
+## 绯荤粺瑕佹眰
 
-**面板服务器：**
+**闈㈡澘鏈嶅姟鍣細**
 
-- Docker 20+ 或 Node.js 22+
-- 最低 512MB 内存
+- Docker 20+ 鎴?Node.js 22+
+- 鏈€浣?512MB 鍐呭瓨
 
-**Agent 目标主机：**
+**Agent 鐩爣涓绘満锛?*
 
-- Linux (Debian / Ubuntu / CentOS / Alpine 等)
-- 需要 `curl`、`jq`、`iptables` 命令
-- 使用 realm 引擎时 Agent 自动下载安装 realm 二进制
-- 使用 socat 引擎时需预装 `socat`
+- Linux (Debian / Ubuntu / CentOS / Alpine 绛?
+- 闇€瑕?`curl`銆乣jq`銆乣iptables` 鍛戒护
+- 浣跨敤 realm 寮曟搸鏃?Agent 鑷姩涓嬭浇瀹夎 realm 浜岃繘鍒?
+- 浣跨敤 socat 寮曟搸鏃堕渶棰勮 `socat`
 
 
-## 常见问题
+## 甯歌闂
 
-**Q: Agent 流量统计显示为 0？**
+**Q: Agent 娴侀噺缁熻鏄剧ず涓?0锛?*
 
-确保 Agent 版本为最新。旧版本中 realm/socat 转发的流量计数链挂载位置有误，导致用户态代理的流量无法统计。更新 Agent 后需重新应用规则以重建计数链。
+纭繚 Agent 鐗堟湰涓烘渶鏂般€傛棫鐗堟湰涓?realm/socat 杞彂鐨勬祦閲忚鏁伴摼鎸傝浇浣嶇疆鏈夎锛屽鑷寸敤鎴锋€佷唬鐞嗙殑娴侀噺鏃犳硶缁熻銆傛洿鏂?Agent 鍚庨渶閲嶆柊搴旂敤瑙勫垯浠ラ噸寤鸿鏁伴摼銆?
 
-**Q: 如何更新 Agent？**
+**Q: 濡備綍鏇存柊 Agent锛?*
 
-在目标主机上执行 `upgrade` 命令即可，Agent 会自动覆盖更新。管理员也可以在主机管理页点击“升级 Agent”，面板会在该主机下次心跳时下发自升级任务。
+鍦ㄧ洰鏍囦富鏈轰笂鎵ц `upgrade` 鍛戒护鍗冲彲锛孉gent 浼氳嚜鍔ㄨ鐩栨洿鏂般€傜鐞嗗憳涔熷彲浠ュ湪涓绘満绠＄悊椤电偣鍑烩€滃崌绾?Agent鈥濓紝闈㈡澘浼氬湪璇ヤ富鏈轰笅娆″績璺虫椂涓嬪彂鑷崌绾т换鍔°€?
+**Q: 鏀寔 IPv6 鍚楋紵**
 
-**Q: 支持 IPv6 吗？**
+鐩墠浠呮敮鎸?IPv4 杞彂銆侷Pv6 鏀寔璁″垝鍦ㄥ悗缁増鏈腑鍔犲叆銆?
 
-目前仅支持 IPv4 转发。IPv6 支持计划在后续版本中加入。
+**Q: 鏁版嵁搴撳浣曞浠斤紵**
 
-**Q: 数据库如何备份？**
+SQLite 鏁版嵁搴撴枃浠堕粯璁や綅浜?Docker Volume 涓殑 `/data/forwardx.db`锛屽彲鐩存帴澶嶅埗璇ユ枃浠惰繘琛屽浠姐€傞潰鏉夸篃鏀寔閫氳繃璁剧疆椤甸潰瀵煎嚭/瀵煎叆閰嶇疆銆?
 
-SQLite 数据库文件默认位于 Docker Volume 中的 `/data/forwardx.db`，可直接复制该文件进行备份。面板也支持通过设置页面导出/导入配置。
+## 璁稿彲璇?
 
-## 许可证
+鏈」鐩熀浜?[MIT License](LICENSE) 寮€婧愩€?
 
-本项目基于 [MIT License](LICENSE) 开源。
+## 璐＄尞
 
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！请阅读 [贡献指南](CONTRIBUTING.md) 了解详情。
+娆㈣繋鎻愪氦 Issue 鍜?Pull Request锛佽闃呰 [璐＄尞鎸囧崡](CONTRIBUTING.md) 浜嗚В璇︽儏銆?
 
 ---
 
@@ -395,16 +386,16 @@ ForwardX is a lightweight, modern, and self-hosted **Linux port forwarding manag
 
 ### Key Features
 
-- **Multi-engine support** — iptables (kernel-level DNAT), realm (high-performance userspace proxy), and socat (universal network tool)
-- **Multi-host management** — Manage forwarding rules on multiple servers through a unified dashboard
-- **Real-time monitoring** — CPU, memory, network metrics and per-rule traffic statistics with trend charts
-- **Traffic management** — User traffic quotas, expiration dates, and auto/manual traffic reset
-- **Port management** — Host port range limits, automatic port conflict detection, and random port assignment
-- **Connectivity testing** — One-click link testing with target reachability and ping latency detection
-- **Multi-user RBAC** — Admin and regular user roles with resource isolation
-- **Config backup** — JSON-based import/export for rules and host configurations
-- **Docker-ready** — One-command deployment with Docker Compose
-- **Agent-based** — No SSH keys needed; Go agent with a lightweight shell installer
+- **Multi-engine support** 鈥?iptables (kernel-level DNAT), realm (high-performance userspace proxy), and socat (universal network tool)
+- **Multi-host management** 鈥?Manage forwarding rules on multiple servers through a unified dashboard
+- **Real-time monitoring** 鈥?CPU, memory, network metrics and per-rule traffic statistics with trend charts
+- **Traffic management** 鈥?User traffic quotas, expiration dates, and auto/manual traffic reset
+- **Port management** 鈥?Host port range limits, automatic port conflict detection, and random port assignment
+- **Connectivity testing** 鈥?One-click link testing with target reachability and ping latency detection
+- **Multi-user RBAC** 鈥?Admin and regular user roles with resource isolation
+- **Config backup** 鈥?JSON-based import/export for rules and host configurations
+- **Docker-ready** 鈥?One-command deployment with Docker Compose
+- **Agent-based** 鈥?No SSH keys needed; Go agent with a lightweight shell installer
 
 ### Quick Start
 
@@ -420,7 +411,7 @@ Visit `http://your-server-ip:3000` to access the panel.
 
 ### Deploy Agent
 
-Generate an Agent Token in **Settings → Agent Token**, then run on the target host:
+Generate an Agent Token in **Settings 鈫?Agent Token**, then run on the target host:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
