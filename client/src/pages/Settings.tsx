@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import {
@@ -54,9 +55,47 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useState, useEffect } from "react";
+import { useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+
+function getUpgradeProgress(job: any) {
+  const status = job?.status || "idle";
+  const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
+  const matched = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(logs));
+  const steps = [
+    {
+      label: "准备升级",
+      done: status !== "idle" && matched([/开始升级/i, /start/i]),
+    },
+    {
+      label: "拉取与准备依赖",
+      done: matched([/load metadata/i, /transferring context/i, /pnpm install/i, /Packages:/i, /node_modules/i, /downloaded/i]),
+    },
+    {
+      label: "构建新版本",
+      done: matched([/pnpm build/i, /vite .*building/i, /modules transformed/i, /Server build complete/i, /exporting layers/i]),
+    },
+    {
+      label: "重启服务",
+      done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]),
+    },
+  ];
+
+  if (status === "success") {
+    return { percent: 100, label: "升级完成", steps: steps.map((step) => ({ ...step, done: true })) };
+  }
+  if (status === "error") {
+    const doneCount = steps.filter((step) => step.done).length;
+    return { percent: Math.max(10, doneCount * 22), label: "升级异常", steps };
+  }
+  if (status === "running") {
+    const doneCount = steps.filter((step) => step.done).length;
+    const activeStep = steps.find((step) => !step.done)?.label || "等待服务重启";
+    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: activeStep, steps };
+  }
+  return { percent: 0, label: "等待升级", steps };
+}
 
 function SettingsContent() {
   const { user } = useAuth();
@@ -814,12 +853,26 @@ function SystemInfoSection() {
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
+  const previousUpgradeStatus = useRef<string | null>(null);
 
   useEffect(() => {
     if (settings) {
       setPanelUrlInput(settings.panelPublicUrl || "");
     }
   }, [settings]);
+
+  useEffect(() => {
+    const status = upgradeStatus?.job?.status;
+    if (!status || status === "idle") return;
+    const previous = previousUpgradeStatus.current;
+    if (previous === "running" && status === "success") {
+      toast.success("面板升级成功");
+    }
+    if (previous === "running" && status === "error") {
+      toast.error(upgradeStatus?.job?.error || "面板升级失败");
+    }
+    previousUpgradeStatus.current = status;
+  }, [upgradeStatus?.job?.status, upgradeStatus?.job?.error]);
 
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
     onSuccess: () => {
@@ -863,6 +916,8 @@ function SystemInfoSection() {
   const latestVersion = updateInfo?.latestVersion || "未知";
   const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
   const isUpgradeRunning = upgradeStatus?.job.status === "running";
+  const upgradeProgress = getUpgradeProgress(upgradeStatus?.job);
+  const upgradeErrorLogs = (upgradeStatus?.job?.logs || []).slice(-80).join("\n");
 
   if (isLoading) {
     return (
@@ -1046,16 +1101,77 @@ function SystemInfoSection() {
           </div>
 
           {upgradeStatus?.job && upgradeStatus.job.status !== "idle" && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>升级任务：{upgradeStatus.job.status}</span>
-                <span>{upgradeStatus.job.targetVersion}</span>
+            <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                    upgradeStatus.job.status === "error"
+                      ? "bg-destructive/10 text-destructive"
+                      : upgradeStatus.job.status === "success"
+                        ? "bg-emerald-500/10 text-emerald-500"
+                        : "bg-primary/10 text-primary"
+                  }`}>
+                    {upgradeStatus.job.status === "error" ? (
+                      <AlertTriangle className="h-5 w-5" />
+                    ) : upgradeStatus.job.status === "success" ? (
+                      <CheckCircle2 className="h-5 w-5" />
+                    ) : (
+                      <Rocket className="h-5 w-5 animate-pulse" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">
+                      {upgradeStatus.job.status === "success"
+                        ? "升级成功"
+                        : upgradeStatus.job.status === "error"
+                          ? "升级出现异常"
+                          : "正在升级"}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {upgradeStatus.job.status === "success"
+                        ? `已完成 ${upgradeStatus.job.targetVersion || ""} 升级`
+                        : upgradeStatus.job.status === "error"
+                          ? "升级未完成，请查看下方异常信息"
+                          : upgradeProgress.label}
+                    </p>
+                  </div>
+                </div>
+                <Badge variant={upgradeStatus.job.status === "error" ? "destructive" : "outline"} className="w-fit">
+                  {upgradeStatus.job.targetVersion}
+                </Badge>
               </div>
-              <pre className="max-h-64 overflow-auto rounded-lg border border-border/40 bg-background/70 p-3 text-xs leading-relaxed">
-                {(upgradeStatus.job.logs || []).join("\n") || "暂无日志"}
-              </pre>
-              {upgradeStatus.job.error && (
-                <p className="text-xs text-destructive">{upgradeStatus.job.error}</p>
+
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{upgradeProgress.label}</span>
+                  <span>{upgradeProgress.percent}%</span>
+                </div>
+                <Progress value={upgradeProgress.percent} className="h-2" />
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {upgradeProgress.steps.map((step) => (
+                    <div
+                      key={step.label}
+                      className={`rounded-lg border px-3 py-2 text-xs ${
+                        step.done
+                          ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-500"
+                          : "border-border/40 bg-background/40 text-muted-foreground"
+                      }`}
+                    >
+                      {step.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {upgradeStatus.job.status === "error" && (
+                <div className="mt-4 space-y-2">
+                  {upgradeStatus.job.error && (
+                    <p className="text-xs font-medium text-destructive">{upgradeStatus.job.error}</p>
+                  )}
+                  <pre className="max-h-64 overflow-auto rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs leading-relaxed text-destructive">
+                    {upgradeErrorLogs || "暂无异常日志"}
+                  </pre>
+                </div>
               )}
             </div>
           )}
