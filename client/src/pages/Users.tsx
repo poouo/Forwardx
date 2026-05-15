@@ -240,9 +240,9 @@ function UsersContent() {
     setCanAddRules(!!u.canAddRules);
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
-    // 转发方式权限：allowedForwardTypes 为 null/空串 表示全部允许
+    // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
-    if (!allowedRaw.trim()) {
+    if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
       setAllowIptables(true); setAllowRealm(true); setAllowSocat(true);
     } else {
       const set = new Set(allowedRaw.split(",").map((s: string) => s.trim()));
@@ -312,7 +312,7 @@ function UsersContent() {
         </div>
       </div>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <Card className="glass-panel overflow-hidden">
         <CardContent className="p-0">
           {isLoading ? (
             <div className="p-6 space-y-3">
@@ -671,7 +671,7 @@ function UsersContent() {
               <Separator />
               <div className="space-y-2">
                 <Label className="text-sm font-medium">允许使用的转发方式</Label>
-                <p className="text-xs text-muted-foreground">全部关闭会被视为「默认全部允许」。建议至少保留一种。</p>
+                <p className="text-xs text-muted-foreground">全部关闭将禁止创建任何转发方式；留空权限时才表示默认全部允许。</p>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
                     <span className="text-xs font-medium">iptables</span>

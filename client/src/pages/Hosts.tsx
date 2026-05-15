@@ -46,6 +46,7 @@ import {
   ArrowUpFromLine,
   LayoutGrid,
   List,
+  RefreshCw,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
@@ -95,10 +96,14 @@ function HostCard({
   host,
   onEdit,
   onDelete,
+  onUpgrade,
+  canUpgrade,
 }: {
   host: any;
   onEdit: (host: any) => void;
   onDelete: (id: number) => void;
+  onUpgrade: (host: any) => void;
+  canUpgrade: boolean;
 }) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 1 },
@@ -115,6 +120,16 @@ function HostCard({
             {host.name}
           </CardTitle>
           <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              disabled={!canUpgrade}
+              title="升级 Agent"
+              onClick={() => onUpgrade(host)}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -153,6 +168,10 @@ function HostCard({
           <div className="space-y-1 col-span-2">
             <p className="text-xs text-muted-foreground">系统</p>
             <p className="text-sm truncate">{host.osInfo || "-"}</p>
+          </div>
+          <div className="space-y-1 col-span-2">
+            <p className="text-xs text-muted-foreground">Agent 版本</p>
+            <p className="text-sm font-mono">{host.agentVersion ? `v${host.agentVersion}` : "-"}</p>
           </div>
         </div>
 
@@ -258,6 +277,14 @@ function HostsContent() {
     onError: (err) => toast.error(err.message || "删除失败"),
   });
 
+  const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
+    onSuccess: () => {
+      utils.hosts.list.invalidate();
+      toast.success("已下发 Agent 升级任务，等待下次心跳执行");
+    },
+    onError: (err) => toast.error(err.message || "下发升级任务失败"),
+  });
+
   const resetForm = () => {
     setForm(defaultFormData);
     setEditingId(null);
@@ -329,6 +356,10 @@ function HostsContent() {
 
   const isPending = createMutation.isPending || updateMutation.isPending;
   const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
+  const requestAgentUpgrade = (host: any) => {
+    if (!confirm(`确定要让主机 "${host.name}" 在下次心跳时升级 Agent 吗？`)) return;
+    upgradeAgentMutation.mutate({ hostId: host.id });
+  };
 
   return (
     <div className="space-y-6">
@@ -388,6 +419,8 @@ function HostsContent() {
                 host={host}
                 onEdit={openEdit}
                 onDelete={(id) => deleteMutation.mutate({ id })}
+                onUpgrade={requestAgentUpgrade}
+                canUpgrade={user?.role === "admin"}
               />
             ))}
           </div>
@@ -405,6 +438,7 @@ function HostsContent() {
                       <TableHead className="hidden md:table-cell">类型</TableHead>
                       <TableHead className="hidden lg:table-cell">端口区间</TableHead>
                       <TableHead className="hidden md:table-cell">系统</TableHead>
+                      <TableHead className="hidden lg:table-cell">Agent</TableHead>
                       <TableHead className="hidden sm:table-cell">最后心跳</TableHead>
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow>
@@ -456,6 +490,11 @@ function HostsContent() {
                             {host.osInfo || "-"}
                           </span>
                         </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          <span className="text-xs font-mono text-muted-foreground">
+                            {host.agentVersion ? `v${host.agentVersion}` : "-"}
+                          </span>
+                        </TableCell>
                         <TableCell className="hidden sm:table-cell">
                           <span className="text-xs text-muted-foreground">
                             {host.lastHeartbeat
@@ -465,6 +504,16 @@ function HostsContent() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              disabled={user?.role !== "admin"}
+                              title="升级 Agent"
+                              onClick={() => requestAgentUpgrade(host)}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon"

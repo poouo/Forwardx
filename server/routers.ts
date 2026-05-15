@@ -77,6 +77,31 @@ function clearLoginFail(ip: string, username: string) {
   loginFailStore.delete(getLoginFailKey(ip, username));
 }
 
+function ensureAdminOrSelf(ctx: { user: { id: number; role: string } }, userId: number) {
+  if (ctx.user.role !== "admin" && ctx.user.id !== userId) {
+    throw new Error("无权访问该用户的数据");
+  }
+}
+
+async function requireHostAccess(ctx: { user: { id: number; role: string } }, hostId: number) {
+  const host = await db.getHostById(hostId);
+  if (!host) throw new Error("主机不存在");
+  if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) {
+    const hasPermission = await db.checkUserHostPermission(ctx.user.id, host.id);
+    if (!hasPermission) throw new Error("无权访问该主机");
+  }
+  return host;
+}
+
+async function requireRuleAccess(ctx: { user: { id: number; role: string } }, ruleId: number) {
+  const rule = await db.getForwardRuleById(ruleId);
+  if (!rule) throw new Error("规则不存在");
+  if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) {
+    throw new Error("无权访问该规则");
+  }
+  return rule;
+}
+
 export const appRouter = router({
   system: systemRouter,
 
@@ -323,7 +348,8 @@ export const appRouter = router({
     /** 获取某用户的规则数和端口数 */
     getUserQuotaUsage: protectedProcedure
       .input(z.object({ userId: z.number() }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
+        ensureAdminOrSelf(ctx, input.userId);
         const [ruleCount, portCount] = await Promise.all([
           db.getUserRuleCount(input.userId),
           db.getUserPortCount(input.userId),
@@ -351,10 +377,10 @@ export const appRouter = router({
           data.expiresAt = expiresAt ? new Date(expiresAt) : null;
         }
         if (allowedForwardTypes !== undefined) {
-          // 所有三种都允许时存 null 表示默认全部
-          const set = new Set((allowedForwardTypes || "").split(",").map(s => s.trim()).filter(Boolean));
+          // null 表示全部允许；空字符串表示全部禁用。
+          const set = new Set((allowedForwardTypes ?? "").split(",").map(s => s.trim()).filter(Boolean));
           const valid = ["iptables", "realm", "socat"].filter(t => set.has(t));
-          data.allowedForwardTypes = valid.length === 0 || valid.length === 3 ? null : valid.join(",");
+          data.allowedForwardTypes = allowedForwardTypes === null || valid.length === 3 ? null : valid.join(",");
         }
         await db.updateUserTrafficSettings(userId, data);
         return { success: true };
@@ -466,8 +492,17 @@ export const appRouter = router({
       }),
     metrics: protectedProcedure
       .input(z.object({ hostId: z.number(), limit: z.number().default(60) }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
+        await requireHostAccess(ctx, input.hostId);
         return db.getLatestHostMetrics(input.hostId, input.limit);
+      }),
+    requestAgentUpgrade: adminProcedure
+      .input(z.object({ hostId: z.number(), targetVersion: z.string().max(64).nullable().optional() }))
+      .mutation(async ({ input }) => {
+        const host = await db.getHostById(input.hostId);
+        if (!host) throw new Error("主机不存在");
+        await db.requestHostAgentUpgrade(input.hostId, input.targetVersion ?? null);
+        return { success: true };
       }),
   }),
 
@@ -494,16 +529,19 @@ export const appRouter = router({
         sourcePort: z.number().min(1).max(65535),
         excludeRuleId: z.number().optional(),
       }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
+        await requireHostAccess(ctx, input.hostId);
+        if (input.excludeRuleId) {
+          await requireRuleAccess(ctx, input.excludeRuleId);
+        }
         const used = await db.isPortUsedOnHost(input.hostId, input.sourcePort, input.excludeRuleId);
         return { used };
       }),
     /** 获取随机可用端口 */
     randomPort: protectedProcedure
       .input(z.object({ hostId: z.number() }))
-      .query(async ({ input }) => {
-        const host = await db.getHostById(input.hostId);
-        if (!host) throw new Error("主机不存在");
+      .query(async ({ input, ctx }) => {
+        const host = await requireHostAccess(ctx, input.hostId);
         const port = await db.findAvailablePort(input.hostId, (host as any).portRangeStart, (host as any).portRangeEnd);
         if (!port) throw new Error("该主机端口区间内已无可用端口");
         return { port };
@@ -526,19 +564,17 @@ export const appRouter = router({
         // 转发方式权限检查：非管理员需在 allowedForwardTypes 列表中
         if (ctx.user.role !== "admin") {
           const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
-          if (allowedRaw && allowedRaw.trim()) {
+          if (allowedRaw !== null && allowedRaw !== undefined) {
             const allowed = new Set(allowedRaw.split(",").map(s => s.trim()).filter(Boolean));
-            if (!allowed.has(input.forwardType)) {
-              throw new Error(`您没有使用 ${input.forwardType} 转发方式的权限，请联系管理员`);
-            }
+            if (!allowed.has(input.forwardType)) throw new Error(`您没有使用 ${input.forwardType} 转发方式的权限，请联系管理员`);
           }
         }
         const host = await db.getHostById(input.hostId);
         if (!host) throw new Error("主机不存在");
 
-        // Agent 权限检查：非管理员需要有该主机的使用权限
+        // Agent 权限检查：非管理员需要拥有该主机，或被管理员授权使用该主机
         if (ctx.user.role !== "admin") {
-          const hasPermission = await db.checkUserHostPermission(ctx.user.id, input.hostId);
+          const hasPermission = host.userId === ctx.user.id || await db.checkUserHostPermission(ctx.user.id, input.hostId);
           if (!hasPermission) throw new Error("您没有使用该主机的权限，请联系管理员授权");
         }
 
@@ -669,7 +705,8 @@ export const appRouter = router({
       }),
     traffic: protectedProcedure
       .input(z.object({ ruleId: z.number(), limit: z.number().default(60) }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
+        await requireRuleAccess(ctx, input.ruleId);
         return db.getTrafficStats(input.ruleId, input.limit);
       }),
     trafficSummary: protectedProcedure
@@ -777,13 +814,23 @@ export const appRouter = router({
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        const token = await db.getAgentTokenById(input.id);
+        if (!token) throw new Error("Token 不存在");
+        if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
+          throw new Error("无权删除该 Token");
+        }
         await db.deleteAgentToken(input.id);
         return { success: true };
       }),
     getInstallScript: protectedProcedure
       .input(z.object({ token: z.string(), panelUrl: z.string().optional() }))
-      .query(({ input, ctx }) => {
+      .query(async ({ input, ctx }) => {
+        const token = await db.getAgentTokenByToken(input.token);
+        if (!token) throw new Error("Token 不存在");
+        if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
+          throw new Error("无权使用该 Token");
+        }
         const reqAny = ctx.req as any;
         const fallbackHost = reqAny?.get?.("host") || "localhost:3000";
         const fallbackProto = reqAny?.protocol || "http";

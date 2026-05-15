@@ -102,6 +102,10 @@ export async function initDatabase() {
         osInfo TEXT,
         cpuInfo TEXT,
         memoryTotal INTEGER,
+        agentVersion TEXT,
+        agentUpgradeRequested INTEGER NOT NULL DEFAULT 0,
+        agentUpgradeTargetVersion TEXT,
+        agentUpgradeRequestedAt INTEGER,
         networkInterface TEXT,
         portRangeStart INTEGER,
         portRangeEnd INTEGER,
@@ -203,6 +207,10 @@ export async function initDatabase() {
       `ALTER TABLE hosts ADD COLUMN networkInterface TEXT`,
       `ALTER TABLE hosts ADD COLUMN portRangeStart INTEGER`,
       `ALTER TABLE hosts ADD COLUMN portRangeEnd INTEGER`,
+      `ALTER TABLE hosts ADD COLUMN agentVersion TEXT`,
+      `ALTER TABLE hosts ADD COLUMN agentUpgradeRequested INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE hosts ADD COLUMN agentUpgradeTargetVersion TEXT`,
+      `ALTER TABLE hosts ADD COLUMN agentUpgradeRequestedAt INTEGER`,
       `ALTER TABLE users ADD COLUMN canAddRules INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficLimit INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficUsed INTEGER NOT NULL DEFAULT 0`,
@@ -520,6 +528,27 @@ export async function updateHostHeartbeat(id: number, metrics?: Partial<InsertHo
   await db.update(hosts).set({ isOnline: true, lastHeartbeat: nowDate(), updatedAt: nowDate(), ...(metrics ?? {}) }).where(eq(hosts.id, id));
 }
 
+export async function requestHostAgentUpgrade(hostId: number, targetVersion: string | null) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(hosts).set({
+    agentUpgradeRequested: true,
+    agentUpgradeTargetVersion: targetVersion,
+    agentUpgradeRequestedAt: nowDate(),
+    updatedAt: nowDate(),
+  }).where(eq(hosts.id, hostId));
+}
+
+export async function clearHostAgentUpgradeRequest(hostId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(hosts).set({
+    agentUpgradeRequested: false,
+    agentUpgradeTargetVersion: null,
+    updatedAt: nowDate(),
+  }).where(eq(hosts.id, hostId));
+}
+
 export async function getHostByAgentToken(token: string) {
   const db = await getDb();
   if (!db) return undefined;
@@ -655,20 +684,25 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   return db.select().from(trafficStats).where(eq(trafficStats.ruleId, ruleId)).orderBy(desc(trafficStats.recordedAt)).limit(limit);
 }
 
+async function getRuleIdsByUser(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ id: forwardRules.id }).from(forwardRules).where(eq(forwardRules.userId, userId));
+  return rows.map((r) => Number(r.id));
+}
+
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
 
   if (userId) {
-    // 通过 hosts 表关联过滤当前用户的流量
-    const userHosts = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, userId));
-    const hostIds = userHosts.map(h => h.id);
-    if (hostIds.length === 0) return { totalIn: 0, totalOut: 0 };
+    const ruleIds = await getRuleIdsByUser(userId);
+    if (ruleIds.length === 0) return { totalIn: 0, totalOut: 0 };
     const r = await db.select({
       totalIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
       totalOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
     }).from(trafficStats)
-      .where(sql`${trafficStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
+      .where(sql`${trafficStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
     const row = r[0];
     return {
       totalIn: Number(row?.totalIn) || 0,
@@ -718,9 +752,9 @@ export async function getTrafficSummaryByRule(opts: {
   }));
 
   if (opts.userId) {
-    const allowed = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, opts.userId));
-    const ok = new Set(allowed.map((h) => Number(h.id)));
-    result = result.filter((r) => ok.has(r.hostId));
+    const ruleIds = await getRuleIdsByUser(opts.userId);
+    const ok = new Set(ruleIds);
+    result = result.filter((r) => ok.has(r.ruleId));
   }
   return result;
 }
@@ -769,10 +803,9 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
 
   const conds: any[] = [gte(trafficStats.recordedAt, since)];
   if (opts.userId) {
-    const allowed = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, opts.userId));
-    const hostIds = allowed.map(h => h.id);
-    if (hostIds.length === 0) return [];
-    conds.push(sql`${trafficStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
+    const ruleIds = await getRuleIdsByUser(opts.userId);
+    if (ruleIds.length === 0) return [];
+    conds.push(sql`${trafficStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
   const bucketExpr = sql.raw(`("recordedAt" / ${bucketSec}) * ${bucketSec}`);
@@ -808,6 +841,13 @@ export async function getAgentTokenByToken(token: string) {
   const db = await getDb();
   if (!db) return undefined;
   const r = await db.select().from(agentTokens).where(eq(agentTokens.token, token)).limit(1);
+  return r[0];
+}
+
+export async function getAgentTokenById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const r = await db.select().from(agentTokens).where(eq(agentTokens.id, id)).limit(1);
   return r[0];
 }
 
@@ -1112,10 +1152,9 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
 
   const conds: any[] = [gte(tcpingStats.recordedAt, since)];
   if (opts.userId) {
-    const allowed = await db.select({ id: hosts.id }).from(hosts).where(eq(hosts.userId, opts.userId));
-    const hostIds = allowed.map(h => h.id);
-    if (hostIds.length === 0) return [];
-    conds.push(sql`${tcpingStats.hostId} IN (${sql.join(hostIds.map(id => sql`${id}`), sql`, `)})`);
+    const ruleIds = await getRuleIdsByUser(opts.userId);
+    if (ruleIds.length === 0) return [];
+    conds.push(sql`${tcpingStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
   const bucketExpr = sql.raw(`("recordedAt" / ${bucketSec}) * ${bucketSec}`);

@@ -39,3 +39,11 @@ yarn.lock
 tmp/
 temp/
 .cache/
+
+# Local Docker deployment bundle generated for manual upload
+docker/Forwardx/
+
+# Go agent local build/caches
+agent/agent/
+agent/forwardx-agent-*
+agent/*.exe

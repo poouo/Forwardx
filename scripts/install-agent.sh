@@ -13,10 +13,15 @@
 #   curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
 #     bash -s -- uninstall
 #
+#   # 升级
+#   curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
+#     bash -s -- upgrade
+#
 # 设计原则：
 #   - 安装阶段：仍需向面板请求与版本配套的"完整安装包"（含密钥、注册、systemd 单元等）
 #     这是必要的——加密密钥派生需要 token，systemd 单元也需要确切的 PANEL_URL
 #   - 卸载阶段：完全本地化，停止服务、清理 iptables 规则、删除文件，不依赖面板
+#   - 升级阶段：读取现有安装中的 PANEL_URL / AGENT_TOKEN，重新拉取完整安装包覆盖安装
 #   - 容错性：当 GitHub 入口本身不可达时，用户仍可直接 curl 面板的 install.sh 备用
 #
 
@@ -45,8 +50,13 @@ show_help() {
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \\
       bash -s -- uninstall
 
+  升级 Agent：
+    curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \\
+      bash -s -- upgrade
+
 参数：
   install   <TOKEN>  安装 Agent 并注册到面板（需要环境变量 PANEL_URL）
+  upgrade   [TOKEN]  升级 Agent；默认复用现有安装中的 Token 和面板地址
   uninstall          完全卸载 Agent 及相关组件（不依赖面板）
 
 EOF
@@ -92,6 +102,53 @@ do_install() {
     echo ""
     echo "[错误] 面板暂时不可达，无法获取完整安装包"
     echo "       请检查面板地址是否正确、网络是否通畅，然后重试"
+    exit 1
+  fi
+}
+
+read_existing_config() {
+  AGENT_FILE="$INSTALL_DIR/agent.sh"
+
+  if [ -f "$AGENT_FILE" ]; then
+    EXISTING_PANEL_URL=$(grep -E '^PANEL_URL=' "$AGENT_FILE" 2>/dev/null | head -1 | sed -E 's/^PANEL_URL=["'\'']?([^"'\'']*)["'\'']?/\1/' || true)
+    EXISTING_AGENT_TOKEN=$(grep -E '^AGENT_TOKEN=' "$AGENT_FILE" 2>/dev/null | head -1 | sed -E 's/^AGENT_TOKEN=["'\'']?([^"'\'']*)["'\'']?/\1/' || true)
+  fi
+}
+
+do_upgrade() {
+  require_root
+  OVERRIDE_TOKEN="$1"
+
+  read_existing_config
+  PANEL_URL="${PANEL_URL:-${EXISTING_PANEL_URL:-}}"
+  AGENT_TOKEN="${OVERRIDE_TOKEN:-${AGENT_TOKEN:-${EXISTING_AGENT_TOKEN:-}}}"
+
+  if [ -z "$PANEL_URL" ]; then
+    echo "[错误] 未找到面板地址。请设置 PANEL_URL 后重试："
+    echo "       PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh upgrade"
+    exit 1
+  fi
+
+  if [ -z "$AGENT_TOKEN" ]; then
+    echo "[错误] 未找到 Agent Token。请传入 Token 或重新安装："
+    echo "       PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh upgrade YOUR_TOKEN"
+    exit 1
+  fi
+
+  PANEL_URL="${PANEL_URL%/}"
+
+  echo "======================================"
+  echo "  ForwardX Agent 升级程序"
+  echo "======================================"
+  echo "面板地址: $PANEL_URL"
+  echo "Token: ${AGENT_TOKEN:0:8}***"
+  echo ""
+
+  echo "[信息] 正在拉取最新完整安装包并覆盖升级..."
+  if ! curl -fsSL --max-time 60 "$PANEL_URL/api/agent/full-install.sh?token=$AGENT_TOKEN" | bash; then
+    echo ""
+    echo "[错误] 升级失败：无法从面板获取完整安装包"
+    echo "       请检查面板地址、Token 和网络连接"
     exit 1
   fi
 }
@@ -194,6 +251,9 @@ do_uninstall() {
 case "$ACTION" in
   install)
     do_install "$TOKEN"
+    ;;
+  upgrade|update)
+    do_upgrade "$TOKEN"
     ;;
   uninstall|remove|delete)
     do_uninstall

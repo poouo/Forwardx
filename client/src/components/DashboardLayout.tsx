@@ -147,7 +147,7 @@ function DashboardLayoutContent({
 
   return (
     <>
-      <Sidebar collapsible="icon" className="border-r">
+      <Sidebar collapsible="icon" className="border-r border-sidebar-border/60 bg-sidebar/75 backdrop-blur-2xl">
         <SidebarHeader className="h-16 justify-center">
           <div className="flex items-center gap-3 px-2 transition-all w-full">
             <button
@@ -266,7 +266,7 @@ function DashboardLayoutContent({
 
         <SidebarFooter className="p-3">
           <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
-            <span className="text-[10px] text-muted-foreground/50">v2.1.7</span>
+            <span className="text-[10px] text-muted-foreground/50">v2.1.8</span>
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -324,7 +324,7 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {isMobile && (
-          <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
+          <div className="glass-surface flex border-b h-14 items-center justify-between px-2 sticky top-0 z-40">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
               <div className="flex items-center gap-3">

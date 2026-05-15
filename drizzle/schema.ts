@@ -51,6 +51,10 @@ export const hosts = sqliteTable("hosts", {
   osInfo: text("osInfo"),
   cpuInfo: text("cpuInfo"),
   memoryTotal: integer("memoryTotal"),
+  agentVersion: text("agentVersion"),
+  agentUpgradeRequested: integer("agentUpgradeRequested", { mode: "boolean" }).notNull().default(false),
+  agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
+  agentUpgradeRequestedAt: integer("agentUpgradeRequestedAt", { mode: "timestamp" }),
   networkInterface: text("networkInterface"),
   // ===== 端口区间限制 =====
   portRangeStart: integer("portRangeStart"),  // 允许转发的起始端口，null = 不限制

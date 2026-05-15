@@ -7,15 +7,20 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
+      NODE_ENV: production
+      PORT: 3000
       # 单容器内置 SQLite，数据库文件持久化到下方 volume
-      - SQLITE_PATH=/data/forwardx.db
-      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-string}
+      SQLITE_PATH: /data/forwardx.db
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
       # 默认管理员密码（每次启动自动重置，可自定义）
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # 后台一键升级命令：容器内拉取 GitHub tag，并通过 Docker Compose 重建/重启本服务
+      FORWARDX_UPGRADE_COMMAND: sh -lc 'cd /deploy && git fetch --tags origin && git checkout "$$FORWARDX_TARGET_VERSION" && docker compose up -d --build forwardx'
     volumes:
       - forwardx-data:/data
+      # 一键升级需要访问宿主机 Docker 和部署目录；如不需要后台升级，可删除下面两行
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/deploy
 
 volumes:
   forwardx-data:

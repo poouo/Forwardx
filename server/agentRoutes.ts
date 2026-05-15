@@ -5,6 +5,7 @@ import {
   decryptPayload,
   isEncryptedEnvelope,
 } from "./agentCrypto";
+import { APP_VERSION } from "./_core/systemRouter";
 
 const agentRouter = Router();
 
@@ -73,7 +74,7 @@ agentRouter.use("/api/agent", (req, res, next) => {
 // Agent 注册接口
 agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
   try {
-    const { token, ip, osInfo, cpuInfo, memoryTotal } = req.body;
+    const { token, ip, osInfo, cpuInfo, memoryTotal, agentVersion } = req.body;
     if (!token) {
       res.status(400).json({ error: "Token is required" });
       return;
@@ -94,6 +95,7 @@ agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
         osInfo: osInfo || existingHost.osInfo,
         cpuInfo: cpuInfo || existingHost.cpuInfo,
         memoryTotal: memoryTotal || existingHost.memoryTotal,
+        agentVersion: agentVersion || (existingHost as any).agentVersion,
         isOnline: true,
         lastHeartbeat: new Date(),
       });
@@ -110,6 +112,7 @@ agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
       osInfo: osInfo || null,
       cpuInfo: cpuInfo || null,
       memoryTotal: memoryTotal || null,
+      agentVersion: agentVersion || null,
       isOnline: true,
       lastHeartbeat: new Date(),
       userId: agentToken.userId,
@@ -139,9 +142,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return;
     }
 
-    const { cpuUsage, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, uptime } = req.body;
+    const { cpuUsage, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, uptime, agentVersion } = req.body;
 
-    await db.updateHostHeartbeat(host.id);
+    await db.updateHostHeartbeat(host.id, { agentVersion: agentVersion || (host as any).agentVersion || null } as any);
 
     await db.insertHostMetric({
       hostId: host.id,
@@ -532,7 +535,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     }
 
-    res.json({ success: true, actions, selfTests, runningRules });
+    const agentUpgrade = (host as any).agentUpgradeRequested ? {
+      targetVersion: (host as any).agentUpgradeTargetVersion || null,
+      panelUrl: await resolvePanelUrl(req),
+    } : null;
+    if (agentUpgrade) {
+      await db.clearHostAgentUpgradeRequest(host.id);
+    }
+
+    res.json({ success: true, actions, selfTests, runningRules, agentUpgrade });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -756,6 +767,7 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '#!/bin/bash',
     '# ForwardX Agent 管理脚本',
     '# 安装: curl -sL PANEL_URL/api/agent/install.sh | PANEL_URL="your-panel-url" bash -s -- install YOUR_TOKEN',
+    '# 升级: curl -sL PANEL_URL/api/agent/install.sh | bash -s -- upgrade',
     '# 卸载: curl -sL PANEL_URL/api/agent/install.sh | bash -s -- uninstall',
     '',
     'set -e',
@@ -778,8 +790,12 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  echo "  卸载 Agent:"',
     '  echo "    curl -sL PANEL_URL/api/agent/install.sh | bash -s -- uninstall"',
     '  echo ""',
+    '  echo "  升级 Agent:"',
+    '  echo "    curl -sL PANEL_URL/api/agent/install.sh | bash -s -- upgrade"',
+    '  echo ""',
     '  echo "参数:"',
     '  echo "  install   <TOKEN>  安装 Agent 并注册到面板"',
+    '  echo "  upgrade   [TOKEN]  升级 Agent，默认复用现有面板地址和 Token"',
     '  echo "  uninstall          完全卸载 Agent 及相关组件"',
     '  echo ""',
     '}',
@@ -900,6 +916,14 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  echo "======================================"',
     '}',
     '',
+    'read_existing_config() {',
+    '  AGENT_FILE="/opt/forwardx-agent/agent.sh"',
+    '  if [ -f "$AGENT_FILE" ]; then',
+    '    EXISTING_PANEL_URL=$(grep -E "^PANEL_URL=" "$AGENT_FILE" 2>/dev/null | head -1 | cut -d\'"\' -f2 || true)',
+    '    EXISTING_AGENT_TOKEN=$(grep -E "^AGENT_TOKEN=" "$AGENT_FILE" 2>/dev/null | head -1 | cut -d\'"\' -f2 || true)',
+    '  fi',
+    '}',
+    '',
     'do_install() {',
     '  AGENT_TOKEN="$1"',
     '  if [ -z "$AGENT_TOKEN" ]; then',
@@ -917,7 +941,7 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  TMP_SCRIPT=$(mktemp)',
     '  if curl -fsSL --max-time 15 "$GITHUB_INSTALL_URL" -o "$TMP_SCRIPT" 2>/dev/null && [ -s "$TMP_SCRIPT" ]; then',
     '    echo "[信息] 从 GitHub 获取成功，开始安装..."',
-    '    PANEL_URL="$PANEL_URL" AGENT_TOKEN="$AGENT_TOKEN" bash "$TMP_SCRIPT"',
+    '    PANEL_URL="$PANEL_URL" AGENT_TOKEN="$AGENT_TOKEN" bash "$TMP_SCRIPT" install "$AGENT_TOKEN"',
     '    rm -f "$TMP_SCRIPT"',
     '  else',
     '    echo "[信息] GitHub 不可达或返回为空，回退从面板获取"',
@@ -926,9 +950,40 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '  fi',
     '}',
     '',
+    'do_upgrade() {',
+    '  OVERRIDE_TOKEN="$1"',
+    '  if [ "$(id -u)" != "0" ]; then',
+    '    echo "[错误] 请使用 root 权限运行此脚本"',
+    '    exit 1',
+    '  fi',
+    '  read_existing_config',
+    '  PANEL_URL="${PANEL_URL:-${EXISTING_PANEL_URL:-}}"',
+    '  AGENT_TOKEN="${OVERRIDE_TOKEN:-${AGENT_TOKEN:-${EXISTING_AGENT_TOKEN:-}}}"',
+    '  if [ -z "$PANEL_URL" ]; then',
+    '    echo "[错误] 未找到面板地址，请设置 PANEL_URL 后重试"',
+    '    exit 1',
+    '  fi',
+    '  if [ -z "$AGENT_TOKEN" ]; then',
+    '    echo "[错误] 未找到 Agent Token，请传入 Token 或重新安装"',
+    '    exit 1',
+    '  fi',
+    '  PANEL_URL="${PANEL_URL%/}"',
+    '  echo "======================================"',
+    '  echo "  ForwardX Agent 升级程序"',
+    '  echo "======================================"',
+    '  echo "面板地址: $PANEL_URL"',
+    '  echo "Token: ${AGENT_TOKEN:0:8}***"',
+    '  echo ""',
+    '  echo "[信息] 正在拉取最新完整安装包并覆盖升级..."',
+    '  curl -fsSL --max-time 60 "$PANEL_URL/api/agent/full-install.sh?token=$AGENT_TOKEN" | bash',
+    '}',
+    '',
     'case "$ACTION" in',
     '  install)',
     '    do_install "$TOKEN"',
+    '    ;;',
+    '  upgrade|update)',
+    '    do_upgrade "$TOKEN"',
     '    ;;',
     '  uninstall|remove|delete)',
     '    do_uninstall',
@@ -942,8 +997,9 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '    echo "请选择操作:"',
     '    echo "  1) 安装 Agent"',
     '    echo "  2) 卸载 Agent"',
+    '    echo "  3) 升级 Agent"',
     '    echo ""',
-    '    read -p "请输入选项 [1/2]: " CHOICE',
+    '    read -p "请输入选项 [1/2/3]: " CHOICE',
     '    case "$CHOICE" in',
     '      1)',
     '        read -p "请输入 Agent Token: " INPUT_TOKEN',
@@ -955,6 +1011,13 @@ function generateInstallScript(defaultPanelUrl: string): string {
     '        ;;',
     '      2)',
     '        do_uninstall',
+    '        ;;',
+    '      3)',
+    '        read -p "请输入面板地址（留空则读取现有安装）[$PANEL_URL]: " INPUT_URL',
+    '        if [ -n "$INPUT_URL" ]; then',
+    '          PANEL_URL="$INPUT_URL"',
+    '        fi',
+    '        do_upgrade',
     '        ;;',
     '      *)',
     '        echo "[错误] 无效选项"',
@@ -1738,7 +1801,53 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'sed -i "s|__AGENT_TOKEN__|$AGENT_TOKEN|g" "$INSTALL_DIR/agent.sh"',
     'chmod +x "$INSTALL_DIR/agent.sh"',
     '',
-    'echo "[步骤 4/5] 配置系统服务..."',
+    'echo "[步骤 4/6] 安装 Go Agent 程序..."',
+    'CONFIG_DIR="/etc/forwardx-agent"',
+    'GO_AGENT_BIN="/usr/local/bin/forwardx-agent"',
+    `AGENT_VERSION="${APP_VERSION}"`,
+    'mkdir -p "$CONFIG_DIR"',
+    'cat > "$CONFIG_DIR/config.json" << EOF',
+    '{',
+    '  "panelUrl": "$PANEL_URL",',
+    '  "token": "$AGENT_TOKEN",',
+    '  "interval": 30',
+    '}',
+    'EOF',
+    'install_go_agent() {',
+    '  ARCH=$(uname -m)',
+    '  case "$ARCH" in',
+    '    x86_64|amd64) GO_ARCH="amd64" ;;',
+    '    aarch64|arm64) GO_ARCH="arm64" ;;',
+    '    *) GO_ARCH="" ;;',
+    '  esac',
+    '  if [ -n "$GO_ARCH" ]; then',
+    '    URL="https://github.com/poouo/Forwardx/releases/download/v${AGENT_VERSION}/forwardx-agent-linux-${GO_ARCH}"',
+    '    if curl -fsSL --max-time 30 "$URL" -o "$GO_AGENT_BIN.tmp" 2>/dev/null && [ -s "$GO_AGENT_BIN.tmp" ]; then',
+    '      install -m 0755 "$GO_AGENT_BIN.tmp" "$GO_AGENT_BIN"',
+    '      rm -f "$GO_AGENT_BIN.tmp"',
+    '      echo "[信息] Go Agent 二进制下载完成: $URL"',
+    '      return 0',
+    '    fi',
+    '    rm -f "$GO_AGENT_BIN.tmp"',
+    '  fi',
+    '  echo "[信息] 未找到预编译 Go Agent，尝试从源码构建..."',
+    '  if ! command -v go >/dev/null 2>&1; then',
+    '    if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq golang-go >/dev/null 2>&1 || true; fi',
+    '    if command -v dnf >/dev/null 2>&1; then dnf install -y -q golang >/dev/null 2>&1 || true; fi',
+    '    if command -v yum >/dev/null 2>&1; then yum install -y -q golang >/dev/null 2>&1 || true; fi',
+    '    if command -v apk >/dev/null 2>&1; then apk add --no-cache go >/dev/null 2>&1 || true; fi',
+    '  fi',
+    '  if command -v go >/dev/null 2>&1; then',
+    '    GOBIN=/tmp/forwardx-agent-build go install -ldflags "-X main.Version=${AGENT_VERSION}" "github.com/poouo/Forwardx/agent@v${AGENT_VERSION}" && \\',
+    '      install -m 0755 /tmp/forwardx-agent-build/agent "$GO_AGENT_BIN" && rm -rf /tmp/forwardx-agent-build && return 0',
+    '  fi',
+    '  echo "[警告] Go Agent 安装失败，将回退使用 Shell Agent"',
+    '  return 1',
+    '}',
+    'USE_GO_AGENT=0',
+    'if install_go_agent; then USE_GO_AGENT=1; fi',
+    '',
+    'echo "[步骤 5/6] 配置系统服务..."',
     'cat > "/etc/systemd/system/$SERVICE_NAME.service" << EOF',
     '[Unit]',
     'Description=ForwardX Agent',
@@ -1753,19 +1862,23 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '[Install]',
     'WantedBy=multi-user.target',
     'EOF',
+    'if [ "$USE_GO_AGENT" = "1" ]; then',
+    '  sed -i "s|ExecStart=.*|ExecStart=$GO_AGENT_BIN -config $CONFIG_DIR/config.json|" "/etc/systemd/system/$SERVICE_NAME.service"',
+    'fi',
     '',
     'systemctl daemon-reload',
     'systemctl enable "$SERVICE_NAME"',
     'systemctl start "$SERVICE_NAME"',
     '',
-    'echo "[步骤 5/5] 注册到面板..."',
+    'echo "[步骤 6/6] 注册到面板..."',
     'REGISTER_PAYLOAD=$(jq -n \\',
     '  --arg token "$AGENT_TOKEN" \\',
     '  --arg ip "$PUBLIC_IP" \\',
     '  --arg os "$OS_INFO" \\',
     '  --arg cpu "$CPU_INFO" \\',
     '  --arg mem "$MEM_TOTAL_BYTES" \\',
-    "  '{token: $token, ip: $ip, osInfo: $os, cpuInfo: $cpu, memoryTotal: ($mem|tonumber)}')",
+    '  --arg agentVersion "$AGENT_VERSION" \\',
+    "  '{token: $token, ip: $ip, osInfo: $os, cpuInfo: $cpu, memoryTotal: ($mem|tonumber), agentVersion: $agentVersion}')",
     '',
     '# 注册接口必须使用加密会话，不提供明文回退',
     'register_with_panel() {',

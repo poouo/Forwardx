@@ -41,6 +41,9 @@ import {
   Globe,
   ShieldCheck,
   ExternalLink,
+  RefreshCw,
+  Rocket,
+  AlertTriangle,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -188,6 +191,11 @@ function SettingsContent() {
   /** 卸载命令也采用同样的「GitHub 优先 + 面板回退」策略 */
   const getUninstallCommand = () => {
     return `bash -c 'S=$(curl -fsSL --max-time 10 ${githubScriptUrl} 2>/dev/null) || S=$(curl -fsSL --max-time 30 "${panelUrl}/api/agent/install.sh"); bash -c "$S" _ uninstall'`;
+  };
+
+  /** 升级命令复用已安装 Agent 中的面板地址和 Token，必要时可由 PANEL_URL 覆盖 */
+  const getUpgradeCommand = () => {
+    return `bash -c 'S=$(curl -fsSL --max-time 10 ${githubScriptUrl} 2>/dev/null) || S=$(curl -fsSL --max-time 30 "${panelUrl}/api/agent/install.sh"); PANEL_URL="${panelUrl}" bash -c "$S" _ upgrade'`;
   };
 
   if (user?.role !== "admin") return null;
@@ -386,6 +394,7 @@ function SettingsContent() {
                     "点击 Token 行的终端图标查看安装脚本",
                     "在被控机上以 root 权限执行安装命令",
                     "Agent 将自动注册并开始上报状态",
+                    "如需升级，执行升级命令即可覆盖安装并重启 Agent",
                     "如需卸载，执行卸载命令即可完全清理",
                   ].map((step, i) => (
                     <div key={i} className="flex gap-3 items-start">
@@ -413,6 +422,25 @@ function SettingsContent() {
                       size="icon"
                       className="shrink-0"
                       onClick={() => copyToClipboard(getInstallCommand("YOUR_TOKEN"))}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+                    <RefreshCw className="h-3 w-3" />
+                    升级命令（复用已安装 Agent 的 Token 与面板地址）：
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs font-mono bg-background/50 p-3 rounded border overflow-x-auto break-all">
+                      {getUpgradeCommand()}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0"
+                      onClick={() => copyToClipboard(getUpgradeCommand())}
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
@@ -705,6 +733,21 @@ function SettingsContent() {
                 </Button>
               </div>
             </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">升级命令</Label>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-xs font-mono bg-muted/30 p-3 rounded border overflow-x-auto">
+                  {getUpgradeCommand()}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => copyToClipboard(getUpgradeCommand())}
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
 
           </div>
           <DialogFooter>
@@ -719,7 +762,12 @@ function SettingsContent() {
 function SystemInfoSection() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
+  const { data: upgradeStatus, refetch: refetchUpgradeStatus } = trpc.system.upgradeStatus.useQuery(
+    undefined,
+    { refetchInterval: 5000 }
+  );
   const [panelUrlInput, setPanelUrlInput] = useState("");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -743,6 +791,32 @@ function SystemInfoSection() {
     }
     updateSettingsMutation.mutate({ panelPublicUrl: v });
   };
+
+  const startUpgradeMutation = trpc.system.startUpgrade.useMutation({
+    onSuccess: async () => {
+      toast.success("升级任务已启动");
+      await refetchUpgradeStatus();
+    },
+    onError: (err) => toast.error(err.message || "启动升级失败"),
+  });
+
+  const handleCheckUpdate = async () => {
+    try {
+      setCheckingUpdate(true);
+      await utils.system.checkUpdate.fetch();
+      await refetchUpgradeStatus();
+      toast.success("版本检查完成");
+    } catch (err: any) {
+      toast.error(err?.message || "检查更新失败");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const updateInfo = upgradeStatus?.update;
+  const latestVersion = updateInfo?.latestVersion || "未知";
+  const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
+  const isUpgradeRunning = upgradeStatus?.job.status === "running";
 
   if (isLoading) {
     return (
@@ -808,6 +882,129 @@ function SystemInfoSection() {
               {settings?.agentEncryption || "aes-256-ctr+hmac-sha256"}
             </code>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* 版本升级 */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Rocket className="h-4 w-4 text-primary" />
+            版本升级
+          </CardTitle>
+          <CardDescription>
+            从 GitHub 检查 ForwardX 新版本。Docker 环境需要配置升级命令后才能在后台一键升级并重建容器。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">当前版本</p>
+              <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
+            </div>
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">最新版本</p>
+              <p className="mt-1 font-mono text-sm">{latestVersion}</p>
+            </div>
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">升级能力</p>
+              <p className="mt-1 text-sm">
+                {upgradeEnabled ? "已启用" : "未配置"}
+                {upgradeStatus?.docker ? " / Docker" : ""}
+                {upgradeStatus?.dockerSocket ? " / socket 可用" : ""}
+              </p>
+            </div>
+          </div>
+
+          {updateInfo?.error && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>检查更新失败</AlertTitle>
+              <AlertDescription>{updateInfo.error}</AlertDescription>
+            </Alert>
+          )}
+
+          {!upgradeEnabled && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>当前环境尚未启用一键升级</AlertTitle>
+              <AlertDescription>
+                请在 Docker 部署中配置 <code>FORWARDX_UPGRADE_COMMAND</code>，并按需挂载 Docker socket 与部署目录。
+                未配置时后台只会检查 GitHub 新版本，不会执行宿主机升级操作。
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {updateInfo?.hasUpdate && (
+            <Alert>
+              <Rocket className="h-4 w-4" />
+              <AlertTitle>发现新版本 {updateInfo.latestVersion}</AlertTitle>
+              <AlertDescription>
+                来源：{updateInfo.source === "release" ? "GitHub Release" : "GitHub Tag"}
+                {updateInfo.publishedAt ? `，发布时间：${new Date(updateInfo.publishedAt).toLocaleString()}` : ""}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {updateInfo && !updateInfo.error && !updateInfo.hasUpdate && (
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+              当前已是最新版本，上次检查时间：{new Date(updateInfo.checkedAt).toLocaleString()}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={handleCheckUpdate}
+              disabled={checkingUpdate || isUpgradeRunning}
+              className="gap-2"
+            >
+              <RefreshCw className={`h-4 w-4 ${checkingUpdate ? "animate-spin" : ""}`} />
+              {checkingUpdate ? "检查中..." : "检查更新"}
+            </Button>
+            <Button
+              onClick={() => {
+                if (!updateInfo?.latestVersion) {
+                  toast.error("请先检查更新");
+                  return;
+                }
+                if (!upgradeEnabled) {
+                  toast.error("未配置升级命令，无法自动升级");
+                  return;
+                }
+                if (!confirm(`确定要升级到 ${updateInfo.latestVersion} 吗？升级过程中容器可能会重建并重启。`)) return;
+                startUpgradeMutation.mutate({ targetVersion: updateInfo.latestVersion });
+              }}
+              disabled={!updateInfo?.hasUpdate || !upgradeEnabled || isUpgradeRunning || startUpgradeMutation.isPending}
+              className="gap-2"
+            >
+              <Rocket className="h-4 w-4" />
+              {isUpgradeRunning ? "升级中..." : "升级并重启"}
+            </Button>
+            {updateInfo?.releaseUrl && (
+              <Button variant="ghost" asChild className="gap-2">
+                <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="h-4 w-4" />
+                  查看 GitHub
+                </a>
+              </Button>
+            )}
+          </div>
+
+          {upgradeStatus?.job && upgradeStatus.job.status !== "idle" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>升级任务：{upgradeStatus.job.status}</span>
+                <span>{upgradeStatus.job.targetVersion}</span>
+              </div>
+              <pre className="max-h-64 overflow-auto rounded-lg border border-border/40 bg-background/70 p-3 text-xs leading-relaxed">
+                {(upgradeStatus.job.logs || []).join("\n") || "暂无日志"}
+              </pre>
+              {upgradeStatus.job.error && (
+                <p className="text-xs text-destructive">{upgradeStatus.job.error}</p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
