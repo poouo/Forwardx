@@ -79,7 +79,7 @@ PORT=$PORT
 SQLITE_PATH=$APP_DIR/data/forwardx.db
 JWT_SECRET=$jwt_secret
 ADMIN_PASSWORD=$ADMIN_PASSWORD
-FORWARDX_UPGRADE_COMMAND=$APP_DIR/scripts/install-panel-local.sh upgrade
+FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgrade"
 EOF
 }
 
@@ -123,9 +123,7 @@ upgrade_panel() {
   install_deps
   sync_source
   build_panel
-  if [ ! -f "$APP_DIR/.env" ]; then
-    write_env
-  fi
+  write_env
   write_service
   systemctl restart "$SERVICE_NAME"
   echo "[完成] ForwardX 面板已升级并重启"

@@ -121,7 +121,7 @@ http://your-server-ip:3000
 | `JWT_SECRET` | `change-me-to-a-random-string` | JWT 签名密钥，生产环境必须修改 |
 | `ADMIN_PASSWORD` | `admin123` | 管理员默认密码，服务启动时会同步到 admin 账号 |
 | `NODE_ENV` | `production` | 运行环境 |
-| `FORWARDX_UPGRADE_COMMAND` | 空 | 本地部署脚本会自动配置，用于后台一键升级 |
+| `FORWARDX_UPGRADE_COMMAND` | 空 | 本地部署脚本会自动配置为 `/bin/bash .../install-panel-local.sh upgrade`，用于后台一键升级 |
 
 ## 部署 Agent
 
@@ -163,7 +163,7 @@ pnpm dev
 ## 构建 Agent 发布二进制
 
 ```bash
-bash scripts/build-agent-release.sh v2.1.14
+bash scripts/build-agent-release.sh v2.1.15
 ```
 
 产物位于：
