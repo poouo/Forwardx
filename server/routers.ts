@@ -903,6 +903,20 @@ export const appRouter = router({
       const isAdmin = ctx.user.role === "admin";
       return db.getTunnels(isAdmin ? undefined : ctx.user.id);
     }),
+    latencySeries: protectedProcedure
+      .input(z.object({
+        tunnelId: z.number(),
+        hours: z.number().min(1).max(48).default(24),
+      }))
+      .query(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.tunnelId);
+        if (!tunnel) throw new Error("Tunnel not found");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) {
+          throw new Error("No permission to view this tunnel");
+        }
+        const since = new Date(Date.now() - input.hours * 3600 * 1000);
+        return db.getTunnelLatencySeries(input.tunnelId, { since });
+      }),
     create: protectedProcedure
       .input(z.object({
         name: z.string().min(1).max(128),
@@ -960,11 +974,26 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.id);
-        if (!tunnel) throw new Error("隧道不存在");
-        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        if (!tunnel) throw new Error("Tunnel not found");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("No permission to test this tunnel");
         const exit = await db.getHostById(tunnel.exitHostId);
-        if (!exit) throw new Error("出口 Agent 不存在");
+        if (!exit) throw new Error("Exit Agent not found");
+        const tunnelRules = await db.getForwardRulesByTunnel(tunnel.id);
+        const testRule = tunnelRules.find((rule: any) => rule.isEnabled && rule.tunnelExitPort);
+        if (!testRule) {
+          const message = "NO_BOUND_RULE";
+          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          return { success: false, latencyMs: null, message, pending: true };
+        }
+        if (!tunnel.isRunning) {
+          const message = "EXIT_AGENT_NOT_APPLIED";
+          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          return { success: false, latencyMs: null, message, pending: true };
+        }
         const target = (exit as any).entryIp || exit.ip;
+        const targetPort = Number((testRule as any).tunnelExitPort);
         const start = Date.now();
         const reachable = await new Promise<boolean>((resolve) => {
           const socket = new net.Socket();
@@ -976,15 +1005,17 @@ export const appRouter = router({
           socket.once("connect", () => done(true));
           socket.once("timeout", () => done(false));
           socket.once("error", () => done(false));
-          socket.connect(tunnel.listenPort, target);
+          socket.connect(targetPort, target);
         });
         const latencyMs = reachable ? Math.max(1, Date.now() - start) : null;
+        const message = reachable ? `TUNNEL_EXIT_REACHABLE ${target}:${targetPort}` : `TUNNEL_EXIT_UNREACHABLE ${target}:${targetPort}`;
         await db.updateTunnelTestResult(tunnel.id, {
           status: reachable ? "success" : "failed",
           latencyMs,
-          message: reachable ? `出口 ${target}:${tunnel.listenPort} 可达` : `出口 ${target}:${tunnel.listenPort} 不可达`,
+          message,
         });
-        return { success: reachable, latencyMs };
+        await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs, isTimeout: !reachable });
+        return { success: reachable, latencyMs, message };
       }),
   }),
 

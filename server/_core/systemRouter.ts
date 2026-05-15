@@ -4,6 +4,7 @@ import * as db from "../db";
 import { ENV } from "../env";
 import { spawn } from "child_process";
 import fs from "fs";
+import { clearPanelLogs, getPanelLogs } from "./panelLogger";
 
 /**
  * 系统级别 router：
@@ -15,8 +16,8 @@ import fs from "fs";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.31";
-export const AGENT_VERSION = "2.1.31";
+export const APP_VERSION = "2.1.32";
+export const AGENT_VERSION = "2.1.32";
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
@@ -259,6 +260,17 @@ export const systemRouter = router({
   }),
 
   /** 启动后台升级任务。实际命令由 FORWARDX_UPGRADE_COMMAND 提供。 */
+  panelLogs: adminProcedure.query(() => {
+    return {
+      logs: getPanelLogs(),
+      checkedAt: new Date().toISOString(),
+    };
+  }),
+
+  clearPanelLogs: adminProcedure.mutation(() => {
+    clearPanelLogs();
+    return { success: true };
+  }),
   startUpgrade: adminProcedure
     .input(z.object({ targetVersion: z.string().min(1).max(64).optional() }).optional())
     .mutation(async ({ input }) => {

@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.31"
+var Version = "2.1.32"
 var upgradeStarted int32
 
 type Config struct {

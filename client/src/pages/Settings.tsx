@@ -46,6 +46,7 @@ import {
   Rocket,
   AlertTriangle,
   Pencil,
+  FileText,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -974,6 +975,22 @@ function SystemInfoSection() {
   const upgradeProgress = getUpgradeProgress(upgradeStatus?.job);
   const upgradeErrorLogs = (upgradeStatus?.job?.logs || []).slice(-80).join("\n");
 
+  const { data: panelLogs, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery(undefined, {
+    refetchInterval: 10000,
+  });
+  const clearLogsMutation = trpc.system.clearPanelLogs.useMutation({
+    onSuccess: async () => {
+      toast.success("?????");
+      await refetchPanelLogs();
+    },
+    onError: (err) => toast.error(err.message || "??????"),
+  });
+  const logLevelClass = (level: string) => {
+    if (level === "error") return "text-destructive";
+    if (level === "warn") return "text-amber-600 dark:text-amber-400";
+    if (level === "info") return "text-sky-600 dark:text-sky-400";
+    return "text-muted-foreground";
+  };
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -986,6 +1003,40 @@ function SystemInfoSection() {
   return (
     <div className="space-y-4">
       {/* 面板公开访问地址 */}
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <FileText className="h-4 w-4 text-primary" />
+                ????
+              </CardTitle>
+              <CardDescription>???? 24 ?????????</CardDescription>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => refetchPanelLogs()}>??</Button>
+              <Button variant="destructive" size="sm" onClick={() => clearLogsMutation.mutate()} disabled={clearLogsMutation.isPending}>????</Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+            {(panelLogs?.logs || []).length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">????</div>
+            ) : (
+              <div className="space-y-1">
+                {(panelLogs?.logs || []).slice().reverse().map((entry: any) => (
+                  <div key={entry.id} className="grid gap-2 sm:grid-cols-[150px_56px_1fr]">
+                    <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
+                    <span className={logLevelClass(entry.level)}>{String(entry.level).toUpperCase()}</span>
+                    <span className="whitespace-pre-wrap break-words text-foreground/90">{entry.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">

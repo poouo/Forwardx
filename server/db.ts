@@ -17,6 +17,7 @@ import {
   userHostPermissions, InsertUserHostPermission,
   systemSettings,
   tcpingStats, InsertTcpingStat,
+  tunnelLatencyStats, InsertTunnelLatencyStat,
 } from "../drizzle/schema";
 import crypto from "crypto";
 import fs from "fs";
@@ -188,6 +189,15 @@ export async function initDatabase() {
       );
       CREATE INDEX IF NOT EXISTS idx_traffic_rule_time ON traffic_stats(ruleId, recordedAt DESC);
       CREATE INDEX IF NOT EXISTS idx_traffic_host_time ON traffic_stats(hostId, recordedAt DESC);
+
+      CREATE TABLE IF NOT EXISTS tunnel_latency_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tunnelId INTEGER NOT NULL,
+        latencyMs INTEGER,
+        isTimeout INTEGER NOT NULL DEFAULT 0,
+        recordedAt INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_tunnel_latency_time ON tunnel_latency_stats(tunnelId, recordedAt DESC);
 
       CREATE TABLE IF NOT EXISTS agent_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -615,6 +625,12 @@ export async function getForwardRuleById(id: number) {
   if (!db) return undefined;
   const r = await db.select().from(forwardRules).where(eq(forwardRules.id, id)).limit(1);
   return r[0];
+}
+
+export async function getForwardRulesByTunnel(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(forwardRules).where(eq(forwardRules.tunnelId, tunnelId)).orderBy(desc(forwardRules.createdAt));
 }
 
 export async function createForwardRule(rule: InsertForwardRule) {
@@ -1264,6 +1280,31 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
 }
 
 /** 获取某条规则的 TCPing 延迟序列（按时间升序） */
+export async function insertTunnelLatencyStat(stat: InsertTunnelLatencyStat) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(tunnelLatencyStats).values(stat);
+}
+
+export async function getTunnelLatencySeries(
+  tunnelId: number,
+  opts: { since?: Date; limit?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const limit = opts.limit ?? 2880;
+  return db
+    .select({
+      latencyMs: tunnelLatencyStats.latencyMs,
+      isTimeout: tunnelLatencyStats.isTimeout,
+      recordedAt: tunnelLatencyStats.recordedAt,
+    })
+    .from(tunnelLatencyStats)
+    .where(and(eq(tunnelLatencyStats.tunnelId, tunnelId), gte(tunnelLatencyStats.recordedAt, since)))
+    .orderBy(asc(tunnelLatencyStats.recordedAt))
+    .limit(limit);
+}
 export async function getTcpingSeriesByRule(
   ruleId: number,
   opts: { since?: Date; limit?: number } = {}

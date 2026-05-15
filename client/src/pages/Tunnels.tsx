@@ -44,6 +44,15 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 type TunnelForm = {
   name: string;
@@ -70,6 +79,135 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   mtcp: "MTCP",
 };
 
+function tunnelTestMessage(data: any) {
+  const message = String(data?.message || "");
+  if (message === "NO_BOUND_RULE") return "?????????????????????????????";
+  if (message === "EXIT_AGENT_NOT_APPLIED") return "?? Agent ??????????????";
+  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `????????? ${data?.latencyMs ?? "-"}ms`;
+  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "????????????? Agent?????????";
+  return message || (data?.success ? `????????? ${data?.latencyMs ?? "-"}ms` : "???????");
+}
+
+function formatTunnelLatencyTime(value: string | Date) {
+  const d = new Date(value);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hour = String(d.getHours()).padStart(2, "0");
+  const minute = String(d.getMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hour}:${minute}`;
+}
+
+function TunnelLatencyDialog({
+  tunnelId,
+  tunnelName,
+  open,
+  onOpenChange,
+}: {
+  tunnelId: number;
+  tunnelName: string;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { data, isLoading } = trpc.tunnels.latencySeries.useQuery(
+    { tunnelId, hours: 24 },
+    { enabled: open, refetchInterval: open ? 30000 : false }
+  );
+  const chartData = useMemo(() => {
+    if (!data || data.length === 0) return [];
+    return data.map((d: any) => ({
+      label: formatTunnelLatencyTime(d.recordedAt),
+      fullLabel: formatTunnelLatencyTime(d.recordedAt),
+      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
+      isTimeout: !!d.isTimeout,
+    }));
+  }, [data]);
+  const stats = useMemo(() => {
+    const total = chartData.length;
+    const timeout = chartData.filter((d) => d.isTimeout).length;
+    const values = chartData.filter((d) => !d.isTimeout && d.latency > 0).map((d) => d.latency);
+    if (values.length === 0) return { total, timeout, max: null as number | null, min: null as number | null, avg: null as number | null };
+    const sum = values.reduce((acc, v) => acc + v, 0);
+    return { total, timeout, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
+  }, [chartData]);
+  const yMax = useMemo(() => {
+    if (chartData.length === 0) return 120;
+    const maxVal = Math.max(...chartData.map((d) => d.latency));
+    if (maxVal <= 0) return 120;
+    return Math.min(500, Math.max(120, Math.ceil(maxVal * 2)));
+  }, [chartData]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[95vw] sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="text-base sm:text-lg">隧道延迟 - {tunnelName}</DialogTitle>
+          <DialogDescription>展示最近 24 小时的隧道出口连通延迟检测数据</DialogDescription>
+        </DialogHeader>
+        <div className="h-72 w-full">
+          {isLoading ? (
+            <Skeleton className="h-full w-full" />
+          ) : chartData.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道延迟数据</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="tunnelLatencyGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={60} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} allowDecimals={false} />
+                <RTooltip
+                  cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
+                  content={({ active, payload }: any) => {
+                    if (!active || !payload?.length) return null;
+                    const item = payload[0].payload;
+                    return (
+                      <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+                        <p className="mb-1 text-xs text-muted-foreground">{item.fullLabel}</p>
+                        {item.isTimeout ? (
+                          <p className="text-sm font-semibold text-destructive">超时</p>
+                        ) : (
+                          <p className="text-sm font-semibold tabular-nums">{item.latency}ms</p>
+                        )}
+                      </div>
+                    );
+                  }}
+                />
+                <Area type="monotone" dataKey="latency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#tunnelLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">统计次数</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}{stats.timeout > 0 && <span className="ml-1 text-xs font-normal text-amber-600">超时 {stats.timeout}</span>}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">最大延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.max === null ? "--" : `${stats.max} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">最小延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.min === null ? "--" : `${stats.min} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">平均延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.avg === null ? "--" : `${stats.avg} ms`}</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TunnelsContent() {
   const utils = trpc.useUtils();
   const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 10000 });
@@ -77,6 +215,7 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
+  const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
 
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning).length ?? 0, [tunnels]);
   const getHostName = (id: number) => hosts?.find((h: any) => h.id === id)?.name || `主机 #${id}`;
@@ -138,7 +277,10 @@ function TunnelsContent() {
   const testMutation = trpc.tunnels.test.useMutation({
     onSuccess: (data) => {
       utils.tunnels.list.invalidate();
-      toast.success(data.success ? `隧道出口可达，延迟 ${data.latencyMs}ms` : "隧道出口不可达");
+      const message = tunnelTestMessage(data);
+      if ((data as any).pending) toast.info(message);
+      else if (data.success) toast.success(message);
+      else toast.error(message);
     },
     onError: (e) => toast.error(e.message || "测试失败"),
   });
@@ -264,6 +406,15 @@ function TunnelsContent() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
+                            title="查看隧道延迟"
+                            onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}
+                          >
+                            <Activity className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
                             title="测试隧道延迟"
                             onClick={() => testMutation.mutate({ id: tunnel.id })}
                           >
@@ -302,6 +453,15 @@ function TunnelsContent() {
           )}
         </CardContent>
       </Card>
+
+      {latencyTunnel && (
+        <TunnelLatencyDialog
+          tunnelId={latencyTunnel.id}
+          tunnelName={latencyTunnel.name}
+          open={!!latencyTunnel}
+          onOpenChange={(open) => !open && setLatencyTunnel(null)}
+        />
+      )}
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="sm:max-w-lg">

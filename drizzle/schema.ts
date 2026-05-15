@@ -139,6 +139,16 @@ export const trafficStats = sqliteTable("traffic_stats", {
 export type TrafficStat = typeof trafficStats.$inferSelect;
 export type InsertTrafficStat = typeof trafficStats.$inferInsert;
 
+export const tunnelLatencyStats = sqliteTable("tunnel_latency_stats", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tunnelId: integer("tunnelId").notNull(),
+  latencyMs: integer("latencyMs"),
+  isTimeout: integer("isTimeout", { mode: "boolean" }).notNull().default(false),
+  recordedAt: integer("recordedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type TunnelLatencyStat = typeof tunnelLatencyStats.$inferSelect;
+export type InsertTunnelLatencyStat = typeof tunnelLatencyStats.$inferInsert;
+
 export const agentTokens = sqliteTable("agent_tokens", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   token: text("token").notNull().unique(),

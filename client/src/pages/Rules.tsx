@@ -1202,11 +1202,6 @@ function SelfTestDialog({
             {renderStatus()}
           </div>
           {renderItem("目标端口TCP可达", !!latest?.targetReachable)}
-          {(isTesting) && (
-            <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              新版 Agent 会每 3 秒拉取一次自测任务，通常几秒内返回结果；旧版 Agent 需要等心跳或升级后才能完成。
-            </div>
-          )}
           <div className="flex items-center justify-between py-1">
             <span className="text-muted-foreground">TCP 延迟</span>
             {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? (

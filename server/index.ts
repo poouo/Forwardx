@@ -10,6 +10,9 @@ import { createContext } from "./_core/context";
 import { agentRouter } from "./agentRoutes";
 import { initDatabase } from "./db";
 import * as db from "./db";
+import { installPanelLogger } from "./_core/panelLogger";
+
+installPanelLogger();
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
