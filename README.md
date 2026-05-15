@@ -200,4 +200,8 @@ dist/agent/SHA256SUMS
 
 ## License
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=poouo/Forwardx&type=Date)](https://star-history.com/#poouo/Forwardx&Date)
+
 MIT
