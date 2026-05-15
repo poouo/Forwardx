@@ -1025,6 +1025,26 @@ function TcpingDetailDialog({
     return Math.min(500, Math.max(120, dynamicMax));
   }, [chartData]);
 
+  const tcpingStats = useMemo(() => {
+    const total = chartData.length;
+    const timeout = chartData.filter((d) => d.isTimeout).length;
+    const values = chartData
+      .filter((d) => !d.isTimeout && d.latency > 0)
+      .map((d) => d.latency);
+    if (values.length === 0) {
+      return { total, timeout, valid: 0, max: null as number | null, min: null as number | null, avg: null as number | null };
+    }
+    const sum = values.reduce((acc, v) => acc + v, 0);
+    return {
+      total,
+      timeout,
+      valid: values.length,
+      max: Math.max(...values),
+      min: Math.min(...values),
+      avg: Math.round(sum / values.length),
+    };
+  }, [chartData]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
@@ -1089,6 +1109,27 @@ function TcpingDetailDialog({
             </ResponsiveContainer>
           )}
         </div>
+        <div className="grid gap-2 sm:grid-cols-4">
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">统计次数</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">
+              {tcpingStats.total}
+              {tcpingStats.timeout > 0 && <span className="ml-1 text-xs font-normal text-amber-600">超时 {tcpingStats.timeout}</span>}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">最大延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.max === null ? "--" : `${tcpingStats.max} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">最小延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.min === null ? "--" : `${tcpingStats.min} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">平均延迟</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.avg === null ? "--" : `${tcpingStats.avg} ms`}</p>
+          </div>
+        </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>
@@ -1119,7 +1160,7 @@ function SelfTestDialog({
   );
   const startMutation = trpc.rules.startSelfTest.useMutation({
     onSuccess: () => {
-      toast.success("自测任务已下发");
+      toast.info("正在测试中");
       utils.rules.latestTest.invalidate({ ruleId });
       refetch();
     },
@@ -1127,6 +1168,7 @@ function SelfTestDialog({
   });
 
   const status = latest?.status as string | undefined;
+  const isTesting = startMutation.isPending || status === "pending" || status === "running";
   const renderStatus = () => {
     if (!latest) return <span className="text-muted-foreground">尚未运行过自测</span>;
     if (status === "pending") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />等待 Agent 拉取</span>;
@@ -1138,7 +1180,7 @@ function SelfTestDialog({
   const renderItem = (label: string, ok: boolean | undefined) => (
     <div className="flex items-center justify-between py-1">
       <span className="text-muted-foreground">{label}</span>
-      {status === "pending" || status === "running" ? (
+      {isTesting ? (
         <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
       ) : ok ? (
         <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -1160,22 +1202,29 @@ function SelfTestDialog({
             {renderStatus()}
           </div>
           {renderItem("目标端口TCP可达", !!latest?.targetReachable)}
-          {(status === "pending" || status === "running") && (
+          {(isTesting) && (
             <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
               新版 Agent 会每 3 秒拉取一次自测任务，通常几秒内返回结果；旧版 Agent 需要等心跳或升级后才能完成。
             </div>
           )}
-          {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 && (
-            <div className="flex items-center justify-between py-1">
-              <span className="text-muted-foreground">TCP延迟</span>
+          <div className="flex items-center justify-between py-1">
+            <span className="text-muted-foreground">TCP 延迟</span>
+            {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? (
               <span className={`font-mono ${
                 latest.latencyMs < 50 ? "text-emerald-600" :
                 latest.latencyMs < 100 ? "text-chart-3" :
                 latest.latencyMs < 200 ? "text-amber-600" :
                 "text-destructive"
               }`}>{latest.latencyMs} ms</span>
-            </div>
-          )}
+            ) : isTesting ? (
+              <span className="flex items-center gap-1 text-amber-600">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                正在测试中
+              </span>
+            ) : (
+              <span className="text-muted-foreground">--</span>
+            )}
+          </div>
           {latest?.message && (
             <div className="rounded-md bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground whitespace-pre-line">
               {latest.message}

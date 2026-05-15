@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.27"
+var Version = "2.1.31"
 var upgradeStarted int32
 
 type Config struct {
@@ -45,6 +45,7 @@ type envelope struct {
 type heartbeatResp struct {
 	Actions      []action      `json:"actions"`
 	SelfTests    []selfTest    `json:"selfTests"`
+	RunningRules []runningRule `json:"runningRules"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
 }
 
@@ -59,12 +60,23 @@ type action struct {
 	Op               string   `json:"op"`
 	ForwardType      string   `json:"forwardType"`
 	SourcePort       int      `json:"sourcePort"`
+	TargetIP         string   `json:"targetIp"`
+	TargetPort       int      `json:"targetPort"`
 	Protocol         string   `json:"protocol"`
 	ServiceName      string   `json:"svcName"`
 	ServiceNameExtra string   `json:"svcNameExtra"`
 	Unit             string   `json:"unit"`
 	UnitExtra        string   `json:"unitExtra"`
 	Commands         []string `json:"commands"`
+}
+
+type runningRule struct {
+	RuleID      int    `json:"ruleId"`
+	SourcePort  int    `json:"sourcePort"`
+	TargetIP    string `json:"targetIp"`
+	TargetPort  int    `json:"targetPort"`
+	Protocol    string `json:"protocol"`
+	ForwardType string `json:"forwardType"`
 }
 
 type agentUpgrade struct {
@@ -164,7 +176,11 @@ func heartbeat(cfg Config) error {
 	for _, t := range resp.SelfTests {
 		go handleSelfTest(cfg, t)
 	}
+	for _, r := range resp.RunningRules {
+		writeRunningRuleState(r)
+	}
 	collectTraffic(cfg)
+	collectTCPing(cfg)
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
@@ -311,12 +327,29 @@ func writeState(a action) {
 	port := strconv.Itoa(a.SourcePort)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(a.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(a.ForwardType), 0644)
+	if a.TargetIP != "" && a.TargetPort > 0 {
+		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", a.TargetIP, a.TargetPort)), 0644)
+	}
+}
+
+func writeRunningRuleState(r runningRule) {
+	if r.RuleID <= 0 || r.SourcePort <= 0 {
+		return
+	}
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	port := strconv.Itoa(r.SourcePort)
+	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(r.RuleID)), 0644)
+	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(r.ForwardType), 0644)
+	if r.TargetIP != "" && r.TargetPort > 0 {
+		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", r.TargetIP, r.TargetPort)), 0644)
+	}
 }
 
 func removeState(port int) {
 	p := strconv.Itoa(port)
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".rule")
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".fwtype")
+	_ = os.Remove("/var/lib/forwardx-agent/target_" + p + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
 }
 
@@ -347,6 +380,68 @@ func collectTraffic(cfg Config) {
 	if len(stats) > 0 {
 		_ = post(cfg, "/api/agent/traffic", map[string]any{"stats": stats}, &map[string]any{})
 	}
+}
+
+func collectTCPing(cfg Config) {
+	files, _ := os.ReadDir("/var/lib/forwardx-agent")
+	results := []map[string]any{}
+	for _, f := range files {
+		name := f.Name()
+		if !strings.HasPrefix(name, "port_") || !strings.HasSuffix(name, ".rule") {
+			continue
+		}
+		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
+		ridBytes, err := os.ReadFile("/var/lib/forwardx-agent/" + name)
+		if err != nil {
+			continue
+		}
+		ruleID, _ := strconv.Atoi(strings.TrimSpace(string(ridBytes)))
+		targetIP, targetPort, ok := readTargetInfo(port)
+		if !ok || ruleID <= 0 {
+			continue
+		}
+		latency, reachable := tcpLatency(targetIP, targetPort, 3*time.Second)
+		result := map[string]any{"ruleId": ruleID}
+		if reachable {
+			result["latencyMs"] = latency
+			result["isTimeout"] = false
+		} else {
+			result["latencyMs"] = 0
+			result["isTimeout"] = true
+		}
+		results = append(results, result)
+	}
+	if len(results) > 0 {
+		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results}, &map[string]any{})
+	}
+}
+
+func readTargetInfo(port string) (string, int, bool) {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/target_" + port + ".info")
+	if err != nil {
+		return "", 0, false
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) < 2 {
+		return "", 0, false
+	}
+	targetIP := strings.TrimSpace(lines[0])
+	targetPort, _ := strconv.Atoi(strings.TrimSpace(lines[1]))
+	return targetIP, targetPort, targetIP != "" && targetPort > 0
+}
+
+func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
+	if err != nil {
+		return 0, false
+	}
+	_ = conn.Close()
+	latency := int(time.Since(start).Milliseconds())
+	if latency < 1 {
+		latency = 1
+	}
+	return latency, true
 }
 
 func conntrackConnections(port string) uint64 {

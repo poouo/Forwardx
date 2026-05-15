@@ -273,6 +273,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `iptables -t mangle -C PREROUTING -p udp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p udp --dport ${port} -j ${inCh}`,
         `iptables -t mangle -C POSTROUTING -p tcp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p tcp --sport ${port} -j ${outCh}`,
         `iptables -t mangle -C POSTROUTING -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p udp --sport ${port} -j ${outCh}`,
+        `iptables -t mangle -C INPUT -p tcp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A INPUT -p tcp --dport ${port} -j ${inCh}`,
+        `iptables -t mangle -C INPUT -p udp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A INPUT -p udp --dport ${port} -j ${inCh}`,
+        `iptables -t mangle -C OUTPUT -p tcp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport ${port} -j ${outCh}`,
+        `iptables -t mangle -C OUTPUT -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A OUTPUT -p udp --sport ${port} -j ${outCh}`,
       ];
     };
     const buildCountingCleanupCmds = (port: number): string[] => [
@@ -280,6 +284,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `iptables -t mangle -D PREROUTING -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
       `iptables -t mangle -D POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
       `iptables -t mangle -D POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+      `iptables -t mangle -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
       `iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`,
       `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
       `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
