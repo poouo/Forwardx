@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.16"
+var Version = "2.1.17"
 
 type Config struct {
 	PanelURL string `json:"panelUrl"`

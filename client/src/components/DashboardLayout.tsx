@@ -38,6 +38,7 @@ import {
   KeyRound,
   Sun,
   Moon,
+  Rocket,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -99,6 +100,12 @@ function DashboardLayoutContent({
   const isMobile = useIsMobile();
   const isAdmin = user?.role === "admin";
   const { resolvedTheme, setTheme } = useTheme();
+  const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
+    enabled: isAdmin,
+    refetchInterval: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
   // Change password dialog state
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -265,6 +272,20 @@ function DashboardLayoutContent({
         </SidebarContent>
 
         <SidebarFooter className="p-3">
+          {isAdmin && updateInfo?.hasUpdate && (
+            <button
+              type="button"
+              onClick={() => setLocation("/settings")}
+              className="mb-2 flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-2 text-left text-primary transition-colors hover:bg-primary/15 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2"
+              title={`发现新版本 ${updateInfo.latestVersion}`}
+            >
+              <Rocket className="h-4 w-4 shrink-0" />
+              <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+                <p className="text-xs font-medium leading-none">发现新版本</p>
+                <p className="mt-1 truncate font-mono text-[11px]">{updateInfo.latestVersion}</p>
+              </div>
+            </button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">

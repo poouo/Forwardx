@@ -15,7 +15,7 @@ import fs from "fs";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.16";
+export const APP_VERSION = "2.1.17";
 
 type UpdateInfo = {
   currentVersion: string;
@@ -142,6 +142,18 @@ function appendUpgradeLog(line: string) {
   }
 }
 
+function normalizeUpgradeCommand(command: string) {
+  const trimmed = command.trim();
+  if (!trimmed) return "";
+  if (/^(?:bash|sh|\/bin\/bash|\/usr\/bin\/bash|\/bin\/sh|\/usr\/bin\/sh)\s+/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^(?:"[^"]+\.sh"|'[^']+\.sh'|\S+\.sh)(?:\s+.*)?$/i.test(trimmed)) {
+    return `/bin/bash ${trimmed}`;
+  }
+  return trimmed;
+}
+
 export const systemRouter = router({
   health: publicProcedure.query(() => {
     return { status: "ok", timestamp: new Date().toISOString() };
@@ -216,7 +228,7 @@ export const systemRouter = router({
   startUpgrade: adminProcedure
     .input(z.object({ targetVersion: z.string().min(1).max(64).optional() }).optional())
     .mutation(async ({ input }) => {
-      const command = ENV.upgradeCommand.trim();
+      const command = normalizeUpgradeCommand(ENV.upgradeCommand);
       if (!command) {
         throw new Error("未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查更新，不能自动升级");
       }

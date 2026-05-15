@@ -813,6 +813,7 @@ function SystemInfoSection() {
   );
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -981,14 +982,23 @@ function SystemInfoSection() {
           )}
 
           {updateInfo?.hasUpdate && (
-            <Alert>
-              <Rocket className="h-4 w-4" />
-              <AlertTitle>发现新版本 {updateInfo.latestVersion}</AlertTitle>
-              <AlertDescription>
-                来源：{updateInfo.source === "release" ? "GitHub Release" : "GitHub Tag"}
-                {updateInfo.publishedAt ? `，发布时间：${new Date(updateInfo.publishedAt).toLocaleString()}` : ""}
-              </AlertDescription>
-            </Alert>
+            <div className="rounded-xl border border-primary/30 bg-primary/10 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                    <Rocket className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-primary">发现新版本 {updateInfo.latestVersion}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      来源：{updateInfo.source === "release" ? "GitHub Release" : "GitHub Tag"}
+                      {updateInfo.publishedAt ? `，发布时间：${new Date(updateInfo.publishedAt).toLocaleString()}` : ""}
+                    </p>
+                  </div>
+                </div>
+                <Badge className="w-fit">可升级</Badge>
+              </div>
+            </div>
           )}
 
           {updateInfo && !updateInfo.error && !updateInfo.hasUpdate && (
@@ -1017,8 +1027,7 @@ function SystemInfoSection() {
                   toast.error("未配置升级命令，无法自动升级");
                   return;
                 }
-                if (!confirm(`确定要升级到 ${updateInfo.latestVersion} 吗？升级过程中容器可能会重建并重启。`)) return;
-                startUpgradeMutation.mutate({ targetVersion: updateInfo.latestVersion });
+                setShowUpgradeConfirm(true);
               }}
               disabled={!updateInfo?.hasUpdate || !upgradeEnabled || isUpgradeRunning || startUpgradeMutation.isPending}
               className="gap-2"
@@ -1054,6 +1063,47 @@ function SystemInfoSection() {
       </Card>
 
       {/* 开源与社区 */}
+      <Dialog open={showUpgradeConfirm} onOpenChange={setShowUpgradeConfirm}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Rocket className="h-5 w-5 text-primary" />
+              确认升级并重启
+            </DialogTitle>
+            <DialogDescription>
+              即将升级到 {updateInfo?.latestVersion}。升级过程中服务会重新构建并重启，面板可能短暂不可用。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/40 bg-muted/30 p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">当前版本</span>
+              <code>v{upgradeStatus?.currentVersion || settings?.version}</code>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-muted-foreground">目标版本</span>
+              <code>{updateInfo?.latestVersion}</code>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowUpgradeConfirm(false)}>
+              取消
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={startUpgradeMutation.isPending || isUpgradeRunning}
+              onClick={() => {
+                if (!updateInfo?.latestVersion) return;
+                setShowUpgradeConfirm(false);
+                startUpgradeMutation.mutate({ targetVersion: updateInfo.latestVersion });
+              }}
+            >
+              <Rocket className="h-4 w-4" />
+              确认升级
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
