@@ -1170,12 +1170,12 @@ function SelfTestDialog({
   const status = latest?.status as string | undefined;
   const isTesting = startMutation.isPending || status === "pending" || status === "running";
   const renderStatus = () => {
-    if (!latest) return <span className="text-muted-foreground">尚未运行过自测</span>;
-    if (status === "pending") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />等待 Agent 拉取</span>;
-    if (status === "running") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />Agent 执行中</span>;
-    if (status === "success") return <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="h-4 w-4" />联通</span>;
-    if (status === "timeout") return <span className="flex items-center gap-1 text-amber-600"><AlertCircle className="h-4 w-4" />自测超时</span>;
-    return <span className="flex items-center gap-1 text-destructive"><XCircle className="h-4 w-4" />联通失败</span>;
+    if (startMutation.isPending) return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
+    if (!latest) return <span className="text-muted-foreground">尚未运行</span>;
+    if (status === "pending" || status === "running") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
+    if (status === "success") return <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="h-4 w-4" />正常</span>;
+    if (status === "timeout") return <span className="flex items-center gap-1 text-amber-600"><AlertCircle className="h-4 w-4" />超时</span>;
+    return <span className="flex items-center gap-1 text-destructive"><XCircle className="h-4 w-4" />异常</span>;
   };
   const renderItem = (label: string, ok: boolean | undefined) => (
     <div className="flex items-center justify-between py-1">
@@ -1201,7 +1201,7 @@ function SelfTestDialog({
             <span className="text-muted-foreground">状态</span>
             {renderStatus()}
           </div>
-          {renderItem("目标端口TCP可达", !!latest?.targetReachable)}
+          {renderItem("端口可达", !!latest?.targetReachable)}
           <div className="flex items-center justify-between py-1">
             <span className="text-muted-foreground">TCP 延迟</span>
             {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? (
@@ -1220,11 +1220,6 @@ function SelfTestDialog({
               <span className="text-muted-foreground">--</span>
             )}
           </div>
-          {latest?.message && (
-            <div className="rounded-md bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground whitespace-pre-line">
-              {latest.message}
-            </div>
-          )}
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
@@ -1240,7 +1235,6 @@ function SelfTestDialog({
     </Dialog>
   );
 }
-
 export default function RulesPage() {
   return (
     <DashboardLayout>

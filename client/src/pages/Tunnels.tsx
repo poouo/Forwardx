@@ -81,12 +81,12 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 
 function tunnelTestMessage(data: any) {
   const message = String(data?.message || "");
-  if (message === "NO_BOUND_RULE") return "隧道还没有绑定启用中的转发规则";
   if (message === "EXIT_AGENT_NOT_APPLIED") return "出口 Agent 尚未应用隧道配置，请等待 Agent 回连";
-  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `隧道出口可达，延迟 ${data?.latencyMs ?? "-"}ms`;
-  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "隧道出口不可达，详情可在面板日志查看";
-  if (message.startsWith("TUNNEL_TEST_TARGET_INVALID")) return "隧道测试目标无效，请检查出口 Agent 地址和端口";
-  return message || (data?.success ? `隧道出口可达，延迟 ${data?.latencyMs ?? "-"}ms` : "隧道测试失败");
+  if (message.startsWith("TUNNEL_LINK_TEST_PENDING ")) return "已下发给入口 Agent，正在测试入口到出口延迟";
+  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `入口到出口可达，延迟 ${data?.latencyMs ?? "-"}ms`;
+  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "入口到出口不可达，详情可在面板日志查看";
+  if (message.startsWith("TUNNEL_TEST_TARGET_INVALID")) return "隧道测试目标无效，请检查出口 Agent 地址和监听端口";
+  return message || (data?.success ? `入口到出口可达，延迟 ${data?.latencyMs ?? "-"}ms` : "隧道链路测试失败");
 }
 
 function formatTunnelLatencyTime(value: string | Date) {
@@ -141,14 +141,14 @@ function TunnelLatencyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-base sm:text-lg">隧道延迟 - {tunnelName}</DialogTitle>
-          <DialogDescription>展示最近 24 小时的隧道出口连通延迟检测数据</DialogDescription>
+          <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
+          <DialogDescription>展示最近 24 小时入口 Agent 到出口 Agent 的 TCP 连通延迟，不包含转发规则目标端口。</DialogDescription>
         </DialogHeader>
         <div className="h-72 w-full">
           {isLoading ? (
             <Skeleton className="h-full w-full" />
           ) : chartData.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道延迟数据</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道链路延迟数据</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
@@ -407,7 +407,7 @@ function TunnelsContent() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            title="查看隧道延迟"
+                            title="查看入口到出口延迟"
                             onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}
                           >
                             <Activity className="h-3.5 w-3.5" />
@@ -416,7 +416,7 @@ function TunnelsContent() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            title="测试隧道延迟"
+                            title="测试入口到出口延迟"
                             onClick={() => testMutation.mutate({ id: tunnel.id })}
                           >
                             {testMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}

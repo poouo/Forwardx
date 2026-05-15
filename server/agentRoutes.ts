@@ -40,6 +40,15 @@ function compareVersions(a: string | null | undefined, b: string | null | undefi
   return 0;
 }
 
+function parseSelfTestMeta(message: unknown): any | null {
+  if (typeof message !== "string" || !message.trim().startsWith("{")) return null;
+  try {
+    return JSON.parse(message);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Agent 加密中间件
  *
@@ -872,9 +881,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
     for (const t of pendingTests) {
+      await db.markForwardTestRunning(t.id);
+      const meta = parseSelfTestMeta((t as any).message);
+      if (meta?.kind === "tunnel") {
+        selfTests.push({
+          testId: t.id,
+          kind: "tunnel",
+          tunnelId: meta.tunnelId,
+          ruleId: 0,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
-      await db.markForwardTestRunning(t.id);
       selfTests.push({
         testId: t.id,
         ruleId: rule.id,
@@ -973,24 +997,37 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       res.status(404).json({ error: "test not found" });
       return;
     }
-    // 连通性判定：仅检测目标端口TCP可达性
+    const meta = parseSelfTestMeta((t as any).message);
     const success = !!targetReachable;
+    const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
+    const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
     await db.updateForwardTestResult(testId, {
       status: success ? "success" : "failed",
-      listenOk: true, // 不再检测本地监听，默认为true
+      listenOk: true,
       targetReachable: !!targetReachable,
-      forwardOk: success, // 目标可达即视为转发正常
-      latencyMs: typeof latencyMs === "number" ? latencyMs : null,
-      message: typeof message === "string" ? message.slice(0, 4000) : null,
+      forwardOk: success,
+      latencyMs: cleanLatency,
+      message: cleanMessage,
     });
+    if (meta?.kind === "tunnel" && typeof meta.tunnelId === "number") {
+      await db.updateTunnelTestResult(meta.tunnelId, {
+        status: success ? "success" : "failed",
+        latencyMs: success ? cleanLatency : null,
+        message: cleanMessage,
+      });
+      await db.insertTunnelLatencyStat({ tunnelId: meta.tunnelId, latencyMs: success ? cleanLatency : null, isTimeout: !success });
+      if (success) {
+        console.log(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping success latency=${cleanLatency}ms`);
+      } else {
+        console.warn(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping failed: ${cleanMessage || "unknown"}`);
+      }
+    }
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent SelfTest] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-// Agent 轻量轮询：仅获取该主机的 pending 转发自测任务并标为 running
 agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1007,9 +1044,24 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
     for (const t of pendingTests) {
+      await db.markForwardTestRunning(t.id);
+      const meta = parseSelfTestMeta((t as any).message);
+      if (meta?.kind === "tunnel") {
+        selfTests.push({
+          testId: t.id,
+          kind: "tunnel",
+          tunnelId: meta.tunnelId,
+          ruleId: 0,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
-      await db.markForwardTestRunning(t.id);
       selfTests.push({
         testId: t.id,
         ruleId: rule.id,
