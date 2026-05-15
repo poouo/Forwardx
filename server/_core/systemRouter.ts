@@ -15,7 +15,8 @@ import fs from "fs";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.19";
+export const APP_VERSION = "2.1.20";
+export const AGENT_VERSION = "2.1.19";
 
 type UpdateInfo = {
   currentVersion: string;
@@ -164,6 +165,7 @@ export const systemRouter = router({
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,
       version: APP_VERSION,
+      agentVersion: AGENT_VERSION,
     };
   }),
 
@@ -174,6 +176,7 @@ export const systemRouter = router({
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,
       version: APP_VERSION,
+      agentVersion: AGENT_VERSION,
       panelPublicUrl: all.panelPublicUrl ?? "",
       agentEncryption: "aes-256-ctr+hmac-sha256", // 加密方案标识
       upgrade: {

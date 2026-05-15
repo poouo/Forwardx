@@ -115,21 +115,21 @@ function HostCard({
   onDelete,
   onUpgrade,
   canUpgrade,
-  panelVersion,
+  latestAgentVersion,
 }: {
   host: any;
   onEdit: (host: any) => void;
   onDelete: (id: number) => void;
   onUpgrade: (host: any) => void;
   canUpgrade: boolean;
-  panelVersion?: string;
+  latestAgentVersion?: string;
 }) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 1 },
     { refetchInterval: 15000 }
   );
   const latestMetric = metrics?.[0];
-  const agentNeedsUpdate = !!host.agentVersion && !!panelVersion && compareVersions(host.agentVersion, panelVersion) < 0;
+  const agentNeedsUpdate = !!host.agentVersion && !!latestAgentVersion && compareVersions(host.agentVersion, latestAgentVersion) < 0;
   const agentUpgrading = !!host.agentUpgradeRequested;
 
   return (
@@ -282,7 +282,7 @@ function HostsContent() {
     refetchInterval: 5000,
   });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
-  const panelVersion = systemSettings?.version;
+  const latestAgentVersion = systemSettings?.agentVersion || systemSettings?.version;
   const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
   const [showDialog, setShowDialog] = useState(false);
@@ -335,7 +335,7 @@ function HostsContent() {
     for (const host of hosts as any[]) {
       currentIds.add(host.id);
       if (host.agentUpgradeRequested) {
-        tracked.set(host.id, host.agentUpgradeTargetVersion || panelVersion || null);
+        tracked.set(host.id, host.agentUpgradeTargetVersion || latestAgentVersion || null);
         continue;
       }
       if (tracked.has(host.id)) {
@@ -346,7 +346,7 @@ function HostsContent() {
     for (const hostId of Array.from(tracked.keys())) {
       if (!currentIds.has(hostId)) tracked.delete(hostId);
     }
-  }, [hosts, panelVersion]);
+  }, [hosts, latestAgentVersion]);
 
   const resetForm = () => {
     setForm(defaultFormData);
@@ -420,8 +420,8 @@ function HostsContent() {
   const isPending = createMutation.isPending || updateMutation.isPending;
   const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
   const updateCount = useMemo(
-    () => hosts?.filter((h) => h.agentVersion && panelVersion && compareVersions(h.agentVersion, panelVersion) < 0).length ?? 0,
-    [hosts, panelVersion]
+    () => hosts?.filter((h) => h.agentVersion && latestAgentVersion && compareVersions(h.agentVersion, latestAgentVersion) < 0).length ?? 0,
+    [hosts, latestAgentVersion]
   );
   const requestAgentUpgrade = (host: any) => {
     setUpgradeHost(host);
@@ -493,7 +493,7 @@ function HostsContent() {
                 onDelete={(id) => deleteMutation.mutate({ id })}
                 onUpgrade={requestAgentUpgrade}
                 canUpgrade={user?.role === "admin"}
-                panelVersion={panelVersion}
+                latestAgentVersion={latestAgentVersion}
               />
             ))}
           </div>
@@ -568,7 +568,7 @@ function HostsContent() {
                             <span className="text-xs font-mono text-muted-foreground">
                               {host.agentVersion ? `v${host.agentVersion}` : "-"}
                             </span>
-                            {host.agentVersion && panelVersion && compareVersions(host.agentVersion, panelVersion) < 0 && (
+                            {host.agentVersion && latestAgentVersion && compareVersions(host.agentVersion, latestAgentVersion) < 0 && (
                               <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
                                 发现新版本
                               </Badge>
@@ -664,7 +664,7 @@ function HostsContent() {
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="text-muted-foreground">目标版本</span>
-                <span className="font-mono">v{panelVersion || "-"}</span>
+                <span className="font-mono">v{latestAgentVersion || "-"}</span>
               </div>
             </div>
           )}

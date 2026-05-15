@@ -5,7 +5,7 @@ import {
   decryptPayload,
   isEncryptedEnvelope,
 } from "./agentCrypto";
-import { APP_VERSION } from "./_core/systemRouter";
+import { AGENT_VERSION } from "./_core/systemRouter";
 
 const agentRouter = Router();
 
@@ -118,7 +118,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
     const agentVersion = req.header("X-Agent-Version");
     if (agentVersion) {
       await db.updateHostHeartbeat(host.id, { agentVersion } as any);
-      const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || APP_VERSION;
+      const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
       const agentUpgradeCompleted = (host as any).agentUpgradeRequested
         && compareVersions(agentVersion, requestedTargetVersion) >= 0;
       if (agentUpgradeCompleted) {
@@ -739,7 +739,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     }
 
-    const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || APP_VERSION;
+    const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
     const agentUpgradeCompleted = (host as any).agentUpgradeRequested
       && agentVersion
       && compareVersions(agentVersion, requestedTargetVersion) >= 0;
@@ -2040,7 +2040,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'echo "[步骤 4/6] 安装 Go Agent 程序..."',
     'CONFIG_DIR="/etc/forwardx-agent"',
     'GO_AGENT_BIN="/usr/local/bin/forwardx-agent"',
-    `AGENT_VERSION="${APP_VERSION}"`,
+    `AGENT_VERSION="${AGENT_VERSION}"`,
     'mkdir -p "$CONFIG_DIR"',
     'cat > "$CONFIG_DIR/config.json" << EOF',
     '{',
@@ -2170,7 +2170,7 @@ async function resolvePanelUrl(req: Request): Promise<string> {
 // 安装/卸载引导脚本
 export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string) {
   return sendAgentEvent(hostId, "agent-upgrade", {
-    targetVersion: targetVersion || APP_VERSION,
+    targetVersion: targetVersion || AGENT_VERSION,
     panelUrl,
   });
 }
