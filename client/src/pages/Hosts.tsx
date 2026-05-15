@@ -435,7 +435,7 @@ function HostsContent() {
     const cooldownMs = 30 * 1000;
     const waitMs = cooldownMs - (now - lastAgentUpdateCheck.current);
     if (waitMs > 0) {
-      toast.info(`检查太频繁，请 ${Math.ceil(waitMs / 1000)} 秒后再试`);
+      toast.info(`请 ${Math.ceil(waitMs / 1000)} 秒后重试`);
       return;
     }
     try {

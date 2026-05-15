@@ -939,7 +939,7 @@ function SystemInfoSection() {
     const cooldownMs = 60 * 1000;
     const waitMs = cooldownMs - (now - lastPanelUpdateCheck.current);
     if (waitMs > 0) {
-      toast.info(`检查太频繁，请 ${Math.ceil(waitMs / 1000)} 秒后再试`);
+      toast.info(`请 ${Math.ceil(waitMs / 1000)} 秒后重试`);
       return;
     }
     try {
@@ -956,7 +956,6 @@ function SystemInfoSection() {
   };
 
   const updateInfo = upgradeStatus?.update;
-  const latestVersion = updateInfo?.latestVersion || "未知";
   const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
   const isUpgradeRunning = upgradeStatus?.job.status === "running";
   const upgradeProgress = getUpgradeProgress(upgradeStatus?.job);
@@ -1021,10 +1020,6 @@ function SystemInfoSection() {
             <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
               <p className="text-xs text-muted-foreground">当前版本</p>
               <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">最新版本</p>
-              <p className="mt-1 font-mono text-sm">{latestVersion}</p>
             </div>
           </div>
 
