@@ -969,15 +969,12 @@ function SystemInfoSection() {
             <ShieldCheck className="h-4 w-4 text-emerald-500" />
             Agent 通讯加密
           </CardTitle>
-          <CardDescription>
-            面板与 Agent 之间的请求身体均使用 AES-256-CTR + HMAC-SHA256（Encrypt-then-MAC）加密，由 Agent Token 派生密钥，含时间戳防重放。老版本 Agent 仍可明文工作以保证向后兼容。
-          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-2 text-sm">
             <Badge variant="outline" className="gap-1.5 border-emerald-500/30 text-emerald-500">
               <CheckCircle2 className="h-3 w-3" />
-              已启用
+              加密方式
             </Badge>
             <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded">
               {settings?.agentEncryption || "aes-256-ctr+hmac-sha256"}
@@ -998,7 +995,7 @@ function SystemInfoSection() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
               <p className="text-xs text-muted-foreground">当前版本</p>
               <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
@@ -1006,14 +1003,6 @@ function SystemInfoSection() {
             <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
               <p className="text-xs text-muted-foreground">最新版本</p>
               <p className="mt-1 font-mono text-sm">{latestVersion}</p>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">升级能力</p>
-              <p className="mt-1 text-sm">
-                {upgradeEnabled ? "已启用" : "未配置"}
-                {upgradeStatus?.docker ? " / Docker" : ""}
-                {upgradeStatus?.dockerSocket ? " / socket 可用" : ""}
-              </p>
             </div>
           </div>
 
