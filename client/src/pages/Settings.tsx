@@ -70,7 +70,19 @@ function getUpgradeProgress(job: any) {
     },
     {
       label: "拉取与准备依赖",
-      done: matched([/load metadata/i, /transferring context/i, /pnpm install/i, /Packages:/i, /node_modules/i, /downloaded/i]),
+      done: matched([
+        /Cloning into/i,
+        /git (fetch|pull|checkout)/i,
+        /load metadata/i,
+        /load build context/i,
+        /transferring context/i,
+        /pnpm install/i,
+        /npm install/i,
+        /Packages:/i,
+        /node_modules/i,
+        /downloaded/i,
+        /Lockfile is up to date/i,
+      ]),
     },
     {
       label: "构建新版本",
@@ -83,18 +95,20 @@ function getUpgradeProgress(job: any) {
   ];
 
   if (status === "success") {
-    return { percent: 100, label: "升级完成", steps: steps.map((step) => ({ ...step, done: true })) };
+    return { percent: 100, label: "升级完成", steps: steps.map((step) => ({ ...step, done: true, active: false })) };
   }
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
-    return { percent: Math.max(10, doneCount * 22), label: "升级异常", steps };
+    const activeIndex = Math.min(doneCount, steps.length - 1);
+    return { percent: Math.max(10, doneCount * 22), label: "升级异常", steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
   if (status === "running") {
     const doneCount = steps.filter((step) => step.done).length;
-    const activeStep = steps.find((step) => !step.done)?.label || "等待服务重启";
-    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: activeStep, steps };
+    const activeIndex = Math.min(doneCount, steps.length - 1);
+    const activeStep = steps[activeIndex]?.label || "等待服务重启";
+    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: activeStep, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
-  return { percent: 0, label: "等待升级", steps };
+  return { percent: 0, label: "等待升级", steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
 function SettingsContent() {
@@ -1152,6 +1166,8 @@ function SystemInfoSection() {
                       className={`rounded-lg border px-3 py-2 text-xs ${
                         step.done
                           ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-500"
+                          : step.active
+                            ? "border-primary/30 bg-primary/10 text-primary"
                           : "border-border/40 bg-background/40 text-muted-foreground"
                       }`}
                     >
