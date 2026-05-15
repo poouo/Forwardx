@@ -47,6 +47,7 @@ import {
   LayoutGrid,
   List,
   RefreshCw,
+  AlertTriangle,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
@@ -69,6 +70,21 @@ function formatUptime(seconds: number | null | undefined): string {
   if (d > 0) return `${d}天 ${h}小时`;
   if (h > 0) return `${h}小时 ${m}分`;
   return `${m}分钟`;
+}
+
+function normalizeVersion(version: string | null | undefined) {
+  return String(version || "").trim().replace(/^v/i, "");
+}
+
+function compareVersions(a: string | null | undefined, b: string | null | undefined) {
+  const pa = normalizeVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const pb = normalizeVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
 }
 
 type HostFormData = {
@@ -98,18 +114,21 @@ function HostCard({
   onDelete,
   onUpgrade,
   canUpgrade,
+  panelVersion,
 }: {
   host: any;
   onEdit: (host: any) => void;
   onDelete: (id: number) => void;
   onUpgrade: (host: any) => void;
   canUpgrade: boolean;
+  panelVersion?: string;
 }) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 1 },
     { refetchInterval: 15000 }
   );
   const latestMetric = metrics?.[0];
+  const agentNeedsUpdate = !!host.agentVersion && !!panelVersion && compareVersions(host.agentVersion, panelVersion) < 0;
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
@@ -171,7 +190,19 @@ function HostCard({
           </div>
           <div className="space-y-1 col-span-2">
             <p className="text-xs text-muted-foreground">Agent 版本</p>
-            <p className="text-sm font-mono">{host.agentVersion ? `v${host.agentVersion}` : "-"}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-mono">{host.agentVersion ? `v${host.agentVersion}` : "-"}</p>
+              {agentNeedsUpdate && (
+                <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
+                  需更新
+                </Badge>
+              )}
+              {!host.agentVersion && (
+                <Badge variant="secondary" className="text-[10px]">
+                  未上报
+                </Badge>
+              )}
+            </div>
           </div>
         </div>
 
@@ -243,8 +274,11 @@ function HostsContent() {
   const { data: hosts, isLoading } = trpc.hosts.list.useQuery(undefined, {
     refetchInterval: 15000,
   });
+  const { data: systemSettings } = trpc.system.getSettings.useQuery();
+  const panelVersion = systemSettings?.version;
 
   const [showDialog, setShowDialog] = useState(false);
+  const [upgradeHost, setUpgradeHost] = useState<any>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
   const [form, setForm] = useState<HostFormData>(defaultFormData);
@@ -280,6 +314,7 @@ function HostsContent() {
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      setUpgradeHost(null);
       toast.success("已下发 Agent 升级任务，等待下次心跳执行");
     },
     onError: (err) => toast.error(err.message || "下发升级任务失败"),
@@ -356,9 +391,12 @@ function HostsContent() {
 
   const isPending = createMutation.isPending || updateMutation.isPending;
   const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
+  const updateCount = useMemo(
+    () => hosts?.filter((h) => h.agentVersion && panelVersion && compareVersions(h.agentVersion, panelVersion) < 0).length ?? 0,
+    [hosts, panelVersion]
+  );
   const requestAgentUpgrade = (host: any) => {
-    if (!confirm(`确定要让主机 "${host.name}" 在下次心跳时升级 Agent 吗？`)) return;
-    upgradeAgentMutation.mutate({ hostId: host.id });
+    setUpgradeHost(host);
   };
 
   return (
@@ -377,6 +415,12 @@ function HostsContent() {
             {onlineCount} / {hosts?.length ?? 0} 在线
           </Badge>
           {/* 布局切换按钮 */}
+          {updateCount > 0 && (
+            <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs border-amber-500/30 text-amber-500">
+              <AlertTriangle className="h-3 w-3" />
+              {updateCount} 台需更新
+            </Badge>
+          )}
           <div className="flex items-center border border-border/40 rounded-md overflow-hidden">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}
@@ -421,6 +465,7 @@ function HostsContent() {
                 onDelete={(id) => deleteMutation.mutate({ id })}
                 onUpgrade={requestAgentUpgrade}
                 canUpgrade={user?.role === "admin"}
+                panelVersion={panelVersion}
               />
             ))}
           </div>
@@ -491,9 +536,16 @@ function HostsContent() {
                           </span>
                         </TableCell>
                         <TableCell className="hidden lg:table-cell">
-                          <span className="text-xs font-mono text-muted-foreground">
-                            {host.agentVersion ? `v${host.agentVersion}` : "-"}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {host.agentVersion ? `v${host.agentVersion}` : "-"}
+                            </span>
+                            {host.agentVersion && panelVersion && compareVersions(host.agentVersion, panelVersion) < 0 && (
+                              <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
+                                需更新
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="hidden sm:table-cell">
                           <span className="text-xs text-muted-foreground">
@@ -554,6 +606,50 @@ function HostsContent() {
           </p>
         </div>
       )}
+
+      {/* Agent Upgrade Dialog */}
+      <Dialog open={!!upgradeHost} onOpenChange={(open) => !open && setUpgradeHost(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="h-5 w-5 text-primary" />
+              升级 Agent
+            </DialogTitle>
+            <DialogDescription>
+              面板会在该主机下次心跳时下发升级任务，Agent 将重新拉取安装脚本并重启自身服务。
+            </DialogDescription>
+          </DialogHeader>
+          {upgradeHost && (
+            <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">主机</span>
+                <span className="font-medium">{upgradeHost.name}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">当前 Agent</span>
+                <span className="font-mono">{upgradeHost.agentVersion ? `v${upgradeHost.agentVersion}` : "未上报"}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">目标版本</span>
+                <span className="font-mono">v{panelVersion || "-"}</span>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUpgradeHost(null)}>
+              取消
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={!upgradeHost || upgradeAgentMutation.isPending}
+              onClick={() => upgradeHost && upgradeAgentMutation.mutate({ hostId: upgradeHost.id })}
+            >
+              <RefreshCw className={`h-4 w-4 ${upgradeAgentMutation.isPending ? "animate-spin" : ""}`} />
+              {upgradeAgentMutation.isPending ? "下发中..." : "确认升级"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>

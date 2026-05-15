@@ -44,6 +44,7 @@ import {
   RefreshCw,
   Rocket,
   AlertTriangle,
+  Pencil,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -92,10 +93,20 @@ function SettingsContent() {
     onError: (err) => toast.error(err.message || "删除 Token 失败"),
   });
 
+  const updateTokenMutation = trpc.agentTokens.update.useMutation({
+    onSuccess: () => {
+      utils.agentTokens.list.invalidate();
+      toast.success("Token 备注已更新");
+      setEditingToken(null);
+      setEditDescription("");
+    },
+    onError: (err) => toast.error(err.message || "更新 Token 备注失败"),
+  });
+
   const [showCreate, setShowCreate] = useState(false);
   const [showNewToken, setShowNewToken] = useState(false);
   const [showScript, setShowScript] = useState(false);
-  const [scriptToken, setScriptToken] = useState("");
+  const [scriptTokenId, setScriptTokenId] = useState<number | null>(null);
   const [importMode, setImportMode] = useState<"merge" | "replace">("merge");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
@@ -109,6 +120,8 @@ function SettingsContent() {
   });
   const [newToken, setNewToken] = useState("");
   const [description, setDescription] = useState("");
+  const [editingToken, setEditingToken] = useState<any>(null);
+  const [editDescription, setEditDescription] = useState("");
   // 面板地址统一使用「系统信息」Tab 中配置的 panelPublicUrl；未配置时回退 window.location.origin
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
@@ -118,8 +131,8 @@ function SettingsContent() {
   const githubScriptUrl = `${repoUrl.replace(/\/+$/, "").replace("github.com", "raw.githubusercontent.com")}/main/scripts/install-agent.sh`;
 
   const { data: scriptData } = trpc.agentTokens.getInstallScript.useQuery(
-    { token: scriptToken },
-    { enabled: !!scriptToken && showScript }
+    { id: scriptTokenId ?? undefined, panelUrl },
+    { enabled: !!scriptTokenId && showScript }
   );
 
   const copyToClipboard = async (text: string) => {
@@ -273,16 +286,8 @@ function SettingsContent() {
                           <TableCell>
                             <div className="flex items-center gap-2">
                               <code className="text-xs bg-muted/40 px-2 py-1 rounded font-mono">
-                                {t.token.substring(0, 16)}...
+                                {t.token}
                               </code>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6"
-                                onClick={() => copyToClipboard(t.token)}
-                              >
-                                <Copy className="h-3 w-3" />
-                              </Button>
                             </div>
                           </TableCell>
                           <TableCell className="hidden sm:table-cell">
@@ -313,11 +318,23 @@ function SettingsContent() {
                                 className="h-8 w-8"
                                 title="查看安装脚本"
                                 onClick={() => {
-                                  setScriptToken(t.token);
+                                  setScriptTokenId(t.id);
                                   setShowScript(true);
                                 }}
                               >
                                 <Terminal className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title="编辑备注"
+                                onClick={() => {
+                                  setEditingToken(t);
+                                  setEditDescription(t.description || "");
+                                }}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
                               </Button>
                               <Button
                                 variant="ghost"
@@ -650,22 +667,10 @@ function SettingsContent() {
               Token 已创建
             </DialogTitle>
             <DialogDescription>
-              请妥善保存此 Token，它不会再次显示
+              下面只展示安装命令，Token 不再单独显示。复制命令到被控机执行即可完成安装。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="p-4 rounded-lg bg-muted/20 border border-border/30">
-              <div className="flex items-center gap-2">
-                <code className="flex-1 text-sm font-mono break-all">{newToken}</code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => copyToClipboard(newToken)}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">快速安装命令：</p>
               <div className="p-3 rounded-lg bg-background/50 border">
@@ -690,6 +695,46 @@ function SettingsContent() {
         </DialogContent>
       </Dialog>
 
+      {/* Edit Token Description Dialog */}
+      <Dialog open={!!editingToken} onOpenChange={(open) => {
+        if (!open) {
+          setEditingToken(null);
+          setEditDescription("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑 Token 备注</DialogTitle>
+            <DialogDescription>
+              修改备注只影响后台展示，不会改变 Token 或已安装 Agent。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>备注</Label>
+            <Input
+              value={editDescription}
+              maxLength={200}
+              placeholder="例如：香港节点 Agent"
+              onChange={(e) => setEditDescription(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingToken(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={updateTokenMutation.isPending || !editingToken}
+              onClick={() => updateTokenMutation.mutate({
+                id: editingToken.id,
+                description: editDescription.trim() || null,
+              })}
+            >
+              {updateTokenMutation.isPending ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Install Script Dialog */}
       <Dialog open={showScript} onOpenChange={setShowScript}>
         <DialogContent className="max-w-2xl">
@@ -707,12 +752,12 @@ function SettingsContent() {
               <Label className="text-xs text-muted-foreground">安装命令</Label>
               <div className="flex items-center gap-2">
                 <code className="flex-1 text-xs font-mono bg-muted/30 p-3 rounded border overflow-x-auto">
-                  {getInstallCommand(scriptToken)}
+                  {scriptData?.token ? getInstallCommand(scriptData.token) : "加载中..."}
                 </code>
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => copyToClipboard(getInstallCommand(scriptToken))}
+                  onClick={() => scriptData?.token && copyToClipboard(getInstallCommand(scriptData.token))}
                 >
                   <Copy className="h-4 w-4" />
                 </Button>

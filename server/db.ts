@@ -866,6 +866,12 @@ export async function markAgentTokenUsed(token: string, hostId: number) {
   await db.update(agentTokens).set({ isUsed: true, hostId }).where(eq(agentTokens.token, token));
 }
 
+export async function updateAgentTokenDescription(id: number, description: string | null) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(agentTokens).set({ description }).where(eq(agentTokens.id, id));
+}
+
 export async function deleteAgentToken(id: number) {
   const db = await getDb();
   if (!db) return;
