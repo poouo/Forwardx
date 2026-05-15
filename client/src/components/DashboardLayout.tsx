@@ -265,9 +265,6 @@ function DashboardLayoutContent({
         </SidebarContent>
 
         <SidebarFooter className="p-3">
-          <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
-            <span className="text-[10px] text-muted-foreground/50">v2.1.10</span>
-          </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
