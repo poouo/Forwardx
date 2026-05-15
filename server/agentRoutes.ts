@@ -159,7 +159,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
 // Agent 注册接口
 agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
   try {
-    const { token, ip, osInfo, cpuInfo, memoryTotal, agentVersion } = req.body;
+    const { token, ip, ipv4, ipv6, osInfo, cpuInfo, memoryTotal, agentVersion } = req.body;
     if (!token) {
       res.status(400).json({ error: "Token is required" });
       return;
@@ -176,7 +176,9 @@ agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
       await db.updateHost(existingHost.id, {
-        ip: ip || existingHost.ip,
+        ip: ipv4 || ip || existingHost.ip,
+        ipv4: ipv4 || (existingHost as any).ipv4 || null,
+        ipv6: ipv6 || (existingHost as any).ipv6 || null,
         osInfo: osInfo || existingHost.osInfo,
         cpuInfo: cpuInfo || existingHost.cpuInfo,
         memoryTotal: memoryTotal || existingHost.memoryTotal,
@@ -191,7 +193,9 @@ agentRouter.post("/api/agent/register", async (req: Request, res: Response) => {
     // 创建新主机
     const hostId = await db.createHost({
       name: `Agent-${token.substring(0, 8)}`,
-      ip: ip || "unknown",
+      ip: ipv4 || ip || "unknown",
+      ipv4: ipv4 || null,
+      ipv6: ipv6 || null,
       hostType: "slave",
       agentToken: token,
       osInfo: osInfo || null,

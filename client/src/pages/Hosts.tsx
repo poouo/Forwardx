@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+﻿import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -89,6 +89,14 @@ function compareVersions(a: string | null | undefined, b: string | null | undefi
   return 0;
 }
 
+function hostAddressLines(host: any) {
+  const rows: Array<{ label: string; value: string }> = [];
+  if (host.ipv4) rows.push({ label: "IPv4", value: host.ipv4 });
+  if (host.ipv6) rows.push({ label: "IPv6", value: host.ipv6 });
+  if (rows.length === 0 && host.ip) rows.push({ label: "IP", value: host.ip });
+  return rows;
+}
+
 type HostFormData = {
   name: string;
   ip: string;
@@ -177,8 +185,15 @@ function HostCard({
         {/* 基本信息 */}
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">IP 地址</p>
-            <p className="text-sm font-mono">{host.ip}</p>
+            <p className="text-xs text-muted-foreground">地址</p>
+            <div className="space-y-0.5">
+              {hostAddressLines(host).map((item) => (
+                <p key={item.label} className="text-sm font-mono">
+                  <span className="mr-1 text-[10px] text-muted-foreground">{item.label}</span>
+                  {item.value}
+                </p>
+              ))}
+            </div>
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">状态</p>
@@ -377,11 +392,11 @@ function HostsContent() {
 
   const handleSubmit = () => {
     const name = (form.name || "").trim();
-    const ip = (form.ip || "").trim();
+    const entry = (form.entryIp || "").trim();
     if (!name) { toast.error("请输入主机名称"); return; }
-    if (!ip) { toast.error("请输入主机 IP 地址"); return; }
+    if (!entry) { toast.error("请输入入口 IP / 域名"); return; }
     if (name.length > 128) { toast.error("主机名称不能超过 128 个字符"); return; }
-    if (ip.length > 64) { toast.error("主机 IP/域名不能超过 64 个字符"); return; }
+    if (entry.length > 128) { toast.error("入口 IP / 域名不能超过 128 个字符"); return; }
 
     const ps = form.portRangeStart;
     const pe = form.portRangeEnd;
@@ -389,12 +404,12 @@ function HostsContent() {
       toast.error("请同时填写端口区间的起始和结束值，或同时留空"); return;
     }
     if (ps != null && pe != null) {
-      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error("端口区间必须在 1–65535 之间"); return; }
+      if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error("端口区间必须在 1-65535 之间"); return; }
       if (ps > pe) { toast.error("端口区间起始值不能大于结束值"); return; }
     }
 
     const ni = (form.networkInterface || "").trim();
-    const entry = (form.entryIp || "").trim();
+    const ip = (form.ip || entry || "unknown").trim();
 
     if (editingId) {
       updateMutation.mutate({
@@ -403,7 +418,7 @@ function HostsContent() {
         ip,
         hostType: form.hostType,
         networkInterface: ni || null,
-        entryIp: entry || null,
+        entryIp: entry,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
       });
@@ -413,13 +428,12 @@ function HostsContent() {
         ip,
         hostType: form.hostType,
         networkInterface: ni || undefined,
-        entryIp: entry || null,
+        entryIp: entry,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
       });
     }
   };
-
   const isPending = createMutation.isPending || updateMutation.isPending;
   const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
   const updateCount = useMemo(
@@ -544,7 +558,7 @@ function HostsContent() {
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-[50px]">状态</TableHead>
                       <TableHead>名称</TableHead>
-                      <TableHead>IP 地址</TableHead>
+                      <TableHead>地址</TableHead>
                       <TableHead className="hidden md:table-cell">类型</TableHead>
                       <TableHead className="hidden lg:table-cell">端口区间</TableHead>
                       <TableHead className="hidden md:table-cell">系统</TableHead>
@@ -572,9 +586,14 @@ function HostsContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <code className="text-xs font-mono bg-muted/40 px-2 py-0.5 rounded">
-                            {host.ip}
-                          </code>
+                          <div className="space-y-1">
+                            {hostAddressLines(host).map((item) => (
+                              <div key={item.label} className="font-mono text-xs">
+                                <span className="mr-1 text-[10px] text-muted-foreground">{item.label}</span>
+                                {item.value}
+                              </div>
+                            ))}
+                          </div>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <Badge
@@ -736,21 +755,13 @@ function HostsContent() {
               <TabsTrigger value="port" className="flex-1">端口限制</TabsTrigger>
             </TabsList>
             <TabsContent value="basic" className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                 <div className="space-y-2">
                   <Label>主机名称</Label>
                   <Input
                     placeholder="例如: 香港节点-01"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>IP 地址</Label>
-                  <Input
-                    placeholder="例如: 192.168.1.100"
-                    value={form.ip}
-                    onChange={(e) => setForm({ ...form, ip: e.target.value })}
                   />
                 </div>
               </div>
@@ -765,17 +776,14 @@ function HostsContent() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>
-                  入口 IP / 域名
-                  <span className="ml-1 text-xs text-muted-foreground">(默认同 IP 地址，可自定义)</span>
-                </Label>
+                <Label>入口 IP / 域名</Label>
                 <Input
                   placeholder="例如: example.com 或 1.2.3.4"
                   value={form.entryIp}
                   onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  用于向最终用户展示与复制的转发入口地址。可以是反代域名、CDN 域名或公网 IP；留空时使用上方 IP 地址
+                  用于展示和复制转发入口地址，可以是公网 IPv4、IPv6 或域名。
                 </p>
               </div>
               <div className="space-y-2">
@@ -844,7 +852,7 @@ function HostsContent() {
             <Button variant="outline" onClick={() => setShowDialog(false)}>
               取消
             </Button>
-            <Button onClick={handleSubmit} disabled={isPending || !form.name || !form.ip}>
+            <Button onClick={handleSubmit} disabled={isPending || !form.name || !form.entryIp}>
               {isPending ? "处理中..." : editingId ? "保存" : "添加"}
             </Button>
           </DialogFooter>
@@ -861,3 +869,4 @@ export default function Hosts() {
     </DashboardLayout>
   );
 }
+

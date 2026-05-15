@@ -44,6 +44,8 @@ export const hosts = sqliteTable("hosts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   ip: text("ip").notNull(),
+  ipv4: text("ipv4"),
+  ipv6: text("ipv6"),
   hostType: text("hostType").notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
   // 用户自定义的入口 IP/域名，为空时回退使用 ip

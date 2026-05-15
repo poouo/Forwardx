@@ -10,6 +10,7 @@ import { ENV } from "./env";
 import * as db from "./db";
 import { generateFullInstallScript, pushAgentUpgrade } from "./agentRoutes";
 import { FORWARD_TYPES } from "../shared/forwardTypes";
+import { appendPanelLog } from "./_core/panelLogger";
 
 const forwardTypeSchema = z.enum(FORWARD_TYPES);
 
@@ -980,41 +981,60 @@ export const appRouter = router({
         if (!exit) throw new Error("Exit Agent not found");
         const tunnelRules = await db.getForwardRulesByTunnel(tunnel.id);
         const testRule = tunnelRules.find((rule: any) => rule.isEnabled && rule.tunnelExitPort);
+        appendPanelLog("info", `[TunnelTest] start tunnel=${tunnel.id} name=${tunnel.name} entryHost=${tunnel.entryHostId} exitHost=${tunnel.exitHostId} mode=${tunnel.mode} listenPort=${tunnel.listenPort}`);
         if (!testRule) {
           const message = "NO_BOUND_RULE";
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
           await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} no enabled forward rule bound to this tunnel`);
           return { success: false, latencyMs: null, message, pending: true };
         }
         if (!tunnel.isRunning) {
           const message = "EXIT_AGENT_NOT_APPLIED";
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
           await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; waiting for exit Agent to reconnect and run tunnel config`);
           return { success: false, latencyMs: null, message, pending: true };
         }
-        const target = (exit as any).entryIp || exit.ip;
+        const target = String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit.ip || "").trim();
         const targetPort = Number((testRule as any).tunnelExitPort);
+        if (!target || !targetPort) {
+          const message = `TUNNEL_TEST_TARGET_INVALID target=${target || "-"} port=${targetPort || "-"}`;
+          await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
+          await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid test target. exitHost=${exit.id} target=${target || "-"} port=${targetPort || "-"}`);
+          return { success: false, latencyMs: null, message };
+        }
+        appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} probing ${target}:${targetPort} via panel TCP connect`);
         const start = Date.now();
-        const reachable = await new Promise<boolean>((resolve) => {
+        const result = await new Promise<{ reachable: boolean; reason?: string }>((resolve) => {
           const socket = new net.Socket();
-          const done = (ok: boolean) => {
+          const done = (reachable: boolean, reason?: string) => {
             socket.destroy();
-            resolve(ok);
+            resolve({ reachable, reason });
           };
           socket.setTimeout(3000);
           socket.once("connect", () => done(true));
-          socket.once("timeout", () => done(false));
-          socket.once("error", () => done(false));
+          socket.once("timeout", () => done(false, "timeout"));
+          socket.once("error", (err: any) => done(false, err?.code || err?.message || "error"));
           socket.connect(targetPort, target);
         });
+        const reachable = result.reachable;
         const latencyMs = reachable ? Math.max(1, Date.now() - start) : null;
-        const message = reachable ? `TUNNEL_EXIT_REACHABLE ${target}:${targetPort}` : `TUNNEL_EXIT_UNREACHABLE ${target}:${targetPort}`;
+        const message = reachable
+          ? `TUNNEL_EXIT_REACHABLE ${target}:${targetPort}`
+          : `TUNNEL_EXIT_UNREACHABLE ${target}:${targetPort} reason=${result.reason || "unknown"}`;
         await db.updateTunnelTestResult(tunnel.id, {
           status: reachable ? "success" : "failed",
           latencyMs,
           message,
         });
         await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs, isTimeout: !reachable });
+        if (reachable) {
+          appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} reachable ${target}:${targetPort} latency=${latencyMs}ms`);
+        } else {
+          appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} unreachable ${target}:${targetPort} reason=${result.reason || "unknown"}. Check exit Agent online status, gost tunnel service, firewall/security group, and listen port.`);
+        }
         return { success: reachable, latencyMs, message };
       }),
   }),

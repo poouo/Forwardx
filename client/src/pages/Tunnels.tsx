@@ -81,11 +81,12 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 
 function tunnelTestMessage(data: any) {
   const message = String(data?.message || "");
-  if (message === "NO_BOUND_RULE") return "?????????????????????????????";
-  if (message === "EXIT_AGENT_NOT_APPLIED") return "?? Agent ??????????????";
-  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `????????? ${data?.latencyMs ?? "-"}ms`;
-  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "????????????? Agent?????????";
-  return message || (data?.success ? `????????? ${data?.latencyMs ?? "-"}ms` : "???????");
+  if (message === "NO_BOUND_RULE") return "隧道还没有绑定启用中的转发规则";
+  if (message === "EXIT_AGENT_NOT_APPLIED") return "出口 Agent 尚未应用隧道配置，请等待 Agent 回连";
+  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `隧道出口可达，延迟 ${data?.latencyMs ?? "-"}ms`;
+  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "隧道出口不可达，详情可在面板日志查看";
+  if (message.startsWith("TUNNEL_TEST_TARGET_INVALID")) return "隧道测试目标无效，请检查出口 Agent 地址和端口";
+  return message || (data?.success ? `隧道出口可达，延迟 ${data?.latencyMs ?? "-"}ms` : "隧道测试失败");
 }
 
 function formatTunnelLatencyTime(value: string | Date) {
@@ -532,3 +533,4 @@ export default function TunnelsPage() {
     </DashboardLayout>
   );
 }
+

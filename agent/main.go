@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.32"
+var Version = "2.1.33"
 var upgradeStarted int32
 
 type Config struct {
@@ -142,9 +142,19 @@ func loadConfig(path string) (Config, error) {
 }
 
 func register(cfg Config) error {
+	ipv4, ipv6 := publicIPs()
+	primaryIP := ipv4
+	if primaryIP == "" {
+		primaryIP = ipv6
+	}
+	if primaryIP == "" {
+		primaryIP = "unknown"
+	}
 	payload := map[string]any{
 		"token":        cfg.Token,
-		"ip":           publicIP(),
+		"ip":           primaryIP,
+		"ipv4":         ipv4,
+		"ipv6":         ipv6,
 		"osInfo":       osInfo(),
 		"cpuInfo":      runtime.GOARCH,
 		"memoryTotal":  memTotal(),
@@ -619,8 +629,22 @@ func osInfo() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
-func publicIP() string {
-	for _, u := range []string{"https://ifconfig.me", "https://icanhazip.com"} {
+func publicIPs() (string, string) {
+	ipv4 := fetchPublicIP([]string{
+		"https://api.ipify.org",
+		"https://ipv4.icanhazip.com",
+		"https://v4.ident.me",
+	})
+	ipv6 := fetchPublicIP([]string{
+		"https://api6.ipify.org",
+		"https://ipv6.icanhazip.com",
+		"https://v6.ident.me",
+	})
+	return ipv4, ipv6
+}
+
+func fetchPublicIP(urls []string) string {
+	for _, u := range urls {
 		c := &http.Client{Timeout: 5 * time.Second}
 		if res, err := c.Get(u); err == nil {
 			b, _ := io.ReadAll(res.Body)
@@ -631,7 +655,7 @@ func publicIP() string {
 			}
 		}
 	}
-	return "unknown"
+	return ""
 }
 
 func readMeminfo() map[string]uint64 {
