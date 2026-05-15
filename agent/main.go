@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.15"
+var Version = "2.1.16"
 
 type Config struct {
 	PanelURL string `json:"panelUrl"`
@@ -41,7 +41,12 @@ type envelope struct {
 
 type heartbeatResp struct {
 	Actions      []action      `json:"actions"`
+	SelfTests    []selfTest    `json:"selfTests"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
+}
+
+type selfTestResp struct {
+	SelfTests []selfTest `json:"selfTests"`
 }
 
 type action struct {
@@ -60,6 +65,16 @@ type action struct {
 type agentUpgrade struct {
 	TargetVersion string `json:"targetVersion"`
 	PanelURL      string `json:"panelUrl"`
+}
+
+type selfTest struct {
+	TestID     int    `json:"testId"`
+	RuleID     int    `json:"ruleId"`
+	ForwardType string `json:"forwardType"`
+	SourcePort  int    `json:"sourcePort"`
+	Protocol    string `json:"protocol"`
+	TargetIP    string `json:"targetIp"`
+	TargetPort  int    `json:"targetPort"`
 }
 
 func main() {
@@ -84,6 +99,7 @@ func main() {
 	}
 
 	_ = register(cfg)
+	go selfTestPoller(cfg)
 	for {
 		if err := heartbeat(cfg); err != nil {
 			logf("heartbeat error: %v", err)
@@ -139,11 +155,57 @@ func heartbeat(cfg Config) error {
 	for _, a := range resp.Actions {
 		go handleAction(cfg, a)
 	}
+	for _, t := range resp.SelfTests {
+		go handleSelfTest(cfg, t)
+	}
 	collectTraffic(cfg)
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
 	return nil
+}
+
+func selfTestPoller(cfg Config) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		var resp selfTestResp
+		if err := post(cfg, "/api/agent/selftest-pull", map[string]any{}, &resp); err != nil {
+			logf("selftest pull error: %v", err)
+			continue
+		}
+		for _, t := range resp.SelfTests {
+			go handleSelfTest(cfg, t)
+		}
+	}
+}
+
+func handleSelfTest(cfg Config, t selfTest) {
+	start := time.Now()
+	target := net.JoinHostPort(t.TargetIP, strconv.Itoa(t.TargetPort))
+	conn, err := net.DialTimeout("tcp", target, 3*time.Second)
+	latency := int(time.Since(start).Milliseconds())
+	reachable := err == nil
+	msg := ""
+	if err == nil {
+		_ = conn.Close()
+		if latency < 1 {
+			latency = 1
+		}
+		msg = fmt.Sprintf("目标 %s TCP可达, 延迟 %dms", target, latency)
+	} else {
+		latency = 0
+		msg = fmt.Sprintf("目标 %s TCP不可达: %v", target, err)
+	}
+	payload := map[string]any{
+		"testId":          t.TestID,
+		"targetReachable": reachable,
+		"latencyMs":       latency,
+		"message":         msg,
+	}
+	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
+		logf("selftest report failed test=%d target=%s: %v", t.TestID, target, err)
+	}
 }
 
 func handleAction(cfg Config, a action) {
