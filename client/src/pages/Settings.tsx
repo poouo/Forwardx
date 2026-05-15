@@ -328,6 +328,11 @@ function SettingsContent() {
             </Button>
           </div>
 
+          <Alert className="border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <ShieldCheck className="h-4 w-4" />
+            <AlertTitle>通讯已加密</AlertTitle>
+          </Alert>
+
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardContent className="p-0">
               {isLoading ? (
@@ -997,27 +1002,6 @@ function SystemInfoSection() {
           <p className="text-xs text-muted-foreground">
             留空使用面板访问请求中的 host 作为默认值。必须以 http:// 或 https:// 开头。
           </p>
-        </CardContent>
-      </Card>
-
-      {/* Agent 加密状态 */}
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-emerald-500" />
-            Agent 通讯加密
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2 text-sm">
-            <Badge variant="outline" className="gap-1.5 border-emerald-500/30 text-emerald-500">
-              <CheckCircle2 className="h-3 w-3" />
-              加密方式
-            </Badge>
-            <code className="text-xs bg-muted/40 px-1.5 py-0.5 rounded">
-              {settings?.agentEncryption || "aes-256-ctr+hmac-sha256"}
-            </code>
-          </div>
         </CardContent>
       </Card>
 
