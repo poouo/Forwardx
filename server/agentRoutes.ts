@@ -363,9 +363,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `systemctl disable forwardx-socat-${port}.service forwardx-socat-tcp-${port}.service forwardx-socat-udp-${port}.service forwardx-realm-${port}.service 2>/dev/null || true`,
       `rm -f /etc/systemd/system/forwardx-socat-${port}.service /etc/systemd/system/forwardx-socat-tcp-${port}.service /etc/systemd/system/forwardx-socat-udp-${port}.service /etc/systemd/system/forwardx-realm-${port}.service`,
       `systemctl daemon-reload`,
-      `pkill -f "socat.*LISTEN:${port}" 2>/dev/null || true`,
-      `pkill -f "realm .*:${port}" 2>/dev/null || true`,
-      `pkill -f "gost .*:${port}" 2>/dev/null || true`,
       `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
       ...buildCountingCleanupCmds(port),
     ];

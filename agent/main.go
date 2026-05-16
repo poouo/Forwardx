@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.2.27"
+var Version = "2.2.28"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -470,9 +470,6 @@ func managedPortCleanupCmds(port string) []string {
 		"systemctl disable forwardx-socat-" + port + ".service forwardx-socat-tcp-" + port + ".service forwardx-socat-udp-" + port + ".service forwardx-realm-" + port + ".service 2>/dev/null || true",
 		"rm -f /etc/systemd/system/forwardx-socat-" + port + ".service /etc/systemd/system/forwardx-socat-tcp-" + port + ".service /etc/systemd/system/forwardx-socat-udp-" + port + ".service /etc/systemd/system/forwardx-realm-" + port + ".service",
 		"systemctl daemon-reload",
-		"pkill -f \"socat.*LISTEN:" + port + "\" 2>/dev/null || true",
-		"pkill -f \"realm .*:" + port + "\" 2>/dev/null || true",
-		"pkill -f \"gost .*:" + port + "\" 2>/dev/null || true",
 		"rm -f /var/lib/forwardx-agent/traffic_" + port + ".prev /var/lib/forwardx-agent/port_" + port + ".rule /var/lib/forwardx-agent/port_" + port + ".fwtype /var/lib/forwardx-agent/target_" + port + ".info 2>/dev/null || true",
 		"iptables -t mangle -D PREROUTING -p tcp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
 		"iptables -t mangle -D PREROUTING -p udp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
