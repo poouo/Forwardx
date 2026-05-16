@@ -46,6 +46,7 @@ import {
   CalendarClock,
   Database,
   Server,
+  Gauge,
 } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
@@ -66,6 +67,18 @@ function parseTrafficInputGB(value: string): number {
   const num = parseFloat(String(value).trim());
   if (isNaN(num) || num <= 0) return 0;
   return Math.floor(num * 1024 * 1024 * 1024);
+}
+
+function parseSpeedInputMB(value: string): number {
+  const num = parseFloat(String(value).trim());
+  if (isNaN(num) || num <= 0) return 0;
+  return Math.floor(num * 1024 * 1024);
+}
+
+function formatSpeed(bytesPerSecond: number | string | null | undefined): string {
+  const num = Number(bytesPerSecond);
+  if (!num || isNaN(num) || num <= 0) return "0 MB/s";
+  return `${parseFloat((num / 1024 / 1024).toFixed(2))} MB/s`;
 }
 
 function UsersContent() {
@@ -92,6 +105,8 @@ function UsersContent() {
   const [trafficUserId, setTrafficUserId] = useState<number | null>(null);
   const [trafficUserName, setTrafficUserName] = useState("");
   const [trafficLimitInput, setTrafficLimitInput] = useState("");
+  const [gostRateLimitInInput, setGostRateLimitInInput] = useState("");
+  const [gostRateLimitOutInput, setGostRateLimitOutInput] = useState("");
   const [expiresAtInput, setExpiresAtInput] = useState("");
   const [trafficAutoReset, setTrafficAutoReset] = useState(false);
   const [trafficResetDay, setTrafficResetDay] = useState(1);
@@ -239,6 +254,10 @@ function UsersContent() {
     setExpiresAtInput(u.expiresAt ? new Date(u.expiresAt).toISOString().slice(0, 10) : "");
     setTrafficAutoReset(!!u.trafficAutoReset);
     setTrafficResetDay(u.trafficResetDay || 1);
+    const gostIn = Number(u.gostRateLimitIn) || 0;
+    const gostOut = Number(u.gostRateLimitOut) || 0;
+    setGostRateLimitInInput(gostIn > 0 ? parseFloat((gostIn / 1024 / 1024).toFixed(2)).toString() : "0");
+    setGostRateLimitOutInput(gostOut > 0 ? parseFloat((gostOut / 1024 / 1024).toFixed(2)).toString() : "0");
     setCanAddRules(!!u.canAddRules);
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
@@ -270,6 +289,8 @@ function UsersContent() {
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       trafficLimit: limitBytes,
+      gostRateLimitIn: parseSpeedInputMB(gostRateLimitInInput),
+      gostRateLimitOut: parseSpeedInputMB(gostRateLimitOutInput),
       expiresAt: expiresAtInput || null,
       trafficAutoReset,
       trafficResetDay,
@@ -458,6 +479,9 @@ function UsersContent() {
                           <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
                             <span>规则: {u.maxRules ? `最多 ${u.maxRules} 条` : "不限"}</span>
                             <span>端口: {u.maxPorts ? `最多 ${u.maxPorts} 个` : "不限"}</span>
+                            {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
+                              <span>GOST: {formatSpeed(u.gostRateLimitIn)} / {formatSpeed(u.gostRateLimitOut)}</span>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
@@ -720,6 +744,53 @@ function UsersContent() {
                 <p className="text-xs text-muted-foreground">
                   请输入数字，默认单位为 GB。填 0 表示不限制
                 </p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-3 rounded-lg border border-border/50 bg-muted/20 p-3">
+                <div className="space-y-1">
+                  <Label className="flex items-center gap-1.5 text-sm">
+                    <Gauge className="h-3.5 w-3.5" />
+                    GOST 限速
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    仅对 GOST 转发和隧道转发生效，iptables、realm、socat 不受此限速影响。
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label className="text-xs">入口限速</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.1"
+                        value={gostRateLimitInInput}
+                        onChange={(e) => setGostRateLimitInInput(e.target.value)}
+                        placeholder="0"
+                      />
+                      <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs">出口限速</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.1"
+                        value={gostRateLimitOutInput}
+                        onChange={(e) => setGostRateLimitOutInput(e.target.value)}
+                        placeholder="0"
+                      />
+                      <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后 Agent 刷新 GOST 配置时生效。</p>
               </div>
 
               <Separator />

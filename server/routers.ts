@@ -302,6 +302,8 @@ export const appRouter = router({
         role: user.role,
         trafficLimit: user.trafficLimit,
         trafficUsed: user.trafficUsed,
+        gostRateLimitIn: user.gostRateLimitIn,
+        gostRateLimitOut: user.gostRateLimitOut,
         expiresAt: user.expiresAt,
         trafficAutoReset: user.trafficAutoReset,
         trafficResetDay: user.trafficResetDay,
@@ -391,6 +393,8 @@ export const appRouter = router({
       .input(z.object({
         userId: z.number(),
         trafficLimit: z.number().min(0).optional(),
+        gostRateLimitIn: z.number().min(0).optional(),
+        gostRateLimitOut: z.number().min(0).optional(),
         expiresAt: z.string().nullable().optional(), // ISO date string or null
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().min(1).max(28).optional(),
@@ -1241,6 +1245,8 @@ export const appRouter = router({
           canAddRules: u.canAddRules,
           trafficLimit: u.trafficLimit,
           trafficUsed: u.trafficUsed,
+          gostRateLimitIn: (u as any).gostRateLimitIn,
+          gostRateLimitOut: (u as any).gostRateLimitOut,
           expiresAt: u.expiresAt,
           trafficAutoReset: u.trafficAutoReset,
           trafficResetDay: u.trafficResetDay,

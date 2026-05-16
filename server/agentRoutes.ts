@@ -345,6 +345,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     ].join("\n");
     const gostRules = (await db.getForwardRules(undefined, host.id))
       .filter((r: any) => r.isEnabled && r.forwardType === "gost");
+    const gostRuleUserIds = Array.from(new Set(gostRules.map((r: any) => Number(r.userId)).filter(Boolean)));
+    const gostUsers = await Promise.all(gostRuleUserIds.map((id) => db.getUserById(id)));
+    const gostUserById = new Map(gostUsers.filter(Boolean).map((u: any) => [u.id, u]));
+    const gostRateLimiters = gostUsers
+      .filter((u: any) => u && (Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0))
+      .map((u: any) => ({
+        name: `fwx-user-${u.id}`,
+        limits: [`$ ${Math.max(0, Number(u.gostRateLimitIn) || 0)}B ${Math.max(0, Number(u.gostRateLimitOut) || 0)}B`],
+      }));
+    const applyGostLimiter = (service: any, userId: number) => {
+      const user = gostUserById.get(userId) as any;
+      if (user && (Number(user.gostRateLimitIn) > 0 || Number(user.gostRateLimitOut) > 0)) {
+        service.limiter = `fwx-user-${user.id}`;
+      }
+      return service;
+    };
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
@@ -356,7 +372,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
-    const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? [] : ["tcp"];
+    const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
     const tunnelExitHostAddress = async (tunnel: any) => {
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
@@ -381,7 +397,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
         return protos.map((proto) => {
           if ((r as any).gostMode === "reverse") {
-            return {
+            return applyGostLimiter({
               name: `fwx-${r.id}-${proto}`,
               addr: ":0",
               handler: { type: proto === "udp" ? "rudp" : "rtcp" },
@@ -392,14 +408,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                   addr: `${r.targetIp}:${r.targetPort}`,
                 }],
               },
-            };
+            }, Number(r.userId));
           }
           const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
-            handler: { type: proto },
-            listener: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
+            handler: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
+            listener: { type: proto },
             forwarder: { nodes: [] as any[] },
           };
           if (!tunnel) {
@@ -412,7 +428,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } else if (!tunnelExitHost || !(r as any).tunnelExitPort) {
             return null;
           }
-          return service;
+          return applyGostLimiter(service, Number(r.userId));
         });
       })
       .filter(Boolean);
@@ -452,7 +468,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             nodes: [{
               name: `exit-${r.id}`,
               addr: `${tunnelExitHost}:${(r as any).tunnelExitPort}`,
-              connector: { type: "forward" },
+              connector: { type: "relay" },
               dialer: {
                 type: tunnelProtocolType(tunnel.mode),
                 ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -463,7 +479,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
     const gostChains = [...reverseGostChains, ...tunnelGostChains];
     const buildGostReloadCmds = () => {
-      const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains }, null, 2), "utf8").toString("base64");
+      const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
       return [
         `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
         `mkdir -p /etc/forwardx-gost`,
@@ -499,11 +515,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !rule.tunnelExitPort) return [];
-        const protos = tunnelForwardProtos(rule.protocol);
-        return protos.map((proto) => ({
-          name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}-${proto}`,
+        return [{
+          name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: { type: "forward" },
+          handler: { type: "relay" },
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -514,7 +529,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               addr: `${rule.targetIp}:${rule.targetPort}`,
             }],
           },
-        }));
+        }];
       });
       const services = [...tunnelProbeServices, ...ruleServices];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");

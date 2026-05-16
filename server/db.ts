@@ -86,6 +86,8 @@ export async function initDatabase() {
         canAddRules INTEGER NOT NULL DEFAULT 0,
         trafficLimit INTEGER NOT NULL DEFAULT 0,
         trafficUsed INTEGER NOT NULL DEFAULT 0,
+        gostRateLimitIn INTEGER NOT NULL DEFAULT 0,
+        gostRateLimitOut INTEGER NOT NULL DEFAULT 0,
         expiresAt INTEGER,
         trafficAutoReset INTEGER NOT NULL DEFAULT 0,
         trafficResetDay INTEGER NOT NULL DEFAULT 1,
@@ -255,6 +257,8 @@ export async function initDatabase() {
       `ALTER TABLE users ADD COLUMN canAddRules INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficLimit INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficUsed INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN gostRateLimitIn INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN gostRateLimitOut INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN expiresAt INTEGER`,
       `ALTER TABLE users ADD COLUMN trafficAutoReset INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficResetDay INTEGER NOT NULL DEFAULT 1`,
@@ -420,8 +424,11 @@ export async function getAllUsers() {
       canAddRules: users.canAddRules,
       maxRules: users.maxRules,
       maxPorts: users.maxPorts,
+      allowedForwardTypes: users.allowedForwardTypes,
       trafficLimit: users.trafficLimit,
       trafficUsed: users.trafficUsed,
+      gostRateLimitIn: users.gostRateLimitIn,
+      gostRateLimitOut: users.gostRateLimitOut,
       expiresAt: users.expiresAt,
       trafficAutoReset: users.trafficAutoReset,
       trafficResetDay: users.trafficResetDay,
@@ -448,6 +455,8 @@ export async function deleteUser(userId: number) {
 /** 更新用户流量管理设置（管理员操作） */
 export async function updateUserTrafficSettings(userId: number, data: {
   trafficLimit?: number;
+  gostRateLimitIn?: number;
+  gostRateLimitOut?: number;
   expiresAt?: Date | null;
   trafficAutoReset?: boolean;
   trafficResetDay?: number;
@@ -522,6 +531,8 @@ export async function getUserTrafficSummaries() {
     role: users.role,
     trafficLimit: users.trafficLimit,
     trafficUsed: users.trafficUsed,
+    gostRateLimitIn: users.gostRateLimitIn,
+    gostRateLimitOut: users.gostRateLimitOut,
     expiresAt: users.expiresAt,
     trafficAutoReset: users.trafficAutoReset,
     trafficResetDay: users.trafficResetDay,
