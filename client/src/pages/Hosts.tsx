@@ -151,6 +151,10 @@ function HostCard({
   );
   const latestMetric = metrics?.[0];
   const previousMetric = metrics?.[1];
+  const totalNetworkIn = latestMetric?.networkIn == null ? null : Number(latestMetric.networkIn);
+  const totalNetworkOut = latestMetric?.networkOut == null ? null : Number(latestMetric.networkOut);
+  const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
+  const diskTotal = latestMetric?.diskTotal == null ? null : Number(latestMetric.diskTotal);
   const networkSpeed = useMemo(() => {
     if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
     const latestAt = new Date(latestMetric.recordedAt).getTime();
@@ -260,6 +264,9 @@ function HostCard({
                 <span className="text-muted-foreground flex items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
                 <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
               </div>
+              <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
+                {host.cpuInfo || "未上报 CPU 型号"}
+              </p>
               <Progress value={latestMetric.cpuUsage ?? 0} className="h-1.5" />
             </div>
             {/* 内存 - 显示具体数据和百分比 */}
@@ -279,24 +286,42 @@ function HostCard({
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
                 <span className="font-medium tabular-nums">
-                  {latestMetric.diskUsed != null && latestMetric.diskTotal
-                    ? `${formatBytes(latestMetric.diskUsed)} / ${formatBytes(latestMetric.diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
-                    : `${latestMetric.diskUsage ?? 0}%`}
+                  {diskUsed !== null && diskTotal
+                    ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
+                    : `-- / -- (${latestMetric.diskUsage ?? 0}%)`}
                 </span>
               </div>
               <Progress value={latestMetric.diskUsage ?? 0} className="h-1.5" />
             </div>
             {/* 流量 */}
             <div className="grid grid-cols-2 gap-3 pt-1">
-              <div className="flex items-center gap-2 text-xs">
-                <ArrowDownToLine className="h-3 w-3 text-muted-foreground" />
-                <span className="text-muted-foreground">入站</span>
-                <span className="font-medium ml-auto">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
+              <div className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <ArrowDownToLine className="h-3 w-3" />
+                  <span>入站</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">累计</span>
+                  <span className="font-medium tabular-nums">{totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">当前</span>
+                  <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                <ArrowUpFromLine className="h-3 w-3 text-muted-foreground" />
-                <span className="text-muted-foreground">出站</span>
-                <span className="font-medium ml-auto">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
+              <div className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
+                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <ArrowUpFromLine className="h-3 w-3" />
+                  <span>出站</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">累计</span>
+                  <span className="font-medium tabular-nums">{totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">当前</span>
+                  <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
+                </div>
               </div>
             </div>
             {/* 运行时间 */}

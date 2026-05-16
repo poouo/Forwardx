@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.40"
+var Version = "2.1.41"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -185,7 +185,7 @@ func register(cfg Config) error {
 		"ipv4":         ipv4,
 		"ipv6":         ipv6,
 		"osInfo":       osInfo(),
-		"cpuInfo":      runtime.GOARCH,
+		"cpuInfo":      cpuInfo(),
 		"memoryTotal":  memTotal(),
 		"agentVersion": Version,
 	}
@@ -205,6 +205,7 @@ func heartbeat(cfg Config) (int, error) {
 		"diskUsed":     diskBytes("used"),
 		"diskTotal":    diskBytes("total"),
 		"uptime":       uptime(),
+		"cpuInfo":      cpuInfo(),
 		"agentVersion": Version,
 	}
 	var resp heartbeatResp
@@ -1281,6 +1282,29 @@ func uptime() int64 {
 	}
 	v, _ := strconv.ParseFloat(f[0], 64)
 	return int64(v)
+}
+
+func cpuInfo() string {
+	model := ""
+	cores := runtime.NumCPU()
+	if b, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "model name") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					model = strings.TrimSpace(parts[1])
+				}
+				break
+			}
+		}
+	}
+	if model == "" {
+		model = runtime.GOARCH
+	}
+	if cores > 0 {
+		return fmt.Sprintf("%s · %d 核心", model, cores)
+	}
+	return model
 }
 
 func cpuUsage() int {
