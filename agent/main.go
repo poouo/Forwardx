@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.2.25"
+var Version = "2.2.27"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -410,6 +410,23 @@ func writeRunningRuleState(r runningRule) {
 	}
 }
 
+func readRuleIDByPort(port string) int {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/port_" + port + ".rule")
+	if err != nil {
+		return 0
+	}
+	id, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return id
+}
+
+func readForwardTypeByPort(port string) string {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/port_" + port + ".fwtype")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func syncRunningRuleState(rules []runningRule) {
 	wanted := map[string]bool{}
 	for _, r := range rules {
@@ -426,8 +443,49 @@ func syncRunningRuleState(rules []runningRule) {
 		}
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
+			reconcileRemovePort(port)
 			removeStateByPort(port)
 		}
+	}
+}
+
+func reconcileRemovePort(port string) {
+	if port == "" {
+		return
+	}
+	ruleID := readRuleIDByPort(port)
+	forwardType := readForwardTypeByPort(port)
+	logf("reconcile remove stale local rule port=%s rule=%d forwardType=%s", port, ruleID, forwardType)
+	if forwardType == "forwardx" && ruleID > 0 {
+		stopFXP(fxpSpec{Role: "entry", RuleID: ruleID, ListenPort: atoi(port), Protocol: "both"})
+	}
+	for _, cmd := range managedPortCleanupCmds(port) {
+		_ = runShell(cmd)
+	}
+}
+
+func managedPortCleanupCmds(port string) []string {
+	return []string{
+		"systemctl stop forwardx-socat-" + port + ".service forwardx-socat-tcp-" + port + ".service forwardx-socat-udp-" + port + ".service forwardx-realm-" + port + ".service 2>/dev/null || true",
+		"systemctl disable forwardx-socat-" + port + ".service forwardx-socat-tcp-" + port + ".service forwardx-socat-udp-" + port + ".service forwardx-realm-" + port + ".service 2>/dev/null || true",
+		"rm -f /etc/systemd/system/forwardx-socat-" + port + ".service /etc/systemd/system/forwardx-socat-tcp-" + port + ".service /etc/systemd/system/forwardx-socat-udp-" + port + ".service /etc/systemd/system/forwardx-realm-" + port + ".service",
+		"systemctl daemon-reload",
+		"pkill -f \"socat.*LISTEN:" + port + "\" 2>/dev/null || true",
+		"pkill -f \"realm .*:" + port + "\" 2>/dev/null || true",
+		"pkill -f \"gost .*:" + port + "\" 2>/dev/null || true",
+		"rm -f /var/lib/forwardx-agent/traffic_" + port + ".prev /var/lib/forwardx-agent/port_" + port + ".rule /var/lib/forwardx-agent/port_" + port + ".fwtype /var/lib/forwardx-agent/target_" + port + ".info 2>/dev/null || true",
+		"iptables -t mangle -D PREROUTING -p tcp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D PREROUTING -p udp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p tcp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p udp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p tcp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p udp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p tcp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p udp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -F FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -X FWX_IN_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -F FWX_OUT_" + port + " 2>/dev/null || true",
+		"iptables -t mangle -X FWX_OUT_" + port + " 2>/dev/null || true",
 	}
 }
 
@@ -436,6 +494,11 @@ func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".fwtype")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+}
+
+func atoi(s string) int {
+	v, _ := strconv.Atoi(strings.TrimSpace(s))
+	return v
 }
 
 func ensureCountingChains(port int) {
