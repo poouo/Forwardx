@@ -30,23 +30,25 @@ compose_cmd() {
 install_base_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl git >/dev/null
+    apt-get install -y -qq ca-certificates curl git openssl >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q git curl ca-certificates
+    dnf install -y -q git curl ca-certificates openssl
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q git curl ca-certificates
+    yum install -y -q git curl ca-certificates openssl
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache git curl ca-certificates
+    apk add --no-cache git curl ca-certificates openssl
   fi
 }
 
 install_docker() {
   install_base_deps
   if command -v docker >/dev/null 2>&1; then
+    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
     return
   fi
   if command -v apt-get >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com | sh
+    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q docker
     systemctl enable --now docker

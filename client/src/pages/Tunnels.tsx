@@ -38,6 +38,7 @@ import {
   Network,
   Pencil,
   Plus,
+  ShieldCheck,
   Stethoscope,
   Trash2,
   XCircle,
@@ -79,6 +80,8 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   mwss: "MWSS",
   mtcp: "MTCP",
 };
+
+const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 
 function formatTunnelLatencyTime(value: string | Date) {
   const d = new Date(value);
@@ -571,6 +574,41 @@ function TunnelsContent() {
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
             </div>
+            <div className="space-y-2">
+              <Label>隧道类型</Label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, mode: gostTunnelModes.includes(form.mode) ? form.mode : "tls" })}
+                  className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
+                    gostTunnelModes.includes(form.mode)
+                      ? "border-primary bg-primary/5 text-foreground"
+                      : "border-border bg-background hover:border-primary/40"
+                  }`}
+                >
+                  <Network className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                  <span className="space-y-1">
+                    <span className="block text-sm font-semibold">GOST 隧道</span>
+                    <span className="block text-xs leading-5 text-muted-foreground">使用 TLS、WSS、TCP、MTLS、MWSS、MTCP 等 GOST 协议。</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, mode: "forwardx" })}
+                  className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
+                    form.mode === "forwardx"
+                      ? "border-primary bg-primary/5 text-foreground"
+                      : "border-border bg-background hover:border-primary/40"
+                  }`}
+                >
+                  <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                  <span className="space-y-1">
+                    <span className="block text-sm font-semibold">ForwardX 自定义加密</span>
+                    <span className="block text-xs leading-5 text-muted-foreground">入口加密，出口解密，支持按规则统计流量和限速。</span>
+                  </span>
+                </button>
+              </div>
+            </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>入口 Agent</Label>
@@ -591,13 +629,13 @@ function TunnelsContent() {
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
+              {form.mode !== "forwardx" && (
               <div className="space-y-2">
-                <Label>协议类型</Label>
+                <Label>GOST 协议</Label>
                 <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="forwardx">ForwardX</SelectItem>
                     <SelectItem value="tls">TLS</SelectItem>
                     <SelectItem value="wss">WSS</SelectItem>
                     <SelectItem value="tcp">TCP</SelectItem>
@@ -607,6 +645,7 @@ function TunnelsContent() {
                   </SelectContent>
                 </Select>
               </div>
+              )}
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
                 <Input type="number" value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />

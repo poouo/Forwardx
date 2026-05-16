@@ -4,3 +4,4 @@ client/dist
 .env
 .git
 *.md
+!.dockerignore
