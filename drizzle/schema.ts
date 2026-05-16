@@ -26,6 +26,8 @@ export const users = sqliteTable("users", {
   maxPorts: integer("maxPorts").notNull().default(0),       // 最大端口数，0 = 不限制（与 maxRules 相同概念，但可独立控制）
   // 允许使用的转发方式，逗号分隔："iptables,realm,socat"；null 或空串 = 全部允许
   allowedForwardTypes: text("allowedForwardTypes"),
+  gostRateLimitIn: integer("gostRateLimitIn").notNull().default(0),
+  gostRateLimitOut: integer("gostRateLimitOut").notNull().default(0),
   // ===== 流量管理字段 =====
   trafficLimit: integer("trafficLimit").notNull().default(0),           // 流量额度（字节），0 = 不限制
   trafficUsed: integer("trafficUsed").notNull().default(0),             // 已用流量（字节）
