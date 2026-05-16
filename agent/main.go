@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.41"
+var Version = "2.1.42"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -261,7 +261,7 @@ func handleSelfTest(cfg Config, t selfTest) {
 		msg = fmt.Sprintf("目标 %s TCP可达, 延迟 %dms", target, latency)
 	} else {
 		latency = 0
-		msg = fmt.Sprintf("目标 %s TCP不可达: %v", target, err)
+		msg = fmt.Sprintf("目标 %s TCP不可�? %v", target, err)
 	}
 	payload := map[string]any{
 		"testId":          t.TestID,
@@ -462,17 +462,22 @@ func removeState(port int) {
 func collectTraffic(cfg Config) {
 	files, _ := os.ReadDir("/var/lib/forwardx-agent")
 	stats := []map[string]any{}
+	watched := 0
 	for _, f := range files {
 		name := f.Name()
 		if !strings.HasPrefix(name, "port_") || !strings.HasSuffix(name, ".rule") {
 			continue
 		}
+		watched++
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		ridBytes, err := os.ReadFile("/var/lib/forwardx-agent/" + name)
 		if err != nil {
 			continue
 		}
 		ruleID, _ := strconv.Atoi(strings.TrimSpace(string(ridBytes)))
+		if ruleID <= 0 {
+			continue
+		}
 		in := iptablesBytes("FWX_IN_" + port)
 		out := iptablesBytes("FWX_OUT_" + port)
 		prevIn, prevOut := readPrev(port)
@@ -484,7 +489,11 @@ func collectTraffic(cfg Config) {
 		}
 	}
 	if len(stats) > 0 {
-		_ = post(cfg, "/api/agent/traffic", map[string]any{"stats": stats}, &map[string]any{})
+		if err := post(cfg, "/api/agent/traffic", map[string]any{"stats": stats}, &map[string]any{}); err != nil {
+			logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
+		} else {
+			logf("traffic report ok watched=%d stats=%d", watched, len(stats))
+		}
 	}
 }
 
@@ -561,7 +570,11 @@ func conntrackConnections(port string) uint64 {
 }
 
 func iptablesBytes(chain string) uint64 {
-	cmd := fmt.Sprintf(`iptables -t mangle -L %s -vnx 2>/dev/null | awk 'NR>2 {s+=$2} END{print s+0}'`, chain)
+	parentChains := "PREROUTING INPUT"
+	if strings.HasPrefix(chain, "FWX_OUT_") {
+		parentChains = "POSTROUTING OUTPUT"
+	}
+	cmd := fmt.Sprintf(`for c in %s; do iptables -t mangle -nvxL "$c" 2>/dev/null; done | awk -v ch=%s '$0 ~ ch {s+=$2} END{print s+0}'`, parentChains, shellQuote(chain))
 	out, err := exec.Command("sh", "-lc", cmd).Output()
 	if err != nil {
 		return 0
@@ -1299,10 +1312,14 @@ func cpuInfo() string {
 		}
 	}
 	if model == "" {
-		model = runtime.GOARCH
+		model = "Unknown CPU"
+	}
+	coreLabel := "Virtual Cores"
+	if cores == 1 {
+		coreLabel = "Virtual Core"
 	}
 	if cores > 0 {
-		return fmt.Sprintf("%s · %d 核心", model, cores)
+		return fmt.Sprintf("%s %d %s", model, cores, coreLabel)
 	}
 	return model
 }
