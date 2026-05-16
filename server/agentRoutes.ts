@@ -1046,6 +1046,30 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         console.warn(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping failed: ${cleanMessage || "unknown"}`);
       }
     }
+    if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
+      const tunnelLatency = await db.getLatestTunnelLatency(meta.tunnelId);
+      const tunnelLatencyMs =
+        tunnelLatency && !(tunnelLatency as any).isTimeout && typeof (tunnelLatency as any).latencyMs === "number"
+          ? Number((tunnelLatency as any).latencyMs)
+          : 0;
+      const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
+      const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
+      const messageParts = [
+        `隧道整体链路测试 ${success ? "成功" : "失败"}`,
+        `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}`,
+      ];
+      if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
+      if (cleanMessage && !success) messageParts.push(cleanMessage);
+      await db.updateForwardTestResult(testId, {
+        status: success ? "success" : "failed",
+        listenOk: true,
+        targetReachable: success,
+        forwardOk: success,
+        latencyMs: totalLatency,
+        message: messageParts.join("; "),
+      });
+      console.log(`[SelfTest] tunnel rule overall test=${testId} tunnel=${meta.tunnelId} success=${success} targetLatency=${cleanLatency ?? "-"}ms tunnelLatency=${tunnelLatencyMs || "-"}ms total=${totalLatency ?? "-"}ms`);
+    }
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent SelfTest] Error:", error);

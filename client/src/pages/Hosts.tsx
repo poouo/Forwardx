@@ -746,7 +746,7 @@ function HostsContent() {
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
             <DialogDescription>
-              {editingId ? "修改主机配置信息" : "添加一台新的主控机或被控机"}
+              {editingId ? "修改主机配置信息" : "添加一台新的 Agent 主机"}
             </DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="basic" className="space-y-4">
@@ -764,16 +764,6 @@ function HostsContent() {
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                   />
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label>主机类型</Label>
-                <Select value={form.hostType} onValueChange={(v) => setForm({ ...form, hostType: v as any })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="master">主控机</SelectItem>
-                    <SelectItem value="slave">被控机</SelectItem>
-                  </SelectContent>
-                </Select>
               </div>
               <div className="space-y-2">
                 <Label>入口 IP / 域名</Label>

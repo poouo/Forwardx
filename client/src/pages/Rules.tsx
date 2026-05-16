@@ -111,6 +111,14 @@ const defaultForm: RuleFormData = {
   targetPort: 0,
 };
 
+function routeModeCardClass(active: boolean, disabled = false) {
+  return [
+    "rounded-lg border p-3 text-left transition-colors",
+    active ? "border-primary/40 bg-primary/10 text-primary" : "border-border/60 bg-muted/20 hover:bg-muted/40",
+    disabled ? "cursor-not-allowed opacity-50 hover:bg-muted/20" : "cursor-pointer",
+  ].join(" ");
+}
+
 function RulesContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -197,6 +205,20 @@ function RulesContent() {
 
   const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string } | null>(null);
   const [selfTestRule, setSelfTestRule] = useState<{ id: number; name: string } | null>(null);
+
+  const setRouteMode = (mode: "local" | "tunnel") => {
+    if (mode === "tunnel" && !canUseGost) return;
+    setForm((prev) => ({
+      ...prev,
+      routeMode: mode,
+      forwardType: mode === "tunnel" ? "gost" : prev.forwardType,
+      gostMode: "direct",
+      gostRelayHost: mode === "tunnel" ? "" : prev.gostRelayHost,
+      gostRelayPort: mode === "tunnel" ? 0 : prev.gostRelayPort,
+      tunnelId: mode === "tunnel" ? prev.tunnelId : null,
+      hostId: mode === "tunnel" && selectedTunnel ? selectedTunnel.entryHostId : prev.hostId,
+    }));
+  };
 
   const toggleMutation = trpc.rules.toggle.useMutation({
     onSuccess: () => {
@@ -759,6 +781,31 @@ function RulesContent() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button type="button" className={routeModeCardClass(form.routeMode === "local")} onClick={() => setRouteMode("local")}>
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <ArrowRightLeft className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">端口转发</p>
+                    <p className="mt-1 text-xs text-muted-foreground">在所选主机监听入口端口，直接转发到目标地址。</p>
+                  </div>
+                </div>
+              </button>
+              <button type="button" className={routeModeCardClass(form.routeMode === "tunnel", !canUseGost)} onClick={() => setRouteMode("tunnel")} disabled={!canUseGost}>
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-chart-4/10 text-chart-4">
+                    <Network className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">隧道转发</p>
+                    <p className="mt-1 text-xs text-muted-foreground">选择一条隧道，由入口 Agent 经出口 Agent 转发到最终目标。</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
             {form.routeMode === "tunnel" && (
               <div className="space-y-3 rounded-lg border border-chart-4/20 bg-chart-4/5 p-3">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
@@ -838,31 +885,7 @@ function RulesContent() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>链路类型</Label>
-                <Select
-                  value={form.routeMode}
-                  onValueChange={(v) =>
-                    setForm({
-                      ...form,
-                      routeMode: v as "local" | "tunnel",
-                      forwardType: v === "tunnel" ? "gost" : form.forwardType,
-                      gostMode: "direct",
-                      gostRelayHost: v === "tunnel" ? "" : form.gostRelayHost,
-                      gostRelayPort: v === "tunnel" ? 0 : form.gostRelayPort,
-                      tunnelId: v === "tunnel" ? form.tunnelId : null,
-                      hostId: v === "tunnel" && selectedTunnel ? selectedTunnel.entryHostId : form.hostId,
-                    })
-                  }
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="local">本机转发</SelectItem>
-                    <SelectItem value="tunnel" disabled={!canUseGost}>隧道转发</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>转发工具</Label>
                 {form.routeMode === "tunnel" ? (

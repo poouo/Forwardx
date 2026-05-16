@@ -1132,6 +1132,18 @@ export async function updateForwardTestResult(
   await db.update(forwardTests).set({ ...data, updatedAt: nowDate() } as any).where(eq(forwardTests.id, id));
 }
 
+export async function getLatestTunnelLatency(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db
+    .select()
+    .from(tunnelLatencyStats)
+    .where(eq(tunnelLatencyStats.tunnelId, tunnelId))
+    .orderBy(desc(tunnelLatencyStats.recordedAt))
+    .limit(1);
+  return rows[0];
+}
+
 export async function getLatestForwardTest(ruleId: number) {
   const db = await getDb();
   if (!db) return undefined;

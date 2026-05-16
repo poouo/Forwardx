@@ -872,15 +872,34 @@ export const appRouter = router({
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) {
           throw new Error("无权操作此规则");
         }
+        let hostId = rule.hostId;
+        let message: string | null = null;
+        if ((rule as any).tunnelId) {
+          const tunnel = await db.getTunnelById((rule as any).tunnelId);
+          if (!tunnel) throw new Error("隧道不存在");
+          hostId = tunnel.exitHostId;
+          const pushed = pushAgentRefresh(tunnel.exitHostId, "forward-selftest-via-tunnel");
+          message = JSON.stringify({
+            kind: "forward-via-tunnel",
+            tunnelId: tunnel.id,
+            entryHostId: tunnel.entryHostId,
+            exitHostId: tunnel.exitHostId,
+            entrySourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            refreshPushed: pushed,
+          });
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued overall link test on exitHost=${tunnel.exitHostId} target=${rule.targetIp}:${rule.targetPort}`);
+        }
         const id = await db.createForwardTest({
           ruleId: rule.id,
-          hostId: rule.hostId,
+          hostId,
           userId: rule.userId,
           status: "pending",
           listenOk: false,
           targetReachable: false,
           forwardOk: false,
-          message: null,
+          message,
         });
         return { id };
       }),
