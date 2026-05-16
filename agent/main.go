@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.44"
+var Version = "2.2.25"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
