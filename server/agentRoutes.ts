@@ -356,6 +356,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
+    const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? [] : ["tcp"];
     const tunnelExitHostAddress = async (tunnel: any) => {
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
@@ -376,7 +377,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const gostServiceConfig = gostRules
       .flatMap((r: any) => {
-        const protos = r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"];
+        const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
+        const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
         return protos.map((proto) => {
           if ((r as any).gostMode === "reverse") {
             return {
@@ -392,27 +394,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               },
             };
           }
+          const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
-            handler: { type: proto },
+            handler: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
             listener: { type: proto },
             forwarder: { nodes: [] as any[] },
           };
-          const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
-          const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
-          service.forwarder.nodes.push({
-            name: `target-${r.id}`,
-            addr: tunnel && tunnelExitHost && (r as any).tunnelExitPort ? `${tunnelExitHost}:${(r as any).tunnelExitPort}` : `${r.targetIp}:${r.targetPort}`,
-            connector: { type: proto },
-            dialer: tunnel ? {
-              type: tunnelProtocolType(tunnel.mode),
-              ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-            } : { type: proto },
-          });
+          if (!tunnel) {
+            service.forwarder.nodes.push({
+              name: `target-${r.id}`,
+              addr: `${r.targetIp}:${r.targetPort}`,
+              connector: { type: proto },
+              dialer: { type: proto },
+            });
+          } else if (!tunnelExitHost || !(r as any).tunnelExitPort) {
+            return null;
+          }
           return service;
         });
-      });
+      })
+      .filter(Boolean);
     const reverseGostChains = gostRules
       .filter((r: any) => (r as any).gostMode === "reverse")
       .flatMap((r: any) => {
@@ -436,7 +439,29 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           };
         });
       });
-    const gostChains = [...reverseGostChains];
+    const tunnelGostChains = gostRules
+      .filter((r: any) => r.isEnabled && r.forwardType === "gost" && r.tunnelId)
+      .flatMap((r: any) => {
+        const tunnel = tunnelById.get((r as any).tunnelId) as any;
+        const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
+        if (!tunnel || !tunnelExitHost || !(r as any).tunnelExitPort) return [];
+        return [{
+          name: `chain-tunnel-${r.id}`,
+          hops: [{
+            name: `hop-tunnel-${r.id}`,
+            nodes: [{
+              name: `exit-${r.id}`,
+              addr: `${tunnelExitHost}:${(r as any).tunnelExitPort}`,
+              connector: { type: "forward" },
+              dialer: {
+                type: tunnelProtocolType(tunnel.mode),
+                ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+              },
+            }],
+          }],
+        }];
+      });
+    const gostChains = [...reverseGostChains, ...tunnelGostChains];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains }, null, 2), "utf8").toString("base64");
       return [
@@ -474,11 +499,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !rule.tunnelExitPort) return [];
-        const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+        const protos = tunnelForwardProtos(rule.protocol);
         return protos.map((proto) => ({
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}-${proto}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: { type: proto },
+          handler: { type: "forward" },
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -487,7 +512,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             nodes: [{
               name: `target-${rule.id}`,
               addr: `${rule.targetIp}:${rule.targetPort}`,
-              connector: { type: proto },
+              connector: { type: "forward" },
               dialer: { type: proto },
             }],
           },
@@ -1081,6 +1106,29 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       });
       console.log(`[SelfTest] tunnel rule overall test=${testId} tunnel=${meta.tunnelId} success=${success} targetLatency=${cleanLatency ?? "-"}ms tunnelLatency=${tunnelLatencyMs || "-"}ms total=${totalLatency ?? "-"}ms`);
     }
+    if (meta?.kind === "forward-via-tunnel-entry" && typeof meta.tunnelId === "number") {
+      const entryTarget = `${meta.entryIp || "-"}:${meta.entrySourcePort || "-"}`;
+      const finalTarget = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
+      const messageParts = [
+        `隧道入口端口检测 ${success ? "成功" : "失败"}`,
+        `入口 ${entryTarget}${success && cleanLatency !== null ? ` ${cleanLatency}ms` : ""}`,
+        `最终目标 ${finalTarget}`,
+      ];
+      if (cleanMessage && !success) messageParts.push(cleanMessage);
+      await db.updateForwardTestResult(testId, {
+        status: success ? "success" : "failed",
+        listenOk: success,
+        targetReachable: success,
+        forwardOk: success,
+        latencyMs: success ? cleanLatency : null,
+        message: messageParts.join("; "),
+      });
+      if (success) {
+        console.log(`[SelfTest] tunnel rule entry-port test=${testId} tunnel=${meta.tunnelId} success latency=${cleanLatency ?? "-"}ms entry=${entryTarget} target=${finalTarget}`);
+      } else {
+        console.warn(`[SelfTest] tunnel rule entry-port test=${testId} tunnel=${meta.tunnelId} failed entry=${entryTarget} target=${finalTarget}: ${cleanMessage || "unknown"}`);
+      }
+    }
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent SelfTest] Error:", error);
@@ -1116,6 +1164,20 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
           sourcePort: 0,
           targetIp: meta.targetIp,
           targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "forward-via-tunnel-entry") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-via-tunnel-entry",
+          tunnelId: meta.tunnelId,
+          ruleId: t.ruleId,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: meta.entrySourcePort || 0,
+          targetIp: meta.entryIp,
+          targetPort: meta.entrySourcePort,
         });
         continue;
       }

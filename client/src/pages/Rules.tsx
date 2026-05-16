@@ -1284,7 +1284,7 @@ function SelfTestDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const utils = trpc.useUtils();
-  const { data: latest, refetch } = trpc.rules.latestTest.useQuery(
+  const { data: latest } = trpc.rules.latestTest.useQuery(
     { ruleId },
     {
       enabled: open,
@@ -1292,16 +1292,23 @@ function SelfTestDialog({
       refetchOnWindowFocus: false,
     }
   );
+  const [optimisticTesting, setOptimisticTesting] = useState(false);
   const startMutation = trpc.rules.startSelfTest.useMutation({
     onSuccess: () => {
       utils.rules.latestTest.invalidate({ ruleId });
-      refetch();
     },
     onError: (e) => toast.error(e?.message || "下发失败"),
   });
 
   const status = latest?.status as string | undefined;
-  const isTesting = startMutation.isPending || status === "pending" || status === "running";
+  const isServerTesting = status === "pending" || status === "running";
+  useEffect(() => {
+    if (!open) setOptimisticTesting(false);
+  }, [open]);
+  useEffect(() => {
+    if (status && status !== "pending" && status !== "running") setOptimisticTesting(false);
+  }, [status]);
+  const isTesting = startMutation.isPending || optimisticTesting || isServerTesting;
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
@@ -1372,7 +1379,10 @@ function SelfTestDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             disabled={startMutation.isPending}
-            onClick={() => startMutation.mutate({ ruleId })}
+            onClick={() => {
+              setOptimisticTesting(true);
+              startMutation.mutate({ ruleId });
+            }}
           >
             {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4 mr-1" />}
             运行测试

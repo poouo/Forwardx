@@ -901,19 +901,24 @@ export const appRouter = router({
         if ((rule as any).tunnelId) {
           const tunnel = await db.getTunnelById((rule as any).tunnelId);
           if (!tunnel) throw new Error("隧道不存在");
+          const entry = await db.getHostById(tunnel.entryHostId);
+          if (!entry) throw new Error("入口 Agent 不存在");
+          const entryIp = String((entry as any).entryIp || (entry as any).ipv4 || entry.ip || "").trim();
+          if (!entryIp) throw new Error("入口 Agent 缺少可测试的入口 IP");
           hostId = tunnel.exitHostId;
-          const pushed = pushAgentRefresh(tunnel.exitHostId, "forward-selftest-via-tunnel");
+          const pushed = pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
           message = JSON.stringify({
-            kind: "forward-via-tunnel",
+            kind: "forward-via-tunnel-entry",
             tunnelId: tunnel.id,
             entryHostId: tunnel.entryHostId,
             exitHostId: tunnel.exitHostId,
+            entryIp,
             entrySourcePort: rule.sourcePort,
             targetIp: rule.targetIp,
             targetPort: rule.targetPort,
             refreshPushed: pushed,
           });
-          appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued overall link test on exitHost=${tunnel.exitHostId} target=${rule.targetIp}:${rule.targetPort}`);
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued entry-port test from exitHost=${tunnel.exitHostId} to ${entryIp}:${rule.sourcePort}, finalTarget=${rule.targetIp}:${rule.targetPort}`);
         }
         const id = await db.createForwardTest({
           ruleId: rule.id,
