@@ -1217,7 +1217,7 @@ function TcpingDetailDialog({
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
-          <DialogDescription>Agent 每次心跳时对目标地址执行 TCP 连接延迟检测，展示最近 24 小时数据</DialogDescription>
+          <DialogDescription>Agent 默认每 1 分钟对目标地址执行 TCPing 探测，展示最近 24 小时链路延迟和丢包率。</DialogDescription>
         </DialogHeader>
         <div className="h-72 w-full">
           {isLoading ? (
@@ -1281,7 +1281,6 @@ function TcpingDetailDialog({
             <p className="text-[11px] text-muted-foreground">统计次数</p>
             <p className="mt-1 text-sm font-semibold tabular-nums">
               {tcpingStats.total}
-              {tcpingStats.timeout > 0 && <span className="ml-1 text-xs font-normal text-amber-600">超时 {tcpingStats.timeout}</span>}
             </p>
           </div>
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">

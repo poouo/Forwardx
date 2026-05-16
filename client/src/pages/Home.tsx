@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import { FORWARD_TYPE_LABELS } from "@shared/forwardTypes";
 import {
   Server,
   ArrowRightLeft,
@@ -33,6 +34,22 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useMemo } from "react";
+
+const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+function getTunnelDisplay(tunnel: any | null | undefined) {
+  const mode = String(tunnel?.mode || "").toLowerCase();
+  if (mode === "forwardx") return "隧道 / ForwardX";
+  if (gostTunnelModes.has(mode)) return "隧道 / gost";
+  return mode ? `隧道 / ${mode.toUpperCase()}` : "隧道";
+}
+
+function protocolLabel(protocol: string | null | undefined) {
+  const value = String(protocol || "both").toLowerCase();
+  if (value === "tcp") return "TCP";
+  if (value === "udp") return "UDP";
+  return "TCP+UDP";
+}
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -144,6 +161,9 @@ function DashboardContent() {
   const { data: rules } = trpc.rules.list.useQuery(undefined, {
     refetchInterval: 30000,
   });
+  const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
+    refetchInterval: 30000,
+  });
 
   // 流量走势：固定查询最近 7 天，30 分钟分桶（每半小时累加为一个点位）
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
@@ -185,6 +205,27 @@ function DashboardContent() {
     if (!rules) return [];
     return rules.slice(0, 5);
   }, [rules]);
+  const hostById = useMemo(() => {
+    const map = new Map<number, any>();
+    (hosts || []).forEach((host: any) => map.set(Number(host.id), host));
+    return map;
+  }, [hosts]);
+  const tunnelById = useMemo(() => {
+    const map = new Map<number, any>();
+    (tunnels || []).forEach((tunnel: any) => map.set(Number(tunnel.id), tunnel));
+    return map;
+  }, [tunnels]);
+  const getRuleEntryAddress = (rule: any) => {
+    const host = hostById.get(Number(rule.hostId));
+    const entry = String(host?.entryIp || host?.ip || "").trim();
+    return `${entry || "入口未配置"}:${rule.sourcePort}`;
+  };
+  const getRuleLinkLabel = (rule: any) => {
+    if (rule.forwardType === "gost" && rule.tunnelId) {
+      return getTunnelDisplay(tunnelById.get(Number(rule.tunnelId)));
+    }
+    return FORWARD_TYPE_LABELS[rule.forwardType as keyof typeof FORWARD_TYPE_LABELS] || rule.forwardType;
+  };
 
   return (
     <div className="space-y-6">
@@ -566,7 +607,7 @@ function DashboardContent() {
                       <div>
                         <p className="text-sm font-medium">{rule.name}</p>
                         <p className="text-xs text-muted-foreground font-mono">
-                          :{rule.sourcePort} → {rule.targetIp}:{rule.targetPort}
+                          {getRuleEntryAddress(rule)}{" -> "}{rule.targetIp}:{rule.targetPort}
                         </p>
                       </div>
                     </div>
@@ -579,10 +620,10 @@ function DashboardContent() {
                             : "border-chart-3/30 text-chart-3"
                         }`}
                       >
-                        {rule.forwardType}
+                        {getRuleLinkLabel(rule)}
                       </Badge>
-                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 uppercase">
-                        {rule.protocol}
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5">
+                        {protocolLabel(rule.protocol)}
                       </Badge>
                     </div>
                   </div>

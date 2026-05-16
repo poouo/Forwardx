@@ -118,11 +118,18 @@ function UsersContent() {
   const [allowRealm, setAllowRealm] = useState(true);
   const [allowSocat, setAllowSocat] = useState(true);
   const [allowGost, setAllowGost] = useState(true);
+  const [allowForwardXTunnel, setAllowForwardXTunnel] = useState(false);
 
   // Agent 权限
   const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
+  const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
   const { data: allHosts } = trpc.hosts.list.useQuery();
+  const { data: allTunnels } = trpc.tunnels.list.useQuery();
   const { data: userHostPerms } = trpc.users.getHostPermissions.useQuery(
+    { userId: trafficUserId! },
+    { enabled: showTrafficSettings && !!trafficUserId }
+  );
+  const { data: userTunnelPerms } = trpc.users.getTunnelPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
@@ -132,6 +139,13 @@ function UsersContent() {
     },
     onError: (err) => toast.error(err.message || "更新主机权限失败"),
   });
+  const updateTunnelPermsMutation = trpc.users.setTunnelPermissions.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "更新隧道权限失败"),
+  });
+
 
   // 当权限数据加载完成后同步到状态
   useEffect(() => {
@@ -139,6 +153,12 @@ function UsersContent() {
       setAllowedHostIds([...userHostPerms]);
     }
   }, [userHostPerms]);
+
+  useEffect(() => {
+    if (userTunnelPerms) {
+      setAllowedTunnelIds([...userTunnelPerms]);
+    }
+  }, [userTunnelPerms]);
 
   useEffect(() => {
     if (currentUser && currentUser.role !== "admin") {
@@ -256,11 +276,13 @@ function UsersContent() {
     setTrafficResetDay(u.trafficResetDay || 1);
     const gostIn = Number(u.gostRateLimitIn) || 0;
     const gostOut = Number(u.gostRateLimitOut) || 0;
-    setGostRateLimitInInput(gostIn > 0 ? parseFloat((gostIn / 1024 / 1024).toFixed(2)).toString() : "0");
-    setGostRateLimitOutInput(gostOut > 0 ? parseFloat((gostOut / 1024 / 1024).toFixed(2)).toString() : "0");
+    const unifiedRateLimit = Math.max(gostIn, gostOut);
+    setGostRateLimitInInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
+    setGostRateLimitOutInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
     setCanAddRules(!!u.canAddRules);
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
+    setAllowForwardXTunnel(!!u.allowForwardXTunnel);
     // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
     if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
@@ -273,6 +295,7 @@ function UsersContent() {
       setAllowGost(set.has("gost"));
     }
     setAllowedHostIds([]);
+    setAllowedTunnelIds([]);
     setShowTrafficSettings(true);
   };
 
@@ -286,11 +309,12 @@ function UsersContent() {
     if (allowSocat) allowed.push("socat");
     if (allowGost) allowed.push("gost");
     const allowedForwardTypes = allowed.length === FORWARD_TYPES.length ? null : allowed.join(",");
+    const unifiedRateLimit = parseSpeedInputMB(gostRateLimitInInput);
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       trafficLimit: limitBytes,
-      gostRateLimitIn: parseSpeedInputMB(gostRateLimitInInput),
-      gostRateLimitOut: parseSpeedInputMB(gostRateLimitOutInput),
+      gostRateLimitIn: unifiedRateLimit,
+      gostRateLimitOut: unifiedRateLimit,
       expiresAt: expiresAtInput || null,
       trafficAutoReset,
       trafficResetDay,
@@ -298,11 +322,16 @@ function UsersContent() {
       maxRules,
       maxPorts,
       allowedForwardTypes,
+      allowForwardXTunnel,
     });
     // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
     updateHostPermsMutation.mutate({
       userId: trafficUserId,
       hostIds: allowedHostIds,
+    });
+    updateTunnelPermsMutation.mutate({
+      userId: trafficUserId,
+      tunnelIds: allowedTunnelIds,
     });
   };
 
@@ -311,6 +340,14 @@ function UsersContent() {
       prev.includes(hostId) ? prev.filter(id => id !== hostId) : [...prev, hostId]
     );
   };
+
+  const toggleTunnelPermission = (tunnelId: number) => {
+    setAllowedTunnelIds(prev =>
+      prev.includes(tunnelId) ? prev.filter(id => id !== tunnelId) : [...prev, tunnelId]
+    );
+  };
+
+  const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
 
   return (
     <div className="space-y-6">
@@ -480,7 +517,7 @@ function UsersContent() {
                             <span>规则: {u.maxRules ? `最多 ${u.maxRules} 条` : "不限"}</span>
                             <span>端口: {u.maxPorts ? `最多 ${u.maxPorts} 个` : "不限"}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
-                              <span>GOST: {formatSpeed(u.gostRateLimitIn)} / {formatSpeed(u.gostRateLimitOut)}</span>
+                              <span>隧道限速: {formatSpeed(Math.max(Number(u.gostRateLimitIn) || 0, Number(u.gostRateLimitOut) || 0))}</span>
                             )}
                           </div>
                         </TableCell>
@@ -661,7 +698,7 @@ function UsersContent() {
               </TabsTrigger>
               <TabsTrigger value="hosts" className="gap-1.5">
                 <Server className="h-3.5 w-3.5" />
-                <span>主机</span>
+                <span>授权</span>
               </TabsTrigger>
             </TabsList>
 
@@ -752,45 +789,31 @@ function UsersContent() {
                 <div className="space-y-1">
                   <Label className="flex items-center gap-1.5 text-sm">
                     <Gauge className="h-3.5 w-3.5" />
-                    GOST 限速
+                    隧道限速
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    仅对 GOST 转发和隧道转发生效，iptables、realm、socat 不受此限速影响。
+                    对 GOST 和自定义加密隧道生效；iptables、realm、socat 不受该限速影响。
                   </p>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label className="text-xs">入口限速</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        step="0.1"
-                        value={gostRateLimitInInput}
-                        onChange={(e) => setGostRateLimitInInput(e.target.value)}
-                        placeholder="0"
-                      />
-                      <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs">出口限速</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        step="0.1"
-                        value={gostRateLimitOutInput}
-                        onChange={(e) => setGostRateLimitOutInput(e.target.value)}
-                        placeholder="0"
-                      />
-                      <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
-                    </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">最大速度</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step="0.1"
+                      value={gostRateLimitInInput}
+                      onChange={(e) => {
+                        setGostRateLimitInInput(e.target.value);
+                        setGostRateLimitOutInput(e.target.value);
+                      }}
+                      placeholder="0"
+                    />
+                    <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后 Agent 刷新 GOST 配置时生效。</p>
+                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后 Agent 刷新隧道配置时生效。</p>
               </div>
 
               <Separator />
@@ -874,28 +897,75 @@ function UsersContent() {
             </TabsContent>
 
             {/* 主机标签页 */}
-            <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
+            {/* 授权标签页 */}
+            <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                指定用户可以使用哪些主机进行转发，未勾选的主机将无法添加规则。
+                分别分配端口转发可用主机，以及隧道转发可用隧道。未授权的主机或隧道不会出现在普通用户的创建选项中。
               </p>
-              {allHosts && allHosts.length > 0 ? (
-                <div className="space-y-2">
-                  {allHosts.map((h: any) => (
-                    <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-sm font-medium truncate">{h.name}</span>
-                        <span className="text-[10px] text-muted-foreground font-mono truncate">{h.ip}</span>
-                      </div>
-                      <Switch
-                        checked={allowedHostIds.includes(h.id)}
-                        onCheckedChange={() => toggleHostPermission(h.id)}
-                      />
-                    </div>
-                  ))}
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">端口转发主机</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
                 </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">暂无可用主机</p>
-              )}
+                {allHosts && allHosts.length > 0 ? (
+                  <div className="space-y-2">
+                    {allHosts.map((h: any) => (
+                      <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium truncate">{h.name}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono truncate">{h.ip}</span>
+                        </div>
+                        <Switch
+                          checked={allowedHostIds.includes(h.id)}
+                          onCheckedChange={() => toggleHostPermission(h.id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无可用主机</p>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">隧道转发隧道</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedTunnelIds.length} 条</Badge>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                  <div className="min-w-0 pr-3">
+                    <p className="text-sm font-medium">允许自定义加密隧道</p>
+                    <p className="text-xs text-muted-foreground">开启后，该用户才能创建使用 ForwardX 自定义加密隧道的规则。</p>
+                  </div>
+                  <Switch checked={allowForwardXTunnel} onCheckedChange={setAllowForwardXTunnel} />
+                </div>
+                {allTunnels && allTunnels.length > 0 ? (
+                  <div className="space-y-2">
+                    {allTunnels.map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium truncate">{t.name}</span>
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">{String(t.mode || "tls")}</Badge>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground truncate">
+                            {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={allowedTunnelIds.includes(t.id)}
+                          onCheckedChange={() => toggleTunnelPermission(t.id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无可用隧道</p>
+                )}
+              </div>
             </TabsContent>
           </Tabs>
           <DialogFooter className="shrink-0">
@@ -910,6 +980,7 @@ function UsersContent() {
       </Dialog>
     </div>
   );
+
 }
 
 export default function Users() {

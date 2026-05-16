@@ -1414,6 +1414,12 @@ export async function insertTunnelLatencyStat(stat: InsertTunnelLatencyStat) {
   const db = await getDb();
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
+  await db.update(tunnels).set({
+    lastLatencyMs: stat.isTimeout ? null : (stat.latencyMs ?? null),
+    lastTestStatus: stat.isTimeout ? "failed" : "success",
+    lastTestAt: nowDate(),
+    updatedAt: nowDate(),
+  }).where(eq(tunnels.id, stat.tunnelId));
 }
 
 export async function getAllUserTunnelPermissions(): Promise<Array<{ userId: number; tunnelId: number }>> {

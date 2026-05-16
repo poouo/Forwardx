@@ -28,10 +28,11 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.2.31"
+var Version = "2.2.33"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
+var lastTCPingAt time.Time
 
 type Config struct {
 	PanelURL string `json:"panelUrl"`
@@ -51,6 +52,7 @@ type heartbeatResp struct {
 	Actions      []action      `json:"actions"`
 	SelfTests    []selfTest    `json:"selfTests"`
 	RunningRules []runningRule `json:"runningRules"`
+	TunnelProbes []tunnelProbe `json:"tunnelProbes"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
 	NextInterval int           `json:"nextInterval"`
 }
@@ -84,6 +86,13 @@ type runningRule struct {
 	TargetPort  int    `json:"targetPort"`
 	Protocol    string `json:"protocol"`
 	ForwardType string `json:"forwardType"`
+}
+
+type tunnelProbe struct {
+	TunnelID   int    `json:"tunnelId"`
+	TargetIP   string `json:"targetIp"`
+	TargetPort int    `json:"targetPort"`
+	Protocol   string `json:"protocol"`
 }
 
 type agentUpgrade struct {
@@ -224,7 +233,10 @@ func heartbeat(cfg Config) (int, error) {
 		ensureCountingChains(r.SourcePort)
 	}
 	collectTraffic(cfg)
-	collectTCPing(cfg)
+	if lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
+		collectTCPing(cfg, resp.TunnelProbes)
+		lastTCPingAt = time.Now()
+	}
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
@@ -566,7 +578,7 @@ func collectTraffic(cfg Config) {
 	}
 }
 
-func collectTCPing(cfg Config) {
+func collectTCPing(cfg Config, probes []tunnelProbe) {
 	files, _ := os.ReadDir("/var/lib/forwardx-agent")
 	results := []map[string]any{}
 	for _, f := range files {
@@ -595,8 +607,24 @@ func collectTCPing(cfg Config) {
 		}
 		results = append(results, result)
 	}
-	if len(results) > 0 {
-		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results}, &map[string]any{})
+	tunnels := []map[string]any{}
+	for _, probe := range probes {
+		if probe.TunnelID <= 0 || probe.TargetIP == "" || probe.TargetPort <= 0 {
+			continue
+		}
+		latency, reachable := tcpLatency(probe.TargetIP, probe.TargetPort, 3*time.Second)
+		result := map[string]any{"tunnelId": probe.TunnelID}
+		if reachable {
+			result["latencyMs"] = latency
+			result["isTimeout"] = false
+		} else {
+			result["latencyMs"] = 0
+			result["isTimeout"] = true
+		}
+		tunnels = append(tunnels, result)
+	}
+	if len(results) > 0 || len(tunnels) > 0 {
+		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels}, &map[string]any{})
 	}
 }
 

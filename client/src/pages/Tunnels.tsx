@@ -112,7 +112,7 @@ function TunnelLatencyDialog({
     return data.map((d: any) => ({
       label: formatTunnelLatencyTime(d.recordedAt),
       fullLabel: formatTunnelLatencyTime(d.recordedAt),
-      latency: d.isTimeout ? null : (Number(d.latencyMs) || 0),
+      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
   }, [data]);
@@ -121,24 +121,21 @@ function TunnelLatencyDialog({
     const timeout = chartData.filter((d) => d.isTimeout).length;
     const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
     const values = chartData
-      .map((d) => d.latency)
-      .filter((value): value is number => typeof value === "number" && value > 0);
+      .filter((d) => !d.isTimeout && d.latency > 0)
+      .map((d) => d.latency);
     if (values.length === 0) return { total, timeout, lossRate, max: null as number | null, min: null as number | null, avg: null as number | null };
     const sum = values.reduce((acc, v) => acc + v, 0);
     return { total, timeout, lossRate, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
   }, [chartData]);
   const yMax = useMemo(() => {
     if (chartData.length === 0) return 120;
-    const values = chartData
-      .map((d) => d.latency)
-      .filter((value): value is number => typeof value === "number" && value > 0);
-    if (values.length === 0) return 120;
-    const maxVal = Math.max(...values);
+    const maxVal = Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.latency), 0);
     if (maxVal <= 0) return 120;
-    return Math.ceil(maxVal * 2);
+    const dynamicMax = Math.ceil(maxVal * 2);
+    return Math.min(500, Math.max(120, dynamicMax));
   }, [chartData]);
   const yTicks = useMemo(() => {
-    const step = Math.max(1, Math.ceil(yMax / 4));
+    const step = yMax <= 120 ? 20 : yMax <= 200 ? 40 : yMax <= 300 ? 50 : 100;
     const ticks: number[] = [];
     for (let i = 0; i <= yMax; i += step) {
       ticks.push(i);
@@ -152,7 +149,7 @@ function TunnelLatencyDialog({
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
-          <DialogDescription>展示最近 24 小时入口 Agent 到出口 Agent 的 TCP 连通延迟，不包含转发规则目标端口。</DialogDescription>
+          <DialogDescription>Agent 默认每 1 分钟从入口到出口执行 TCPing 探测，展示最近 24 小时链路延迟和丢包率。</DialogDescription>
         </DialogHeader>
         <div className="h-72 w-full">
           {isLoading ? (

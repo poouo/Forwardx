@@ -436,6 +436,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         tunnelExitHostById.set(tunnel.id, await tunnelExitHostAddress(tunnel));
       }
     }
+    const tunnelProbes = (hostTunnels as any[])
+      .filter((tunnel: any) => tunnel.entryHostId === host.id && tunnel.isEnabled)
+      .map((tunnel: any) => ({
+        tunnelId: tunnel.id,
+        targetIp: tunnelExitHostById.get(tunnel.id) || "",
+        targetPort: Number(tunnel.listenPort) || 0,
+        protocol: "tcp",
+      }))
+      .filter((probe: any) => probe.targetIp && probe.targetPort > 0);
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
         if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost" || !r.tunnelId) return false;
@@ -1142,7 +1151,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       panelUrl: await resolvePanelUrl(req),
     } : null;
 
-    res.json({ success: true, actions, selfTests, runningRules, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
+    res.json({ success: true, actions, selfTests, runningRules, tunnelProbes, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -1459,21 +1468,38 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       return;
     }
 
-    const { results } = req.body;
-    if (!Array.isArray(results)) {
-      res.status(400).json({ error: "results array is required" });
+    const results = Array.isArray(req.body?.results) ? req.body.results : [];
+    const tunnelResults = Array.isArray(req.body?.tunnels)
+      ? req.body.tunnels
+      : (Array.isArray(req.body?.tunnelResults) ? req.body.tunnelResults : []);
+    if (results.length === 0 && tunnelResults.length === 0) {
+      res.status(400).json({ error: "results or tunnels array is required" });
       return;
     }
 
-    const stats = results.map((r: any) => ({
-      ruleId: Number(r.ruleId),
-      hostId: host.id,
-      latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-      isTimeout: !!r.isTimeout,
-    }));
+    const stats = results
+      .map((r: any) => ({
+        ruleId: Number(r.ruleId),
+        hostId: host.id,
+        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+        isTimeout: !!r.isTimeout,
+      }))
+      .filter((r: any) => r.ruleId > 0);
 
     if (stats.length > 0) {
       await db.insertTcpingStats(stats);
+    }
+
+    for (const r of tunnelResults) {
+      const tunnelId = Number(r.tunnelId);
+      if (!tunnelId) continue;
+      const tunnel = await db.getTunnelById(tunnelId);
+      if (!tunnel || tunnel.entryHostId !== host.id) continue;
+      await db.insertTunnelLatencyStat({
+        tunnelId,
+        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+        isTimeout: !!r.isTimeout,
+      });
     }
 
     res.json({ success: true });
@@ -1880,6 +1906,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     'PANEL_URL="__PANEL_URL__"',
     'AGENT_TOKEN="__AGENT_TOKEN__"',
     'HEARTBEAT_INTERVAL=30',
+    'TCPING_INTERVAL=60',
     'SELFTEST_POLL_INTERVAL=3',
     'STATE_DIR="/var/lib/forwardx-agent"',
     'mkdir -p "$STATE_DIR"',
@@ -2404,13 +2431,11 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '',
     '# TCPing \u5ef6\u8fdf\u91c7\u96c6\uff1a\u5bf9\u6240\u6709\u8fd0\u884c\u4e2d\u7684\u89c4\u5219\u7684\u76ee\u6807 IP:Port \u6267\u884c TCP \u8fde\u63a5\u5ef6\u8fdf\u68c0\u6d4b',
     'collect_tcping() {',
+    '  RESPONSE_JSON="${1:-}"',
     '  PORTS=$(ls "$STATE_DIR"/port_*.rule 2>/dev/null | sed "s|.*/port_||;s|\\.rule||" | sort -n)',
     '  PORT_COUNT=$(echo "$PORTS" | grep -c "[0-9]" 2>/dev/null || echo 0)',
-    '  if [ "$PORT_COUNT" -eq 0 ] 2>/dev/null; then',
-    '    return',
-    '  fi',
     '  TCPING_JSON="[]"',
-    '  for PORT in $PORTS; do',
+    '  if [ "$PORT_COUNT" -gt 0 ] 2>/dev/null; then for PORT in $PORTS; do',
     '    RID_FILE="$STATE_DIR/port_${PORT}.rule"',
     '    [ -f "$RID_FILE" ] || continue',
     '    RID=$(cat "$RID_FILE")',
@@ -2433,10 +2458,31 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '      TCPING_JSON=$(echo "$TCPING_JSON" | jq --argjson rid "$RID" \'. + [{ruleId:$rid,latencyMs:0,isTimeout:true}]\')',
     '      log DEBUG "[tcping] rule=$RID target=$TIP:$TPT TIMEOUT"',
     '    fi',
-    '  done',
-    '  if [ "$TCPING_JSON" != "[]" ]; then',
-    '    log INFO "[tcping] \u4e0a\u62a5 TCPing \u6570\u636e: $TCPING_JSON"',
-    '    agent_post "/api/agent/tcping" "{\\"results\\":$TCPING_JSON}" >/dev/null 2>&1',
+    '  done; fi',
+    '  TUNNEL_JSON="[]"',
+    '  if [ -n "$RESPONSE_JSON" ]; then',
+    '    while IFS= read -r PROBE; do',
+    '      [ -n "$PROBE" ] || continue',
+    '      TID=$(echo "$PROBE" | jq -r ".tunnelId // 0" 2>/dev/null)',
+    '      TIP=$(echo "$PROBE" | jq -r ".targetIp // empty" 2>/dev/null)',
+    '      TPT=$(echo "$PROBE" | jq -r ".targetPort // 0" 2>/dev/null)',
+    '      if [ -z "$TIP" ] || [ "${TPT:-0}" -le 0 ] 2>/dev/null || [ "${TID:-0}" -le 0 ] 2>/dev/null; then continue; fi',
+    '      LAT=$(tcp_latency "$TIP" "$TPT")',
+    '      RC=$?',
+    '      if [ $RC -eq 0 ] && [ "${LAT:-0}" -gt 0 ] 2>/dev/null; then',
+    '        TUNNEL_JSON=$(echo "$TUNNEL_JSON" | jq --argjson tid "$TID" --argjson lat "$LAT" \'. + [{tunnelId:$tid,latencyMs:$lat,isTimeout:false}]\')',
+    '        log DEBUG "[tcping] tunnel=$TID target=$TIP:$TPT latency=${LAT}ms"',
+    '      else',
+    '        TUNNEL_JSON=$(echo "$TUNNEL_JSON" | jq --argjson tid "$TID" \'. + [{tunnelId:$tid,latencyMs:0,isTimeout:true}]\')',
+    '        log DEBUG "[tcping] tunnel=$TID target=$TIP:$TPT TIMEOUT"',
+    '      fi',
+    '    done <<EOF',
+    '$(echo "$RESPONSE_JSON" | jq -c ".tunnelProbes[]?" 2>/dev/null)',
+    'EOF',
+    '  fi',
+    '  if [ "$TCPING_JSON" != "[]" ] || [ "$TUNNEL_JSON" != "[]" ]; then',
+    '    log INFO "[tcping] \u4e0a\u62a5 TCPing \u6570\u636e: rules=$TCPING_JSON tunnels=$TUNNEL_JSON"',
+    '    agent_post "/api/agent/tcping" "{\\"results\\":$TCPING_JSON,\\"tunnels\\":$TUNNEL_JSON}" >/dev/null 2>&1',
     '  fi',
     '}',
     '',
@@ -2530,7 +2576,11 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '    log WARN "[heartbeat] 心跳无响应，面板可能不可达: $PANEL_URL"',
     '  fi',
     '  collect_traffic',
-    '  collect_tcping',
+    '  NOW_TCPING=$(date +%s)',
+    '  if [ $((NOW_TCPING - LAST_TCPING)) -ge $TCPING_INTERVAL ]; then',
+    '    collect_tcping "$RESPONSE"',
+    '    LAST_TCPING=$NOW_TCPING',
+    '  fi',
     '}',
     '',
     'log INFO "========================================"',
@@ -2548,6 +2598,7 @@ export function generateFullInstallScript(panelUrl: string, token: string): stri
     '}',
     '',
     'LAST_HEARTBEAT=0',
+    'LAST_TCPING=0',
     'while true; do',
     '  NOW=$(date +%s)',
     '  if [ $((NOW - LAST_HEARTBEAT)) -ge $HEARTBEAT_INTERVAL ]; then',

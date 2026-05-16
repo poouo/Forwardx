@@ -137,7 +137,7 @@ ForwardX 支持两类隧道：
 | `SQLITE_PATH` | `/data/forwardx.db` | SQLite 数据库路径 |
 | `JWT_SECRET` | `change-me-to-a-random-string` | 登录签名密钥，生产环境必须修改 |
 | `ADMIN_PASSWORD` | `admin123` | 默认管理员密码 |
-| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.2.32` |
+| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.2.33` |
 
 ## Docker Compose
 
@@ -153,7 +153,7 @@ docker compose -p forwardx up -d --build
 
 ```bash
 git fetch --tags origin
-git checkout v2.2.32
+git checkout v2.2.33
 docker compose -p forwardx up -d --build --remove-orphans
 ```
 
