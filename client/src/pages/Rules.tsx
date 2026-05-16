@@ -111,6 +111,31 @@ const defaultForm: RuleFormData = {
   targetPort: 0,
 };
 
+const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+function getTunnelDisplay(tunnel: any | null | undefined) {
+  const mode = String(tunnel?.mode || "").toLowerCase();
+  if (mode === "forwardx") {
+    return {
+      shortLabel: "ForwardX",
+      badgeLabel: "隧道 / ForwardX",
+      toolLabel: "ForwardX 加密隧道",
+    };
+  }
+  if (gostTunnelModes.has(mode)) {
+    return {
+      shortLabel: "gost",
+      badgeLabel: "隧道 / gost",
+      toolLabel: "GOST 隧道",
+    };
+  }
+  return {
+    shortLabel: mode ? mode.toUpperCase() : "隧道",
+    badgeLabel: mode ? `隧道 / ${mode.toUpperCase()}` : "隧道",
+    toolLabel: "隧道转发",
+  };
+}
+
 function routeModeCardClass(active: boolean, disabled = false) {
   return [
     "rounded-lg border p-3 text-left transition-colors",
@@ -288,6 +313,12 @@ function RulesContent() {
     if (!form.tunnelId || !tunnels) return null;
     return tunnels.find((t: any) => t.id === form.tunnelId) || null;
   }, [form.tunnelId, tunnels]);
+  const selectedTunnelDisplay = useMemo(() => getTunnelDisplay(selectedTunnel), [selectedTunnel]);
+  const tunnelDisplayById = useMemo(() => {
+    const map = new Map<number, ReturnType<typeof getTunnelDisplay>>();
+    (tunnels || []).forEach((t: any) => map.set(Number(t.id), getTunnelDisplay(t)));
+    return map;
+  }, [tunnels]);
 
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
 
@@ -634,7 +665,7 @@ function RulesContent() {
                           }`}
                         >
                           {rule.forwardType === "gost" && rule.tunnelId ? (
-                            <><Network className="h-3 w-3 mr-1" />隧道 / gost</>
+                            <><Network className="h-3 w-3 mr-1" />{tunnelDisplayById.get(Number(rule.tunnelId))?.badgeLabel || "隧道"}</>
                           ) : rule.forwardType === "iptables" ? (
                             <><Shield className="h-3 w-3 mr-1" />iptables</>
                           ) : rule.forwardType === "socat" ? (
@@ -833,7 +864,7 @@ function RulesContent() {
                   </div>
                   <Badge variant="outline" className="h-9 justify-center gap-1.5 border-chart-4/30 px-3 text-chart-4">
                     <Network className="h-3.5 w-3.5" />
-                    gost
+                    {selectedTunnelDisplay.shortLabel}
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -890,7 +921,7 @@ function RulesContent() {
                 <Label>转发工具</Label>
                 {form.routeMode === "tunnel" ? (
                   <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
-                    gost
+                    {selectedTunnelDisplay.toolLabel}
                   </div>
                 ) : (
                   <Select

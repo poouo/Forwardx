@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.42"
+var Version = "2.1.43"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -340,6 +340,7 @@ func runAgentEventStream(cfg Config) error {
 
 func handleAction(cfg Config, a action) {
 	ok := true
+	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	if a.Op == "apply" {
 		if a.Unit != "" && a.ServiceName != "" {
 			ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
@@ -351,7 +352,9 @@ func handleAction(cfg Config, a action) {
 			ok = runShell(cmd) && ok
 		}
 		if a.Fxp != nil {
-			ok = startFXP(*a.Fxp) && ok
+			fxpOK := startFXP(*a.Fxp)
+			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, fxpOK)
+			ok = fxpOK && ok
 		}
 		writeState(a)
 	} else {
@@ -363,8 +366,14 @@ func handleAction(cfg Config, a action) {
 		}
 		removeState(a.SourcePort)
 	}
-	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": ok && a.Op == "apply"}
-	_ = post(cfg, "/api/agent/rule-status", payload, &map[string]any{})
+	running := ok && a.Op == "apply"
+	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": running}
+	var out map[string]any
+	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
+		logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
+	} else {
+		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
+	}
 }
 
 func writeUnitAndRestart(name, unit string) bool {

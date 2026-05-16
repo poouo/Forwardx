@@ -6,6 +6,7 @@ import {
   isEncryptedEnvelope,
 } from "./agentCrypto";
 import { AGENT_VERSION, APP_VERSION } from "./_core/systemRouter";
+import { appendPanelLog } from "./_core/panelLogger";
 import crypto from "crypto";
 
 const agentRouter = Router();
@@ -877,7 +878,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               sourcePort: rule.sourcePort,
               targetIp: rule.targetIp,
               targetPort: rule.targetPort,
-              protocol: "tcp",
+              protocol: rule.protocol,
               networkInterface: hostInterface,
               commands: buildCountingChainCmds(rule.sourcePort),
               fxp: {
@@ -1161,6 +1162,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         return;
       }
       await db.updateTunnelRunningStatus(tunnelId, !!isRunning);
+      appendPanelLog("info", `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning}`);
       res.json({ success: true });
       return;
     }
@@ -1170,6 +1172,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     }
 
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
+    appendPanelLog("info", `[Rule] status rule=${ruleId} host=${host.id} running=${!!isRunning}`);
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent Rule Status] Error:", error);
@@ -1214,6 +1217,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       message: cleanMessage,
     });
     if (meta?.kind === "tunnel" && typeof meta.tunnelId === "number") {
+      await db.updateTunnelRunningStatus(meta.tunnelId, success);
       await db.updateTunnelTestResult(meta.tunnelId, {
         status: success ? "success" : "failed",
         latencyMs: success ? cleanLatency : null,
