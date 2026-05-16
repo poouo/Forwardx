@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.39"
+var Version = "2.1.40"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -217,6 +217,7 @@ func heartbeat(cfg Config) (int, error) {
 	for _, t := range resp.SelfTests {
 		go handleSelfTest(cfg, t)
 	}
+	syncRunningRuleState(resp.RunningRules)
 	for _, r := range resp.RunningRules {
 		writeRunningRuleState(r)
 		ensureCountingChains(r.SourcePort)
@@ -397,6 +398,34 @@ func writeRunningRuleState(r runningRule) {
 	if r.TargetIP != "" && r.TargetPort > 0 {
 		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", r.TargetIP, r.TargetPort)), 0644)
 	}
+}
+
+func syncRunningRuleState(rules []runningRule) {
+	wanted := map[string]bool{}
+	for _, r := range rules {
+		if r.RuleID <= 0 || r.SourcePort <= 0 {
+			continue
+		}
+		wanted[strconv.Itoa(r.SourcePort)] = true
+	}
+	files, _ := os.ReadDir("/var/lib/forwardx-agent")
+	for _, f := range files {
+		name := f.Name()
+		if !strings.HasPrefix(name, "port_") || !strings.HasSuffix(name, ".rule") {
+			continue
+		}
+		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
+		if !wanted[port] {
+			removeStateByPort(port)
+		}
+	}
+}
+
+func removeStateByPort(port string) {
+	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".rule")
+	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".fwtype")
+	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
+	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 }
 
 func ensureCountingChains(port int) {

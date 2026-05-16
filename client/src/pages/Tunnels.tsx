@@ -112,7 +112,7 @@ function TunnelLatencyDialog({
     return data.map((d: any) => ({
       label: formatTunnelLatencyTime(d.recordedAt),
       fullLabel: formatTunnelLatencyTime(d.recordedAt),
-      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
+      latency: d.isTimeout ? null : (Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
   }, [data]);
@@ -120,17 +120,32 @@ function TunnelLatencyDialog({
     const total = chartData.length;
     const timeout = chartData.filter((d) => d.isTimeout).length;
     const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
-    const values = chartData.filter((d) => !d.isTimeout && d.latency > 0).map((d) => d.latency);
+    const values = chartData
+      .map((d) => d.latency)
+      .filter((value): value is number => typeof value === "number" && value > 0);
     if (values.length === 0) return { total, timeout, lossRate, max: null as number | null, min: null as number | null, avg: null as number | null };
     const sum = values.reduce((acc, v) => acc + v, 0);
     return { total, timeout, lossRate, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
   }, [chartData]);
   const yMax = useMemo(() => {
     if (chartData.length === 0) return 120;
-    const maxVal = Math.max(...chartData.map((d) => d.latency));
+    const values = chartData
+      .map((d) => d.latency)
+      .filter((value): value is number => typeof value === "number" && value > 0);
+    if (values.length === 0) return 120;
+    const maxVal = Math.max(...values);
     if (maxVal <= 0) return 120;
-    return Math.min(500, Math.max(120, Math.ceil(maxVal * 2)));
+    return Math.ceil(maxVal * 2);
   }, [chartData]);
+  const yTicks = useMemo(() => {
+    const step = Math.max(1, Math.ceil(yMax / 4));
+    const ticks: number[] = [];
+    for (let i = 0; i <= yMax; i += step) {
+      ticks.push(i);
+    }
+    if (ticks[ticks.length - 1] !== yMax) ticks.push(yMax);
+    return ticks;
+  }, [yMax]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -155,7 +170,7 @@ function TunnelLatencyDialog({
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={60} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} allowDecimals={false} />
+                <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
                 <RTooltip
                   cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
                   content={({ active, payload }: any) => {
@@ -181,7 +196,7 @@ function TunnelLatencyDialog({
         <div className="grid gap-2 sm:grid-cols-5">
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">统计次数</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}{stats.timeout > 0 && <span className="ml-1 text-xs font-normal text-amber-600">超时 {stats.timeout}</span>}</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}</p>
           </div>
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">最大延迟</p>

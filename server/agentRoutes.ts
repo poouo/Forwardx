@@ -573,6 +573,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }];
       });
       const services = [...tunnelProbeServices, ...ruleServices];
+      const countingCmds = tunnelExitRules.flatMap((rule: any) => {
+        const tunnel = tunnelById.get(rule.tunnelId) as any;
+        if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
+        return buildCountingChainCmds(Number(rule.tunnelExitPort));
+      });
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       return [
         `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
@@ -597,10 +602,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `systemctl daemon-reload`,
         `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
         services.length > 0 ? `systemctl restart forwardx-tunnels.service` : `systemctl stop forwardx-tunnels.service 2>/dev/null || true`,
+        ...countingCmds,
       ];
     };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
+    const ruleTrafficPort = (rule: any) => {
+      const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
+      if (tunnel && !isForwardXTunnel(tunnel) && tunnel.exitHostId === host.id && rule.tunnelExitPort) {
+        return Number(rule.tunnelExitPort);
+      }
+      if (tunnel && !isForwardXTunnel(tunnel)) return 0;
+      return Number(rule.sourcePort) || 0;
+    };
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
 
     const pendingTunnelExitRuleIds = new Set(
@@ -660,9 +674,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of rules) {
       // 收集所有已运行的规则映射（无论是否有 action 下发）
       if (rule.isEnabled && rule.isRunning) {
+        const trafficPort = ruleTrafficPort(rule);
+        if (!trafficPort) continue;
         runningRules.push({
           ruleId: rule.id,
-          sourcePort: rule.sourcePort,
+          sourcePort: trafficPort,
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
           protocol: rule.protocol,
