@@ -25,6 +25,10 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
   return true;
 }
 
+export function pushAgentRefresh(hostId: number, reason: string) {
+  return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now() });
+}
+
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }

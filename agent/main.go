@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-var Version = "2.1.33"
+var Version = "2.1.36"
 var upgradeStarted int32
 
 type Config struct {
@@ -281,6 +281,12 @@ func runAgentEventStream(cfg Config) error {
 				} else {
 					go selfUpgrade(cfg, &up)
 				}
+			} else if eventName == "agent-refresh" {
+				go func() {
+					if err := heartbeat(cfg); err != nil {
+						logf("agent refresh heartbeat error: %v", err)
+					}
+				}()
 			}
 			eventName = ""
 			data.Reset()

@@ -8,7 +8,7 @@ import jwt from "jsonwebtoken";
 import net from "net";
 import { ENV } from "./env";
 import * as db from "./db";
-import { generateFullInstallScript, pushAgentUpgrade } from "./agentRoutes";
+import { generateFullInstallScript, pushAgentRefresh, pushAgentUpgrade } from "./agentRoutes";
 import { FORWARD_TYPES } from "../shared/forwardTypes";
 import { appendPanelLog } from "./_core/panelLogger";
 
@@ -951,6 +951,7 @@ export const appRouter = router({
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
         const id = await db.createTunnel({ ...input, listenPort, userId: ctx.user.id });
+        pushAgentRefresh(input.exitHostId, "tunnel-created");
         return { id, listenPort };
       }),
     update: protectedProcedure
@@ -960,7 +961,7 @@ export const appRouter = router({
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
         mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
-        listenPort: z.number().min(1).max(65535).optional(),
+        listenPort: z.number().min(0).max(65535).optional(),
         isEnabled: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -999,6 +1000,10 @@ export const appRouter = router({
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
         if (keyChanged) await db.resetForwardRulesByTunnel(id);
+        if (keyChanged) {
+          pushAgentRefresh(exitHostId, "tunnel-updated");
+          if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
+        }
         return { success: true, reset: keyChanged };
       }),
     delete: protectedProcedure
@@ -1022,10 +1027,13 @@ export const appRouter = router({
         if (!exit) throw new Error("Exit Agent not found");
         appendPanelLog("info", `[TunnelTest] start tunnel=${tunnel.id} name=${tunnel.name} entryHost=${tunnel.entryHostId} exitHost=${tunnel.exitHostId} mode=${tunnel.mode} listenPort=${tunnel.listenPort}`);
         if (!tunnel.isRunning) {
-          const message = "EXIT_AGENT_NOT_APPLIED";
-          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
-          appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; waiting for exit Agent to reconnect and run tunnel config`);
-          return { success: false, latencyMs: null, message, pending: true };
+          const pushed = pushAgentRefresh(tunnel.exitHostId, "tunnel-test-refresh");
+          appendPanelLog(
+            pushed ? "info" : "warn",
+            pushed
+              ? `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; pushed refresh to exit Agent`
+              : `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; exit Agent event stream unavailable, test will still be queued`
+          );
         }
         const target = String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit.ip || "").trim();
         const targetPort = Number(tunnel.listenPort);

@@ -738,10 +738,21 @@ export async function findAvailableTunnelExitPort(
   usedExitPorts.forEach((r) => {
     if (r.port != null) used.add(Number(r.port));
   });
-  for (let port = end; port >= start; port--) {
-    if (!used.has(port)) return port;
+  const highStart = Math.max(start, end - 9999);
+  const collectAvailable = (from: number, to: number) => {
+    const ports: number[] = [];
+    for (let port = from; port <= to; port++) {
+      if (!used.has(port)) ports.push(port);
+    }
+    return ports;
+  };
+  let available = collectAvailable(highStart, end);
+  if (available.length === 0 && highStart > start) {
+    available = collectAvailable(start, highStart - 1);
   }
-  return null;
+  if (available.length === 0) return null;
+  const preferred = available.length > 1 ? available.filter((port) => port !== 65535) : available;
+  return preferred[crypto.randomInt(0, preferred.length)];
 }
 
 export async function isTunnelListenPortUsed(exitHostId: number, listenPort: number, excludeTunnelId?: number): Promise<boolean> {
