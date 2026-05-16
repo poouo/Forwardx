@@ -826,7 +826,8 @@ export const appRouter = router({
           await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
           if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-deleted");
         }
-        await db.deleteForwardRule(input.id);
+        await db.markForwardRulePendingDelete(input.id);
+        pushAgentRefresh(rule.hostId, "forward-rule-deleted");
         return { success: true };
       }),
     toggle: protectedProcedure

@@ -140,6 +140,7 @@ export async function initDatabase() {
         targetPort INTEGER NOT NULL,
         isEnabled INTEGER NOT NULL DEFAULT 1,
         isRunning INTEGER NOT NULL DEFAULT 0,
+        pendingDelete INTEGER NOT NULL DEFAULT 0,
         userId INTEGER NOT NULL,
         createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
         updatedAt INTEGER NOT NULL DEFAULT (unixepoch())
@@ -277,6 +278,7 @@ export async function initDatabase() {
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelId INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelExitPort INTEGER`,
+      `ALTER TABLE forward_rules ADD COLUMN pendingDelete INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE tunnels ADD COLUMN secret TEXT`,
     ];
 
@@ -632,11 +634,17 @@ export async function getHostRuleCount(hostId: number): Promise<number> {
 export async function getForwardRules(userId?: number, hostId?: number) {
   const db = await getDb();
   if (!db) return [];
-  const conds: any[] = [];
+  const conds: any[] = [eq(forwardRules.pendingDelete, false)];
   if (userId) conds.push(eq(forwardRules.userId, userId));
   if (hostId) conds.push(eq(forwardRules.hostId, hostId));
-  if (conds.length > 0) {
-    return db.select().from(forwardRules).where(and(...conds)).orderBy(desc(forwardRules.createdAt));
+  return db.select().from(forwardRules).where(and(...conds)).orderBy(desc(forwardRules.createdAt));
+}
+
+export async function getForwardRulesForAgent(hostId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  if (hostId) {
+    return db.select().from(forwardRules).where(eq(forwardRules.hostId, hostId)).orderBy(desc(forwardRules.createdAt));
   }
   return db.select().from(forwardRules).orderBy(desc(forwardRules.createdAt));
 }
@@ -674,6 +682,17 @@ export async function deleteForwardRule(id: number) {
   await db.delete(forwardRules).where(eq(forwardRules.id, id));
 }
 
+export async function markForwardRulePendingDelete(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({
+    isEnabled: false,
+    isRunning: true,
+    pendingDelete: true,
+    updatedAt: nowDate(),
+  }).where(eq(forwardRules.id, id));
+}
+
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;
@@ -683,6 +702,12 @@ export async function toggleForwardRule(id: number, isEnabled: boolean) {
 export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
   const db = await getDb();
   if (!db) return;
+  const rule = await getForwardRuleById(id);
+  if (rule && (rule as any).pendingDelete && !isRunning) {
+    await db.delete(trafficStats).where(eq(trafficStats.ruleId, id));
+    await db.delete(forwardRules).where(eq(forwardRules.id, id));
+    return;
+  }
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
 }
 
