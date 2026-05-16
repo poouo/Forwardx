@@ -16,8 +16,8 @@ import { clearPanelLogs, getPanelLogs, getPanelLogSummary } from "./panelLogger"
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.2.0";
-export const AGENT_VERSION = "2.1.38";
+export const APP_VERSION = "2.2.1";
+export const AGENT_VERSION = "2.1.39";
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
@@ -90,6 +90,8 @@ async function fetchGithubJson<T>(url: string): Promise<T> {
 async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   const checkedAt = new Date().toISOString();
   const api = githubApiBase(REPO_URL);
+  let releaseInfo: UpdateInfo | null = null;
+  let releaseErrorMessage: string | null = null;
 
   try {
     const latest = await fetchGithubJson<{
@@ -100,7 +102,7 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
       draft?: boolean;
     }>(`${api}/releases/latest`);
     const latestVersion = latest.tag_name || null;
-    return {
+    releaseInfo = {
       currentVersion: APP_VERSION,
       latestVersion,
       hasUpdate: !!latestVersion && compareVersions(latestVersion, APP_VERSION) > 0,
@@ -110,35 +112,52 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
       checkedAt,
     };
   } catch (releaseError: any) {
-    try {
-      const tags = await fetchGithubJson<Array<{ name?: string; commit?: { sha?: string } }>>(`${api}/tags?per_page=20`);
-      const versionTags = tags
-        .map((t) => t.name)
-        .filter((name): name is string => !!name && /^v?\d+\.\d+\.\d+/.test(name))
-        .sort((a, b) => compareVersions(b, a));
-      const latestVersion = versionTags[0] || null;
+    releaseErrorMessage = releaseError?.message || null;
+  }
+
+  try {
+    const tags = await fetchGithubJson<Array<{ name?: string; commit?: { sha?: string } }>>(`${api}/tags?per_page=50`);
+    const versionTags = tags
+      .map((t) => t.name)
+      .filter((name): name is string => !!name && /^v?\d+\.\d+\.\d+/.test(name))
+      .sort((a, b) => compareVersions(b, a));
+    const tagVersion = versionTags[0] || null;
+    if (tagVersion && (!releaseInfo?.latestVersion || compareVersions(tagVersion, releaseInfo.latestVersion) > 0)) {
       return {
         currentVersion: APP_VERSION,
-        latestVersion,
-        hasUpdate: !!latestVersion && compareVersions(latestVersion, APP_VERSION) > 0,
-        releaseUrl: latestVersion ? `${REPO_URL}/releases/tag/${latestVersion}` : REPO_URL,
+        latestVersion: tagVersion,
+        hasUpdate: compareVersions(tagVersion, APP_VERSION) > 0,
+        releaseUrl: `${REPO_URL}/releases/tag/${tagVersion}`,
         source: "tag",
         publishedAt: null,
         checkedAt,
       };
-    } catch (tagError: any) {
-      return {
-        currentVersion: APP_VERSION,
-        latestVersion: null,
-        hasUpdate: false,
-        releaseUrl: null,
-        source: null,
-        publishedAt: null,
-        checkedAt,
-        error: tagError?.message || releaseError?.message || "检查更新失败",
-      };
     }
+    if (releaseInfo) return releaseInfo;
+  } catch (tagError: any) {
+    if (releaseInfo) return releaseInfo;
+    return {
+      currentVersion: APP_VERSION,
+      latestVersion: null,
+      hasUpdate: false,
+      releaseUrl: null,
+      source: null,
+      publishedAt: null,
+      checkedAt,
+      error: tagError?.message || releaseErrorMessage || "检查更新失败",
+    };
   }
+
+  return releaseInfo || {
+    currentVersion: APP_VERSION,
+    latestVersion: null,
+    hasUpdate: false,
+    releaseUrl: null,
+    source: null,
+    publishedAt: null,
+    checkedAt,
+    error: releaseErrorMessage || "检查更新失败",
+  };
 }
 
 async function getLatestUpdateInfoCached(): Promise<UpdateInfo> {

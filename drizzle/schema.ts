@@ -126,6 +126,8 @@ export const hostMetrics = sqliteTable("host_metrics", {
   networkIn: integer("networkIn"),
   networkOut: integer("networkOut"),
   diskUsage: integer("diskUsage"),
+  diskUsed: integer("diskUsed"),
+  diskTotal: integer("diskTotal"),
   uptime: integer("uptime"),
   recordedAt: integer("recordedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
 });

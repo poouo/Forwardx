@@ -119,10 +119,11 @@ function TunnelLatencyDialog({
   const stats = useMemo(() => {
     const total = chartData.length;
     const timeout = chartData.filter((d) => d.isTimeout).length;
+    const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
     const values = chartData.filter((d) => !d.isTimeout && d.latency > 0).map((d) => d.latency);
-    if (values.length === 0) return { total, timeout, max: null as number | null, min: null as number | null, avg: null as number | null };
+    if (values.length === 0) return { total, timeout, lossRate, max: null as number | null, min: null as number | null, avg: null as number | null };
     const sum = values.reduce((acc, v) => acc + v, 0);
-    return { total, timeout, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
+    return { total, timeout, lossRate, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
   }, [chartData]);
   const yMax = useMemo(() => {
     if (chartData.length === 0) return 120;
@@ -177,7 +178,7 @@ function TunnelLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <div className="grid gap-2 sm:grid-cols-4">
+        <div className="grid gap-2 sm:grid-cols-5">
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">统计次数</p>
             <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}{stats.timeout > 0 && <span className="ml-1 text-xs font-normal text-amber-600">超时 {stats.timeout}</span>}</p>
@@ -185,6 +186,10 @@ function TunnelLatencyDialog({
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">最大延迟</p>
             <p className="mt-1 text-sm font-semibold tabular-nums">{stats.max === null ? "--" : `${stats.max} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">丢包率</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total === 0 ? "--" : `${stats.lossRate}%`}</p>
           </div>
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">最小延迟</p>

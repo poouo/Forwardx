@@ -17,6 +17,7 @@ type AgentEventClient = {
 };
 
 const agentEventClients = new Map<number, AgentEventClient>();
+const hostMetricsWatchUntil = new Map<number, number>();
 
 function sendAgentEvent(hostId: number, event: string, data: any) {
   const client = agentEventClients.get(hostId);
@@ -32,6 +33,24 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
 
 export function pushAgentRefresh(hostId: number, reason: string) {
   return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now() });
+}
+
+export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {
+  const until = Date.now() + ttlMs;
+  for (const id of hostIds) {
+    if (Number.isFinite(id) && id > 0) {
+      hostMetricsWatchUntil.set(id, until);
+    }
+  }
+}
+
+function isHostMetricsWatching(hostId: number) {
+  const until = hostMetricsWatchUntil.get(hostId) || 0;
+  if (until <= Date.now()) {
+    hostMetricsWatchUntil.delete(hostId);
+    return false;
+  }
+  return true;
 }
 
 function normalizeVersion(version: string | null | undefined) {
@@ -259,7 +278,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return;
     }
 
-    const { cpuUsage, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, uptime, agentVersion } = req.body;
+    const { cpuUsage, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
 
     await db.updateHostHeartbeat(host.id, { agentVersion: agentVersion || (host as any).agentVersion || null } as any);
 
@@ -271,6 +290,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       networkIn: networkIn ?? null,
       networkOut: networkOut ?? null,
       diskUsage: diskUsage ?? null,
+      diskUsed: diskUsed ?? null,
+      diskTotal: diskTotal ?? null,
       uptime: uptime ?? null,
     });
 
@@ -1072,7 +1093,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       panelUrl: await resolvePanelUrl(req),
     } : null;
 
-    res.json({ success: true, actions, selfTests, runningRules, agentUpgrade });
+    res.json({ success: true, actions, selfTests, runningRules, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

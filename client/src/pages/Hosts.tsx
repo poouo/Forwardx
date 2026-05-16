@@ -55,6 +55,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
+function usePageVisible() {
+  const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
+  useEffect(() => {
+    const onVisibilityChange = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+  return visible;
+}
+
 function formatBytes(bytes: number | null | undefined): string {
   const num = Number(bytes);
   if (!num || isNaN(num) || num === 0) return "0 B";
@@ -125,6 +135,7 @@ function HostCard({
   onUpgrade,
   canUpgrade,
   latestAgentVersion,
+  refreshInterval,
 }: {
   host: any;
   onEdit: (host: any) => void;
@@ -132,12 +143,23 @@ function HostCard({
   onUpgrade: (host: any) => void;
   canUpgrade: boolean;
   latestAgentVersion?: string;
+  refreshInterval: number | false;
 }) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
-    { hostId: host.id, limit: 1 },
-    { refetchInterval: 15000 }
+    { hostId: host.id, limit: 2 },
+    { refetchInterval: refreshInterval }
   );
   const latestMetric = metrics?.[0];
+  const previousMetric = metrics?.[1];
+  const networkSpeed = useMemo(() => {
+    if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
+    const latestAt = new Date(latestMetric.recordedAt).getTime();
+    const previousAt = new Date(previousMetric.recordedAt).getTime();
+    const seconds = Math.max(1, (latestAt - previousAt) / 1000);
+    const inDelta = Math.max(0, Number(latestMetric.networkIn || 0) - Number(previousMetric.networkIn || 0));
+    const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
+    return { in: inDelta / seconds, out: outDelta / seconds };
+  }, [latestMetric, previousMetric]);
   const agentNeedsUpdate = !!host.agentVersion && !!latestAgentVersion && compareVersions(host.agentVersion, latestAgentVersion) < 0;
   const agentUpgrading = !!host.agentUpgradeRequested;
 
@@ -256,7 +278,11 @@ function HostCard({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
-                <span className="font-medium tabular-nums">{latestMetric.diskUsage ?? 0}%</span>
+                <span className="font-medium tabular-nums">
+                  {latestMetric.diskUsed != null && latestMetric.diskTotal
+                    ? `${formatBytes(latestMetric.diskUsed)} / ${formatBytes(latestMetric.diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
+                    : `${latestMetric.diskUsage ?? 0}%`}
+                </span>
               </div>
               <Progress value={latestMetric.diskUsage ?? 0} className="h-1.5" />
             </div>
@@ -265,12 +291,12 @@ function HostCard({
               <div className="flex items-center gap-2 text-xs">
                 <ArrowDownToLine className="h-3 w-3 text-muted-foreground" />
                 <span className="text-muted-foreground">入站</span>
-                <span className="font-medium ml-auto">{formatBytes(latestMetric.networkIn)}</span>
+                <span className="font-medium ml-auto">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <ArrowUpFromLine className="h-3 w-3 text-muted-foreground" />
                 <span className="text-muted-foreground">出站</span>
-                <span className="font-medium ml-auto">{formatBytes(latestMetric.networkOut)}</span>
+                <span className="font-medium ml-auto">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
               </div>
             </div>
             {/* 运行时间 */}
@@ -294,8 +320,11 @@ function HostsContent() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
+  const pageVisible = usePageVisible();
+  const hostRefreshInterval = pageVisible ? 2000 : false;
   const { data: hosts, isLoading } = trpc.hosts.list.useQuery(undefined, {
-    refetchInterval: 5000,
+    refetchInterval: hostRefreshInterval,
+    refetchOnWindowFocus: true,
   });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const latestAgentVersion = systemSettings?.agentVersion || systemSettings?.version;
@@ -308,6 +337,7 @@ function HostsContent() {
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
   const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
+  const watchMetricsMutation = trpc.hosts.watchMetrics.useMutation();
 
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
@@ -365,6 +395,17 @@ function HostsContent() {
       if (!currentIds.has(hostId)) tracked.delete(hostId);
     }
   }, [hosts, latestAgentVersion]);
+
+  useEffect(() => {
+    if (!pageVisible || !hosts?.length) return;
+    const hostIds = hosts.map((host: any) => Number(host.id)).filter(Boolean);
+    if (hostIds.length === 0) return;
+    watchMetricsMutation.mutate({ hostIds });
+    const timer = window.setInterval(() => {
+      watchMetricsMutation.mutate({ hostIds });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [pageVisible, hosts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetForm = () => {
     setForm(defaultFormData);
@@ -545,6 +586,7 @@ function HostsContent() {
                 onUpgrade={requestAgentUpgrade}
                 canUpgrade={user?.role === "admin"}
                 latestAgentVersion={latestAgentVersion}
+                refreshInterval={hostRefreshInterval}
               />
             ))}
           </div>

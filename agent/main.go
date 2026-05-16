@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.38"
+var Version = "2.1.39"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -52,6 +52,7 @@ type heartbeatResp struct {
 	SelfTests    []selfTest    `json:"selfTests"`
 	RunningRules []runningRule `json:"runningRules"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
+	NextInterval int           `json:"nextInterval"`
 }
 
 type selfTestResp struct {
@@ -140,10 +141,17 @@ func main() {
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
 	for {
-		if err := heartbeat(cfg); err != nil {
+		nextInterval, err := heartbeat(cfg)
+		if err != nil {
 			logf("heartbeat error: %v", err)
 		}
-		time.Sleep(time.Duration(cfg.Interval) * time.Second)
+		if nextInterval <= 0 {
+			nextInterval = cfg.Interval
+		}
+		if nextInterval < 2 {
+			nextInterval = 2
+		}
+		time.Sleep(time.Duration(nextInterval) * time.Second)
 	}
 }
 
@@ -185,7 +193,7 @@ func register(cfg Config) error {
 	return post(cfg, "/api/agent/register", payload, &out)
 }
 
-func heartbeat(cfg Config) error {
+func heartbeat(cfg Config) (int, error) {
 	payload := map[string]any{
 		"cpuUsage":     cpuUsage(),
 		"memoryUsage":  memUsagePercent(),
@@ -194,12 +202,14 @@ func heartbeat(cfg Config) error {
 		"networkIn":    netBytes(0),
 		"networkOut":   netBytes(1),
 		"diskUsage":    diskUsage(),
+		"diskUsed":     diskBytes("used"),
+		"diskTotal":    diskBytes("total"),
 		"uptime":       uptime(),
 		"agentVersion": Version,
 	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
-		return err
+		return cfg.Interval, err
 	}
 	for _, a := range resp.Actions {
 		go handleAction(cfg, a)
@@ -216,7 +226,7 @@ func heartbeat(cfg Config) error {
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
-	return nil
+	return resp.NextInterval, nil
 }
 
 func selfTestPoller(cfg Config) {
@@ -305,7 +315,7 @@ func runAgentEventStream(cfg Config) error {
 				}
 			} else if eventName == "agent-refresh" {
 				go func() {
-					if err := heartbeat(cfg); err != nil {
+					if _, err := heartbeat(cfg); err != nil {
 						logf("agent refresh heartbeat error: %v", err)
 					}
 				}()
@@ -1281,6 +1291,19 @@ func diskUsage() int {
 		return 0
 	}
 	v, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return v
+}
+
+func diskBytes(kind string) uint64 {
+	col := "$2"
+	if kind == "used" {
+		col = "$3"
+	}
+	out, err := exec.Command("sh", "-lc", fmt.Sprintf(`df -P -B1 / | awk 'NR==2 {print %s}'`, col)).Output()
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 	return v
 }
 

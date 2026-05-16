@@ -9,7 +9,7 @@ import net from "net";
 import crypto from "crypto";
 import { ENV } from "./env";
 import * as db from "./db";
-import { generateFullInstallScript, pushAgentRefresh, pushAgentUpgrade } from "./agentRoutes";
+import { generateFullInstallScript, markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "./agentRoutes";
 import { FORWARD_TYPES } from "../shared/forwardTypes";
 import { appendPanelLog } from "./_core/panelLogger";
 
@@ -530,6 +530,18 @@ export const appRouter = router({
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
         return db.getLatestHostMetrics(input.hostId, input.limit);
+      }),
+    watchMetrics: protectedProcedure
+      .input(z.object({ hostIds: z.array(z.number()).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const allowed: number[] = [];
+        for (const hostId of input.hostIds) {
+          await requireHostAccess(ctx, hostId);
+          allowed.push(hostId);
+        }
+        markHostMetricsWatching(allowed);
+        for (const hostId of allowed) pushAgentRefresh(hostId, "metrics-watch");
+        return { success: true, count: allowed.length };
       }),
     requestAgentUpgrade: adminProcedure
       .input(z.object({ hostId: z.number(), targetVersion: z.string().max(64).nullable().optional() }))

@@ -178,6 +178,8 @@ export async function initDatabase() {
         networkIn INTEGER,
         networkOut INTEGER,
         diskUsage INTEGER,
+        diskUsed INTEGER,
+        diskTotal INTEGER,
         uptime INTEGER,
         recordedAt INTEGER NOT NULL DEFAULT (unixepoch())
       );
@@ -255,6 +257,8 @@ export async function initDatabase() {
       `ALTER TABLE hosts ADD COLUMN agentUpgradeRequested INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE hosts ADD COLUMN agentUpgradeTargetVersion TEXT`,
       `ALTER TABLE hosts ADD COLUMN agentUpgradeRequestedAt INTEGER`,
+      `ALTER TABLE host_metrics ADD COLUMN diskUsed INTEGER`,
+      `ALTER TABLE host_metrics ADD COLUMN diskTotal INTEGER`,
       `ALTER TABLE users ADD COLUMN canAddRules INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficLimit INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE users ADD COLUMN trafficUsed INTEGER NOT NULL DEFAULT 0`,

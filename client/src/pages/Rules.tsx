@@ -1162,16 +1162,18 @@ function TcpingDetailDialog({
   const tcpingStats = useMemo(() => {
     const total = chartData.length;
     const timeout = chartData.filter((d) => d.isTimeout).length;
+    const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
     const values = chartData
       .filter((d) => !d.isTimeout && d.latency > 0)
       .map((d) => d.latency);
     if (values.length === 0) {
-      return { total, timeout, valid: 0, max: null as number | null, min: null as number | null, avg: null as number | null };
+      return { total, timeout, lossRate, valid: 0, max: null as number | null, min: null as number | null, avg: null as number | null };
     }
     const sum = values.reduce((acc, v) => acc + v, 0);
     return {
       total,
       timeout,
+      lossRate,
       valid: values.length,
       max: Math.max(...values),
       min: Math.min(...values),
@@ -1243,7 +1245,7 @@ function TcpingDetailDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <div className="grid gap-2 sm:grid-cols-4">
+        <div className="grid gap-2 sm:grid-cols-5">
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">统计次数</p>
             <p className="mt-1 text-sm font-semibold tabular-nums">
@@ -1254,6 +1256,10 @@ function TcpingDetailDialog({
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">最大延迟</p>
             <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.max === null ? "--" : `${tcpingStats.max} ms`}</p>
+          </div>
+          <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-[11px] text-muted-foreground">丢包率</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.total === 0 ? "--" : `${tcpingStats.lossRate}%`}</p>
           </div>
           <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
             <p className="text-[11px] text-muted-foreground">最小延迟</p>
