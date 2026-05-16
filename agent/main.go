@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.2.28"
+var Version = "2.2.29"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -791,7 +791,7 @@ func fxpHandleEntry(spec fxpSpec, client net.Conn) {
 		logf("fxp entry handshake failed: %v", err)
 		return
 	}
-	fxpRelayEncrypted(client, exitConn, spec, salt)
+	fxpRelayEncryptedEntry(client, exitConn, spec, salt)
 }
 
 func fxpHandleExit(spec fxpSpec, conn net.Conn) {
@@ -807,7 +807,7 @@ func fxpHandleExit(spec fxpSpec, conn net.Conn) {
 		return
 	}
 	defer targetConn.Close()
-	fxpRelayEncrypted(targetConn, conn, spec, salt)
+	fxpRelayEncryptedExit(targetConn, conn, spec, salt)
 }
 
 func fxpClientHandshake(conn net.Conn, spec fxpSpec) ([]byte, error) {
@@ -1073,11 +1073,32 @@ func fxpUDPUnpack(in []byte) (string, string, []byte, error) {
 	return clientKey, target, append([]byte(nil), in[offset:]...), nil
 }
 
-func fxpRelayEncrypted(plain net.Conn, encrypted net.Conn, spec fxpSpec, salt []byte) {
+func fxpRelayEncryptedEntry(client net.Conn, exitConn net.Conn, spec fxpSpec, salt []byte) {
 	errc := make(chan error, 2)
-	go func() { errc <- fxpEncryptCopy(encrypted, plain, spec.Key, salt, "client-to-exit", spec.LimitIn) }()
-	go func() { errc <- fxpDecryptCopy(plain, encrypted, spec.Key, salt, "exit-to-client", spec.LimitOut) }()
-	<-errc
+	go func() { errc <- fxpEncryptCopy(exitConn, client, spec.Key, salt, "client-to-exit", spec.LimitIn) }()
+	go func() { errc <- fxpDecryptCopy(client, exitConn, spec.Key, salt, "exit-to-client", spec.LimitOut) }()
+	if err := <-errc; err != nil && !isClosedConnError(err) {
+		logf("fxp entry relay ended: %v", err)
+	}
+}
+
+func fxpRelayEncryptedExit(targetConn net.Conn, entryConn net.Conn, spec fxpSpec, salt []byte) {
+	errc := make(chan error, 2)
+	go func() { errc <- fxpDecryptCopy(targetConn, entryConn, spec.Key, salt, "client-to-exit", spec.LimitIn) }()
+	go func() { errc <- fxpEncryptCopy(entryConn, targetConn, spec.Key, salt, "exit-to-client", spec.LimitOut) }()
+	if err := <-errc; err != nil && !isClosedConnError(err) {
+		logf("fxp exit relay ended: %v", err)
+	}
+}
+
+func isClosedConnError(err error) bool {
+	if err == nil || err == io.EOF {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "connection reset by peer") ||
+		strings.Contains(s, "broken pipe")
 }
 
 func fxpAEAD(key string, salt []byte, direction string) (cipher.AEAD, error) {
