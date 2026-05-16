@@ -278,9 +278,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return;
     }
 
-    const { cpuUsage, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
+    const { cpuUsage, cpuInfo, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
 
-    await db.updateHostHeartbeat(host.id, { agentVersion: agentVersion || (host as any).agentVersion || null } as any);
+    await db.updateHostHeartbeat(host.id, {
+      agentVersion: agentVersion || (host as any).agentVersion || null,
+      cpuInfo: cpuInfo || (host as any).cpuInfo || null,
+    } as any);
 
     await db.insertHostMetric({
       hostId: host.id,
@@ -1065,6 +1068,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     // 取走该主机的 pending 转发自测任务并标为 running
+    for (const rule of tunnelExitRules) {
+      if (!rule.isEnabled || !rule.isRunning) continue;
+      const trafficPort = Number((rule as any).tunnelExitPort) || 0;
+      if (!trafficPort) continue;
+      runningRules.push({
+        ruleId: rule.id,
+        sourcePort: trafficPort,
+        targetIp: rule.targetIp,
+        targetPort: rule.targetPort,
+        protocol: rule.protocol,
+        forwardType: "gost-tunnel-exit",
+      });
+    }
+
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
     for (const t of pendingTests) {
@@ -1354,7 +1371,15 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       const bytesIn = stat.bytesIn || 0;
       const bytesOut = stat.bytesOut || 0;
       const rule = await db.getForwardRuleById(stat.ruleId);
-      if (!rule || rule.hostId !== host.id) {
+      if (!rule) {
+        continue;
+      }
+      let allowedHost = rule.hostId === host.id;
+      if (!allowedHost && (rule as any).tunnelId) {
+        const tunnel = await db.getTunnelById((rule as any).tunnelId);
+        allowedHost = !!tunnel && tunnel.exitHostId === host.id;
+      }
+      if (!allowedHost) {
         continue;
       }
       await db.insertTrafficStat({
@@ -1366,6 +1391,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       });
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
+        console.log(`[Traffic] host=${host.id} rule=${rule.id} in=${bytesIn} out=${bytesOut} connections=${stat.connections || 0}`);
         trafficByUser.set(rule.userId, (trafficByUser.get(rule.userId) || 0) + ruleBytes);
       }
     }
