@@ -6,6 +6,7 @@ import {
   isEncryptedEnvelope,
 } from "./agentCrypto";
 import { AGENT_VERSION } from "./_core/systemRouter";
+import crypto from "crypto";
 
 const agentRouter = Router();
 
@@ -46,6 +47,14 @@ function compareVersions(a: string | null | undefined, b: string | null | undefi
     if (diff !== 0) return diff > 0 ? 1 : -1;
   }
   return 0;
+}
+
+function tunnelSecretSeed(tunnel: any) {
+  if (tunnel?.secret) return String(tunnel.secret);
+  return crypto
+    .createHash("sha256")
+    .update(`forwardx-tunnel:${tunnel?.id}:${tunnel?.entryHostId}:${tunnel?.exitHostId}`)
+    .digest("hex");
 }
 
 function parseSelfTestMeta(message: unknown): any | null {
@@ -361,6 +370,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return service;
     };
+    const userRateLimits = (userId: number) => {
+      const user = gostUserById.get(userId) as any;
+      return {
+        limitIn: Math.max(0, Number(user?.gostRateLimitIn) || 0),
+        limitOut: Math.max(0, Number(user?.gostRateLimitOut) || 0),
+      };
+    };
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
@@ -372,6 +388,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
+    const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
     const tunnelExitHostAddress = async (tunnel: any) => {
       const exit = await db.getHostById(tunnel.exitHostId);
@@ -394,6 +411,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostServiceConfig = gostRules
       .flatMap((r: any) => {
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
+        if (tunnel && isForwardXTunnel(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
         return protos.map((proto) => {
           if ((r as any).gostMode === "reverse") {
@@ -460,6 +478,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .filter((r: any) => r.isEnabled && r.forwardType === "gost" && r.tunnelId)
       .flatMap((r: any) => {
         const tunnel = tunnelById.get((r as any).tunnelId) as any;
+        if (isForwardXTunnel(tunnel)) return [];
         const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
         if (!tunnel || !tunnelExitHost || !(r as any).tunnelExitPort) return [];
         return [{
@@ -495,7 +514,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const buildTunnelReloadCmds = () => {
       const tunnelProbeServices = hostTunnels
-        .filter((tunnel: any) => tunnel.exitHostId === host.id && tunnel.isEnabled)
+        .filter((tunnel: any) => tunnel.exitHostId === host.id && tunnel.isEnabled && !isForwardXTunnel(tunnel))
         .map((tunnel: any) => ({
           name: `fwx-tunnel-probe-${tunnel.id}`,
           addr: `:${tunnel.listenPort}`,
@@ -515,7 +534,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }));
       const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
-        if (!tunnel || !rule.tunnelExitPort) return [];
+        if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -571,30 +590,48 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.exitHostId !== host.id) continue;
       if (tunnel.isEnabled && (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)))) {
+        const fxpTunnel = isForwardXTunnel(tunnel);
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",
           ruleId: 0,
           op: "apply",
-          forwardType: "gost-tunnel",
+          forwardType: fxpTunnel ? "forwardx-tunnel" : "gost-tunnel",
           sourcePort: tunnel.listenPort,
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : buildTunnelReloadCmds(),
+          fxp: fxpTunnel ? {
+            role: "exit",
+            tunnelId: tunnel.id,
+            ruleId: 0,
+            listenPort: tunnel.listenPort,
+            protocol: "both",
+            key: tunnelSecretSeed(tunnel),
+          } : undefined,
         });
       } else if (!tunnel.isEnabled && tunnel.isRunning) {
+        const fxpTunnel = isForwardXTunnel(tunnel);
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",
           ruleId: 0,
           op: "remove",
-          forwardType: "gost-tunnel",
+          forwardType: fxpTunnel ? "forwardx-tunnel" : "gost-tunnel",
           sourcePort: tunnel.listenPort,
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : buildTunnelReloadCmds(),
+          fxp: fxpTunnel ? {
+            role: "exit",
+            tunnelId: tunnel.id,
+            ruleId: 0,
+            listenPort: tunnel.listenPort,
+            protocol: "both",
+            key: tunnelSecretSeed(tunnel),
+          } : undefined,
         });
       }
     }
@@ -789,6 +826,36 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             });
           }
         } else if (rule.forwardType === "gost") {
+          const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
+          if (tunnel && isForwardXTunnel(tunnel)) {
+            const tunnelExitHost = tunnelExitHostById.get(tunnel.id);
+            const rateLimits = userRateLimits(Number(rule.userId));
+            actions.push({
+              ruleId: rule.id,
+              op: "apply",
+              forwardType: "forwardx",
+              sourcePort: rule.sourcePort,
+              targetIp: rule.targetIp,
+              targetPort: rule.targetPort,
+              protocol: "tcp",
+              networkInterface: hostInterface,
+              commands: buildCountingChainCmds(rule.sourcePort),
+              fxp: {
+                role: "entry",
+                tunnelId: tunnel.id,
+                ruleId: rule.id,
+                listenPort: rule.sourcePort,
+                protocol: rule.protocol,
+                exitHost: tunnelExitHost,
+                exitPort: tunnel.listenPort,
+                targetIp: rule.targetIp,
+                targetPort: rule.targetPort,
+                key: tunnelSecretSeed(tunnel),
+                ...rateLimits,
+              },
+            });
+            continue;
+          }
           actions.push({
             ruleId: rule.id,
             op: "apply",
@@ -932,7 +999,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: removeCmds,
           });
         } else if (rule.forwardType === "gost") {
-          const removeCmds: string[] = [...buildGostReloadCmds()];
+          const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
+          const removeCmds: string[] = tunnel && isForwardXTunnel(tunnel) ? [] : [...buildGostReloadCmds()];
           removeCmds.push(`pkill -f "gost .*:${rule.sourcePort}" 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
@@ -946,6 +1014,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: removeCmds,
+            fxp: tunnel && isForwardXTunnel(tunnel) ? {
+              role: "entry",
+              tunnelId: tunnel.id,
+              ruleId: rule.id,
+              listenPort: rule.sourcePort,
+              protocol: rule.protocol,
+              key: tunnelSecretSeed(tunnel),
+            } : undefined,
           });
         }
       }
@@ -1236,10 +1312,14 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
-    let totalBytes = 0;
+    const trafficByUser = new Map<number, number>();
     for (const stat of stats) {
       const bytesIn = stat.bytesIn || 0;
       const bytesOut = stat.bytesOut || 0;
+      const rule = await db.getForwardRuleById(stat.ruleId);
+      if (!rule || rule.hostId !== host.id) {
+        continue;
+      }
       await db.insertTrafficStat({
         ruleId: stat.ruleId,
         hostId: host.id,
@@ -1247,15 +1327,19 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         bytesOut,
         connections: stat.connections || 0,
       });
-      totalBytes += bytesIn + bytesOut;
+      const ruleBytes = bytesIn + bytesOut;
+      if (ruleBytes > 0) {
+        trafficByUser.set(rule.userId, (trafficByUser.get(rule.userId) || 0) + ruleBytes);
+      }
     }
 
     // 累加用户已用流量
-    if (totalBytes > 0) {
-      await db.addUserTraffic(host.userId, totalBytes);
+    for (const [userId, totalBytes] of trafficByUser.entries()) {
+      if (totalBytes <= 0) continue;
+      await db.addUserTraffic(userId, totalBytes);
 
       // 检查用户流量配额
-      const user = await db.getUserById(host.userId);
+      const user = await db.getUserById(userId);
       if (user) {
         // 流量超额：自动禁用该用户所有规则
         if (user.trafficLimit > 0 && (user.trafficUsed + totalBytes) >= user.trafficLimit) {

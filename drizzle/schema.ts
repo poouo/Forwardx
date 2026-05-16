@@ -102,6 +102,7 @@ export const tunnels = sqliteTable("tunnels", {
   entryHostId: integer("entryHostId").notNull(),
   exitHostId: integer("exitHostId").notNull(),
   mode: text("mode").notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
+  secret: text("secret"),
   listenPort: integer("listenPort").notNull(),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
   isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),

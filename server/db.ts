@@ -153,6 +153,7 @@ export async function initDatabase() {
         entryHostId INTEGER NOT NULL,
         exitHostId INTEGER NOT NULL,
         mode TEXT NOT NULL DEFAULT 'tls',
+        secret TEXT,
         listenPort INTEGER NOT NULL,
         isEnabled INTEGER NOT NULL DEFAULT 1,
         isRunning INTEGER NOT NULL DEFAULT 0,
@@ -272,6 +273,7 @@ export async function initDatabase() {
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelId INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelExitPort INTEGER`,
+      `ALTER TABLE tunnels ADD COLUMN secret TEXT`,
     ];
 
     // 创建用户-主机权限表

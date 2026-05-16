@@ -58,7 +58,7 @@ type TunnelForm = {
   name: string;
   entryHostId: number | null;
   exitHostId: number | null;
-  mode: "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
+  mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   listenPort: number;
 };
 
@@ -66,11 +66,12 @@ const defaultForm: TunnelForm = {
   name: "",
   entryHostId: null,
   exitHostId: null,
-  mode: "tls",
+  mode: "forwardx",
   listenPort: 0,
 };
 
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
+  forwardx: "ForwardX",
   tls: "TLS",
   wss: "WSS",
   tcp: "TCP",
@@ -401,7 +402,7 @@ function TunnelsContent() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">隧道管理</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            使用两台公网 Agent 组建 gost 隧道，供转发规则复用
+            使用两台公网 Agent 组建加密隧道，供转发规则复用
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -563,7 +564,7 @@ function TunnelsContent() {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加隧道"}</DialogTitle>
-            <DialogDescription>入口 Agent 负责使用隧道，出口 Agent 提供 gost 出口服务。</DialogDescription>
+            <DialogDescription>入口 Agent 负责接入和加密，出口 Agent 解密后连接最终目标。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -596,6 +597,7 @@ function TunnelsContent() {
                 <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="forwardx">ForwardX</SelectItem>
                     <SelectItem value="tls">TLS</SelectItem>
                     <SelectItem value="wss">WSS</SelectItem>
                     <SelectItem value="tcp">TCP</SelectItem>

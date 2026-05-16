@@ -6,6 +6,7 @@ import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
 import net from "net";
+import crypto from "crypto";
 import { ENV } from "./env";
 import * as db from "./db";
 import { generateFullInstallScript, pushAgentRefresh, pushAgentUpgrade } from "./agentRoutes";
@@ -975,7 +976,7 @@ export const appRouter = router({
         name: z.string().min(1).max(128),
         entryHostId: z.number(),
         exitHostId: z.number(),
-        mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("tls"),
+        mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -1002,7 +1003,8 @@ export const appRouter = router({
           ) ?? 0;
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
-        const id = await db.createTunnel({ ...input, listenPort, userId: ctx.user.id });
+        const secret = crypto.randomBytes(32).toString("hex");
+        const id = await db.createTunnel({ ...input, listenPort, secret, userId: ctx.user.id } as any);
         pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         return { id, listenPort };
       }),
@@ -1012,7 +1014,7 @@ export const appRouter = router({
         name: z.string().min(1).max(128).optional(),
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
-        mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
+        mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
         listenPort: z.number().min(0).max(65535).optional(),
         isEnabled: z.boolean().optional(),
       }))
