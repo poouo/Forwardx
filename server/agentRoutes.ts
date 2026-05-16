@@ -416,15 +416,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             addr: `:${r.sourcePort}`,
             handler: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
             listener: { type: proto },
-            forwarder: { nodes: [] as any[] },
           };
           if (!tunnel) {
-            service.forwarder.nodes.push({
-              name: `target-${r.id}`,
-              addr: `${r.targetIp}:${r.targetPort}`,
-              connector: { type: proto },
-              dialer: { type: proto },
-            });
+            service.forwarder = {
+              nodes: [{
+                name: `target-${r.id}`,
+                addr: `${r.targetIp}:${r.targetPort}`,
+                connector: { type: proto },
+                dialer: { type: proto },
+              }],
+            };
           } else if (!tunnelExitHost || !(r as any).tunnelExitPort) {
             return null;
           }
