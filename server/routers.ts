@@ -117,6 +117,16 @@ async function requireTunnelAccess(ctx: { user: { id: number; role: string } }, 
   return tunnel;
 }
 
+async function requireTunnelUseAccess(ctx: { user: { id: number; role: string } }, tunnelId: number) {
+  const tunnel = await db.getTunnelById(tunnelId);
+  if (!tunnel) throw new Error("隧道不存在");
+  if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) {
+    const hasPermission = await db.checkUserTunnelPermission(ctx.user.id, tunnel.id);
+    if (!hasPermission) throw new Error("无权使用该隧道");
+  }
+  return tunnel;
+}
+
 function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const entryPushed = pushAgentRefresh(tunnel.entryHostId, `${reason}-entry`);
   const exitPushed = pushAgentRefresh(tunnel.exitHostId, `${reason}-exit`);
@@ -378,6 +388,20 @@ export const appRouter = router({
     allHostPermissions: adminProcedure.query(async () => {
       return db.getAllUserHostPermissions();
     }),
+    getTunnelPermissions: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getUserAllowedTunnelIds(input.userId);
+      }),
+    setTunnelPermissions: adminProcedure
+      .input(z.object({ userId: z.number(), tunnelIds: z.array(z.number()) }))
+      .mutation(async ({ input }) => {
+        await db.setUserTunnelPermissions(input.userId, input.tunnelIds);
+        return { success: true };
+      }),
+    allTunnelPermissions: adminProcedure.query(async () => {
+      return db.getAllUserTunnelPermissions();
+    }),
     /** 获取某用户的规则数和端口数 */
     getUserQuotaUsage: protectedProcedure
       .input(z.object({ userId: z.number() }))
@@ -404,6 +428,7 @@ export const appRouter = router({
         maxPorts: z.number().min(0).optional(),
         // 逗号分隔的转发方式列表；null 为全部允许
         allowedForwardTypes: z.string().nullable().optional(),
+        allowForwardXTunnel: z.boolean().optional(),
       }))
       .mutation(async ({ input }) => {
         const { userId, expiresAt, allowedForwardTypes, ...rest } = input;
@@ -576,11 +601,23 @@ export const appRouter = router({
     checkPort: protectedProcedure
       .input(z.object({
         hostId: z.number(),
+        tunnelId: z.number().nullable().optional(),
         sourcePort: z.number().min(1).max(65535),
         excludeRuleId: z.number().optional(),
       }))
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
+        let rangeStart: number | null | undefined;
+        let rangeEnd: number | null | undefined;
+        if (input.tunnelId) {
+          const tunnel = await requireTunnelUseAccess(ctx, input.tunnelId);
+          if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
+          rangeStart = (tunnel as any).portRangeStart;
+          rangeEnd = (tunnel as any).portRangeEnd;
+        }
+        if (rangeStart != null && rangeEnd != null && (input.sourcePort < rangeStart || input.sourcePort > rangeEnd)) {
+          return { used: true, reason: `端口必须在隧道允许范围 ${rangeStart}-${rangeEnd} 内` };
+        }
         if (input.excludeRuleId) {
           await requireRuleAccess(ctx, input.excludeRuleId);
         }
@@ -589,10 +626,18 @@ export const appRouter = router({
       }),
     /** 获取随机可用端口 */
     randomPort: protectedProcedure
-      .input(z.object({ hostId: z.number() }))
+      .input(z.object({ hostId: z.number(), tunnelId: z.number().nullable().optional() }))
       .query(async ({ input, ctx }) => {
         const host = await requireHostAccess(ctx, input.hostId);
-        const port = await db.findAvailablePort(input.hostId, (host as any).portRangeStart, (host as any).portRangeEnd);
+        let rangeStart = (host as any).portRangeStart;
+        let rangeEnd = (host as any).portRangeEnd;
+        if (input.tunnelId) {
+          const tunnel = await requireTunnelUseAccess(ctx, input.tunnelId);
+          if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
+          rangeStart = (tunnel as any).portRangeStart;
+          rangeEnd = (tunnel as any).portRangeEnd;
+        }
+        const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd);
         if (!port) throw new Error("该主机端口区间内已无可用端口");
         return { port };
       }),
@@ -657,16 +702,31 @@ export const appRouter = router({
           }
         }
 
+        const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
+        let selectedTunnelForRule: any = null;
+        if (tunnelId) {
+          selectedTunnelForRule = await requireTunnelUseAccess(ctx, tunnelId);
+          if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
+          if (selectedTunnelForRule.entryHostId !== input.hostId) {
+            throw new Error("Tunnel entry host must match the rule host");
+          }
+          if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx" && !(currentUser as any)?.allowForwardXTunnel) {
+            throw new Error("No permission to use custom encrypted tunnels");
+          }
+        }
+        const entryRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
+        const entryRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
+
         let sourcePort = input.sourcePort;
         // 源端口为 0 时随机分配
         if (sourcePort === 0) {
-          const randomPort = await db.findAvailablePort(input.hostId, (host as any).portRangeStart, (host as any).portRangeEnd);
+          const randomPort = await db.findAvailablePort(input.hostId, entryRangeStart, entryRangeEnd);
           if (!randomPort) throw new Error("该主机端口区间内已无可用端口");
           sourcePort = randomPort;
         } else {
           // 检查端口区间限制
-          const rangeStart = (host as any).portRangeStart;
-          const rangeEnd = (host as any).portRangeEnd;
+          const rangeStart = entryRangeStart;
+          const rangeEnd = entryRangeEnd;
           if (rangeStart != null && rangeEnd != null) {
             if (sourcePort < rangeStart || sourcePort > rangeEnd) {
               throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
@@ -681,7 +741,6 @@ export const appRouter = router({
 
         const gostRelayHost = input.forwardType === "gost" && input.gostMode === "reverse" ? (input.gostRelayHost || "").trim() : null;
         const gostRelayPort = input.forwardType === "gost" && input.gostMode === "reverse" ? input.gostRelayPort : null;
-        const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
         let tunnelExitPort: number | null = null;
         if (input.forwardType === "gost" && input.gostMode === "reverse") {
           if (!gostRelayHost) throw new Error("反向隧道需要填写中继地址");
@@ -689,7 +748,7 @@ export const appRouter = router({
         }
 
         if (tunnelId) {
-          const tunnel = await requireTunnelAccess(ctx, tunnelId);
+          const tunnel = selectedTunnelForRule ?? await requireTunnelUseAccess(ctx, tunnelId);
           if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
           if (tunnel.entryHostId !== input.hostId) {
             throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
@@ -732,11 +791,33 @@ export const appRouter = router({
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
 
         // 如果修改了源端口，检查端口区间和占用
+        let selectedTunnelForRule: any = null;
+        {
+          const nextForwardType = input.forwardType ?? rule.forwardType;
+          const nextGostMode = input.gostMode ?? (rule as any).gostMode ?? "direct";
+          const nextTunnelIdForRule = nextForwardType === "gost" && nextGostMode === "direct"
+            ? (input.tunnelId !== undefined ? input.tunnelId : (rule as any).tunnelId)
+            : null;
+          if (nextTunnelIdForRule) {
+            selectedTunnelForRule = await requireTunnelUseAccess(ctx, nextTunnelIdForRule);
+            if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
+            if (selectedTunnelForRule.entryHostId !== rule.hostId) {
+              throw new Error("Tunnel entry host must match the rule host");
+            }
+            if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx") {
+              const currentUser = await db.getUserById(ctx.user.id);
+              if (!(currentUser as any)?.allowForwardXTunnel) {
+                throw new Error("No permission to use custom encrypted tunnels");
+              }
+            }
+          }
+        }
+
         if (input.sourcePort && input.sourcePort !== rule.sourcePort) {
           const host = await db.getHostById(rule.hostId);
           if (host) {
-            const rangeStart = (host as any).portRangeStart;
-            const rangeEnd = (host as any).portRangeEnd;
+            const rangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
+            const rangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
             if (rangeStart != null && rangeEnd != null) {
               if (input.sourcePort < rangeStart || input.sourcePort > rangeEnd) {
                 throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
@@ -766,7 +847,7 @@ export const appRouter = router({
           (data as any).gostRelayPort = null;
           const nextTunnelId = data.tunnelId !== undefined ? data.tunnelId : (rule as any).tunnelId;
           if (nextTunnelId) {
-            const tunnel = await requireTunnelAccess(ctx, nextTunnelId);
+            const tunnel = selectedTunnelForRule ?? await requireTunnelUseAccess(ctx, nextTunnelId);
             if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
             if (tunnel.entryHostId !== rule.hostId) {
               throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
@@ -968,7 +1049,7 @@ export const appRouter = router({
   tunnels: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
-      return db.getTunnels(isAdmin ? undefined : ctx.user.id);
+      return isAdmin ? db.getTunnels() : db.getTunnelsForUser(ctx.user.id);
     }),
     latencySeries: protectedProcedure
       .input(z.object({
@@ -991,8 +1072,13 @@ export const appRouter = router({
         exitHostId: z.number(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
+        portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
+        portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        if (input.portRangeStart != null && input.portRangeEnd != null && input.portRangeStart > input.portRangeEnd) {
+          throw new Error("隧道可用端口范围起始值不能大于结束值");
+        }
         if (input.entryHostId === input.exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
         const entry = await requireHostAccess(ctx, input.entryHostId);
         const exit = await requireHostAccess(ctx, input.exitHostId);
@@ -1017,7 +1103,7 @@ export const appRouter = router({
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
         const secret = crypto.randomBytes(32).toString("hex");
-        const id = await db.createTunnel({ ...input, listenPort, secret, userId: ctx.user.id } as any);
+        const id = await db.createTunnel({ ...input, portRangeStart: input.portRangeStart ?? null, portRangeEnd: input.portRangeEnd ?? null, listenPort, secret, userId: ctx.user.id } as any);
         pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         return { id, listenPort };
       }),
@@ -1029,6 +1115,8 @@ export const appRouter = router({
         exitHostId: z.number().optional(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
         listenPort: z.number().min(0).max(65535).optional(),
+        portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
+        portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         isEnabled: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -1041,6 +1129,11 @@ export const appRouter = router({
         await requireHostAccess(ctx, entryHostId);
         const exit = await requireHostAccess(ctx, exitHostId);
         const { id, ...data } = input;
+        const nextPortRangeStart = (data as any).portRangeStart !== undefined ? (data as any).portRangeStart : (tunnel as any).portRangeStart;
+        const nextPortRangeEnd = (data as any).portRangeEnd !== undefined ? (data as any).portRangeEnd : (tunnel as any).portRangeEnd;
+        if (nextPortRangeStart != null && nextPortRangeEnd != null && nextPortRangeStart > nextPortRangeEnd) {
+          throw new Error("隧道可用端口范围起始值不能大于结束值");
+        }
         if ((data as any).listenPort !== undefined) {
           const listenPort = Number((data as any).listenPort) || 0;
           if (listenPort <= 0) {
@@ -1063,9 +1156,17 @@ export const appRouter = router({
             (data as any).listenPort = listenPort;
           }
         }
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
+        const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
+        if (enabledChanged) {
+          if ((data as any).isEnabled) {
+            await db.restoreForwardRulesByTunnel(id);
+          } else {
+            await db.disableForwardRulesByTunnel(id);
+          }
+        }
         if (keyChanged) await db.resetForwardRulesByTunnel(id);
         if (keyChanged) {
           pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");

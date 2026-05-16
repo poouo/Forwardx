@@ -21,6 +21,7 @@ import {
   CalendarClock,
   BarChart3,
   Info,
+  Network,
 } from "lucide-react";
 import {
   AreaChart,
@@ -246,7 +247,7 @@ function DashboardContent() {
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <BarChart3 className="h-4 w-4" />
               流量走势
-              <span className="text-[10px] text-muted-foreground/60 font-normal">最近 7 天</span>
+              <span className="text-[10px] text-muted-foreground/60 font-normal">最近 7 天 / 每 30 分钟</span>
             </CardTitle>
             <div className="flex items-center gap-3 text-[10px]">
               <span className="flex items-center gap-1">
@@ -261,7 +262,7 @@ function DashboardContent() {
           </div>
           <p className="text-[10px] text-muted-foreground/50 flex items-center gap-1 mt-1">
             <Info className="h-3 w-3" />
-            iptables 转发的流量统计最为准确，其他转发方式 (realm/socat/gost) 的流量统计可能存在偏差
+            按 Agent 上报的规则增量流量汇总展示；每个点为 30 分钟内所有可见规则的入站/出站合计。
           </p>
         </CardHeader>
         <CardContent>

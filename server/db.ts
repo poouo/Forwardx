@@ -15,6 +15,7 @@ import {
   agentTokens, InsertAgentToken,
   forwardTests, InsertForwardTest,
   userHostPermissions, InsertUserHostPermission,
+  userTunnelPermissions,
   systemSettings,
   tcpingStats, InsertTcpingStat,
   tunnelLatencyStats, InsertTunnelLatencyStat,
@@ -86,6 +87,7 @@ export async function initDatabase() {
         canAddRules INTEGER NOT NULL DEFAULT 0,
         trafficLimit INTEGER NOT NULL DEFAULT 0,
         trafficUsed INTEGER NOT NULL DEFAULT 0,
+        allowForwardXTunnel INTEGER NOT NULL DEFAULT 0,
         gostRateLimitIn INTEGER NOT NULL DEFAULT 0,
         gostRateLimitOut INTEGER NOT NULL DEFAULT 0,
         expiresAt INTEGER,
@@ -139,6 +141,7 @@ export async function initDatabase() {
         targetIp TEXT NOT NULL,
         targetPort INTEGER NOT NULL,
         isEnabled INTEGER NOT NULL DEFAULT 1,
+        disabledByTunnel INTEGER NOT NULL DEFAULT 0,
         isRunning INTEGER NOT NULL DEFAULT 0,
         pendingDelete INTEGER NOT NULL DEFAULT 0,
         userId INTEGER NOT NULL,
@@ -156,6 +159,8 @@ export async function initDatabase() {
         mode TEXT NOT NULL DEFAULT 'tls',
         secret TEXT,
         listenPort INTEGER NOT NULL,
+        portRangeStart INTEGER,
+        portRangeEnd INTEGER,
         isEnabled INTEGER NOT NULL DEFAULT 1,
         isRunning INTEGER NOT NULL DEFAULT 0,
         lastLatencyMs INTEGER,
@@ -273,13 +278,17 @@ export async function initDatabase() {
       `ALTER TABLE users ADD COLUMN maxPorts INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE hosts ADD COLUMN entryIp TEXT`,
       `ALTER TABLE users ADD COLUMN allowedForwardTypes TEXT`,
+      `ALTER TABLE users ADD COLUMN allowForwardXTunnel INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE forward_rules ADD COLUMN gostMode TEXT NOT NULL DEFAULT 'direct'`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayHost TEXT`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelId INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN tunnelExitPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN pendingDelete INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE forward_rules ADD COLUMN disabledByTunnel INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE tunnels ADD COLUMN secret TEXT`,
+      `ALTER TABLE tunnels ADD COLUMN portRangeStart INTEGER`,
+      `ALTER TABLE tunnels ADD COLUMN portRangeEnd INTEGER`,
     ];
 
     // 创建用户-主机权限表
@@ -293,6 +302,16 @@ export async function initDatabase() {
       );
       CREATE INDEX IF NOT EXISTS idx_uhp_user ON user_host_permissions(userId);
       CREATE INDEX IF NOT EXISTS idx_uhp_host ON user_host_permissions(hostId);
+
+      CREATE TABLE IF NOT EXISTS user_tunnel_permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId INTEGER NOT NULL,
+        tunnelId INTEGER NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(userId, tunnelId)
+      );
+      CREATE INDEX IF NOT EXISTS idx_utp_user ON user_tunnel_permissions(userId);
+      CREATE INDEX IF NOT EXISTS idx_utp_tunnel ON user_tunnel_permissions(tunnelId);
     `);
 
     // 创建系统设置表（k-v）
@@ -433,6 +452,7 @@ export async function getAllUsers() {
       maxRules: users.maxRules,
       maxPorts: users.maxPorts,
       allowedForwardTypes: users.allowedForwardTypes,
+      allowForwardXTunnel: users.allowForwardXTunnel,
       trafficLimit: users.trafficLimit,
       trafficUsed: users.trafficUsed,
       gostRateLimitIn: users.gostRateLimitIn,
@@ -472,6 +492,7 @@ export async function updateUserTrafficSettings(userId: number, data: {
   maxRules?: number;
   maxPorts?: number;
   allowedForwardTypes?: string | null;
+  allowForwardXTunnel?: boolean;
 }) {
   const db = await getDb();
   if (!db) return;
@@ -541,6 +562,7 @@ export async function getUserTrafficSummaries() {
     trafficUsed: users.trafficUsed,
     gostRateLimitIn: users.gostRateLimitIn,
     gostRateLimitOut: users.gostRateLimitOut,
+    allowForwardXTunnel: users.allowForwardXTunnel,
     expiresAt: users.expiresAt,
     trafficAutoReset: users.trafficAutoReset,
     trafficResetDay: users.trafficResetDay,
@@ -696,7 +718,7 @@ export async function markForwardRulePendingDelete(id: number) {
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ isEnabled, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  await db.update(forwardRules).set({ isEnabled, disabledByTunnel: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
 }
 
 export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
@@ -752,6 +774,7 @@ export async function deleteTunnel(id: number) {
   const db = await getDb();
   if (!db) return;
   await db.update(forwardRules).set({ tunnelId: null, isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, id));
+  await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.tunnelId, id));
   await db.delete(tunnels).where(eq(tunnels.id, id));
 }
 
@@ -759,6 +782,36 @@ export async function resetForwardRulesByTunnel(tunnelId: number) {
   const db = await getDb();
   if (!db) return;
   await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
+}
+
+export async function disableForwardRulesByTunnel(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({
+    isEnabled: false,
+    disabledByTunnel: true,
+    isRunning: false,
+    updatedAt: nowDate(),
+  }).where(and(
+    eq(forwardRules.tunnelId, tunnelId),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+  ));
+}
+
+export async function restoreForwardRulesByTunnel(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({
+    isEnabled: true,
+    disabledByTunnel: false,
+    isRunning: false,
+    updatedAt: nowDate(),
+  }).where(and(
+    eq(forwardRules.tunnelId, tunnelId),
+    eq(forwardRules.disabledByTunnel, true),
+    eq(forwardRules.pendingDelete, false),
+  ));
 }
 
 export async function findAvailableTunnelExitPort(
@@ -1268,6 +1321,7 @@ export async function deleteUserPermissions(userId: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+  await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
 }
 
 // ==================== User Rule/Port Count ====================
@@ -1360,6 +1414,59 @@ export async function insertTunnelLatencyStat(stat: InsertTunnelLatencyStat) {
   const db = await getDb();
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
+}
+
+export async function getAllUserTunnelPermissions(): Promise<Array<{ userId: number; tunnelId: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ userId: userTunnelPermissions.userId, tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions);
+}
+
+export async function getUserAllowedTunnelIds(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
+  return rows.map(r => r.tunnelId);
+}
+
+export async function getTunnelsForUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const owned = await db.select().from(tunnels).where(eq(tunnels.userId, userId));
+  const permRows = await db.select({ tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
+  if (permRows.length === 0) return owned.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+  const ids = new Set(permRows.map(r => r.tunnelId));
+  const all = await db.select().from(tunnels);
+  const merged = new Map<number, any>();
+  for (const tunnel of owned) merged.set(tunnel.id, tunnel);
+  for (const tunnel of all) {
+    if (ids.has(tunnel.id)) merged.set(tunnel.id, tunnel);
+  }
+  return Array.from(merged.values()).sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+}
+
+export async function setUserTunnelPermissions(userId: number, tunnelIds: number[]) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
+  if (tunnelIds.length > 0) {
+    await db.insert(userTunnelPermissions).values(tunnelIds.map(tunnelId => ({ userId, tunnelId })));
+  }
+}
+
+export async function checkUserTunnelPermission(userId: number, tunnelId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db.select().from(userTunnelPermissions).where(
+    and(eq(userTunnelPermissions.userId, userId), eq(userTunnelPermissions.tunnelId, tunnelId))
+  ).limit(1);
+  return rows.length > 0;
+}
+
+export async function deleteTunnelPermissions(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(userTunnelPermissions).where(eq(userTunnelPermissions.tunnelId, tunnelId));
 }
 
 export async function getTunnelLatencySeries(

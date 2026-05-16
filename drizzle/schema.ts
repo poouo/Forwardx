@@ -26,6 +26,7 @@ export const users = sqliteTable("users", {
   maxPorts: integer("maxPorts").notNull().default(0),       // 最大端口数，0 = 不限制（与 maxRules 相同概念，但可独立控制）
   // 允许使用的转发方式，逗号分隔："iptables,realm,socat"；null 或空串 = 全部允许
   allowedForwardTypes: text("allowedForwardTypes"),
+  allowForwardXTunnel: integer("allowForwardXTunnel", { mode: "boolean" }).notNull().default(false),
   gostRateLimitIn: integer("gostRateLimitIn").notNull().default(0),
   gostRateLimitOut: integer("gostRateLimitOut").notNull().default(0),
   // ===== 流量管理字段 =====
@@ -87,6 +88,7 @@ export const forwardRules = sqliteTable("forward_rules", {
   targetIp: text("targetIp").notNull(),
   targetPort: integer("targetPort").notNull(),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
+  disabledByTunnel: integer("disabledByTunnel", { mode: "boolean" }).notNull().default(false),
   isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),
   pendingDelete: integer("pendingDelete", { mode: "boolean" }).notNull().default(false),
   userId: integer("userId").notNull(),
@@ -105,6 +107,8 @@ export const tunnels = sqliteTable("tunnels", {
   mode: text("mode").notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
   secret: text("secret"),
   listenPort: integer("listenPort").notNull(),
+  portRangeStart: integer("portRangeStart"),
+  portRangeEnd: integer("portRangeEnd"),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
   isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),
   lastLatencyMs: integer("lastLatencyMs"),
@@ -216,3 +220,12 @@ export const userHostPermissions = sqliteTable("user_host_permissions", {
 });
 export type UserHostPermission = typeof userHostPermissions.$inferSelect;
 export type InsertUserHostPermission = typeof userHostPermissions.$inferInsert;
+
+export const userTunnelPermissions = sqliteTable("user_tunnel_permissions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("userId").notNull(),
+  tunnelId: integer("tunnelId").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type UserTunnelPermission = typeof userTunnelPermissions.$inferSelect;
+export type InsertUserTunnelPermission = typeof userTunnelPermissions.$inferInsert;

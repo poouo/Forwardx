@@ -55,8 +55,8 @@ import { toast } from "sonner";
 const mainMenuItems = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
   { icon: Server, label: "主机管理", path: "/hosts" },
-  { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
+  { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
 ];
 
 const adminMenuItems = [

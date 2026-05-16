@@ -135,6 +135,7 @@ function SettingsContent() {
     return tab === "system" || tab === "logs" || tab === "install" || tab === "backup" || tab === "tokens" ? tab : "tokens";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
 
   useEffect(() => {
     if (user && user.role !== "admin") {
@@ -432,8 +433,7 @@ function SettingsContent() {
                                 size="icon"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
                                 onClick={() => {
-                                  if (confirm("确定要删除此 Token 吗？已使用的 Token 会从关联主机解除绑定，但不会删除主机。"))
-                                    deleteTokenMutation.mutate({ id: t.id });
+                                  setTokenToDelete(t);
                                 }}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
@@ -826,6 +826,42 @@ function SettingsContent() {
               })}
             >
               {updateTokenMutation.isPending ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Token Confirm Dialog */}
+      <Dialog open={!!tokenToDelete} onOpenChange={(open) => !open && setTokenToDelete(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              删除 Agent Token
+            </DialogTitle>
+            <DialogDescription>
+              删除后，使用该 Token 注册的主机会解除绑定并显示为离线，但主机记录不会被删除。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/50 bg-muted/30 p-3 text-sm">
+            <div className="font-mono break-all">{tokenToDelete?.token}</div>
+            {tokenToDelete?.description && (
+              <div className="mt-2 text-xs text-muted-foreground">{tokenToDelete.description}</div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTokenToDelete(null)}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteTokenMutation.isPending || !tokenToDelete}
+              onClick={() => {
+                if (!tokenToDelete) return;
+                const id = tokenToDelete.id;
+                setTokenToDelete(null);
+                deleteTokenMutation.mutate({ id });
+              }}
+            >
+              {deleteTokenMutation.isPending ? "删除中..." : "确认删除"}
             </Button>
           </DialogFooter>
         </DialogContent>
