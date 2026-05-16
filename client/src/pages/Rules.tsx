@@ -1378,13 +1378,16 @@ function SelfTestDialog({
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
+            className="min-w-[112px] gap-2"
             disabled={startMutation.isPending}
             onClick={() => {
               setOptimisticTesting(true);
               startMutation.mutate({ ruleId });
             }}
           >
-            {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4 mr-1" />}
+            <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+              {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+            </span>
             运行测试
           </Button>
         </DialogFooter>
