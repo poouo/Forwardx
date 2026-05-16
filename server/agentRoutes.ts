@@ -512,8 +512,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             nodes: [{
               name: `target-${rule.id}`,
               addr: `${rule.targetIp}:${rule.targetPort}`,
-              connector: { type: "forward" },
-              dialer: { type: proto },
             }],
           },
         }));
