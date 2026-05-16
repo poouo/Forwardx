@@ -19,9 +19,13 @@ const agentEventClients = new Map<number, AgentEventClient>();
 
 function sendAgentEvent(hostId: number, event: string, data: any) {
   const client = agentEventClients.get(hostId);
-  if (!client) return false;
+  if (!client) {
+    console.warn(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
+    return false;
+  }
   client.res.write(`event: ${event}\n`);
   client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+  console.info(`[AgentEvent] host=${hostId} event=${event} pushed`);
   return true;
 }
 
@@ -148,6 +152,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
     const previous = agentEventClients.get(host.id);
     previous?.res.end();
     agentEventClients.set(host.id, { hostId: host.id, token, res });
+    console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
     res.write(`event: ready\n`);
     res.write(`data: {"success":true}\n\n`);
 
@@ -162,6 +167,7 @@ agentRouter.get("/api/agent/events", async (req: Request, res: Response) => {
       if (current?.res === res) {
         agentEventClients.delete(host.id);
       }
+      console.info(`[AgentEvent] host=${host.id} disconnected`);
     });
   } catch (error) {
     console.error("[Agent Events] Error:", error);
@@ -350,15 +356,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
-    const tunnelTargetAddress = async (tunnel: any) => {
+    const tunnelExitHostAddress = async (tunnel: any) => {
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
-      return `${((exit as any).entryIp && String((exit as any).entryIp).trim()) || exit.ip}:${tunnel.listenPort}`;
+      return ((exit as any).entryIp && String((exit as any).entryIp).trim()) || exit.ip || "";
     };
-    const tunnelAddressById = new Map<number, string>();
+    const tunnelExitHostById = new Map<number, string>();
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.entryHostId === host.id && tunnel.isEnabled) {
-        tunnelAddressById.set(tunnel.id, await tunnelTargetAddress(tunnel));
+        tunnelExitHostById.set(tunnel.id, await tunnelExitHostAddress(tunnel));
       }
     }
     const tunnelExitRules = (await db.getForwardRules(undefined))
@@ -394,10 +400,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             forwarder: { nodes: [] as any[] },
           };
           const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
-          const tunnelAddr = tunnel ? tunnelAddressById.get(tunnel.id) : "";
+          const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
           service.forwarder.nodes.push({
             name: `target-${r.id}`,
-            addr: tunnel && tunnelAddr && (r as any).tunnelExitPort ? `${tunnelAddr.split(":").slice(0, -1).join(":")}:${(r as any).tunnelExitPort}` : `${r.targetIp}:${r.targetPort}`,
+            addr: tunnel && tunnelExitHost && (r as any).tunnelExitPort ? `${tunnelExitHost}:${(r as any).tunnelExitPort}` : `${r.targetIp}:${r.targetPort}`,
             connector: { type: proto },
             dialer: tunnel ? {
               type: tunnelProtocolType(tunnel.mode),
@@ -518,9 +524,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
 
+    const pendingTunnelExitRuleIds = new Set(
+      tunnelExitRules
+        .filter((rule: any) => !rule.isRunning)
+        .map((rule: any) => Number(rule.tunnelId))
+    );
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.exitHostId !== host.id) continue;
-      if (tunnel.isEnabled && !tunnel.isRunning) {
+      if (tunnel.isEnabled && (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)))) {
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",

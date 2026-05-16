@@ -162,11 +162,12 @@ async function startServer() {
   const port = await findAvailablePort(preferredPort);
 
   if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+    console.warn(`[Server] Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
   server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+    console.info(`Server running on http://localhost:${port}/`);
+    console.info(`[Server] ForwardX panel started on port ${port}`);
   });
 
   // 启动定时任务

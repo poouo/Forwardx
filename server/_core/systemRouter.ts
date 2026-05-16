@@ -4,7 +4,7 @@ import * as db from "../db";
 import { ENV } from "../env";
 import { spawn } from "child_process";
 import fs from "fs";
-import { clearPanelLogs, getPanelLogs } from "./panelLogger";
+import { clearPanelLogs, getPanelLogs, getPanelLogSummary } from "./panelLogger";
 
 /**
  * 系统级别 router：
@@ -16,7 +16,7 @@ import { clearPanelLogs, getPanelLogs } from "./panelLogger";
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.1.38";
+export const APP_VERSION = "2.1.39";
 export const AGENT_VERSION = "2.1.36";
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
@@ -237,13 +237,21 @@ export const systemRouter = router({
         // 去除尾部斜杠
         const normalized = v.replace(/\/+$/, "");
         await db.setSetting("panelPublicUrl", normalized || null);
+        console.info(`[Settings] panelPublicUrl ${normalized ? "updated" : "cleared"}`);
       }
       return { success: true };
     }),
 
   /** 检查 GitHub 是否有新版本 */
   checkUpdate: adminProcedure.query(async () => {
-    return getLatestUpdateInfoCached();
+    console.info("[Update] Checking latest version");
+    const info = await getLatestUpdateInfoCached();
+    if (info.error) {
+      console.warn(`[Update] Check failed: ${info.error}`);
+    } else {
+      console.info(`[Update] Current v${APP_VERSION}, latest ${info.latestVersion || "unknown"}`);
+    }
+    return info;
   }),
 
   /** 获取上次检查结果和升级任务状态 */
@@ -260,15 +268,21 @@ export const systemRouter = router({
   }),
 
   /** 启动后台升级任务。实际命令由 FORWARDX_UPGRADE_COMMAND 提供。 */
-  panelLogs: adminProcedure.query(() => {
-    return {
-      logs: getPanelLogs(),
-      checkedAt: new Date().toISOString(),
-    };
-  }),
+  panelLogs: adminProcedure
+    .input(z.object({ level: z.enum(["all", "log", "info", "warn", "error"]).default("all") }).optional())
+    .query(({ input }) => {
+      const level = input?.level || "all";
+      const logs = getPanelLogs();
+      return {
+        logs: level === "all" ? logs : logs.filter((entry) => entry.level === level),
+        summary: getPanelLogSummary(),
+        checkedAt: new Date().toISOString(),
+      };
+    }),
 
   clearPanelLogs: adminProcedure.mutation(() => {
     clearPanelLogs();
+    console.info("[PanelLogs] Cleared panel logs");
     return { success: true };
   }),
   startUpgrade: adminProcedure
@@ -276,9 +290,11 @@ export const systemRouter = router({
     .mutation(async ({ input }) => {
       const command = normalizeUpgradeCommand(ENV.upgradeCommand);
       if (!command) {
+        console.warn("[Upgrade] Start requested but FORWARDX_UPGRADE_COMMAND is not configured");
         throw new Error("未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查更新，不能自动升级");
       }
       if (upgradeJob.status === "running") {
+        console.warn("[Upgrade] Start requested while another upgrade is running");
         throw new Error("已有升级任务正在执行");
       }
 
@@ -296,6 +312,7 @@ export const systemRouter = router({
       if (compareVersions(targetVersion, APP_VERSION) <= 0) {
         throw new Error("Already on the latest version");
       }
+      console.info(`[Upgrade] Starting panel upgrade current=v${APP_VERSION} target=${targetVersion}`);
 
       upgradeJob = {
         status: "running",
@@ -327,6 +344,7 @@ export const systemRouter = router({
         upgradeJob.status = "error";
         upgradeJob.error = `${err.message}. Please run the one-click script manually.`;
         upgradeJob.finishedAt = new Date().toISOString();
+        console.error(`[Upgrade] Failed to start upgrade command: ${err.message}`);
         appendUpgradeLog(`[ForwardX] Upgrade command failed to start: ${err.message}`);
         appendManualUpgradeHint();
       });
@@ -334,10 +352,12 @@ export const systemRouter = router({
         upgradeJob.finishedAt = new Date().toISOString();
         if (code === 0) {
           upgradeJob.status = "success";
+          console.info(`[Upgrade] Panel upgrade command completed target=${targetVersion}`);
           appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
         } else {
           upgradeJob.status = "error";
           upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;
+          console.error(`[Upgrade] Panel upgrade failed target=${targetVersion} exitCode=${code}`);
           appendUpgradeLog(`[ForwardX] Upgrade failed, exit code: ${code}`);
           appendManualUpgradeHint();
         }

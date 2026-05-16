@@ -116,6 +116,16 @@ async function requireTunnelAccess(ctx: { user: { id: number; role: string } }, 
   return tunnel;
 }
 
+function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
+  const entryPushed = pushAgentRefresh(tunnel.entryHostId, `${reason}-entry`);
+  const exitPushed = pushAgentRefresh(tunnel.exitHostId, `${reason}-exit`);
+  appendPanelLog(
+    entryPushed && exitPushed ? "info" : "warn",
+    `[Tunnel] refresh tunnel=${tunnel.id} reason=${reason} entryHost=${tunnel.entryHostId} pushed=${entryPushed} exitHost=${tunnel.exitHostId} pushed=${exitPushed}`
+  );
+  return { entryPushed, exitPushed };
+}
+
 function maskToken(token: string) {
   if (!token) return "";
   if (token.length <= 12) return `${token.slice(0, 4)}...`;
@@ -677,7 +687,11 @@ export const appRouter = router({
         }
 
         const id = await db.createForwardRule({ ...input, sourcePort, gostRelayHost, gostRelayPort, tunnelId, tunnelExitPort, userId: ctx.user.id });
-        if (tunnelId) await db.updateTunnel(tunnelId, { isRunning: false } as any);
+        if (tunnelId) {
+          const tunnel = await db.getTunnelById(tunnelId);
+          await db.updateTunnel(tunnelId, { isRunning: false } as any);
+          if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
+        }
         return { id, sourcePort };
       }),
     update: protectedProcedure
@@ -776,7 +790,9 @@ export const appRouter = router({
           if ((rule as any).tunnelId) affectedTunnelIds.add((rule as any).tunnelId);
           if ((data as any).tunnelId) affectedTunnelIds.add((data as any).tunnelId);
           for (const affectedTunnelId of affectedTunnelIds) {
+            const affectedTunnel = await db.getTunnelById(affectedTunnelId);
             await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
+            if (affectedTunnel) pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
           }
         }
         await db.updateForwardRule(id, data);
@@ -788,7 +804,11 @@ export const appRouter = router({
         const rule = await db.getForwardRuleById(input.id);
         if (!rule) throw new Error("规则不存在");
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
-        if ((rule as any).tunnelId) await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+        if ((rule as any).tunnelId) {
+          const tunnel = await db.getTunnelById((rule as any).tunnelId);
+          await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+          if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-deleted");
+        }
         await db.deleteForwardRule(input.id);
         return { success: true };
       }),
@@ -798,7 +818,11 @@ export const appRouter = router({
         const rule = await db.getForwardRuleById(input.id);
         if (!rule) throw new Error("规则不存在");
         if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) throw new Error("无权操作此规则");
-        if ((rule as any).tunnelId) await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+        if ((rule as any).tunnelId) {
+          const tunnel = await db.getTunnelById((rule as any).tunnelId);
+          await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
+          if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
+        }
         if (input.isEnabled) {
           await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false });
         } else {
@@ -970,7 +994,7 @@ export const appRouter = router({
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
         const id = await db.createTunnel({ ...input, listenPort, userId: ctx.user.id });
-        pushAgentRefresh(input.exitHostId, "tunnel-created");
+        pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         return { id, listenPort };
       }),
     update: protectedProcedure
@@ -1020,7 +1044,8 @@ export const appRouter = router({
         await db.updateTunnel(id, data as any);
         if (keyChanged) await db.resetForwardRulesByTunnel(id);
         if (keyChanged) {
-          pushAgentRefresh(exitHostId, "tunnel-updated");
+          pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
+          if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
           if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
         }
         return { success: true, reset: keyChanged };
@@ -1031,6 +1056,7 @@ export const appRouter = router({
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
         await db.deleteTunnel(input.id);
         return { success: true };
       }),

@@ -45,6 +45,15 @@ export function getPanelLogs() {
   return logs;
 }
 
+export function getPanelLogSummary() {
+  trimLogs();
+  return logs.reduce<Record<string, number>>((acc, entry) => {
+    acc[entry.level] = (acc[entry.level] || 0) + 1;
+    acc.all = (acc.all || 0) + 1;
+    return acc;
+  }, { all: 0, log: 0, info: 0, warn: 0, error: 0 });
+}
+
 export function clearPanelLogs() {
   logs = [];
 }
