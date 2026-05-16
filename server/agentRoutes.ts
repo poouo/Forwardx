@@ -628,8 +628,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.exitHostId !== host.id) continue;
-      if (tunnel.isEnabled && (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)))) {
-        const fxpTunnel = isForwardXTunnel(tunnel);
+      const fxpTunnel = isForwardXTunnel(tunnel);
+      const shouldRefreshExit = fxpTunnel
+        ? !tunnel.isRunning
+        : (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)));
+      if (tunnel.isEnabled && shouldRefreshExit) {
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",
@@ -651,7 +654,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } : undefined,
         });
       } else if (!tunnel.isEnabled && tunnel.isRunning) {
-        const fxpTunnel = isForwardXTunnel(tunnel);
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",

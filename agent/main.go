@@ -28,7 +28,7 @@ import (
 	"github.com/zeebo/blake3"
 )
 
-var Version = "2.1.43"
+var Version = "2.1.44"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpServer{}
@@ -640,6 +640,15 @@ func startFXP(spec fxpSpec) bool {
 		logf("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 		return false
 	}
+	id := fxpServerID(spec)
+	fxpMu.Lock()
+	existing := fxpServers[id]
+	if existing != nil && existing.key == spec.Key {
+		fxpMu.Unlock()
+		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
+		return true
+	}
+	fxpMu.Unlock()
 	stopFXP(spec)
 	addr := ":" + strconv.Itoa(spec.ListenPort)
 	var ln net.Listener
@@ -663,7 +672,6 @@ func startFXP(spec fxpSpec) bool {
 			return false
 		}
 	}
-	id := fxpServerID(spec)
 	fxpMu.Lock()
 	fxpServers[id] = &fxpServer{key: spec.Key, ln: ln, pc: pc}
 	fxpMu.Unlock()
