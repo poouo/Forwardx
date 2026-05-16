@@ -924,17 +924,34 @@ export const appRouter = router({
         entryHostId: z.number(),
         exitHostId: z.number(),
         mode: z.enum(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("tls"),
-        listenPort: z.number().min(1).max(65535),
+        listenPort: z.number().min(0).max(65535).optional().default(0),
       }))
       .mutation(async ({ input, ctx }) => {
         if (input.entryHostId === input.exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
         const entry = await requireHostAccess(ctx, input.entryHostId);
         const exit = await requireHostAccess(ctx, input.exitHostId);
         if (!entry || !exit) throw new Error("主机不存在");
-        const used = await db.isPortUsedOnHost(input.exitHostId, input.listenPort);
-        if (used) throw new Error(`出口 Agent 端口 ${input.listenPort} 已被转发规则占用`);
-        const id = await db.createTunnel({ ...input, userId: ctx.user.id });
-        return { id };
+        let listenPort = Number(input.listenPort) || 0;
+        if (listenPort > 0) {
+          const start = (exit as any).portRangeStart;
+          const end = (exit as any).portRangeEnd;
+          if (start != null && end != null && (listenPort < start || listenPort > end)) {
+            throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
+          }
+          const used = await db.isPortUsedOnHost(input.exitHostId, listenPort);
+          if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
+          const tunnelUsed = await db.isTunnelListenPortUsed(input.exitHostId, listenPort);
+          if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
+        } else {
+          listenPort = await db.findAvailableTunnelExitPort(
+            input.exitHostId,
+            (exit as any).portRangeStart,
+            (exit as any).portRangeEnd,
+          ) ?? 0;
+          if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+        }
+        const id = await db.createTunnel({ ...input, listenPort, userId: ctx.user.id });
+        return { id, listenPort };
       }),
     update: protectedProcedure
       .input(z.object({
@@ -954,8 +971,30 @@ export const appRouter = router({
         const exitHostId = input.exitHostId ?? tunnel.exitHostId;
         if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
         await requireHostAccess(ctx, entryHostId);
-        await requireHostAccess(ctx, exitHostId);
+        const exit = await requireHostAccess(ctx, exitHostId);
         const { id, ...data } = input;
+        if ((data as any).listenPort !== undefined) {
+          const listenPort = Number((data as any).listenPort) || 0;
+          if (listenPort <= 0) {
+            (data as any).listenPort = await db.findAvailableTunnelExitPort(
+              exitHostId,
+              (exit as any).portRangeStart,
+              (exit as any).portRangeEnd,
+            );
+            if (!(data as any).listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+          } else {
+            const start = (exit as any).portRangeStart;
+            const end = (exit as any).portRangeEnd;
+            if (start != null && end != null && (listenPort < start || listenPort > end)) {
+              throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
+            }
+            const used = await db.isPortUsedOnHost(exitHostId, listenPort);
+            if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
+            const tunnelUsed = await db.isTunnelListenPortUsed(exitHostId, listenPort, id);
+            if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
+            (data as any).listenPort = listenPort;
+          }
+        }
         const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

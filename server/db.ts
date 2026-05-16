@@ -738,10 +738,17 @@ export async function findAvailableTunnelExitPort(
   usedExitPorts.forEach((r) => {
     if (r.port != null) used.add(Number(r.port));
   });
-  for (let port = start; port <= end; port++) {
+  for (let port = end; port >= start; port--) {
     if (!used.has(port)) return port;
   }
   return null;
+}
+
+export async function isTunnelListenPortUsed(exitHostId: number, listenPort: number, excludeTunnelId?: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db.select({ id: tunnels.id }).from(tunnels).where(and(eq(tunnels.exitHostId, exitHostId), eq(tunnels.listenPort, listenPort)));
+  return rows.some((row) => row.id !== excludeTunnelId);
 }
 
 export async function updateTunnelRunningStatus(id: number, isRunning: boolean) {

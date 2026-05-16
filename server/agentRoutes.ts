@@ -442,7 +442,26 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ];
     };
     const buildTunnelReloadCmds = () => {
-      const services = tunnelExitRules.flatMap((rule: any) => {
+      const tunnelProbeServices = hostTunnels
+        .filter((tunnel: any) => tunnel.exitHostId === host.id && tunnel.isEnabled)
+        .map((tunnel: any) => ({
+          name: `fwx-tunnel-probe-${tunnel.id}`,
+          addr: `:${tunnel.listenPort}`,
+          handler: { type: "tcp" },
+          listener: {
+            type: tunnelProtocolType(tunnel.mode),
+            ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+          },
+          forwarder: {
+            nodes: [{
+              name: `probe-${tunnel.id}`,
+              addr: "127.0.0.1:9",
+              connector: { type: "tcp" },
+              dialer: { type: "tcp" },
+            }],
+          },
+        }));
+      const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !rule.tunnelExitPort) return [];
         const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
@@ -464,6 +483,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           },
         }));
       });
+      const services = [...tunnelProbeServices, ...ruleServices];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       return [
         `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,

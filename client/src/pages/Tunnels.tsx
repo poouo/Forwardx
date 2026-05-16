@@ -79,16 +79,6 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   mtcp: "MTCP",
 };
 
-function tunnelTestMessage(data: any) {
-  const message = String(data?.message || "");
-  if (message === "EXIT_AGENT_NOT_APPLIED") return "出口 Agent 尚未应用隧道配置，请等待 Agent 回连";
-  if (message.startsWith("TUNNEL_LINK_TEST_PENDING ")) return "已下发给入口 Agent，正在测试入口到出口延迟";
-  if (message.startsWith("TUNNEL_EXIT_REACHABLE ")) return `入口到出口可达，延迟 ${data?.latencyMs ?? "-"}ms`;
-  if (message.startsWith("TUNNEL_EXIT_UNREACHABLE ")) return "入口到出口不可达，详情可在面板日志查看";
-  if (message.startsWith("TUNNEL_TEST_TARGET_INVALID")) return "隧道测试目标无效，请检查出口 Agent 地址和监听端口";
-  return message || (data?.success ? `入口到出口可达，延迟 ${data?.latencyMs ?? "-"}ms` : "隧道链路测试失败");
-}
-
 function formatTunnelLatencyTime(value: string | Date) {
   const d = new Date(value);
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -209,6 +199,113 @@ function TunnelLatencyDialog({
   );
 }
 
+function TunnelSelfTestDialog({
+  tunnelId,
+  tunnelName,
+  open,
+  onOpenChange,
+}: {
+  tunnelId: number;
+  tunnelName: string;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const utils = trpc.useUtils();
+  const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
+    enabled: open,
+    refetchInterval: open ? 1500 : false,
+    refetchOnWindowFocus: false,
+  });
+  const tunnel = useMemo(() => tunnels?.find((item: any) => item.id === tunnelId), [tunnels, tunnelId]);
+  const testMutation = trpc.tunnels.test.useMutation({
+    onSuccess: async () => {
+      await utils.tunnels.list.invalidate();
+    },
+    onError: (e) => toast.error(e.message || "测试失败"),
+  });
+
+  const status = tunnel?.lastTestStatus as string | undefined;
+  const isTesting = testMutation.isPending || status === "pending";
+  const isSuccess = status === "success";
+  const isFailed = status === "failed";
+  const latencyMs = tunnel?.lastLatencyMs;
+
+  const statusView = (() => {
+    if (isTesting) {
+      return (
+        <span className="flex items-center gap-2 text-amber-600">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          正在测试中
+        </span>
+      );
+    }
+    if (isSuccess) {
+      return (
+        <span className="flex items-center gap-2 text-emerald-600">
+          <CheckCircle2 className="h-4 w-4" />
+          正常
+        </span>
+      );
+    }
+    if (isFailed) {
+      return (
+        <span className="flex items-center gap-2 text-destructive">
+          <XCircle className="h-4 w-4" />
+          异常
+        </span>
+      );
+    }
+    return <span className="text-muted-foreground">尚未运行</span>;
+  })();
+
+  const reachableView = (() => {
+    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
+    if (isSuccess) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
+    if (isFailed) return <XCircle className="h-4 w-4 text-destructive" />;
+    return <span className="text-muted-foreground">--</span>;
+  })();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>隧道链路自测 - {tunnelName}</DialogTitle>
+          <DialogDescription>检测入口 Agent 到出口 Agent 监听端口的 TCP 可达性和延迟。</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">状态</span>
+            <span className="text-sm font-medium">{statusView}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">入口到出口可达</span>
+            <span className="text-sm font-medium">{reachableView}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">TCP 延迟</span>
+            <span className="text-sm font-semibold tabular-nums">
+              {isTesting ? "正在测试中" : isSuccess && latencyMs !== null && latencyMs !== undefined ? `${latencyMs} ms` : "--"}
+            </span>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button
+            onClick={() => testMutation.mutate({ id: tunnelId })}
+            disabled={testMutation.isPending}
+            className="gap-2"
+          >
+            {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+            运行测试
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TunnelsContent() {
   const utils = trpc.useUtils();
   const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 10000 });
@@ -217,6 +314,7 @@ function TunnelsContent() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
+  const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
 
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning).length ?? 0, [tunnels]);
   const getHostName = (id: number) => hosts?.find((h: any) => h.id === id)?.name || `主机 #${id}`;
@@ -275,20 +373,9 @@ function TunnelsContent() {
     onError: (e) => toast.error(e.message || "删除失败"),
   });
 
-  const testMutation = trpc.tunnels.test.useMutation({
-    onSuccess: (data) => {
-      utils.tunnels.list.invalidate();
-      const message = tunnelTestMessage(data);
-      if ((data as any).pending) toast.info(message);
-      else if (data.success) toast.success(message);
-      else toast.error(message);
-    },
-    onError: (e) => toast.error(e.message || "测试失败"),
-  });
-
   const handleSubmit = () => {
-    if (!form.name || !form.entryHostId || !form.exitHostId || !form.listenPort) {
-      toast.error("请填写隧道名称、两台 Agent 和监听端口");
+    if (!form.name || !form.entryHostId || !form.exitHostId) {
+      toast.error("请填写隧道名称和两台 Agent");
       return;
     }
     if (form.entryHostId === form.exitHostId) {
@@ -417,9 +504,9 @@ function TunnelsContent() {
                             size="icon"
                             className="h-8 w-8"
                             title="测试入口到出口延迟"
-                            onClick={() => testMutation.mutate({ id: tunnel.id })}
+                            onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}
                           >
-                            {testMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}
+                            <Stethoscope className="h-3.5 w-3.5" />
                           </Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(tunnel)}>
                             <Pencil className="h-3.5 w-3.5" />
@@ -461,6 +548,14 @@ function TunnelsContent() {
           tunnelName={latencyTunnel.name}
           open={!!latencyTunnel}
           onOpenChange={(open) => !open && setLatencyTunnel(null)}
+        />
+      )}
+      {testTunnel && (
+        <TunnelSelfTestDialog
+          tunnelId={testTunnel.id}
+          tunnelName={testTunnel.name}
+          open={!!testTunnel}
+          onOpenChange={(open) => !open && setTestTunnel(null)}
         />
       )}
 
@@ -512,7 +607,8 @@ function TunnelsContent() {
               </div>
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
-                <Input type="number" value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="例如: 18080" />
+                <Input type="number" value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                <p className="text-xs text-muted-foreground">可留空，面板会按出口 Agent 的端口范围自动选择高位可用端口。</p>
               </div>
             </div>
           </div>
