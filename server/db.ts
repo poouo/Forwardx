@@ -127,7 +127,7 @@ export async function initDatabase() {
         hostId INTEGER NOT NULL,
         name TEXT NOT NULL,
         forwardType TEXT NOT NULL DEFAULT 'iptables',
-        protocol TEXT NOT NULL DEFAULT 'tcp',
+        protocol TEXT NOT NULL DEFAULT 'both',
         gostMode TEXT NOT NULL DEFAULT 'direct',
         gostRelayHost TEXT,
         gostRelayPort INTEGER,

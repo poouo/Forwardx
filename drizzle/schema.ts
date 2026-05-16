@@ -75,7 +75,7 @@ export const forwardRules = sqliteTable("forward_rules", {
   hostId: integer("hostId").notNull(),
   name: text("name").notNull(),
   forwardType: text("forwardType").notNull().default("iptables"), // 'iptables' | 'realm' | 'socat'
-  protocol: text("protocol").notNull().default("tcp"), // 'tcp' | 'udp' | 'both'
+  protocol: text("protocol").notNull().default("both"), // 'tcp' | 'udp' | 'both'
   gostMode: text("gostMode").notNull().default("direct"), // 'direct' | 'reverse'
   gostRelayHost: text("gostRelayHost"),
   gostRelayPort: integer("gostRelayPort"),

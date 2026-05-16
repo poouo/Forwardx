@@ -574,7 +574,7 @@ export const appRouter = router({
         hostId: z.number(),
         name: z.string().min(1).max(128),
         forwardType: forwardTypeSchema.default("iptables"),
-        protocol: z.enum(["tcp", "udp", "both"]).default("tcp"),
+        protocol: z.enum(["tcp", "udp", "both"]).default("both"),
         gostMode: z.enum(["direct", "reverse"]).default("direct"),
         gostRelayHost: z.string().max(128).nullable().optional(),
         gostRelayPort: z.number().min(1).max(65535).nullable().optional(),

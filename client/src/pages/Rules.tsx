@@ -101,7 +101,7 @@ const defaultForm: RuleFormData = {
   name: "",
   routeMode: "local",
   forwardType: "iptables",
-  protocol: "tcp",
+  protocol: "both",
   gostMode: "direct",
   gostRelayHost: "",
   gostRelayPort: 0,
@@ -257,9 +257,11 @@ function RulesContent() {
     return hosts.find(h => h.id === form.hostId) || null;
   }, [form.hostId, hosts]);
   const availableTunnels = useMemo(() => {
-    if (!form.hostId || !tunnels) return [];
+    if (!tunnels) return [];
+    if (form.routeMode === "tunnel") return tunnels;
+    if (!form.hostId) return [];
     return tunnels.filter((t: any) => t.entryHostId === form.hostId);
-  }, [form.hostId, tunnels]);
+  }, [form.hostId, form.routeMode, tunnels]);
   const selectedTunnel = useMemo(() => {
     if (!form.tunnelId || !tunnels) return null;
     return tunnels.find((t: any) => t.id === form.tunnelId) || null;
@@ -757,6 +759,53 @@ function RulesContent() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {form.routeMode === "tunnel" && (
+              <div className="space-y-3 rounded-lg border border-chart-4/20 bg-chart-4/5 p-3">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                  <div className="space-y-2">
+                    <Label>使用隧道</Label>
+                    <Select
+                      value={form.tunnelId ? String(form.tunnelId) : "none"}
+                      disabled={availableTunnels.length === 0}
+                      onValueChange={(v) => {
+                        const nextTunnelId = v === "none" ? null : Number(v);
+                        const tunnel = nextTunnelId ? tunnels?.find((t: any) => t.id === nextTunnelId) : null;
+                        setForm({ ...form, tunnelId: nextTunnelId, hostId: tunnel ? tunnel.entryHostId : null });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">请选择隧道</SelectItem>
+                        {availableTunnels.map((t: any) => (
+                          <SelectItem key={t.id} value={String(t.id)}>
+                            {t.name} / {getHostName(t.entryHostId)} → {getHostName(t.exitHostId)} / {String(t.mode).toUpperCase()}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-chart-4/30 px-3 text-chart-4">
+                    <Network className="h-3.5 w-3.5" />
+                    gost
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  所属主机由隧道入口 Agent 自动决定，流量经隧道送到出口 Agent 后再连接最终目标。
+                </p>
+                {availableTunnels.length === 0 && (
+                  <p className="text-xs text-amber-600">暂无可用隧道，请先在隧道管理中创建隧道。</p>
+                )}
+                {selectedTunnel && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>{getHostName(selectedTunnel.entryHostId)}</span>
+                    <ArrowRight className="h-3 w-3" />
+                    <span>{getHostName(selectedTunnel.exitHostId)}</span>
+                    <code className="rounded bg-background/60 px-1.5 py-0.5">:{selectedTunnel.listenPort}</code>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>规则名称</Label>
@@ -768,22 +817,28 @@ function RulesContent() {
               </div>
               <div className="space-y-2">
                 <Label>所属主机</Label>
-                <Select
-                  value={form.hostId ? String(form.hostId) : ""}
-                  onValueChange={(v) => setForm({ ...form, hostId: parseInt(v), tunnelId: null })}
-                  disabled={!!editingId}
-                >
-                  <SelectTrigger><SelectValue placeholder="选择主机" /></SelectTrigger>
-                  <SelectContent>
-                    {hosts?.map((h) => (
-                      <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {form.routeMode === "tunnel" ? (
+                  <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
+                    {selectedTunnel ? getHostName(selectedTunnel.entryHostId) : "选择隧道后自动确定"}
+                  </div>
+                ) : (
+                  <Select
+                    value={form.hostId ? String(form.hostId) : ""}
+                    onValueChange={(v) => setForm({ ...form, hostId: parseInt(v), tunnelId: null })}
+                    disabled={!!editingId}
+                  >
+                    <SelectTrigger><SelectValue placeholder="选择主机" /></SelectTrigger>
+                    <SelectContent>
+                      {hosts?.map((h) => (
+                        <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>链路类型</Label>
                 <Select
@@ -797,6 +852,7 @@ function RulesContent() {
                       gostRelayHost: v === "tunnel" ? "" : form.gostRelayHost,
                       gostRelayPort: v === "tunnel" ? 0 : form.gostRelayPort,
                       tunnelId: v === "tunnel" ? form.tunnelId : null,
+                      hostId: v === "tunnel" && selectedTunnel ? selectedTunnel.entryHostId : form.hostId,
                     })
                   }
                 >
@@ -838,9 +894,11 @@ function RulesContent() {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-2 sm:items-start">
               <div className="space-y-2">
                 <Label>{form.routeMode === "tunnel" ? "入口端口" : "源端口"}</Label>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2">
                   <div className="relative flex-1">
                     <Input
                       type="number"
@@ -862,16 +920,6 @@ function RulesContent() {
                       <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
                     )}
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 flex-shrink-0"
-                    onClick={handleRandomPort}
-                    title="随机分配端口"
-                  >
-                    <Shuffle className="h-4 w-4" />
-                  </Button>
                 </div>
                 {(portStatus !== "idle" || (selectedHost && (selectedHost as any).portRangeStart && (selectedHost as any).portRangeEnd)) && (
                   <p className={`text-[10px] leading-4 ${
@@ -894,50 +942,20 @@ function RulesContent() {
                   </p>
                 )}
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-0 gap-2 sm:mt-8"
+                onClick={handleRandomPort}
+                title="随机分配端口"
+                disabled={!form.hostId}
+              >
+                <Shuffle className="h-4 w-4" />
+                随机端口
+              </Button>
             </div>
 
-            {form.routeMode === "tunnel" ? (
-              <div className="space-y-3 rounded-lg border border-chart-4/20 bg-chart-4/5 p-3">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                  <div className="space-y-2">
-                    <Label>使用隧道</Label>
-                    <Select
-                      value={form.tunnelId ? String(form.tunnelId) : "none"}
-                      disabled={availableTunnels.length === 0}
-                      onValueChange={(v) => setForm({ ...form, tunnelId: v === "none" ? null : Number(v) })}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">请选择隧道</SelectItem>
-                        {availableTunnels.map((t: any) => (
-                          <SelectItem key={t.id} value={String(t.id)}>
-                            {t.name} / {String(t.mode).toUpperCase()} / :{t.listenPort}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-chart-4/30 px-3 text-chart-4">
-                    <Network className="h-3.5 w-3.5" />
-                    gost
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  隧道转发会把入口机收到的流量经所选隧道送到出口机，再由出口机连接下面填写的目标 IP 和目标端口。
-                </p>
-                {availableTunnels.length === 0 && (
-                  <p className="text-xs text-amber-600">当前所属主机没有可用隧道，请先在隧道管理中创建入口为该主机的隧道。</p>
-                )}
-                {selectedTunnel && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>{getHostName(selectedTunnel.entryHostId)}</span>
-                    <ArrowRight className="h-3 w-3" />
-                    <span>{getHostName(selectedTunnel.exitHostId)}</span>
-                    <code className="rounded bg-background/60 px-1.5 py-0.5">:{selectedTunnel.listenPort}</code>
-                  </div>
-                )}
-              </div>
-            ) : (
+            {form.routeMode === "local" && (
               <div className={`rounded-lg border border-border/40 bg-muted/20 p-3 space-y-3 ${form.forwardType !== "gost" ? "opacity-60" : ""}`}>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-2">
@@ -1253,7 +1271,6 @@ function SelfTestDialog({
   );
   const startMutation = trpc.rules.startSelfTest.useMutation({
     onSuccess: () => {
-      toast.info("正在测试中");
       utils.rules.latestTest.invalidate({ ruleId });
       refetch();
     },
@@ -1262,26 +1279,49 @@ function SelfTestDialog({
 
   const status = latest?.status as string | undefined;
   const isTesting = startMutation.isPending || status === "pending" || status === "running";
-  const renderStatus = () => {
-    if (startMutation.isPending) return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
+  const isSuccess = status === "success";
+  const isTimeout = status === "timeout";
+  const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
+  const statusView = (() => {
+    if (isTesting) {
+      return (
+        <span className="flex items-center gap-2 text-amber-600">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          正在测试中
+        </span>
+      );
+    }
     if (!latest) return <span className="text-muted-foreground">尚未运行</span>;
-    if (status === "pending" || status === "running") return <span className="flex items-center gap-1 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
-    if (status === "success") return <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 className="h-4 w-4" />正常</span>;
-    if (status === "timeout") return <span className="flex items-center gap-1 text-amber-600"><AlertCircle className="h-4 w-4" />超时</span>;
-    return <span className="flex items-center gap-1 text-destructive"><XCircle className="h-4 w-4" />异常</span>;
-  };
-  const renderItem = (label: string, ok: boolean | undefined) => (
-    <div className="flex items-center justify-between py-1">
-      <span className="text-muted-foreground">{label}</span>
-      {isTesting ? (
-        <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
-      ) : ok ? (
-        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-      ) : (
-        <XCircle className="h-4 w-4 text-destructive" />
-      )}
-    </div>
-  );
+    if (isSuccess) {
+      return (
+        <span className="flex items-center gap-2 text-emerald-600">
+          <CheckCircle2 className="h-4 w-4" />
+          正常
+        </span>
+      );
+    }
+    if (isTimeout) {
+      return (
+        <span className="flex items-center gap-2 text-amber-600">
+          <AlertCircle className="h-4 w-4" />
+          超时
+        </span>
+      );
+    }
+    return (
+      <span className="flex items-center gap-2 text-destructive">
+        <XCircle className="h-4 w-4" />
+        异常
+      </span>
+    );
+  })();
+  const reachableView = (() => {
+    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
+    if (latest?.targetReachable) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
+    if (latest || isFailed || isTimeout) return <XCircle className="h-4 w-4 text-destructive" />;
+    return <span className="text-muted-foreground">--</span>;
+  })();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -1289,29 +1329,20 @@ function SelfTestDialog({
           <DialogTitle>转发链路自测 - {ruleName}</DialogTitle>
           <DialogDescription>Agent 会检测目标端口 TCP 可达性和延迟来判定转发链路状态</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">状态</span>
-            {renderStatus()}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">状态</span>
+            <span className="text-sm font-medium">{statusView}</span>
           </div>
-          {renderItem("端口可达", !!latest?.targetReachable)}
-          <div className="flex items-center justify-between py-1">
-            <span className="text-muted-foreground">TCP 延迟</span>
-            {typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? (
-              <span className={`font-mono ${
-                latest.latencyMs < 50 ? "text-emerald-600" :
-                latest.latencyMs < 100 ? "text-chart-3" :
-                latest.latencyMs < 200 ? "text-amber-600" :
-                "text-destructive"
-              }`}>{latest.latencyMs} ms</span>
-            ) : isTesting ? (
-              <span className="flex items-center gap-1 text-amber-600">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                正在测试中
-              </span>
-            ) : (
-              <span className="text-muted-foreground">--</span>
-            )}
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">端口可达</span>
+            <span className="text-sm font-medium">{reachableView}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">TCP 延迟</span>
+            <span className="text-sm font-semibold tabular-nums">
+              {isTesting ? "正在测试中" : typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? `${latest.latencyMs} ms` : "--"}
+            </span>
           </div>
         </div>
         <DialogFooter className="gap-2">
@@ -1321,7 +1352,7 @@ function SelfTestDialog({
             onClick={() => startMutation.mutate({ ruleId })}
           >
             {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4 mr-1" />}
-            运行自测
+            运行测试
           </Button>
         </DialogFooter>
       </DialogContent>
