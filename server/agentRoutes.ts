@@ -398,8 +398,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
-            handler: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
-            listener: { type: proto },
+            handler: { type: proto },
+            listener: tunnel ? { type: proto, chain: `chain-tunnel-${r.id}` } : { type: proto },
             forwarder: { nodes: [] as any[] },
           };
           if (!tunnel) {
