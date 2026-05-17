@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.34"
+var Version = "2.2.35"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -121,6 +121,9 @@ type fxpSpec struct {
 	Key        string `json:"key"`
 	LimitIn    int64  `json:"limitIn"`
 	LimitOut   int64  `json:"limitOut"`
+	MaxConnections int `json:"maxConnections"`
+	MaxIPs         int `json:"maxIPs"`
+	AccessScope    string `json:"accessScope"`
 }
 
 func main() {
@@ -727,6 +730,9 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.Key,
 		strconv.FormatInt(spec.LimitIn, 10),
 		strconv.FormatInt(spec.LimitOut, 10),
+		strconv.Itoa(spec.MaxConnections),
+		strconv.Itoa(spec.MaxIPs),
+		spec.AccessScope,
 	}, "|")
 }
 

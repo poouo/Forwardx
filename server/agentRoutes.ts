@@ -389,7 +389,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const agentAllRules = await db.getForwardRulesForAgent(undefined);
     const gostRules = agentHostRules
       .filter((r: any) => !r.pendingDelete && r.isEnabled && r.forwardType === "gost");
-    const gostRuleUserIds = Array.from(new Set(gostRules.map((r: any) => Number(r.userId)).filter(Boolean)));
+    const gostRuleUserIds = Array.from(new Set(agentHostRules.map((r: any) => Number(r.userId)).filter(Boolean)));
     const gostUsers = await Promise.all(gostRuleUserIds.map((id) => db.getUserById(id)));
     const gostUserById = new Map(gostUsers.filter(Boolean).map((u: any) => [u.id, u]));
     const gostRateLimiters = gostUsers
@@ -412,7 +412,47 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         limitOut: Math.max(0, Number(user?.gostRateLimitOut) || 0),
       };
     };
+    const userAccessLimits = (userId: number) => {
+      const user = gostUserById.get(userId) as any;
+      return {
+        maxConnections: Math.max(0, Number(user?.maxConnections) || 0),
+        maxIPs: Math.max(0, Number(user?.maxIPs) || 0),
+      };
+    };
+    const accessScopeName = (scope: string) => `FWX_LIMIT_${scope.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 40)}`;
+    const buildAccessLimitCleanupCmds = (port: number, scope: string): string[] => {
+      const chain = accessScopeName(scope);
+      return [
+        `iptables -D INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || true`,
+        `iptables -D FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || true`,
+      ];
+    };
+    const buildAccessLimitCmds = (port: number, scope: string, limits: { maxConnections?: number; maxIPs?: number }): string[] => {
+      const maxConnections = Math.max(0, Number(limits.maxConnections || 0));
+      const maxIPs = Math.max(0, Number(limits.maxIPs || 0));
+      if (maxConnections <= 0 && maxIPs <= 0) return buildAccessLimitCleanupCmds(port, scope);
+      const chain = accessScopeName(scope);
+      const cmds = [
+        `iptables -N ${chain} 2>/dev/null || true`,
+        `iptables -F ${chain} 2>/dev/null || true`,
+      ];
+      if (maxConnections > 0) {
+        cmds.push(`iptables -A ${chain} -p tcp -m connlimit --connlimit-above ${maxConnections} --connlimit-mask 0 -j REJECT --reject-with tcp-reset`);
+      }
+      if (maxIPs > 0) {
+        cmds.push(`iptables -A ${chain} -p tcp -m connlimit --connlimit-above ${maxIPs} --connlimit-mask 32 -j REJECT --reject-with tcp-reset`);
+      }
+      cmds.push(`iptables -A ${chain} -j RETURN`);
+      cmds.push(`iptables -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ${chain}`);
+      cmds.push(`iptables -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || iptables -I FORWARD -p tcp --dport ${port} -j ${chain}`);
+      return cmds;
+    };
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
+    const accessScopeForRule = (rule: any) => (
+      rule.tunnelId
+        ? `u${Number(rule.userId) || 0}_t${Number(rule.tunnelId) || 0}`
+        : `u${Number(rule.userId) || 0}_h${host.id}`
+    );
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
       if (mode === "tcp" || mode === "mtcp") return "tcp";
@@ -736,6 +776,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
           // 挂入 mangle 计数链，为 Agent 采样提供准确流量计数器
           for (const c of buildCountingChainCmds(rule.sourcePort)) cmds.push(c);
+          for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) cmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "apply",
@@ -786,6 +827,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `systemctl restart ${svcName}.service`,
               // 同时为该端口挂入 mangle 计数链，保证 realm 转发也能被准确统计
               ...buildCountingChainCmds(rule.sourcePort),
+              ...buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId))),
             ],
           });
         } else if (rule.forwardType === "socat") {
@@ -837,6 +879,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ].join("\n");
             // socat both 模式下为该端口挂入 mangle 计数链
             for (const c of buildCountingChainCmds(rule.sourcePort)) socatCmds.push(c);
+            for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) socatCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -873,6 +916,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ].join("\n");
             // socat 单协议模式下为该端口挂入 mangle 计数链
             for (const c of buildCountingChainCmds(rule.sourcePort)) socatCmds.push(c);
+            for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) socatCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -892,6 +936,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (tunnel && isForwardXTunnel(tunnel)) {
             const tunnelExitHost = tunnelExitHostById.get(tunnel.id);
             const rateLimits = userRateLimits(Number(rule.userId));
+            const accessLimits = userAccessLimits(Number(rule.userId));
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -918,6 +963,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 targetPort: rule.targetPort,
                 key: tunnelSecretSeed(tunnel),
                 ...rateLimits,
+                ...accessLimits,
+                accessScope: accessScopeForRule(rule),
               },
             });
             continue;
@@ -931,7 +978,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             networkInterface: hostInterface,
-            commands: [...buildGostReloadCmds(), ...buildCountingChainCmds(rule.sourcePort)],
+            commands: [
+              ...buildGostReloadCmds(),
+              ...buildCountingChainCmds(rule.sourcePort),
+              ...buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId))),
+            ],
           });
         }
       } else if (!rule.isEnabled && rule.isRunning) {
@@ -966,6 +1017,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           cmds.push(`iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
           cmds.push(`iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
           cmds.push(`iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
+          for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) cmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "remove",
@@ -1013,6 +1065,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
               `iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
               `iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
+              ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
             ],
           });
         } else if (rule.forwardType === "socat") {
@@ -1054,6 +1107,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(`iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
           removeCmds.push(`iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
           removeCmds.push(`iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
+          for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) removeCmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "remove",

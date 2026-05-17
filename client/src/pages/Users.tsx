@@ -112,6 +112,8 @@ function UsersContent() {
   const [trafficResetDay, setTrafficResetDay] = useState(1);
   const [maxRules, setMaxRules] = useState(0);
   const [maxPorts, setMaxPorts] = useState(0);
+  const [maxConnections, setMaxConnections] = useState(0);
+  const [maxIPs, setMaxIPs] = useState(0);
   // 允许使用的转发方式：默认三种全部允许
   const [allowIptables, setAllowIptables] = useState(true);
   const [allowRealm, setAllowRealm] = useState(true);
@@ -288,6 +290,8 @@ function UsersContent() {
     setGostRateLimitOutInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
+    setMaxConnections(u.maxConnections || 0);
+    setMaxIPs(u.maxIPs || 0);
     // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
     if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
@@ -325,6 +329,8 @@ function UsersContent() {
       trafficResetDay,
       maxRules,
       maxPorts,
+      maxConnections,
+      maxIPs,
       allowedForwardTypes,
     });
     // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
@@ -538,6 +544,8 @@ function UsersContent() {
                           <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
                             <span>规则: {u.maxRules ? `最多 ${u.maxRules} 条` : "不限"}</span>
                             <span>端口: {u.maxPorts ? `最多 ${u.maxPorts} 个` : "不限"}</span>
+                            <span>连接: {u.maxConnections ? `最多 ${u.maxConnections}` : "不限"}</span>
+                            <span>单 IP: {u.maxIPs ? `最多 ${u.maxIPs}` : "不限"}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
                               <span>隧道限速: {formatSpeed(Math.max(Number(u.gostRateLimitIn) || 0, Number(u.gostRateLimitOut) || 0))}</span>
                             )}
@@ -746,6 +754,28 @@ function UsersContent() {
                     placeholder="0=不限制"
                   />
                   <p className="text-xs text-muted-foreground">0 或留空表示不限制</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>最大连接数</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={maxConnections || ""}
+                    onChange={(e) => setMaxConnections(parseInt(e.target.value) || 0)}
+                    placeholder="0=不限制"
+                  />
+                  <p className="text-xs text-muted-foreground">按用户 + 主机/隧道聚合统计；端口转发按主机，隧道转发按隧道。</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>单 IP 接入限制</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={maxIPs || ""}
+                    onChange={(e) => setMaxIPs(parseInt(e.target.value) || 0)}
+                    placeholder="0=不限制"
+                  />
+                  <p className="text-xs text-muted-foreground">同一主机或同一隧道下，多条规则共享这个单 IP 接入上限。</p>
                 </div>
               </div>
               <Separator />

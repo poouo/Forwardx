@@ -29,6 +29,18 @@ function speed(value?: number | null) {
   return value ? `${bytes(value)}/s` : "不限";
 }
 
+const durationOptions = [
+  { value: 30, label: "一个月" },
+  { value: 90, label: "三个月" },
+  { value: 180, label: "半年" },
+  { value: 365, label: "一年" },
+  { value: 730, label: "两年" },
+];
+
+function durationLabel(days?: number | null) {
+  return durationOptions.find((item) => item.value === Number(days))?.label || `${days || 30} 天`;
+}
+
 export default function Store() {
   const utils = trpc.useUtils();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
@@ -112,7 +124,7 @@ export default function Store() {
                         <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> {plan.name}</CardTitle>
                         <CardDescription className="mt-2 line-clamp-2">{plan.description || "订阅后自动分配权限和端口段"}</CardDescription>
                       </div>
-                      <Badge>{plan.durationDays || "永久"} 天</Badge>
+                      <Badge>{durationLabel(plan.durationDays)}</Badge>
                     </div>
                   </CardHeader>
                   <CardContent className="flex-1 space-y-3">
@@ -120,7 +132,13 @@ export default function Store() {
                     <div className="grid gap-2 text-sm text-muted-foreground">
                       <div>连续端口：{plan.portCount} 个</div>
                       <div>总流量：{bytes(plan.trafficLimit)}</div>
+                      {Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0 && (
+                        <div>流量周期：购买日起按月重置</div>
+                      )}
                       <div>限速：{speed(plan.rateLimitMbps)}</div>
+                      <div>规则：最多 {plan.maxRules || "不限"} 条</div>
+                      <div>连接：最多 {plan.maxConnections || "不限"}，单 IP {plan.maxIPs || "不限"}</div>
+                      <div>限制口径：端口转发按主机，隧道转发按隧道</div>
                       <div>资源：{plan.hostIds?.length || 0} 台主机 / {plan.tunnelIds?.length || 0} 条隧道</div>
                     </div>
                   </CardContent>

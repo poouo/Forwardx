@@ -25,6 +25,8 @@ type PlanForm = {
   trafficGB: string;
   rateLimitMB: string;
   maxRules: string;
+  maxConnections: string;
+  maxIPs: string;
   isActive: boolean;
   isStoreVisible: boolean;
   sortOrder: string;
@@ -32,16 +34,20 @@ type PlanForm = {
   tunnelIds: number[];
 };
 
+type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
+
 const emptyForm: PlanForm = {
   name: "",
   description: "",
   price: "0",
   currency: "CNY",
   durationDays: "30",
-  portCount: "1",
+  portCount: "20",
   trafficGB: "0",
   rateLimitMB: "0",
-  maxRules: "0",
+  maxRules: "20",
+  maxConnections: "2000",
+  maxIPs: "10",
   isActive: true,
   isStoreVisible: true,
   sortOrder: "0",
@@ -70,6 +76,18 @@ function speed(value?: number | null) {
   return value ? `${bytes(value)}/s` : "不限";
 }
 
+const durationOptions = [
+  { value: "30", label: "一个月" },
+  { value: "90", label: "三个月" },
+  { value: "180", label: "半年" },
+  { value: "365", label: "一年" },
+  { value: "730", label: "两年" },
+];
+
+function durationLabel(days?: number | null) {
+  return durationOptions.find((item) => Number(item.value) === Number(days))?.label || `${days || 30} 天`;
+}
+
 function toForm(plan: any): PlanForm {
   return {
     id: plan.id,
@@ -78,10 +96,12 @@ function toForm(plan: any): PlanForm {
     price: String((Number(plan.priceCents || 0) / 100).toFixed(2)),
     currency: plan.currency || "CNY",
     durationDays: String(plan.durationDays ?? 30),
-    portCount: String(plan.portCount ?? 1),
+    portCount: String(plan.portCount ?? 20),
     trafficGB: String(Number(plan.trafficLimit || 0) / 1024 / 1024 / 1024 || 0),
     rateLimitMB: String(Number(plan.rateLimitMbps || 0) / 1024 / 1024 || 0),
-    maxRules: String(plan.maxRules ?? 0),
+    maxRules: String(plan.maxRules ?? 20),
+    maxConnections: String(plan.maxConnections ?? 2000),
+    maxIPs: String(plan.maxIPs ?? 10),
     isActive: !!plan.isActive,
     isStoreVisible: !!plan.isStoreVisible,
     sortOrder: String(plan.sortOrder ?? 0),
@@ -91,16 +111,19 @@ function toForm(plan: any): PlanForm {
 }
 
 function payload(form: PlanForm) {
+  const durationDays = Number(form.durationDays || 30);
   return {
     name: form.name.trim(),
     description: form.description.trim() || null,
     priceCents: Math.round(Number(form.price || 0) * 100),
     currency: (form.currency || "CNY").toUpperCase(),
-    durationDays: Math.max(0, Math.floor(Number(form.durationDays || 0))),
+    durationDays: ([30, 90, 180, 365, 730].includes(durationDays) ? durationDays : 30) as PlanDurationDays,
     portCount: Math.max(1, Math.floor(Number(form.portCount || 1))),
     trafficLimit: Math.max(0, Math.floor(Number(form.trafficGB || 0) * 1024 * 1024 * 1024)),
     rateLimitMbps: Math.max(0, Math.floor(Number(form.rateLimitMB || 0) * 1024 * 1024)),
     maxRules: Math.max(0, Math.floor(Number(form.maxRules || 0))),
+    maxConnections: Math.max(0, Math.floor(Number(form.maxConnections || 0))),
+    maxIPs: Math.max(0, Math.floor(Number(form.maxIPs || 0))),
     isActive: form.isActive,
     isStoreVisible: form.isStoreVisible,
     sortOrder: Math.max(0, Math.floor(Number(form.sortOrder || 0))),
@@ -259,7 +282,7 @@ export default function Plans() {
                       <div className="font-medium">{plan.name}</div>
                       <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || "无描述"}</div>
                     </TableCell>
-                    <TableCell>{money(plan.priceCents, plan.currency)} / {plan.durationDays || "永久"} 天</TableCell>
+                    <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         <Badge variant="outline">主机 {plan.hostIds?.length || 0}</Badge>
@@ -268,7 +291,8 @@ export default function Plans() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       <div>{plan.portCount} 个端口</div>
-                      <div>流量 {bytes(plan.trafficLimit)} · 限速 {speed(plan.rateLimitMbps)}</div>
+                      <div>规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</div>
+                      <div>连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"} · 限速 {speed(plan.rateLimitMbps)}</div>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -340,8 +364,16 @@ export default function Plans() {
               <Input type="number" min={0} step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>有效期（天，0 为永久）</Label>
-              <Input type="number" min={0} value={form.durationDays} onChange={(e) => setForm({ ...form, durationDays: e.target.value })} />
+              <Label>有效期</Label>
+              <Select value={form.durationDays} onValueChange={(durationDays) => setForm({ ...form, durationDays })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {durationOptions.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">超过一个月的套餐会从购买日开始按月自动重置套餐流量。</p>
             </div>
             <div className="space-y-2">
               <Label>连续端口数</Label>
@@ -358,6 +390,16 @@ export default function Plans() {
             <div className="space-y-2">
               <Label>最大规则数（0 为不限）</Label>
               <Input type="number" min={0} value={form.maxRules} onChange={(e) => setForm({ ...form, maxRules: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>最大连接数</Label>
+              <Input type="number" min={0} value={form.maxConnections} onChange={(e) => setForm({ ...form, maxConnections: e.target.value })} />
+              <p className="text-xs text-muted-foreground">端口转发按主机聚合，隧道转发按隧道聚合。</p>
+            </div>
+            <div className="space-y-2">
+              <Label>单 IP 接入限制</Label>
+              <Input type="number" min={0} value={form.maxIPs} onChange={(e) => setForm({ ...form, maxIPs: e.target.value })} />
+              <p className="text-xs text-muted-foreground">同一聚合范围内的多条规则共享限制。</p>
             </div>
             <div className="space-y-2">
               <Label>排序</Label>

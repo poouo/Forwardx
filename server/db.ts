@@ -95,6 +95,8 @@ export async function initDatabase() {
         allowForwardXTunnel INTEGER NOT NULL DEFAULT 0,
         gostRateLimitIn INTEGER NOT NULL DEFAULT 0,
         gostRateLimitOut INTEGER NOT NULL DEFAULT 0,
+        maxConnections INTEGER NOT NULL DEFAULT 0,
+        maxIPs INTEGER NOT NULL DEFAULT 0,
         expiresAt INTEGER,
         trafficAutoReset INTEGER NOT NULL DEFAULT 0,
         trafficResetDay INTEGER NOT NULL DEFAULT 1,
@@ -285,6 +287,8 @@ export async function initDatabase() {
       `ALTER TABLE hosts ADD COLUMN entryIp TEXT`,
       `ALTER TABLE users ADD COLUMN allowedForwardTypes TEXT`,
       `ALTER TABLE users ADD COLUMN allowForwardXTunnel INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN maxConnections INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE users ADD COLUMN maxIPs INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE forward_rules ADD COLUMN gostMode TEXT NOT NULL DEFAULT 'direct'`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayHost TEXT`,
       `ALTER TABLE forward_rules ADD COLUMN gostRelayPort INTEGER`,
@@ -361,10 +365,12 @@ export async function initDatabase() {
         priceCents INTEGER NOT NULL DEFAULT 0,
         currency TEXT NOT NULL DEFAULT 'CNY',
         durationDays INTEGER NOT NULL DEFAULT 30,
-        portCount INTEGER NOT NULL DEFAULT 1,
+        portCount INTEGER NOT NULL DEFAULT 20,
         trafficLimit INTEGER NOT NULL DEFAULT 0,
         rateLimitMbps INTEGER NOT NULL DEFAULT 0,
-        maxRules INTEGER NOT NULL DEFAULT 0,
+        maxRules INTEGER NOT NULL DEFAULT 20,
+        maxConnections INTEGER NOT NULL DEFAULT 2000,
+        maxIPs INTEGER NOT NULL DEFAULT 10,
         isActive INTEGER NOT NULL DEFAULT 1,
         isStoreVisible INTEGER NOT NULL DEFAULT 1,
         sortOrder INTEGER NOT NULL DEFAULT 0,
@@ -394,6 +400,8 @@ export async function initDatabase() {
         paymentOrderNo TEXT,
         portRangeStart INTEGER,
         portRangeEnd INTEGER,
+        nextTrafficResetAt INTEGER,
+        lastTrafficResetAt INTEGER,
         startedAt INTEGER NOT NULL DEFAULT (unixepoch()),
         expiresAt INTEGER,
         createdAt INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -405,6 +413,10 @@ export async function initDatabase() {
     for (const stmt of [
       `ALTER TABLE payment_orders ADD COLUMN planId INTEGER`,
       `ALTER TABLE payment_orders ADD COLUMN subscriptionId INTEGER`,
+      `ALTER TABLE subscription_plans ADD COLUMN maxConnections INTEGER NOT NULL DEFAULT 2000`,
+      `ALTER TABLE subscription_plans ADD COLUMN maxIPs INTEGER NOT NULL DEFAULT 10`,
+      `ALTER TABLE user_subscriptions ADD COLUMN nextTrafficResetAt INTEGER`,
+      `ALTER TABLE user_subscriptions ADD COLUMN lastTrafficResetAt INTEGER`,
     ]) {
       try { _sqlite.exec(stmt); } catch { /* column already exists */ }
     }
@@ -448,6 +460,22 @@ function lastRowId(): number {
 }
 
 const nowDate = () => new Date();
+
+function addMonthsClamped(date: Date, months: number): Date {
+  const day = date.getDate();
+  const next = new Date(date);
+  next.setDate(1);
+  next.setMonth(next.getMonth() + months);
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, lastDay));
+  return next;
+}
+
+function nextMonthlyTrafficReset(start: Date, expiresAt: Date | null): Date | null {
+  if (!expiresAt) return addMonthsClamped(start, 1);
+  const next = addMonthsClamped(start, 1);
+  return next.getTime() < expiresAt.getTime() ? next : null;
+}
 
 // ==================== User Queries ====================
 
@@ -540,6 +568,8 @@ export async function getAllUsers() {
       canAddRules: users.canAddRules,
       maxRules: users.maxRules,
       maxPorts: users.maxPorts,
+      maxConnections: users.maxConnections,
+      maxIPs: users.maxIPs,
       allowedForwardTypes: users.allowedForwardTypes,
       allowForwardXTunnel: users.allowForwardXTunnel,
       trafficLimit: users.trafficLimit,
@@ -580,6 +610,8 @@ export async function updateUserTrafficSettings(userId: number, data: {
   canAddRules?: boolean;
   maxRules?: number;
   maxPorts?: number;
+  maxConnections?: number;
+  maxIPs?: number;
   allowedForwardTypes?: string | null;
   allowForwardXTunnel?: boolean;
 }) {
@@ -689,6 +721,8 @@ export async function getUserTrafficSummaries() {
     expiresAt: users.expiresAt,
     trafficAutoReset: users.trafficAutoReset,
     trafficResetDay: users.trafficResetDay,
+    maxConnections: users.maxConnections,
+    maxIPs: users.maxIPs,
   }).from(users).orderBy(desc(users.trafficUsed));
 }
 
@@ -1652,6 +1686,7 @@ export async function listUserSubscriptions(userId?: number) {
       paymentOrderNo: userSubscriptions.paymentOrderNo,
       portRangeStart: userSubscriptions.portRangeStart,
       portRangeEnd: userSubscriptions.portRangeEnd,
+      nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
       startedAt: userSubscriptions.startedAt,
       expiresAt: userSubscriptions.expiresAt,
       createdAt: userSubscriptions.createdAt,
@@ -1683,6 +1718,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
       paymentOrderNo: userSubscriptions.paymentOrderNo,
       portRangeStart: userSubscriptions.portRangeStart,
       portRangeEnd: userSubscriptions.portRangeEnd,
+      nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
       startedAt: userSubscriptions.startedAt,
       expiresAt: userSubscriptions.expiresAt,
       planName: subscriptionPlans.name,
@@ -1690,6 +1726,8 @@ export async function getActiveUserSubscriptions(userId?: number) {
       trafficLimit: subscriptionPlans.trafficLimit,
       rateLimitMbps: subscriptionPlans.rateLimitMbps,
       maxRules: subscriptionPlans.maxRules,
+      maxConnections: subscriptionPlans.maxConnections,
+      maxIPs: subscriptionPlans.maxIPs,
     })
     .from(userSubscriptions)
     .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
@@ -1724,6 +1762,38 @@ export async function expireUserSubscriptions() {
   const now = Math.floor(Date.now() / 1000);
   const result = _sqlite.prepare(`UPDATE user_subscriptions SET status='expired', updatedAt=? WHERE status='active' AND expiresAt IS NOT NULL AND expiresAt <= ?`).run(now, now);
   return Number(result.changes || 0);
+}
+
+export async function rechargeSubscriptionTrafficCycles() {
+  const db = await getDb();
+  if (!db) return 0;
+  const now = new Date();
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const due = await db.select().from(userSubscriptions).where(and(
+    eq(userSubscriptions.status, "active"),
+    sql`${userSubscriptions.nextTrafficResetAt} IS NOT NULL`,
+    sql`${userSubscriptions.nextTrafficResetAt} <= ${nowSec}`,
+    sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+  ));
+  const resetUserIds = new Set<number>();
+  for (const sub of due as any[]) {
+    const expiresAt = sub.expiresAt ? new Date(sub.expiresAt) : null;
+    let next = sub.nextTrafficResetAt ? new Date(sub.nextTrafficResetAt) : null;
+    if (!next) continue;
+    while (next && next.getTime() <= now.getTime()) {
+      next = addMonthsClamped(next, 1);
+    }
+    const boundedNext = next && (!expiresAt || next.getTime() < expiresAt.getTime()) ? next : null;
+    await updateUserSubscription(sub.id, {
+      nextTrafficResetAt: boundedNext,
+      lastTrafficResetAt: now,
+    } as any);
+    resetUserIds.add(Number(sub.userId));
+  }
+  for (const userId of resetUserIds) {
+    await resetUserTraffic(userId);
+  }
+  return resetUserIds.size;
 }
 
 export async function getUserPlanPortRange(userId: number, hostId?: number, tunnelId?: number): Promise<{ start: number; end: number } | null> {
@@ -1798,6 +1868,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const now = startsAt || new Date();
   const expiresAt = Number(plan.durationDays) > 0 ? new Date(now.getTime() + Number(plan.durationDays) * 24 * 3600 * 1000) : null;
+  const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0 ? nextMonthlyTrafficReset(now, expiresAt) : null;
   const subscriptionId = await createUserSubscription({
     userId,
     planId,
@@ -1806,6 +1877,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
     paymentOrderNo: paymentOrderNo ?? null,
     portRangeStart: block.start,
     portRangeEnd: block.end,
+    nextTrafficResetAt,
     startedAt: now,
     expiresAt,
   } as any);
@@ -1815,6 +1887,8 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
     allowForwardXTunnel: true,
     maxPorts: Math.max(Number(user?.maxPorts || 0), Number(plan.portCount || 0)),
     maxRules: Math.max(Number(user?.maxRules || 0), Number(plan.maxRules || 0)),
+    maxConnections: Math.max(Number((user as any)?.maxConnections || 0), Number((plan as any).maxConnections || 0)),
+    maxIPs: Math.max(Number((user as any)?.maxIPs || 0), Number((plan as any).maxIPs || 0)),
     trafficLimit: Math.max(Number(user?.trafficLimit || 0), Number(plan.trafficLimit || 0)),
     gostRateLimitIn: Number(plan.rateLimitMbps || 0) > 0 ? Number(plan.rateLimitMbps) : Number(user?.gostRateLimitIn || 0),
     gostRateLimitOut: Number(plan.rateLimitMbps || 0) > 0 ? Number(plan.rateLimitMbps) : Number(user?.gostRateLimitOut || 0),

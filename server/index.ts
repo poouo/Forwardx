@@ -56,6 +56,10 @@ async function runMonthlyTrafficReset() {
     if (usersToReset.length > 0) {
       console.log(`[Scheduler] Monthly traffic reset: ${usersToReset.length} user(s) reset`);
     }
+    const recharged = await db.rechargeSubscriptionTrafficCycles();
+    if (recharged > 0) {
+      console.log(`[Scheduler] Subscription traffic recharge: ${recharged} user(s) reset`);
+    }
   } catch (error) {
     console.error("[Scheduler] Monthly traffic reset error:", error);
   }

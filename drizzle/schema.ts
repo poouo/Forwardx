@@ -29,6 +29,8 @@ export const users = sqliteTable("users", {
   allowForwardXTunnel: integer("allowForwardXTunnel", { mode: "boolean" }).notNull().default(false),
   gostRateLimitIn: integer("gostRateLimitIn").notNull().default(0),
   gostRateLimitOut: integer("gostRateLimitOut").notNull().default(0),
+  maxConnections: integer("maxConnections").notNull().default(0),
+  maxIPs: integer("maxIPs").notNull().default(0),
   // ===== 流量管理字段 =====
   trafficLimit: integer("trafficLimit").notNull().default(0),           // 流量额度（字节），0 = 不限制
   trafficUsed: integer("trafficUsed").notNull().default(0),             // 已用流量（字节）
@@ -246,10 +248,12 @@ export const subscriptionPlans = sqliteTable("subscription_plans", {
   priceCents: integer("priceCents").notNull().default(0),
   currency: text("currency").notNull().default("CNY"),
   durationDays: integer("durationDays").notNull().default(30),
-  portCount: integer("portCount").notNull().default(1),
+  portCount: integer("portCount").notNull().default(20),
   trafficLimit: integer("trafficLimit").notNull().default(0),
   rateLimitMbps: integer("rateLimitMbps").notNull().default(0),
-  maxRules: integer("maxRules").notNull().default(0),
+  maxRules: integer("maxRules").notNull().default(20),
+  maxConnections: integer("maxConnections").notNull().default(2000),
+  maxIPs: integer("maxIPs").notNull().default(10),
   isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
   isStoreVisible: integer("isStoreVisible", { mode: "boolean" }).notNull().default(true),
   sortOrder: integer("sortOrder").notNull().default(0),
@@ -286,6 +290,8 @@ export const userSubscriptions = sqliteTable("user_subscriptions", {
   paymentOrderNo: text("paymentOrderNo"),
   portRangeStart: integer("portRangeStart"),
   portRangeEnd: integer("portRangeEnd"),
+  nextTrafficResetAt: integer("nextTrafficResetAt", { mode: "timestamp" }),
+  lastTrafficResetAt: integer("lastTrafficResetAt", { mode: "timestamp" }),
   startedAt: integer("startedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
   expiresAt: integer("expiresAt", { mode: "timestamp" }),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
