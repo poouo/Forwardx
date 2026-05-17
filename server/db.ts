@@ -142,6 +142,7 @@ export async function initDatabase() {
         targetPort INTEGER NOT NULL,
         isEnabled INTEGER NOT NULL DEFAULT 1,
         disabledByTunnel INTEGER NOT NULL DEFAULT 0,
+        disabledByUser INTEGER NOT NULL DEFAULT 0,
         isRunning INTEGER NOT NULL DEFAULT 0,
         pendingDelete INTEGER NOT NULL DEFAULT 0,
         userId INTEGER NOT NULL,
@@ -286,6 +287,7 @@ export async function initDatabase() {
       `ALTER TABLE forward_rules ADD COLUMN tunnelExitPort INTEGER`,
       `ALTER TABLE forward_rules ADD COLUMN pendingDelete INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE forward_rules ADD COLUMN disabledByTunnel INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE forward_rules ADD COLUMN disabledByUser INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE tunnels ADD COLUMN secret TEXT`,
       `ALTER TABLE tunnels ADD COLUMN portRangeStart INTEGER`,
       `ALTER TABLE tunnels ADD COLUMN portRangeEnd INTEGER`,
@@ -499,6 +501,39 @@ export async function updateUserTrafficSettings(userId: number, data: {
   await db.update(users).set({ ...data, updatedAt: nowDate() } as any).where(eq(users.id, userId));
 }
 
+export async function setUserForwardAccess(userId: number, enabled: boolean) {
+  const db = await getDb();
+  if (!db) return;
+  const now = nowDate();
+  await db.update(users).set({
+    canAddRules: enabled,
+    allowForwardXTunnel: enabled,
+    updatedAt: now,
+  }).where(eq(users.id, userId));
+  if (enabled) {
+    await db.update(forwardRules).set({
+      isEnabled: true,
+      disabledByUser: false,
+      isRunning: false,
+      updatedAt: now,
+    }).where(and(
+      eq(forwardRules.userId, userId),
+      eq(forwardRules.disabledByUser, true),
+      eq(forwardRules.pendingDelete, false),
+    ));
+  } else {
+    await db.update(forwardRules).set({
+      isEnabled: false,
+      disabledByUser: true,
+      updatedAt: now,
+    }).where(and(
+      eq(forwardRules.userId, userId),
+      eq(forwardRules.isEnabled, true),
+      eq(forwardRules.pendingDelete, false),
+    ));
+  }
+}
+
 /** 手动重置用户流量 */
 export async function resetUserTraffic(userId: number) {
   const db = await getDb();
@@ -546,7 +581,7 @@ export async function getExpiredUsers() {
 export async function disableAllUserRules(userId: number) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ isEnabled: false, updatedAt: nowDate() }).where(eq(forwardRules.userId, userId));
+  await db.update(forwardRules).set({ isEnabled: false, isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.userId, userId));
 }
 
 /** 获取用户流量汇总信息（用于仪表盘展示） */
@@ -718,7 +753,7 @@ export async function markForwardRulePendingDelete(id: number) {
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ isEnabled, disabledByTunnel: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  await db.update(forwardRules).set({ isEnabled, disabledByTunnel: false, disabledByUser: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
 }
 
 export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
