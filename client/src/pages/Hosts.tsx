@@ -871,6 +871,9 @@ function HostsContent() {
                     <Label className="text-xs text-muted-foreground">起始端口</Label>
                     <Input
                       type="number"
+                      min={1}
+                      max={65535}
+                      step={1}
                       placeholder="例如: 10000"
                       value={form.portRangeStart ?? ""}
                       onChange={(e) => {
@@ -883,6 +886,9 @@ function HostsContent() {
                     <Label className="text-xs text-muted-foreground">结束端口</Label>
                     <Input
                       type="number"
+                      min={1}
+                      max={65535}
+                      step={1}
                       placeholder="例如: 20000"
                       value={form.portRangeEnd ?? ""}
                       onChange={(e) => {

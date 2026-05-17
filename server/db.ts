@@ -461,6 +461,12 @@ function lastRowId(): number {
 
 const nowDate = () => new Date();
 
+function clampPositiveInt(value: unknown, fallback: number, max: number) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(n, max);
+}
+
 function addMonthsClamped(date: Date, months: number): Date {
   const day = date.getDate();
   const next = new Date(date);
@@ -1185,7 +1191,7 @@ export async function getTrafficSeriesByRule(
 ) {
   const db = await getDb();
   if (!db) return [] as Array<{ bucket: Date; bytesIn: number; bytesOut: number; connections: number }>;
-  const bucket = Math.max(1, opts.bucketMinutes ?? 1);
+  const bucket = clampPositiveInt(opts.bucketMinutes, 1, 60);
   const since = opts.since ?? new Date(Date.now() - 60 * 60 * 1000);
   const sinceSec = Math.floor(since.getTime() / 1000);
   const bucketSec = bucket * 60;
@@ -1216,7 +1222,7 @@ export async function getTrafficSeriesByRule(
 export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; since?: Date; userId?: number } = {}) {
   const db = await getDb();
   if (!db) return [] as Array<{ bucket: Date; bytesIn: number; bytesOut: number }>;
-  const bucket = Math.max(1, opts.bucketMinutes ?? 5);
+  const bucket = clampPositiveInt(opts.bucketMinutes, 5, 60);
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bucketSec = bucket * 60;
 
@@ -2109,7 +2115,7 @@ export async function getTcpingSeriesByRule(
 export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; since?: Date; userId?: number } = {}) {
   const db = await getDb();
   if (!db) return [] as Array<{ bucket: Date; avgLatency: number; maxLatency: number; minLatency: number; timeoutCount: number; totalCount: number }>;
-  const bucket = Math.max(1, opts.bucketMinutes ?? 1);
+  const bucket = clampPositiveInt(opts.bucketMinutes, 1, 60);
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bucketSec = bucket * 60;
 

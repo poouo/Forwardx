@@ -144,6 +144,10 @@ function routeModeCardClass(active: boolean, disabled = false) {
   ].join(" ");
 }
 
+function isValidPort(port: number, allowZero = false) {
+  return Number.isInteger(port) && port >= (allowZero ? 0 : 1) && port <= 65535;
+}
+
 function RulesContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -324,6 +328,11 @@ function RulesContent() {
 
   const checkPort = useCallback(async () => {
     if (!form.hostId || !form.sourcePort || form.sourcePort < 1) return;
+    if (!isValidPort(form.sourcePort)) {
+      setPortRangeError("端口必须在 1-65535 之间");
+      setPortStatus("used");
+      return;
+    }
     // 先检查端口范围
     if (selectedHost) {
       const pStart = (selectedHost as any).portRangeStart;
@@ -387,8 +396,20 @@ function RulesContent() {
       toast.error("请选择要使用的隧道");
       return;
     }
+    if (!isValidPort(form.sourcePort, !editingId)) {
+      toast.error(editingId ? "入口端口必须在 1-65535 之间" : "入口端口必须为 0 或 1-65535，0 表示随机分配");
+      return;
+    }
+    if (!isValidPort(form.targetPort)) {
+      toast.error("目标端口必须在 1-65535 之间");
+      return;
+    }
     if (form.routeMode === "local" && form.forwardType === "gost" && form.gostMode === "reverse" && (!form.gostRelayHost || !form.gostRelayPort)) {
       toast.error("请填写 gost 反向隧道的中继地址和端口");
+      return;
+    }
+    if (form.routeMode === "local" && form.forwardType === "gost" && form.gostMode === "reverse" && !isValidPort(form.gostRelayPort)) {
+      toast.error("中继端口必须在 1-65535 之间");
       return;
     }
     if (portStatus === "used") {
@@ -956,6 +977,9 @@ function RulesContent() {
                   <div className="relative flex-1">
                     <Input
                       type="number"
+                      min={0}
+                      max={65535}
+                      step={1}
                       placeholder="0=随机"
                       value={form.sourcePort || ""}
                       onChange={(e) => setForm({ ...form, sourcePort: parseInt(e.target.value) || 0 })}
@@ -1041,6 +1065,9 @@ function RulesContent() {
                         <Label>中继端口</Label>
                         <Input
                           type="number"
+                          min={1}
+                          max={65535}
+                          step={1}
                           placeholder="例如: 8443"
                           disabled={form.forwardType !== "gost" || form.gostMode !== "reverse"}
                           value={form.gostRelayPort || ""}
@@ -1096,6 +1123,9 @@ function RulesContent() {
                 <Label>{form.routeMode === "tunnel" ? "最终目标端口" : "目标端口"} <span className="text-destructive">*</span></Label>
                 <Input
                   type="number"
+                  min={1}
+                  max={65535}
+                  step={1}
                   placeholder="必填，例如: 80"
                   value={form.targetPort || ""}
                   onChange={(e) => setForm({ ...form, targetPort: parseInt(e.target.value) || 0 })}

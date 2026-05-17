@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.41] - 2026-05-18
+
+### Changed
+
+- Reworked README for a cleaner user-facing release page.
+- Bumped panel version to 2.2.41 and Agent version to 2.2.36.
+- Prepared this release as the new single public release baseline.
+
 本文件记录 ForwardX 的所有重要变更。
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，

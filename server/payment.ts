@@ -689,6 +689,24 @@ async function finalizePaidOrder(outTradeNo: string) {
 }
 
 export const paymentRouter = router({
+  availableMethods: protectedProcedure.query(async () => {
+    const config = await getPaymentConfig();
+    if (!config.enabled) return [];
+    const methods: Array<{ value: "alipay" | "wxpay" | "stripe"; label: string }> = [];
+    const alipayProvider = config.routes.alipay;
+    const wxpayProvider = config.routes.wxpay;
+    if ((alipayProvider === "easypay" && config.easypay.enabled) || (alipayProvider === "alipay" && config.alipay.enabled)) {
+      methods.push({ value: "alipay", label: "支付宝" });
+    }
+    if ((wxpayProvider === "easypay" && config.easypay.enabled) || (wxpayProvider === "wxpay" && config.wxpay.enabled)) {
+      methods.push({ value: "wxpay", label: "微信支付" });
+    }
+    if (config.stripe.enabled) {
+      methods.push({ value: "stripe", label: "Stripe" });
+    }
+    return methods;
+  }),
+
   getConfig: adminProcedure.query(async () => {
     const config = await getPaymentConfig();
     return sanitizeConfig(config);

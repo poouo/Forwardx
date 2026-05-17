@@ -71,6 +71,10 @@ const defaultForm: TunnelForm = {
   listenPort: 0,
 };
 
+function isValidPort(port: number, allowZero = false) {
+  return Number.isInteger(port) && port >= (allowZero ? 0 : 1) && port <= 65535;
+}
+
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   forwardx: "ForwardX",
   tls: "TLS",
@@ -396,6 +400,10 @@ function TunnelsContent() {
       toast.error("入口 Agent 和出口 Agent 不能相同");
       return;
     }
+    if (!isValidPort(form.listenPort, true)) {
+      toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
+      return;
+    }
     const payload = {
       name: form.name,
       entryHostId: form.entryHostId,
@@ -658,7 +666,7 @@ function TunnelsContent() {
               )}
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
-                <Input type="number" value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
                 <p className="text-xs text-muted-foreground">可留空，面板会按出口 Agent 的端口范围自动选择高位可用端口。</p>
               </div>
             </div>

@@ -2,9 +2,9 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
-import { CheckCircle2, CreditCard, Lock, Package, ShoppingBag } from "lucide-react";
+import { CheckCircle2, CreditCard, Lock, Package, RefreshCw, ShoppingBag } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -46,11 +46,16 @@ export default function Store() {
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
   const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery();
   const { data: subscriptions = [] } = trpc.plans.mySubscriptions.useQuery();
-  const [paymentType, setPaymentType] = useState("stripe");
+  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
+    enabled: !!storeStatus?.enabled,
+  });
+  const [selectedPlan, setSelectedPlan] = useState<any | null>(null);
+  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("stripe");
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
       toast.success("订单已创建");
+      setSelectedPlan(null);
       utils.plans.mySubscriptions.invalidate();
       if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
     },
@@ -58,10 +63,21 @@ export default function Store() {
   });
 
   const buy = (plan: any) => {
+    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | undefined;
+    if (!firstMethod) {
+      toast.error("当前没有可用的支付方式，请联系管理员");
+      return;
+    }
+    setPaymentType(firstMethod);
+    setSelectedPlan(plan);
+  };
+
+  const confirmBuy = () => {
+    if (!selectedPlan) return;
     createOrder.mutate({
-      amount: Number(plan.priceCents || 0) / 100,
-      paymentType: paymentType as any,
-      planId: plan.id,
+      amount: Number(selectedPlan.priceCents || 0) / 100,
+      paymentType,
+      planId: selectedPlan.id,
     });
   };
 
@@ -102,19 +118,6 @@ export default function Store() {
 
         {storeStatus?.enabled && (
           <>
-            <div className="flex max-w-xs items-center gap-2">
-              <CreditCard className="h-4 w-4 text-muted-foreground" />
-              <Select value={paymentType} onValueChange={setPaymentType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="stripe">Stripe</SelectItem>
-                  <SelectItem value="alipay">支付宝</SelectItem>
-                  <SelectItem value="wxpay">微信支付</SelectItem>
-                  <SelectItem value="epay">易支付</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {plans.map((plan: any) => (
                 <Card key={plan.id} className="flex flex-col">
@@ -160,6 +163,49 @@ export default function Store() {
             </div>
           </>
         )}
+
+        <Dialog open={!!selectedPlan} onOpenChange={(open) => !open && setSelectedPlan(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <CreditCard className="h-5 w-5" />
+                选择支付方式
+              </DialogTitle>
+              <DialogDescription>
+                购买 {selectedPlan?.name || "套餐"}，金额 {selectedPlan ? money(selectedPlan.priceCents, selectedPlan.currency) : "-"}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-2">
+              {paymentMethods.map((method: any) => (
+                <button
+                  key={method.value}
+                  type="button"
+                  onClick={() => setPaymentType(method.value)}
+                  className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
+                    paymentType === method.value
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/60 bg-background/60 hover:bg-muted/60"
+                  }`}
+                >
+                  <span className="font-medium">{method.label}</span>
+                  {paymentType === method.value && <CheckCircle2 className="h-4 w-4" />}
+                </button>
+              ))}
+              {paymentMethods.length === 0 && (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  当前没有可用的支付方式，请联系管理员。
+                </div>
+              )}
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setSelectedPlan(null)}>取消</Button>
+              <Button onClick={confirmBuy} disabled={createOrder.isPending || paymentMethods.length === 0}>
+                {createOrder.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
+                去支付
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   );
