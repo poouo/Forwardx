@@ -128,20 +128,13 @@ function TunnelLatencyDialog({
     return { total, timeout, lossRate, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
   }, [chartData]);
   const yMax = useMemo(() => {
-    if (chartData.length === 0) return 120;
+    if (chartData.length === 0) return 60;
     const maxVal = Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.latency), 0);
-    if (maxVal <= 0) return 120;
-    const dynamicMax = Math.ceil(maxVal * 2);
-    return Math.min(500, Math.max(120, dynamicMax));
+    if (maxVal <= 0) return 60;
+    return Math.max(2, Math.ceil(maxVal * 2));
   }, [chartData]);
   const yTicks = useMemo(() => {
-    const step = yMax <= 120 ? 20 : yMax <= 200 ? 40 : yMax <= 300 ? 50 : 100;
-    const ticks: number[] = [];
-    for (let i = 0; i <= yMax; i += step) {
-      ticks.push(i);
-    }
-    if (ticks[ticks.length - 1] !== yMax) ticks.push(yMax);
-    return ticks;
+    return Array.from({ length: 5 }, (_, i) => Math.round((yMax / 4) * i));
   }, [yMax]);
 
   return (

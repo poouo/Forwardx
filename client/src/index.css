@@ -120,10 +120,16 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
   body {
     @apply bg-background text-foreground;
     background:
-      linear-gradient(135deg, color-mix(in oklch, var(--background) 88%, var(--chart-2) 12%) 0%, var(--background) 42%, color-mix(in oklch, var(--background) 86%, var(--chart-4) 14%) 100%);
+      radial-gradient(circle at 18% -10%, color-mix(in oklch, var(--chart-1) 16%, transparent) 0, transparent 34rem),
+      radial-gradient(circle at 92% 8%, color-mix(in oklch, var(--chart-2) 14%, transparent) 0, transparent 30rem),
+      linear-gradient(135deg, color-mix(in oklch, var(--background) 90%, white 10%) 0%, var(--background) 48%, color-mix(in oklch, var(--background) 88%, var(--chart-4) 12%) 100%);
     min-height: 100vh;
   }
   button:not(:disabled),
@@ -143,29 +149,32 @@
   .glass-panel {
     @apply border text-card-foreground shadow-sm;
     background:
-      linear-gradient(135deg, color-mix(in oklch, var(--card) 76%, white 24%) 0%, color-mix(in oklch, var(--card) 72%, var(--chart-2) 7%) 100%);
-    border-color: color-mix(in oklch, var(--border) 54%, white 46%);
+      linear-gradient(145deg, color-mix(in oklch, var(--card) 70%, white 30%) 0%, color-mix(in oklch, var(--card) 62%, transparent) 54%, color-mix(in oklch, var(--card) 72%, var(--chart-2) 8%) 100%);
+    border-color: color-mix(in oklch, var(--border) 42%, white 58%);
     box-shadow:
-      inset 0 1px 0 color-mix(in oklch, white 58%, transparent),
-      0 18px 60px color-mix(in oklch, var(--foreground) 10%, transparent);
-    backdrop-filter: blur(24px) saturate(1.35);
-    -webkit-backdrop-filter: blur(24px) saturate(1.35);
+      inset 0 1px 0 color-mix(in oklch, white 72%, transparent),
+      inset 0 -1px 0 color-mix(in oklch, var(--foreground) 5%, transparent),
+      0 18px 60px color-mix(in oklch, var(--foreground) 9%, transparent);
+    backdrop-filter: blur(28px) saturate(1.55);
+    -webkit-backdrop-filter: blur(28px) saturate(1.55);
   }
 
   .dark .glass-panel {
     background:
-      linear-gradient(135deg, color-mix(in oklch, var(--card) 70%, white 5%) 0%, color-mix(in oklch, var(--card) 78%, var(--chart-3) 10%) 100%);
-    border-color: color-mix(in oklch, var(--border) 72%, white 12%);
+      linear-gradient(145deg, color-mix(in oklch, var(--card) 72%, white 8%) 0%, color-mix(in oklch, var(--card) 64%, transparent) 54%, color-mix(in oklch, var(--card) 78%, var(--chart-3) 10%) 100%);
+    border-color: color-mix(in oklch, var(--border) 64%, white 18%);
     box-shadow:
-      inset 0 1px 0 color-mix(in oklch, white 16%, transparent),
+      inset 0 1px 0 color-mix(in oklch, white 18%, transparent),
+      inset 0 -1px 0 color-mix(in oklch, black 22%, transparent),
       0 18px 60px color-mix(in oklch, black 36%, transparent);
   }
 
   .glass-surface {
-    background: color-mix(in oklch, var(--background) 72%, transparent);
-    border-color: color-mix(in oklch, var(--border) 56%, white 24%);
-    backdrop-filter: blur(20px) saturate(1.25);
-    -webkit-backdrop-filter: blur(20px) saturate(1.25);
+    background: color-mix(in oklch, var(--background) 64%, transparent);
+    border-color: color-mix(in oklch, var(--border) 48%, white 30%);
+    box-shadow: inset 0 1px 0 color-mix(in oklch, white 44%, transparent);
+    backdrop-filter: blur(24px) saturate(1.45);
+    -webkit-backdrop-filter: blur(24px) saturate(1.45);
   }
 
   .container {

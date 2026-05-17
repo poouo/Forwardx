@@ -92,7 +92,7 @@ function UsersContent() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserName, setNewUserName] = useState("");
   // 出于安全考虑，后台创建的用户一律为普通用户
-  const [newCanAddRules, setNewCanAddRules] = useState(false);
+  const [newCanAddRules, setNewCanAddRules] = useState(true);
 
   // Reset password dialog
   const [showResetPassword, setShowResetPassword] = useState(false);
@@ -110,7 +110,6 @@ function UsersContent() {
   const [expiresAtInput, setExpiresAtInput] = useState("");
   const [trafficAutoReset, setTrafficAutoReset] = useState(false);
   const [trafficResetDay, setTrafficResetDay] = useState(1);
-  const [canAddRules, setCanAddRules] = useState(false);
   const [maxRules, setMaxRules] = useState(0);
   const [maxPorts, setMaxPorts] = useState(0);
   // 允许使用的转发方式：默认三种全部允许
@@ -118,7 +117,6 @@ function UsersContent() {
   const [allowRealm, setAllowRealm] = useState(true);
   const [allowSocat, setAllowSocat] = useState(true);
   const [allowGost, setAllowGost] = useState(true);
-  const [allowForwardXTunnel, setAllowForwardXTunnel] = useState(false);
 
   // Agent 权限
   const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
@@ -178,7 +176,7 @@ function UsersContent() {
       setNewUsername("");
       setNewUserPassword("");
       setNewUserName("");
-      setNewCanAddRules(false);
+      setNewCanAddRules(true);
     },
     onError: (err) => toast.error(err.message || "创建用户失败"),
   });
@@ -224,6 +222,15 @@ function UsersContent() {
       toast.success("流量已重置");
     },
     onError: (err) => toast.error(err.message || "重置流量失败"),
+  });
+
+  const updateForwardAccessMutation = trpc.users.setForwardAccess.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+      utils.rules.list.invalidate();
+      toast.success("用户转发权限已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新转发权限失败"),
   });
 
   const adminCount = useMemo(() => users?.filter((u) => u.role === "admin").length ?? 0, [users]);
@@ -279,10 +286,8 @@ function UsersContent() {
     const unifiedRateLimit = Math.max(gostIn, gostOut);
     setGostRateLimitInInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
     setGostRateLimitOutInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
-    setCanAddRules(!!u.canAddRules);
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
-    setAllowForwardXTunnel(!!u.allowForwardXTunnel);
     // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
     if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
@@ -318,11 +323,9 @@ function UsersContent() {
       expiresAt: expiresAtInput || null,
       trafficAutoReset,
       trafficResetDay,
-      canAddRules,
       maxRules,
       maxPorts,
       allowedForwardTypes,
-      allowForwardXTunnel,
     });
     // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
     updateHostPermsMutation.mutate({
@@ -419,11 +422,23 @@ function UsersContent() {
                                 <User className="h-3.5 w-3.5 text-muted-foreground" />
                               )}
                             </div>
-                            <div>
+                            <div className="min-w-0">
                               <p className="font-medium text-sm leading-none">{u.name || "未命名"}</p>
                               <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">{u.username}</p>
                               {u.id === currentUser?.id && (
                                 <p className="text-[10px] text-primary">当前登录</p>
+                              )}
+                              {u.role !== "admin" && (
+                                <div className="mt-2 flex items-center gap-2 lg:hidden">
+                                  <Switch
+                                    checked={!!u.canAddRules}
+                                    disabled={updateForwardAccessMutation.isPending}
+                                    onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
+                                  />
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {u.canAddRules ? "转发启用" : "转发停用"}
+                                  </span>
+                                </div>
                               )}
                             </div>
                           </div>
@@ -496,15 +511,22 @@ function UsersContent() {
                         </TableCell>
                         <TableCell className="hidden lg:table-cell">
                           <div className="flex flex-col gap-0.5">
-                            {u.canAddRules || u.role === "admin" ? (
-                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-chart-2/30 text-chart-2 w-fit">
-                                可添加规则
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-muted-foreground/30 text-muted-foreground w-fit">
-                                仅查看
-                              </Badge>
-                            )}
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={u.role === "admin" || !!u.canAddRules}
+                                disabled={u.role === "admin" || updateForwardAccessMutation.isPending}
+                                onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
+                              />
+                              {u.canAddRules || u.role === "admin" ? (
+                                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-chart-2/30 text-chart-2 w-fit">
+                                  转发启用
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-muted-foreground/30 text-muted-foreground w-fit">
+                                  转发停用
+                                </Badge>
+                              )}
+                            </div>
                             {u.trafficAutoReset && (
                               <span className="text-[9px] text-muted-foreground">
                                 每月{u.trafficResetDay || 1}日重置
@@ -629,10 +651,10 @@ function UsersContent() {
               />
             </div>
             <div className="space-y-2">
-              <Label>允许添加规则</Label>
+              <Label>转发总开关</Label>
               <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
                 <div className="min-w-0 pr-3">
-                  <p className="text-xs text-muted-foreground">新用户默认为普通用户，可控制其是否可创建转发规则</p>
+                  <p className="text-xs text-muted-foreground">关闭后用户无法创建转发规则，且已有规则会保持停用</p>
                 </div>
                 <Switch
                   checked={newCanAddRules}
@@ -704,13 +726,6 @@ function UsersContent() {
 
             {/* 权限标签页 */}
             <TabsContent value="permission" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
-              <div className="flex items-center justify-between rounded-lg border border-border/40 p-3">
-                <div className="min-w-0 pr-3">
-                  <p className="text-sm font-medium">允许添加转发规则</p>
-                  <p className="text-xs text-muted-foreground">关闭后用户将无法创建新的转发规则</p>
-                </div>
-                <Switch checked={canAddRules} onCheckedChange={setCanAddRules} />
-              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <Label>最大规则数</Label>
@@ -900,7 +915,7 @@ function UsersContent() {
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                分别分配端口转发可用主机，以及隧道转发可用隧道。未授权的主机或隧道不会出现在普通用户的创建选项中。
+                分别分配端口转发可用主机，以及隧道转发可用链路。未授权的主机或隧道不会出现在普通用户的创建选项中。
               </p>
 
               <div className="space-y-2">
@@ -932,15 +947,8 @@ function UsersContent() {
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label className="text-sm font-medium">隧道转发隧道</Label>
+                  <Label className="text-sm font-medium">隧道转发</Label>
                   <Badge variant="outline" className="text-[10px]">{allowedTunnelIds.length} 条</Badge>
-                </div>
-                <div className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
-                  <div className="min-w-0 pr-3">
-                    <p className="text-sm font-medium">允许自定义加密隧道</p>
-                    <p className="text-xs text-muted-foreground">开启后，该用户才能创建使用 ForwardX 自定义加密隧道的规则。</p>
-                  </div>
-                  <Switch checked={allowForwardXTunnel} onCheckedChange={setAllowForwardXTunnel} />
                 </div>
                 {allTunnels && allTunnels.length > 0 ? (
                   <div className="space-y-2">

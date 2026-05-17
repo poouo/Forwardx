@@ -89,6 +89,7 @@ export const forwardRules = sqliteTable("forward_rules", {
   targetPort: integer("targetPort").notNull(),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
   disabledByTunnel: integer("disabledByTunnel", { mode: "boolean" }).notNull().default(false),
+  disabledByUser: integer("disabledByUser", { mode: "boolean" }).notNull().default(false),
   isRunning: integer("isRunning", { mode: "boolean" }).notNull().default(false),
   pendingDelete: integer("pendingDelete", { mode: "boolean" }).notNull().default(false),
   userId: integer("userId").notNull(),

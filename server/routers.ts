@@ -137,6 +137,25 @@ function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   return { entryPushed, exitPushed };
 }
 
+async function refreshUserForwardEndpoints(userId: number, reason: string) {
+  const rules = await db.getForwardRules(userId);
+  const hostIds = new Set<number>();
+  const tunnelIds = new Set<number>();
+  for (const rule of rules as any[]) {
+    hostIds.add(Number(rule.hostId));
+    if (rule.tunnelId) tunnelIds.add(Number(rule.tunnelId));
+  }
+  for (const hostId of hostIds) {
+    if (hostId > 0) pushAgentRefresh(hostId, reason);
+  }
+  for (const tunnelId of tunnelIds) {
+    const tunnel = await db.getTunnelById(tunnelId);
+    if (!tunnel) continue;
+    await db.updateTunnel(tunnelId, { isRunning: false } as any);
+    pushTunnelEndpointRefresh(tunnel, reason);
+  }
+}
+
 function maskToken(token: string) {
   if (!token) return "";
   if (token.length <= 12) return `${token.slice(0, 4)}...`;
@@ -356,6 +375,8 @@ export const appRouter = router({
           throw new Error("不允许修改管理员账户的角色");
         }
         await db.updateUserRole(input.userId, input.role);
+        await db.setUserForwardAccess(input.userId, false);
+        await refreshUserForwardEndpoints(input.userId, "user-role-updated");
         return { success: true };
       }),
     resetPassword: adminProcedure
@@ -443,6 +464,16 @@ export const appRouter = router({
           data.allowedForwardTypes = allowedForwardTypes === null || valid.length === FORWARD_TYPES.length ? null : valid.join(",");
         }
         await db.updateUserTrafficSettings(userId, data);
+        return { success: true };
+      }),
+    setForwardAccess: adminProcedure
+      .input(z.object({ userId: z.number(), enabled: z.boolean() }))
+      .mutation(async ({ input }) => {
+        const target = await db.getUserById(input.userId);
+        if (!target) throw new Error("用户不存在");
+        if (target.role === "admin") throw new Error("管理员默认拥有全部权限");
+        await db.setUserForwardAccess(input.userId, input.enabled);
+        await refreshUserForwardEndpoints(input.userId, input.enabled ? "user-forward-enabled" : "user-forward-disabled");
         return { success: true };
       }),
     /** 手动重置用户流量 */
@@ -710,7 +741,7 @@ export const appRouter = router({
           if (selectedTunnelForRule.entryHostId !== input.hostId) {
             throw new Error("Tunnel entry host must match the rule host");
           }
-          if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx" && !(currentUser as any)?.allowForwardXTunnel) {
+          if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx" && !(currentUser as any)?.canAddRules) {
             throw new Error("No permission to use custom encrypted tunnels");
           }
         }
@@ -806,7 +837,7 @@ export const appRouter = router({
             }
             if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx") {
               const currentUser = await db.getUserById(ctx.user.id);
-              if (!(currentUser as any)?.allowForwardXTunnel) {
+              if (!(currentUser as any)?.canAddRules) {
                 throw new Error("No permission to use custom encrypted tunnels");
               }
             }
