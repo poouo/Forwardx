@@ -13,6 +13,9 @@ import Rules from "./pages/Rules";
 import Tunnels from "./pages/Tunnels";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
+import Payments from "./pages/Payments";
+import Plans from "./pages/Plans";
+import Store from "./pages/Store";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
@@ -31,6 +34,9 @@ function Router() {
       <Route path="/rules" component={Rules} />
       <Route path="/tunnels">{() => <AdminRoute component={Tunnels} />}</Route>
       <Route path="/users">{() => <AdminRoute component={Users} />}</Route>
+      <Route path="/payments">{() => <AdminRoute component={Payments} />}</Route>
+      <Route path="/plans">{() => <AdminRoute component={Plans} />}</Route>
+      <Route path="/store" component={Store} />
       <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

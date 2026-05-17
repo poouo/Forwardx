@@ -41,6 +41,9 @@ import {
   Rocket,
   Route,
   Zap,
+  CreditCard,
+  Package,
+  ShoppingBag,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -60,6 +63,8 @@ const mainMenuItems = [
 ];
 
 const adminMenuItems = [
+  { icon: CreditCard, label: "支付对接", path: "/payments" },
+  { icon: Package, label: "套餐管理", path: "/plans" },
   { icon: Users, label: "用户管理", path: "/users" },
   { icon: Settings, label: "系统设置", path: "/settings" },
 ];
@@ -123,6 +128,11 @@ function DashboardLayoutContent({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const { data: storeStatus } = trpc.plans.storeStatus.useQuery(undefined, {
+    enabled: !!user && !isAdmin,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
   // Change password dialog state
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -166,10 +176,13 @@ function DashboardLayoutContent({
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
     : mainMenuItems.filter((item) => item.path !== "/hosts" && item.path !== "/tunnels");
+  const userStoreMenuItems = !isAdmin && storeStatus?.enabled
+    ? [{ icon: ShoppingBag, label: "商店", path: "/store" }]
+    : [];
 
   const allMenuItems = isAdmin
     ? [...visibleMainMenuItems, ...adminMenuItems]
-    : visibleMainMenuItems;
+    : [...visibleMainMenuItems, ...userStoreMenuItems];
 
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
 
@@ -227,7 +240,7 @@ function DashboardLayoutContent({
               主菜单
             </SidebarGroupLabel>
             <SidebarMenu className="px-2 py-1">
-              {visibleMainMenuItems.map((item) => {
+              {[...visibleMainMenuItems, ...userStoreMenuItems].map((item) => {
                 const isActive = location === item.path;
                 return (
                   <SidebarMenuItem key={item.path}>

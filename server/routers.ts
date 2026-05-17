@@ -1,6 +1,7 @@
 import { COOKIE_NAME } from "../shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
+import { paymentRouter } from "./payment";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
@@ -162,8 +163,101 @@ function maskToken(token: string) {
   return `${token.slice(0, 8)}...${token.slice(-4)}`;
 }
 
+const planInput = z.object({
+  name: z.string().min(1).max(80),
+  description: z.string().max(500).nullable().optional(),
+  priceCents: z.number().int().min(0).max(100_000_000),
+  currency: z.string().trim().min(3).max(8).default("CNY"),
+  durationDays: z.number().int().min(0).max(3650).default(30),
+  portCount: z.number().int().min(1).max(1024).default(1),
+  trafficLimit: z.number().int().min(0).default(0),
+  rateLimitMbps: z.number().int().min(0).default(0),
+  maxRules: z.number().int().min(0).default(0),
+  isActive: z.boolean().default(true),
+  isStoreVisible: z.boolean().default(true),
+  sortOrder: z.number().int().min(0).max(9999).default(0),
+  hostIds: z.array(z.number().int().positive()).default([]),
+  tunnelIds: z.array(z.number().int().positive()).default([]),
+});
+
 export const appRouter = router({
   system: systemRouter,
+  payment: paymentRouter,
+
+  plans: router({
+    storeStatus: protectedProcedure.query(async () => {
+      return { enabled: (await db.getSetting("storeEnabled")) === "true" };
+    }),
+    setStoreEnabled: adminProcedure
+      .input(z.object({ enabled: z.boolean() }))
+      .mutation(async ({ input }) => {
+        await db.setSetting("storeEnabled", input.enabled ? "true" : "false");
+        appendPanelLog("info", `[Store] ${input.enabled ? "enabled" : "disabled"}`);
+        return { success: true };
+      }),
+    list: adminProcedure.query(async () => {
+      return db.listSubscriptionPlans(true);
+    }),
+    storeList: protectedProcedure.query(async () => {
+      if ((await db.getSetting("storeEnabled")) !== "true") return [];
+      return db.listSubscriptionPlans(false);
+    }),
+    create: adminProcedure
+      .input(planInput)
+      .mutation(async ({ input }) => {
+        const { hostIds, tunnelIds, ...data } = input;
+        if (hostIds.length === 0 && tunnelIds.length === 0) throw new Error("套餐至少需要绑定一个主机或隧道");
+        return db.createSubscriptionPlan({
+          ...data,
+          description: data.description || null,
+          currency: data.currency.toUpperCase(),
+        } as any, hostIds, tunnelIds);
+      }),
+    update: adminProcedure
+      .input(planInput.extend({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        const { id, hostIds, tunnelIds, ...data } = input;
+        if (hostIds.length === 0 && tunnelIds.length === 0) throw new Error("套餐至少需要绑定一个主机或隧道");
+        return db.updateSubscriptionPlan(id, {
+          ...data,
+          description: data.description || null,
+          currency: data.currency.toUpperCase(),
+        } as any, hostIds, tunnelIds);
+      }),
+    delete: adminProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        await db.deleteSubscriptionPlan(input.id);
+        return { success: true };
+      }),
+    subscriptions: adminProcedure
+      .input(z.object({ userId: z.number().optional() }).optional())
+      .query(async ({ input }) => {
+        await db.expireUserSubscriptions();
+        return db.listUserSubscriptions(input?.userId);
+      }),
+    mySubscriptions: protectedProcedure.query(async ({ ctx }) => {
+      await db.expireUserSubscriptions();
+      return db.listUserSubscriptions(ctx.user.id);
+    }),
+    assign: adminProcedure
+      .input(z.object({
+        userId: z.number().int().positive(),
+        planId: z.number().int().positive(),
+      }))
+      .mutation(async ({ input }) => {
+        const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null);
+        await refreshUserForwardEndpoints(input.userId, "plan-assigned");
+        appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+        return result;
+      }),
+    cancelSubscription: adminProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        await db.cancelUserSubscription(input.id);
+        return { success: true };
+      }),
+  }),
 
   auth: router({
     me: publicProcedure.query(({ ctx }) => {
@@ -650,6 +744,12 @@ export const appRouter = router({
         if (rangeStart != null && rangeEnd != null && (input.sourcePort < rangeStart || input.sourcePort > rangeEnd)) {
           return { used: true, reason: `端口必须在隧道允许范围 ${rangeStart}-${rangeEnd} 内` };
         }
+        if (ctx.user.role !== "admin") {
+          const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
+          if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
+            return { used: true, reason: `套餐端口必须在 ${planRange.start}-${planRange.end} 内` };
+          }
+        }
         if (input.excludeRuleId) {
           await requireRuleAccess(ctx, input.excludeRuleId);
         }
@@ -668,6 +768,13 @@ export const appRouter = router({
           if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
           rangeStart = (tunnel as any).portRangeStart;
           rangeEnd = (tunnel as any).portRangeEnd;
+        }
+        if (ctx.user.role !== "admin") {
+          const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
+          if (planRange) {
+            rangeStart = Math.max(Number(rangeStart || planRange.start), planRange.start);
+            rangeEnd = Math.min(Number(rangeEnd || planRange.end), planRange.end);
+          }
         }
         const port = await db.findAvailablePort(input.hostId, rangeStart, rangeEnd);
         if (!port) throw new Error("该主机端口区间内已无可用端口");
@@ -736,6 +843,7 @@ export const appRouter = router({
 
         const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
         let selectedTunnelForRule: any = null;
+        let nextTunnelIdForRule: number | null = null;
         if (tunnelId) {
           selectedTunnelForRule = await requireTunnelUseAccess(ctx, tunnelId);
           if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
@@ -748,17 +856,22 @@ export const appRouter = router({
         }
         const entryRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
         const entryRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
+        const planRange = ctx.user.role !== "admin"
+          ? await db.getUserPlanPortRange(ctx.user.id, input.hostId, tunnelId ?? undefined)
+          : null;
+        const effectiveRangeStart = planRange ? Math.max(Number(entryRangeStart || planRange.start), planRange.start) : entryRangeStart;
+        const effectiveRangeEnd = planRange ? Math.min(Number(entryRangeEnd || planRange.end), planRange.end) : entryRangeEnd;
 
         let sourcePort = input.sourcePort;
         // 源端口为 0 时随机分配
         if (sourcePort === 0) {
-          const randomPort = await db.findAvailablePort(input.hostId, entryRangeStart, entryRangeEnd);
+          const randomPort = await db.findAvailablePort(input.hostId, effectiveRangeStart, effectiveRangeEnd);
           if (!randomPort) throw new Error("该主机端口区间内已无可用端口");
           sourcePort = randomPort;
         } else {
           // 检查端口区间限制
-          const rangeStart = entryRangeStart;
-          const rangeEnd = entryRangeEnd;
+          const rangeStart = effectiveRangeStart;
+          const rangeEnd = effectiveRangeEnd;
           if (rangeStart != null && rangeEnd != null) {
             if (sourcePort < rangeStart || sourcePort > rangeEnd) {
               throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
@@ -812,6 +925,7 @@ export const appRouter = router({
         gostRelayHost: z.string().max(128).nullable().optional(),
         gostRelayPort: z.number().min(1).max(65535).nullable().optional(),
         tunnelId: z.number().nullable().optional(),
+        tunnelExitPort: z.number().min(1).max(65535).nullable().optional(),
         sourcePort: z.number().min(1).max(65535).optional(),
         targetIp: z.string().min(1).max(64).optional(),
         targetPort: z.number().min(1).max(65535).optional(),
@@ -824,10 +938,11 @@ export const appRouter = router({
 
         // 如果修改了源端口，检查端口区间和占用
         let selectedTunnelForRule: any = null;
+        let nextTunnelIdForRule: number | null = null;
         {
           const nextForwardType = input.forwardType ?? rule.forwardType;
           const nextGostMode = input.gostMode ?? (rule as any).gostMode ?? "direct";
-          const nextTunnelIdForRule = nextForwardType === "gost" && nextGostMode === "direct"
+          nextTunnelIdForRule = nextForwardType === "gost" && nextGostMode === "direct"
             ? (input.tunnelId !== undefined ? input.tunnelId : (rule as any).tunnelId)
             : null;
           if (nextTunnelIdForRule) {
@@ -853,6 +968,12 @@ export const appRouter = router({
             if (rangeStart != null && rangeEnd != null) {
               if (input.sourcePort < rangeStart || input.sourcePort > rangeEnd) {
                 throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
+              }
+            }
+            if (ctx.user.role !== "admin") {
+              const planRange = await db.getUserPlanPortRange(ctx.user.id, rule.hostId, nextTunnelIdForRule || undefined);
+              if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
+                throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
               }
             }
             const used = await db.isPortUsedOnHost(rule.hostId, input.sourcePort, rule.id);

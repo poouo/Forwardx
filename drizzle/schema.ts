@@ -212,6 +212,88 @@ export const systemSettings = sqliteTable("system_settings", {
 export type SystemSetting = typeof systemSettings.$inferSelect;
 export type InsertSystemSetting = typeof systemSettings.$inferInsert;
 
+// ===== Payment orders =====
+export const paymentOrders = sqliteTable("payment_orders", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  outTradeNo: text("outTradeNo").notNull().unique(),
+  userId: integer("userId").notNull(),
+  provider: text("provider").notNull(), // easypay | alipay | wxpay | stripe
+  paymentType: text("paymentType").notNull(), // alipay | wxpay | stripe
+  status: text("status").notNull().default("pending"), // pending | paid | completed | expired | cancelled | failed
+  subject: text("subject").notNull(),
+  amountCents: integer("amountCents").notNull(),
+  currency: text("currency").notNull().default("CNY"),
+  tradeNo: text("tradeNo"),
+  payUrl: text("payUrl"),
+  qrCode: text("qrCode"),
+  planId: integer("planId"),
+  subscriptionId: integer("subscriptionId"),
+  clientIp: text("clientIp"),
+  rawNotify: text("rawNotify"),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }),
+  paidAt: integer("paidAt", { mode: "timestamp" }),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type PaymentOrder = typeof paymentOrders.$inferSelect;
+export type InsertPaymentOrder = typeof paymentOrders.$inferInsert;
+
+// ===== Subscription plans =====
+export const subscriptionPlans = sqliteTable("subscription_plans", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description"),
+  priceCents: integer("priceCents").notNull().default(0),
+  currency: text("currency").notNull().default("CNY"),
+  durationDays: integer("durationDays").notNull().default(30),
+  portCount: integer("portCount").notNull().default(1),
+  trafficLimit: integer("trafficLimit").notNull().default(0),
+  rateLimitMbps: integer("rateLimitMbps").notNull().default(0),
+  maxRules: integer("maxRules").notNull().default(0),
+  isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
+  isStoreVisible: integer("isStoreVisible", { mode: "boolean" }).notNull().default(true),
+  sortOrder: integer("sortOrder").notNull().default(0),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
+export type InsertSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
+
+export const subscriptionPlanHosts = sqliteTable("subscription_plan_hosts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  planId: integer("planId").notNull(),
+  hostId: integer("hostId").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type SubscriptionPlanHost = typeof subscriptionPlanHosts.$inferSelect;
+export type InsertSubscriptionPlanHost = typeof subscriptionPlanHosts.$inferInsert;
+
+export const subscriptionPlanTunnels = sqliteTable("subscription_plan_tunnels", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  planId: integer("planId").notNull(),
+  tunnelId: integer("tunnelId").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type SubscriptionPlanTunnel = typeof subscriptionPlanTunnels.$inferSelect;
+export type InsertSubscriptionPlanTunnel = typeof subscriptionPlanTunnels.$inferInsert;
+
+export const userSubscriptions = sqliteTable("user_subscriptions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("userId").notNull(),
+  planId: integer("planId").notNull(),
+  status: text("status").notNull().default("active"), // active | expired | cancelled
+  source: text("source").notNull().default("admin"), // admin | payment
+  paymentOrderNo: text("paymentOrderNo"),
+  portRangeStart: integer("portRangeStart"),
+  portRangeEnd: integer("portRangeEnd"),
+  startedAt: integer("startedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+export type UserSubscription = typeof userSubscriptions.$inferSelect;
+export type InsertUserSubscription = typeof userSubscriptions.$inferInsert;
+
 // ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = sqliteTable("user_host_permissions", {
   id: integer("id").primaryKey({ autoIncrement: true }),

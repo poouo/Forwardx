@@ -24,14 +24,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/zeebo/blake3"
 )
 
-var Version = "2.2.33"
+var Version = "2.2.34"
 var upgradeStarted int32
 var fxpMu sync.Mutex
-var fxpServers = map[string]*fxpServer{}
+var fxpServers = map[string]*fxpProcess{}
 var lastTCPingAt time.Time
 
 type Config struct {
@@ -101,8 +99,8 @@ type agentUpgrade struct {
 }
 
 type selfTest struct {
-	TestID     int    `json:"testId"`
-	RuleID     int    `json:"ruleId"`
+	TestID      int    `json:"testId"`
+	RuleID      int    `json:"ruleId"`
 	ForwardType string `json:"forwardType"`
 	SourcePort  int    `json:"sourcePort"`
 	Protocol    string `json:"protocol"`
@@ -120,7 +118,7 @@ type fxpSpec struct {
 	ExitPort   int    `json:"exitPort"`
 	TargetIP   string `json:"targetIp"`
 	TargetPort int    `json:"targetPort"`
-	Key         string `json:"key"`
+	Key        string `json:"key"`
 	LimitIn    int64  `json:"limitIn"`
 	LimitOut   int64  `json:"limitOut"`
 }
@@ -705,10 +703,10 @@ func delta(cur, prev uint64) uint64 {
 	return cur
 }
 
-type fxpServer struct {
-	signature string
-	ln        net.Listener
-	pc        net.PacketConn
+type fxpProcess struct {
+	signature  string
+	cmd        *exec.Cmd
+	configPath string
 }
 
 func fxpServerID(spec fxpSpec) string {
@@ -732,62 +730,78 @@ func fxpServerSignature(spec fxpSpec) string {
 	}, "|")
 }
 
-func fxpWantsTCP(spec fxpSpec) bool {
-	return spec.Protocol == "" || spec.Protocol == "tcp" || spec.Protocol == "both"
-}
-
-func fxpWantsUDP(spec fxpSpec) bool {
-	return spec.Protocol == "udp" || spec.Protocol == "both"
-}
-
 func startFXP(spec fxpSpec) bool {
 	if spec.Key == "" || spec.ListenPort <= 0 {
 		logf("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 		return false
 	}
+	runtimePath, err := exec.LookPath("forwardx-fxp")
+	if err != nil {
+		for _, p := range []string{"/usr/local/bin/forwardx-fxp", "/opt/forwardx-agent/forwardx-fxp"} {
+			if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
+				runtimePath = p
+				err = nil
+				break
+			}
+		}
+	}
+	if err != nil || runtimePath == "" {
+		logf("fxp runtime missing: install /usr/local/bin/forwardx-fxp to use custom encrypted tunnels")
+		return false
+	}
+
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)
 	fxpMu.Lock()
 	existing := fxpServers[id]
-	if existing != nil && existing.signature == signature {
+	if existing != nil && existing.signature == signature && existing.cmd != nil && existing.cmd.Process != nil {
 		fxpMu.Unlock()
 		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
 		return true
 	}
 	fxpMu.Unlock()
 	stopFXP(spec)
-	addr := ":" + strconv.Itoa(spec.ListenPort)
-	var ln net.Listener
-	var pc net.PacketConn
-	if fxpWantsTCP(spec) {
-		var err error
-		ln, err = net.Listen("tcp", addr)
-		if err != nil {
-			logf("fxp tcp listen %s failed: %v", addr, err)
-			return false
-		}
+
+	if err := os.MkdirAll("/run/forwardx-agent", 0700); err != nil {
+		logf("fxp create runtime dir failed: %v", err)
+		return false
 	}
-	if fxpWantsUDP(spec) {
-		var err error
-		pc, err = net.ListenPacket("udp", addr)
-		if err != nil {
-			if ln != nil {
-				_ = ln.Close()
-			}
-			logf("fxp udp listen %s failed: %v", addr, err)
-			return false
-		}
+	configPath := fmt.Sprintf("/run/forwardx-agent/fxp-%s-%d-%d-%d.json", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
+	cfgBytes, err := json.Marshal(spec)
+	if err != nil {
+		logf("fxp marshal config failed: %v", err)
+		return false
 	}
+	if err := os.WriteFile(configPath, cfgBytes, 0600); err != nil {
+		logf("fxp write config failed: %v", err)
+		return false
+	}
+
+	cmd := exec.Command(runtimePath, "-config", configPath)
+	cmd.Stdout = fxpLogWriter{}
+	cmd.Stderr = fxpLogWriter{}
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(configPath)
+		logf("fxp runtime start failed: %v", err)
+		return false
+	}
+
 	fxpMu.Lock()
-	fxpServers[id] = &fxpServer{signature: signature, ln: ln, pc: pc}
+	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath}
 	fxpMu.Unlock()
-	if ln != nil {
-		go fxpAcceptLoop(spec, ln)
-	}
-	if pc != nil {
-		go fxpUDPServe(spec, pc)
-	}
-	logf("fxp %s started tunnel=%d rule=%d listen=%s protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, addr, spec.Protocol)
+	go func() {
+		err := cmd.Wait()
+		fxpMu.Lock()
+		current := fxpServers[id]
+		if current != nil && current.cmd == cmd {
+			delete(fxpServers, id)
+		}
+		fxpMu.Unlock()
+		if err != nil {
+			logf("fxp runtime exited tunnel=%d rule=%d: %v", spec.TunnelID, spec.RuleID, err)
+		}
+	}()
+	logf("fxp %s started tunnel=%d rule=%d listen=:%d protocol=%s runtime=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, runtimePath)
 	return true
 }
 
@@ -799,474 +813,27 @@ func stopFXP(spec fxpSpec) {
 		delete(fxpServers, id)
 	}
 	fxpMu.Unlock()
-	if s != nil && s.ln != nil {
-		_ = s.ln.Close()
-	}
-	if s != nil && s.pc != nil {
-		_ = s.pc.Close()
-	}
-}
-
-func fxpAcceptLoop(spec fxpSpec, ln net.Listener) {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		if spec.Role == "exit" {
-			go fxpHandleExit(spec, conn)
-		} else {
-			go fxpHandleEntry(spec, conn)
-		}
-	}
-}
-
-func fxpHandleEntry(spec fxpSpec, client net.Conn) {
-	defer client.Close()
-	if spec.ExitHost == "" || spec.ExitPort <= 0 || spec.TargetIP == "" || spec.TargetPort <= 0 {
+	if s == nil {
 		return
 	}
-	logf("fxp entry accepted tunnel=%d rule=%d from=%s exit=%s:%d target=%s:%d", spec.TunnelID, spec.RuleID, client.RemoteAddr(), spec.ExitHost, spec.ExitPort, spec.TargetIP, spec.TargetPort)
-	exitConn, err := net.DialTimeout("tcp", net.JoinHostPort(spec.ExitHost, strconv.Itoa(spec.ExitPort)), 5*time.Second)
-	if err != nil {
-		logf("fxp entry dial exit %s:%d failed: %v", spec.ExitHost, spec.ExitPort, err)
-		return
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Signal(os.Interrupt)
+		time.Sleep(500 * time.Millisecond)
+		_ = s.cmd.Process.Kill()
 	}
-	defer exitConn.Close()
-	salt, err := fxpClientHandshake(exitConn, spec)
-	if err != nil {
-		logf("fxp entry handshake failed: %v", err)
-		return
-	}
-	logf("fxp entry handshake ok tunnel=%d rule=%d salt=%x", spec.TunnelID, spec.RuleID, salt)
-	fxpRelayEncryptedEntry(client, exitConn, spec, salt)
-}
-
-func fxpHandleExit(spec fxpSpec, conn net.Conn) {
-	defer conn.Close()
-	target, salt, err := fxpServerHandshake(conn, spec.Key)
-	if err != nil {
-		logf("fxp exit handshake failed: %v", err)
-		return
-	}
-	logf("fxp exit handshake ok tunnel=%d rule=%d target=%s", spec.TunnelID, spec.RuleID, target)
-	targetConn, err := net.DialTimeout("tcp", target, 5*time.Second)
-	if err != nil {
-		logf("fxp exit dial target %s failed: %v", target, err)
-		return
-	}
-	defer targetConn.Close()
-	logf("fxp exit dial target ok tunnel=%d rule=%d target=%s", spec.TunnelID, spec.RuleID, target)
-	fxpRelayEncryptedExit(targetConn, conn, spec, salt)
-}
-
-func fxpClientHandshake(conn net.Conn, spec fxpSpec) ([]byte, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, err
-	}
-	target := net.JoinHostPort(spec.TargetIP, strconv.Itoa(spec.TargetPort))
-	targetBytes := []byte(target)
-	if len(targetBytes) > 65535 {
-		return nil, fmt.Errorf("target too long")
-	}
-	header := []byte{'F', 'X', 1, 1}
-	header = append(header, salt...)
-	var lenBuf [2]byte
-	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(targetBytes)))
-	header = append(header, lenBuf[:]...)
-	header = append(header, targetBytes...)
-	_, err := conn.Write(header)
-	return salt, err
-}
-
-func fxpServerHandshake(conn net.Conn, key string) (string, []byte, error) {
-	header := make([]byte, 22)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return "", nil, err
-	}
-	if header[0] != 'F' || header[1] != 'X' || header[2] != 1 || header[3] != 1 {
-		return "", nil, fmt.Errorf("invalid fxp header")
-	}
-	salt := append([]byte(nil), header[4:20]...)
-	targetLen := int(binary.BigEndian.Uint16(header[20:22]))
-	if targetLen <= 0 || targetLen > 1024 {
-		return "", nil, fmt.Errorf("invalid fxp target length")
-	}
-	targetBytes := make([]byte, targetLen)
-	if _, err := io.ReadFull(conn, targetBytes); err != nil {
-		return "", nil, err
-	}
-	return string(targetBytes), salt, nil
-}
-
-func fxpUDPPacketKey(addr net.Addr) string {
-	if addr == nil {
-		return ""
-	}
-	return addr.String()
-}
-
-func fxpUDPServe(spec fxpSpec, pc net.PacketConn) {
-	if spec.Role == "exit" {
-		fxpUDPServeExit(spec, pc)
-		return
-	}
-	fxpUDPServeEntry(spec, pc)
-}
-
-func fxpUDPServeEntry(spec fxpSpec, pc net.PacketConn) {
-	if spec.ExitHost == "" || spec.ExitPort <= 0 || spec.TargetIP == "" || spec.TargetPort <= 0 {
-		return
-	}
-	exitAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(spec.ExitHost, strconv.Itoa(spec.ExitPort)))
-	if err != nil {
-		logf("fxp udp entry resolve exit failed: %v", err)
-		return
-	}
-	target := net.JoinHostPort(spec.TargetIP, strconv.Itoa(spec.TargetPort))
-	sessions := map[string][]byte{}
-	var mu sync.Mutex
-	var upWindowStart time.Time
-	var upWindowBytes int64
-	var downWindowStart time.Time
-	var downWindowBytes int64
-	buf := make([]byte, 64*1024)
-	for {
-		n, clientAddr, err := pc.ReadFrom(buf)
-		if err != nil {
-			return
-		}
-		if clientAddr == nil {
-			continue
-		}
-		clientKey := fxpUDPPacketKey(clientAddr)
-		isExitPacket := clientKey == exitAddr.String()
-		if isExitPacket {
-			client, plain, ok := fxpUDPDecodeDownstream(spec, buf[:n])
-			if !ok {
-				continue
-			}
-			fxpThrottle(len(plain), spec.LimitOut, &downWindowStart, &downWindowBytes)
-			_, _ = pc.WriteTo(plain, client)
-			continue
-		}
-		mu.Lock()
-		salt := sessions[clientKey]
-		if salt == nil {
-			salt = make([]byte, 16)
-			if _, err := rand.Read(salt); err != nil {
-				mu.Unlock()
-				continue
-			}
-			sessions[clientKey] = salt
-		}
-		mu.Unlock()
-		fxpThrottle(n, spec.LimitIn, &upWindowStart, &upWindowBytes)
-		packet, err := fxpUDPEncodeUpstream(spec.Key, salt, clientKey, target, buf[:n])
-		if err != nil {
-			continue
-		}
-		_, _ = pc.WriteTo(packet, exitAddr)
+	if s.configPath != "" {
+		_ = os.Remove(s.configPath)
 	}
 }
 
-func fxpUDPServeExit(spec fxpSpec, pc net.PacketConn) {
-	buf := make([]byte, 64*1024)
-	for {
-		n, entryAddr, err := pc.ReadFrom(buf)
-		if err != nil {
-			return
-		}
-		go fxpUDPHandleExitPacket(spec, pc, entryAddr, append([]byte(nil), buf[:n]...))
-	}
-}
+type fxpLogWriter struct{}
 
-func fxpUDPHandleExitPacket(spec fxpSpec, pc net.PacketConn, entryAddr net.Addr, packet []byte) {
-	clientKey, target, plain, salt, err := fxpUDPDecodeUpstream(spec.Key, packet)
-	if err != nil {
-		logf("fxp udp exit decode failed: %v", err)
-		return
+func (fxpLogWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if msg != "" {
+		logf("fxp runtime: %s", msg)
 	}
-	targetAddr, err := net.ResolveUDPAddr("udp", target)
-	if err != nil {
-		logf("fxp udp exit resolve target %s failed: %v", target, err)
-		return
-	}
-	conn, err := net.DialUDP("udp", nil, targetAddr)
-	if err != nil {
-		logf("fxp udp exit dial target %s failed: %v", target, err)
-		return
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
-	if _, err := conn.Write(plain); err != nil {
-		return
-	}
-	reply := make([]byte, 64*1024)
-	n, err := conn.Read(reply)
-	if err != nil || n <= 0 {
-		return
-	}
-	resp, err := fxpUDPEncodeDownstream(spec.Key, salt, clientKey, reply[:n])
-	if err != nil {
-		return
-	}
-	_, _ = pc.WriteTo(resp, entryAddr)
-}
-
-func fxpUDPEncodeUpstream(key string, salt []byte, clientKey string, target string, payload []byte) ([]byte, error) {
-	aead, err := fxpAEAD(key, salt, "udp-client-to-exit")
-	if err != nil {
-		return nil, err
-	}
-	plain, err := fxpUDPPack(clientKey, target, payload)
-	if err != nil {
-		return nil, err
-	}
-	sealed := aead.Seal(nil, fxpNonce(0), plain, nil)
-	out := []byte{'F', 'X', 'U', 1}
-	out = append(out, salt...)
-	out = append(out, sealed...)
-	return out, nil
-}
-
-func fxpUDPDecodeUpstream(key string, packet []byte) (string, string, []byte, []byte, error) {
-	if len(packet) < 20 || packet[0] != 'F' || packet[1] != 'X' || packet[2] != 'U' || packet[3] != 1 {
-		return "", "", nil, nil, fmt.Errorf("invalid udp header")
-	}
-	salt := append([]byte(nil), packet[4:20]...)
-	aead, err := fxpAEAD(key, salt, "udp-client-to-exit")
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	plain, err := aead.Open(nil, fxpNonce(0), packet[20:], nil)
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	clientKey, target, payload, err := fxpUDPUnpack(plain)
-	return clientKey, target, payload, salt, err
-}
-
-func fxpUDPEncodeDownstream(key string, salt []byte, clientKey string, payload []byte) ([]byte, error) {
-	aead, err := fxpAEAD(key, salt, "udp-exit-to-client")
-	if err != nil {
-		return nil, err
-	}
-	plain, err := fxpUDPPack(clientKey, "", payload)
-	if err != nil {
-		return nil, err
-	}
-	sealed := aead.Seal(nil, fxpNonce(0), plain, nil)
-	out := []byte{'F', 'X', 'D', 1}
-	out = append(out, salt...)
-	out = append(out, sealed...)
-	return out, nil
-}
-
-func fxpUDPDecodeDownstream(spec fxpSpec, packet []byte) (net.Addr, []byte, bool) {
-	if len(packet) < 20 || packet[0] != 'F' || packet[1] != 'X' || packet[2] != 'D' || packet[3] != 1 {
-		return nil, nil, false
-	}
-	salt := packet[4:20]
-	aead, err := fxpAEAD(spec.Key, salt, "udp-exit-to-client")
-	if err != nil {
-		return nil, nil, false
-	}
-	plain, err := aead.Open(nil, fxpNonce(0), packet[20:], nil)
-	if err != nil {
-		return nil, nil, false
-	}
-	clientKey, _, payload, err := fxpUDPUnpack(plain)
-	if err != nil {
-		return nil, nil, false
-	}
-	addr, err := net.ResolveUDPAddr("udp", clientKey)
-	if err != nil {
-		return nil, nil, false
-	}
-	return addr, payload, true
-}
-
-func fxpUDPPack(clientKey string, target string, payload []byte) ([]byte, error) {
-	clientBytes := []byte(clientKey)
-	targetBytes := []byte(target)
-	if len(clientBytes) > 65535 || len(targetBytes) > 65535 {
-		return nil, fmt.Errorf("udp metadata too long")
-	}
-	out := make([]byte, 0, 4+len(clientBytes)+len(targetBytes)+len(payload))
-	var b [2]byte
-	binary.BigEndian.PutUint16(b[:], uint16(len(clientBytes)))
-	out = append(out, b[:]...)
-	binary.BigEndian.PutUint16(b[:], uint16(len(targetBytes)))
-	out = append(out, b[:]...)
-	out = append(out, clientBytes...)
-	out = append(out, targetBytes...)
-	out = append(out, payload...)
-	return out, nil
-}
-
-func fxpUDPUnpack(in []byte) (string, string, []byte, error) {
-	if len(in) < 4 {
-		return "", "", nil, fmt.Errorf("udp packet too short")
-	}
-	clientLen := int(binary.BigEndian.Uint16(in[0:2]))
-	targetLen := int(binary.BigEndian.Uint16(in[2:4]))
-	offset := 4
-	if clientLen <= 0 || len(in) < offset+clientLen+targetLen {
-		return "", "", nil, fmt.Errorf("invalid udp metadata")
-	}
-	clientKey := string(in[offset : offset+clientLen])
-	offset += clientLen
-	target := string(in[offset : offset+targetLen])
-	offset += targetLen
-	return clientKey, target, append([]byte(nil), in[offset:]...), nil
-}
-
-func fxpRelayEncryptedEntry(client net.Conn, exitConn net.Conn, spec fxpSpec, salt []byte) {
-	errc := make(chan error, 2)
-	go func() { errc <- fxpEncryptCopy("entry client-to-exit", exitConn, client, spec.Key, salt, "client-to-exit", spec.LimitIn) }()
-	go func() { errc <- fxpDecryptCopy("entry exit-to-client", client, exitConn, spec.Key, salt, "exit-to-client", spec.LimitOut) }()
-	if err := <-errc; err != nil && !isClosedConnError(err) {
-		logf("fxp entry relay ended: %v", err)
-	}
-	logf("fxp entry relay closed tunnel=%d rule=%d", spec.TunnelID, spec.RuleID)
-}
-
-func fxpRelayEncryptedExit(targetConn net.Conn, entryConn net.Conn, spec fxpSpec, salt []byte) {
-	errc := make(chan error, 2)
-	go func() { errc <- fxpDecryptCopy("exit client-to-target", targetConn, entryConn, spec.Key, salt, "client-to-exit", spec.LimitIn) }()
-	go func() { errc <- fxpEncryptCopy("exit target-to-client", entryConn, targetConn, spec.Key, salt, "exit-to-client", spec.LimitOut) }()
-	if err := <-errc; err != nil && !isClosedConnError(err) {
-		logf("fxp exit relay ended: %v", err)
-	}
-	logf("fxp exit relay closed tunnel=%d rule=%d", spec.TunnelID, spec.RuleID)
-}
-
-func isClosedConnError(err error) bool {
-	if err == nil || err == io.EOF {
-		return true
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "use of closed network connection") ||
-		strings.Contains(s, "connection reset by peer") ||
-		strings.Contains(s, "broken pipe")
-}
-
-func fxpAEAD(key string, salt []byte, direction string) (cipher.AEAD, error) {
-	seedInput := append([]byte("forwardx-fxp-aes-128-gcm|"+direction+"|"+key+"|"), salt...)
-	seed := blake3.Sum256(seedInput)
-	block, err := aes.NewCipher(seed[:16])
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
-func fxpNonce(seq uint64) []byte {
-	nonce := make([]byte, 12)
-	binary.BigEndian.PutUint64(nonce[4:], seq)
-	return nonce
-}
-
-func fxpThrottle(bytes int, limit int64, windowStart *time.Time, windowBytes *int64) {
-	if limit <= 0 || bytes <= 0 {
-		return
-	}
-	now := time.Now()
-	if windowStart.IsZero() || now.Sub(*windowStart) >= time.Second {
-		*windowStart = now
-		*windowBytes = 0
-	}
-	*windowBytes += int64(bytes)
-	if *windowBytes > limit {
-		sleepFor := time.Second - time.Since(*windowStart)
-		if sleepFor > 0 {
-			time.Sleep(sleepFor)
-		}
-		*windowStart = time.Now()
-		*windowBytes = 0
-	}
-}
-
-func fxpEncryptCopy(label string, dst net.Conn, src net.Conn, key string, salt []byte, direction string, limit int64) error {
-	aead, err := fxpAEAD(key, salt, direction)
-	if err != nil {
-		return err
-	}
-	buf := make([]byte, 32*1024)
-	var seq uint64
-	var windowStart time.Time
-	var windowBytes int64
-	for {
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			fxpThrottle(n, limit, &windowStart, &windowBytes)
-			sealed := aead.Seal(nil, fxpNonce(seq), buf[:n], nil)
-			var hdr [4]byte
-			binary.BigEndian.PutUint32(hdr[:], uint32(len(sealed)))
-			if err := writeFull(dst, hdr[:]); err != nil {
-				return fmt.Errorf("%s write header: %w", label, err)
-			}
-			if err := writeFull(dst, sealed); err != nil {
-				return fmt.Errorf("%s write frame: %w", label, err)
-			}
-			seq++
-		}
-		if readErr != nil {
-			if readErr != io.EOF {
-				return fmt.Errorf("%s read: %w", label, readErr)
-			}
-			return readErr
-		}
-	}
-}
-
-func fxpDecryptCopy(label string, dst net.Conn, src net.Conn, key string, salt []byte, direction string, limit int64) error {
-	aead, err := fxpAEAD(key, salt, direction)
-	if err != nil {
-		return err
-	}
-	var seq uint64
-	var windowStart time.Time
-	var windowBytes int64
-	for {
-		var hdr [4]byte
-		if _, err := io.ReadFull(src, hdr[:]); err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				return fmt.Errorf("%s read header: %w", label, err)
-			}
-			return err
-		}
-		n := binary.BigEndian.Uint32(hdr[:])
-		if n == 0 || n > 64*1024 {
-			return fmt.Errorf("%s invalid fxp frame size %d", label, n)
-		}
-		frame := make([]byte, n)
-		if _, err := io.ReadFull(src, frame); err != nil {
-			return fmt.Errorf("%s read frame: %w", label, err)
-		}
-		plain, err := aead.Open(nil, fxpNonce(seq), frame, nil)
-		if err != nil {
-			return fmt.Errorf("%s open frame seq=%d: %w", label, seq, err)
-		}
-		fxpThrottle(len(plain), limit, &windowStart, &windowBytes)
-		if err := writeFull(dst, plain); err != nil {
-			return fmt.Errorf("%s write plain: %w", label, err)
-		}
-		seq++
-	}
-}
-
-func writeFull(conn net.Conn, p []byte) error {
-	for len(p) > 0 {
-		n, err := conn.Write(p)
-		if err != nil {
-			return err
-		}
-		p = p[n:]
-	}
-	return nil
+	return len(p), nil
 }
 
 func selfUpgrade(cfg Config, up *agentUpgrade) {

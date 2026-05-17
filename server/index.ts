@@ -8,6 +8,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/context";
 import { agentRouter } from "./agentRoutes";
+import { paymentCallbackRouter } from "./payment";
 import { initDatabase } from "./db";
 import * as db from "./db";
 import { installPanelLogger } from "./_core/panelLogger";
@@ -141,6 +142,8 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+  // Payment webhooks need the original request body for signature verification.
+  app.use(paymentCallbackRouter);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
