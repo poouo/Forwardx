@@ -595,6 +595,7 @@ export async function getUserTrafficSummaries() {
     role: users.role,
     trafficLimit: users.trafficLimit,
     trafficUsed: users.trafficUsed,
+    canAddRules: users.canAddRules,
     gostRateLimitIn: users.gostRateLimitIn,
     gostRateLimitOut: users.gostRateLimitOut,
     allowForwardXTunnel: users.allowForwardXTunnel,

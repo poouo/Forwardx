@@ -126,6 +126,24 @@ function formatTrafficTime(dateStr: string | Date): string {
   return `${month}/${day} ${hour}:${minute}`;
 }
 
+function formatDate(value: string | Date | null | undefined): string {
+  if (!value) return "永久有效";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "永久有效";
+  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+function getExpiryStatus(value: string | Date | null | undefined) {
+  if (!value) return { label: "永久有效", tone: "normal" as const };
+  const expiry = new Date(value).getTime();
+  if (Number.isNaN(expiry)) return { label: "永久有效", tone: "normal" as const };
+  const diffDays = Math.ceil((expiry - Date.now()) / (24 * 60 * 60 * 1000));
+  if (diffDays < 0) return { label: "已到期", tone: "danger" as const };
+  if (diffDays === 0) return { label: "今日到期", tone: "warning" as const };
+  if (diffDays <= 7) return { label: `剩余 ${diffDays} 天`, tone: "warning" as const };
+  return { label: `剩余 ${diffDays} 天`, tone: "normal" as const };
+}
+
 /** 流量 Tooltip */
 function TrafficTooltipContent({ active, payload, label }: any) {
   if (!active || !payload || payload.length === 0) return null;
@@ -185,6 +203,16 @@ function DashboardContent() {
   const { data: userTraffic, isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, {
     refetchInterval: 30000,
   });
+  const currentUserTraffic = useMemo(() => {
+    if (!userTraffic || userTraffic.length === 0) return null;
+    return userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || userTraffic[0];
+  }, [userTraffic, user?.id]);
+  const currentTrafficLimit = Number(currentUserTraffic?.trafficLimit) || 0;
+  const currentTrafficUsed = Number(currentUserTraffic?.trafficUsed) || 0;
+  const currentTrafficRemaining = currentTrafficLimit > 0 ? Math.max(0, currentTrafficLimit - currentTrafficUsed) : null;
+  const currentTrafficPct = currentTrafficLimit > 0 ? Math.min(100, Math.round((currentTrafficUsed / currentTrafficLimit) * 100)) : 0;
+  const currentExpiry = getExpiryStatus(currentUserTraffic?.expiresAt);
+  const currentCanForward = user?.role === "admin" || !!currentUserTraffic?.canAddRules;
 
   const onlineRate = useMemo(() => {
     if (!stats || stats.totalHosts === 0) return 0;
@@ -280,6 +308,79 @@ function DashboardContent() {
           loading={isLoading}
         />
       </div>
+
+      {user?.role !== "admin" && (
+        <Card className="relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
+          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <Shield className="h-4 w-4" />
+                我的账户状态
+              </CardTitle>
+              {userTrafficLoading ? (
+                <Skeleton className="h-6 w-36 rounded-full" />
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Badge
+                    variant={currentCanForward ? "outline" : "destructive"}
+                    className={currentCanForward ? "border-chart-2/30 text-chart-2" : ""}
+                  >
+                    {currentCanForward ? "转发已启用" : "转发已停用"}
+                  </Badge>
+                  <Badge
+                    variant={currentExpiry.tone === "danger" ? "destructive" : "outline"}
+                    className={currentExpiry.tone === "warning" ? "border-amber-500/40 text-amber-600" : ""}
+                  >
+                    {currentExpiry.label}
+                  </Badge>
+                </div>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {userTrafficLoading ? (
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20 w-full" />)}
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                    <p className="text-xs text-muted-foreground">已用流量</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">{formatBytes(currentTrafficUsed)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                    <p className="text-xs text-muted-foreground">剩余流量</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">
+                      {currentTrafficRemaining === null ? "不限" : formatBytes(currentTrafficRemaining)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                    <p className="text-xs text-muted-foreground">到期时间</p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">{formatDate(currentUserTraffic?.expiresAt)}</p>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span>流量使用进度</span>
+                    <span className="tabular-nums">
+                      {currentTrafficLimit > 0
+                        ? `${formatBytes(currentTrafficUsed)} / ${formatBytes(currentTrafficLimit)} (${currentTrafficPct}%)`
+                        : `${formatBytes(currentTrafficUsed)} / 不限`}
+                    </span>
+                  </div>
+                  <Progress value={currentTrafficLimit > 0 ? currentTrafficPct : 0} className="h-2" />
+                  <p className="text-[11px] text-muted-foreground/70">
+                    流量按 Agent 上报的转发规则增量累计；管理员未设置限额时仅展示已用总量。
+                    {currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
+                  </p>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Traffic Trend Chart - AreaChart style */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">

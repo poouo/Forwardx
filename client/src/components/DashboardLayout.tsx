@@ -163,9 +163,13 @@ function DashboardLayoutContent({
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
 
+  const visibleMainMenuItems = isAdmin
+    ? mainMenuItems
+    : mainMenuItems.filter((item) => item.path !== "/hosts" && item.path !== "/tunnels");
+
   const allMenuItems = isAdmin
-    ? [...mainMenuItems, ...adminMenuItems]
-    : mainMenuItems;
+    ? [...visibleMainMenuItems, ...adminMenuItems]
+    : visibleMainMenuItems;
 
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
 
@@ -223,7 +227,7 @@ function DashboardLayoutContent({
               主菜单
             </SidebarGroupLabel>
             <SidebarMenu className="px-2 py-1">
-              {mainMenuItems.map((item) => {
+              {visibleMainMenuItems.map((item) => {
                 const isActive = location === item.path;
                 return (
                   <SidebarMenuItem key={item.path}>

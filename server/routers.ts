@@ -332,6 +332,7 @@ export const appRouter = router({
         role: user.role,
         trafficLimit: user.trafficLimit,
         trafficUsed: user.trafficUsed,
+        canAddRules: user.canAddRules,
         gostRateLimitIn: user.gostRateLimitIn,
         gostRateLimitOut: user.gostRateLimitOut,
         expiresAt: user.expiresAt,
