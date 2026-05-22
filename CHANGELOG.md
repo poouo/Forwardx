@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.52] - 2026-05-22
+
+### Added
+
+- Added paginated Telegram user management for bound administrators, including user detail, traffic reset, and forward-access enable/disable actions.
+- Added paginated Telegram rule management for users, including rule detail and enable/disable actions.
+- Added Telegram traffic and expiry reminder settings, with scheduled notifications for bound users.
+- Added Telegram slash-command registration so users see command suggestions after typing `/` in the bot chat.
+
+### Changed
+
+- Telegram `/rules` and `/users` now open interactive paginated views.
+- Bumped panel version to 2.2.52. Agent version remains 2.2.45.
+
 ## [2.2.51] - 2026-05-22
 
 ### Added

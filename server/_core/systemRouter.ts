@@ -19,7 +19,7 @@ import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } 
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
-export const APP_VERSION = "2.2.51";
+export const APP_VERSION = "2.2.52";
 export const AGENT_VERSION = "2.2.45";
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
@@ -276,6 +276,9 @@ export const systemRouter = router({
         })(),
         tokenSource: ENV.telegramBotToken.trim() ? "env" : (all.telegramBotToken ? "database" : "none"),
         polling: ENV.telegramBotPolling,
+        expiryReminder: all.telegramExpiryReminder === "true",
+        trafficReminder: all.telegramTrafficReminder === "true",
+        trafficReminderThreshold: Number(all.telegramTrafficReminderThreshold || 20),
       },
     };
   }),
@@ -303,6 +306,9 @@ export const systemRouter = router({
           enabled: z.boolean().optional(),
           botToken: z.string().max(256).optional(),
           clearToken: z.boolean().optional(),
+          expiryReminder: z.boolean().optional(),
+          trafficReminder: z.boolean().optional(),
+          trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
         }).optional(),
       })
     )
@@ -341,6 +347,9 @@ export const systemRouter = router({
       if (input.telegram) {
         const next: Record<string, string | null> = {};
         if (input.telegram.enabled !== undefined) next.telegramBotEnabled = input.telegram.enabled ? "true" : "false";
+        if (input.telegram.expiryReminder !== undefined) next.telegramExpiryReminder = input.telegram.expiryReminder ? "true" : "false";
+        if (input.telegram.trafficReminder !== undefined) next.telegramTrafficReminder = input.telegram.trafficReminder ? "true" : "false";
+        if (input.telegram.trafficReminderThreshold !== undefined) next.telegramTrafficReminderThreshold = String(input.telegram.trafficReminderThreshold);
         let tokenChanged = false;
         if (input.telegram.clearToken) {
           next.telegramBotToken = null;

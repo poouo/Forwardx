@@ -404,5 +404,9 @@ export async function getUserTrafficSummaries() {
     maxConnections: users.maxConnections,
     maxIPs: users.maxIPs,
     balanceCents: users.balanceCents,
+    telegramId: users.telegramId,
+    telegramUsername: users.telegramUsername,
+    telegramFirstName: users.telegramFirstName,
+    telegramLastName: users.telegramLastName,
   }).from(users).orderBy(desc(users.trafficUsed));
 }

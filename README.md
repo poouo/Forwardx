@@ -181,7 +181,7 @@ ForwardX 支持两类隧道：
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | 空 | 可选，通过环境变量提供 MySQL 连接信息 |
 | `MYSQL_SSL` | `false` | MySQL 是否启用 SSL |
 | `JWT_SECRET` | `change-me-to-a-random-string` | 登录签名密钥，生产环境必须修改 |
-| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.2.51` |
+| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.2.52` |
 
 ## 手动 Docker Compose
 
@@ -195,7 +195,7 @@ docker compose -p forwardx up -d --build
 
 ```bash
 git fetch --tags origin
-git checkout v2.2.51
+git checkout v2.2.52
 docker compose -p forwardx up -d --build --remove-orphans
 ```
 

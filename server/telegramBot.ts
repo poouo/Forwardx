@@ -25,6 +25,11 @@ type TelegramCallbackQuery = {
   data?: string;
 };
 
+type TelegramBotCommand = {
+  command: string;
+  description: string;
+};
+
 type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
@@ -37,6 +42,20 @@ let updateOffset = 0;
 let activeTokenKey = "";
 
 const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
+const USER_PAGE_SIZE = 10;
+const RULE_PAGE_SIZE = 10;
+const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
+  { command: "start", description: "打开菜单或完成账号绑定" },
+  { command: "menu", description: "打开功能菜单" },
+  { command: "usage", description: "查询流量和额度" },
+  { command: "rules", description: "查看和管理转发规则" },
+  { command: "login", description: "生成网页登录链接" },
+  { command: "bind", description: "使用绑定码绑定后台账号" },
+  { command: "unbind", description: "解除 Telegram 绑定" },
+  { command: "users", description: "管理员用户管理" },
+  { command: "reset", description: "管理员重置用户流量" },
+  { command: "help", description: "查看帮助" },
+];
 
 function randomCode(length = 32) {
   let out = "";
@@ -69,6 +88,17 @@ function formatTelegramName(from?: TelegramUser) {
   const parts = [from?.first_name, from?.last_name].filter(Boolean);
   if (parts.length) return parts.join(" ");
   return from?.username ? `@${from.username}` : String(from?.id || "");
+}
+
+function clampPage(page: number, total: number, pageSize: number) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(0, Math.floor(page) || 0), totalPages - 1);
+  return { page: safePage, totalPages };
+}
+
+function shortText(value: unknown, length = 18) {
+  const text = String(value || "-");
+  return text.length > length ? `${text.slice(0, length - 1)}…` : text;
 }
 
 function getTokenKey(token: string) {
@@ -121,6 +151,16 @@ async function sendMessage(chatId: number | string, text: string, replyMarkup?: 
 
 export async function sendTelegramMessage(chatId: number | string, text: string) {
   await sendMessage(chatId, text);
+}
+
+export async function syncTelegramBotCommands() {
+  const settings = await getTelegramSettings();
+  if (!settings.token) return false;
+  await telegramApi("setMyCommands", {
+    commands: TELEGRAM_BOT_COMMANDS,
+    scope: { type: "default" },
+  });
+  return true;
 }
 
 async function editMessage(chatId: number | string, messageId: number, text: string, replyMarkup?: InlineKeyboardMarkup) {
@@ -197,7 +237,7 @@ function mainMenuKeyboard(user: any): InlineKeyboardMarkup {
     ],
   ];
   if (user?.role === "admin") {
-    rows.push([{ text: "用户概览", callback_data: "fx:users" }]);
+    rows.push([{ text: "用户管理", callback_data: "fx:users:0" }]);
   }
   rows.push([{ text: "解除绑定", callback_data: "fx:unbind" }]);
   return { inline_keyboard: rows };
@@ -206,6 +246,24 @@ function mainMenuKeyboard(user: any): InlineKeyboardMarkup {
 function backMenuKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
+      [{ text: "返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
+}
+
+function userManageBackKeyboard(page = 0): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "返回用户列表", callback_data: `fx:users:${page}` }],
+      [{ text: "返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
+}
+
+function ruleListBackKeyboard(page = 0): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "返回规则列表", callback_data: `fx:rules:${page}` }],
       [{ text: "返回菜单", callback_data: "fx:menu" }],
     ],
   };
@@ -275,6 +333,55 @@ async function rulesText(user: any) {
   return `<b>转发规则</b>\n\n${lines.join("\n\n")}${more}`;
 }
 
+async function rulesView(user: any, page = 0) {
+  const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
+  const { page: safePage, totalPages } = clampPage(page, rules.length, RULE_PAGE_SIZE);
+  const visible = rules.slice(safePage * RULE_PAGE_SIZE, safePage * RULE_PAGE_SIZE + RULE_PAGE_SIZE);
+  const text = visible.length === 0
+    ? "<b>转发规则</b>\n\n暂无转发规则。"
+    : [
+        "<b>转发规则</b>",
+        `第 ${safePage + 1}/${totalPages} 页，共 ${rules.length} 条`,
+        "",
+        ...visible.map((rule: any) => {
+          const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+          return `#${rule.id} <b>${escapeHtml(shortText(rule.name, 24))}</b>\n${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(rule.protocol)} · :${rule.sourcePort}`;
+        }),
+      ].join("\n\n");
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  for (const rule of visible) {
+    rows.push([
+      { text: `${rule.isEnabled ? "停用" : "启用"} #${rule.id}`, callback_data: `fx:rule:toggle:${rule.id}:${safePage}` },
+      { text: `详情 #${rule.id}`, callback_data: `fx:rule:view:${rule.id}:${safePage}` },
+    ]);
+  }
+  if (totalPages > 1) {
+    rows.push([
+      { text: "上一页", callback_data: `fx:rules:${Math.max(0, safePage - 1)}` },
+      { text: "下一页", callback_data: `fx:rules:${Math.min(totalPages - 1, safePage + 1)}` },
+    ]);
+  }
+  rows.push([{ text: "返回菜单", callback_data: "fx:menu" }]);
+  return { text, keyboard: { inline_keyboard: rows } };
+}
+
+async function ruleDetailText(ruleId: number, user: any) {
+  const rule = await db.getForwardRuleById(ruleId);
+  if (!rule || (user.role !== "admin" && rule.userId !== user.id)) return "规则不存在或无权查看。";
+  const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+  return [
+    `<b>规则 #${rule.id}</b>`,
+    "",
+    `名称：${escapeHtml(rule.name)}`,
+    `状态：${status}`,
+    `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(rule.protocol)}`,
+    `入口端口：${rule.sourcePort}`,
+    `目标：${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
+    `主机 ID：${rule.hostId}`,
+    rule.tunnelId ? `隧道 ID：${rule.tunnelId}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 async function usersText() {
   const users = await db.getUserTrafficSummaries();
   if (users.length === 0) return "<b>用户概览</b>\n\n暂无用户。";
@@ -283,6 +390,81 @@ async function usersText() {
     return `#${user.id} ${escapeHtml(user.name || user.username)} ${escapeHtml(formatBytes(user.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`;
   });
   return `<b>用户概览</b>\n\n${lines.join("\n")}`;
+}
+
+async function usersView(page = 0) {
+  const users = await db.getUserTrafficSummaries();
+  const { page: safePage, totalPages } = clampPage(page, users.length, USER_PAGE_SIZE);
+  const visible = users.slice(safePage * USER_PAGE_SIZE, safePage * USER_PAGE_SIZE + USER_PAGE_SIZE);
+  const text = visible.length === 0
+    ? "<b>用户管理</b>\n\n暂无用户。"
+    : [
+        "<b>用户管理</b>",
+        `第 ${safePage + 1}/${totalPages} 页，共 ${users.length} 个用户`,
+        "",
+        ...visible.map((user: any) => {
+          const limit = Number(user.trafficLimit) || 0;
+          const access = user.role === "admin" || user.canAddRules ? "转发启用" : "转发停用";
+          return `#${user.id} <b>${escapeHtml(shortText(user.name || user.username, 18))}</b> · ${user.role === "admin" ? "管理员" : "用户"}\n${access} · ${escapeHtml(formatBytes(user.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`;
+        }),
+      ].join("\n\n");
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  for (const user of visible) {
+    rows.push([{ text: `管理 #${user.id} ${shortText(user.name || user.username, 14)}`, callback_data: `fx:admin:user:${user.id}:${safePage}` }]);
+  }
+  if (totalPages > 1) {
+    rows.push([
+      { text: "上一页", callback_data: `fx:users:${Math.max(0, safePage - 1)}` },
+      { text: "下一页", callback_data: `fx:users:${Math.min(totalPages - 1, safePage + 1)}` },
+    ]);
+  }
+  rows.push([{ text: "返回菜单", callback_data: "fx:menu" }]);
+  return { text, keyboard: { inline_keyboard: rows } };
+}
+
+async function adminUserText(userId: number) {
+  const target = await db.getUserById(userId);
+  if (!target) return { target: null, text: "用户不存在。" };
+  const [ruleCount, portCount] = await Promise.all([
+    db.getUserRuleCount(target.id),
+    db.getUserPortCount(target.id),
+  ]);
+  const limit = Number(target.trafficLimit) || 0;
+  const used = Number(target.trafficUsed) || 0;
+  const remaining = limit > 0 ? Math.max(0, limit - used) : null;
+  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  const text = [
+    `<b>管理用户 #${target.id}</b>`,
+    "",
+    `账户：${escapeHtml(target.name || target.username)}`,
+    `用户名：${escapeHtml(target.username)}`,
+    `角色：${target.role === "admin" ? "管理员" : "用户"}`,
+    `转发权限：${target.role === "admin" || target.canAddRules ? "已启用" : "已停用"}`,
+    `已用流量：${escapeHtml(formatBytes(used))}`,
+    `流量额度：${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`,
+    `剩余流量：${remaining === null ? "不限" : escapeHtml(formatBytes(remaining))}`,
+    limit > 0 ? `使用率：${percent}%` : "",
+    `到期时间：${escapeHtml(formatDate(target.expiresAt))}`,
+    `规则/端口：${ruleCount}${target.maxRules ? `/${target.maxRules}` : ""} 条，${portCount}${target.maxPorts ? `/${target.maxPorts}` : ""} 个端口`,
+    `TG：${target.telegramId ? (target.telegramUsername ? `@${escapeHtml(target.telegramUsername)}` : target.telegramId) : "未绑定"}`,
+  ].filter(Boolean).join("\n");
+  return { target, text };
+}
+
+async function adminUserKeyboard(userId: number, page = 0): Promise<InlineKeyboardMarkup> {
+  const target = await db.getUserById(userId);
+  const accessEnabled = !!target && (target.role === "admin" || target.canAddRules);
+  return {
+    inline_keyboard: [
+      [
+        { text: "重置流量", callback_data: `fx:admin:reset:${userId}:${page}` },
+        { text: accessEnabled ? "停用转发" : "启用转发", callback_data: `fx:admin:access:${userId}:${accessEnabled ? "0" : "1"}:${page}` },
+      ],
+      [{ text: "刷新详情", callback_data: `fx:admin:user:${userId}:${page}` }],
+      [{ text: "返回用户列表", callback_data: `fx:users:${page}` }],
+      [{ text: "返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
 }
 
 async function loginText(user: any) {
@@ -344,7 +526,8 @@ async function handleUsage(message: TelegramMessage, user: any) {
 }
 
 async function handleRules(message: TelegramMessage, user: any) {
-  await sendMessage(message.chat.id, await rulesText(user));
+  const view = await rulesView(user, 0);
+  await sendMessage(message.chat.id, view.text, view.keyboard);
 }
 
 async function refreshRuleEndpoint(rule: any, reason: string) {
@@ -355,6 +538,22 @@ async function refreshRuleEndpoint(rule: any, reason: string) {
   } else {
     pushAgentRefresh(Number(rule.hostId), reason);
   }
+}
+
+async function refreshUserForwardEndpoints(userId: number, reason: string) {
+  const rules = await db.getForwardRules(userId);
+  const hostIds = new Set<number>();
+  const tunnelIds = new Set<number>();
+  for (const rule of rules as any[]) {
+    if (rule.tunnelId) tunnelIds.add(Number(rule.tunnelId));
+    else if (rule.hostId) hostIds.add(Number(rule.hostId));
+  }
+  for (const tunnelId of tunnelIds) {
+    const tunnel = await db.getTunnelById(tunnelId);
+    await db.updateTunnel(tunnelId, { isRunning: false } as any);
+    if (tunnel) pushTunnelEndpointRefresh(tunnel, reason);
+  }
+  for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
 }
 
 async function handleRuleToggle(message: TelegramMessage, user: any, ruleIdRaw: string | undefined, enabled: boolean) {
@@ -391,12 +590,35 @@ async function handleRuleToggle(message: TelegramMessage, user: any, ruleIdRaw: 
   await sendMessage(message.chat.id, `规则 #${rule.id} ${enabled ? "已启用，等待 Agent 同步" : "已停用"}。`);
 }
 
+async function toggleRuleForUser(user: any, ruleId: number, enabled: boolean) {
+  if (!Number.isFinite(ruleId) || ruleId <= 0) {
+    throw new Error("规则 ID 无效");
+  }
+  const rule = await db.getForwardRuleById(ruleId);
+  if (!rule || (user.role !== "admin" && rule.userId !== user.id)) {
+    throw new Error("规则不存在或无权操作");
+  }
+  if (enabled && user.role !== "admin") {
+    if (!user.canAddRules) throw new Error("你的转发权限已停用，无法启用规则");
+    if (user.expiresAt && new Date(user.expiresAt) <= new Date()) throw new Error("账户已到期，无法启用规则");
+    if (Number(user.trafficLimit) > 0 && Number(user.trafficUsed) >= Number(user.trafficLimit)) throw new Error("流量已用完，无法启用规则");
+  }
+  if (enabled) {
+    await db.updateForwardRule(rule.id, { isEnabled: true, isRunning: false });
+  } else {
+    await db.toggleForwardRule(rule.id, false);
+  }
+  await refreshRuleEndpoint(rule, enabled ? "telegram-rule-enabled" : "telegram-rule-disabled");
+  return rule;
+}
+
 async function handleLogin(message: TelegramMessage, user: any) {
   await sendMessage(message.chat.id, await loginText(user));
 }
 
 async function handleUsers(message: TelegramMessage) {
-  await sendMessage(message.chat.id, await usersText());
+  const view = await usersView(0);
+  await sendMessage(message.chat.id, view.text, view.keyboard);
 }
 
 async function handleReset(message: TelegramMessage, userIdRaw: string | undefined) {
@@ -475,7 +697,100 @@ async function handleCallback(query: TelegramCallbackQuery) {
     return;
   }
 
-  switch (query.data) {
+  const data = query.data || "";
+  if (data.startsWith("fx:rules:")) {
+    const page = Number(data.split(":")[2] || 0);
+    const view = await rulesView(user, page);
+    await editMessage(chatId, messageId, view.text, view.keyboard);
+    return;
+  }
+  if (data.startsWith("fx:rule:view:")) {
+    const [, , , ruleIdRaw, pageRaw] = data.split(":");
+    const ruleId = Number(ruleIdRaw);
+    const page = Number(pageRaw || 0);
+    await editMessage(chatId, messageId, await ruleDetailText(ruleId, user), ruleListBackKeyboard(page));
+    return;
+  }
+  if (data.startsWith("fx:rule:toggle:")) {
+    const [, , , ruleIdRaw, pageRaw] = data.split(":");
+    const ruleId = Number(ruleIdRaw);
+    const page = Number(pageRaw || 0);
+    const rule = await db.getForwardRuleById(ruleId);
+    if (!rule) {
+      await editMessage(chatId, messageId, "规则不存在。", ruleListBackKeyboard(page));
+      return;
+    }
+    await toggleRuleForUser(user, ruleId, !rule.isEnabled);
+    const view = await rulesView(user, page);
+    await editMessage(chatId, messageId, `规则 #${ruleId} 已${rule.isEnabled ? "停用" : "启用"}。\n\n${view.text}`, view.keyboard);
+    return;
+  }
+  if (data.startsWith("fx:users:")) {
+    if (user.role !== "admin") {
+      await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+      return;
+    }
+    const page = Number(data.split(":")[2] || 0);
+    const view = await usersView(page);
+    await editMessage(chatId, messageId, view.text, view.keyboard);
+    return;
+  }
+  if (data.startsWith("fx:admin:user:")) {
+    if (user.role !== "admin") {
+      await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+      return;
+    }
+    const [, , , userIdRaw, pageRaw] = data.split(":");
+    const userId = Number(userIdRaw);
+    const page = Number(pageRaw || 0);
+    const detail = await adminUserText(userId);
+    await editMessage(chatId, messageId, detail.text, detail.target ? await adminUserKeyboard(userId, page) : userManageBackKeyboard(page));
+    return;
+  }
+  if (data.startsWith("fx:admin:reset:")) {
+    if (user.role !== "admin") {
+      await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+      return;
+    }
+    const [, , , userIdRaw, pageRaw] = data.split(":");
+    const userId = Number(userIdRaw);
+    const page = Number(pageRaw || 0);
+    const target = await db.getUserById(userId);
+    if (!target) {
+      await editMessage(chatId, messageId, "用户不存在。", userManageBackKeyboard(page));
+      return;
+    }
+    await db.resetUserTraffic(userId);
+    const detail = await adminUserText(userId);
+    await editMessage(chatId, messageId, `已重置用户 #${userId} 的流量。\n\n${detail.text}`, await adminUserKeyboard(userId, page));
+    return;
+  }
+  if (data.startsWith("fx:admin:access:")) {
+    if (user.role !== "admin") {
+      await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+      return;
+    }
+    const [, , , userIdRaw, enabledRaw, pageRaw] = data.split(":");
+    const userId = Number(userIdRaw);
+    const page = Number(pageRaw || 0);
+    const target = await db.getUserById(userId);
+    if (!target) {
+      await editMessage(chatId, messageId, "用户不存在。", userManageBackKeyboard(page));
+      return;
+    }
+    if (target.role === "admin") {
+      await editMessage(chatId, messageId, "管理员账户不能在机器人内停用转发权限。", await adminUserKeyboard(userId, page));
+      return;
+    }
+    const enabled = enabledRaw === "1";
+    await db.setUserForwardAccess(userId, enabled);
+    await refreshUserForwardEndpoints(userId, enabled ? "telegram-user-forward-enabled" : "telegram-user-forward-disabled");
+    const detail = await adminUserText(userId);
+    await editMessage(chatId, messageId, `已${enabled ? "启用" : "停用"}用户 #${userId} 的转发权限。\n\n${detail.text}`, await adminUserKeyboard(userId, page));
+    return;
+  }
+
+  switch (data) {
     case "fx:menu":
       await editMainMenu(chatId, messageId, user);
       return;
@@ -486,7 +801,10 @@ async function handleCallback(query: TelegramCallbackQuery) {
       await editMessage(chatId, messageId, await usageText(user), backMenuKeyboard());
       return;
     case "fx:rules":
-      await editMessage(chatId, messageId, await rulesText(user), backMenuKeyboard());
+      {
+        const view = await rulesView(user, 0);
+        await editMessage(chatId, messageId, view.text, view.keyboard);
+      }
       return;
     case "fx:login":
       await editMessage(chatId, messageId, await loginText(user), backMenuKeyboard());
@@ -496,7 +814,10 @@ async function handleCallback(query: TelegramCallbackQuery) {
         await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
         return;
       }
-      await editMessage(chatId, messageId, await usersText(), backMenuKeyboard());
+      {
+        const view = await usersView(0);
+        await editMessage(chatId, messageId, view.text, view.keyboard);
+      }
       return;
     case "fx:unbind":
       await db.unbindTelegramAccount(user.id);
@@ -541,6 +862,9 @@ export async function refreshTelegramBotProfile() {
   if (!settings.token) return null;
   const me = await telegramApi<{ username?: string; first_name?: string; id?: number }>("getMe");
   if (me.username) await db.setSetting("telegramBotUsername", me.username);
+  await syncTelegramBotCommands().catch((error) => {
+    console.warn(`[Telegram] setMyCommands failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   return me;
 }
 

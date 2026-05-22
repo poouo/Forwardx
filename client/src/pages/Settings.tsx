@@ -896,10 +896,16 @@ function TelegramBotSettingsCard() {
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const [telegramEnabled, setTelegramEnabled] = useState(false);
   const [telegramBotTokenInput, setTelegramBotTokenInput] = useState("");
+  const [telegramExpiryReminder, setTelegramExpiryReminder] = useState(false);
+  const [telegramTrafficReminder, setTelegramTrafficReminder] = useState(false);
+  const [telegramTrafficThreshold, setTelegramTrafficThreshold] = useState(20);
 
   useEffect(() => {
     if (settings) {
       setTelegramEnabled(!!settings.telegram?.enabled);
+      setTelegramExpiryReminder(!!settings.telegram?.expiryReminder);
+      setTelegramTrafficReminder(!!settings.telegram?.trafficReminder);
+      setTelegramTrafficThreshold(Number(settings.telegram?.trafficReminderThreshold || 20));
     }
   }, [settings]);
 
@@ -920,6 +926,9 @@ function TelegramBotSettingsCard() {
       telegram: {
         enabled: telegramEnabled,
         botToken: telegramBotTokenInput.trim() || undefined,
+        expiryReminder: telegramExpiryReminder,
+        trafficReminder: telegramTrafficReminder,
+        trafficReminderThreshold: telegramTrafficThreshold,
       },
     });
     setTelegramBotTokenInput("");
@@ -989,6 +998,38 @@ function TelegramBotSettingsCard() {
                     </p>
                   </div>
                   <Switch checked={telegramEnabled} onCheckedChange={setTelegramEnabled} />
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">到期提醒</p>
+                    <p className="mt-1 text-xs text-muted-foreground">到期前 3 天内，每天最多通过 Telegram 提醒一次。</p>
+                  </div>
+                  <Switch checked={telegramExpiryReminder} onCheckedChange={setTelegramExpiryReminder} />
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">流量提醒</p>
+                    <p className="mt-1 text-xs text-muted-foreground">剩余流量低于阈值时，每天最多提醒一次。</p>
+                  </div>
+                  <Switch checked={telegramTrafficReminder} onCheckedChange={setTelegramTrafficReminder} />
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <Label className="shrink-0 text-xs text-muted-foreground">阈值</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={99}
+                    value={telegramTrafficThreshold}
+                    onChange={(e) => setTelegramTrafficThreshold(Math.min(99, Math.max(1, Number(e.target.value) || 20)))}
+                    className="h-8 w-24"
+                  />
+                  <span className="text-xs text-muted-foreground">%</span>
                 </div>
               </div>
             </div>
