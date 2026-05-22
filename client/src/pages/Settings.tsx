@@ -136,7 +136,7 @@ function SettingsContent() {
   const initialTab = (() => {
     const query = location.split("?")[1] || "";
     const tab = new URLSearchParams(query).get("tab");
-    return tab === "system" || tab === "logs" || tab === "install" || tab === "tokens" ? tab : "tokens";
+    return tab === "system" || tab === "telegram" || tab === "logs" || tab === "install" || tab === "tokens" ? tab : "tokens";
   })();
   const [activeTab, setActiveTab] = useState(initialTab);
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
@@ -150,7 +150,7 @@ function SettingsContent() {
   useEffect(() => {
     const query = location.split("?")[1] || "";
     const tab = new URLSearchParams(query).get("tab");
-    if (tab === "system" || tab === "logs" || tab === "install" || tab === "tokens") {
+    if (tab === "system" || tab === "telegram" || tab === "logs" || tab === "install" || tab === "tokens") {
       setActiveTab(tab);
     }
   }, [location]);
@@ -304,8 +304,6 @@ function SettingsContent() {
         </Badge>
       </div>
 
-      <TelegramBotSettingsCard />
-
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="bg-muted/30 border border-border/30">
           <TabsTrigger value="tokens" className="gap-1.5">
@@ -319,6 +317,10 @@ function SettingsContent() {
           <TabsTrigger value="system" className="gap-1.5">
             <Settings2 className="h-3.5 w-3.5" />
             系统信息
+          </TabsTrigger>
+          <TabsTrigger value="telegram" className="gap-1.5">
+            <Send className="h-3.5 w-3.5" />
+            Telegram 机器人
           </TabsTrigger>
           <TabsTrigger value="logs" className="gap-1.5">
             <FileText className="h-3.5 w-3.5" />
@@ -583,6 +585,11 @@ function SettingsContent() {
         {/* System Info Tab */}
         <TabsContent value="system" className="space-y-4">
           <SystemInfoSection />
+        </TabsContent>
+
+        {/* Telegram Bot Tab */}
+        <TabsContent value="telegram" className="space-y-4">
+          <TelegramBotSettingsCard />
         </TabsContent>
 
         {/* Panel Logs Tab */}

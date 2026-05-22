@@ -225,9 +225,51 @@ function DashboardLayoutContent({
   };
 
   const copyText = async (text: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast.success("已复制到剪贴板");
+        return;
+      } catch (error) {
+        console.warn("[Clipboard] navigator.clipboard failed, fallback to execCommand:", error);
+      }
+    }
+
+    const host =
+      (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) ||
+      document.body;
+    const textarea = document.createElement("textarea");
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(text);
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      textarea.style.pointerEvents = "none";
+      textarea.style.left = "0";
+      textarea.style.top = "0";
+      textarea.style.width = "1px";
+      textarea.style.height = "1px";
+      host.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+      copied = document.execCommand("copy");
+    } catch (error) {
+      console.warn("[Clipboard] execCommand fallback failed:", error);
+      copied = false;
+    } finally {
+      if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
+    }
+
+    if (copied) {
       toast.success("已复制到剪贴板");
+      return;
+    }
+
+    try {
+      window.prompt("复制失败，请手动选中并复制：", text);
+      toast.warning("未能自动写入剪贴板，已弹出手动复制窗口");
     } catch {
       toast.error("复制失败，请手动复制");
     }
@@ -248,6 +290,9 @@ function DashboardLayoutContent({
 
   const telegramBindUrl = telegramBind?.botUsername && telegramBind?.code
     ? `https://t.me/${telegramBind.botUsername}?start=${encodeURIComponent(telegramBind.code)}`
+    : "";
+  const telegramBotUrl = (telegramBind?.botUsername || telegramStatus?.botUsername)
+    ? `https://t.me/${telegramBind?.botUsername || telegramStatus?.botUsername}`
     : "";
 
   const toggleTheme = () => {
@@ -591,6 +636,19 @@ function DashboardLayoutContent({
               </div>
             ) : telegramBind ? (
               <div className="space-y-3">
+                {telegramBotUrl && (
+                  <a
+                    href={telegramBotUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between rounded-lg border border-sky-500/25 bg-sky-500/10 p-3 text-sm text-sky-700 transition-colors hover:bg-sky-500/15 dark:text-sky-300"
+                  >
+                    <span>
+                      当前机器人：<b>@{telegramBind.botUsername || telegramStatus?.botUsername}</b>
+                    </span>
+                    <Send className="h-4 w-4" />
+                  </a>
+                )}
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                   <p className="text-xs text-muted-foreground">绑定码</p>
                   <div className="mt-1 flex items-center gap-2">
@@ -613,8 +671,23 @@ function DashboardLayoutContent({
                 )}
               </div>
             ) : (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                {telegramStatus?.configured ? "点击下方按钮生成绑定码。" : "管理员尚未配置 Telegram Bot Token。"}
+              <div className="space-y-3">
+                {telegramBotUrl && (
+                  <a
+                    href={telegramBotUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between rounded-lg border border-sky-500/25 bg-sky-500/10 p-3 text-sm text-sky-700 transition-colors hover:bg-sky-500/15 dark:text-sky-300"
+                  >
+                    <span>
+                      当前机器人：<b>@{telegramStatus?.botUsername}</b>
+                    </span>
+                    <Send className="h-4 w-4" />
+                  </a>
+                )}
+                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+                  {telegramStatus?.configured ? "点击下方按钮生成绑定码，也可以先打开上方机器人。" : "管理员尚未配置 Telegram Bot Token。"}
+                </div>
               </div>
             )}
           </div>

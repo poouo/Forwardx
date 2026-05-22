@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.51] - 2026-05-22
+
+### Added
+
+- Added Telegram inline keyboard menus after account binding, with user info, usage, rules, login, admin user overview, and return-to-menu actions.
+- Added a clickable bot link in the Telegram binding dialog so users can clearly open the configured bot.
+
+### Changed
+
+- Moved Telegram bot configuration into its own Settings tab before panel logs.
+- Improved Telegram binding-code copy fallback for non-secure browser contexts.
+- Bumped panel version to 2.2.51. Agent version remains 2.2.45.
+
 ## [2.2.50] - 2026-05-22
 
 ### Added

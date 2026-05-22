@@ -18,9 +18,17 @@ type TelegramMessage = {
   from?: TelegramUser;
 };
 
+type TelegramCallbackQuery = {
+  id: string;
+  from?: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+};
+
 type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 };
 
 let pollingStarted = false;
@@ -97,12 +105,17 @@ async function telegramApi<T = any>(method: string, body?: Record<string, unknow
   return json.result as T;
 }
 
-async function sendMessage(chatId: number | string, text: string) {
+type InlineKeyboardMarkup = {
+  inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+};
+
+async function sendMessage(chatId: number | string, text: string, replyMarkup?: InlineKeyboardMarkup) {
   await telegramApi("sendMessage", {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
     disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
 }
 
@@ -110,8 +123,25 @@ export async function sendTelegramMessage(chatId: number | string, text: string)
   await sendMessage(chatId, text);
 }
 
-async function ensureTelegramIdentity(message: TelegramMessage) {
-  const from = message.from;
+async function editMessage(chatId: number | string, messageId: number, text: string, replyMarkup?: InlineKeyboardMarkup) {
+  await telegramApi("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
+}
+
+async function answerCallback(callbackId: string, text?: string) {
+  await telegramApi("answerCallbackQuery", {
+    callback_query_id: callbackId,
+    ...(text ? { text } : {}),
+  });
+}
+
+async function ensureTelegramUser(from?: TelegramUser) {
   if (!from?.id || from.is_bot) return null;
   const telegramId = String(from.id);
   const user = await db.getUserByTelegramId(telegramId);
@@ -123,6 +153,10 @@ async function ensureTelegramIdentity(message: TelegramMessage) {
     });
   }
   return { telegramId, user, from };
+}
+
+async function ensureTelegramIdentity(message: TelegramMessage) {
+  return ensureTelegramUser(message.from);
 }
 
 function helpText(bound: boolean, isAdmin = false) {
@@ -151,6 +185,131 @@ function parseCommand(text: string) {
   return { command, args: parts };
 }
 
+function mainMenuKeyboard(user: any): InlineKeyboardMarkup {
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [
+    [
+      { text: "用户信息", callback_data: "fx:user" },
+      { text: "流量用量", callback_data: "fx:usage" },
+    ],
+    [
+      { text: "转发规则", callback_data: "fx:rules" },
+      { text: "登录后台", callback_data: "fx:login" },
+    ],
+  ];
+  if (user?.role === "admin") {
+    rows.push([{ text: "用户概览", callback_data: "fx:users" }]);
+  }
+  rows.push([{ text: "解除绑定", callback_data: "fx:unbind" }]);
+  return { inline_keyboard: rows };
+}
+
+function backMenuKeyboard(): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
+}
+
+function menuText(user: any) {
+  const title = user?.role === "admin" ? "ForwardX 管理菜单" : "ForwardX 用户菜单";
+  return [
+    `<b>${escapeHtml(title)}</b>`,
+    "",
+    `当前账户：<b>${escapeHtml(user?.name || user?.username || "-")}</b>`,
+    `角色：${user?.role === "admin" ? "管理员" : "用户"}`,
+    "",
+    "请选择下面的功能按钮。",
+  ].join("\n");
+}
+
+function userInfoText(user: any) {
+  return [
+    "<b>用户信息</b>",
+    "",
+    `账户：<b>${escapeHtml(user.name || user.username)}</b>`,
+    `用户名：${escapeHtml(user.username)}`,
+    `角色：${user.role === "admin" ? "管理员" : "用户"}`,
+    `余额：¥${((Number(user.balanceCents) || 0) / 100).toFixed(2)}`,
+    `到期时间：${escapeHtml(formatDate(user.expiresAt))}`,
+    `转发权限：${user.role === "admin" || user.canAddRules ? "已启用" : "已停用"}`,
+    `绑定时间：${escapeHtml(formatDate(user.telegramLinkedAt))}`,
+    `最近使用：${escapeHtml(formatDate(user.telegramLastSeenAt))}`,
+  ].join("\n");
+}
+
+async function usageText(user: any) {
+  const [ruleCount, portCount] = await Promise.all([
+    db.getUserRuleCount(user.id),
+    db.getUserPortCount(user.id),
+  ]);
+  const limit = Number(user.trafficLimit) || 0;
+  const used = Number(user.trafficUsed) || 0;
+  const remaining = limit > 0 ? Math.max(0, limit - used) : null;
+  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  return [
+    "<b>流量用量</b>",
+    "",
+    `已用流量：${escapeHtml(formatBytes(used))}`,
+    `流量额度：${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`,
+    `剩余流量：${remaining === null ? "不限" : escapeHtml(formatBytes(remaining))}`,
+    limit > 0 ? `使用率：${percent}%` : "",
+    `规则/端口：${ruleCount}${user.maxRules ? `/${user.maxRules}` : ""} 条，${portCount}${user.maxPorts ? `/${user.maxPorts}` : ""} 个端口`,
+    user.trafficAutoReset ? `自动重置：每月 ${user.trafficResetDay || 1} 日` : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function rulesText(user: any) {
+  const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
+  const visible = user.role === "admin" ? rules.slice(0, 10) : rules.slice(0, 15);
+  if (visible.length === 0) return "<b>转发规则</b>\n\n暂无转发规则。";
+  const lines = visible.map((rule: any) => {
+    const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+    return [
+      `#${rule.id} <b>${escapeHtml(rule.name)}</b>`,
+      `${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(rule.protocol)}`,
+      `:${rule.sourcePort} → ${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
+    ].join("\n");
+  });
+  const more = rules.length > visible.length ? `\n\n还有 ${rules.length - visible.length} 条规则未展示，可发送 /rules 查看更多。` : "";
+  return `<b>转发规则</b>\n\n${lines.join("\n\n")}${more}`;
+}
+
+async function usersText() {
+  const users = await db.getUserTrafficSummaries();
+  if (users.length === 0) return "<b>用户概览</b>\n\n暂无用户。";
+  const lines = users.slice(0, 20).map((user: any) => {
+    const limit = Number(user.trafficLimit) || 0;
+    return `#${user.id} ${escapeHtml(user.name || user.username)} ${escapeHtml(formatBytes(user.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`;
+  });
+  return `<b>用户概览</b>\n\n${lines.join("\n")}`;
+}
+
+async function loginText(user: any) {
+  const settings = await getTelegramSettings();
+  const code = randomCode(32);
+  const expiresAt = new Date(Date.now() + LOGIN_CODE_TTL_MS);
+  await db.createTelegramLoginCode(user.id, code, expiresAt);
+  const path = `/login?tg=${encodeURIComponent(code)}`;
+  const url = settings.panelPublicUrl ? `${settings.panelPublicUrl}${path}` : path;
+  return [
+    "<b>网页登录</b>",
+    "",
+    "一次性登录链接 5 分钟内有效：",
+    escapeHtml(url),
+    "",
+    settings.panelPublicUrl ? "" : `如果未配置面板公开访问地址，请在浏览器打开面板后访问：${escapeHtml(path)}`,
+  ].filter(Boolean).join("\n");
+}
+
+async function sendMainMenu(chatId: number | string, user: any) {
+  await sendMessage(chatId, menuText(user), mainMenuKeyboard(user));
+}
+
+async function editMainMenu(chatId: number | string, messageId: number, user: any) {
+  await editMessage(chatId, messageId, menuText(user), mainMenuKeyboard(user));
+}
+
 async function handleBind(message: TelegramMessage, code: string) {
   const from = message.from;
   if (!from?.id || from.is_bot) return;
@@ -176,43 +335,16 @@ async function handleBind(message: TelegramMessage, code: string) {
     message.chat.id,
     `已绑定到 ForwardX 账户：<b>${escapeHtml(user.name || user.username)}</b>\n之后可以使用 /usage、/rules、/login。`,
   );
+  const boundUser = await db.getUserById(user.id);
+  if (boundUser) await sendMainMenu(message.chat.id, boundUser);
 }
 
 async function handleUsage(message: TelegramMessage, user: any) {
-  const [ruleCount, portCount] = await Promise.all([
-    db.getUserRuleCount(user.id),
-    db.getUserPortCount(user.id),
-  ]);
-  const limit = Number(user.trafficLimit) || 0;
-  const used = Number(user.trafficUsed) || 0;
-  const remaining = limit > 0 ? Math.max(0, limit - used) : null;
-  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-  const lines = [
-    `<b>${escapeHtml(user.name || user.username)}</b>`,
-    `已用流量：${escapeHtml(formatBytes(used))}`,
-    `流量额度：${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`,
-    `剩余流量：${remaining === null ? "不限" : escapeHtml(formatBytes(remaining))}`,
-    limit > 0 ? `使用率：${percent}%` : "",
-    `到期时间：${escapeHtml(formatDate(user.expiresAt))}`,
-    `转发权限：${user.role === "admin" || user.canAddRules ? "已启用" : "已停用"}`,
-    `规则/端口：${ruleCount}${user.maxRules ? `/${user.maxRules}` : ""} 条，${portCount}${user.maxPorts ? `/${user.maxPorts}` : ""} 个端口`,
-    user.trafficAutoReset ? `自动重置：每月 ${user.trafficResetDay || 1} 日` : "",
-  ].filter(Boolean);
-  await sendMessage(message.chat.id, lines.join("\n"));
+  await sendMessage(message.chat.id, await usageText(user));
 }
 
 async function handleRules(message: TelegramMessage, user: any) {
-  const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
-  const visible = user.role === "admin" ? rules.slice(0, 20) : rules;
-  if (visible.length === 0) {
-    await sendMessage(message.chat.id, "暂无转发规则。");
-    return;
-  }
-  const lines = visible.map((rule: any) => {
-    const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
-    return `#${rule.id} ${escapeHtml(rule.name)} [${status}]\n${escapeHtml(rule.forwardType)} ${escapeHtml(rule.protocol)} :${rule.sourcePort} -> ${escapeHtml(rule.targetIp)}:${rule.targetPort}`;
-  });
-  await sendMessage(message.chat.id, lines.join("\n\n"));
+  await sendMessage(message.chat.id, await rulesText(user));
 }
 
 async function refreshRuleEndpoint(rule: any, reason: string) {
@@ -260,29 +392,11 @@ async function handleRuleToggle(message: TelegramMessage, user: any, ruleIdRaw: 
 }
 
 async function handleLogin(message: TelegramMessage, user: any) {
-  const settings = await getTelegramSettings();
-  const code = randomCode(32);
-  const expiresAt = new Date(Date.now() + LOGIN_CODE_TTL_MS);
-  await db.createTelegramLoginCode(user.id, code, expiresAt);
-  const path = `/login?tg=${encodeURIComponent(code)}`;
-  const url = settings.panelPublicUrl ? `${settings.panelPublicUrl}${path}` : path;
-  await sendMessage(
-    message.chat.id,
-    `一次性登录链接 5 分钟内有效：\n${escapeHtml(url)}\n\n如果未配置面板公开访问地址，请在浏览器打开面板后访问：${escapeHtml(path)}`,
-  );
+  await sendMessage(message.chat.id, await loginText(user));
 }
 
 async function handleUsers(message: TelegramMessage) {
-  const users = await db.getUserTrafficSummaries();
-  if (users.length === 0) {
-    await sendMessage(message.chat.id, "暂无用户。");
-    return;
-  }
-  const lines = users.slice(0, 30).map((user: any) => {
-    const limit = Number(user.trafficLimit) || 0;
-    return `#${user.id} ${escapeHtml(user.name || user.username)} ${escapeHtml(formatBytes(user.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}`;
-  });
-  await sendMessage(message.chat.id, lines.join("\n"));
+  await sendMessage(message.chat.id, await usersText());
 }
 
 async function handleReset(message: TelegramMessage, userIdRaw: string | undefined) {
@@ -312,7 +426,11 @@ async function handleMessage(message: TelegramMessage) {
     return;
   }
   if (command === "/start" || command === "/help") {
-    await sendMessage(message.chat.id, helpText(!!identity.user, identity.user?.role === "admin"));
+    if (identity.user) {
+      await sendMainMenu(message.chat.id, identity.user);
+    } else {
+      await sendMessage(message.chat.id, helpText(false));
+    }
     return;
   }
   if (command === "/bind") {
@@ -326,6 +444,7 @@ async function handleMessage(message: TelegramMessage) {
     return;
   }
 
+  if (command === "/menu") return sendMainMenu(message.chat.id, user);
   if (command === "/usage") return handleUsage(message, user);
   if (command === "/rules") return handleRules(message, user);
   if (command === "/enable") return handleRuleToggle(message, user, args[0], true);
@@ -343,6 +462,51 @@ async function handleMessage(message: TelegramMessage) {
   await sendMessage(message.chat.id, helpText(true, user.role === "admin"));
 }
 
+async function handleCallback(query: TelegramCallbackQuery) {
+  if (!query.message?.chat?.id || !query.message.message_id) return;
+  await answerCallback(query.id).catch(() => undefined);
+  const identity = await ensureTelegramUser(query.from);
+  if (!identity) return;
+  const user = identity.user;
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+  if (!user) {
+    await editMessage(chatId, messageId, "当前 Telegram 尚未绑定 ForwardX 账户。请先在面板中完成绑定。");
+    return;
+  }
+
+  switch (query.data) {
+    case "fx:menu":
+      await editMainMenu(chatId, messageId, user);
+      return;
+    case "fx:user":
+      await editMessage(chatId, messageId, userInfoText(user), backMenuKeyboard());
+      return;
+    case "fx:usage":
+      await editMessage(chatId, messageId, await usageText(user), backMenuKeyboard());
+      return;
+    case "fx:rules":
+      await editMessage(chatId, messageId, await rulesText(user), backMenuKeyboard());
+      return;
+    case "fx:login":
+      await editMessage(chatId, messageId, await loginText(user), backMenuKeyboard());
+      return;
+    case "fx:users":
+      if (user.role !== "admin") {
+        await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+        return;
+      }
+      await editMessage(chatId, messageId, await usersText(), backMenuKeyboard());
+      return;
+    case "fx:unbind":
+      await db.unbindTelegramAccount(user.id);
+      await editMessage(chatId, messageId, "已解除当前 Telegram 绑定。");
+      return;
+    default:
+      await editMainMenu(chatId, messageId, user);
+  }
+}
+
 async function pollOnce() {
   const settings = await getTelegramSettings();
   if (!settings.enabled || !settings.token) {
@@ -357,16 +521,17 @@ async function pollOnce() {
   const updates = await telegramApi<TelegramUpdate[]>("getUpdates", {
     offset: updateOffset || undefined,
     timeout: 25,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
   });
   for (const update of updates) {
     updateOffset = Math.max(updateOffset, update.update_id + 1);
-    if (!update.message) continue;
     try {
-      await handleMessage(update.message);
+      if (update.message) await handleMessage(update.message);
+      if (update.callback_query) await handleCallback(update.callback_query);
     } catch (error) {
       console.error("[Telegram] Failed to handle message:", error);
-      await sendMessage(update.message.chat.id, `操作失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`).catch(() => undefined);
+      const chatId = update.message?.chat.id || update.callback_query?.message?.chat.id;
+      if (chatId) await sendMessage(chatId, `操作失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`).catch(() => undefined);
     }
   }
 }
