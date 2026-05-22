@@ -1238,6 +1238,7 @@ function SystemInfoSection() {
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
+  const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [migrationCode, setMigrationCode] = useState<{
     code: string;
     expiresAt: number;
@@ -1312,8 +1313,25 @@ function SystemInfoSection() {
     updateSettingsMutation.mutate({ homepageEnabled, homepageCustomEnabled, homepageHtml });
   };
 
+  const resetForwardProtocolDraft = () => {
+    setForwardProtocols(normalizeForwardProtocolSettings(settings?.forwardProtocols));
+  };
+
+  const openForwardProtocolDialog = () => {
+    resetForwardProtocolDraft();
+    setShowForwardProtocolDialog(true);
+  };
+
+  const closeForwardProtocolDialog = () => {
+    resetForwardProtocolDraft();
+    setShowForwardProtocolDialog(false);
+  };
+
   const handleSaveForwardProtocols = () => {
-    updateSettingsMutation.mutate({ forwardProtocols });
+    updateSettingsMutation.mutate(
+      { forwardProtocols },
+      { onSuccess: () => setShowForwardProtocolDialog(false) },
+    );
   };
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
@@ -1415,6 +1433,10 @@ function SystemInfoSection() {
   const upgradeErrorLogs = (upgradeStatus?.job?.logs || []).slice(-80).join("\n");
   const migrationCountdown = getMigrationCodeCountdown(migrationCode, migrationCodeTick);
   const migrationRequest = migrationCode?.pendingRequest;
+  const directProtocolEnabledCount = directForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
+  const tunnelProtocolEnabledCount = tunnelForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
+  const totalProtocolEnabledCount = directProtocolEnabledCount + tunnelProtocolEnabledCount;
+  const totalProtocolCount = directForwardProtocolKeys.length + tunnelForwardProtocolKeys.length;
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -1459,16 +1481,59 @@ function SystemInfoSection() {
       </Card>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-primary" />
-            转发协议总开关
-          </CardTitle>
-          <CardDescription>
-            关闭后用户无法创建、启用或操作对应协议；已存在的规则会停止转发但保留配置，重新开启后会按原规则自动恢复。
-          </CardDescription>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              转发协议总开关
+            </CardTitle>
+            <CardDescription>
+              关闭后用户无法创建、启用或操作对应协议；已存在的规则会停止转发但保留配置，重新开启后会按原规则自动恢复。
+            </CardDescription>
+          </div>
+          <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openForwardProtocolDialog}>
+            <Settings2 className="h-4 w-4" />
+            管理协议开关
+          </Button>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">全部协议</p>
+              <p className="mt-1 text-lg font-semibold">{totalProtocolEnabledCount} / {totalProtocolCount}</p>
+            </div>
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">端口转发</p>
+              <p className="mt-1 text-lg font-semibold">{directProtocolEnabledCount} / {directForwardProtocolKeys.length}</p>
+            </div>
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">隧道协议</p>
+              <p className="mt-1 text-lg font-semibold">{tunnelProtocolEnabledCount} / {tunnelForwardProtocolKeys.length}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog
+        open={showForwardProtocolDialog}
+        onOpenChange={(open) => {
+          if (open) {
+            openForwardProtocolDialog();
+          } else {
+            closeForwardProtocolDialog();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-primary" />
+              转发协议总开关
+            </DialogTitle>
+            <DialogDescription>
+              在这里统一开启或关闭用户可见、可用的转发与隧道协议。
+            </DialogDescription>
+          </DialogHeader>
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-2 rounded-lg border border-border/40 bg-muted/20 p-3">
               <div>
@@ -1477,7 +1542,10 @@ function SystemInfoSection() {
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {directForwardProtocolKeys.map((key) => (
-                  <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2">
+                  <div
+                    key={key}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
+                  >
                     <span className="text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
                     <Switch checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
                   </div>
@@ -1491,7 +1559,10 @@ function SystemInfoSection() {
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {tunnelForwardProtocolKeys.map((key) => (
-                  <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2">
+                  <div
+                    key={key}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
+                  >
                     <span className="text-sm">{FORWARD_PROTOCOL_LABELS[key]}</span>
                     <Switch checked={forwardProtocols[key]} onCheckedChange={(checked) => setForwardProtocolEnabled(key, checked)} />
                   </div>
@@ -1499,13 +1570,16 @@ function SystemInfoSection() {
               </div>
             </div>
           </div>
-          <div className="flex justify-end">
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={closeForwardProtocolDialog}>
+              取消
+            </Button>
             <Button onClick={handleSaveForwardProtocols} disabled={updateSettingsMutation.isPending}>
               {updateSettingsMutation.isPending ? "保存中..." : "保存协议开关"}
             </Button>
-          </div>
-        </CardContent>
-      </Card>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="border-border/40 bg-card/60 backdrop-blur-md lg:col-span-2">
@@ -1535,43 +1609,45 @@ function SystemInfoSection() {
                 <Switch checked={homepageCustomEnabled} onCheckedChange={setHomepageCustomEnabled} />
               </div>
             </div>
-            <div className="space-y-2">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <Label className="text-sm font-medium">首页 H5/HTML 代码</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    可以粘贴完整 HTML，也可以只粘贴 body 内容。预览会在独立页面中打开。
-                  </p>
+            {homepageCustomEnabled && (
+              <div className="space-y-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <Label className="text-sm font-medium">首页 H5/HTML 代码</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      可以粘贴完整 HTML，也可以只粘贴 body 内容。预览会在独立页面中打开。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={handleUseHomepageTemplate}>
+                      使用示例
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handlePreviewHomepage} className="gap-2">
+                      <Eye className="h-4 w-4" />
+                      预览
+                    </Button>
+                    <Button variant="outline" size="sm" asChild>
+                      <a href="/homepage-preview" target="_blank" rel="noopener noreferrer">
+                        查看已保存
+                      </a>
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={handleUseHomepageTemplate}>
-                    使用示例
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handlePreviewHomepage} className="gap-2">
-                    <Eye className="h-4 w-4" />
-                    预览
-                  </Button>
-                  <Button variant="outline" size="sm" asChild>
-                    <a href="/homepage-preview" target="_blank" rel="noopener noreferrer">
-                      查看已保存
-                    </a>
-                  </Button>
-                </div>
-              </div>
-              <Textarea
-                value={homepageHtml}
-                onChange={(e) => setHomepageHtml(e.target.value)}
-                placeholder="粘贴你的首页 H5/HTML 代码"
-                className="min-h-72 font-mono text-xs leading-5"
-              />
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <Textarea
+                  value={homepageHtml}
+                  onChange={(e) => setHomepageHtml(e.target.value)}
+                  placeholder="粘贴你的首页 H5/HTML 代码"
+                  className="min-h-72 font-mono text-xs leading-5"
+                />
                 <p className="text-xs text-muted-foreground">
                   当前 {homepageHtml.length.toLocaleString()} / 60,000 字符。自定义代码会在沙箱 iframe 中渲染。
                 </p>
-                <Button variant="outline" onClick={handleSaveHomepage} disabled={updateSettingsMutation.isPending}>
-                  {updateSettingsMutation.isPending ? "保存中..." : "保存首页设置"}
-                </Button>
               </div>
+            )}
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={handleSaveHomepage} disabled={updateSettingsMutation.isPending}>
+                {updateSettingsMutation.isPending ? "保存中..." : "保存首页设置"}
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -1651,7 +1727,6 @@ function SystemInfoSection() {
             </Button>
           </CardContent>
         </Card>
-      </div>
 
       {/* 版本升级 */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -1847,6 +1922,7 @@ function SystemInfoSection() {
           )}
         </CardContent>
       </Card>
+      </div>
 
       {/* 开源与社区 */}
       <Dialog open={showUpgradeConfirm} onOpenChange={setShowUpgradeConfirm}>

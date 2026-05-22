@@ -64,6 +64,7 @@ export default function Store() {
       setSelectedPlan(null);
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
       if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
     },
     onError: (error) => toast.error(error.message || "创建订单失败"),
@@ -77,6 +78,7 @@ export default function Store() {
       setDiscountPreview(null);
       utils.plans.mySubscriptions.invalidate();
       utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
     },
     onError: (error) => toast.error(error.message || "购买失败"),
   });

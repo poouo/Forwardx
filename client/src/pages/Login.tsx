@@ -1,15 +1,31 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Network, Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn } from "lucide-react";
+import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send } from "lucide-react";
 import { toast } from "sonner";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
 
 type Mode = "login" | "register";
+
+type TelegramLoginPayload = {
+  id: string | number;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  photo_url?: string;
+  auth_date: string | number;
+  hash: string;
+};
+
+declare global {
+  interface Window {
+    forwardxTelegramLogin?: (user: TelegramLoginPayload) => void;
+  }
+}
 
 export default function Login() {
   const [location] = useLocation();
@@ -25,6 +41,7 @@ export default function Login() {
   const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [showCaptcha, setShowCaptcha] = useState(false);
   const [telegramLoginCode, setTelegramLoginCode] = useState<string | null>(null);
+  const telegramWidgetRef = useRef<HTMLDivElement | null>(null);
   const { resolvedTheme, setTheme } = useTheme();
 
   useEffect(() => {
@@ -34,6 +51,9 @@ export default function Login() {
 
   const utils = trpc.useUtils();
   const { data: emailConfig } = trpc.auth.emailConfig.useQuery(undefined, {
+    refetchOnWindowFocus: false,
+  });
+  const { data: telegramLoginStatus } = trpc.telegram.loginStatus.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
 
@@ -83,6 +103,17 @@ export default function Login() {
     },
   });
 
+  const telegramWidgetLoginMutation = trpc.telegram.loginWithWidget.useMutation({
+    onSuccess: () => {
+      toast.success("Telegram 登录成功");
+      utils.auth.me.invalidate();
+      window.location.href = "/";
+    },
+    onError: (error) => {
+      toast.error(error.message || "Telegram 登录失败");
+    },
+  });
+
   // 注册 mutation
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: (data) => {
@@ -117,6 +148,34 @@ export default function Login() {
     setTelegramLoginCode(code);
     telegramLoginMutation.mutate({ code });
   }, [location, telegramLoginCode, telegramLoginMutation]);
+
+  const telegramBotUsername = telegramLoginStatus?.botUsername?.replace(/^@/, "").trim();
+  const showTelegramLogin = mode === "login" && !!telegramLoginStatus?.enabled && !!telegramLoginStatus?.configured;
+  const canRenderTelegramWidget = showTelegramLogin && !!telegramBotUsername;
+
+  useEffect(() => {
+    const container = telegramWidgetRef.current;
+    if (!canRenderTelegramWidget || !telegramBotUsername || !container) return;
+
+    window.forwardxTelegramLogin = (user: TelegramLoginPayload) => {
+      telegramWidgetLoginMutation.mutate(user);
+    };
+
+    container.innerHTML = "";
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = "https://telegram.org/js/telegram-widget.js?22";
+    script.setAttribute("data-telegram-login", telegramBotUsername);
+    script.setAttribute("data-size", "large");
+    script.setAttribute("data-radius", "8");
+    script.setAttribute("data-onauth", "forwardxTelegramLogin(user)");
+    container.appendChild(script);
+
+    return () => {
+      container.innerHTML = "";
+      delete window.forwardxTelegramLogin;
+    };
+  }, [canRenderTelegramWidget, telegramBotUsername, telegramWidgetLoginMutation]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -188,7 +247,7 @@ export default function Login() {
   };
 
   const isPending = loginMutation.isPending || registerMutation.isPending;
-  const isTelegramPending = telegramLoginMutation.isPending;
+  const isTelegramPending = telegramLoginMutation.isPending || telegramWidgetLoginMutation.isPending;
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-background relative px-3 sm:px-4">
@@ -311,6 +370,32 @@ export default function Login() {
                   </>
                 )}
               </Button>
+
+              {showTelegramLogin && (
+                <div className="space-y-3">
+                  <div className="relative flex items-center justify-center">
+                    <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
+                    <span className="relative bg-card px-3 text-xs text-muted-foreground">或</span>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                    <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
+                      <Send className="h-4 w-4 text-sky-500" />
+                      使用 Telegram 快捷登录
+                    </div>
+                    {canRenderTelegramWidget ? (
+                      <div
+                        ref={telegramWidgetRef}
+                        className={`flex min-h-11 justify-center ${telegramWidgetLoginMutation.isPending ? "pointer-events-none opacity-60" : ""}`}
+                      />
+                    ) : (
+                      <p className="text-center text-xs text-muted-foreground">Telegram 机器人用户名同步后即可使用。</p>
+                    )}
+                    <p className="mt-2 text-center text-xs text-muted-foreground">
+                      仅已绑定 Telegram 的账户可登录。
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="text-center">
                 <button

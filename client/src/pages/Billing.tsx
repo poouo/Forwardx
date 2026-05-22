@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { Gift, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
+import { CreditCard, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -45,11 +45,29 @@ function normalizeCodeInput(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 64);
 }
 
+function ledgerTone(item: any) {
+  if (item.kind === "balance" && Number(item.amountCents) < 0) return "text-destructive";
+  if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600";
+  if (item.kind === "payment" && (item.status === "paid" || item.status === "completed")) return "text-emerald-600";
+  return "";
+}
+
+function ledgerIcon(item: any) {
+  if (item.kind === "payment") return CreditCard;
+  if (item.kind === "subscription") return Package;
+  return WalletCards;
+}
+
 export default function Billing() {
   const utils = trpc.useUtils();
   const { data: users = [] } = trpc.users.list.useQuery();
   const { data: plans = [] } = trpc.plans.list.useQuery();
   const { data: transactions = [] } = trpc.billing.listTransactions.useQuery({ limit: 100 });
+  const [ledgerUserId, setLedgerUserId] = useState("all");
+  const { data: ledger = [] } = trpc.billing.ledger.useQuery({
+    limit: 200,
+    userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
+  });
   const { data: redemptionCodes = [] } = trpc.billing.listRedemptionCodes.useQuery();
   const { data: discountCodes = [] } = trpc.billing.listDiscountCodes.useQuery();
   const { data: featureStatus } = trpc.billing.featureStatus.useQuery();
@@ -219,10 +237,83 @@ export default function Billing() {
 
         <Tabs defaultValue="balance">
           <TabsList className="flex h-auto flex-wrap">
+            <TabsTrigger value="ledger">账单流水</TabsTrigger>
             <TabsTrigger value="balance">余额流水</TabsTrigger>
             <TabsTrigger value="redeem">兑换码</TabsTrigger>
             <TabsTrigger value="discount">折扣码</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="ledger" className="mt-4">
+            <Card>
+              <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" /> 账单流水</CardTitle>
+                  <CardDescription>整合余额变动、支付订单和套餐订阅记录，管理员可按用户筛选。</CardDescription>
+                </div>
+                <Select value={ledgerUserId} onValueChange={setLedgerUserId}>
+                  <SelectTrigger className="w-full lg:w-56">
+                    <SelectValue placeholder="筛选用户" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部用户</SelectItem>
+                    {users.map((user: any) => (
+                      <SelectItem key={user.id} value={String(user.id)}>
+                        {user.name || user.username}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>用户</TableHead>
+                      <TableHead>项目</TableHead>
+                      <TableHead>类型</TableHead>
+                      <TableHead>金额</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead>关联信息</TableHead>
+                      <TableHead>时间</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {ledger.map((item: any) => {
+                      const Icon = ledgerIcon(item);
+                      return (
+                        <TableRow key={item.id}>
+                          <TableCell>{item.name || item.username || `#${item.userId}`}</TableCell>
+                          <TableCell>
+                            <div className="flex min-w-60 items-start gap-3">
+                              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted/30">
+                                <Icon className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">{item.title}</p>
+                                <p className="truncate text-xs text-muted-foreground">{item.description || "-"}</p>
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell><Badge variant="outline">{item.category}</Badge></TableCell>
+                          <TableCell className={ledgerTone(item)}>
+                            {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
+                          </TableCell>
+                          <TableCell><Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel || item.status}</Badge></TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">{item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-")}</TableCell>
+                          <TableCell>{dateText(item.createdAt)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {ledger.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">暂无账单流水</TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="balance" className="mt-4">
             <Card>

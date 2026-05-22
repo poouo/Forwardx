@@ -43,6 +43,7 @@ import {
   Zap,
   CreditCard,
   WalletCards,
+  ReceiptText,
   Package,
   ShoppingBag,
   Megaphone,
@@ -73,7 +74,7 @@ const mainMenuItems = [
 
 const adminMenuItems = [
   { icon: CreditCard, label: "支付对接", path: "/payments" },
-  { icon: WalletCards, label: "余额与兑换", path: "/billing" },
+  { icon: WalletCards, label: "账单与兑换", path: "/billing" },
   { icon: Package, label: "套餐管理", path: "/plans" },
   { icon: Users, label: "用户管理", path: "/users" },
   { icon: Mail, label: "邮箱设置", path: "/email-settings" },
@@ -305,7 +306,7 @@ function DashboardLayoutContent({
     : mainMenuItems.filter((item) => item.path !== "/hosts" && item.path !== "/tunnels");
   const userStoreMenuItems = !isAdmin
     ? [
-        { icon: WalletCards, label: "我的余额", path: "/wallet" },
+        { icon: ReceiptText, label: "账单中心", path: "/wallet" },
         ...(storeStatus?.enabled ? [{ icon: ShoppingBag, label: "商店", path: "/store" }] : []),
       ]
     : [];

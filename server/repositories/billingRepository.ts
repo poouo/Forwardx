@@ -393,6 +393,139 @@ export async function listBalanceTransactions(userId?: number, limit = 100) {
   return base.orderBy(desc(balanceTransactions.createdAt)).limit(limit);
 }
 
+function normalizeBillingLimit(limit = 100) {
+  return Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+}
+
+function billingTime(value: unknown) {
+  if (!value) return 0;
+  const date = value instanceof Date ? value : new Date(value as any);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function paymentStatusLabel(status: string) {
+  if (status === "pending") return "待支付";
+  if (status === "paid") return "已支付";
+  if (status === "completed") return "已完成";
+  if (status === "expired") return "已过期";
+  if (status === "cancelled") return "已取消";
+  if (status === "failed") return "失败";
+  return status || "-";
+}
+
+function paymentOrderTypeLabel(type: string | null | undefined) {
+  if (type === "plan") return "套餐订单";
+  if (type === "test") return "测试订单";
+  return "余额充值";
+}
+
+function balanceTypeLabel(type: string) {
+  if (type === "admin_recharge") return "管理员充值";
+  if (type === "payment") return "在线充值入账";
+  if (type === "purchase") return "余额消费";
+  if (type === "redeem") return "兑换入账";
+  return type || "余额变动";
+}
+
+function subscriptionSourceLabel(source: string) {
+  if (source === "admin") return "管理员分配";
+  if (source === "payment") return "在线购买";
+  if (source === "redeem") return "兑换套餐";
+  if (source === "balance") return "余额购买";
+  return source || "套餐变更";
+}
+
+export async function listBillingLedger(options?: {
+  viewerUserId?: number;
+  isAdmin?: boolean;
+  userId?: number;
+  limit?: number;
+}) {
+  const limit = normalizeBillingLimit(options?.limit);
+  const targetUserId = options?.isAdmin ? options?.userId : options?.viewerUserId;
+  if (!options?.isAdmin && !targetUserId) return [];
+
+  const [transactions, orders, subscriptions] = await Promise.all([
+    listBalanceTransactions(targetUserId, limit),
+    listPaymentOrders(limit, targetUserId),
+    listUserSubscriptions(targetUserId),
+  ]);
+
+  const items = [
+    ...transactions.map((tx: any) => ({
+      id: `balance-${tx.id}`,
+      sourceId: tx.id,
+      kind: "balance",
+      category: balanceTypeLabel(tx.type),
+      title: balanceTypeLabel(tx.type),
+      description: tx.description || "-",
+      userId: tx.userId,
+      username: tx.username,
+      name: tx.name,
+      amountCents: Number(tx.amountCents || 0),
+      currency: "CNY",
+      balanceAfterCents: Number(tx.balanceAfterCents || 0),
+      status: "completed",
+      statusLabel: "已完成",
+      paymentOrderNo: tx.paymentOrderNo,
+      redemptionCodeId: tx.redemptionCodeId,
+      operatorUserId: tx.operatorUserId,
+      createdAt: tx.createdAt,
+    })),
+    ...orders.map((order: any) => ({
+      id: `payment-${order.id}`,
+      sourceId: order.id,
+      kind: "payment",
+      category: paymentOrderTypeLabel(order.orderType),
+      title: order.subject || paymentOrderTypeLabel(order.orderType),
+      description: order.outTradeNo,
+      userId: order.userId,
+      username: order.username,
+      name: order.name,
+      amountCents: Number(order.amountCents || 0),
+      currency: order.currency || "CNY",
+      status: order.status,
+      statusLabel: paymentStatusLabel(order.status),
+      paymentType: order.paymentType,
+      provider: order.provider,
+      paymentOrderNo: order.outTradeNo,
+      tradeNo: order.tradeNo,
+      planId: order.planId,
+      subscriptionId: order.subscriptionId,
+      discountAmountCents: Number(order.discountAmountCents || 0),
+      createdAt: order.createdAt,
+      paidAt: order.paidAt,
+    })),
+    ...subscriptions.map((sub: any) => ({
+      id: `subscription-${sub.id}`,
+      sourceId: sub.id,
+      kind: "subscription",
+      category: "套餐记录",
+      title: `${subscriptionSourceLabel(sub.source)}：${sub.planName || `套餐 #${sub.planId}`}`,
+      description: sub.portRangeStart && sub.portRangeEnd ? `端口段 ${sub.portRangeStart}-${sub.portRangeEnd}` : "-",
+      userId: sub.userId,
+      username: sub.username,
+      name: sub.name,
+      amountCents: sub.source === "admin" || sub.source === "redeem" ? 0 : Number(sub.priceCents || 0),
+      currency: "CNY",
+      status: sub.status,
+      statusLabel: sub.status === "active" ? "生效中" : sub.status === "expired" ? "已过期" : sub.status === "cancelled" ? "已取消" : sub.status,
+      planId: sub.planId,
+      planName: sub.planName,
+      paymentOrderNo: sub.paymentOrderNo,
+      portRangeStart: sub.portRangeStart,
+      portRangeEnd: sub.portRangeEnd,
+      startedAt: sub.startedAt,
+      expiresAt: sub.expiresAt,
+      createdAt: sub.createdAt,
+    })),
+  ];
+
+  return items
+    .sort((a, b) => billingTime(b.createdAt) - billingTime(a.createdAt))
+    .slice(0, limit);
+}
+
 export async function addUserBalance(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");

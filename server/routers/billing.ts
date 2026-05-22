@@ -44,6 +44,21 @@ export const billingRouter = router({
     .input(z.object({ userId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(500).default(100) }).optional())
     .query(async ({ input }) => db.listBalanceTransactions(input?.userId, input?.limit || 100)),
 
+  ledger: protectedProcedure
+    .input(z.object({
+      userId: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(500).default(100),
+    }).optional())
+    .query(async ({ input, ctx }) => {
+      const isAdmin = ctx.user.role === "admin";
+      return db.listBillingLedger({
+        viewerUserId: ctx.user.id,
+        isAdmin,
+        userId: isAdmin ? input?.userId : undefined,
+        limit: input?.limit || 100,
+      });
+    }),
+
   adminRecharge: adminProcedure
     .input(z.object({
       userId: z.number().int().positive(),
