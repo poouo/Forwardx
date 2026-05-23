@@ -33,6 +33,8 @@ function EmailSettingsContent() {
     password: "",
     from: "",
     verifyRegistration: false,
+    whitelistEnabled: false,
+    whitelist: "",
     expiryReminder: false,
     trafficReminder: false,
     trafficReminderThreshold: 20,
@@ -50,6 +52,8 @@ function EmailSettingsContent() {
       password: "",
       from: email.from || "",
       verifyRegistration: !!email.verifyRegistration,
+      whitelistEnabled: !!email.whitelistEnabled,
+      whitelist: email.whitelist || "",
       expiryReminder: !!email.expiryReminder,
       trafficReminder: !!email.trafficReminder,
       trafficReminderThreshold: Number(email.trafficReminderThreshold || 20),
@@ -89,6 +93,8 @@ function EmailSettingsContent() {
         password: form.password,
         from: form.from,
         verifyRegistration: form.verifyRegistration,
+        whitelistEnabled: form.whitelistEnabled,
+        whitelist: form.whitelist,
         expiryReminder: form.expiryReminder,
         trafficReminder: form.trafficReminder,
         trafficReminderThreshold: Number(form.trafficReminderThreshold || 20),
@@ -202,6 +208,24 @@ function EmailSettingsContent() {
               <p className="text-xs text-muted-foreground">开启后，新用户注册必须填写邮箱并通过 5 分钟验证码。</p>
             </div>
             <Switch checked={form.verifyRegistration} onCheckedChange={(verifyRegistration) => setForm({ ...form, verifyRegistration })} />
+          </div>
+          <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 md:grid-cols-[1fr_240px]">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">邮箱后缀白名单</p>
+                <p className="text-xs text-muted-foreground">开启后，仅允许指定后缀的邮箱注册，支持英文逗号或中文逗号分割。</p>
+              </div>
+              <Switch checked={form.whitelistEnabled} onCheckedChange={(whitelistEnabled) => setForm({ ...form, whitelistEnabled })} />
+            </div>
+            <div className="space-y-2">
+              <Label>允许的邮箱后缀</Label>
+              <Input
+                value={form.whitelist}
+                onChange={(e) => setForm({ ...form, whitelist: e.target.value })}
+                placeholder="example.com，gmail.com"
+                disabled={!form.whitelistEnabled}
+              />
+            </div>
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/40 bg-muted/20 p-3">
             <div>

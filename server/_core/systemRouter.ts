@@ -279,6 +279,8 @@ export const systemRouter = router({
         user: all.emailUser ?? "",
         from: all.emailFrom ?? "",
         verifyRegistration: all.emailVerifyRegistration === "true",
+        whitelistEnabled: all.emailWhitelistEnabled === "true",
+        whitelist: all.emailWhitelist ?? "",
         expiryReminder: all.emailExpiryReminder === "true",
         trafficReminder: all.emailTrafficReminder === "true",
         trafficReminderThreshold: Number(all.emailTrafficReminderThreshold || 20),
@@ -297,7 +299,8 @@ export const systemRouter = router({
         tokenMasked: (() => {
           const token = ENV.telegramBotToken.trim() || String(all.telegramBotToken || "").trim();
           if (!token) return "";
-          return token.length <= 12 ? `${token.slice(0, 4)}...` : `${token.slice(0, 8)}...${token.slice(-4)}`;
+          if (token.length <= 12) return `${token.slice(0, 4)}${"*".repeat(Math.max(4, token.length - 4))}`;
+          return `${token.slice(0, 8)}${"*".repeat(Math.max(8, token.length - 12))}${token.slice(-4)}`;
         })(),
         tokenSource: ENV.telegramBotToken.trim() ? "env" : (all.telegramBotToken ? "database" : "none"),
         polling: ENV.telegramBotPolling,
@@ -326,6 +329,8 @@ export const systemRouter = router({
           password: z.string().max(512).optional(),
           from: z.string().max(320).optional(),
           verifyRegistration: z.boolean().optional(),
+          whitelistEnabled: z.boolean().optional(),
+          whitelist: z.string().max(1000).optional(),
           expiryReminder: z.boolean().optional(),
           trafficReminder: z.boolean().optional(),
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
@@ -383,6 +388,8 @@ export const systemRouter = router({
         if (email.password !== undefined && email.password.trim()) next.emailPassword = email.password;
         if (email.from !== undefined) next.emailFrom = email.from.trim() || null;
         if (email.verifyRegistration !== undefined) next.emailVerifyRegistration = email.verifyRegistration ? "true" : "false";
+        if (email.whitelistEnabled !== undefined) next.emailWhitelistEnabled = email.whitelistEnabled ? "true" : "false";
+        if (email.whitelist !== undefined) next.emailWhitelist = email.whitelist.trim() || null;
         if (email.expiryReminder !== undefined) next.emailExpiryReminder = email.expiryReminder ? "true" : "false";
         if (email.trafficReminder !== undefined) next.emailTrafficReminder = email.trafficReminder ? "true" : "false";
         if (email.trafficReminderThreshold !== undefined) next.emailTrafficReminderThreshold = String(email.trafficReminderThreshold);

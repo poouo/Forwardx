@@ -94,6 +94,9 @@ export const users = table("users", {
   password: text("password").notNull(),
   name: text("name"),
   email: text("email"),
+  emailVerified: boolean("emailVerified").notNull().default(false),
+  emailVerifiedAt: epoch("emailVerifiedAt"),
+  displayRemark: text("displayRemark"),
   role: varchar("role", { length: 32 }).notNull().default("user"), // 'user' | 'admin'
   // ===== 鏉冮檺鎺у埗 =====
   canAddRules: boolean("canAddRules").notNull().default(false), // 鏄惁鍏佽娣诲姞杞彂瑙勫垯

@@ -11,6 +11,10 @@ import { useLocation } from "wouter";
 
 type Mode = "login" | "register";
 
+function isEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 type TelegramLoginPayload = {
   id: string | number;
   first_name?: string;
@@ -211,6 +215,10 @@ export default function Login() {
     }
     if (password.length < 6) {
       toast.error("密码至少6个字符");
+      return;
+    }
+    if (!isEmail(username)) {
+      toast.error("注册用户名必须是邮箱格式");
       return;
     }
     if (emailConfig?.verifyRegistration) {
@@ -414,9 +422,12 @@ export default function Login() {
                 <Input
                   id="reg-username"
                   type="text"
-                  placeholder="至少2个字符"
+                  placeholder="请输入邮箱作为用户名"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    if (!email || email === username) setEmail(e.target.value);
+                  }}
                   autoComplete="username"
                   autoFocus
                   disabled={isPending}

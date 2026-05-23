@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { FORWARD_TYPES } from "../../shared/forwardTypes";
 import { ensureAdminOrSelf, refreshUserForwardEndpoints } from "./helpers";
+import { getEmailConfig, sendMail } from "../email";
 
 export const usersRouter = router({
     list: adminProcedure.query(async () => {
@@ -80,6 +81,26 @@ export const usersRouter = router({
       .input(z.object({ userId: z.number(), tunnelIds: z.array(z.number()) }))
       .mutation(async ({ input }) => {
         await db.setUserTunnelPermissions(input.userId, input.tunnelIds);
+        return { success: true };
+      }),
+    sendEmail: adminProcedure
+      .input(z.object({
+        userId: z.number(),
+        subject: z.string().trim().min(1).max(120),
+        content: z.string().trim().min(1).max(4000),
+      }))
+      .mutation(async ({ input }) => {
+        const config = await getEmailConfig();
+        if (!config.enabled) throw new Error("邮箱服务未启用");
+        const user = await db.getUserById(input.userId);
+        if (!user) throw new Error("用户不存在");
+        if (!user.email || !user.emailVerified) throw new Error("该用户邮箱尚未验证，不能发送邮件");
+        await sendMail({
+          to: user.email,
+          subject: input.subject.trim(),
+          text: input.content.trim(),
+          html: input.content.trim().replace(/\n/g, "<br />"),
+        });
         return { success: true };
       }),
     allTunnelPermissions: adminProcedure.query(async () => {

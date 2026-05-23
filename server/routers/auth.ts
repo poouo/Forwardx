@@ -81,6 +81,28 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function parseEmailWhitelist(value?: string | null) {
+  return String(value || "")
+    .split(/[,，]/)
+    .map((item) => item.trim().toLowerCase().replace(/^@/, ""))
+    .filter(Boolean);
+}
+
+function ensureAllowedEmail(email: string, config: Awaited<ReturnType<typeof getEmailConfig>>) {
+  const normalized = normalizeEmail(email);
+  if (!z.string().email().safeParse(normalized).success) {
+    throw new Error("邮箱格式不正确");
+  }
+  if (!config.whitelistEnabled) return normalized;
+  const whitelist = parseEmailWhitelist(config.whitelist);
+  if (!whitelist.length) return normalized;
+  const domain = normalized.split("@")[1] || "";
+  if (!whitelist.some((suffix) => domain === suffix || domain.endsWith(`.${suffix}`))) {
+    throw new Error("该邮箱后缀不在注册白名单内");
+  }
+  return normalized;
+}
+
 function generateEmailCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -119,7 +141,7 @@ export const authRouter = router({
     .mutation(async ({ input }) => {
       const config = await getEmailConfig();
       if (!config.enabled || !config.verifyRegistration) return { skipped: true };
-      const email = normalizeEmail(input.email);
+      const email = ensureAllowedEmail(input.email, config);
       const code = generateEmailCode();
       emailCodeStore.set(email, { code, expiresAt: Date.now() + 5 * 60 * 1000 });
       await sendVerificationCode(email, code);
@@ -170,7 +192,7 @@ export const authRouter = router({
 
   register: publicProcedure
     .input(z.object({
-      username: z.string().min(2, "用户名至少2个字符").max(64),
+      username: z.string().email("用户名必须是邮箱格式").max(64),
       password: z.string().min(6, "密码至少6个字符"),
       name: z.string().max(64).optional(),
       email: z.string().email("邮箱格式不正确").optional(),
@@ -182,19 +204,30 @@ export const authRouter = router({
       if (!verifyCaptcha(input.captchaId, input.captchaAnswer)) {
         throw new Error("验证码错误，请重新输入");
       }
-      const existing = await db.getUserByUsername(input.username);
+      const emailConfig = await getEmailConfig();
+      const usernameEmail = ensureAllowedEmail(input.username, emailConfig);
+      const existing = await db.getUserByUsername(usernameEmail);
       if (existing) {
         throw new Error("用户名已存在");
       }
-      const emailConfig = await getEmailConfig();
+      let verifiedEmail = false;
       if (emailConfig.enabled && emailConfig.verifyRegistration) {
         if (!input.email) throw new Error("请填写邮箱地址");
+        const inputEmail = ensureAllowedEmail(input.email, emailConfig);
+        if (inputEmail !== usernameEmail) throw new Error("验证邮箱必须和用户名邮箱一致");
         if (!verifyEmailCode(input.email, input.emailCode)) {
           throw new Error("邮箱验证码错误或已过期");
         }
+        verifiedEmail = true;
       }
       const { captchaId: _captchaId, captchaAnswer: _captchaAnswer, emailCode: _emailCode, ...userData } = input;
-      const id = await db.registerUser(userData);
+      const id = await db.registerUser({
+        ...userData,
+        username: usernameEmail,
+        email: usernameEmail,
+        emailVerified: verifiedEmail,
+        emailVerifiedAt: verifiedEmail ? new Date() : null,
+      });
       return { id, message: "注册成功，请联系管理员开通权限" };
     }),
 
@@ -221,9 +254,13 @@ export const authRouter = router({
     .input(z.object({
       name: z.string().min(1).max(64).optional(),
       email: z.string().email().max(320).optional(),
+      displayRemark: z.string().trim().max(24).nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await db.updateUserProfile(ctx.user.id, input);
+      await db.updateUserProfile(ctx.user.id, {
+        ...input,
+        displayRemark: input.displayRemark === undefined ? undefined : input.displayRemark?.trim() || null,
+      });
       return { success: true };
     }),
 });

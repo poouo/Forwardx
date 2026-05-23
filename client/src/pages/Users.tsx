@@ -49,6 +49,7 @@ import {
   Gauge,
   WalletCards,
   Send,
+  Mail,
 } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
@@ -83,6 +84,10 @@ function formatSpeed(bytesPerSecond: number | string | null | undefined): string
   return `${parseFloat((num / 1024 / 1024).toFixed(2))} MB/s`;
 }
 
+function userLabel(user: any) {
+  return user?.displayRemark || user?.username || user?.name || `#${user?.id}`;
+}
+
 function UsersContent() {
   const { user: currentUser } = useAuth();
   const [, setLocation] = useLocation();
@@ -108,6 +113,12 @@ function UsersContent() {
   const [rechargeUserId, setRechargeUserId] = useState<number | null>(null);
   const [rechargeUserName, setRechargeUserName] = useState("");
   const [rechargeAmount, setRechargeAmount] = useState("");
+  const [showSendEmail, setShowSendEmail] = useState(false);
+  const [emailUserId, setEmailUserId] = useState<number | null>(null);
+  const [emailUserName, setEmailUserName] = useState("");
+  const [emailTo, setEmailTo] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailContent, setEmailContent] = useState("");
 
   // Traffic settings dialog
   const [showTrafficSettings, setShowTrafficSettings] = useState(false);
@@ -218,6 +229,16 @@ function UsersContent() {
     onError: (err) => toast.error(err.message || "删除用户失败"),
   });
 
+  const sendEmailMutation = trpc.users.sendEmail.useMutation({
+    onSuccess: () => {
+      toast.success("邮件已发送");
+      setShowSendEmail(false);
+      setEmailSubject("");
+      setEmailContent("");
+    },
+    onError: (err) => toast.error(err.message || "邮件发送失败"),
+  });
+
   const updateTrafficMutation = trpc.users.updateTrafficSettings.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -292,13 +313,39 @@ function UsersContent() {
     resetTrafficMutation.mutate({ userId: resetTrafficUserId });
   };
 
+  const openSendEmail = (u: any) => {
+    if (!u.email || !u.emailVerified) {
+      toast.error("该用户邮箱尚未验证，不能发送邮件");
+      return;
+    }
+    setEmailUserId(u.id);
+    setEmailUserName(userLabel(u));
+    setEmailTo(u.email);
+    setEmailSubject("");
+    setEmailContent("");
+    setShowSendEmail(true);
+  };
+
+  const handleSendEmail = () => {
+    if (!emailUserId) return;
+    if (!emailSubject.trim() || !emailContent.trim()) {
+      toast.error("请填写邮件标题和内容");
+      return;
+    }
+    sendEmailMutation.mutate({
+      userId: emailUserId,
+      subject: emailSubject.trim(),
+      content: emailContent.trim(),
+    });
+  };
+
   const openTrafficSettings = (u: any) => {
     if (u.role === "admin") {
       toast.info("管理员默认拥有全部权限，且不受流量/资源限制");
       return;
     }
     setTrafficUserId(u.id);
-    setTrafficUserName(u.name || u.username);
+    setTrafficUserName(userLabel(u));
     const limitBytes = Number(u.trafficLimit) || 0;
     if (limitBytes > 0) {
       const gb = limitBytes / (1024 * 1024 * 1024);
@@ -465,8 +512,10 @@ function UsersContent() {
                               )}
                             </div>
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium leading-none">{u.name || "未命名"}</p>
-                              <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{u.username}</p>
+                              <p className="truncate text-sm font-medium leading-none">{u.username || "未命名"}</p>
+                              {u.displayRemark && (
+                                <p className="mt-0.5 truncate text-xs text-muted-foreground">{u.displayRemark}</p>
+                              )}
                               {u.id === currentUser?.id && (
                                 <p className="text-[10px] text-primary">当前登录</p>
                               )}
@@ -620,7 +669,7 @@ function UsersContent() {
                               title="余额充值"
                               onClick={() => {
                                 setRechargeUserId(u.id);
-                                setRechargeUserName(u.name || u.username);
+                                setRechargeUserName(userLabel(u));
                                 setRechargeAmount("");
                                 setShowRecharge(true);
                               }}
@@ -640,10 +689,20 @@ function UsersContent() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
+                              title={u.emailVerified ? "发送邮件" : "邮箱未验证"}
+                              disabled={!u.emailVerified || !u.email}
+                              onClick={() => openSendEmail(u)}
+                            >
+                              <Mail className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
                               title="重置流量"
                               onClick={() => {
                                 setResetTrafficUserId(u.id);
-                                setResetTrafficUserName(u.name || u.username);
+                                setResetTrafficUserName(userLabel(u));
                                 setShowResetTraffic(true);
                               }}
                             >
@@ -656,7 +715,7 @@ function UsersContent() {
                               title="重置密码"
                               onClick={() => {
                                 setResetUserId(u.id);
-                                setResetUserName(u.name || u.username);
+                                setResetUserName(userLabel(u));
                                 setResetNewPassword("");
                                 setShowResetPassword(true);
                               }}
@@ -670,7 +729,7 @@ function UsersContent() {
                               disabled={u.id === currentUser?.id}
                               onClick={() => {
                                 if (u.id === currentUser?.id) return;
-                                if (confirm(`确定要删除用户 "${u.name || u.username}" 吗？`))
+                                if (confirm(`确定要删除用户 "${userLabel(u)}" 吗？`))
                                   deleteMutation.mutate({ userId: u.id });
                               }}
                             >
@@ -831,6 +890,43 @@ function UsersContent() {
             </Button>
             <Button onClick={handleRecharge} disabled={adminRechargeMutation.isPending}>
               {adminRechargeMutation.isPending ? "充值中..." : "确认充值"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSendEmail} onOpenChange={setShowSendEmail}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogTitle>发送邮件</DialogTitle>
+          <DialogDescription>发送给用户 "{emailUserName}" 的已验证邮箱：{emailTo}</DialogDescription>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>邮件标题</Label>
+              <Input
+                value={emailSubject}
+                maxLength={120}
+                onChange={(e) => setEmailSubject(e.target.value)}
+                placeholder="请输入邮件标题"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>邮件内容</Label>
+              <textarea
+                value={emailContent}
+                maxLength={4000}
+                onChange={(e) => setEmailContent(e.target.value)}
+                placeholder="请输入邮件内容"
+                className="flex min-h-40 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <p className="text-right text-xs text-muted-foreground">{emailContent.length}/4000</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSendEmail(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSendEmail} disabled={sendEmailMutation.isPending}>
+              {sendEmailMutation.isPending ? "发送中..." : "发送邮件"}
             </Button>
           </DialogFooter>
         </DialogContent>

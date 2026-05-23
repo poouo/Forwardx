@@ -61,7 +61,7 @@ export async function changeUserPassword(userId: number, oldPassword: string, ne
   return true;
 }
 
-export async function updateUserProfile(userId: number, data: { name?: string; email?: string }) {
+export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null }) {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
@@ -194,7 +194,7 @@ export async function consumeTelegramLoginCode(code: string) {
   return user;
 }
 
-export async function createUser(data: { username: string; password: string; name?: string; email?: string; role?: "user" | "admin"; canAddRules?: boolean }) {
+export async function createUser(data: { username: string; password: string; name?: string; email?: string; emailVerified?: boolean; emailVerifiedAt?: Date | null; role?: "user" | "admin"; canAddRules?: boolean }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   return insertAndGetId("users", {
@@ -202,13 +202,15 @@ export async function createUser(data: { username: string; password: string; nam
     password: hashPassword(data.password),
     name: data.name ?? data.username,
     email: data.email ?? null,
+    emailVerified: data.emailVerified ?? false,
+    emailVerifiedAt: data.emailVerifiedAt ?? null,
     role: data.role ?? "user",
     canAddRules: data.canAddRules ?? false,
   });
 }
 
 /** 用户自行注册（默认 role=user, canAddRules=false） */
-export async function registerUser(data: { username: string; password: string; name?: string; email?: string }) {
+export async function registerUser(data: { username: string; password: string; name?: string; email?: string; emailVerified?: boolean; emailVerifiedAt?: Date | null }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   return insertAndGetId("users", {
@@ -216,6 +218,8 @@ export async function registerUser(data: { username: string; password: string; n
     password: hashPassword(data.password),
     name: data.name ?? data.username,
     email: data.email ?? null,
+    emailVerified: data.emailVerified ?? false,
+    emailVerifiedAt: data.emailVerifiedAt ?? null,
     role: "user",
     canAddRules: false,
   });
@@ -236,6 +240,9 @@ export async function getAllUsers() {
       username: users.username,
       name: users.name,
       email: users.email,
+      emailVerified: users.emailVerified,
+      emailVerifiedAt: users.emailVerifiedAt,
+      displayRemark: users.displayRemark,
       role: users.role,
       canAddRules: users.canAddRules,
       maxRules: users.maxRules,
@@ -391,6 +398,7 @@ export async function getUserTrafficSummaries() {
     username: users.username,
     name: users.name,
     email: users.email,
+    displayRemark: users.displayRemark,
     role: users.role,
     trafficLimit: users.trafficLimit,
     trafficUsed: users.trafficUsed,

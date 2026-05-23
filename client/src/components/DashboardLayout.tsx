@@ -51,6 +51,7 @@ import {
   Send,
   Copy,
   Link2Off,
+  UserCog,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -159,10 +160,16 @@ function DashboardLayoutContent({
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [showTelegramDialog, setShowTelegramDialog] = useState(false);
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
+  const [showProfileDialog, setShowProfileDialog] = useState(false);
+  const [displayRemark, setDisplayRemark] = useState("");
 
   useEffect(() => {
     if (popupAnnouncement?.id) setShowAnnouncement(true);
   }, [popupAnnouncement?.id]);
+
+  useEffect(() => {
+    setDisplayRemark((user as any)?.displayRemark || "");
+  }, [(user as any)?.displayRemark]);
 
   const dismissAnnouncement = trpc.announcements.dismiss.useMutation({
     onSuccess: () => {
@@ -188,6 +195,15 @@ function DashboardLayoutContent({
     onError: (error) => {
       toast.error(error.message || "密码修改失败");
     },
+  });
+
+  const updateProfileMutation = trpc.auth.updateProfile.useMutation({
+    onSuccess: () => {
+      utils.auth.me.invalidate();
+      setShowProfileDialog(false);
+      toast.success("账号设置已保存");
+    },
+    onError: (error) => toast.error(error.message || "保存账号设置失败"),
   });
 
   const createTelegramBindMutation = trpc.telegram.createBindCode.useMutation({
@@ -224,6 +240,15 @@ function DashboardLayoutContent({
       return;
     }
     changePasswordMutation.mutate({ oldPassword, newPassword });
+  };
+
+  const handleSaveProfile = () => {
+    const nextRemark = displayRemark.trim();
+    if (nextRemark.length > 24) {
+      toast.error("备注最多 24 个字符");
+      return;
+    }
+    updateProfileMutation.mutate({ displayRemark: nextRemark || null });
   };
 
   const copyText = async (text: string) => {
@@ -452,7 +477,7 @@ function DashboardLayoutContent({
               >
                 <Avatar className="h-9 w-9 border shrink-0">
                   <AvatarFallback className="text-xs font-medium bg-primary/10 text-primary">
-                    {user?.name?.charAt(0).toUpperCase() || user?.username?.charAt(0).toUpperCase() || "U"}
+                    {user?.username?.charAt(0).toUpperCase() || "U"}
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
@@ -467,20 +492,19 @@ function DashboardLayoutContent({
               <div className="px-2 py-1.5">
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{user?.name || user?.username}</p>
-                    <p className="truncate text-xs text-muted-foreground">{user?.username}</p>
+                    <p className="truncate text-sm font-medium">{user?.username}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? "管理员" : "普通用户"}</p>
                   </div>
-                  {isAdmin && (
-                    <Badge
-                      variant="secondary"
-                      className="h-5 shrink-0 whitespace-nowrap border-0 bg-primary/10 px-1.5 py-0 text-[10px] leading-none text-primary"
-                    >
-                      管理员
-                    </Badge>
-                  )}
                 </div>
               </div>
               <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setShowProfileDialog(true)}
+                className="cursor-pointer"
+              >
+                <UserCog className="mr-2 h-4 w-4" />
+                <span>账号设置</span>
+              </DropdownMenuItem>
               {isAdmin && updateInfo?.hasUpdate && (
                 <DropdownMenuItem
                   onClick={() => setLocation("/settings?tab=system")}
@@ -545,6 +569,40 @@ function DashboardLayoutContent({
         )}
         <main className="flex-1 p-3 sm:p-6">{children}</main>
       </SidebarInset>
+
+      <Dialog open={showProfileDialog} onOpenChange={setShowProfileDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>账号设置</DialogTitle>
+          <DialogDescription>设置一个可选备注。备注为空时不会在用户列表展示。</DialogDescription>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>用户名</Label>
+              <Input value={user?.username || ""} readOnly className="font-mono" />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="display-remark">备注</Label>
+                <span className="text-xs text-muted-foreground">{displayRemark.trim().length}/24</span>
+              </div>
+              <Input
+                id="display-remark"
+                value={displayRemark}
+                maxLength={24}
+                onChange={(e) => setDisplayRemark(e.target.value.slice(0, 24))}
+                placeholder="可选，最多 24 个字符"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowProfileDialog(false)}>
+              取消
+            </Button>
+            <Button onClick={handleSaveProfile} disabled={updateProfileMutation.isPending}>
+              {updateProfileMutation.isPending ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Change Password Dialog */}
       <Dialog open={showChangePassword} onOpenChange={setShowChangePassword}>

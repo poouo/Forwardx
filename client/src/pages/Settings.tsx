@@ -1053,6 +1053,7 @@ function TelegramBotSettingsCard() {
   const [telegramExpiryReminder, setTelegramExpiryReminder] = useState(false);
   const [telegramTrafficReminder, setTelegramTrafficReminder] = useState(false);
   const [telegramTrafficThreshold, setTelegramTrafficThreshold] = useState(20);
+  const [showDeleteTelegramBot, setShowDeleteTelegramBot] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -1076,10 +1077,11 @@ function TelegramBotSettingsCard() {
   });
 
   const handleSaveTelegram = () => {
+    const canSubmitToken = !settings?.telegram?.configured && settings?.telegram?.tokenSource !== "env";
     updateSettingsMutation.mutate({
       telegram: {
         enabled: telegramEnabled,
-        botToken: telegramBotTokenInput.trim() || undefined,
+        botToken: canSubmitToken ? telegramBotTokenInput.trim() || undefined : undefined,
         expiryReminder: telegramExpiryReminder,
         trafficReminder: telegramTrafficReminder,
         trafficReminderThreshold: telegramTrafficThreshold,
@@ -1097,6 +1099,7 @@ function TelegramBotSettingsCard() {
     });
     setTelegramEnabled(false);
     setTelegramBotTokenInput("");
+    setShowDeleteTelegramBot(false);
   };
 
   const tokenSourceLabel =
@@ -1106,7 +1109,13 @@ function TelegramBotSettingsCard() {
         ? "数据库配置"
         : "未配置";
 
+  const telegramTokenLocked = !!settings?.telegram?.configured || settings?.telegram?.tokenSource === "env";
+  const telegramTokenDisplayValue = telegramTokenLocked
+    ? settings?.telegram?.tokenMasked || ""
+    : telegramBotTokenInput;
+
   return (
+    <>
     <Card className="border-sky-500/25 bg-sky-500/5 backdrop-blur-md">
       <CardHeader>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1133,11 +1142,21 @@ function TelegramBotSettingsCard() {
               <div className="space-y-2">
                 <Label>Bot Token</Label>
                 <Input
-                  type="password"
+                  type="text"
                   placeholder={settings?.telegram?.tokenMasked || "从 @BotFather 获取，例如 123456:ABC..."}
-                  value={telegramBotTokenInput}
-                  onChange={(e) => setTelegramBotTokenInput(e.target.value)}
+                  value={telegramTokenDisplayValue}
+                  onChange={(e) => {
+                    if (!telegramTokenLocked) setTelegramBotTokenInput(e.target.value);
+                  }}
+                  readOnly={telegramTokenLocked}
                   disabled={settings?.telegram?.tokenSource === "env"}
+                  onMouseDown={(e) => {
+                    if (telegramTokenLocked) e.preventDefault();
+                  }}
+                  onSelect={(e) => {
+                    if (telegramTokenLocked) e.currentTarget.setSelectionRange(0, 0);
+                  }}
+                  className={telegramTokenLocked ? "select-none font-mono" : "font-mono"}
                 />
                 <p className="text-xs text-muted-foreground">
                   来源：{tokenSourceLabel}。环境变量优先级最高，数据库 Token 可随时替换为其他机器人；机器人使用长轮询，无需配置 webhook。
@@ -1203,8 +1222,14 @@ function TelegramBotSettingsCard() {
                 {testTelegramMutation.isPending ? "发送中..." : "测试发送"}
               </Button>
               {settings?.telegram?.tokenSource === "database" && (
-                <Button variant="outline" onClick={handleClearTelegramToken} disabled={updateSettingsMutation.isPending}>
-                  清空 Token
+                <Button
+                  variant="outline"
+                  className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setShowDeleteTelegramBot(true)}
+                  disabled={updateSettingsMutation.isPending}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  删除机器人
                 </Button>
               )}
               {settings?.telegram?.botUsername && (
@@ -1220,6 +1245,34 @@ function TelegramBotSettingsCard() {
         )}
       </CardContent>
     </Card>
+
+    <Dialog open={showDeleteTelegramBot} onOpenChange={setShowDeleteTelegramBot}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            删除 Telegram 机器人
+          </DialogTitle>
+          <DialogDescription>
+            删除后会清空当前 Bot Token 并关闭已配置的 Telegram 机器人。删除完成后，可以重新输入新的 Bot Token。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+          <p className="text-xs text-muted-foreground">当前机器人</p>
+          <p className="mt-1 font-medium">{settings?.telegram?.botUsername ? `@${settings.telegram.botUsername}` : "Telegram 机器人"}</p>
+          <p className="mt-2 font-mono text-xs text-muted-foreground">{settings?.telegram?.tokenMasked || "-"}</p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowDeleteTelegramBot(false)}>
+            取消
+          </Button>
+          <Button variant="destructive" onClick={handleClearTelegramToken} disabled={updateSettingsMutation.isPending}>
+            {updateSettingsMutation.isPending ? "删除中..." : "确认删除"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 
@@ -1540,7 +1593,7 @@ function SystemInfoSection() {
                 <p className="text-sm font-medium">端口转发</p>
                 <p className="text-xs text-muted-foreground">控制规则中的 iptables、realm、socat、gost 转发工具。</p>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
                 {directForwardProtocolKeys.map((key) => (
                   <div
                     key={key}
@@ -1557,7 +1610,7 @@ function SystemInfoSection() {
                 <p className="text-sm font-medium">隧道协议</p>
                 <p className="text-xs text-muted-foreground">控制隧道管理中的 ForwardX 与 GOST 隧道模式。</p>
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
                 {tunnelForwardProtocolKeys.map((key) => (
                   <div
                     key={key}

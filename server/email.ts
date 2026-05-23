@@ -19,6 +19,8 @@ export async function getEmailConfig() {
     password: settings.emailPassword || "",
     from: settings.emailFrom || settings.emailUser || "",
     verifyRegistration: settings.emailVerifyRegistration === "true",
+    whitelistEnabled: settings.emailWhitelistEnabled === "true",
+    whitelist: settings.emailWhitelist || "",
     expiryReminder: settings.emailExpiryReminder === "true",
     trafficReminder: settings.emailTrafficReminder === "true",
     trafficReminderThreshold: Number(settings.emailTrafficReminderThreshold || 20),
