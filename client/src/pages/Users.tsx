@@ -105,6 +105,8 @@ function UsersContent() {
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [resetUserName, setResetUserName] = useState("");
+  const [resetUsernameInput, setResetUsernameInput] = useState("");
+  const [resetNameInput, setResetNameInput] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [showResetTraffic, setShowResetTraffic] = useState(false);
   const [resetTrafficUserId, setResetTrafficUserId] = useState<number | null>(null);
@@ -143,13 +145,20 @@ function UsersContent() {
   // Agent 权限
   const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
   const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
-  const { data: allHosts } = trpc.hosts.list.useQuery();
-  const { data: allTunnels } = trpc.tunnels.list.useQuery();
+  const [trafficBillingHostIds, setTrafficBillingHostIds] = useState<number[]>([]);
+  const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
+  const { data: allHosts } = trpc.hosts.listAll.useQuery();
+  const { data: allTunnels } = trpc.tunnels.listAll.useQuery();
+  const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery();
   const { data: userHostPerms } = trpc.users.getHostPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
   const { data: userTunnelPerms } = trpc.users.getTunnelPermissions.useQuery(
+    { userId: trafficUserId! },
+    { enabled: showTrafficSettings && !!trafficUserId }
+  );
+  const { data: userTrafficBillingPerms } = trpc.users.getTrafficBillingPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
@@ -165,6 +174,12 @@ function UsersContent() {
     },
     onError: (err) => toast.error(err.message || "更新隧道权限失败"),
   });
+  const updateTrafficBillingPermsMutation = trpc.users.setTrafficBillingPermissions.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "更新流量计费授权失败"),
+  });
 
 
   // 当权限数据加载完成后同步到状态
@@ -179,6 +194,13 @@ function UsersContent() {
       setAllowedTunnelIds([...userTunnelPerms]);
     }
   }, [userTunnelPerms]);
+
+  useEffect(() => {
+    if (userTrafficBillingPerms) {
+      setTrafficBillingHostIds([...(userTrafficBillingPerms.hostIds || [])]);
+      setTrafficBillingTunnelIds([...(userTrafficBillingPerms.tunnelIds || [])]);
+    }
+  }, [userTrafficBillingPerms]);
 
   useEffect(() => {
     if (currentUser && currentUser.role !== "admin") {
@@ -214,11 +236,13 @@ function UsersContent() {
   const resetPasswordMutation = trpc.users.resetPassword.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
-      toast.success("密码已重置");
+      toast.success("账户信息已更新");
       setShowResetPassword(false);
+      setResetUsernameInput("");
+      setResetNameInput("");
       setResetNewPassword("");
     },
-    onError: (err) => toast.error(err.message || "重置密码失败"),
+    onError: (err) => toast.error(err.message || "更新账户信息失败"),
   });
 
   const deleteMutation = trpc.users.delete.useMutation({
@@ -301,11 +325,23 @@ function UsersContent() {
 
   const handleResetPassword = () => {
     if (!resetUserId) return;
-    if (resetNewPassword.length < 6) {
+    const username = resetUsernameInput.trim();
+    const name = resetNameInput.trim();
+    const password = resetNewPassword.trim();
+    if (!username) {
+      toast.error("请输入账号");
+      return;
+    }
+    if (password && password.length < 6) {
       toast.error("密码至少6个字符");
       return;
     }
-    resetPasswordMutation.mutate({ userId: resetUserId, newPassword: resetNewPassword });
+    resetPasswordMutation.mutate({
+      userId: resetUserId,
+      username,
+      name: name || null,
+      newPassword: password || undefined,
+    });
   };
 
   const handleResetTraffic = () => {
@@ -379,6 +415,8 @@ function UsersContent() {
     }
     setAllowedHostIds([]);
     setAllowedTunnelIds([]);
+    setTrafficBillingHostIds([]);
+    setTrafficBillingTunnelIds([]);
     setShowTrafficSettings(true);
   };
 
@@ -416,6 +454,11 @@ function UsersContent() {
       userId: trafficUserId,
       tunnelIds: allowedTunnelIds,
     });
+    updateTrafficBillingPermsMutation.mutate({
+      userId: trafficUserId,
+      hostIds: trafficBillingHostIds,
+      tunnelIds: trafficBillingTunnelIds,
+    });
   };
 
   const toggleHostPermission = (hostId: number) => {
@@ -437,7 +480,21 @@ function UsersContent() {
     );
   };
 
+  const toggleTrafficBillingHost = (hostId: number) => {
+    setTrafficBillingHostIds(prev =>
+      prev.includes(hostId) ? prev.filter(id => id !== hostId) : [...prev, hostId]
+    );
+  };
+
+  const toggleTrafficBillingTunnel = (tunnelId: number) => {
+    setTrafficBillingTunnelIds(prev =>
+      prev.includes(tunnelId) ? prev.filter(id => id !== tunnelId) : [...prev, tunnelId]
+    );
+  };
+
   const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
+  const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled).map((item: any) => Number(item.resourceId)));
+  const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled).map((item: any) => Number(item.resourceId)));
 
   return (
     <div className="space-y-6">
@@ -712,10 +769,12 @@ function UsersContent() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8"
-                              title="重置密码"
+                              title="账户信息"
                               onClick={() => {
                                 setResetUserId(u.id);
                                 setResetUserName(userLabel(u));
+                                setResetUsernameInput(u.username || "");
+                                setResetNameInput(u.name || "");
                                 setResetNewPassword("");
                                 setShowResetPassword(true);
                               }}
@@ -816,12 +875,31 @@ function UsersContent() {
         </DialogContent>
       </Dialog>
 
-      {/* Reset Password Dialog */}
+      {/* Account Dialog */}
       <Dialog open={showResetPassword} onOpenChange={setShowResetPassword}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>重置密码</DialogTitle>
-          <DialogDescription>为用户 "{resetUserName}" 设置新密码</DialogDescription>
+          <DialogTitle>账户信息</DialogTitle>
+          <DialogDescription>修改用户 "{resetUserName}" 的账号信息；密码留空则不修改。</DialogDescription>
           <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="reset-username">账号</Label>
+              <Input
+                id="reset-username"
+                value={resetUsernameInput}
+                onChange={(e) => setResetUsernameInput(e.target.value)}
+                placeholder="请输入账号"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="reset-name">显示名称</Label>
+              <Input
+                id="reset-name"
+                value={resetNameInput}
+                onChange={(e) => setResetNameInput(e.target.value)}
+                placeholder="留空则使用账号"
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="reset-password">新密码</Label>
               <Input
@@ -829,8 +907,7 @@ function UsersContent() {
                 type="password"
                 value={resetNewPassword}
                 onChange={(e) => setResetNewPassword(e.target.value)}
-                placeholder="请输入新密码（至少6个字符）"
-                autoFocus
+                placeholder="留空不修改密码"
               />
             </div>
           </div>
@@ -839,7 +916,7 @@ function UsersContent() {
               取消
             </Button>
             <Button onClick={handleResetPassword} disabled={resetPasswordMutation.isPending}>
-              {resetPasswordMutation.isPending ? "重置中..." : "重置密码"}
+              {resetPasswordMutation.isPending ? "保存中..." : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1162,11 +1239,10 @@ function UsersContent() {
               </div>
             </TabsContent>
 
-            {/* 主机标签页 */}
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                分别分配端口转发可用主机，以及隧道转发可用链路。未授权的主机或隧道不会出现在普通用户的创建选项中。
+                分别分配普通资源和流量计费资源。未授权的主机或隧道不会出现在普通用户的创建选项中；流量计费资源需要额外授权。
               </p>
 
               <div className="space-y-2">
@@ -1223,6 +1299,63 @@ function UsersContent() {
                   </div>
                 ) : (
                   <p className="text-xs text-muted-foreground">暂无可用隧道</p>
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">流量计费主机</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingHostIds.length} 台</Badge>
+                </div>
+                {allHosts?.filter((h: any) => billableHostIds.has(Number(h.id))).length ? (
+                  <div className="space-y-2">
+                    {allHosts.filter((h: any) => billableHostIds.has(Number(h.id))).map((h: any) => (
+                      <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-sm font-medium">{h.name}</span>
+                          <span className="truncate font-mono text-[10px] text-muted-foreground">{h.ip}</span>
+                        </div>
+                        <Switch
+                          checked={trafficBillingHostIds.includes(h.id)}
+                          onCheckedChange={() => toggleTrafficBillingHost(h.id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无已启用计费的主机</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">流量计费隧道</Label>
+                  <Badge variant="outline" className="text-[10px]">{trafficBillingTunnelIds.length} 条</Badge>
+                </div>
+                {allTunnels?.filter((t: any) => billableTunnelIds.has(Number(t.id))).length ? (
+                  <div className="space-y-2">
+                    {allTunnels.filter((t: any) => billableTunnelIds.has(Number(t.id))).map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{t.name}</span>
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{String(t.mode || "tls")}</Badge>
+                          </div>
+                          <p className="truncate text-[10px] text-muted-foreground">
+                            {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                          </p>
+                        </div>
+                        <Switch
+                          checked={trafficBillingTunnelIds.includes(t.id)}
+                          onCheckedChange={() => toggleTrafficBillingTunnel(t.id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">暂无已启用计费的隧道</p>
                 )}
               </div>
             </TabsContent>

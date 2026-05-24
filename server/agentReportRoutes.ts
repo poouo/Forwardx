@@ -33,7 +33,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
-    const trafficByUser = new Map<number, number>();
+    const quotaTrafficByUser = new Map<number, number>();
+    const trafficBillingEnabled = await db.isTrafficBillingEnabled();
     for (const stat of stats) {
       const bytesIn = Number(stat.bytesIn) || 0;
       const bytesOut = Number(stat.bytesOut) || 0;
@@ -59,12 +60,32 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
         console.log(`[Traffic] host=${host.id} rule=${rule.id} in=${bytesIn} out=${bytesOut} connections=${stat.connections || 0}`);
-        trafficByUser.set(rule.userId, (trafficByUser.get(rule.userId) || 0) + ruleBytes);
+        const tunnelId = Number((rule as any).tunnelId || 0);
+        const billingResource = tunnelId > 0
+          ? { resourceType: "tunnel" as const, resourceId: tunnelId }
+          : { resourceType: "host" as const, resourceId: Number(rule.hostId) };
+        const billingConfig = trafficBillingEnabled
+          ? await db.findTrafficBillingConfig(billingResource.resourceType, billingResource.resourceId)
+          : null;
+        if (billingConfig) {
+          const billed = await db.billTrafficUsage({
+            userId: Number(rule.userId),
+            ruleId: Number(rule.id),
+            bytes: ruleBytes,
+            ...billingResource,
+          });
+          if (billed && billed.balanceAfterCents < 0) {
+            console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
+            await db.disableAllUserRules(rule.userId);
+          }
+        } else {
+          quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + ruleBytes);
+        }
       }
     }
 
     // 累加用户已用流量
-    for (const [userId, totalBytes] of trafficByUser.entries()) {
+    for (const [userId, totalBytes] of quotaTrafficByUser.entries()) {
       if (totalBytes <= 0) continue;
       await db.addUserTraffic(userId, totalBytes);
 

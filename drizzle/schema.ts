@@ -407,6 +407,58 @@ export const balanceTransactions = table("balance_transactions", {
 export type BalanceTransaction = typeof balanceTransactions.$inferSelect;
 export type InsertBalanceTransaction = typeof balanceTransactions.$inferInsert;
 
+export const trafficBillingConfigs = table("traffic_billing_configs", {
+  id: serial("id"),
+  resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel
+  resourceId: int("resourceId").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
+  multiplier: int("multiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 30x = 3000
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type TrafficBillingConfig = typeof trafficBillingConfigs.$inferSelect;
+export type InsertTrafficBillingConfig = typeof trafficBillingConfigs.$inferInsert;
+
+export const trafficBillingRecords = table("traffic_billing_records", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  resourceType: varchar("resourceType", { length: 16 }).notNull(),
+  resourceId: int("resourceId").notNull(),
+  bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
+  billedGb: int("billedGb").notNull().default(0),
+  pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
+  multiplier: int("multiplier").notNull().default(100),
+  amountCents: bigint("amountCents", { mode: "number" }).notNull().default(0),
+  balanceAfterCents: bigint("balanceAfterCents", { mode: "number" }).notNull().default(0),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type TrafficBillingRecord = typeof trafficBillingRecords.$inferSelect;
+export type InsertTrafficBillingRecord = typeof trafficBillingRecords.$inferInsert;
+
+export const trafficBillingUsage = table("traffic_billing_usage", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  resourceType: varchar("resourceType", { length: 16 }).notNull(),
+  resourceId: int("resourceId").notNull(),
+  totalBytes: bigint("totalBytes", { mode: "number" }).notNull().default(0),
+  billedGb: int("billedGb").notNull().default(0),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type TrafficBillingUsage = typeof trafficBillingUsage.$inferSelect;
+export type InsertTrafficBillingUsage = typeof trafficBillingUsage.$inferInsert;
+
+export const userTrafficBillingPermissions = table("user_traffic_billing_permissions", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  resourceType: varchar("resourceType", { length: 16 }).notNull(),
+  resourceId: int("resourceId").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type UserTrafficBillingPermission = typeof userTrafficBillingPermissions.$inferSelect;
+export type InsertUserTrafficBillingPermission = typeof userTrafficBillingPermissions.$inferInsert;
+
 export const redemptionCodes = table("redemption_codes", {
   id: serial("id"),
   code: text("code").notNull().unique(),

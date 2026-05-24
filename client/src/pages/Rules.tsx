@@ -413,6 +413,7 @@ function RulesContent() {
     try {
       const result = await utils.rules.checkPort.fetch({
         hostId: form.hostId,
+        tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
         sourcePort: form.sourcePort,
         excludeRuleId: editingId || undefined,
       });
@@ -420,7 +421,7 @@ function RulesContent() {
     } catch {
       setPortStatus("idle");
     }
-  }, [form.hostId, form.sourcePort, editingId, utils, selectedHost]);
+  }, [form.hostId, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedHost]);
 
   // 源端口变化时自动检测
   useEffect(() => {
@@ -447,7 +448,7 @@ function RulesContent() {
       return;
     }
     try {
-      const result = await utils.rules.randomPort.fetch({ hostId: form.hostId });
+      const result = await utils.rules.randomPort.fetch({ hostId: form.hostId, tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null });
       setForm({ ...form, sourcePort: result.port });
       setPortStatus("available");
       toast.success(`已分配随机端口: ${result.port}`);

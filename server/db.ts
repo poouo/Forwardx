@@ -24,6 +24,7 @@ export * from "./repositories/forwardTestRepository";
 export * from "./repositories/permissionRepository";
 export * from "./repositories/settingsRepository";
 export * from "./repositories/billingRepository";
+export * from "./repositories/trafficBillingRepository";
 export * from "./repositories/announcementRepository";
 
 // ==================== Initialization ====================

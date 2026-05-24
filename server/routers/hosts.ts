@@ -9,10 +9,13 @@ export const hostsRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       if (isAdmin) return db.getHosts();
-      // 普通用户：返回自己创建的主机 + 管理员授权的主机
-      const allowedHostIds = await db.getUserAllowedHostIds(ctx.user.id);
+      // 普通用户：返回自己创建的主机 + 普通授权主机 + 已授权的流量计费主机
+      const [allowedHostIds, billingResourceIds] = await Promise.all([
+        db.getUserAllowedHostIds(ctx.user.id),
+        db.getUserUsableTrafficBillingResourceIds(ctx.user.id),
+      ]);
       const allHosts = await db.getHosts();
-      const allowedSet = new Set(allowedHostIds);
+      const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
       return allHosts.filter(h => allowedSet.has(h.id) || h.userId === ctx.user.id);
     }),
     /** 获取所有主机列表（管理员用，用于权限分配） */

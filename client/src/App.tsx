@@ -23,6 +23,7 @@ import Announcements from "./pages/Announcements";
 import Setup from "./pages/Setup";
 import EmailSettings from "./pages/EmailSettings";
 import HomepagePreview from "./pages/HomepagePreview";
+import TrafficBilling from "./pages/TrafficBilling";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
@@ -46,6 +47,7 @@ function Router() {
       <Route path="/email-settings">{() => <AdminRoute component={EmailSettings} />}</Route>
       <Route path="/payments">{() => <AdminRoute component={Payments} />}</Route>
       <Route path="/billing">{() => <AdminRoute component={Billing} />}</Route>
+      <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBilling} />}</Route>
       <Route path="/plans">{() => <AdminRoute component={Plans} />}</Route>
       <Route path="/store" component={Store} />
       <Route path="/wallet" component={Wallet} />

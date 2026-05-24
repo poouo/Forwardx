@@ -231,6 +231,28 @@ export async function resetUserPassword(userId: number, newPassword: string) {
   await db.update(users).set({ password: hashPassword(newPassword), updatedAt: nowDate() }).where(eq(users.id, userId));
 }
 
+export async function updateUserAccount(userId: number, data: { username?: string; name?: string | null; password?: string }) {
+  const db = await getDb();
+  if (!db) return;
+  const current = await getUserById(userId);
+  if (!current) throw new Error("用户不存在");
+  const patch: Record<string, unknown> = { updatedAt: nowDate() };
+  const username = data.username?.trim();
+  if (username && username !== current.username) {
+    patch.username = username;
+    if (!current.email || current.email === current.username) patch.email = username;
+  }
+  if (data.name !== undefined) {
+    const name = String(data.name || "").trim();
+    patch.name = name || username || current.username;
+  }
+  const password = data.password?.trim();
+  if (password) patch.password = hashPassword(password);
+  if (Object.keys(patch).length > 1) {
+    await db.update(users).set(patch).where(eq(users.id, userId));
+  }
+}
+
 export async function getAllUsers() {
   const db = await getDb();
   if (!db) return [];

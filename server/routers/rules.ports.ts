@@ -1,7 +1,7 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
-import { requireHostAccess, requireRuleAccess, requireTunnelUseAccess } from "./helpers";
+import { requireHostUseAccess, requireRuleAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 
 export const portsRulesRouter = router({
   checkPort: protectedProcedure
@@ -12,11 +12,11 @@ export const portsRulesRouter = router({
       excludeRuleId: z.number().optional(),
     }))
     .query(async ({ input, ctx }) => {
-      await requireHostAccess(ctx, input.hostId);
+      await requireHostUseAccess(ctx, input.hostId);
       let rangeStart: number | null | undefined;
       let rangeEnd: number | null | undefined;
       if (input.tunnelId) {
-        const tunnel = await requireTunnelUseAccess(ctx, input.tunnelId);
+        const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
         rangeStart = (tunnel as any).portRangeStart;
         rangeEnd = (tunnel as any).portRangeEnd;
@@ -40,11 +40,11 @@ export const portsRulesRouter = router({
   randomPort: protectedProcedure
     .input(z.object({ hostId: z.number(), tunnelId: z.number().nullable().optional() }))
     .query(async ({ input, ctx }) => {
-      const host = await requireHostAccess(ctx, input.hostId);
+      const { host } = await requireHostUseAccess(ctx, input.hostId);
       let rangeStart = (host as any).portRangeStart;
       let rangeEnd = (host as any).portRangeEnd;
       if (input.tunnelId) {
-        const tunnel = await requireTunnelUseAccess(ctx, input.tunnelId);
+        const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
         rangeStart = (tunnel as any).portRangeStart;
         rangeEnd = (tunnel as any).portRangeEnd;

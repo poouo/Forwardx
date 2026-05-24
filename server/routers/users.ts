@@ -64,10 +64,29 @@ export const usersRouter = router({
         return { success: true };
       }),
     resetPassword: adminProcedure
-      .input(z.object({ userId: z.number(), newPassword: z.string().min(6) }))
+      .input(z.object({
+        userId: z.number(),
+        username: z.string().trim().min(1).max(64).optional(),
+        name: z.string().trim().max(64).nullable().optional(),
+        newPassword: z.string().max(128).optional(),
+      }))
       .mutation(async ({ input, ctx }) => {
-        await db.resetUserPassword(input.userId, input.newPassword);
-        console.info(`[Users] Reset password userId=${input.userId} ${actorLabel(ctx)}`);
+        const target = await db.getUserById(input.userId);
+        if (!target) throw new Error("用户不存在");
+        const username = input.username?.trim();
+        if (username && username !== target.username) {
+          const existing = await db.getUserByUsername(username);
+          if (existing && existing.id !== input.userId) throw new Error("账号已存在");
+        }
+        const password = input.newPassword?.trim() || "";
+        if (password && password.length < 6) throw new Error("密码至少6个字符");
+        if (!username && input.name === undefined && !password) throw new Error("没有需要保存的修改");
+        await db.updateUserAccount(input.userId, {
+          username,
+          name: input.name,
+          password: password || undefined,
+        });
+        console.info(`[Users] Updated account userId=${input.userId} usernameChanged=${!!username && username !== target.username} passwordChanged=${!!password} ${actorLabel(ctx)}`);
         return { success: true };
       }),
     delete: adminProcedure
@@ -96,6 +115,22 @@ export const usersRouter = router({
     allHostPermissions: adminProcedure.query(async () => {
       return db.getAllUserHostPermissions();
     }),
+    getTrafficBillingPermissions: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getUserTrafficBillingPermissions(input.userId);
+      }),
+    setTrafficBillingPermissions: adminProcedure
+      .input(z.object({
+        userId: z.number(),
+        hostIds: z.array(z.number()),
+        tunnelIds: z.array(z.number()),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await db.setUserTrafficBillingPermissions(input.userId, input.hostIds, input.tunnelIds);
+        console.info(`[Users] Updated traffic billing permissions userId=${input.userId} hosts=${input.hostIds.length} tunnels=${input.tunnelIds.length} ${actorLabel(ctx)}`);
+        return { success: true };
+      }),
     getTunnelPermissions: adminProcedure
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => {

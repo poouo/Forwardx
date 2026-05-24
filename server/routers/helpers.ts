@@ -46,6 +46,46 @@ export async function requireTunnelUseAccess(ctx: { user: { id: number; role: st
   return tunnel;
 }
 
+export async function requireTrafficBillingAccessIfConfigured(
+  ctx: { user: { id: number; role: string } },
+  resourceType: "host" | "tunnel",
+  resourceId: number,
+) {
+  if (ctx.user.role === "admin") return false;
+  if (!(await db.isTrafficBillingEnabled())) return false;
+  const config = await db.findTrafficBillingConfig(resourceType, resourceId);
+  if (!config) return false;
+  const hasPermission = await db.checkUserTrafficBillingPermission(ctx.user.id, resourceType, resourceId);
+  if (!hasPermission) {
+    throw new Error(resourceType === "host"
+      ? "您没有使用该主机流量计费资源的权限，请联系管理员授权"
+      : "您没有使用该隧道流量计费资源的权限，请联系管理员授权");
+  }
+  return true;
+}
+
+export async function requireHostUseAccess(ctx: { user: { id: number; role: string } }, hostId: number) {
+  const host = await db.getHostById(hostId);
+  if (!host) throw new Error("主机不存在");
+  const isTrafficBillingResource = await requireTrafficBillingAccessIfConfigured(ctx, "host", host.id);
+  if (ctx.user.role !== "admin" && !isTrafficBillingResource && host.userId !== ctx.user.id) {
+    const hasPermission = await db.checkUserHostPermission(ctx.user.id, host.id);
+    if (!hasPermission) throw new Error("您没有使用该主机的权限，请联系管理员授权");
+  }
+  return { host, isTrafficBillingResource };
+}
+
+export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: number; role: string } }, tunnelId: number) {
+  const tunnel = await db.getTunnelById(tunnelId);
+  if (!tunnel) throw new Error("隧道不存在");
+  const isTrafficBillingResource = await requireTrafficBillingAccessIfConfigured(ctx, "tunnel", tunnel.id);
+  if (ctx.user.role !== "admin" && !isTrafficBillingResource && tunnel.userId !== ctx.user.id) {
+    const hasPermission = await db.checkUserTunnelPermission(ctx.user.id, tunnel.id);
+    if (!hasPermission) throw new Error("无权使用该隧道");
+  }
+  return { tunnel, isTrafficBillingResource };
+}
+
 export function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const entryPushed = pushAgentRefresh(tunnel.entryHostId, `${reason}-entry`);
   const exitPushed = pushAgentRefresh(tunnel.exitHostId, `${reason}-exit`);

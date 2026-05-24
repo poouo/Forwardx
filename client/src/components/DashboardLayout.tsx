@@ -52,6 +52,7 @@ import {
   Copy,
   Link2Off,
   UserCog,
+  Coins,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -76,6 +77,7 @@ const mainMenuItems = [
 const adminMenuItems = [
   { icon: CreditCard, label: "支付对接", path: "/payments" },
   { icon: WalletCards, label: "账单与兑换", path: "/billing" },
+  { icon: Coins, label: "流量计费管理", path: "/traffic-billing" },
   { icon: Package, label: "套餐管理", path: "/plans" },
   { icon: Users, label: "用户管理", path: "/users" },
   { icon: Mail, label: "邮箱设置", path: "/email-settings" },

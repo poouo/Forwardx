@@ -12,6 +12,10 @@ export const tunnelsRouter = router({
       const isAdmin = ctx.user.role === "admin";
       return isAdmin ? db.getTunnels() : db.getTunnelsForUser(ctx.user.id);
     }),
+    listAll: protectedProcedure.query(async ({ ctx }) => {
+      if (ctx.user.role !== "admin") throw new Error("无权访问");
+      return db.getTunnels();
+    }),
     latencySeries: protectedProcedure
       .input(z.object({
         tunnelId: z.number(),

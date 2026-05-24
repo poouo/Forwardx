@@ -13,6 +13,7 @@ import {
   ArrowUpFromLine,
   BarChart3,
   CalendarClock,
+  Coins,
   Globe,
   Info,
   Package,
@@ -184,6 +185,7 @@ function DashboardContent() {
   const { data: rules = [] } = trpc.rules.list.useQuery(undefined, { refetchInterval: 30000 });
   const { data: tunnels = [] } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 30000 });
   const { data: wallet } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
+  const { data: trafficBilling } = trpc.trafficBilling.status.useQuery();
   const { data: subscriptions = [] } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
@@ -211,6 +213,10 @@ function DashboardContent() {
   const trafficUsed = Number(currentUserTraffic?.trafficUsed) || 0;
   const trafficRemaining = trafficLimit > 0 ? Math.max(0, trafficLimit - trafficUsed) : null;
   const trafficPercent = trafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / trafficLimit) * 100)) : 0;
+  const trafficBillingEnabled = !!trafficBilling?.enabled;
+  const trafficBillingBytes = Number(trafficBilling?.totalBytes || 0);
+  const trafficBillingAmount = Number(trafficBilling?.totalAmountCents || 0);
+  const trafficBillingBilledGb = Number(trafficBilling?.totalBilledGb || 0);
   const expiry = getExpiryStatus(currentUserTraffic?.expiresAt);
   const canForward = isAdmin || !!currentUserTraffic?.canAddRules;
 
@@ -300,6 +306,27 @@ function DashboardContent() {
         />
       </div>
 
+      {isAdmin && trafficBillingEnabled && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StatCard
+            title="计费流量"
+            value={formatBytes(trafficBillingBytes)}
+            subtitle={`已计费 ${trafficBillingBilledGb}GB`}
+            icon={Coins}
+            tone="bg-gradient-to-br from-cyan-500 to-cyan-600"
+            loading={isLoading}
+          />
+          <StatCard
+            title="计费消费"
+            value={money(trafficBillingAmount)}
+            subtitle="全局流量计费扣费"
+            icon={WalletCards}
+            tone="bg-gradient-to-br from-rose-500 to-rose-600"
+            loading={isLoading}
+          />
+        </div>
+      )}
+
       {!isAdmin && (
         <Card className="relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
           <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
@@ -332,13 +359,13 @@ function DashboardContent() {
               </div>
             ) : (
               <>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
                   <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="text-xs text-muted-foreground">已用流量</p>
+                    <p className="text-xs text-muted-foreground">套餐已用流量</p>
                     <p className="mt-1 text-xl font-semibold tabular-nums">{formatBytes(trafficUsed)}</p>
                   </div>
                   <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="text-xs text-muted-foreground">剩余流量</p>
+                    <p className="text-xs text-muted-foreground">套餐剩余流量</p>
                     <p className="mt-1 text-xl font-semibold tabular-nums">{trafficRemaining === null ? "不限" : formatBytes(trafficRemaining)}</p>
                   </div>
                   <div className="rounded-lg border border-border/50 bg-background/35 p-3">
@@ -354,6 +381,22 @@ function DashboardContent() {
                   </div>
                   <div className="rounded-lg border border-border/50 bg-background/35 p-3">
                     <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <WalletCards className="h-3 w-3" />
+                      计费流量
+                    </p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启"}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">{trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "管理员未开启"}</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <WalletCards className="h-3 w-3" />
+                      计费消费
+                    </p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? money(trafficBillingAmount) : "-"}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">仅统计流量计费资源</p>
+                  </div>
+                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Package className="h-3 w-3" />
                       当前套餐
                     </p>
@@ -362,14 +405,14 @@ function DashboardContent() {
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                    <span>流量使用进度</span>
+                    <span>套餐流量使用进度</span>
                     <span className="tabular-nums">
                       {trafficLimit > 0 ? `${formatBytes(trafficUsed)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)` : `${formatBytes(trafficUsed)} / 不限`}
                     </span>
                   </div>
                   <Progress value={trafficLimit > 0 ? trafficPercent : 0} className="h-2" />
                   <p className="text-[11px] text-muted-foreground/70">
-                    流量按 Agent 上报的转发规则增量累计。管理员未设置限额时，仅展示已用总量。
+                    普通套餐流量和流量计费资源分开统计，互不影响。管理员未设置限额时，仅展示套餐已用总量。
                     {currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
                   </p>
                 </div>

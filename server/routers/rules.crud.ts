@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
-import { pushTunnelEndpointRefresh, requireTunnelUseAccess } from "./helpers";
+import { pushTunnelEndpointRefresh, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 
 export const crudRulesRouter = router({
@@ -34,22 +34,9 @@ export const crudRulesRouter = router({
           if (!allowed.has(input.forwardType)) throw new Error(`您没有使用 ${input.forwardType} 转发方式的权限，请联系管理员`);
         }
       }
-      const host = await db.getHostById(input.hostId);
-      if (!host) throw new Error("主机不存在");
-
-      // Agent 权限检查：非管理员需要拥有该主机，或被管理员授权使用该主机
-      if (ctx.user.role !== "admin") {
-        const hasPermission = host.userId === ctx.user.id || await db.checkUserHostPermission(ctx.user.id, input.hostId);
-        if (!hasPermission) throw new Error("您没有使用该主机的权限，请联系管理员授权");
-      }
-
       // 检查用户是否已到期
       if (ctx.user.expiresAt && new Date(ctx.user.expiresAt) <= new Date()) {
         throw new Error("您的账户已到期，无法添加规则");
-      }
-      // 检查用户流量是否已超额
-      if (ctx.user.trafficLimit > 0 && ctx.user.trafficUsed >= ctx.user.trafficLimit) {
-        throw new Error("您的流量已用完，无法添加规则");
       }
 
       // 检查用户规则数量限制
@@ -70,9 +57,11 @@ export const crudRulesRouter = router({
 
       const tunnelId = input.forwardType === "gost" && input.gostMode === "direct" ? input.tunnelId ?? null : null;
       let selectedTunnelForRule: any = null;
-      let nextTunnelIdForRule: number | null = null;
+      let isTrafficBillingRule = false;
       if (tunnelId) {
-        selectedTunnelForRule = await requireTunnelUseAccess(ctx, tunnelId);
+        const access = await requireTunnelUseOrTrafficBillingAccess(ctx, tunnelId);
+        selectedTunnelForRule = access.tunnel;
+        isTrafficBillingRule = access.isTrafficBillingResource;
         if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
         if (selectedTunnelForRule.entryHostId !== input.hostId) {
           throw new Error("Tunnel entry host must match the rule host");
@@ -80,8 +69,16 @@ export const crudRulesRouter = router({
         if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx" && !(currentUser as any)?.canAddRules) {
           throw new Error("No permission to use custom encrypted tunnels");
         }
+      } else {
+        const access = await requireHostUseAccess(ctx, input.hostId);
+        isTrafficBillingRule = access.isTrafficBillingResource;
       }
       await requireRuleProtocolEnabled({ forwardType: input.forwardType, tunnelId }, selectedTunnelForRule);
+      if (!isTrafficBillingRule && ctx.user.trafficLimit > 0 && ctx.user.trafficUsed >= ctx.user.trafficLimit) {
+        throw new Error("您的流量已用完，无法添加规则");
+      }
+      const host = await db.getHostById(input.hostId);
+      if (!host) throw new Error("主机不存在");
       const entryRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
       const entryRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
       const planRange = ctx.user.role !== "admin"
@@ -121,7 +118,7 @@ export const crudRulesRouter = router({
       }
 
       if (tunnelId) {
-        const tunnel = selectedTunnelForRule ?? await requireTunnelUseAccess(ctx, tunnelId);
+        const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, tunnelId)).tunnel;
         if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
         if (tunnel.entryHostId !== input.hostId) {
           throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
@@ -177,7 +174,8 @@ export const crudRulesRouter = router({
           ? (input.tunnelId !== undefined ? input.tunnelId : (rule as any).tunnelId)
           : null;
         if (nextTunnelIdForRule) {
-          selectedTunnelForRule = await requireTunnelUseAccess(ctx, nextTunnelIdForRule);
+          const access = await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelIdForRule);
+          selectedTunnelForRule = access.tunnel;
           if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
           if (selectedTunnelForRule.entryHostId !== rule.hostId) {
             throw new Error("Tunnel entry host must match the rule host");
@@ -191,6 +189,9 @@ export const crudRulesRouter = router({
         }
       }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
+      if (!nextTunnelIdForRule) {
+        await requireHostUseAccess(ctx, rule.hostId);
+      }
 
       if (input.sourcePort && input.sourcePort !== rule.sourcePort) {
         const host = await db.getHostById(rule.hostId);
@@ -232,7 +233,7 @@ export const crudRulesRouter = router({
         (data as any).gostRelayPort = null;
         const nextTunnelId = data.tunnelId !== undefined ? data.tunnelId : (rule as any).tunnelId;
         if (nextTunnelId) {
-          const tunnel = selectedTunnelForRule ?? await requireTunnelUseAccess(ctx, nextTunnelId);
+          const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId)).tunnel;
           if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
           if (tunnel.entryHostId !== rule.hostId) {
             throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
@@ -309,6 +310,14 @@ export const crudRulesRouter = router({
         if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
       }
       if (input.isEnabled) {
+        if (ctx.user.role !== "admin") {
+          const activeTunnelId = Number((rule as any).tunnelId || 0);
+          if (activeTunnelId) {
+            await requireTunnelUseOrTrafficBillingAccess(ctx, activeTunnelId);
+          } else {
+            await requireHostUseAccess(ctx, rule.hostId);
+          }
+        }
         await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false });
       } else {
         await db.toggleForwardRule(input.id, false);

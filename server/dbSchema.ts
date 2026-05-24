@@ -41,6 +41,10 @@ export const MIGRATION_TABLES = [
   "subscription_plan_tunnels",
   "user_subscriptions",
   "balance_transactions",
+  "traffic_billing_configs",
+  "traffic_billing_records",
+  "traffic_billing_usage",
+  "user_traffic_billing_permissions",
   "redemption_codes",
   "discount_codes",
   "discount_code_plans",
@@ -127,6 +131,10 @@ const tables: TableDef[] = [
   { name: "subscription_plan_tunnels", columns: [c("id", "id"), c("planId", "int", { notNull: true }), c("tunnelId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["planId", "tunnelId"]] },
   { name: "user_subscriptions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("planId", "int", { notNull: true }), c("status", "varchar", { length: 32, notNull: true, default: "active" }), c("source", "varchar", { length: 32, notNull: true, default: "admin" }), c("paymentOrderNo", "text"), c("portRangeStart", "int"), c("portRangeEnd", "int"), c("nextTrafficResetAt", "epoch"), c("lastTrafficResetAt", "epoch"), c("startedAt", "epoch", { notNull: true, default: "now" }), c("expiresAt", "epoch"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], indexes: [["userId", "status", "expiresAt"], ["planId"]] },
   { name: "balance_transactions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("type", "varchar", { length: 32, notNull: true }), c("amountCents", "bigint", { notNull: true }), c("balanceAfterCents", "bigint", { notNull: true }), c("description", "text"), c("operatorUserId", "int"), c("paymentOrderNo", "text"), c("redemptionCodeId", "int"), c("createdAt", "epoch", { notNull: true, default: "now" })], indexes: [["userId", "createdAt"]] },
+  { name: "traffic_billing_configs", columns: [c("id", "id"), c("resourceType", "varchar", { length: 16, notNull: true }), c("resourceId", "int", { notNull: true }), c("enabled", "bool", { notNull: true, default: true }), c("pricePerGbCents", "bigint", { notNull: true, default: 0 }), c("multiplier", "int", { notNull: true, default: 100 }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["resourceType", "resourceId"]], indexes: [["enabled"]] },
+  { name: "traffic_billing_records", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("ruleId", "int", { notNull: true }), c("resourceType", "varchar", { length: 16, notNull: true }), c("resourceId", "int", { notNull: true }), c("bytes", "bigint", { notNull: true, default: 0 }), c("billedGb", "int", { notNull: true, default: 0 }), c("pricePerGbCents", "bigint", { notNull: true, default: 0 }), c("multiplier", "int", { notNull: true, default: 100 }), c("amountCents", "bigint", { notNull: true, default: 0 }), c("balanceAfterCents", "bigint", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" })], indexes: [["userId", "createdAt"], ["resourceType", "resourceId", "createdAt"], ["ruleId", "createdAt"]] },
+  { name: "traffic_billing_usage", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("resourceType", "varchar", { length: 16, notNull: true }), c("resourceId", "int", { notNull: true }), c("totalBytes", "bigint", { notNull: true, default: 0 }), c("billedGb", "int", { notNull: true, default: 0 }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "resourceType", "resourceId"]], indexes: [["resourceType", "resourceId"]] },
+  { name: "user_traffic_billing_permissions", columns: [c("id", "id"), c("userId", "int", { notNull: true }), c("resourceType", "varchar", { length: 16, notNull: true }), c("resourceId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["userId", "resourceType", "resourceId"]], indexes: [["userId"], ["resourceType", "resourceId"]] },
   { name: "redemption_codes", columns: [c("id", "id"), c("code", "text", { notNull: true }), c("type", "varchar", { length: 32, notNull: true }), c("planId", "int"), c("durationDays", "int"), c("amountCents", "bigint", { notNull: true, default: 0 }), c("startsAt", "epoch"), c("expiresAt", "epoch"), c("isActive", "bool", { notNull: true, default: true }), c("usedByUserId", "int"), c("usedAt", "epoch"), c("createdByUserId", "int"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["code"]], indexes: [["isActive", "startsAt", "expiresAt", "usedAt"]] },
   { name: "discount_codes", columns: [c("id", "id"), c("code", "text", { notNull: true }), c("discountType", "varchar", { length: 32, notNull: true }), c("discountValue", "int", { notNull: true }), c("maxUses", "int", { notNull: true, default: 0 }), c("usedCount", "int", { notNull: true, default: 0 }), c("startsAt", "epoch"), c("expiresAt", "epoch"), c("isActive", "bool", { notNull: true, default: true }), c("createdByUserId", "int"), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["code"]], indexes: [["isActive", "startsAt", "expiresAt", "usedCount"]] },
   { name: "discount_code_plans", columns: [c("id", "id"), c("discountCodeId", "int", { notNull: true }), c("planId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" })], unique: [["discountCodeId", "planId"]], indexes: [["planId"]] },
@@ -140,6 +148,7 @@ const seedSettings = [
   ["homepageCustomEnabled", "false"],
   ["redemptionEnabled", "true"],
   ["discountEnabled", "true"],
+  ["trafficBillingEnabled", "false"],
 ] as const;
 
 function quote(kind: "mysql" | "sqlite", id: string) {

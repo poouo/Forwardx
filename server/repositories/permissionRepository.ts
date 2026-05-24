@@ -9,6 +9,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
 import { getActiveUserSubscriptions } from "./billingRepository";
+import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 
 // ==================== User-Host Permissions ====================
 
@@ -146,9 +147,13 @@ export async function getTunnelsForUser(userId: number) {
   const db = await getDb();
   if (!db) return [];
   const owned = await db.select().from(tunnels).where(eq(tunnels.userId, userId));
-  const allowedTunnelIds = await getUserAllowedTunnelIds(userId);
-  if (allowedTunnelIds.length === 0) return owned.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
-  const ids = new Set(allowedTunnelIds);
+  const [allowedTunnelIds, billingResourceIds] = await Promise.all([
+    getUserAllowedTunnelIds(userId),
+    getUserUsableTrafficBillingResourceIds(userId),
+  ]);
+  const allAllowedTunnelIds = Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds]));
+  if (allAllowedTunnelIds.length === 0) return owned.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+  const ids = new Set(allAllowedTunnelIds);
   const all = await db.select().from(tunnels);
   const merged = new Map<number, any>();
   for (const tunnel of owned) merged.set(tunnel.id, tunnel);
