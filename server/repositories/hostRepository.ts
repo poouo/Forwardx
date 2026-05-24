@@ -16,19 +16,9 @@ function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unkn
   return { ...host, isOnline: !!host.isOnline && isFreshHeartbeat(host.lastHeartbeat) };
 }
 
-export async function markStaleHostsOffline() {
-  const db = await getDb();
-  if (!db) return;
-  const cutoff = new Date(Date.now() - HOST_ONLINE_TTL_MS);
-  await db.update(hosts).set({ isOnline: false, updatedAt: nowDate() }).where(
-    sql`${hosts.isOnline} = ${true} AND (${hosts.lastHeartbeat} IS NULL OR ${hosts.lastHeartbeat} < ${cutoff})`
-  );
-}
-
 export async function getHosts(userId?: number) {
   const db = await getDb();
   if (!db) return [];
-  await markStaleHostsOffline();
   if (userId) {
     const rows = await db.select().from(hosts).where(eq(hosts.userId, userId)).orderBy(desc(hosts.createdAt));
     return rows.map(withComputedOnline);
@@ -40,7 +30,6 @@ export async function getHosts(userId?: number) {
 export async function getHostById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
-  await markStaleHostsOffline();
   const r = await db.select().from(hosts).where(eq(hosts.id, id)).limit(1);
   return r[0] ? withComputedOnline(r[0]) : undefined;
 }

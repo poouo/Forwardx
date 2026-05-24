@@ -1,7 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { forwardRules, hosts } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
-import { markStaleHostsOffline } from "./hostRepository";
 import { getTotalTraffic } from "./metricsRepository";
 
 // ==================== Dashboard Stats ====================
@@ -9,7 +8,6 @@ import { getTotalTraffic } from "./metricsRepository";
 export async function getDashboardStats(userId?: number) {
   const db = await getDb();
   if (!db) return { totalHosts: 0, onlineHosts: 0, totalRules: 0, activeRules: 0, totalTrafficIn: 0, totalTrafficOut: 0 };
-  await markStaleHostsOffline();
 
   const hostConditions = userId ? eq(hosts.userId, userId) : undefined;
   const ruleConditions = userId ? eq(forwardRules.userId, userId) : undefined;
@@ -33,10 +31,16 @@ export async function getDashboardStats(userId?: number) {
   const hostStats = hostStatsRows[0];
   const ruleStats = ruleStatsRows[0];
   const traffic = await getTotalTraffic(userId);
+  const freshOnlineHosts = (await db.select().from(hosts).where(hostConditions as any))
+    .filter((host: any) => {
+      if (!host.isOnline || !host.lastHeartbeat) return false;
+      const time = new Date(host.lastHeartbeat).getTime();
+      return Number.isFinite(time) && Date.now() - time <= 90 * 1000;
+    }).length;
 
   return {
     totalHosts: Number(hostStats?.totalHosts) || 0,
-    onlineHosts: Number(hostStats?.onlineHosts) || 0,
+    onlineHosts: freshOnlineHosts,
     totalRules: Number(ruleStats?.totalRules) || 0,
     activeRules: Number(ruleStats?.activeRules) || 0,
     totalTrafficIn: traffic.totalIn,
