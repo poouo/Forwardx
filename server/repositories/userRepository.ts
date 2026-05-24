@@ -322,6 +322,7 @@ export async function updateUserTrafficSettings(userId: number, data: {
   maxIPs?: number;
   allowedForwardTypes?: string | null;
   allowForwardXTunnel?: boolean;
+  displayRemark?: string | null;
 }) {
   const db = await getDb();
   if (!db) return;

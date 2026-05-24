@@ -189,6 +189,7 @@ export const usersRouter = router({
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().min(1).max(28).optional(),
         canAddRules: z.boolean().optional(),
+        displayRemark: z.string().trim().max(24).nullable().optional(),
         maxRules: z.number().min(0).optional(),
         maxPorts: z.number().min(0).optional(),
         maxConnections: z.number().min(0).optional(),
@@ -208,6 +209,9 @@ export const usersRouter = router({
           const set = new Set((allowedForwardTypes ?? "").split(",").map(s => s.trim()).filter(Boolean));
           const valid = FORWARD_TYPES.filter(t => set.has(t));
           data.allowedForwardTypes = allowedForwardTypes === null || valid.length === FORWARD_TYPES.length ? null : valid.join(",");
+        }
+        if (input.displayRemark !== undefined) {
+          data.displayRemark = input.displayRemark?.trim() || null;
         }
         await db.updateUserTrafficSettings(userId, data);
         console.info(`[Users] Updated traffic settings userId=${userId} keys=${Object.keys(data).join(",") || "none"} ${actorLabel(ctx)}`);

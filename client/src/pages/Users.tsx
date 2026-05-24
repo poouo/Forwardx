@@ -85,7 +85,7 @@ function formatSpeed(bytesPerSecond: number | string | null | undefined): string
 }
 
 function userLabel(user: any) {
-  return user?.displayRemark || user?.username || user?.name || `#${user?.id}`;
+  return user?.username || user?.name || `#${user?.id}`;
 }
 
 function UsersContent() {
@@ -106,7 +106,6 @@ function UsersContent() {
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [resetUserName, setResetUserName] = useState("");
   const [resetUsernameInput, setResetUsernameInput] = useState("");
-  const [resetNameInput, setResetNameInput] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [showResetTraffic, setShowResetTraffic] = useState(false);
   const [resetTrafficUserId, setResetTrafficUserId] = useState<number | null>(null);
@@ -126,6 +125,7 @@ function UsersContent() {
   const [showTrafficSettings, setShowTrafficSettings] = useState(false);
   const [trafficUserId, setTrafficUserId] = useState<number | null>(null);
   const [trafficUserName, setTrafficUserName] = useState("");
+  const [trafficDisplayRemark, setTrafficDisplayRemark] = useState("");
   const [trafficLimitInput, setTrafficLimitInput] = useState("");
   const [gostRateLimitInInput, setGostRateLimitInInput] = useState("");
   const [gostRateLimitOutInput, setGostRateLimitOutInput] = useState("");
@@ -239,7 +239,6 @@ function UsersContent() {
       toast.success("账户信息已更新");
       setShowResetPassword(false);
       setResetUsernameInput("");
-      setResetNameInput("");
       setResetNewPassword("");
     },
     onError: (err) => toast.error(err.message || "更新账户信息失败"),
@@ -326,7 +325,6 @@ function UsersContent() {
   const handleResetPassword = () => {
     if (!resetUserId) return;
     const username = resetUsernameInput.trim();
-    const name = resetNameInput.trim();
     const password = resetNewPassword.trim();
     if (!username) {
       toast.error("请输入账号");
@@ -339,7 +337,6 @@ function UsersContent() {
     resetPasswordMutation.mutate({
       userId: resetUserId,
       username,
-      name: name || null,
       newPassword: password || undefined,
     });
   };
@@ -382,6 +379,7 @@ function UsersContent() {
     }
     setTrafficUserId(u.id);
     setTrafficUserName(userLabel(u));
+    setTrafficDisplayRemark(String(u.displayRemark || ""));
     const limitBytes = Number(u.trafficLimit) || 0;
     if (limitBytes > 0) {
       const gb = limitBytes / (1024 * 1024 * 1024);
@@ -431,8 +429,10 @@ function UsersContent() {
     if (allowGost) allowed.push("gost");
     const allowedForwardTypes = allowed.length === FORWARD_TYPES.length ? null : allowed.join(",");
     const unifiedRateLimit = parseSpeedInputMB(gostRateLimitInInput);
+    const displayRemark = trafficDisplayRemark.trim().slice(0, 24);
     updateTrafficMutation.mutate({
       userId: trafficUserId,
+      displayRemark: displayRemark || null,
       trafficLimit: limitBytes,
       gostRateLimitIn: unifiedRateLimit,
       gostRateLimitOut: unifiedRateLimit,
@@ -774,7 +774,6 @@ function UsersContent() {
                                 setResetUserId(u.id);
                                 setResetUserName(userLabel(u));
                                 setResetUsernameInput(u.username || "");
-                                setResetNameInput(u.name || "");
                                 setResetNewPassword("");
                                 setShowResetPassword(true);
                               }}
@@ -889,15 +888,6 @@ function UsersContent() {
                 onChange={(e) => setResetUsernameInput(e.target.value)}
                 placeholder="请输入账号"
                 autoFocus
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="reset-name">显示名称</Label>
-              <Input
-                id="reset-name"
-                value={resetNameInput}
-                onChange={(e) => setResetNameInput(e.target.value)}
-                placeholder="留空则使用账号"
               />
             </div>
             <div className="space-y-2">
@@ -1033,6 +1023,18 @@ function UsersContent() {
             {/* 权限标签页 */}
             <TabsContent value="permission" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-3 data-[state=inactive]:hidden">
               <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label>用户备注</Label>
+                    <span className="text-xs text-muted-foreground">{trafficDisplayRemark.trim().length}/24</span>
+                  </div>
+                  <Input
+                    value={trafficDisplayRemark}
+                    maxLength={24}
+                    onChange={(e) => setTrafficDisplayRemark(e.target.value.slice(0, 24))}
+                    placeholder="可选，留空则不显示"
+                  />
+                </div>
                 <div className="space-y-2">
                   <Label>最大规则数</Label>
                   <Input

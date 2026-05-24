@@ -50,6 +50,7 @@ import {
   AlertTriangle,
   Loader2,
   RefreshCw,
+  Activity,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -114,6 +115,14 @@ function hostAddressLines(host: any) {
   return rows;
 }
 
+function hostAddressText(host: any) {
+  const parts: string[] = [];
+  if (host.ipv4) parts.push(`IPv4 ${host.ipv4}`);
+  if (host.ipv6) parts.push(`IPv6 ${host.ipv6}`);
+  if (parts.length === 0 && host.ip) parts.push(`IP ${host.ip}`);
+  return parts.join("  /  ") || "-";
+}
+
 type HostFormData = {
   name: string;
   ip: string;
@@ -176,13 +185,28 @@ function HostCard({
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Monitor className="h-4 w-4" />
-            {host.name}
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="min-w-0 text-base font-semibold">
+            <span className="flex min-w-0 items-center gap-2">
+              <Monitor className="h-4 w-4 shrink-0" />
+              <span className="truncate">{host.name}</span>
+              <span className="shrink-0 rounded border border-border/50 px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+                {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+              </span>
+              {agentNeedsUpdate && (
+                <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
+                  新版
+                </Badge>
+              )}
+              {agentUpgrading && (
+                <Badge variant="outline" className="shrink-0 border-blue-500/30 px-1.5 py-0 text-[10px] text-blue-500">
+                  升级中
+                </Badge>
+              )}
+            </span>
           </CardTitle>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <Button
               variant="ghost"
               size="icon"
@@ -214,50 +238,24 @@ function HostCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3">
         {/* 基本信息 */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1 col-span-2">
-            <p className="text-xs text-muted-foreground">地址</p>
-            <div className="space-y-0.5">
-              {hostAddressLines(host).map((item) => (
-                <p key={item.label} className="flex min-w-0 items-start gap-1 text-sm font-mono leading-5">
-                  <span className="shrink-0 text-[10px] text-muted-foreground">{item.label}</span>
-                  <span className="min-w-0 flex-1 break-all">{item.value}</span>
-                </p>
-              ))}
-            </div>
+        <div className="space-y-2">
+          <div className="min-w-0 rounded-md border border-border/40 bg-background/30 px-2.5 py-2">
+            <p className="truncate font-mono text-xs leading-5" title={hostAddressText(host)}>
+              <span className="mr-1.5 text-muted-foreground">地址</span>
+              {hostAddressText(host)}
+            </p>
           </div>
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">状态</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <div className="flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5 text-muted-foreground" />
               <span className={`h-2 w-2 rounded-full ${host.isOnline ? "bg-chart-2 animate-pulse" : "bg-muted-foreground/30"}`} />
-              <span className="text-sm">{host.isOnline ? "在线" : "离线"}</span>
+              <span>{host.isOnline ? "在线" : "离线"}</span>
             </div>
-          </div>
-          <div className="space-y-1 col-span-2">
-            <p className="text-xs text-muted-foreground">系统</p>
-            <p className="text-sm truncate">{host.osInfo || "-"}</p>
-          </div>
-          <div className="space-y-1 col-span-2">
-            <p className="text-xs text-muted-foreground">Agent 版本</p>
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-mono">{host.agentVersion ? `v${host.agentVersion}` : "-"}</p>
-              {agentNeedsUpdate && (
-                <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-500">
-                  发现新版本
-                </Badge>
-              )}
-              {agentUpgrading && (
-                <Badge variant="outline" className="text-[10px] border-blue-500/30 text-blue-500">
-                  升级中
-                </Badge>
-              )}
-              {!host.agentVersion && (
-                <Badge variant="secondary" className="text-[10px]">
-                  未上报
-                </Badge>
-              )}
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 truncate" title={host.osInfo || ""}>{host.osInfo || "-"}</span>
             </div>
           </div>
         </div>
