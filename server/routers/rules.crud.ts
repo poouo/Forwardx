@@ -318,7 +318,7 @@ export const crudRulesRouter = router({
             await requireHostUseAccess(ctx, rule.hostId);
           }
         }
-        await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false });
+        await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, protocolBlockReason: null } as any);
       } else {
         await db.toggleForwardRule(input.id, false);
       }

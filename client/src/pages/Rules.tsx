@@ -854,6 +854,11 @@ function RulesContent() {
                               {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
                             </div>
                           )}
+                          {rule.protocolBlockReason && (
+                            <div className="mt-1 text-[11px] leading-4 text-destructive">
+                              {rule.protocolBlockReason}
+                            </div>
+                          )}
                         </div>
                       </div>
                       {supported ? (
@@ -921,6 +926,11 @@ function RulesContent() {
                           {!supported && (
                             <span className="mt-1 block text-[11px] text-destructive">
                               {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                            </span>
+                          )}
+                          {rule.protocolBlockReason && (
+                            <span className="mt-1 block text-[11px] leading-4 text-destructive">
+                              {rule.protocolBlockReason}
                             </span>
                           )}
                         </TableCell>

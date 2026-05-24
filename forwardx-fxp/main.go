@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -39,6 +43,11 @@ type config struct {
 	MaxConnections int    `json:"maxConnections"`
 	MaxIPs         int    `json:"maxIPs"`
 	AccessScope    string `json:"accessScope"`
+	BlockHTTP      bool   `json:"blockHttp"`
+	BlockSocks     bool   `json:"blockSocks"`
+	BlockTLS       bool   `json:"blockTls"`
+	PanelURL       string `json:"panelUrl"`
+	Token          string `json:"token"`
 }
 
 type helloFrame struct {
@@ -47,6 +56,20 @@ type helloFrame struct {
 	TargetPort int    `json:"targetPort"`
 	TunnelID   int    `json:"tunnelId"`
 	RuleID     int    `json:"ruleId"`
+}
+
+type protocolPolicy struct {
+	BlockHTTP  bool
+	BlockSocks bool
+	BlockTLS   bool
+}
+
+type envelope struct {
+	V   int    `json:"v"`
+	IV  string `json:"iv"`
+	CT  string `json:"ct"`
+	MAC string `json:"mac"`
+	TS  int64  `json:"ts"`
 }
 
 type secureConn struct {
@@ -278,6 +301,21 @@ func acceptEntryTCP(ln net.Listener, cfg config, aead cipher.AEAD, gate *connGat
 
 func handleEntryTCP(client net.Conn, cfg config, aead cipher.AEAD) error {
 	defer client.Close()
+	var first []byte
+	if cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
+		_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 4096)
+		n, err := client.Read(buf)
+		_ = client.SetReadDeadline(time.Time{})
+		if err != nil {
+			return err
+		}
+		first = append(first, buf[:n]...)
+		if proto := detectBlockedProtocol(first, protocolPolicy{BlockHTTP: cfg.BlockHTTP, BlockSocks: cfg.BlockSocks, BlockTLS: cfg.BlockTLS}); proto != "" {
+			reportProtocolBlock(cfg, proto)
+			return nil
+		}
+	}
 	exit, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.ExitHost, strconv.Itoa(cfg.ExitPort)), 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial exit: %w", err)
@@ -293,6 +331,11 @@ func handleEntryTCP(client net.Conn, cfg config, aead cipher.AEAD) error {
 	})
 	if err := sec.writeFrame(hello); err != nil {
 		return err
+	}
+	if len(first) > 0 {
+		if err := sec.writeFrame(first); err != nil {
+			return err
+		}
 	}
 	errCh := make(chan error, 2)
 	go func() { errCh <- copyPlainToSecure(sec, client, cfg.LimitIn) }()
@@ -567,6 +610,132 @@ func remoteIP(addr net.Addr) string {
 		return addr.String()
 	}
 	return host
+}
+
+func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
+	if policy.BlockHTTP && detectHTTPProtocol(data) {
+		return "http"
+	}
+	if policy.BlockTLS && detectTLSProtocol(data) {
+		return "tls"
+	}
+	if policy.BlockSocks && detectSocksProtocol(data) {
+		return "socks"
+	}
+	return ""
+}
+
+func detectHTTPProtocol(data []byte) bool {
+	if len(data) >= 24 && string(data[:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+		return true
+	}
+	methods := []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "CONNECT ", "TRACE "}
+	upper := strings.ToUpper(string(data[:minInt(len(data), 16)]))
+	for _, method := range methods {
+		if strings.HasPrefix(upper, method) {
+			return true
+		}
+	}
+	return false
+}
+
+func detectTLSProtocol(data []byte) bool {
+	return len(data) >= 5 && data[0] == 0x16 && data[1] == 0x03 && data[2] >= 0x01 && data[2] <= 0x04
+}
+
+func detectSocksProtocol(data []byte) bool {
+	if len(data) < 2 {
+		return false
+	}
+	if data[0] == 0x04 {
+		return len(data) >= 7 && (data[1] == 0x01 || data[1] == 0x02)
+	}
+	if data[0] != 0x05 {
+		return false
+	}
+	nMethods := int(data[1])
+	if nMethods <= 0 || len(data) < 2+nMethods {
+		return false
+	}
+	for _, method := range data[2 : 2+nMethods] {
+		if method == 0x00 || method == 0x02 {
+			return true
+		}
+	}
+	return false
+}
+
+func reportProtocolBlock(cfg config, proto string) {
+	if cfg.PanelURL == "" || cfg.Token == "" || cfg.RuleID <= 0 {
+		log.Printf("protocol blocked rule=%d tunnel=%d protocol=%s", cfg.RuleID, cfg.TunnelID, proto)
+		return
+	}
+	payload := map[string]any{
+		"ruleId":     cfg.RuleID,
+		"tunnelId":   cfg.TunnelID,
+		"sourcePort": cfg.ListenPort,
+		"protocol":   proto,
+	}
+	env, err := encryptEnvelope(payload, cfg.Token)
+	if err != nil {
+		log.Printf("protocol block encrypt failed: %v", err)
+		return
+	}
+	body, _ := json.Marshal(env)
+	req, err := http.NewRequest("POST", strings.TrimRight(cfg.PanelURL, "/")+"/api/agent/protocol-block", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("protocol block request failed: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Encrypted", "1")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("protocol block report failed: %v", err)
+		return
+	}
+	_ = resp.Body.Close()
+	log.Printf("protocol block reported rule=%d tunnel=%d protocol=%s status=%s", cfg.RuleID, cfg.TunnelID, proto, resp.Status)
+}
+
+func encryptEnvelope(payload any, token string) (envelope, error) {
+	plain, _ := json.Marshal(payload)
+	keyEnc := sha256.Sum256([]byte(token + "|forwardx-agent-v1"))
+	keyMac := sha256.Sum256([]byte(token + "|forwardx-agent-mac"))
+	iv := make([]byte, aes.BlockSize)
+	if _, err := rand.Read(iv); err != nil {
+		return envelope{}, err
+	}
+	block, err := aes.NewCipher(keyEnc[:])
+	if err != nil {
+		return envelope{}, err
+	}
+	ct := make([]byte, len(plain))
+	cipher.NewCTR(block, iv).XORKeyStream(ct, plain)
+	ts := time.Now().UnixMilli()
+	mac := calcMAC(keyMac[:], iv, ct, ts)
+	return envelope{V: 1, IV: hex.EncodeToString(iv), CT: hex.EncodeToString(ct), MAC: hex.EncodeToString(mac), TS: ts}, nil
+}
+
+func calcMAC(key, iv, ct []byte, ts int64) []byte {
+	buf := bytes.NewBufferString("v1")
+	buf.Write(iv)
+	buf.Write(ct)
+	tsb := make([]byte, 8)
+	binary.BigEndian.PutUint64(tsb, uint64(ts))
+	buf.Write(tsb)
+	m := hmac.New(sha256.New, key)
+	m.Write(buf.Bytes())
+	return m.Sum(nil)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func writeFull(w io.Writer, b []byte) (int, error) {

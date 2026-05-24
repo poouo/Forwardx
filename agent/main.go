@@ -31,6 +31,8 @@ var Version = "2.2.45"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
+var protocolGuardMu sync.Mutex
+var protocolGuards = map[string]*protocolGuardServer{}
 var lastTCPingAt time.Time
 
 type Config struct {
@@ -52,6 +54,7 @@ type heartbeatResp struct {
 	SelfTests    []selfTest    `json:"selfTests"`
 	RunningRules []runningRule `json:"runningRules"`
 	TunnelProbes []tunnelProbe `json:"tunnelProbes"`
+	GuardRules   []guardRule   `json:"guardRules"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
 	NextInterval int           `json:"nextInterval"`
 }
@@ -118,21 +121,41 @@ type selfTest struct {
 }
 
 type fxpSpec struct {
-	Role       string `json:"role"`
-	TunnelID   int    `json:"tunnelId"`
-	RuleID     int    `json:"ruleId"`
-	ListenPort int    `json:"listenPort"`
-	Protocol   string `json:"protocol"`
-	ExitHost   string `json:"exitHost"`
-	ExitPort   int    `json:"exitPort"`
-	TargetIP   string `json:"targetIp"`
-	TargetPort int    `json:"targetPort"`
-	Key        string `json:"key"`
-	LimitIn    int64  `json:"limitIn"`
-	LimitOut   int64  `json:"limitOut"`
-	MaxConnections int `json:"maxConnections"`
-	MaxIPs         int `json:"maxIPs"`
+	Role           string `json:"role"`
+	TunnelID       int    `json:"tunnelId"`
+	RuleID         int    `json:"ruleId"`
+	ListenPort     int    `json:"listenPort"`
+	Protocol       string `json:"protocol"`
+	ExitHost       string `json:"exitHost"`
+	ExitPort       int    `json:"exitPort"`
+	TargetIP       string `json:"targetIp"`
+	TargetPort     int    `json:"targetPort"`
+	Key            string `json:"key"`
+	LimitIn        int64  `json:"limitIn"`
+	LimitOut       int64  `json:"limitOut"`
+	MaxConnections int    `json:"maxConnections"`
+	MaxIPs         int    `json:"maxIPs"`
 	AccessScope    string `json:"accessScope"`
+	BlockHTTP      bool   `json:"blockHttp"`
+	BlockSocks     bool   `json:"blockSocks"`
+	BlockTLS       bool   `json:"blockTls"`
+	PanelURL       string `json:"panelUrl,omitempty"`
+	Token          string `json:"token,omitempty"`
+}
+
+type protocolPolicy struct {
+	BlockHTTP  bool `json:"blockHttp"`
+	BlockSocks bool `json:"blockSocks"`
+	BlockTLS   bool `json:"blockTls"`
+}
+
+type guardRule struct {
+	RuleID     int            `json:"ruleId"`
+	TunnelID   int            `json:"tunnelId"`
+	ListenPort int            `json:"listenPort"`
+	TargetIP   string         `json:"targetIp"`
+	TargetPort int            `json:"targetPort"`
+	Policy     protocolPolicy `json:"policy"`
 }
 
 func main() {
@@ -250,6 +273,7 @@ func heartbeat(cfg Config) (int, error) {
 		writeRunningRuleState(r)
 		ensureCountingChains(r.SourcePort)
 	}
+	syncProtocolGuards(cfg, resp.GuardRules)
 	collectTraffic(cfg)
 	if lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
 		collectTCPing(cfg, resp.TunnelProbes)
@@ -380,7 +404,7 @@ func handleAction(cfg Config, a action) {
 			ok = runShell(cmd) && ok
 		}
 		if a.Fxp != nil {
-			fxpOK := startFXP(*a.Fxp, actionMessage)
+			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
 			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, fxpOK)
 			ok = fxpOK && ok
 		}
@@ -784,10 +808,13 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.Itoa(spec.MaxConnections),
 		strconv.Itoa(spec.MaxIPs),
 		spec.AccessScope,
+		strconv.FormatBool(spec.BlockHTTP),
+		strconv.FormatBool(spec.BlockSocks),
+		strconv.FormatBool(spec.BlockTLS),
 	}, "|")
 }
 
-func startFXP(spec fxpSpec, actionMessage *actionMessage) bool {
+func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	if spec.Key == "" || spec.ListenPort <= 0 {
 		actionMessage.set("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 		return false
@@ -824,6 +851,10 @@ func startFXP(spec fxpSpec, actionMessage *actionMessage) bool {
 		return false
 	}
 	configPath := fmt.Sprintf("/run/forwardx-agent/fxp-%s-%d-%d-%d.json", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
+	if spec.Role == "entry" {
+		spec.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
+		spec.Token = cfg.Token
+	}
 	cfgBytes, err := json.Marshal(spec)
 	if err != nil {
 		actionMessage.set("fxp marshal config failed: %v", err)
@@ -881,6 +912,208 @@ func stopFXP(spec fxpSpec) {
 	if s.configPath != "" {
 		_ = os.Remove(s.configPath)
 	}
+}
+
+type protocolGuardServer struct {
+	rule guardRule
+	ln   net.Listener
+	done chan struct{}
+}
+
+func guardID(rule guardRule) string {
+	return strconv.Itoa(rule.RuleID) + ":" + strconv.Itoa(rule.ListenPort)
+}
+
+func guardSignature(rule guardRule) string {
+	return strings.Join([]string{
+		strconv.Itoa(rule.RuleID),
+		strconv.Itoa(rule.TunnelID),
+		strconv.Itoa(rule.ListenPort),
+		rule.TargetIP,
+		strconv.Itoa(rule.TargetPort),
+		strconv.FormatBool(rule.Policy.BlockHTTP),
+		strconv.FormatBool(rule.Policy.BlockSocks),
+		strconv.FormatBool(rule.Policy.BlockTLS),
+	}, "|")
+}
+
+func syncProtocolGuards(cfg Config, rules []guardRule) {
+	wanted := map[string]string{}
+	for _, rule := range rules {
+		if rule.RuleID <= 0 || rule.ListenPort <= 0 || rule.TargetIP == "" || rule.TargetPort <= 0 {
+			continue
+		}
+		id := guardID(rule)
+		sig := guardSignature(rule)
+		wanted[id] = sig
+		protocolGuardMu.Lock()
+		existing := protocolGuards[id]
+		protocolGuardMu.Unlock()
+		if existing != nil && guardSignature(existing.rule) == sig {
+			continue
+		}
+		stopProtocolGuard(id)
+		startProtocolGuard(cfg, rule)
+	}
+
+	protocolGuardMu.Lock()
+	ids := make([]string, 0, len(protocolGuards))
+	for id := range protocolGuards {
+		if _, ok := wanted[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	protocolGuardMu.Unlock()
+	for _, id := range ids {
+		stopProtocolGuard(id)
+	}
+}
+
+func startProtocolGuard(cfg Config, rule guardRule) {
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(rule.ListenPort))
+	if err != nil {
+		logf("protocol guard listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
+		return
+	}
+	server := &protocolGuardServer{rule: rule, ln: ln, done: make(chan struct{})}
+	protocolGuardMu.Lock()
+	protocolGuards[guardID(rule)] = server
+	protocolGuardMu.Unlock()
+	go server.serve(cfg)
+	logf("protocol guard started rule=%d tunnel=%d listen=:%d target=%s:%d", rule.RuleID, rule.TunnelID, rule.ListenPort, rule.TargetIP, rule.TargetPort)
+}
+
+func stopProtocolGuard(id string) {
+	protocolGuardMu.Lock()
+	server := protocolGuards[id]
+	if server != nil {
+		delete(protocolGuards, id)
+	}
+	protocolGuardMu.Unlock()
+	if server == nil {
+		return
+	}
+	close(server.done)
+	_ = server.ln.Close()
+	logf("protocol guard stopped rule=%d port=%d", server.rule.RuleID, server.rule.ListenPort)
+}
+
+func (s *protocolGuardServer) serve(cfg Config) {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			select {
+			case <-s.done:
+				return
+			default:
+				logf("protocol guard accept rule=%d: %v", s.rule.RuleID, err)
+				return
+			}
+		}
+		go s.handleConn(cfg, conn)
+	}
+}
+
+func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
+	defer client.Close()
+	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 4096)
+	n, err := client.Read(buf)
+	_ = client.SetReadDeadline(time.Time{})
+	if err != nil {
+		return
+	}
+	if proto := detectBlockedProtocol(buf[:n], s.rule.Policy); proto != "" {
+		reportProtocolBlock(cfg, s.rule, proto)
+		return
+	}
+	target, err := net.DialTimeout("tcp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)), 10*time.Second)
+	if err != nil {
+		logf("protocol guard dial target rule=%d: %v", s.rule.RuleID, err)
+		return
+	}
+	defer target.Close()
+	if _, err := target.Write(buf[:n]); err != nil {
+		return
+	}
+	errCh := make(chan error, 2)
+	go func() { _, err := io.Copy(target, client); errCh <- err }()
+	go func() { _, err := io.Copy(client, target); errCh <- err }()
+	<-errCh
+}
+
+func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
+	if policy.BlockHTTP && detectHTTPProtocol(data) {
+		return "http"
+	}
+	if policy.BlockTLS && detectTLSProtocol(data) {
+		return "tls"
+	}
+	if policy.BlockSocks && detectSocksProtocol(data) {
+		return "socks"
+	}
+	return ""
+}
+
+func detectHTTPProtocol(data []byte) bool {
+	if len(data) >= 24 && string(data[:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+		return true
+	}
+	methods := []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "CONNECT ", "TRACE "}
+	upper := strings.ToUpper(string(data[:minInt(len(data), 16)]))
+	for _, method := range methods {
+		if strings.HasPrefix(upper, method) {
+			return true
+		}
+	}
+	return false
+}
+
+func detectTLSProtocol(data []byte) bool {
+	return len(data) >= 5 && data[0] == 0x16 && data[1] == 0x03 && data[2] >= 0x01 && data[2] <= 0x04
+}
+
+func detectSocksProtocol(data []byte) bool {
+	if len(data) < 2 {
+		return false
+	}
+	if data[0] == 0x04 {
+		return len(data) >= 7 && (data[1] == 0x01 || data[1] == 0x02)
+	}
+	if data[0] != 0x05 {
+		return false
+	}
+	nMethods := int(data[1])
+	if nMethods <= 0 || len(data) < 2+nMethods {
+		return false
+	}
+	for _, method := range data[2 : 2+nMethods] {
+		if method == 0x00 || method == 0x02 {
+			return true
+		}
+	}
+	return false
+}
+
+func reportProtocolBlock(cfg Config, rule guardRule, proto string) {
+	payload := map[string]any{
+		"ruleId":     rule.RuleID,
+		"tunnelId":   rule.TunnelID,
+		"sourcePort": rule.ListenPort,
+		"protocol":   proto,
+	}
+	if err := post(cfg, "/api/agent/protocol-block", payload, &map[string]any{}); err != nil {
+		logf("protocol block report failed rule=%d protocol=%s: %v", rule.RuleID, proto, err)
+	} else {
+		logf("protocol block reported rule=%d tunnel=%d protocol=%s", rule.RuleID, rule.TunnelID, proto)
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type fxpLogWriter struct {
@@ -945,7 +1178,7 @@ func post(cfg Config, path string, payload any, out any) error {
 	}
 	if res.StatusCode >= 300 {
 		var migrated struct {
-			PanelURL      string        `json:"panelUrl"`
+			PanelURL     string        `json:"panelUrl"`
 			AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
 		}
 		if err := json.Unmarshal(decodedBody, &migrated); err == nil {

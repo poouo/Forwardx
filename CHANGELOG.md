@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.62] - 2026-05-24
+
+### Added
+
+- Added per-tunnel HTTP, SOCKS, and TLS protocol blocking for ForwardX and GOST tunnels.
+- Added user-facing blocked-rule messages when a tunnel rule is stopped by protocol policy.
+
+### Changed
+
+- Improved the empty tunnel-management state and dark-mode switch visibility.
+- Bumped panel version to 2.2.62. Agent version remains 2.2.45.
+
 ## [2.2.57] - 2026-05-23
 
 ### Added

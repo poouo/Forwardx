@@ -68,7 +68,13 @@ export async function markForwardRulePendingDelete(id: number) {
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;
-  await db.update(forwardRules).set({ isEnabled, disabledByTunnel: false, disabledByUser: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+  await db.update(forwardRules).set({
+    isEnabled,
+    disabledByTunnel: false,
+    disabledByUser: false,
+    ...(isEnabled ? { protocolBlockReason: null } : {}),
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardRules.id, id));
 }
 
 export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
@@ -81,5 +87,17 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
     return;
   }
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+}
+
+export async function disableForwardRuleByProtocolBlock(id: number, reason: string) {
+  const db = await getDb();
+  if (!db) return;
+  const message = String(reason || "Protocol blocked").slice(0, 300);
+  await db.update(forwardRules).set({
+    isEnabled: false,
+    isRunning: false,
+    protocolBlockReason: message,
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardRules.id, id));
 }
 

@@ -39,6 +39,9 @@ export const tunnelsRouter = router({
         listenPort: z.number().min(0).max(65535).optional().default(0),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        blockHttp: z.boolean().optional().default(false),
+        blockSocks: z.boolean().optional().default(false),
+        blockTls: z.boolean().optional().default(false),
       }))
       .mutation(async ({ input, ctx }) => {
         if (input.portRangeStart != null && input.portRangeEnd != null && input.portRangeStart > input.portRangeEnd) {
@@ -69,7 +72,17 @@ export const tunnelsRouter = router({
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
         const secret = crypto.randomBytes(32).toString("hex");
-        const id = await db.createTunnel({ ...input, portRangeStart: input.portRangeStart ?? null, portRangeEnd: input.portRangeEnd ?? null, listenPort, secret, userId: ctx.user.id } as any);
+        const id = await db.createTunnel({
+          ...input,
+          portRangeStart: input.portRangeStart ?? null,
+          portRangeEnd: input.portRangeEnd ?? null,
+          blockHttp: !!input.blockHttp,
+          blockSocks: !!input.blockSocks,
+          blockTls: !!input.blockTls,
+          listenPort,
+          secret,
+          userId: ctx.user.id,
+        } as any);
         pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         return { id, listenPort };
       }),
@@ -83,6 +96,9 @@ export const tunnelsRouter = router({
         listenPort: z.number().min(0).max(65535).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        blockHttp: z.boolean().optional(),
+        blockSocks: z.boolean().optional(),
+        blockTls: z.boolean().optional(),
         isEnabled: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -123,7 +139,7 @@ export const tunnelsRouter = router({
             (data as any).listenPort = listenPort;
           }
         }
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "blockHttp", "blockSocks", "blockTls"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

@@ -68,6 +68,9 @@ type TunnelForm = {
   exitHostId: number | null;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   listenPort: number;
+  blockHttp: boolean;
+  blockSocks: boolean;
+  blockTls: boolean;
 };
 
 const defaultForm: TunnelForm = {
@@ -76,6 +79,9 @@ const defaultForm: TunnelForm = {
   exitHostId: null,
   mode: "forwardx",
   listenPort: 0,
+  blockHttp: false,
+  blockSocks: false,
+  blockTls: false,
 };
 
 function isValidPort(port: number, allowZero = false) {
@@ -435,6 +441,9 @@ function TunnelsContent() {
       exitHostId: tunnel.exitHostId,
       mode: tunnel.mode || "tls",
       listenPort: tunnel.listenPort,
+      blockHttp: !!tunnel.blockHttp,
+      blockSocks: !!tunnel.blockSocks,
+      blockTls: !!tunnel.blockTls,
     });
     setEditingId(tunnel.id);
     setShowDialog(true);
@@ -492,6 +501,9 @@ function TunnelsContent() {
       exitHostId: form.exitHostId,
       mode: form.mode,
       listenPort: form.listenPort,
+      blockHttp: form.blockHttp,
+      blockSocks: form.blockSocks,
+      blockTls: form.blockTls,
     };
     if (editingId) updateMutation.mutate({ id: editingId, ...payload });
     else createMutation.mutate(payload);
@@ -533,13 +545,17 @@ function TunnelsContent() {
         </div>
       </div>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardContent className="p-0">
-          {isLoading ? (
+      {isLoading ? (
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardContent className="p-0">
             <div className="space-y-3 p-6">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
             </div>
-          ) : tunnels && tunnels.length > 0 ? (
+          </CardContent>
+        </Card>
+      ) : tunnels && tunnels.length > 0 ? (
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -667,17 +683,17 @@ function TunnelsContent() {
                 </TableBody>
               </Table>
             </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/30">
-                <Network className="h-8 w-8 opacity-40" />
-              </div>
-              <p className="text-lg font-medium">暂无隧道</p>
-              <p className="mt-1 text-sm text-muted-foreground/60">选择两台 Agent 创建第一条隧道</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/30">
+            <Network className="h-8 w-8 opacity-40" />
+          </div>
+          <p className="text-lg font-medium">暂无隧道</p>
+          <p className="mt-1 text-sm text-muted-foreground/60">选择两台 Agent 创建第一条隧道</p>
+        </div>
+      )}
 
       {latencyTunnel && (
         <TunnelLatencyDialog
@@ -815,6 +831,28 @@ function TunnelsContent() {
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
                 <p className="text-xs text-muted-foreground">可留空，面板会按出口 Agent 的端口范围自动选择高位可用端口。</p>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
+              <div>
+                <Label className="text-sm">协议屏蔽</Label>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  仅对 ForwardX 隧道和 GOST 隧道转发生效，普通端口转发不受影响。检测到被禁止协议后会关闭当前规则并在规则列表提示用户。
+                </p>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                  <span className="text-sm font-medium">HTTP</span>
+                  <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                </label>
+                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                  <span className="text-sm font-medium">SOCKS</span>
+                  <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                </label>
+                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                  <span className="text-sm font-medium">TLS</span>
+                  <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                </label>
               </div>
             </div>
           </div>

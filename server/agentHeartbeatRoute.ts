@@ -246,6 +246,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         protocol: "tcp",
       }))
       .filter((probe: any) => probe.targetIp && probe.targetPort > 0);
+    const tunnelProtocolPolicy = (tunnel: any) => ({
+      blockHttp: !!(tunnel as any)?.blockHttp,
+      blockSocks: !!(tunnel as any)?.blockSocks,
+      blockTls: !!(tunnel as any)?.blockTls,
+    });
+    const hasProtocolPolicy = (tunnel: any) => {
+      const policy = tunnelProtocolPolicy(tunnel);
+      return policy.blockHttp || policy.blockSocks || policy.blockTls;
+    };
+    const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
         if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost" || !r.tunnelId) return false;
@@ -384,6 +394,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
+        const targetAddr = hasProtocolPolicy(tunnel)
+          ? `127.0.0.1:${guardListenPort(rule)}`
+          : `${rule.targetIp}:${rule.targetPort}`;
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -395,7 +408,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           forwarder: {
             nodes: [{
               name: `target-${rule.id}`,
-              addr: `${rule.targetIp}:${rule.targetPort}`,
+              addr: targetAddr,
             }],
           },
         }];
@@ -444,6 +457,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Number(rule.sourcePort) || 0;
     };
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
+    const guardRules: any[] = [];
 
     const buildDisabledRuleRemovalAction = (rule: any) => {
       const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
@@ -852,6 +866,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 ...rateLimits,
                 ...accessLimits,
                 accessScope: accessScopeForRule(rule),
+                ...tunnelProtocolPolicy(tunnel),
               },
             });
             continue;
@@ -1035,6 +1050,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     // 取走该主机的 pending 转发自测任务并标为 running
     for (const rule of tunnelExitRules) {
+      const tunnel = tunnelById.get((rule as any).tunnelId) as any;
+      if (tunnel && hasProtocolPolicy(tunnel)) {
+        guardRules.push({
+          ruleId: rule.id,
+          tunnelId: tunnel.id,
+          listenPort: guardListenPort(rule),
+          targetIp: rule.targetIp,
+          targetPort: rule.targetPort,
+          policy: tunnelProtocolPolicy(tunnel),
+        });
+      }
+    }
+
+    for (const rule of tunnelExitRules) {
       if (!rule.isEnabled || !rule.isRunning) continue;
       const trafficPort = Number((rule as any).tunnelExitPort) || 0;
       if (!trafficPort) continue;
@@ -1092,7 +1121,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       panelUrl: await resolvePanelUrl(req),
     } : null;
 
-    res.json({ success: true, actions, selfTests, runningRules, tunnelProbes, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
+    res.json({ success: true, actions, selfTests, runningRules, tunnelProbes, guardRules, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });
