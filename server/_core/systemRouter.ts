@@ -9,6 +9,7 @@ import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, 
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
 import { pushAgentRefresh } from "../agentEvents";
+import { maskSecret } from "../ddns";
 import {
   FORWARD_TYPES,
   TUNNEL_PROTOCOLS,
@@ -238,12 +239,13 @@ export const systemRouter = router({
   }),
 
   publicInfo: publicProcedure.query(() => {
-    return {
+    return db.getAllSettings().then((all) => ({
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,
       version: APP_VERSION,
       agentVersion: AGENT_VERSION,
-    };
+      registrationEnabled: all.registrationEnabled !== "false",
+    }));
   }),
 
   /** 获取系统设置（包含开源地址、版本、面板公开 URL 等元信息） */
@@ -255,6 +257,7 @@ export const systemRouter = router({
       version: APP_VERSION,
       agentVersion: AGENT_VERSION,
       panelPublicUrl: all.panelPublicUrl ?? "",
+      registrationEnabled: all.registrationEnabled !== "false",
       homepageEnabled: all.homepageEnabled !== "false",
       homepageCustomEnabled: all.homepageCustomEnabled === "true",
       homepageHtml: all.homepageHtml ?? "",
@@ -287,6 +290,15 @@ export const systemRouter = router({
         trafficReminder: all.emailTrafficReminder === "true",
         trafficReminderThreshold: Number(all.emailTrafficReminderThreshold || 20),
       },
+      ddns: {
+        enabled: all.ddnsEnabled === "true",
+        provider: all.ddnsProvider || "disabled",
+        cloudflareZoneId: all.ddnsCloudflareZoneId ?? "",
+        cloudflareTokenMasked: maskSecret(all.ddnsCloudflareApiToken),
+        webhookUrl: all.ddnsWebhookUrl ?? "",
+        webhookMethod: all.ddnsWebhookMethod ?? "POST",
+        webhookHeaders: all.ddnsWebhookHeaders ?? "",
+      },
       agentEncryption: "aes-256-ctr+hmac-sha256", // 加密方案标识
       upgrade: {
         enabled: !!ENV.upgradeCommand.trim(),
@@ -318,6 +330,7 @@ export const systemRouter = router({
     .input(
       z.object({
         panelPublicUrl: z.string().max(256).optional(),
+        registrationEnabled: z.boolean().optional(),
         homepageEnabled: z.boolean().optional(),
         homepageCustomEnabled: z.boolean().optional(),
         homepageHtml: z.string().max(60000).optional(),
@@ -345,6 +358,16 @@ export const systemRouter = router({
           trafficReminder: z.boolean().optional(),
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
         }).optional(),
+        ddns: z.object({
+          enabled: z.boolean().optional(),
+          provider: z.enum(["disabled", "cloudflare", "webhook"]).optional(),
+          cloudflareZoneId: z.string().max(256).optional(),
+          cloudflareApiToken: z.string().max(512).optional(),
+          clearCloudflareApiToken: z.boolean().optional(),
+          webhookUrl: z.string().max(1000).optional(),
+          webhookMethod: z.enum(["POST", "PUT", "GET"]).optional(),
+          webhookHeaders: z.string().max(2000).optional(),
+        }).optional(),
       })
     )
     .mutation(async ({ input }) => {
@@ -357,6 +380,10 @@ export const systemRouter = router({
         const normalized = v.replace(/\/+$/, "");
         await db.setSetting("panelPublicUrl", normalized || null);
         console.info(`[Settings] panelPublicUrl ${normalized ? "updated" : "cleared"}`);
+      }
+      if (input.registrationEnabled !== undefined) {
+        await db.setSetting("registrationEnabled", input.registrationEnabled ? "true" : "false");
+        console.info(`[Settings] public registration ${input.registrationEnabled ? "enabled" : "disabled"}`);
       }
       if (input.homepageEnabled !== undefined) {
         await db.setSetting("homepageEnabled", input.homepageEnabled ? "true" : "false");
@@ -426,6 +453,21 @@ export const systemRouter = router({
           });
         }
         console.info("[Settings] telegram settings updated");
+      }
+      if (input.ddns) {
+        const next: Record<string, string | null> = {};
+        if (input.ddns.enabled !== undefined) next.ddnsEnabled = input.ddns.enabled ? "true" : "false";
+        if (input.ddns.provider !== undefined) next.ddnsProvider = input.ddns.provider;
+        if (input.ddns.cloudflareZoneId !== undefined) next.ddnsCloudflareZoneId = input.ddns.cloudflareZoneId.trim() || null;
+        if (input.ddns.clearCloudflareApiToken) next.ddnsCloudflareApiToken = null;
+        if (input.ddns.cloudflareApiToken !== undefined && input.ddns.cloudflareApiToken.trim()) {
+          next.ddnsCloudflareApiToken = input.ddns.cloudflareApiToken.trim();
+        }
+        if (input.ddns.webhookUrl !== undefined) next.ddnsWebhookUrl = input.ddns.webhookUrl.trim() || null;
+        if (input.ddns.webhookMethod !== undefined) next.ddnsWebhookMethod = input.ddns.webhookMethod;
+        if (input.ddns.webhookHeaders !== undefined) next.ddnsWebhookHeaders = input.ddns.webhookHeaders.trim() || null;
+        await db.setSettings(next);
+        console.info("[Settings] ddns settings updated");
       }
       return { success: true };
     }),

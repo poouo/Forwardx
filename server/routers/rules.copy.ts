@@ -1,0 +1,149 @@
+import { z } from "zod";
+import * as db from "../db";
+import { protectedProcedure, router } from "../_core/trpc";
+import { pushAgentRefresh } from "../agentEvents";
+import { requireHostUseAccess, requireRuleAccess } from "./helpers";
+import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
+import { FORWARD_TYPES } from "../../shared/forwardTypes";
+
+const conflictStrategySchema = z.enum(["skip", "auto", "error"]);
+
+export const copyRulesRouter = router({
+  copyToHosts: protectedProcedure
+    .input(z.object({
+      ruleIds: z.array(z.number().int().positive()).min(1),
+      targetHostIds: z.array(z.number().int().positive()).min(1),
+      conflictStrategy: conflictStrategySchema.default("skip"),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && !ctx.user.canAddRules) {
+        throw new Error("您没有添加转发规则的权限，请联系管理员开通");
+      }
+      if (ctx.user.expiresAt && new Date(ctx.user.expiresAt) <= new Date()) {
+        throw new Error("您的账户已到期，无法复制规则");
+      }
+
+      const currentUser = await db.getUserById(ctx.user.id);
+      if (!currentUser) throw new Error("用户不存在");
+      const allowedForwardTypes = (() => {
+        if (ctx.user.role === "admin") return null;
+        const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
+        if (allowedRaw === null || allowedRaw === undefined) return null;
+        return new Set(allowedRaw.split(",").map((item) => item.trim()).filter(Boolean));
+      })();
+
+      const uniqueRuleIds = Array.from(new Set(input.ruleIds));
+      const uniqueTargetHostIds = Array.from(new Set(input.targetHostIds));
+      const rules: any[] = [];
+      for (const ruleId of uniqueRuleIds) {
+        const rule = await requireRuleAccess(ctx, ruleId);
+        if ((rule as any).tunnelId) {
+          throw new Error("隧道转发规则暂不支持直接复制，请在目标隧道上重新创建");
+        }
+        if (!(FORWARD_TYPES as readonly string[]).includes(String(rule.forwardType))) {
+          throw new Error(`规则 ${rule.name || rule.id} 的转发方式不支持复制`);
+        }
+        if (allowedForwardTypes && !allowedForwardTypes.has(String(rule.forwardType))) {
+          throw new Error(`您没有使用 ${rule.forwardType} 转发方式的权限，请联系管理员`);
+        }
+        await requireRuleProtocolEnabled(rule);
+        rules.push(rule);
+      }
+
+      const targetHosts: Array<{ host: any; isTrafficBillingResource: boolean }> = [];
+      for (const hostId of uniqueTargetHostIds) {
+        const access = await requireHostUseAccess(ctx, hostId);
+        targetHosts.push(access);
+      }
+
+      const copied: Array<{ sourceRuleId: number; targetHostId: number; newRuleId: number; sourcePort: number }> = [];
+      const skipped: Array<{ sourceRuleId: number; targetHostId: number; reason: string }> = [];
+
+      for (const { host, isTrafficBillingResource } of targetHosts) {
+        for (const rule of rules) {
+          if (Number(rule.hostId) === Number(host.id)) {
+            skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: "源主机与目标主机相同" });
+            continue;
+          }
+
+          if (ctx.user.role !== "admin") {
+            if (currentUser.maxRules > 0) {
+              const ruleCount = await db.getUserRuleCount(ctx.user.id);
+              if (ruleCount >= currentUser.maxRules) {
+                skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: `已达到最大规则数量限制（${currentUser.maxRules} 条）` });
+                continue;
+              }
+            }
+            if (currentUser.maxPorts > 0) {
+              const portCount = await db.getUserPortCount(ctx.user.id);
+              if (portCount >= currentUser.maxPorts) {
+                skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: `已达到最大端口数量限制（${currentUser.maxPorts} 个）` });
+                continue;
+              }
+            }
+            if (!isTrafficBillingResource && ctx.user.trafficLimit > 0 && ctx.user.trafficUsed >= ctx.user.trafficLimit) {
+              throw new Error("您的流量已用完，无法复制规则");
+            }
+          }
+
+          let sourcePort = Number(rule.sourcePort);
+          const hostRangeStart = (host as any).portRangeStart != null ? Number((host as any).portRangeStart) : null;
+          const hostRangeEnd = (host as any).portRangeEnd != null ? Number((host as any).portRangeEnd) : null;
+          const planRange = ctx.user.role !== "admin"
+            ? await db.getUserPlanPortRange(ctx.user.id, Number(host.id))
+            : null;
+          const effectiveRangeStart = planRange ? Math.max(hostRangeStart ?? planRange.start, planRange.start) : hostRangeStart;
+          const effectiveRangeEnd = planRange ? Math.min(hostRangeEnd ?? planRange.end, planRange.end) : hostRangeEnd;
+          const outOfRange =
+            effectiveRangeStart != null &&
+            effectiveRangeEnd != null &&
+            (sourcePort < effectiveRangeStart || sourcePort > effectiveRangeEnd);
+          const used = await db.isPortUsedOnHost(Number(host.id), sourcePort);
+          if (used || outOfRange) {
+            if (input.conflictStrategy === "skip") {
+              skipped.push({
+                sourceRuleId: rule.id,
+                targetHostId: host.id,
+                reason: outOfRange ? `端口 ${sourcePort} 不在允许范围内` : `端口 ${sourcePort} 已被占用`,
+              });
+              continue;
+            }
+            if (input.conflictStrategy === "error") {
+              throw new Error(outOfRange
+                ? `${host.name} 的端口 ${sourcePort} 不在允许范围内`
+                : `${host.name} 的端口 ${sourcePort} 已被占用`);
+            }
+            const nextPort = await db.findAvailablePort(Number(host.id), effectiveRangeStart, effectiveRangeEnd);
+            if (!nextPort) {
+              skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: "目标主机无可用端口" });
+              continue;
+            }
+            sourcePort = nextPort;
+          }
+
+          const id = await db.createForwardRule({
+            hostId: Number(host.id),
+            name: rule.name,
+            forwardType: rule.forwardType,
+            protocol: rule.protocol,
+            gostMode: "direct",
+            gostRelayHost: null,
+            gostRelayPort: null,
+            tunnelId: null,
+            tunnelExitPort: null,
+            sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: Number(rule.targetPort),
+            isEnabled: !!rule.isEnabled,
+            isRunning: false,
+            pendingDelete: false,
+            userId: ctx.user.id,
+          } as any);
+          copied.push({ sourceRuleId: rule.id, targetHostId: Number(host.id), newRuleId: id, sourcePort });
+          pushAgentRefresh(Number(host.id), "forward-rule-copied");
+        }
+      }
+
+      return { copied, skipped };
+    }),
+});

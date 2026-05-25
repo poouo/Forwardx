@@ -4,7 +4,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { createHomepageDocument } from "@/lib/homepageHtml";
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, Gauge, Lock, Network, Server, ShieldCheck, WalletCards, Zap } from "lucide-react";
+import { toast } from "sonner";
 import { Link } from "wouter";
+
+const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
 
 const features = [
   { title: "多主机 Agent 管理", text: "统一接入多台 Linux 服务器，面板不保存 SSH 密钥。", icon: Server },
@@ -27,6 +30,13 @@ export function CustomPublicHome({ html }: { html: string }) {
 
 export default function PublicHome() {
   const { data: info } = trpc.system.publicInfo.useQuery(undefined, { refetchOnWindowFocus: false });
+  const registrationEnabled = info?.registrationEnabled !== false;
+
+  const handleRegisterClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (registrationEnabled) return;
+    event.preventDefault();
+    toast.info(REGISTRATION_CLOSED_MESSAGE);
+  };
 
   return (
     <div className="min-h-screen bg-[linear-gradient(135deg,#f7fbff_0%,#eef7f3_48%,#fff6e8_100%)] text-foreground">
@@ -40,7 +50,7 @@ export default function PublicHome() {
             <Link href="/login">登录</Link>
           </Button>
           <Button asChild>
-            <Link href="/login?mode=register">注册</Link>
+            <Link href="/login?mode=register" onClick={handleRegisterClick}>注册</Link>
           </Button>
         </div>
       </header>
@@ -66,7 +76,7 @@ export default function PublicHome() {
                 </Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
-                <Link href="/login?mode=register">创建账号</Link>
+                <Link href="/login?mode=register" onClick={handleRegisterClick}>创建账号</Link>
               </Button>
             </div>
           </div>

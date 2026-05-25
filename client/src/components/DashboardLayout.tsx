@@ -75,6 +75,7 @@ const mainMenuItems = [
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
+  { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
 
 const adminMenuItems = [

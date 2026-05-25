@@ -6,6 +6,7 @@ import { announcementsRouter } from "./routers/announcements";
 import { authRouter } from "./routers/auth";
 import { billingRouter } from "./routers/billing";
 import { dashboardRouter } from "./routers/dashboard";
+import { forwardGroupsRouter } from "./routers/forwardGroups";
 import { hostsRouter } from "./routers/hosts";
 import { plansRouter } from "./routers/plans";
 import { rulesRouter } from "./routers/rules";
@@ -26,6 +27,7 @@ export const appRouter = router({
   users: usersRouter,
   hosts: hostsRouter,
   rules: rulesRouter,
+  forwardGroups: forwardGroupsRouter,
   tunnels: tunnelsRouter,
   telegram: telegramRouter,
   trafficBilling: trafficBillingRouter,

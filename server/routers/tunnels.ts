@@ -10,19 +10,16 @@ import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 
-const normalizeTunnelConnect = (networkType: "public" | "private", connectHost?: string | null) => {
+const normalizeTunnelConnect = (connectHost?: string | null) => {
   const host = String(connectHost || "").trim();
-  if (networkType === "private") {
-    if (!host || isIP(host) === 0) throw new Error("内网隧道连接 IP 无效");
-    return host;
-  }
-  return null;
+  if (!host) return null;
+  if (isIP(host) === 0) throw new Error("指定出口 IP 无效");
+  return host;
 };
 
 const getTunnelDialHost = (tunnel: any, exit: any) => {
-  if (String(tunnel?.networkType || "public") === "private") {
-    return String(tunnel?.connectHost || "").trim();
-  }
+  const connectHost = String(tunnel?.connectHost || "").trim();
+  if (connectHost) return connectHost;
   return String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit?.ip || "").trim();
 };
 
@@ -93,12 +90,12 @@ export const tunnelsRouter = router({
           if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
         }
         const secret = crypto.randomBytes(32).toString("hex");
-        const connectHost = normalizeTunnelConnect(input.networkType, input.connectHost);
+        const connectHost = normalizeTunnelConnect(input.connectHost);
         const id = await db.createTunnel({
           ...input,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
-          networkType: input.networkType,
+          networkType: connectHost ? "private" : "public",
           connectHost,
           blockHttp: !!input.blockHttp,
           blockSocks: !!input.blockSocks,
@@ -166,10 +163,10 @@ export const tunnelsRouter = router({
           }
         }
         if ((data as any).networkType !== undefined || (data as any).connectHost !== undefined) {
-          const nextNetworkType = ((data as any).networkType ?? (tunnel as any).networkType ?? "public") as "public" | "private";
           const nextConnectHost = (data as any).connectHost !== undefined ? (data as any).connectHost : (tunnel as any).connectHost;
-          (data as any).networkType = nextNetworkType;
-          (data as any).connectHost = normalizeTunnelConnect(nextNetworkType, nextConnectHost);
+          const normalizedConnectHost = normalizeTunnelConnect(nextConnectHost);
+          (data as any).networkType = normalizedConnectHost ? "private" : "public";
+          (data as any).connectHost = normalizedConnectHost;
         }
         const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", "blockHttp", "blockSocks", "blockTls"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;

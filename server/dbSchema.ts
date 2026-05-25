@@ -26,6 +26,9 @@ export const MIGRATION_TABLES = [
   "hosts",
   "tunnels",
   "forward_rules",
+  "forward_groups",
+  "forward_group_members",
+  "forward_group_events",
   "host_metrics",
   "traffic_stats",
   "tunnel_latency_stats",
@@ -104,6 +107,42 @@ const tables: TableDef[] = [
     indexes: [["hostId"], ["userId"], ["tunnelId"]],
   },
   {
+    name: "forward_groups",
+    columns: [
+      c("id", "id"), c("name", "text", { notNull: true }), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
+      c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
+      c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true }),
+      c("protocol", "varchar", { length: 16, notNull: true, default: "tcp" }), c("targetIp", "text", { notNull: true }),
+      c("targetPort", "int", { notNull: true }), c("failoverSeconds", "int", { notNull: true, default: 60 }),
+      c("recoverSeconds", "int", { notNull: true, default: 120 }), c("autoFailback", "bool", { notNull: true, default: true }),
+      c("isEnabled", "bool", { notNull: true, default: true }), c("activeMemberId", "int"), c("lastDdnsValue", "text"),
+      c("lastDdnsAt", "epoch"), c("lastFailoverAt", "epoch"), c("lastStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
+      c("lastMessage", "text"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
+      c("updatedAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    indexes: [["userId"], ["isEnabled"], ["activeMemberId"]],
+  },
+  {
+    name: "forward_group_members",
+    columns: [
+      c("id", "id"), c("groupId", "int", { notNull: true }), c("memberType", "varchar", { length: 32, notNull: true }),
+      c("hostId", "int"), c("tunnelId", "int"), c("priority", "int", { notNull: true, default: 0 }), c("ruleId", "int"),
+      c("isEnabled", "bool", { notNull: true, default: true }), c("healthStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
+      c("lastLatencyMs", "int"), c("failureSince", "epoch"), c("healthySince", "epoch"), c("lastCheckedAt", "epoch"),
+      c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    indexes: [["groupId", "priority"], ["ruleId"], ["hostId"], ["tunnelId"]],
+  },
+  {
+    name: "forward_group_events",
+    columns: [
+      c("id", "id"), c("groupId", "int", { notNull: true }), c("memberId", "int"),
+      c("type", "varchar", { length: 32, notNull: true }), c("message", "text"),
+      c("createdAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    indexes: [["groupId", "createdAt"], ["memberId"]],
+  },
+  {
     name: "tunnels",
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("entryHostId", "int", { notNull: true }),
@@ -146,6 +185,7 @@ const tables: TableDef[] = [
 
 const seedSettings = [
   ["storeEnabled", "false"],
+  ["registrationEnabled", "true"],
   ["homepageEnabled", "true"],
   ["homepageCustomEnabled", "false"],
   ["redemptionEnabled", "true"],

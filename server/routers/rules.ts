@@ -2,6 +2,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
 import { crudRulesRouter } from "./rules.crud";
+import { copyRulesRouter } from "./rules.copy";
 import { portsRulesRouter } from "./rules.ports";
 import { selfTestRulesRouter } from "./rules.selfTest";
 import { trafficRulesRouter } from "./rules.traffic";
@@ -22,6 +23,7 @@ export const rulesRouter = router({
       return rule;
     }),
   ...portsRulesRouter._def.procedures,
+  ...copyRulesRouter._def.procedures,
   ...crudRulesRouter._def.procedures,
   ...trafficRulesRouter._def.procedures,
   ...selfTestRulesRouter._def.procedures,

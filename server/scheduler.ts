@@ -169,6 +169,14 @@ async function runTelegramReminders() {
   }
 }
 
+async function runForwardGroupFailover() {
+  try {
+    await db.runForwardGroupFailoverSweep();
+  } catch (error) {
+    console.error("[Scheduler] Forward group failover error:", error);
+  }
+}
+
 function formatBytesLocal(bytes: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -195,6 +203,10 @@ export function startScheduler() {
   }, 60 * 60 * 1000);
 
   setInterval(async () => {
+    await runForwardGroupFailover();
+  }, 30 * 1000);
+
+  setInterval(async () => {
     await runEmailReminders();
     await runTelegramReminders();
   }, 6 * 60 * 60 * 1000);
@@ -204,9 +216,10 @@ export function startScheduler() {
     await runExpirationCheck();
     await runSelfTestTimeoutSweep();
     await runTcpingCleanup();
+    await runForwardGroupFailover();
     await runEmailReminders();
     await runTelegramReminders();
   }, 5000);
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep + tcping cleanup + email/telegram reminders)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + email/telegram reminders)");
 }

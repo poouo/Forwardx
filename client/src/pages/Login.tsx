@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
 
+const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
+
 type Mode = "login" | "register";
 
 function isEmail(value: string) {
@@ -60,6 +62,14 @@ export default function Login() {
   const { data: telegramLoginStatus } = trpc.telegram.loginStatus.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
+  const registrationEnabled = emailConfig?.registrationEnabled !== false;
+
+  useEffect(() => {
+    if (mode === "register" && !registrationEnabled) {
+      toast.info(REGISTRATION_CLOSED_MESSAGE);
+      setMode("login");
+    }
+  }, [mode, registrationEnabled]);
 
   // 获取验证码
   const captchaQuery = trpc.auth.getCaptcha.useQuery(undefined, {
@@ -141,10 +151,10 @@ export default function Login() {
 
   // 切换到注册模式时自动显示验证码
   useEffect(() => {
-    if (mode === "register") {
+    if (mode === "register" && registrationEnabled) {
       setShowCaptcha(true);
     }
-  }, [mode]);
+  }, [mode, registrationEnabled]);
 
   useEffect(() => {
     const code = new URLSearchParams(location.split("?")[1] || "").get("tg");
@@ -205,6 +215,11 @@ export default function Login() {
 
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!registrationEnabled) {
+      toast.info(REGISTRATION_CLOSED_MESSAGE);
+      setMode("login");
+      return;
+    }
     if (!username.trim() || !password.trim()) {
       toast.error("请输入用户名和密码");
       return;
@@ -408,7 +423,14 @@ export default function Login() {
               <div className="text-center">
                 <button
                   type="button"
-                  onClick={() => { setMode("register"); setCaptchaAnswer(""); }}
+                  onClick={() => {
+                    if (!registrationEnabled) {
+                      toast.info(REGISTRATION_CLOSED_MESSAGE);
+                      return;
+                    }
+                    setMode("register");
+                    setCaptchaAnswer("");
+                  }}
                   className="text-sm text-muted-foreground hover:text-primary transition-colors"
                 >
                   没有账号？点击注册

@@ -191,6 +191,65 @@ export const forwardRules = table("forward_rules", {
 export type ForwardRule = typeof forwardRules.$inferSelect;
 export type InsertForwardRule = typeof forwardRules.$inferInsert;
 
+export const forwardGroups = table("forward_groups", {
+  id: serial("id"),
+  name: text("name").notNull(),
+  groupType: varchar("groupType", { length: 32 }).notNull().default("host"),
+  forwardType: varchar("forwardType", { length: 32 }).notNull().default("iptables"),
+  domain: text("domain"),
+  recordType: varchar("recordType", { length: 16 }).notNull().default("A"),
+  sourcePort: int("sourcePort").notNull(),
+  protocol: varchar("protocol", { length: 16 }).notNull().default("tcp"),
+  targetIp: text("targetIp").notNull(),
+  targetPort: int("targetPort").notNull(),
+  failoverSeconds: int("failoverSeconds").notNull().default(60),
+  recoverSeconds: int("recoverSeconds").notNull().default(120),
+  autoFailback: boolean("autoFailback").notNull().default(true),
+  isEnabled: boolean("isEnabled").notNull().default(true),
+  activeMemberId: int("activeMemberId"),
+  lastDdnsValue: text("lastDdnsValue"),
+  lastDdnsAt: epoch("lastDdnsAt"),
+  lastFailoverAt: epoch("lastFailoverAt"),
+  lastStatus: varchar("lastStatus", { length: 32 }).notNull().default("unknown"),
+  lastMessage: text("lastMessage"),
+  userId: int("userId").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type ForwardGroup = typeof forwardGroups.$inferSelect;
+export type InsertForwardGroup = typeof forwardGroups.$inferInsert;
+
+export const forwardGroupMembers = table("forward_group_members", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  memberType: varchar("memberType", { length: 32 }).notNull(),
+  hostId: int("hostId"),
+  tunnelId: int("tunnelId"),
+  priority: int("priority").notNull().default(0),
+  ruleId: int("ruleId"),
+  isEnabled: boolean("isEnabled").notNull().default(true),
+  healthStatus: varchar("healthStatus", { length: 32 }).notNull().default("unknown"),
+  lastLatencyMs: int("lastLatencyMs"),
+  failureSince: epoch("failureSince"),
+  healthySince: epoch("healthySince"),
+  lastCheckedAt: epoch("lastCheckedAt"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type ForwardGroupMember = typeof forwardGroupMembers.$inferSelect;
+export type InsertForwardGroupMember = typeof forwardGroupMembers.$inferInsert;
+
+export const forwardGroupEvents = table("forward_group_events", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  memberId: int("memberId"),
+  type: varchar("type", { length: 32 }).notNull(),
+  message: text("message"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type ForwardGroupEvent = typeof forwardGroupEvents.$inferSelect;
+export type InsertForwardGroupEvent = typeof forwardGroupEvents.$inferInsert;
+
 // ===== gost 闅ч亾閰嶇疆锛堜袱鍙板叕缃?Agent 缁勫缓閾捐矾锛?=====
 export const tunnels = table("tunnels", {
   id: serial("id"),

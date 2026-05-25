@@ -158,12 +158,18 @@ export const authRouter = router({
 
   emailConfig: publicProcedure.query(async () => {
     const config = await getEmailConfig();
-    return { verifyRegistration: config.enabled && config.verifyRegistration };
+    const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
+    return { verifyRegistration: config.enabled && config.verifyRegistration, registrationEnabled };
   }),
 
   sendEmailCode: publicProcedure
     .input(z.object({ email: z.string().email("邮箱格式不正确") }))
     .mutation(async ({ input, ctx }) => {
+      const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
+      if (!registrationEnabled) {
+        console.warn(`[Auth] Email verification rejected registration disabled target=${maskIdentifier(input.email)} ip=${getRequestIp(ctx)}`);
+        throw new Error("当前注册未开放，请联系管理员");
+      }
       const config = await getEmailConfig();
       if (!config.enabled || !config.verifyRegistration) {
         console.info(`[Auth] Email verification skipped ip=${getRequestIp(ctx)}`);
@@ -238,6 +244,11 @@ export const authRouter = router({
       captchaAnswer: z.number(),
     }))
     .mutation(async ({ input, ctx }) => {
+      const registrationEnabled = (await db.getSetting("registrationEnabled")) !== "false";
+      if (!registrationEnabled) {
+        console.warn(`[Auth] Register rejected disabled username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
+        throw new Error("当前注册未开放，请联系管理员");
+      }
       if (!verifyCaptcha(input.captchaId, input.captchaAnswer)) {
         console.warn(`[Auth] Register captcha failed username=${maskIdentifier(input.username)} ip=${getRequestIp(ctx)}`);
         throw new Error("验证码错误，请重新输入");

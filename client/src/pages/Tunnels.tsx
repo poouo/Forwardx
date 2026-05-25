@@ -534,8 +534,8 @@ function TunnelsContent() {
       return;
     }
     const connectHost = form.connectHost.trim();
-    if (form.networkType === "private" && !isValidIpAddress(connectHost)) {
-      toast.error("请输入有效的内网隧道连接 IP");
+    if (connectHost && !isValidIpAddress(connectHost)) {
+      toast.error("请输入有效的指定出口 IP");
       return;
     }
     const payload = {
@@ -544,8 +544,8 @@ function TunnelsContent() {
       exitHostId: form.exitHostId,
       mode: form.mode,
       listenPort: form.listenPort,
-      networkType: form.networkType,
-      connectHost: form.networkType === "private" ? connectHost : null,
+      networkType: connectHost ? "private" : "public",
+      connectHost: connectHost || null,
       blockHttp: form.blockHttp,
       blockSocks: form.blockSocks,
       blockTls: form.blockTls,
@@ -570,7 +570,7 @@ function TunnelsContent() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">隧道管理</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            使用两台公网 Agent 组建加密隧道，供转发规则复用
+            使用两台 Agent 组建加密隧道，供转发规则复用
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -646,9 +646,9 @@ function TunnelsContent() {
                           <span>{getHostName(tunnel.entryHostId)}</span>
                           <ArrowRight className="h-3 w-3 text-muted-foreground" />
                           <span>{getHostName(tunnel.exitHostId)}</span>
-                          {tunnel.networkType === "private" && (
+                          {String(tunnel.connectHost || "").trim() && (
                             <span className="max-w-[150px] truncate rounded bg-muted/40 px-1.5 py-0.5 text-muted-foreground" title={tunnel.connectHost || ""}>
-                              内网 {tunnel.connectHost || "-"}
+                              指定 {tunnel.connectHost || "-"}
                             </span>
                           )}
                           <code className="rounded bg-muted/40 px-1.5 py-0.5">:{tunnel.listenPort}</code>
@@ -658,9 +658,6 @@ function TunnelsContent() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px]">
                             {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
-                          </Badge>
-                          <Badge variant={tunnel.networkType === "private" ? "secondary" : "outline"} className="text-[10px]">
-                            {tunnel.networkType === "private" ? "内网" : "公网"}
                           </Badge>
                         </div>
                       </TableCell>
@@ -783,35 +780,6 @@ function TunnelsContent() {
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
             </div>
             <div className="space-y-2">
-              <Label>链路网络</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setForm({ ...form, networkType: "public" })}
-                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    form.networkType === "public"
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background hover:border-primary/40"
-                  }`}
-                >
-                  <span className="block font-medium">公网隧道</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">使用出口 Agent 入口地址连接</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setForm({ ...form, networkType: "private" })}
-                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    form.networkType === "private"
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background hover:border-primary/40"
-                  }`}
-                >
-                  <span className="block font-medium">内网隧道</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">指定入口 Agent 可访问的出口 IP</span>
-                </button>
-              </div>
-            </div>
-            <div className="space-y-2">
               <Label>隧道类型</Label>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <button
@@ -901,6 +869,22 @@ function TunnelsContent() {
                 </Select>
               </div>
             </div>
+            <div className="space-y-2">
+              <Label>指定出口 IP</Label>
+              <Input
+                list="tunnel-connect-host-options"
+                value={form.connectHost}
+                onChange={(e) => setForm({ ...form, connectHost: e.target.value })}
+                placeholder="留空则使用出口 Agent 默认入口地址"
+                aria-label="指定出口 IP"
+              />
+              <datalist id="tunnel-connect-host-options">
+                {connectHostOptions.map((ip) => <option key={ip} value={ip} />)}
+              </datalist>
+              <p className="text-xs leading-5 text-muted-foreground">
+                入口 Agent 连接出口 Agent 时优先使用这里填写的 IPv4 / IPv6；不填写则走出口 Agent 的默认公网入口地址。
+              </p>
+            </div>
             <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
               {form.mode !== "forwardx" && (
               <div className="space-y-2">
@@ -916,24 +900,6 @@ function TunnelsContent() {
               </div>
               )}
               <div className="space-y-2">
-                {form.networkType === "private" && (
-                  <div className="space-y-2">
-                    <Label>内网出口 IP</Label>
-                    <Input
-                      list="tunnel-connect-host-options"
-                      value={form.connectHost}
-                      onChange={(e) => setForm({ ...form, connectHost: e.target.value })}
-                      placeholder="例如 10.0.0.8 或 fd00::8"
-                      aria-label="内网隧道连接 IP"
-                    />
-                    <datalist id="tunnel-connect-host-options">
-                      {connectHostOptions.map((ip) => <option key={ip} value={ip} />)}
-                    </datalist>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      可选择出口 Agent 已记录的地址，也可以直接输入自定义 IPv4 / IPv6。
-                    </p>
-                  </div>
-                )}
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
                 <p className="text-xs text-muted-foreground">可留空，面板会按出口 Agent 的端口范围自动选择高位可用端口。</p>

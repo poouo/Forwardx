@@ -277,9 +277,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
     const tunnelExitHostAddress = async (tunnel: any) => {
-      if (String(tunnel?.networkType || "public") === "private") {
-        return String(tunnel?.connectHost || "").trim();
-      }
+      const connectHost = String(tunnel?.connectHost || "").trim();
+      if (connectHost) return connectHost;
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
       return String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit.ip || "").trim();

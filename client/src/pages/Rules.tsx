@@ -52,6 +52,7 @@ import {
   AlertCircle,
   Copy,
   Network,
+  ClipboardCopy,
 } from "lucide-react";
 import {
   FORWARD_TYPES,
@@ -158,10 +159,15 @@ function RulesContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
+  const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [form, setForm] = useState<RuleFormData>(defaultForm);
   const [filterHost, setFilterHost] = useState<string>("all");
   const [filterType, setFilterType] = useState<string>("all");
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
+  const [copySourceHostId, setCopySourceHostId] = useState<string>("");
+  const [copyTargetHostIds, setCopyTargetHostIds] = useState<number[]>([]);
+  const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
+  const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("skip");
 
   // 权限检查：管理员或有 canAddRules 权限
   const canAdd = user?.role === "admin" || user?.canAddRules === true;
@@ -193,6 +199,19 @@ function RulesContent() {
       toast.success("规则已删除");
     },
     onError: (err) => toast.error(err.message || "删除失败"),
+  });
+
+  const copyMutation = trpc.rules.copyToHosts.useMutation({
+    onSuccess: (data) => {
+      utils.rules.list.invalidate();
+      const copied = data.copied.length;
+      const skipped = data.skipped.length;
+      toast.success(`已复制 ${copied} 条规则${skipped ? `，跳过 ${skipped} 条` : ""}`);
+      setShowCopyDialog(false);
+      setCopyRuleIds([]);
+      setCopyTargetHostIds([]);
+    },
+    onError: (err) => toast.error(err.message || "复制失败"),
   });
 
   // 近 24h 按规则汇总的流量
@@ -280,6 +299,21 @@ function RulesContent() {
       });
     }
     setShowDialog(true);
+  };
+
+  const openCopyDialog = () => {
+    if (!canAdd) {
+      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
+      return;
+    }
+    const initialHostId = filterHost !== "all"
+      ? filterHost
+      : hosts?.[0]?.id ? String(hosts[0].id) : "";
+    setCopySourceHostId(initialHostId);
+    setCopyTargetHostIds([]);
+    setCopyRuleIds([]);
+    setCopyConflictStrategy("skip");
+    setShowCopyDialog(true);
   };
 
   const openEdit = (rule: any) => {
@@ -385,6 +419,14 @@ function RulesContent() {
     () => rules?.filter((r) => r.isEnabled && isRuleSupported(r)).length ?? 0,
     [isRuleSupported, rules]
   );
+  const copyableSourceRules = useMemo(() => {
+    if (!rules || !copySourceHostId) return [];
+    return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
+  }, [copySourceHostId, rules]);
+  const copyTargetHosts = useMemo(() => {
+    if (!hosts) return [];
+    return hosts.filter((host: any) => String(host.id) !== copySourceHostId);
+  }, [copySourceHostId, hosts]);
 
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
 
@@ -452,6 +494,30 @@ function RulesContent() {
     } catch (err: any) {
       toast.error(err.message || "无法获取随机端口");
     }
+  };
+
+  const toggleCopyRule = (ruleId: number, checked: boolean) => {
+    setCopyRuleIds((prev) => checked ? Array.from(new Set([...prev, ruleId])) : prev.filter((id) => id !== ruleId));
+  };
+
+  const toggleCopyTargetHost = (hostId: number, checked: boolean) => {
+    setCopyTargetHostIds((prev) => checked ? Array.from(new Set([...prev, hostId])) : prev.filter((id) => id !== hostId));
+  };
+
+  const handleCopyRules = () => {
+    if (copyRuleIds.length === 0) {
+      toast.error("请选择要复制的规则");
+      return;
+    }
+    if (copyTargetHostIds.length === 0) {
+      toast.error("请选择目标主机");
+      return;
+    }
+    copyMutation.mutate({
+      ruleIds: copyRuleIds,
+      targetHostIds: copyTargetHostIds,
+      conflictStrategy: copyConflictStrategy,
+    });
   };
 
   const handleSubmit = () => {
@@ -728,6 +794,16 @@ function RulesContent() {
             <Zap className="h-3 w-3 text-chart-2" />
             {activeCount} / {rules?.length ?? 0} 活跃
           </Badge>
+          <Button
+            variant="outline"
+            onClick={openCopyDialog}
+            className="gap-2"
+            disabled={!canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
+            title={!canAdd ? "需要管理员授权后才能复制规则" : undefined}
+          >
+            <ClipboardCopy className="h-4 w-4" />
+            复制规则
+          </Button>
           {canAdd ? (
             <Button onClick={openCreate} className="gap-2" disabled={!hosts || hosts.length === 0 || (usableForwardTypes.length === 0 && !canUseGost)}>
               <Plus className="h-4 w-4" />
@@ -1097,7 +1173,7 @@ function RulesContent() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" ? "sm:grid-cols-2" : ""}`}>
               <div className="space-y-2">
                 <Label>规则名称</Label>
                 <Input
@@ -1106,13 +1182,9 @@ function RulesContent() {
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-2">
-                <Label>所属主机</Label>
-                {form.routeMode === "tunnel" ? (
-                  <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
-                    {selectedTunnel ? getHostName(selectedTunnel.entryHostId) : "选择隧道后自动确定"}
-                  </div>
-                ) : (
+              {form.routeMode === "local" && (
+                <div className="space-y-2">
+                  <Label>所属主机</Label>
                   <Select
                     value={form.hostId ? String(form.hostId) : ""}
                     onValueChange={(v) => setForm({ ...form, hostId: parseInt(v), tunnelId: null })}
@@ -1125,18 +1197,14 @@ function RulesContent() {
                       ))}
                     </SelectContent>
                   </Select>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>转发工具</Label>
-                {form.routeMode === "tunnel" ? (
-                  <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm text-muted-foreground">
-                    {selectedTunnelDisplay.toolLabel}
-                  </div>
-                ) : (
+            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" ? "sm:grid-cols-2" : ""}`}>
+              {form.routeMode === "local" && (
+                <div className="space-y-2">
+                  <Label>转发工具</Label>
                   <Select
                     value={form.forwardType}
                     onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: "direct", gostRelayHost: "", gostRelayPort: 0, tunnelId: null })}
@@ -1148,8 +1216,8 @@ function RulesContent() {
                       ))}
                     </SelectContent>
                   </Select>
-                )}
-              </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>协议</Label>
                 <Select value={form.protocol} onValueChange={(v) => setForm({ ...form, protocol: v as any })}>
@@ -1257,6 +1325,130 @@ function RulesContent() {
               disabled={isPending || !form.name || !form.hostId || !form.targetIp || !form.targetPort || portStatus === "used" || (form.routeMode === "local" && usableForwardTypes.length === 0) || (form.routeMode === "tunnel" && !form.tunnelId)}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showCopyDialog} onOpenChange={setShowCopyDialog}>
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>复制转发规则</DialogTitle>
+            <DialogDescription>从一台主机选择已有端口转发规则，复制到一台或多台目标主机。</DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>源主机</Label>
+                <Select
+                  value={copySourceHostId}
+                  onValueChange={(value) => {
+                    setCopySourceHostId(value);
+                    setCopyRuleIds([]);
+                    setCopyTargetHostIds((prev) => prev.filter((id) => String(id) !== value));
+                  }}
+                >
+                  <SelectTrigger><SelectValue placeholder="选择源主机" /></SelectTrigger>
+                  <SelectContent>
+                    {hosts?.map((host: any) => (
+                      <SelectItem key={host.id} value={String(host.id)}>{host.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>端口冲突处理</Label>
+                <Select value={copyConflictStrategy} onValueChange={(value) => setCopyConflictStrategy(value as any)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="skip">跳过冲突规则</SelectItem>
+                    <SelectItem value="auto">自动分配新端口</SelectItem>
+                    <SelectItem value="error">遇到冲突时报错</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>选择规则</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setCopyRuleIds(copyableSourceRules.map((rule: any) => Number(rule.id)))}
+                    disabled={copyableSourceRules.length === 0}
+                  >
+                    全选
+                  </Button>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {copyableSourceRules.length > 0 ? copyableSourceRules.map((rule: any) => (
+                    <label key={rule.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/60 p-2">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={copyRuleIds.includes(Number(rule.id))}
+                        onChange={(e) => toggleCopyRule(Number(rule.id), e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{rule.name}</span>
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {rule.forwardType} / {rule.protocol}
+                        </span>
+                      </span>
+                    </label>
+                  )) : (
+                    <div className="py-10 text-center text-sm text-muted-foreground">该主机没有可复制的端口转发规则</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>目标主机</Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setCopyTargetHostIds(copyTargetHosts.map((host: any) => Number(host.id)))}
+                    disabled={copyTargetHosts.length === 0}
+                  >
+                    全选
+                  </Button>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {copyTargetHosts.length > 0 ? copyTargetHosts.map((host: any) => (
+                    <label key={host.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/60 p-2">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={copyTargetHostIds.includes(Number(host.id))}
+                        onChange={(e) => toggleCopyTargetHost(Number(host.id), e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{host.name}</span>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">{host.entryIp || host.ip || "-"}</span>
+                      </span>
+                    </label>
+                  )) : (
+                    <div className="py-10 text-center text-sm text-muted-foreground">没有可选目标主机</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <p className="text-xs leading-5 text-muted-foreground">
+              只复制普通端口转发规则；运行状态、流量统计、自测记录不会复制。隧道转发规则请在目标隧道上单独创建。
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCopyDialog(false)}>取消</Button>
+            <Button onClick={handleCopyRules} disabled={copyMutation.isPending || copyRuleIds.length === 0 || copyTargetHostIds.length === 0}>
+              {copyMutation.isPending ? "复制中..." : "开始复制"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -56,6 +56,8 @@ import {
   Pencil,
   FileText,
   Eye,
+  Cloud,
+  UserPlus,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRef, useState, useEffect } from "react";
@@ -1325,10 +1327,18 @@ function SystemInfoSection() {
     refetchInterval: 1000,
   });
   const [panelUrlInput, setPanelUrlInput] = useState("");
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [homepageEnabled, setHomepageEnabled] = useState(true);
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
+  const [ddnsEnabled, setDdnsEnabled] = useState(false);
+  const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
+  const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
+  const [ddnsCloudflareApiToken, setDdnsCloudflareApiToken] = useState("");
+  const [ddnsWebhookUrl, setDdnsWebhookUrl] = useState("");
+  const [ddnsWebhookMethod, setDdnsWebhookMethod] = useState<"POST" | "PUT" | "GET">("POST");
+  const [ddnsWebhookHeaders, setDdnsWebhookHeaders] = useState("");
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [migrationCode, setMigrationCode] = useState<{
     code: string;
@@ -1353,10 +1363,17 @@ function SystemInfoSection() {
   useEffect(() => {
     if (settings) {
       setPanelUrlInput(settings.panelPublicUrl || "");
+      setRegistrationEnabled(settings.registrationEnabled ?? true);
       setHomepageEnabled(settings.homepageEnabled ?? true);
       setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
       setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
+      setDdnsEnabled(!!settings.ddns?.enabled);
+      setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
+      setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
+      setDdnsWebhookUrl(settings.ddns?.webhookUrl || "");
+      setDdnsWebhookMethod((settings.ddns?.webhookMethod === "PUT" || settings.ddns?.webhookMethod === "GET") ? settings.ddns.webhookMethod : "POST");
+      setDdnsWebhookHeaders(settings.ddns?.webhookHeaders || "");
     }
   }, [settings]);
 
@@ -1400,8 +1417,28 @@ function SystemInfoSection() {
     updateSettingsMutation.mutate({ panelPublicUrl: v });
   };
 
+  const handleSaveRegistration = () => {
+    updateSettingsMutation.mutate({ registrationEnabled });
+  };
+
   const handleSaveHomepage = () => {
     updateSettingsMutation.mutate({ homepageEnabled, homepageCustomEnabled, homepageHtml });
+  };
+
+  const handleSaveDdns = () => {
+    updateSettingsMutation.mutate({
+      ddns: {
+        enabled: ddnsEnabled,
+        provider: ddnsProvider,
+        cloudflareZoneId: ddnsCloudflareZoneId,
+        cloudflareApiToken: ddnsCloudflareApiToken.trim() || undefined,
+        webhookUrl: ddnsWebhookUrl,
+        webhookMethod: ddnsWebhookMethod,
+        webhookHeaders: ddnsWebhookHeaders,
+      },
+    }, {
+      onSuccess: () => setDdnsCloudflareApiToken(""),
+    });
   };
 
   const resetForwardProtocolDraft = () => {
@@ -1568,6 +1605,129 @@ function SystemInfoSection() {
           <p className="text-xs text-muted-foreground">
             留空使用面板访问请求中的 host 作为默认值。必须以 http:// 或 https:// 开头。
           </p>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <UserPlus className="h-4 w-4 text-primary" />
+            用户注册
+          </CardTitle>
+          <CardDescription>
+            控制访客是否可以自行注册账号。关闭后只能由管理员在用户管理中新增用户。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+            <div>
+              <p className="text-sm font-medium">开放注册</p>
+              <p className="text-xs text-muted-foreground">
+                关闭后，登录页和首页点击注册会提示“当前注册未开放，请联系管理员”。
+              </p>
+            </div>
+            <Switch checked={registrationEnabled} onCheckedChange={setRegistrationEnabled} />
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleSaveRegistration} disabled={updateSettingsMutation.isPending}>
+              {updateSettingsMutation.isPending ? "保存中..." : "保存注册设置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Cloud className="h-4 w-4 text-primary" />
+            DDNS 服务商
+          </CardTitle>
+          <CardDescription>
+            转发组故障转移会使用这里的配置更新域名记录。Cloudflare 可直接更新 DNS，Webhook 可对接任意自建 DDNS 服务。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">启用 DDNS</p>
+                <p className="text-xs text-muted-foreground">关闭时只检测健康状态，不更新域名。</p>
+              </div>
+              <Switch checked={ddnsEnabled} onCheckedChange={setDdnsEnabled} />
+            </div>
+            <div className="space-y-2 lg:col-span-2">
+              <Label>服务商</Label>
+              <Select value={ddnsProvider} onValueChange={(v) => setDdnsProvider(v as any)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="disabled">不使用</SelectItem>
+                  <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                  <SelectItem value="webhook">自定义 Webhook</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {ddnsProvider === "cloudflare" && (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Zone ID</Label>
+                <Input value={ddnsCloudflareZoneId} onChange={(e) => setDdnsCloudflareZoneId(e.target.value)} placeholder="Cloudflare Zone ID" />
+              </div>
+              <div className="space-y-2">
+                <Label>API Token</Label>
+                <Input
+                  value={ddnsCloudflareApiToken}
+                  onChange={(e) => setDdnsCloudflareApiToken(e.target.value)}
+                  placeholder={settings?.ddns?.cloudflareTokenMasked || "需要 DNS Edit 权限"}
+                  type="password"
+                />
+                <p className="text-xs text-muted-foreground">留空则保留已保存 Token。</p>
+              </div>
+            </div>
+          )}
+
+          {ddnsProvider === "webhook" && (
+            <div className="space-y-3">
+              <div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)]">
+                <div className="space-y-2">
+                  <Label>请求方法</Label>
+                  <Select value={ddnsWebhookMethod} onValueChange={(v) => setDdnsWebhookMethod(v as any)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="POST">POST</SelectItem>
+                      <SelectItem value="PUT">PUT</SelectItem>
+                      <SelectItem value="GET">GET</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Webhook URL</Label>
+                  <Input
+                    value={ddnsWebhookUrl}
+                    onChange={(e) => setDdnsWebhookUrl(e.target.value)}
+                    placeholder="https://ddns.example.com/update?domain={{domain}}&value={{value}}"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>请求头</Label>
+                <Textarea
+                  value={ddnsWebhookHeaders}
+                  onChange={(e) => setDdnsWebhookHeaders(e.target.value)}
+                  placeholder='{"Authorization":"Bearer xxx"}'
+                  className="min-h-20 font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">支持 JSON 对象或每行一个 Header。POST/PUT 会发送 domain、recordType、value、groupId。</p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <Button onClick={handleSaveDdns} disabled={updateSettingsMutation.isPending}>
+              {updateSettingsMutation.isPending ? "保存中..." : "保存 DDNS 配置"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

@@ -11,6 +11,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Hosts from "./pages/Hosts";
 import Rules from "./pages/Rules";
+import ForwardGroups from "./pages/ForwardGroups";
 import Tunnels from "./pages/Tunnels";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
@@ -42,6 +43,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/hosts">{() => <AdminRoute component={Hosts} />}</Route>
       <Route path="/rules" component={Rules} />
+      <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroups} />}</Route>
       <Route path="/tunnels">{() => <AdminRoute component={Tunnels} />}</Route>
       <Route path="/users">{() => <AdminRoute component={Users} />}</Route>
       <Route path="/email-settings">{() => <AdminRoute component={EmailSettings} />}</Route>
