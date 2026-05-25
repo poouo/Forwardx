@@ -5,7 +5,7 @@
 ForwardX 是一个面向 Linux 多主机环境的转发与隧道编排平台。它通过 Agent 管理主机、隧道、转发规则、转发组、用户权限和流量数据，适合把多台服务器统一组织成可观测、可切换、可授权的网络入口。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.04-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.05-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -231,7 +231,7 @@ ForwardX 支持两类隧道：
 | `MYSQL_SSL` | `false` | MySQL 是否启用 SSL |
 | `JWT_SECRET` | `change-me-to-a-random-string` | 登录签名密钥，生产环境必须修改 |
 | `TELEGRAM_BOT_TOKEN` | 空 | Telegram 机器人 Token |
-| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.3.04` |
+| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.3.05` |
 
 ## 手动 Docker Compose
 
@@ -245,7 +245,7 @@ docker compose -p forwardx up -d --build
 
 ```bash
 git fetch --force --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*"
-git checkout v2.3.04
+git checkout v2.3.05
 docker compose -p forwardx up -d --build --remove-orphans
 ```
 

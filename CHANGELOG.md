@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.05] - 2026-05-25
+
+### Added
+
+- Added a Telegram settings reminder that Telegram quick login requires a BotFather domain configuration.
+
+### Changed
+
+- Replaced Telegram quick-login widget domain errors on the login page with Chinese guidance before loading the widget.
+- Bumped panel version to 2.3.05. Agent version remains 2.2.49.
+
 ## [2.3.04] - 2026-05-25
 
 ### Fixed

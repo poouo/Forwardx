@@ -17,6 +17,26 @@ function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
+function getTelegramLoginDomainStatus() {
+  if (typeof window === "undefined") {
+    return { valid: false, message: "正在检测当前访问地址..." };
+  }
+  const { protocol, hostname } = window.location;
+  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  const isIpAddress = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
+
+  if (isLocalhost) {
+    return { valid: false, message: "Telegram 快捷登录需要使用在 BotFather 里配置过的正式域名，本地地址仅适合调试账号密码登录。" };
+  }
+  if (protocol !== "https:" && !isLocalhost) {
+    return { valid: false, message: "Telegram 快捷登录需要使用已配置域名的 HTTPS 地址访问面板。" };
+  }
+  if (isIpAddress) {
+    return { valid: false, message: "Telegram 快捷登录不支持直接使用 IP 访问，请使用在 BotFather 里配置过的域名打开面板。" };
+  }
+  return { valid: true, message: "" };
+}
+
 type TelegramLoginPayload = {
   id: string | number;
   first_name?: string;
@@ -165,7 +185,8 @@ export default function Login() {
 
   const telegramBotUsername = telegramLoginStatus?.botUsername?.replace(/^@/, "").trim();
   const showTelegramLogin = mode === "login" && !!telegramLoginStatus?.enabled && !!telegramLoginStatus?.configured;
-  const canRenderTelegramWidget = showTelegramLogin && !!telegramBotUsername;
+  const telegramDomainStatus = getTelegramLoginDomainStatus();
+  const canRenderTelegramWidget = showTelegramLogin && !!telegramBotUsername && telegramDomainStatus.valid;
 
   useEffect(() => {
     const container = telegramWidgetRef.current;
@@ -410,6 +431,10 @@ export default function Login() {
                         ref={telegramWidgetRef}
                         className={`flex min-h-11 justify-center ${telegramWidgetLoginMutation.isPending ? "pointer-events-none opacity-60" : ""}`}
                       />
+                    ) : !telegramDomainStatus.valid ? (
+                      <p className="text-center text-xs leading-5 text-muted-foreground">
+                        {telegramDomainStatus.message}
+                      </p>
                     ) : (
                       <p className="text-center text-xs text-muted-foreground">Telegram 机器人用户名同步后即可使用。</p>
                     )}

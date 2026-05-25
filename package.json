@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.04",
+  "version": "2.3.05",
   "description": "ForwardX forwarding and tunnel orchestration platform",
   "private": true,
   "type": "module",

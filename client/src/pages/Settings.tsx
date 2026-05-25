@@ -1214,6 +1214,14 @@ function TelegramBotSettingsCard() {
                 </div>
               </div>
             </div>
+            <Alert>
+              <Globe className="h-4 w-4" />
+              <AlertTitle>Telegram 快捷登录需要配置域名</AlertTitle>
+              <AlertDescription>
+                如需在登录页使用 Telegram 快捷登录，请先在「系统信息」里填写面板公开访问地址，并到 @BotFather 使用 /setdomain
+                为当前机器人绑定同一个域名。未配置域名时，绑定、提醒和机器人命令仍可使用，但快捷登录不会生效。
+              </AlertDescription>
+            </Alert>
             <div className="grid gap-3 lg:grid-cols-2">
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">
