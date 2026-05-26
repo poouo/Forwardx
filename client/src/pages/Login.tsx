@@ -347,7 +347,7 @@ export default function Login() {
   const savePanelUrl = () => {
     const normalized = mobileAuth.normalizePanelUrl(panelUrlDraft);
     if (!mobileAuth.isValidPanelUrl(normalized)) {
-      toast.error("请输入完整面板地址，例如 http://45.129.9.159:3000");
+      toast.error("请输入完整面板地址，例如 https://panel.example.com");
       return;
     }
     mobileAuth.setPanelUrl(normalized);
@@ -402,7 +402,7 @@ export default function Login() {
           </div>
           <CardTitle className="text-xl sm:text-2xl font-bold tracking-tight">ForwardX</CardTitle>
           <CardDescription className="text-muted-foreground">
-            {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "端口转发集中管理面板" : "注册新账号"}
+            {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "多主机转发管理" : "注册账号"}
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-4">
@@ -725,13 +725,13 @@ export default function Login() {
         <Dialog open={showPanelSettings} onOpenChange={setShowPanelSettings}>
           <DialogContent className="w-[calc(100vw-2rem)] max-w-sm">
             <DialogTitle>面板地址</DialogTitle>
-            <DialogDescription>验证码、登录和后台请求都会使用这个地址。</DialogDescription>
+            <DialogDescription>APP 会通过这个地址连接面板。</DialogDescription>
             <div className="space-y-2">
               <Label htmlFor="mobile-panel-url">面板地址</Label>
               <Input
                 id="mobile-panel-url"
                 type="url"
-                placeholder="http://45.129.9.159:3000"
+                placeholder="https://panel.example.com"
                 value={panelUrlDraft}
                 onChange={(e) => setPanelUrlDraft(e.target.value)}
                 autoComplete="url"

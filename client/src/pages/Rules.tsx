@@ -900,15 +900,15 @@ function RulesContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+        <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">转发规则</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
-            管理端口转发规则，支持 iptables、nftables、realm、socat 和 gost
+            管理端口、隧道和转发组规则
           </p>
         </div>
-        <div className="flex items-center gap-2 sm:gap-3">
-          <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
+          <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
             {activeCount} / {rules?.length ?? 0} 活跃
           </Badge>
@@ -923,12 +923,12 @@ function RulesContent() {
             复制规则
           </Button>
           {canAdd ? (
-            <Button onClick={openCreate} className="gap-2" disabled={!hosts || hosts.length === 0 || (usableForwardTypes.length === 0 && !canUseGost)}>
+            <Button onClick={openCreate} className="col-span-2 gap-2 sm:col-span-1" disabled={!hosts || hosts.length === 0 || (usableForwardTypes.length === 0 && !canUseGost)}>
               <Plus className="h-4 w-4" />
               添加规则
             </Button>
           ) : (
-            <Button disabled className="gap-2" title="需要管理员授权后才能添加规则">
+            <Button disabled className="col-span-2 gap-2 sm:col-span-1" title="需要管理员授权后才能添加规则">
               <Plus className="h-4 w-4" />
               添加规则
             </Button>
@@ -944,13 +944,13 @@ function RulesContent() {
       )}
 
       {rules && rules.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">筛选:</span>
           </div>
           <Select value={filterHost} onValueChange={setFilterHost}>
-            <SelectTrigger className="w-[160px] h-8 text-xs">
+            <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
               <SelectValue placeholder="所有主机" />
             </SelectTrigger>
             <SelectContent>
@@ -970,7 +970,7 @@ function RulesContent() {
             </SelectContent>
           </Select>
           <Select value={filterType} onValueChange={setFilterType}>
-            <SelectTrigger className="w-[140px] h-8 text-xs">
+            <SelectTrigger className="h-8 w-full text-xs sm:w-[140px]">
               <SelectValue placeholder="所有类型" />
             </SelectTrigger>
             <SelectContent>
@@ -989,30 +989,30 @@ function RulesContent() {
       {/* 近 24 小时转发流量汇总 */}
       <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <Card className="border-border/40">
-          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
-            <div>
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
+            <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 入向</p>
-              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{formatBytes(trafficTotals.bytesIn)}</p>
+              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesIn)}</p>
             </div>
-            <ArrowDownToLine className="h-4 w-4 sm:h-6 sm:w-6 text-chart-2" />
+            <ArrowDownToLine className="hidden h-4 w-4 shrink-0 text-chart-2 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
-            <div>
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
+            <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 出向</p>
-              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{formatBytes(trafficTotals.bytesOut)}</p>
+              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesOut)}</p>
             </div>
-            <ArrowUpFromLine className="h-4 w-4 sm:h-6 sm:w-6 text-chart-4" />
+            <ArrowUpFromLine className="hidden h-4 w-4 shrink-0 text-chart-4 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="p-3 sm:p-4 flex items-center justify-between">
-            <div>
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
+            <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 连接</p>
-              <p className="text-sm sm:text-xl font-semibold mt-0.5 sm:mt-1">{trafficTotals.connections.toLocaleString()}</p>
+              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{trafficTotals.connections.toLocaleString()}</p>
             </div>
-            <Activity className="h-4 w-4 sm:h-6 sm:w-6 text-chart-3" />
+            <Activity className="hidden h-4 w-4 shrink-0 text-chart-3 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
       </div>
@@ -1070,7 +1070,7 @@ function RulesContent() {
                     <div className="mt-3 rounded-md bg-muted/25 p-2">
                       {renderTransfer(rule, true)}
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                    <div className="mt-3 grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
                       <div>
                         <div className="mb-1 text-muted-foreground">链路</div>
                         {renderRouteBadge(rule)}
@@ -1079,7 +1079,7 @@ function RulesContent() {
                         <div className="mb-1 text-muted-foreground">协议</div>
                         <Badge variant="secondary" className="text-[10px] uppercase">{rule.protocol}</Badge>
                       </div>
-                      <div className="col-span-2">
+                      <div className="sm:col-span-2">
                         <div className="mb-1 text-muted-foreground">近 24h 流量</div>
                         {renderRuleTraffic(rule)}
                       </div>

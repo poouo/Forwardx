@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bell, Download, ExternalLink, Loader2, Smartphone } from "lucide-react";
+import { Bell, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,6 @@ import {
   defaultMobileNotificationSettings,
   getMobileNotificationSettings,
   normalizeMobileNotificationSettings,
-  openMobileReleasePage,
   saveMobileNotificationSettings,
   scheduleMobileReminders,
   type MobileReminderSnapshot,
@@ -23,7 +22,6 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
   const [settings, setSettings] = useState<MobileNotificationSettings>(defaultMobileNotificationSettings);
   const [trafficThresholdInput, setTrafficThresholdInput] = useState(String(defaultMobileNotificationSettings.trafficThresholdPercent));
   const [expiryDaysInput, setExpiryDaysInput] = useState(String(defaultMobileNotificationSettings.expiryDaysBefore));
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const normalizedSnapshot = useMemo(() => snapshot, [snapshot]);
 
   useEffect(() => {
@@ -65,18 +63,6 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
     }
   };
 
-  const checkUpdate = async () => {
-    setCheckingUpdate(true);
-    try {
-      const result = await checkMobileAppUpdate({ silent: false });
-      if (result && !result.hasUpdate) toast.success("当前 APK 已是最新版本");
-    } catch (error: any) {
-      toast.error(error?.message || "检查更新失败");
-    } finally {
-      setCheckingUpdate(false);
-    }
-  };
-
   const commitTrafficThreshold = () => {
     if (!trafficThresholdInput.trim()) {
       setTrafficThresholdInput(String(settings.trafficThresholdPercent));
@@ -98,7 +84,7 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
           <Smartphone className="h-4 w-4" />
-          安卓应用设置
+          APP 设置
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -107,9 +93,9 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
             <span className="min-w-0">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <Bell className="h-4 w-4" />
-                流量到期通知
+                流量提醒
               </span>
-              <span className="mt-1 block text-xs text-muted-foreground">默认关闭，剩余流量低于阈值后在指定时间提醒。</span>
+              <span className="mt-1 block text-xs text-muted-foreground">低于阈值时提醒。</span>
             </span>
             <Switch checked={settings.trafficEnabled} onCheckedChange={(trafficEnabled) => save({ ...settings, trafficEnabled })} />
           </label>
@@ -135,9 +121,9 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
             <span className="min-w-0">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <Bell className="h-4 w-4" />
-                套餐到期通知
+                到期提醒
               </span>
-              <span className="mt-1 block text-xs text-muted-foreground">默认关闭，在套餐到期前指定天数提醒。</span>
+              <span className="mt-1 block text-xs text-muted-foreground">到期前提醒。</span>
             </span>
             <Switch checked={settings.expiryEnabled} onCheckedChange={(expiryEnabled) => save({ ...settings, expiryEnabled })} />
           </label>
@@ -170,27 +156,11 @@ export default function MobileAppSettings({ snapshot }: { snapshot: MobileRemind
           </div>
           <label className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/35 p-3">
             <span className="min-w-0">
-              <span className="block text-sm font-medium">启动时自动检查 APK 更新</span>
-              <span className="mt-1 block text-xs text-muted-foreground">有新版本时会询问是否前往 GitHub 下载。</span>
+              <span className="block text-sm font-medium">自动检查更新</span>
+              <span className="mt-1 block text-xs text-muted-foreground">有新版本时提示下载。</span>
             </span>
             <Switch checked={settings.upgradeAutoCheck} onCheckedChange={(upgradeAutoCheck) => save({ ...settings, upgradeAutoCheck })} />
           </label>
-        </div>
-
-        <div className="flex flex-col gap-3 rounded-lg border border-border/50 bg-background/35 p-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium">APK 更新</p>
-            <p className="text-xs text-muted-foreground">可手动检查新版本，下载页会通过 GitHub 打开。</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" className="gap-2" onClick={checkUpdate} disabled={checkingUpdate}>
-              {checkingUpdate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              检查更新
-            </Button>
-            <Button variant="outline" size="icon" onClick={openMobileReleasePage} title="打开下载页">
-              <ExternalLink className="h-4 w-4" />
-            </Button>
-          </div>
         </div>
       </CardContent>
     </Card>

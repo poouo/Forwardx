@@ -327,9 +327,9 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   if (!plan.isActive) throw new Error("套餐已停用");
   const hostIds = (plan as any).hostIds || [];
   const tunnelIds = (plan as any).tunnelIds || [];
-  if (hostIds.length === 0 && tunnelIds.length === 0) throw new Error("濂楅鏈粦瀹氫换浣曚富鏈烘垨闅ч亾");
+  if (hostIds.length === 0 && tunnelIds.length === 0) throw new Error("套餐未绑定任何主机或隧道");
   const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds);
-  if (!block) throw new Error("濂楅鍙敤绔彛涓嶈冻锛屾棤娉曞垎閰嶈繛缁鍙ｆ");
+  if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const now = startsAt || new Date();
   const durationDays = Number(overrideDurationDays || plan.durationDays);
   const expiresAt = durationDays > 0 ? new Date(now.getTime() + durationDays * 24 * 3600 * 1000) : null;
@@ -598,7 +598,7 @@ export async function listBillingLedger(options?: {
 export async function addUserBalance(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("閲戦鏃犳晥");
+  if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("金额无效");
   const kind = getDatabaseKind();
   if (kind === "mysql") return addUserBalanceMysql(userId, amountCents, meta);
   if (kind === "sqlite") return addUserBalanceSqlite(userId, amountCents, meta);
@@ -607,17 +607,17 @@ export async function addUserBalance(userId: number, amountCents: number, meta: 
 
 export async function purchasePlanWithBalance(userId: number, planId: number, discountCodeId?: number | null) {
   const plan = await getSubscriptionPlanById(planId);
-  if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("濂楅涓嶅彲璐拱");
+  if (!plan || !plan.isActive || !plan.isStoreVisible) throw new Error("套餐不可购买");
   const discount = discountCodeId ? await getDiscountCodeById(discountCodeId) : null;
   if (discount) {
     const allowedPlanIds = Array.isArray((discount as any).planIds) ? (discount as any).planIds.map(Number) : [];
     if (allowedPlanIds.length > 0 && !allowedPlanIds.includes(Number(planId))) {
-      throw new Error("鎶樻墸鐮佷笉閫傜敤浜庤濂楅");
+      throw new Error("折扣码不适用于该套餐");
     }
   }
   const amountCents = calculateDiscountedAmount(Number(plan.priceCents || 0), discount);
   const balance = await getUserBalance(userId);
-  if (balance < amountCents) throw new Error("浣欓涓嶈冻");
+  if (balance < amountCents) throw new Error("余额不足");
   const result = await applySubscriptionToUser(userId, planId, "balance", null);
   if (amountCents > 0) {
     await addUserBalance(userId, -amountCents, {
@@ -784,7 +784,7 @@ export function discountCodeStatus(code: any) {
 export function calculateDiscountedAmount(amountCents: number, code: any | null | undefined) {
   const amount = Math.max(0, Math.round(amountCents));
   if (!code) return amount;
-  if (discountCodeStatus(code) !== "active") throw new Error("鎶樻墸鐮佷笉鍙敤");
+  if (discountCodeStatus(code) !== "active") throw new Error("折扣码不可用");
   if (code.discountType === "percent") {
     const pct = Math.max(0, Math.min(100, Number(code.discountValue || 0)));
     return Math.max(0, Math.round(amount * (100 - pct) / 100));
@@ -795,10 +795,10 @@ export function calculateDiscountedAmount(amountCents: number, code: any | null 
 
 export async function previewDiscount(code: string, amountCents: number, planId?: number | null) {
   const item = await getDiscountCodeByCode(code);
-  if (!item) throw new Error("鎶樻墸鐮佷笉瀛樺湪");
+  if (!item) throw new Error("折扣码不存在");
   const allowedPlanIds = Array.isArray((item as any).planIds) ? (item as any).planIds.map(Number) : [];
   if (allowedPlanIds.length > 0 && (!planId || !allowedPlanIds.includes(Number(planId)))) {
-    throw new Error("鎶樻墸鐮佷笉閫傜敤浜庤濂楅");
+    throw new Error("折扣码不适用于该套餐");
   }
   const finalAmountCents = calculateDiscountedAmount(amountCents, item);
   return {

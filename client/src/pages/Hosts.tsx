@@ -203,11 +203,11 @@ function HostCard({
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
       <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <CardTitle className="min-w-0 text-base font-semibold">
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
               <Monitor className="h-4 w-4 shrink-0" />
-              <span className="truncate">{host.name}</span>
+              <span className="min-w-0 max-w-full truncate">{host.name}</span>
               <span className="shrink-0 rounded border border-border/50 px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
                 {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
               </span>
@@ -223,7 +223,7 @@ function HostCard({
               )}
             </span>
           </CardTitle>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center justify-end gap-1">
             <Button
               variant="ghost"
               size="icon"
@@ -295,7 +295,7 @@ function HostCard({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
-                <span className="font-medium tabular-nums">
+                <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
                   {latestMetric.memoryUsed && host.memoryTotal
                     ? `${formatBytes(latestMetric.memoryUsed)} / ${formatBytes(host.memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
                     : `${latestMetric.memoryUsage ?? 0}%`}
@@ -307,7 +307,7 @@ function HostCard({
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
-                <span className="font-medium tabular-nums">
+                <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
                   {diskUsed !== null && diskTotal
                     ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
                     : `-- / -- (${latestMetric.diskUsage ?? 0}%)`}
@@ -316,7 +316,7 @@ function HostCard({
               <Progress value={latestMetric.diskUsage ?? 0} className="h-1.5" />
             </div>
             {/* 流量 */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
               <div className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ArrowDownToLine className="h-3 w-3" />
@@ -562,21 +562,21 @@ function HostsContent() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">主机管理</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            管理主控机和被控机，监控运行状态
+            管理 Agent 主机和运行状态
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
+          <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
             {onlineCount} / {hosts?.length ?? 0} 在线
           </Badge>
           {/* 布局切换按钮 */}
           {updateCount > 0 && (
-            <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs border-amber-500/30 text-amber-500">
+            <Badge variant="outline" className="justify-center gap-1.5 border-amber-500/30 px-3 py-1.5 text-xs text-amber-500">
               <AlertTriangle className="h-3 w-3" />
               {updateCount} 台发现新版本
             </Badge>
@@ -584,14 +584,14 @@ function HostsContent() {
           <Button
             variant="outline"
             size="sm"
-            className="gap-2"
+            className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
             disabled={checkingAgentUpdate}
             onClick={handleCheckAgentUpdate}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
             检查 Agent 更新
           </Button>
-          <div className="flex items-center border border-border/40 rounded-md overflow-hidden">
+          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}
               size="icon"
@@ -609,7 +609,7 @@ function HostsContent() {
               <List className="h-4 w-4" />
             </Button>
           </div>
-          <Button onClick={() => setLocation("/settings")} className="gap-2">
+          <Button onClick={() => setLocation("/settings")} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
             <Plus className="h-4 w-4" />
             添加主机
           </Button>
@@ -626,7 +626,7 @@ function HostsContent() {
       ) : hosts && hosts.length > 0 ? (
         viewMode === "card" ? (
           /* ========== 卡片式布局 ========== */
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {hosts.map((host) => (
               <HostCard
                 key={host.id}
@@ -642,9 +642,24 @@ function HostsContent() {
           </div>
         ) : (
           /* ========== 表格式布局 ========== */
-          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:hidden">
+              {hosts.map((host) => (
+                <HostCard
+                  key={host.id}
+                  host={host}
+                  onEdit={openEdit}
+                  onDelete={(id) => deleteMutation.mutate({ id })}
+                  onUpgrade={requestAgentUpgrade}
+                  canUpgrade={user?.role === "admin"}
+                  latestAgentVersion={latestAgentVersion}
+                  refreshInterval={hostRefreshInterval}
+                />
+              ))}
+            </div>
+            <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
@@ -772,9 +787,10 @@ function HostsContent() {
                     ))}
                   </TableBody>
                 </Table>
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              </CardContent>
+            </Card>
+          </>
         )
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">

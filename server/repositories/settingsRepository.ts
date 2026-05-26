@@ -4,7 +4,7 @@ import { executeRaw, getDatabaseKind, getDb } from "../dbRuntime";
 
 // ==================== System Settings (key-value) ====================
 
-/** 璇诲彇鍗曚釜绯荤粺璁剧疆锛涗笉瀛樺湪杩斿洖 null */
+/** 读取单个系统设置；不存在返回 null */
 export async function getSetting(key: string): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;
@@ -12,7 +12,7 @@ export async function getSetting(key: string): Promise<string | null> {
   return r[0]?.value ?? null;
 }
 
-/** 鎵归噺璇诲彇鎵€鏈夌郴缁熻缃?*/
+/** 批量读取所有系统设置 */
 export async function getAllSettings(): Promise<Record<string, string | null>> {
   const db = await getDb();
   if (!db) return {};
@@ -22,7 +22,7 @@ export async function getAllSettings(): Promise<Record<string, string | null>> {
   return out;
 }
 
-/** UPSERT 鍗曚釜绯荤粺璁剧疆 */
+/** UPSERT 单个系统设置 */
 export async function setSetting(key: string, value: string | null): Promise<void> {
   const db = await getDb();
   if (!db) return;
@@ -39,7 +39,7 @@ export async function setSetting(key: string, value: string | null): Promise<voi
     );
   }
 }
-/** 鎵归噺 UPSERT */
+/** 批量 UPSERT */
 export async function setSettings(map: Record<string, string | null>): Promise<void> {
   for (const [k, v] of Object.entries(map)) {
     await setSetting(k, v);

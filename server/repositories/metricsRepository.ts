@@ -37,7 +37,10 @@ export async function insertTrafficStat(stat: InsertTrafficStat) {
 export async function getTrafficStats(ruleId: number, limit = 60) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(trafficStats).where(eq(trafficStats.ruleId, ruleId)).orderBy(desc(trafficStats.recordedAt)).limit(limit);
+  const rule = await getRuleWithCreatedAt(ruleId);
+  const conds: any[] = [eq(trafficStats.ruleId, ruleId)];
+  if (rule?.createdAt) conds.push(gte(trafficStats.recordedAt, rule.createdAt));
+  return db.select().from(trafficStats).where(and(...conds)).orderBy(desc(trafficStats.recordedAt)).limit(limit);
 }
 
 async function getRuleIdsByUser(userId: number): Promise<number[]> {
@@ -45,6 +48,18 @@ async function getRuleIdsByUser(userId: number): Promise<number[]> {
   if (!db) return [];
   const rows = await db.select({ id: forwardRules.id }).from(forwardRules).where(eq(forwardRules.userId, userId));
   return rows.map((r) => Number(r.id));
+}
+
+async function getRuleWithCreatedAt(ruleId: number): Promise<{ id: number; createdAt: Date } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ id: forwardRules.id, createdAt: forwardRules.createdAt })
+    .from(forwardRules)
+    .where(eq(forwardRules.id, ruleId))
+    .limit(1);
+  const row = rows[0] as any;
+  return row ? { id: Number(row.id), createdAt: row.createdAt } : null;
 }
 
 export async function getTotalTraffic(userId?: number) {
@@ -96,15 +111,19 @@ export async function getTrafficSummaryByRule(opts: {
       bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
       connections: sql<number>`COALESCE(SUM(${trafficStats.connections}), 0)`,
     })
-    .from(trafficStats);
+    .from(trafficStats)
+    .innerJoin(forwardRules, and(
+      eq(forwardRules.id, trafficStats.ruleId),
+      sql`${trafficStats.recordedAt} >= ${forwardRules.createdAt}`,
+    ));
   const rows = await (conds.length ? baseQuery.where(and(...conds)) : baseQuery).groupBy(trafficStats.ruleId, trafficStats.hostId);
 
   let result = rows.map((r) => ({
-    ruleId: Number(r.ruleId),
-    hostId: Number(r.hostId),
-    bytesIn: Number(r.bytesIn) || 0,
-    bytesOut: Number(r.bytesOut) || 0,
-    connections: Number(r.connections) || 0,
+    ruleId: Number((r as any).ruleId),
+    hostId: Number((r as any).hostId),
+    bytesIn: Number((r as any).bytesIn) || 0,
+    bytesOut: Number((r as any).bytesOut) || 0,
+    connections: Number((r as any).connections) || 0,
   }));
 
   const groupChildIds = Array.from(new Set(result.map((r) => r.ruleId)));
@@ -149,7 +168,7 @@ export async function getTrafficSummaryByRule(opts: {
   return result;
 }
 
-/** 鎸夋椂闂村垎妗惰仛鍚堟煇鏉¤鍒欑殑娴侀噺搴忓垪 */
+/** 按时间分桶聚合某条规则的流量序列 */
 export async function getTrafficSeriesByRule(
   ruleId: number,
   opts: { bucketMinutes?: number; since?: Date } = {}
@@ -158,7 +177,9 @@ export async function getTrafficSeriesByRule(
   if (!db) return [] as Array<{ bucket: Date; bytesIn: number; bytesOut: number; connections: number }>;
   const bucket = clampPositiveInt(opts.bucketMinutes, 1, 60);
   const since = opts.since ?? new Date(Date.now() - 60 * 60 * 1000);
-  const sinceSec = Math.floor(since.getTime() / 1000);
+  const rule = await getRuleWithCreatedAt(ruleId);
+  const effectiveSince = rule?.createdAt && rule.createdAt > since ? rule.createdAt : since;
+  const sinceSec = Math.floor(effectiveSince.getTime() / 1000);
   const bucketSec = bucket * 60;
 
   const bucketExpr = sql.raw(`(FLOOR(recordedAt / ${bucketSec}) * ${bucketSec})`);
@@ -171,7 +192,7 @@ export async function getTrafficSeriesByRule(
       connections: sql<number>`COALESCE(SUM(${trafficStats.connections}), 0)`,
     })
     .from(trafficStats)
-    .where(and(eq(trafficStats.ruleId, ruleId), gte(trafficStats.recordedAt, since)))
+    .where(and(eq(trafficStats.ruleId, ruleId), gte(trafficStats.recordedAt, effectiveSince)))
     .groupBy(bucketExpr)
     .orderBy(asc(bucketExpr));
 
@@ -233,7 +254,7 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
   await db.insert(tcpingStats).values(stats);
 }
 
-/** 鑾峰彇鏌愭潯瑙勫垯鐨?TCPing 寤惰繜搴忓垪锛堟寜鏃堕棿鍗囧簭锛?*/
+/** 获取某条规则的 TCPing 延迟序列（按时间升序） */
 export async function insertTunnelLatencyStat(stat: InsertTunnelLatencyStat) {
   const db = await getDb();
   if (!db) return;
@@ -286,7 +307,7 @@ export async function getTcpingSeriesByRule(
   return rows;
 }
 
-/** 鑾峰彇鍏ㄥ眬 TCPing 寤惰繜搴忓垪锛堟墍鏈夎鍒欑殑骞冲潎寤惰繜锛屾寜鏃堕棿鍒嗘《锛?*/
+/** 获取全局 TCPing 延迟序列（所有规则的平均延迟，按时间分桶） */
 export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; since?: Date; userId?: number } = {}) {
   const db = await getDb();
   if (!db) return [] as Array<{ bucket: Date; avgLatency: number; maxLatency: number; minLatency: number; timeoutCount: number; totalCount: number }>;
@@ -327,7 +348,7 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
   }));
 }
 
-/** 娓呯悊杩囨湡鐨?TCPing 鏁版嵁锛堜繚鐣欐渶杩?N 灏忔椂锛?*/
+/** 清理过期的 TCPing 数据（保留最近 N 小时） */
 export async function cleanOldTcpingStats(retainHours: number = 48) {
   const db = await getDb();
   if (!db) return;

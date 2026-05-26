@@ -148,7 +148,7 @@ export async function updateTunnelTestResult(id: number, data: {
   }).where(eq(tunnels.id, id));
 }
 
-/** 妫€鏌ユ煇涓绘満涓婃煇绔彛鏄惁宸茶鍗犵敤 */
+/** 检查某主机上的某端口是否已被占用 */
 export async function isPortUsedOnHost(hostId: number, sourcePort: number, excludeRuleId?: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
@@ -162,13 +162,13 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
   return (Number(r[0]?.count) || 0) > 0;
 }
 
-/** 鍦ㄤ富鏈虹鍙ｅ尯闂村唴鎵句竴涓湭琚崰鐢ㄧ殑闅忔満绔彛 */
+/** 在主机端口区间内找一个未被占用的随机端口 */
 export async function findAvailablePort(hostId: number, rangeStart?: number | null, rangeEnd?: number | null): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
   const start = rangeStart ?? 10000;
   const end = rangeEnd ?? 65535;
-  // 鑾峰彇璇ヤ富鏈哄凡鍗犵敤鐨勭鍙?
+  // 获取该主机已占用的端口
   const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(
     eq(forwardRules.hostId, hostId),
     eq(forwardRules.isForwardGroupTemplate, false),
@@ -177,7 +177,7 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
   // 闅忔満灏濊瘯
   const range = end - start + 1;
   if (range <= 0) return null;
-  // 濡傛灉鍖洪棿涓嶅ぇ锛岀洿鎺ラ亶鍘嗘壘绌洪棽
+  // 如果区间不大，直接遍历找空闲
   if (range <= 10000) {
     const available: number[] = [];
     for (let p = start; p <= end; p++) {
@@ -186,7 +186,7 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
     if (available.length === 0) return null;
     return available[Math.floor(Math.random() * available.length)];
   }
-  // 鍖洪棿杈冨ぇ鏃堕殢鏈哄皾璇?
+  // 区间较大时随机尝试
   for (let i = 0; i < 100; i++) {
     const p = start + Math.floor(Math.random() * range);
     if (!usedPorts.has(p)) return p;

@@ -567,14 +567,14 @@ function TunnelsContent() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">隧道管理</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            使用两台 Agent 组建加密隧道，供转发规则复用
+            管理 Agent 之间的转发链路
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
+          <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-chart-2" />
             {activeCount} / {tunnels?.length ?? 0} 活跃
           </Badge>
@@ -599,7 +599,117 @@ function TunnelsContent() {
           </CardContent>
         </Card>
       ) : tunnels && tunnels.length > 0 ? (
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <>
+          <div className="grid gap-3 sm:hidden">
+            {tunnels.map((tunnel: any) => {
+              const supported = isTunnelSupported(tunnel);
+              const protocolKey = getTunnelProtocolKey(tunnel);
+              return (
+                <Card key={tunnel.id} className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
+                  <CardContent className="space-y-3 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-2">
+                        <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
+                          {!supported ? (
+                            <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />
+                          ) : tunnel.isRunning ? (
+                            <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
+                          ) : tunnel.isEnabled ? (
+                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />
+                          ) : (
+                            <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{tunnel.name}</p>
+                          {!supported && (
+                            <p className="mt-1 text-[11px] text-destructive">
+                              {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      {supported ? (
+                        <Switch
+                          checked={tunnel.isEnabled}
+                          onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
+                          className="scale-75"
+                        />
+                      ) : (
+                        renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
+                      )}
+                    </div>
+
+                    <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate">{getHostName(tunnel.entryHostId)}</span>
+                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 truncate">{getHostName(tunnel.exitHostId)}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant="outline" className="text-[10px]">
+                          {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
+                        </Badge>
+                        <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
+                        {String(tunnel.connectHost || "").trim() && (
+                          <span className="max-w-full truncate rounded bg-muted/50 px-1.5 py-0.5 text-muted-foreground" title={tunnel.connectHost || ""}>
+                            指定 {tunnel.connectHost || "-"}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="text-muted-foreground">延迟</span>
+                      {tunnel.lastTestStatus === "success" ? (
+                        <span className="flex items-center gap-1 text-emerald-600">
+                          <CheckCircle2 className="h-3 w-3" />
+                          {tunnel.lastLatencyMs}ms
+                        </span>
+                      ) : tunnel.lastTestStatus === "failed" ? (
+                        <span className="flex items-center gap-1 text-destructive">
+                          <XCircle className="h-3 w-3" />
+                          不可达
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">未测试</span>
+                      )}
+                    </div>
+
+                    <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                      {supported && (
+                        <>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title="查看延迟" onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
+                            <Activity className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" title="测试延迟" onClick={() => setTestTunnel({ id: tunnel.id, name: tunnel.name })}>
+                            <Stethoscope className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(tunnel)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        </>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        title={!supported ? unsupportedProtocolTitle : undefined}
+                        onClick={() => {
+                          if (confirm("确定要删除此隧道吗？关联转发规则会解除隧道绑定。")) {
+                            deleteMutation.mutate({ id: tunnel.id });
+                          }
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+          <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
@@ -737,6 +847,7 @@ function TunnelsContent() {
             </div>
           </CardContent>
         </Card>
+        </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardContent className="p-0">

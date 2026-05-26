@@ -98,11 +98,11 @@ export const users = table("users", {
   emailVerifiedAt: epoch("emailVerifiedAt"),
   displayRemark: text("displayRemark"),
   role: varchar("role", { length: 32 }).notNull().default("user"), // 'user' | 'admin'
-  // ===== 鏉冮檺鎺у埗 =====
-  canAddRules: boolean("canAddRules").notNull().default(false), // 鏄惁鍏佽娣诲姞杞彂瑙勫垯
-  maxRules: int("maxRules").notNull().default(0),       // 鏈€澶ц鍒欐潯鏁帮紝0 = 涓嶉檺鍒?
-  maxPorts: int("maxPorts").notNull().default(0),       // 鏈€澶х鍙ｆ暟锛? = 涓嶉檺鍒讹紙涓?maxRules 鐩稿悓姒傚康锛屼絾鍙嫭绔嬫帶鍒讹級
-  // 鍏佽浣跨敤鐨勮浆鍙戞柟寮忥紝閫楀彿鍒嗛殧锛?iptables,realm,socat"锛沶ull 鎴栫┖涓?= 鍏ㄩ儴鍏佽
+  // ===== 权限控制 =====
+  canAddRules: boolean("canAddRules").notNull().default(false), // 是否允许添加转发规则
+  maxRules: int("maxRules").notNull().default(0),       // 最大规则条数，0 = 不限制
+  maxPorts: int("maxPorts").notNull().default(0),       // 最大端口数，0 = 不限制（与 maxRules 相同概念，但可独立控制）
+  // 允许使用的转发方式，逗号分隔，如 "iptables,realm,socat"；null 或空串 = 全部允许
   allowedForwardTypes: text("allowedForwardTypes"),
   allowForwardXTunnel: boolean("allowForwardXTunnel").notNull().default(false),
   gostRateLimitIn: int("gostRateLimitIn").notNull().default(0),
@@ -110,13 +110,13 @@ export const users = table("users", {
   maxConnections: int("maxConnections").notNull().default(0),
   maxIPs: int("maxIPs").notNull().default(0),
   balanceCents: bigint("balanceCents", { mode: "number" }).notNull().default(0),
-  // ===== 娴侀噺绠＄悊瀛楁 =====
-  trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),           // 娴侀噺棰濆害锛堝瓧鑺傦級锛? = 涓嶉檺鍒?
-  trafficUsed: bigint("trafficUsed", { mode: "number" }).notNull().default(0),             // 宸茬敤娴侀噺锛堝瓧鑺傦級
-  expiresAt: epoch("expiresAt"),               // 鍒版湡鏃堕棿锛宯ull = 姘镐笉杩囨湡
-  trafficAutoReset: boolean("trafficAutoReset").notNull().default(false), // 鏈堝害鑷姩閲嶇疆寮€鍏?
-  trafficResetDay: int("trafficResetDay").notNull().default(1),     // 姣忔湀閲嶇疆鏃ワ紙1-28锛?
-  lastTrafficReset: epoch("lastTrafficReset"), // 涓婃閲嶇疆鏃堕棿
+  // ===== 流量管理字段 =====
+  trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),           // 流量额度（字节），0 = 不限制
+  trafficUsed: bigint("trafficUsed", { mode: "number" }).notNull().default(0),             // 已用流量（字节）
+  expiresAt: epoch("expiresAt"),               // 到期时间，null = 永不过期
+  trafficAutoReset: boolean("trafficAutoReset").notNull().default(false), // 月度自动重置开关
+  trafficResetDay: int("trafficResetDay").notNull().default(1),     // 每月重置日（1-28）
+  lastTrafficReset: epoch("lastTrafficReset"), // 上次重置时间
   telegramId: text("telegramId").unique(),
   telegramUsername: text("telegramUsername"),
   telegramFirstName: text("telegramFirstName"),
@@ -142,7 +142,7 @@ export const hosts = table("hosts", {
   ipv6: text("ipv6"),
   hostType: varchar("hostType", { length: 32 }).notNull().default("slave"), // 'master' | 'slave'
   agentToken: text("agentToken"),
-  // 鐢ㄦ埛鑷畾涔夌殑鍏ュ彛 IP/鍩熷悕锛屼负绌烘椂鍥為€€浣跨敤 ip
+  // 用户自定义的入口 IP/域名，为空时回退使用 ip
   entryIp: text("entryIp"),
   osInfo: text("osInfo"),
   cpuInfo: text("cpuInfo"),
@@ -152,9 +152,9 @@ export const hosts = table("hosts", {
   agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
   networkInterface: text("networkInterface"),
-  // ===== 绔彛鍖洪棿闄愬埗 =====
-  portRangeStart: int("portRangeStart"),  // 鍏佽杞彂鐨勮捣濮嬬鍙ｏ紝null = 涓嶉檺鍒?
-  portRangeEnd: int("portRangeEnd"),      // 鍏佽杞彂鐨勭粨鏉熺鍙ｏ紝null = 涓嶉檺鍒?
+  // ===== 端口区间限制 =====
+  portRangeStart: int("portRangeStart"),  // 允许转发的起始端口，null = 不限制
+  portRangeEnd: int("portRangeEnd"),      // 允许转发的结束端口，null = 不限制
   isOnline: boolean("isOnline").notNull().default(false),
   lastHeartbeat: epoch("lastHeartbeat"),
   userId: int("userId").notNull(),
@@ -254,7 +254,7 @@ export const forwardGroupEvents = table("forward_group_events", {
 export type ForwardGroupEvent = typeof forwardGroupEvents.$inferSelect;
 export type InsertForwardGroupEvent = typeof forwardGroupEvents.$inferInsert;
 
-// ===== gost 闅ч亾閰嶇疆锛堜袱鍙板叕缃?Agent 缁勫缓閾捐矾锛?=====
+// ===== gost 隧道配置（两台公网 Agent 组建链路） =====
 export const tunnels = table("tunnels", {
   id: serial("id"),
   name: text("name").notNull(),
@@ -351,19 +351,19 @@ export const forwardTests = table("forward_tests", {
 export type ForwardTest = typeof forwardTests.$inferSelect;
 export type InsertForwardTest = typeof forwardTests.$inferInsert;
 
-// ===== TCPing 寤惰繜缁熻琛?=====
+// ===== TCPing 延迟统计表 =====
 export const tcpingStats = table("tcping_stats", {
   id: serial("id"),
   ruleId: int("ruleId").notNull(),
   hostId: int("hostId").notNull(),
-  latencyMs: int("latencyMs"),           // 寤惰繜姣鏁帮紝null 琛ㄧず瓒呮椂/涓嶅彲杈?
+  latencyMs: int("latencyMs"),           // 延迟毫秒数，null 表示超时/不可达
   isTimeout: boolean("isTimeout").notNull().default(false),
   recordedAt: epoch("recordedAt").notNull().default(nowDefault()),
 });
 export type TcpingStat = typeof tcpingStats.$inferSelect;
 export type InsertTcpingStat = typeof tcpingStats.$inferInsert;
 
-// ===== 绯荤粺璁剧疆琛紙閿€煎瓨鍌級 =====
+// ===== 系统设置表（键值存储） =====
 export const systemSettings = table("system_settings", {
   key: varchar("key", { length: 191 }).primaryKey(),
   value: text("value"),
@@ -597,7 +597,7 @@ export const announcementReads = table("announcement_reads", {
 export type AnnouncementRead = typeof announcementReads.$inferSelect;
 export type InsertAnnouncementRead = typeof announcementReads.$inferInsert;
 
-// ===== 鐢ㄦ埛-涓绘満鏉冮檺琛紙绠＄悊鍛樻寚瀹氱敤鎴峰彲浣跨敤鍝簺 Agent/涓绘満锛?=====
+// ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = table("user_host_permissions", {
   id: serial("id"),
   userId: int("userId").notNull(),

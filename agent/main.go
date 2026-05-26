@@ -311,10 +311,10 @@ func handleSelfTest(cfg Config, t selfTest) {
 		if latency < 1 {
 			latency = 1
 		}
-		msg = fmt.Sprintf("目标 %s TCP可达, 延迟 %dms", target, latency)
+		msg = fmt.Sprintf("目标 %s TCP可达，延迟 %dms", target, latency)
 	} else {
 		latency = 0
-		msg = fmt.Sprintf("目标 %s TCP不可�? %v", target, err)
+		msg = fmt.Sprintf("目标 %s TCP不可达：%v", target, err)
 	}
 	payload := map[string]any{
 		"testId":          t.TestID,
@@ -445,6 +445,7 @@ func writeUnitAndRestart(name, unit string) bool {
 func writeState(a action) {
 	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
 	port := strconv.Itoa(a.SourcePort)
+	resetTrafficStateIfRuleChanged(port, a.RuleID)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(a.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(a.ForwardType), 0644)
 	if a.TargetIP != "" && a.TargetPort > 0 {
@@ -458,6 +459,7 @@ func writeRunningRuleState(r runningRule) {
 	}
 	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
 	port := strconv.Itoa(r.SourcePort)
+	resetTrafficStateIfRuleChanged(port, r.RuleID)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(r.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(r.ForwardType), 0644)
 	if r.TargetIP != "" && r.TargetPort > 0 {
@@ -480,6 +482,17 @@ func readForwardTypeByPort(port string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func resetTrafficStateIfRuleChanged(port string, nextRuleID int) {
+	if port == "" || nextRuleID <= 0 {
+		return
+	}
+	currentRuleID := readRuleIDByPort(port)
+	if currentRuleID > 0 && currentRuleID != nextRuleID {
+		_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+		logf("traffic baseline reset port=%s oldRule=%d newRule=%d", port, currentRuleID, nextRuleID)
+	}
 }
 
 func syncRunningRuleState(rules []runningRule) {
@@ -610,9 +623,12 @@ func collectTraffic(cfg Config) {
 		if forwardType == "nftables" {
 			in, out = nftablesBytes(ruleID, port)
 		}
-		prevIn, prevOut := readPrev(port)
+		prevRuleID, prevIn, prevOut := readPrev(port)
+		if prevRuleID <= 0 || prevRuleID != ruleID {
+			prevIn, prevOut = in, out
+		}
 		din, dout := delta(in, prevIn), delta(out, prevOut)
-		writePrev(port, in, out)
+		writePrev(port, ruleID, in, out)
 		conns := conntrackConnections(port)
 		if din > 0 || dout > 0 || conns > 0 {
 			stats = append(stats, map[string]any{"ruleId": ruleID, "bytesIn": din, "bytesOut": dout, "connections": conns})
@@ -745,22 +761,28 @@ func nftablesChainBytes(chain string) uint64 {
 	return v
 }
 
-func readPrev(port string) (uint64, uint64) {
+func readPrev(port string) (int, uint64, uint64) {
 	b, err := os.ReadFile("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	if len(lines) < 2 {
-		return 0, 0
+		return 0, 0, 0
+	}
+	if len(lines) >= 3 {
+		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
+		a, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
+		c, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
+		return rid, a, c
 	}
 	a, _ := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
 	c, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
-	return a, c
+	return 0, a, c
 }
 
-func writePrev(port string, in, out uint64) {
-	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n", in, out)), 0644)
+func writePrev(port string, ruleID int, in, out uint64) {
+	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n", ruleID, in, out)), 0644)
 }
 
 func delta(cur, prev uint64) uint64 {

@@ -272,14 +272,14 @@ function ForwardGroupsContent() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">转发组</h1>
           <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-            维护一组可被转发规则引用的入口成员，并按优先级执行 DDNS 故障转移。
+            管理可故障转移的入口组。
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
+          <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-emerald-500" />
             {activeCount} / {groups?.length ?? 0} 健康
           </Badge>
@@ -287,7 +287,7 @@ function ForwardGroupsContent() {
             {runFailoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             检查
           </Button>
-          <Button onClick={openCreate} className="gap-2">
+          <Button onClick={openCreate} className="col-span-2 gap-2 sm:col-span-1">
             <Plus className="h-4 w-4" />
             添加转发组
           </Button>
@@ -301,7 +301,82 @@ function ForwardGroupsContent() {
           </CardContent>
         </Card>
       ) : groups && groups.length > 0 ? (
-        <Card className="border-border/40 bg-card/60">
+        <>
+          <div className="grid gap-3 sm:hidden">
+            {groups.map((group: any) => (
+              <Card key={group.id} className="border-border/40 bg-card/60">
+                <CardContent className="space-y-3 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <p className="min-w-0 truncate font-medium">{group.name}</p>
+                        <Badge variant="outline">{group.groupType === "tunnel" ? "隧道组" : "主机组"}</Badge>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.lastMessage || "等待检查"}</p>
+                    </div>
+                    <div className="shrink-0">{groupStatusBadge(group)}</div>
+                  </div>
+
+                  <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
+                    <div className="text-xs text-muted-foreground">成员优先级</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(group.members || []).length > 0 ? (group.members || []).map((member: any, index: number) => (
+                        <span
+                          key={member.id}
+                          className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
+                            Number(group.activeMemberId) === Number(member.id)
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                              : "border-border bg-muted/20 text-muted-foreground"
+                          }`}
+                          title={`${member.healthStatus || "unknown"}${member.lastLatencyMs ? ` / ${member.lastLatencyMs}ms` : ""}`}
+                        >
+                          {member.healthStatus === "healthy" ? (
+                            <CheckCircle2 className="h-3 w-3 shrink-0" />
+                          ) : member.healthStatus === "unhealthy" ? (
+                            <XCircle className="h-3 w-3 shrink-0" />
+                          ) : null}
+                          <span className="truncate">{index + 1}. {memberLabel(member)}</span>
+                        </span>
+                      )) : (
+                        <span className="text-xs text-muted-foreground">暂无成员</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
+                      <p className="text-muted-foreground">DDNS</p>
+                      <p className="mt-1 truncate">{group.domain || "未配置"}</p>
+                    </div>
+                    <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
+                      <p className="text-muted-foreground">引用规则</p>
+                      <p className="mt-1">{Number(group.templateRuleCount || 0)}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(group)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      onClick={() => {
+                        if (confirm("确定删除此转发组吗？引用它的转发规则会同步清理。")) deleteMutation.mutate({ id: group.id });
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <Card className="hidden border-border/40 bg-card/60 sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
@@ -381,6 +456,7 @@ function ForwardGroupsContent() {
             </div>
           </CardContent>
         </Card>
+        </>
       ) : (
         <Card className="border-border/40 bg-card/60">
           <CardContent className="flex flex-col items-center justify-center py-20 text-muted-foreground">

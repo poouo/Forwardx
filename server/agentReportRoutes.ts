@@ -42,6 +42,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       if (!rule) {
         continue;
       }
+      if ((rule as any).pendingDelete || !(rule as any).isRunning) {
+        continue;
+      }
       let allowedHost = rule.hostId === host.id;
       if (!allowedHost && (rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);

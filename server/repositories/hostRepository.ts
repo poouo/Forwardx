@@ -89,7 +89,7 @@ export async function getHostByAgentToken(token: string) {
   return r[0];
 }
 
-/** 鑾峰彇涓绘満涓嬬殑杞彂瑙勫垯鏁伴噺 */
+/** 获取主机下的转发规则数量 */
 export async function getHostRuleCount(hostId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;

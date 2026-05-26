@@ -55,6 +55,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  Download,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -66,6 +67,8 @@ import { Label } from "./ui/label";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { renderMixedHtml } from "@/lib/htmlContent";
+import { mobileAuth } from "@/lib/mobileAuth";
+import { checkMobileAppUpdate } from "@/lib/mobileNotifications";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 
@@ -211,6 +214,7 @@ function DashboardLayoutContent({
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
+  const [checkingMobileUpdate, setCheckingMobileUpdate] = useState(false);
   const { data: upgradeStatus, refetch: refetchUpgradeStatus } = trpc.system.upgradeStatus.useQuery(undefined, {
     enabled: isAdmin,
     refetchInterval: (query) => {
@@ -380,6 +384,18 @@ function DashboardLayoutContent({
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
 
+  const handleMobileUpdateCheck = async () => {
+    setCheckingMobileUpdate(true);
+    try {
+      const result = await checkMobileAppUpdate({ silent: false });
+      if (result && !result.hasUpdate) toast.success("当前 APP 已是最新版本");
+    } catch (error: any) {
+      toast.error(error?.message || "检查更新失败");
+    } finally {
+      setCheckingMobileUpdate(false);
+    }
+  };
+
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
     : mainMenuItems.filter((item) => item.path !== "/hosts" && item.path !== "/tunnels");
@@ -505,6 +521,27 @@ function DashboardLayoutContent({
                     </SidebarMenuItem>
                   );
                 })}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
+
+          {mobileAuth.isNative && (
+            <SidebarGroup>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+                APP
+              </SidebarGroupLabel>
+              <SidebarMenu className="px-2 py-1">
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={handleMobileUpdateCheck}
+                    tooltip="检查更新"
+                    className="h-10 transition-all font-normal"
+                    disabled={checkingMobileUpdate}
+                  >
+                    {checkingMobileUpdate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    <span>检查更新</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroup>
           )}

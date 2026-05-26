@@ -67,7 +67,7 @@ export const crudRulesRouter = router({
           const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
           if (allowedRaw !== null && allowedRaw !== undefined) {
             const allowed = new Set(allowedRaw.split(",").map(s => s.trim()).filter(Boolean));
-            if (!allowed.has(forwardType)) throw new Error(`鎮ㄦ病鏈変娇鐢?${forwardType} 杞彂鏂瑰紡鐨勬潈闄愶紝璇疯仈绯荤鐞嗗憳`);
+            if (!allowed.has(forwardType)) throw new Error(`您没有使用 ${forwardType} 转发方式的权限，请联系管理员`);
           }
         }
         await requireRuleProtocolEnabled({ forwardType, tunnelId: null });
