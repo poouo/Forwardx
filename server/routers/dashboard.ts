@@ -24,6 +24,23 @@ export const dashboardRouter = router({
           userId: isAdmin ? undefined : ctx.user.id,
         });
       }),
+    /** 各规则、主机、隧道的流量消耗分布 */
+    trafficBreakdown: protectedProcedure
+      .input(z.object({
+        hours: z.number().min(1).max(24 * 30).default(168),
+        limit: z.number().min(1).max(100).default(30),
+      }).optional())
+      .query(async ({ input, ctx }) => {
+        const hours = input?.hours ?? 168;
+        const limit = input?.limit ?? 30;
+        const since = new Date(Date.now() - hours * 3600 * 1000);
+        const isAdmin = ctx.user.role === "admin";
+        return db.getDashboardTrafficBreakdown({
+          userId: isAdmin ? undefined : ctx.user.id,
+          since,
+          limit,
+        });
+      }),
     /** 全局 TCPing 延迟走势（仪表盘图表） */
     tcpingSeries: protectedProcedure
       .input(z.object({

@@ -7,24 +7,19 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { trpc } from "@/lib/trpc";
-import { FORWARD_TYPE_LABELS } from "@shared/forwardTypes";
 import {
   Activity,
   ArrowDownToLine,
   ArrowRightLeft,
   ArrowUpFromLine,
   BarChart3,
-  CalendarClock,
   Coins,
-  Globe,
   Info,
   Package,
   Server,
   Shield,
-  TrendingUp,
   WalletCards,
   Wifi,
-  WifiOff,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo } from "react";
@@ -34,14 +29,17 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip as RTooltip,
   XAxis,
   YAxis,
 } from "recharts";
 
-const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
+const TRAFFIC_PIE_COLORS = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#84cc16", "#f97316", "#14b8a6", "#ec4899"];
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -79,20 +77,6 @@ function getExpiryStatus(value: string | Date | null | undefined) {
   if (diffDays < 0) return { label: "已到期", tone: "danger" as const };
   if (diffDays <= 7) return { label: diffDays === 0 ? "今日到期" : `剩余 ${diffDays} 天`, tone: "warning" as const };
   return { label: `剩余 ${diffDays} 天`, tone: "normal" as const };
-}
-
-function protocolLabel(protocol: string | null | undefined) {
-  const value = String(protocol || "both").toLowerCase();
-  if (value === "tcp") return "TCP";
-  if (value === "udp") return "UDP";
-  return "TCP+UDP";
-}
-
-function getTunnelDisplay(tunnel: any | null | undefined) {
-  const mode = String(tunnel?.mode || "").toLowerCase();
-  if (mode === "forwardx") return "隧道 / ForwardX";
-  if (gostTunnelModes.has(mode)) return "隧道 / gost";
-  return mode ? `隧道 / ${mode.toUpperCase()}` : "隧道";
 }
 
 function StatCard({
@@ -185,17 +169,115 @@ function TrafficTooltipContent({ active, payload, label }: any) {
   );
 }
 
+function PieTooltipContent({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const item = payload[0]?.payload;
+  if (!item) return null;
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+      <p className="max-w-52 truncate text-xs font-medium">{item.name}</p>
+      <p className="mt-1 text-xs text-muted-foreground tabular-nums">{formatBytes(item.value)}</p>
+    </div>
+  );
+}
+
+function PieLoading() {
+  return (
+    <div className="flex h-56 items-center justify-center">
+      <div className="relative h-32 w-32">
+        <div className="absolute inset-0 rounded-full border-8 border-muted/50" />
+        <div className="absolute inset-0 animate-spin rounded-full border-8 border-transparent border-t-primary border-r-emerald-500" />
+        <div className="absolute inset-8 rounded-full bg-card shadow-inner" />
+      </div>
+    </div>
+  );
+}
+
+function TrafficPieCard({
+  title,
+  data,
+  loading,
+}: {
+  title: string;
+  data: Array<{ id: number; name: string; value: number }>;
+  loading: boolean;
+}) {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+
+  return (
+    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <BarChart3 className="h-4 w-4" />
+            {title}
+          </CardTitle>
+          <span className="text-[10px] text-muted-foreground/70">最近 7 天</span>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <PieLoading />
+        ) : data.length === 0 || total <= 0 ? (
+          <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">暂无流量数据</div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-[minmax(180px,0.9fr)_minmax(0,1.1fr)] lg:grid-cols-1 xl:grid-cols-[minmax(180px,0.9fr)_minmax(0,1.1fr)]">
+            <div className="h-56 min-w-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={data}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius="52%"
+                    outerRadius="78%"
+                    paddingAngle={2}
+                    minAngle={3}
+                    isAnimationActive
+                    animationDuration={700}
+                  >
+                    {data.map((item, index) => (
+                      <Cell key={item.id} fill={TRAFFIC_PIE_COLORS[index % TRAFFIC_PIE_COLORS.length]} stroke="var(--color-card)" strokeWidth={2} />
+                    ))}
+                  </Pie>
+                  <RTooltip content={<PieTooltipContent />} wrapperStyle={{ pointerEvents: "none" }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="min-w-0 space-y-2">
+              {data.map((item, index) => {
+                const percent = total > 0 ? Math.round((item.value / total) * 100) : 0;
+                return (
+                  <div key={item.id} className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/30 px-2.5 py-2">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: TRAFFIC_PIE_COLORS[index % TRAFFIC_PIE_COLORS.length] }} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-medium">{item.name}</p>
+                      <p className="text-[10px] text-muted-foreground tabular-nums">{formatBytes(item.value)}</p>
+                    </div>
+                    <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">{percent}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function DashboardContent() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: 15000 });
-  const { data: hosts = [] } = trpc.hosts.list.useQuery(undefined, { refetchInterval: 30000 });
-  const { data: rules = [] } = trpc.rules.list.useQuery(undefined, { refetchInterval: 30000 });
-  const { data: tunnels = [] } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 30000 });
   const { data: wallet } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
   const { data: trafficBilling } = trpc.trafficBilling.status.useQuery();
   const { data: subscriptions = [] } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
+  const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
+    { hours: 168, limit: 30 },
+    { refetchInterval: 30000 },
+  );
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 168, bucketMinutes: 30 },
     { refetchInterval: 30000 },
@@ -247,31 +329,18 @@ function DashboardContent() {
 
   const onlineRate = stats?.totalHosts ? Math.round((stats.onlineHosts / stats.totalHosts) * 100) : 0;
   const activeRate = stats?.totalRules ? Math.round((stats.activeRules / stats.totalRules) * 100) : 0;
-  const recentHosts = hosts.slice(0, 5);
-  const recentRules = rules.slice(0, 5);
-
-  const hostById = useMemo(() => {
-    const map = new Map<number, any>();
-    hosts.forEach((host: any) => map.set(Number(host.id), host));
-    return map;
-  }, [hosts]);
-
-  const tunnelById = useMemo(() => {
-    const map = new Map<number, any>();
-    tunnels.forEach((tunnel: any) => map.set(Number(tunnel.id), tunnel));
-    return map;
-  }, [tunnels]);
-
-  const getRuleEntryAddress = (rule: any) => {
-    const host = hostById.get(Number(rule.hostId));
-    const entry = String(host?.entryIp || host?.ip || "").trim();
-    return `${entry || "入口未配置"}:${rule.sourcePort}`;
-  };
-
-  const getRuleLinkLabel = (rule: any) => {
-    if (rule.tunnelId) return getTunnelDisplay(tunnelById.get(Number(rule.tunnelId)));
-    return FORWARD_TYPE_LABELS[rule.forwardType as keyof typeof FORWARD_TYPE_LABELS] || rule.forwardType;
-  };
+  const ruleTrafficData = useMemo(
+    () => (trafficBreakdown?.rules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [trafficBreakdown?.rules],
+  );
+  const hostTrafficData = useMemo(
+    () => (trafficBreakdown?.hosts || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [trafficBreakdown?.hosts],
+  );
+  const tunnelTrafficData = useMemo(
+    () => (trafficBreakdown?.tunnels || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [trafficBreakdown?.tunnels],
+  );
 
   return (
     <div className="space-y-6">
@@ -503,43 +572,11 @@ function DashboardContent() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <TrendingUp className="h-4 w-4" />
-            最近规则
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {recentRules.length > 0 ? (
-            <div className="space-y-2">
-              {recentRules.map((rule: any) => (
-                <div key={rule.id} className="flex flex-col gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-muted/30 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={`h-2 w-2 rounded-full ${rule.isEnabled && rule.isRunning ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-muted-foreground/30"}`} />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{rule.name}</p>
-                      <p className="break-all font-mono text-xs text-muted-foreground">
-                        {getRuleEntryAddress(rule)}
-                        {" -> "}
-                        {rule.targetIp}:{rule.targetPort}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    <Badge variant="outline" className="border-amber-500/30 text-amber-600">
-                      {getRuleLinkLabel(rule)}
-                    </Badge>
-                    <Badge variant="secondary">{protocolLabel(rule.protocol)}</Badge>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="py-8 text-center text-sm text-muted-foreground">暂无转发规则</div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <TrafficPieCard title="规则流量消耗" data={ruleTrafficData} loading={breakdownLoading} />
+        <TrafficPieCard title="主机流量消耗" data={hostTrafficData} loading={breakdownLoading} />
+        <TrafficPieCard title="隧道流量消耗" data={tunnelTrafficData} loading={breakdownLoading} />
+      </div>
 
       <div className={`grid grid-cols-1 gap-4 ${isAdmin ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
         {isAdmin && (
@@ -623,37 +660,6 @@ function DashboardContent() {
           </CardContent>
         </Card>
       </div>
-
-      {isAdmin && (
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-              <Globe className="h-4 w-4" />
-              最近主机
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {recentHosts.length > 0 ? (
-              <div className="space-y-2">
-                {recentHosts.map((host: any) => (
-                  <div key={host.id} className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-muted/30">
-                    <div className="flex items-center gap-3">
-                      <div className={`h-2 w-2 rounded-full ${host.isOnline ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-muted-foreground/30"}`} />
-                      <div>
-                        <p className="text-sm font-medium">{host.name}</p>
-                        <p className="font-mono text-xs text-muted-foreground">{host.ip}</p>
-                      </div>
-                    </div>
-                    {host.isOnline ? <Wifi className="h-3.5 w-3.5 text-emerald-500" /> : <WifiOff className="h-3.5 w-3.5 text-muted-foreground/40" />}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-sm text-muted-foreground">暂无主机</div>
-            )}
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

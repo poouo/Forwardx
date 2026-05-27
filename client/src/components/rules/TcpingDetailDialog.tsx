@@ -3,7 +3,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RToolti
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks, MAX_LATENCY_CHART_MS } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -31,9 +31,8 @@ function TcpingTooltipContent({ active, payload, label }: any) {
   if (!data) return null;
   const latency = data.latency;
   const isTimeout = data.isTimeout;
-  const clipped = !isTimeout && latency > MAX_LATENCY_CHART_MS;
   return (
-    <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+    <div className="pointer-events-none rounded-lg border border-border bg-card px-3 py-2 shadow-md">
       <p className="text-xs text-muted-foreground mb-1">{data.fullLabel || label}</p>
       {isTimeout ? (
         <p className="text-sm font-semibold text-destructive">超时</p>
@@ -41,7 +40,6 @@ function TcpingTooltipContent({ active, payload, label }: any) {
         <p className="text-sm font-semibold tabular-nums">
           <span className={latency < 50 ? "text-emerald-500" : latency < 100 ? "text-chart-3" : latency < 200 ? "text-amber-500" : "text-destructive"}>
             {latency}ms
-            {clipped ? ` (图表按 ${MAX_LATENCY_CHART_MS}ms 显示)` : ""}
           </span>
         </p>
       ) : (
@@ -147,6 +145,9 @@ function TcpingDetailDialog({
                 <RTooltip
                   content={<TcpingTooltipContent />}
                   cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
+                  offset={12}
+                  allowEscapeViewBox={{ x: true, y: true }}
+                  wrapperStyle={{ pointerEvents: "none" }}
                 />
                 <Area
                   type="monotone"

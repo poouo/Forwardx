@@ -9,8 +9,8 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { CreditCard, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
-import { useState } from "react";
+import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -43,6 +43,19 @@ function discountStatus(code: any) {
 
 function normalizeCodeInput(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 64);
+}
+
+function downloadCodeTextFile(codes: string[], filename = `redemption-codes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`) {
+  if (!codes.length || typeof window === "undefined") return;
+  const blob = new Blob([codes.join("\r\n")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function ledgerTone(item: any) {
@@ -80,6 +93,8 @@ export default function Billing() {
   const [redeemCount, setRedeemCount] = useState("1");
   const [redeemStartsAt, setRedeemStartsAt] = useState("");
   const [redeemExpiresAt, setRedeemExpiresAt] = useState("");
+  const [redemptionUsageFilter, setRedemptionUsageFilter] = useState<"all" | "unused" | "used">("all");
+  const [selectedRedemptionIds, setSelectedRedemptionIds] = useState<number[]>([]);
 
   const [discountCode, setDiscountCode] = useState("");
   const [discountType, setDiscountType] = useState<"percent" | "amount">("percent");
@@ -100,15 +115,27 @@ export default function Billing() {
   const createRedemptionCodes = trpc.billing.createRedemptionCodes.useMutation({
     onSuccess: (res) => {
       toast.success(`已生成 ${res.codes.length} 个兑换码`);
+      downloadCodeTextFile(res.codes);
       setRedeemCode("");
+      setSelectedRedemptionIds([]);
       utils.billing.listRedemptionCodes.invalidate();
     },
     onError: (error) => toast.error(error.message || "生成失败"),
   });
 
   const deleteRedemptionCode = trpc.billing.deleteRedemptionCode.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success("兑换码已删除");
+      setSelectedRedemptionIds((ids) => ids.filter((id) => id !== variables.id));
+      utils.billing.listRedemptionCodes.invalidate();
+    },
+    onError: (error) => toast.error(error.message || "删除失败"),
+  });
+
+  const deleteRedemptionCodes = trpc.billing.deleteRedemptionCodes.useMutation({
+    onSuccess: (data) => {
+      toast.success(`已删除 ${data.deleted} 个兑换码`);
+      setSelectedRedemptionIds([]);
       utils.billing.listRedemptionCodes.invalidate();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
@@ -170,6 +197,65 @@ export default function Billing() {
       startsAt: redeemStartsAt || null,
       expiresAt: redeemExpiresAt || null,
     });
+  };
+
+  const filteredRedemptionCodes = useMemo(() => {
+    if (redemptionUsageFilter === "unused") return redemptionCodes.filter((code: any) => !code.usedAt && !code.usedByUserId);
+    if (redemptionUsageFilter === "used") return redemptionCodes.filter((code: any) => !!code.usedAt || !!code.usedByUserId);
+    return redemptionCodes;
+  }, [redemptionCodes, redemptionUsageFilter]);
+
+  const filteredRedemptionIds = useMemo(
+    () => filteredRedemptionCodes.map((code: any) => Number(code.id)).filter(Boolean),
+    [filteredRedemptionCodes]
+  );
+  const selectedRedemptionSet = useMemo(() => new Set(selectedRedemptionIds), [selectedRedemptionIds]);
+  const selectedRedemptionCodes = useMemo(
+    () => redemptionCodes.filter((code: any) => selectedRedemptionSet.has(Number(code.id))),
+    [redemptionCodes, selectedRedemptionSet]
+  );
+  const allFilteredRedemptionSelected = filteredRedemptionIds.length > 0 && filteredRedemptionIds.every((id: number) => selectedRedemptionSet.has(id));
+
+  useEffect(() => {
+    const existingIds = new Set(redemptionCodes.map((code: any) => Number(code.id)));
+    setSelectedRedemptionIds((ids) => ids.filter((id) => existingIds.has(id)));
+  }, [redemptionCodes]);
+
+  const toggleAllFilteredRedemptionCodes = (checked: boolean) => {
+    setSelectedRedemptionIds((ids) => {
+      const next = new Set(ids);
+      filteredRedemptionIds.forEach((id: number) => {
+        if (checked) next.add(id);
+        else next.delete(id);
+      });
+      return Array.from(next);
+    });
+  };
+
+  const toggleRedemptionCode = (id: number, checked: boolean) => {
+    setSelectedRedemptionIds((ids) => {
+      if (checked) return ids.includes(id) ? ids : [...ids, id];
+      return ids.filter((item) => item !== id);
+    });
+  };
+
+  const exportRedemptionCodes = (items: any[]) => {
+    const codes = items.map((item) => String(item.code || "").trim()).filter(Boolean);
+    if (codes.length === 0) {
+      toast.error("没有可导出的兑换码");
+      return;
+    }
+    downloadCodeTextFile(codes);
+    toast.success(`已导出 ${codes.length} 个兑换码`);
+  };
+
+  const deleteSelectedRedemptionCodes = () => {
+    if (selectedRedemptionIds.length === 0) {
+      toast.error("请先选择兑换码");
+      return;
+    }
+    if (!window.confirm(`确认删除选中的 ${selectedRedemptionIds.length} 个兑换码？`)) return;
+    deleteRedemptionCodes.mutate({ ids: selectedRedemptionIds });
   };
 
   const submitDiscount = () => {
@@ -367,18 +453,49 @@ export default function Billing() {
                 )}
                 <div className="space-y-2"><Label>数量</Label><Input type="number" min={1} max={500} value={redeemCount} onChange={(e) => setRedeemCount(e.target.value)} /></div>
                 <div className="space-y-2"><Label>生效时间</Label><Input type="datetime-local" value={redeemStartsAt} onChange={(e) => setRedeemStartsAt(e.target.value)} /></div>
-                <div className="space-y-2"><Label>失效时间</Label><Input type="datetime-local" value={redeemExpiresAt} onChange={(e) => setRedeemExpiresAt(e.target.value)} /></div>
+                <div className="space-y-2">
+                  <Label>失效时间</Label>
+                  <Input type="datetime-local" value={redeemExpiresAt} onChange={(e) => setRedeemExpiresAt(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">不选择则永久有效。</p>
+                </div>
                 <div className="flex items-end md:col-span-2"><Button onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" /> 生成兑换码</Button></div>
               </CardContent>
             </Card>
             <Card>
-              <CardHeader><CardTitle>兑换码列表</CardTitle></CardHeader>
+              <CardHeader className="gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <CardTitle>兑换码列表</CardTitle>
+                  <CardDescription>筛选、选择并导出兑换码。</CardDescription>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+                  <Select value={redemptionUsageFilter} onValueChange={(value: "all" | "unused" | "used") => setRedemptionUsageFilter(value)}>
+                    <SelectTrigger className="w-full sm:w-36">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部</SelectItem>
+                      <SelectItem value="unused">未使用</SelectItem>
+                      <SelectItem value="used">已使用</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" variant="outline" onClick={() => exportRedemptionCodes(filteredRedemptionCodes)} disabled={filteredRedemptionCodes.length === 0}>
+                    <Download className="mr-2 h-4 w-4" /> 导出当前
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => exportRedemptionCodes(selectedRedemptionCodes)} disabled={selectedRedemptionCodes.length === 0}>
+                    <Download className="mr-2 h-4 w-4" /> 导出所选
+                  </Button>
+                  <Button type="button" variant="destructive" onClick={deleteSelectedRedemptionCodes} disabled={selectedRedemptionIds.length === 0 || deleteRedemptionCodes.isPending}>
+                    <Trash2 className="mr-2 h-4 w-4" /> 删除所选
+                  </Button>
+                </div>
+              </CardHeader>
               <CardContent className="overflow-x-auto">
                 <Table>
-                  <TableHeader><TableRow><TableHead>兑换码</TableHead><TableHead>类型</TableHead><TableHead>内容</TableHead><TableHead>有效期</TableHead><TableHead>使用情况</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                  <TableHeader><TableRow><TableHead className="w-12"><input type="checkbox" checked={allFilteredRedemptionSelected} onChange={(event) => toggleAllFilteredRedemptionCodes(event.target.checked)} disabled={filteredRedemptionCodes.length === 0} /></TableHead><TableHead>兑换码</TableHead><TableHead>类型</TableHead><TableHead>内容</TableHead><TableHead>有效期</TableHead><TableHead>使用情况</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                   <TableBody>
-                    {redemptionCodes.map((code: any) => (
+                    {filteredRedemptionCodes.map((code: any) => (
                       <TableRow key={code.id}>
+                        <TableCell><input type="checkbox" checked={selectedRedemptionSet.has(Number(code.id))} onChange={(event) => toggleRedemptionCode(Number(code.id), event.target.checked)} /></TableCell>
                         <TableCell className="font-mono">{code.code}</TableCell>
                         <TableCell><Badge variant="outline">{code.type === "plan" ? "套餐" : "余额"}</Badge></TableCell>
                         <TableCell>{code.type === "plan" ? `${code.planName || `套餐 #${code.planId}`} / ${code.durationDays || 30} 天` : money(code.amountCents)}</TableCell>
@@ -387,6 +504,11 @@ export default function Billing() {
                         <TableCell className="text-right"><Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteRedemptionCode.mutate({ id: code.id })}><Trash2 className="h-4 w-4" /></Button></TableCell>
                       </TableRow>
                     ))}
+                    {filteredRedemptionCodes.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">暂无兑换码</TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </CardContent>

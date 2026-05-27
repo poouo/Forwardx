@@ -96,12 +96,8 @@ export default function Store() {
 
   const buy = (plan: any) => {
     const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | undefined;
-    if (!firstMethod) {
-      toast.error("当前没有可用的支付方式，请联系管理员");
-      return;
-    }
-    setPaymentType(firstMethod);
-    setPayMode("gateway");
+    if (firstMethod) setPaymentType(firstMethod);
+    setPayMode(firstMethod ? "gateway" : "balance");
     setDiscountCode("");
     setDiscountPreview(null);
     setSelectedPlan(plan);

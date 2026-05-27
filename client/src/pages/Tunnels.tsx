@@ -31,7 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks, MAX_LATENCY_CHART_MS } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -227,6 +227,9 @@ function TunnelLatencyDialog({
                 <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
                 <RTooltip
                   cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
+                  offset={12}
+                  allowEscapeViewBox={{ x: true, y: true }}
+                  wrapperStyle={{ pointerEvents: "none" }}
                   content={({ active, payload }: any) => {
                     if (!active || !payload?.length) return null;
                     const item = payload[0].payload;
@@ -237,7 +240,7 @@ function TunnelLatencyDialog({
                           <p className="text-sm font-semibold text-destructive">超时</p>
                         ) : (
                           <p className="text-sm font-semibold tabular-nums">
-                            {item.latency}ms{item.latency > MAX_LATENCY_CHART_MS ? ` (图表按 ${MAX_LATENCY_CHART_MS}ms 显示)` : ""}
+                            {item.latency}ms
                           </p>
                         )}
                       </div>

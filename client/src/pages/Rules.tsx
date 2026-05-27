@@ -64,7 +64,7 @@ import {
   type ForwardType,
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
-import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { Fragment, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
 
@@ -114,6 +114,17 @@ const defaultForm: RuleFormData = {
 
 const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
 const unsupportedProtocolTitle = "当前不支持，请联系管理员";
+const desktopRuleTypeLabels = {
+  local: "端口转发",
+  tunnel: "隧道转发",
+  group: "转发组",
+} as const;
+
+function getRuleDisplayType(rule: any): keyof typeof desktopRuleTypeLabels {
+  if (rule.forwardGroupId) return "group";
+  if (rule.forwardType === "gost" && rule.tunnelId) return "tunnel";
+  return "local";
+}
 
 function getTunnelDisplay(tunnel: any | null | undefined) {
   const mode = String(tunnel?.mode || "").toLowerCase();
@@ -153,19 +164,40 @@ function isValidPort(port: number, allowZero = false) {
 function RulesContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSecondaryQueriesReady(true), 300);
+    return () => window.clearTimeout(timer);
+  }, []);
   const { data: rules, isLoading } = trpc.rules.list.useQuery(undefined, {
     refetchInterval: 15000,
+    staleTime: 10000,
+    refetchOnWindowFocus: false,
   });
-  const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: tunnels } = trpc.tunnels.list.useQuery();
+  const { data: hosts } = trpc.hosts.list.useQuery(undefined, {
+    staleTime: 60000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
+    staleTime: 60000,
+    refetchOnWindowFocus: false,
+  });
   const { data: users } = trpc.users.list.useQuery(undefined, {
-    enabled: user?.role === "admin",
+    enabled: user?.role === "admin" && secondaryQueriesReady,
+    staleTime: 60000,
+    refetchOnWindowFocus: false,
   });
   const { data: forwardGroups } = trpc.forwardGroups.list.useQuery(undefined, {
-    enabled: user?.role === "admin",
+    enabled: user?.role === "admin" && secondaryQueriesReady,
     refetchInterval: 15000,
+    staleTime: 10000,
+    refetchOnWindowFocus: false,
   });
-  const { data: systemSettings } = trpc.system.getSettings.useQuery();
+  const { data: systemSettings } = trpc.system.getSettings.useQuery(undefined, {
+    enabled: secondaryQueriesReady,
+    staleTime: 60000,
+    refetchOnWindowFocus: false,
+  });
 
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -195,6 +227,8 @@ function RulesContent() {
   const { data: selectedScopeRules } = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
     enabled: user?.role === "admin" && !!effectiveRulesQuery,
     refetchInterval: 15000,
+    staleTime: 10000,
+    refetchOnWindowFocus: false,
   });
 
   // 权限检查：管理员或有 canAddRules 权限
@@ -245,7 +279,12 @@ function RulesContent() {
   // 近 24h 按规则汇总的流量
   const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24 },
-    { refetchInterval: 30000 }
+    {
+      enabled: secondaryQueriesReady && !!rules && rules.length > 0,
+      refetchInterval: 30000,
+      staleTime: 15000,
+      refetchOnWindowFocus: false,
+    }
   );
   const trafficByRule = useMemo(() => {
     const m = new Map<number, { bytesIn: number; bytesOut: number; connections: number }>();
@@ -754,6 +793,7 @@ function RulesContent() {
       return true;
     });
   }, [rules, selectedScopeRules, filterUser, filterHost, filterTunnel, filterType]);
+  const hasActiveRuleFilter = filterUser !== "all" || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
   const activeCount = useMemo(
     () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,
     [filteredRules, isRuleSupported]
@@ -764,6 +804,18 @@ function RulesContent() {
     isReady: !isLoading && !!rules,
   });
   const pagedRules = rulePagination.items;
+  const desktopRuleGroups = useMemo(() => {
+    const groups = [
+      { type: "local" as const, label: desktopRuleTypeLabels.local, rules: [] as any[] },
+      { type: "tunnel" as const, label: desktopRuleTypeLabels.tunnel, rules: [] as any[] },
+      { type: "group" as const, label: desktopRuleTypeLabels.group, rules: [] as any[] },
+    ];
+    const groupByType = new Map(groups.map((group) => [group.type, group]));
+    pagedRules.forEach((rule: any) => {
+      groupByType.get(getRuleDisplayType(rule))?.rules.push(rule);
+    });
+    return groups.filter((group) => group.rules.length > 0);
+  }, [pagedRules]);
 
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
@@ -1037,7 +1089,7 @@ function RulesContent() {
         </div>
       )}
 
-      {rules && rules.length > 0 && (
+      {(user?.role === "admin" || (rules && rules.length > 0)) && (
         <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
           <div className="flex items-center gap-2">
             <Filter className="h-4 w-4 text-muted-foreground" />
@@ -1234,7 +1286,24 @@ function RulesContent() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pagedRules.map((rule: any) => {
+                    {desktopRuleGroups.map((group) => (
+                      <Fragment key={group.type}>
+                        <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/35">
+                          <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="py-2">
+                            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                              {group.type === "group" ? (
+                                <Layers3 className="h-3.5 w-3.5" />
+                              ) : group.type === "tunnel" ? (
+                                <Network className="h-3.5 w-3.5" />
+                              ) : (
+                                <ArrowRightLeft className="h-3.5 w-3.5" />
+                              )}
+                              <span>{group.label}</span>
+                              <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                        {group.rules.map((rule: any) => {
                       const supported = isRuleSupported(rule);
                       const protocolKey = getRuleProtocolKey(rule);
                       return (
@@ -1289,7 +1358,9 @@ function RulesContent() {
                         <TableCell className="text-right">{renderRuleActions(rule)}</TableCell>
                       </TableRow>
                       );
-                    })}
+                        })}
+                      </Fragment>
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -1297,7 +1368,7 @@ function RulesContent() {
                 <PersistentPagination pagination={rulePagination} itemName="条规则" />
               </div>
             </>
-          ) : rules && rules.length > 0 ? (
+          ) : (rules && rules.length > 0) || hasActiveRuleFilter ? (
             <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
               <Filter className="h-10 w-10 mb-3 opacity-30" />
               <p className="text-base font-medium">没有匹配的规则</p>

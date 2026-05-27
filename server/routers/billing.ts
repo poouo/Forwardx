@@ -154,6 +154,14 @@ export const billingRouter = router({
       return { success: true };
     }),
 
+  deleteRedemptionCodes: adminProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(500) }))
+    .mutation(async ({ input }) => {
+      const ids = Array.from(new Set(input.ids));
+      for (const id of ids) await db.deleteRedemptionCode(id);
+      return { success: true, deleted: ids.length };
+    }),
+
   listDiscountCodes: adminProcedure.query(async () => db.listDiscountCodes()),
 
   createDiscountCode: adminProcedure
