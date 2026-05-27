@@ -59,7 +59,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
@@ -73,6 +73,7 @@ import { renderMixedHtml } from "@/lib/htmlContent";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { cn } from "@/lib/utils";
+import { PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
@@ -225,7 +226,10 @@ function DashboardLayoutContent({
   const [checkingMobileUpdate, setCheckingMobileUpdate] = useState(false);
   const [mobileUpdateInfo, setMobileUpdateInfo] = useState<MobileAppUpdateResult | null>(null);
   const [showMobileUpdateDialog, setShowMobileUpdateDialog] = useState(false);
+  const upgradeRefreshTimerRef = useRef<number | null>(null);
+  const upgradeRefreshIntervalRef = useRef<number | null>(null);
   const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
+  const [upgradeRefreshCountdown, setUpgradeRefreshCountdown] = useState<number | null>(null);
   const [backgroundUpgrade, setBackgroundUpgrade] = useState<{ targetVersion: string; startedAt: number } | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -274,6 +278,38 @@ function DashboardLayoutContent({
     onError: (error) => toast.error(error.message || "启动升级失败"),
   });
 
+  const scheduleUpgradeRefresh = useCallback(() => {
+    if (upgradeRefreshTimerRef.current !== null) return;
+    try {
+      window.sessionStorage.removeItem(PANEL_UPGRADE_SESSION_KEY);
+    } catch {
+      // Ignore storage failures.
+    }
+    setUpgradeRefreshScheduled(true);
+    setUpgradeRefreshCountdown(PANEL_UPGRADE_REFRESH_DELAY_SECONDS);
+    upgradeRefreshIntervalRef.current = window.setInterval(() => {
+      setUpgradeRefreshCountdown((value) => (value === null ? null : Math.max(0, value - 1)));
+    }, 1000);
+    upgradeRefreshTimerRef.current = window.setTimeout(() => {
+      if (upgradeRefreshIntervalRef.current !== null) {
+        window.clearInterval(upgradeRefreshIntervalRef.current);
+        upgradeRefreshIntervalRef.current = null;
+      }
+      window.location.reload();
+    }, PANEL_UPGRADE_REFRESH_DELAY_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (upgradeRefreshTimerRef.current !== null) {
+        window.clearTimeout(upgradeRefreshTimerRef.current);
+      }
+      if (upgradeRefreshIntervalRef.current !== null) {
+        window.clearInterval(upgradeRefreshIntervalRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (popupAnnouncement?.id) setShowAnnouncement(true);
   }, [popupAnnouncement?.id]);
@@ -296,19 +332,8 @@ function DashboardLayoutContent({
 
   useEffect(() => {
     if (upgradeStatus?.job?.status !== "success") return;
-    if (upgradeRefreshScheduled) return;
-    try {
-      window.sessionStorage.removeItem(PANEL_UPGRADE_SESSION_KEY);
-    } catch {
-      // Ignore storage failures.
-    }
-    setBackgroundUpgrade(null);
-    setUpgradeRefreshScheduled(true);
-    const timer = window.setTimeout(() => {
-      window.location.reload();
-    }, 3500);
-    return () => window.clearTimeout(timer);
-  }, [upgradeRefreshScheduled, upgradeStatus?.job?.status]);
+    scheduleUpgradeRefresh();
+  }, [scheduleUpgradeRefresh, upgradeStatus?.job?.status]);
 
   useEffect(() => {
     if (!backgroundUpgrade?.targetVersion || !upgradeStatus?.currentVersion) return;
@@ -316,19 +341,8 @@ function DashboardLayoutContent({
     const currentVersion = String(upgradeStatus.currentVersion).replace(/^v/i, "");
     const targetVersion = String(backgroundUpgrade.targetVersion).replace(/^v/i, "");
     if (currentVersion !== targetVersion) return;
-    try {
-      window.sessionStorage.removeItem(PANEL_UPGRADE_SESSION_KEY);
-    } catch {
-      // Ignore storage failures.
-    }
-    setBackgroundUpgrade(null);
-    if (upgradeRefreshScheduled) return;
-    setUpgradeRefreshScheduled(true);
-    const timer = window.setTimeout(() => {
-      window.location.reload();
-    }, 1200);
-    return () => window.clearTimeout(timer);
-  }, [backgroundUpgrade, upgradeRefreshScheduled, upgradeStatus?.currentVersion, upgradeStatus?.job?.status]);
+    scheduleUpgradeRefresh();
+  }, [backgroundUpgrade?.targetVersion, scheduleUpgradeRefresh, upgradeStatus?.currentVersion, upgradeStatus?.job?.status]);
 
   const dismissAnnouncement = trpc.announcements.dismiss.useMutation({
     onSuccess: () => {
@@ -642,6 +656,16 @@ function DashboardLayoutContent({
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
   const upgradeJob = upgradeStatus?.job;
   const displayUpgradeJob = useMemo(() => {
+    if (upgradeRefreshScheduled) {
+      return {
+        status: "success",
+        startedAt: upgradeJob?.startedAt || (backgroundUpgrade?.startedAt ? new Date(backgroundUpgrade.startedAt).toISOString() : null),
+        finishedAt: upgradeJob?.finishedAt || new Date().toISOString(),
+        targetVersion: upgradeJob?.targetVersion || backgroundUpgrade?.targetVersion || upgradeStatus?.currentVersion || "",
+        logs: upgradeJob?.logs || ["[ForwardX] Upgrade completed; browser refresh scheduled"],
+        error: null,
+      };
+    }
     if (upgradeJob?.status && upgradeJob.status !== "idle") return upgradeJob;
     if (!backgroundUpgrade) return upgradeJob;
     return {
@@ -652,9 +676,12 @@ function DashboardLayoutContent({
       logs: ["[ForwardX] Starting upgrade in background"],
       error: null,
     };
-  }, [backgroundUpgrade, upgradeJob]);
+  }, [backgroundUpgrade, upgradeJob, upgradeRefreshScheduled, upgradeStatus?.currentVersion]);
   const upgradeProgress = getLayoutUpgradeProgress(displayUpgradeJob);
   const upgradeTargetVersion = updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || displayUpgradeJob?.targetVersion || "";
+  const upgradeRefreshText = upgradeRefreshCountdown !== null
+    ? (upgradeRefreshCountdown > 0 ? `${upgradeRefreshCountdown} 秒后自动刷新` : "正在刷新页面")
+    : "系统恢复后将自动刷新";
   const hasPanelUpdate = isAdmin && !!updateInfo?.hasUpdate && !!upgradeTargetVersion;
   const showUpgradeNotice = isAdmin && (
     hasPanelUpdate ||
@@ -852,7 +879,7 @@ function DashboardLayoutContent({
                 displayUpgradeJob?.status === "running"
                   ? upgradeProgress.label
                   : displayUpgradeJob?.status === "success"
-                    ? "升级完成，系统正在重启"
+                    ? upgradeRefreshText
                     : displayUpgradeJob?.status === "error"
                       ? "升级失败"
                       : `发现新版本 ${upgradeTargetVersion}`
@@ -882,7 +909,7 @@ function DashboardLayoutContent({
                     {displayUpgradeJob?.status === "running"
                       ? upgradeProgress.label
                       : displayUpgradeJob?.status === "success"
-                        ? "系统重启后将自动刷新"
+                        ? upgradeRefreshText
                         : displayUpgradeJob?.status === "error"
                           ? (displayUpgradeJob.error || "点击查看详情")
                           : `可升级到 ${upgradeTargetVersion}`}
@@ -1124,7 +1151,7 @@ function DashboardLayoutContent({
 
                 {isSuccess && (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                    升级任务已完成，面板正在重启。页面将自动刷新。
+                    升级任务已完成，面板正在重启。{upgradeRefreshText}。
                   </div>
                 )}
 

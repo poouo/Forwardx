@@ -99,7 +99,13 @@ export const plansRouter = router({
   cancelSubscription: adminProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input }) => {
+      const subscriptions = await db.listUserSubscriptions();
+      const subscription = (subscriptions as any[]).find((item) => Number(item.id) === Number(input.id));
       await db.cancelUserSubscription(input.id);
+      if (subscription?.userId) {
+        await db.syncUserSubscriptionEntitlements(Number(subscription.userId));
+        await refreshUserForwardEndpoints(Number(subscription.userId), "subscription-cancelled");
+      }
       return { success: true };
     }),
 });

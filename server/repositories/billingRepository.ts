@@ -234,12 +234,12 @@ export async function expireUserSubscriptions() {
     "UPDATE user_subscriptions SET status='expired', updatedAt=? WHERE status='active' AND expiresAt IS NOT NULL AND expiresAt <= ?",
     [nowSec, nowSec],
   );
-  const userIds = Array.from(new Set(expiredRows.map((row) => Number(row.userId)).filter((id) => id > 0)));
+  const userIds = Array.from(new Set((expiredRows as any[]).map((row: any) => Number(row.userId)).filter((id: number) => id > 0)));
   for (const userId of userIds) {
+    const rules = await getForwardRulesForUserSync(userId);
     const active = await getActiveUserSubscriptions(userId);
+    await syncUserSubscriptionEntitlements(userId);
     if (active.length === 0) {
-      const rules = await getForwardRulesForUserSync(userId);
-      await disableAllUserRules(userId);
       const hostIds = new Set<number>();
       const tunnelIds = new Set<number>();
       for (const rule of rules as any[]) {
@@ -260,6 +260,57 @@ export async function expireUserSubscriptions() {
     }
   }
   return Number(result?.affectedRows ?? result?.changes ?? 0);
+}
+
+export async function getEffectiveUserPlanLimits(userId: number) {
+  const active = await getActiveUserSubscriptions(userId);
+  if (active.length === 0) {
+    return {
+      canAddRules: false,
+      allowForwardXTunnel: false,
+      maxPorts: 0,
+      maxRules: 0,
+      maxConnections: 0,
+      maxIPs: 0,
+      trafficLimit: 0,
+      gostRateLimitIn: 0,
+      gostRateLimitOut: 0,
+      expiresAt: null as Date | null,
+    };
+  }
+
+  let expiresAt: Date | null = null;
+  const maxOf = (field: string) => Math.max(...active.map((sub: any) => Number(sub[field] || 0)));
+  for (const sub of active as any[]) {
+    const subExpiresAt = sub.expiresAt ? new Date(sub.expiresAt) : null;
+    if (!subExpiresAt) {
+      expiresAt = null;
+      break;
+    }
+    if (!expiresAt || subExpiresAt.getTime() > expiresAt.getTime()) expiresAt = subExpiresAt;
+  }
+
+  return {
+    canAddRules: true,
+    allowForwardXTunnel: true,
+    maxPorts: maxOf("portCount"),
+    maxRules: maxOf("maxRules"),
+    maxConnections: maxOf("maxConnections"),
+    maxIPs: maxOf("maxIPs"),
+    trafficLimit: maxOf("trafficLimit"),
+    gostRateLimitIn: maxOf("rateLimitMbps"),
+    gostRateLimitOut: maxOf("rateLimitMbps"),
+    expiresAt,
+  };
+}
+
+export async function syncUserSubscriptionEntitlements(userId: number) {
+  const limits = await getEffectiveUserPlanLimits(userId);
+  await updateUserTrafficSettings(userId, limits);
+  if (!limits.canAddRules) {
+    await disableAllUserRules(userId);
+  }
+  return limits;
 }
 
 export async function rechargeSubscriptionTrafficCycles() {
@@ -324,8 +375,8 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
     const end = Number((tunnel as any).portRangeEnd || 65535);
     ranges.push({ start, end });
   }
-  const start = ranges.length ? Math.max(...ranges.map(r => r.start)) : 10000;
-  const end = ranges.length ? Math.min(...ranges.map(r => r.end)) : 65535;
+  const start = ranges.length ? Math.max(...ranges.map((r) => r.start)) : 10000;
+  const end = ranges.length ? Math.min(...ranges.map((r) => r.end)) : 65535;
   if (start <= 0 || end < start || end - start + 1 < count) return null;
 
   const used = new Set<number>();
@@ -333,7 +384,7 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ));
-  ruleRows.forEach(row => used.add(Number(row.port)));
+  (ruleRows as any[]).forEach((row: any) => used.add(Number(row.port)));
   const subRows = await db.select({
     portRangeStart: userSubscriptions.portRangeStart,
     portRangeEnd: userSubscriptions.portRangeEnd,
@@ -341,7 +392,7 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
     eq(userSubscriptions.status, "active"),
     sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${Math.floor(Date.now() / 1000)})`,
   ));
-  subRows.forEach(row => {
+  (subRows as any[]).forEach((row: any) => {
     const s = Number(row.portRangeStart || 0);
     const e = Number(row.portRangeEnd || 0);
     for (let p = s; p > 0 && p <= e; p++) used.add(p);
@@ -374,6 +425,8 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const durationDays = Number(overrideDurationDays || plan.durationDays);
   const expiresAt = durationDays > 0 ? new Date(now.getTime() + durationDays * 24 * 3600 * 1000) : null;
   const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0 ? nextMonthlyTrafficReset(now, expiresAt) : null;
+  const user = await getUserById(userId);
+  const hadActiveSubscription = (await getActiveUserSubscriptions(userId)).length > 0;
   const subscriptionId = await createUserSubscription({
     userId,
     planId,
@@ -386,19 +439,10 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
     startedAt: now,
     expiresAt,
   } as any);
-  const user = await getUserById(userId);
-  await updateUserTrafficSettings(userId, {
-    canAddRules: true,
-    allowForwardXTunnel: true,
-    maxPorts: Math.max(Number(user?.maxPorts || 0), Number(plan.portCount || 0)),
-    maxRules: Math.max(Number(user?.maxRules || 0), Number(plan.maxRules || 0)),
-    maxConnections: Math.max(Number((user as any)?.maxConnections || 0), Number((plan as any).maxConnections || 0)),
-    maxIPs: Math.max(Number((user as any)?.maxIPs || 0), Number((plan as any).maxIPs || 0)),
-    trafficLimit: Math.max(Number(user?.trafficLimit || 0), Number(plan.trafficLimit || 0)),
-    gostRateLimitIn: Number(plan.rateLimitMbps || 0) > 0 ? Number(plan.rateLimitMbps) : Number(user?.gostRateLimitIn || 0),
-    gostRateLimitOut: Number(plan.rateLimitMbps || 0) > 0 ? Number(plan.rateLimitMbps) : Number(user?.gostRateLimitOut || 0),
-    expiresAt: expiresAt && (!user?.expiresAt || new Date(user.expiresAt).getTime() < expiresAt.getTime()) ? expiresAt : user?.expiresAt ?? null,
-  });
+  await syncUserSubscriptionEntitlements(userId);
+  if (!hadActiveSubscription && Number(user?.trafficUsed || 0) >= Number(user?.trafficLimit || 0) && Number(user?.trafficLimit || 0) > 0) {
+    await resetUserTraffic(userId);
+  }
   return { subscriptionId, portRangeStart: block.start, portRangeEnd: block.end, expiresAt };
 }
 

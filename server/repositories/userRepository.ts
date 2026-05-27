@@ -406,9 +406,17 @@ export async function addUserTraffic(userId: number, bytes: number) {
 export async function getUsersForAutoReset(day: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(users).where(
-    and(eq(users.trafficAutoReset, true), eq(users.trafficResetDay, day))
-  );
+  const now = new Date();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const todayStartSec = Math.floor(todayStart.getTime() / 1000);
+  const monthStartSec = Math.floor(monthStart.getTime() / 1000);
+  return db.select().from(users).where(and(
+    eq(users.trafficAutoReset, true),
+    sql`${users.trafficResetDay} <= ${day}`,
+    sql`(${users.lastTrafficReset} IS NULL OR ${users.lastTrafficReset} < ${monthStartSec})`,
+  ));
 }
 
 /** 获取所有已到期的用户 */
@@ -419,7 +427,8 @@ export async function getExpiredUsers() {
   return db.select().from(users).where(
     and(
       sql`${users.expiresAt} IS NOT NULL`,
-      sql`${users.expiresAt} <= ${nowSec}`
+      sql`${users.expiresAt} <= ${nowSec}`,
+      eq(users.canAddRules, true)
     )
   );
 }

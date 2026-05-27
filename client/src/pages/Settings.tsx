@@ -28,6 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
+import { PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import {
   FORWARD_PROTOCOL_LABELS,
   FORWARD_TYPES,
@@ -1523,7 +1524,7 @@ function SystemInfoSection() {
     if (!status || status === "idle") return;
     const previous = previousUpgradeStatus.current;
     if (previous === "running" && status === "success") {
-      toast.success("面板升级成功");
+      toast.success(`面板升级成功，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`);
     }
     if (previous === "running" && status === "error") {
       toast.error(upgradeStatus?.job?.error || "面板升级失败");
@@ -2287,7 +2288,7 @@ function SystemInfoSection() {
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {upgradeStatus.job.status === "success"
-                        ? `已完成 ${upgradeStatus.job.targetVersion || ""} 升级`
+                        ? `已完成 ${upgradeStatus.job.targetVersion || ""} 升级，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`
                         : upgradeStatus.job.status === "error"
                           ? "升级未完成，请查看下方异常信息"
                           : upgradeProgress.label}

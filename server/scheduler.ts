@@ -44,11 +44,22 @@ async function runMonthlyTrafficReset() {
   }
 }
 
+async function runSubscriptionExpirationCheck() {
+  try {
+    const expired = await db.expireUserSubscriptions();
+    if (expired > 0) {
+      console.log(`[Scheduler] Subscription expiration check: ${expired} subscription(s) expired`);
+    }
+  } catch (error) {
+    console.error("[Scheduler] Subscription expiration check error:", error);
+  }
+}
+
 async function runExpirationCheck() {
   try {
     const expiredUsers = await db.getExpiredUsers();
     for (const user of expiredUsers) {
-      await db.disableAllUserRules(user.id);
+      await db.setUserForwardAccess(user.id, false);
       await refreshUserRuleAgents(user.id, "user-expired");
       console.log(`[Scheduler] User ${user.id} (${user.username}) expired, disabled all rules`);
     }
@@ -209,10 +220,11 @@ function formatBytesLocal(bytes: number) {
 export function startScheduler() {
   setInterval(async () => {
     const now = new Date();
-    if (now.getMinutes() < 10) await runMonthlyTrafficReset();
+    await runMonthlyTrafficReset();
   }, 60 * 60 * 1000);
 
   setInterval(async () => {
+    await runSubscriptionExpirationCheck();
     await runExpirationCheck();
   }, 60 * 60 * 1000);
 
@@ -235,6 +247,7 @@ export function startScheduler() {
 
   setTimeout(async () => {
     await runMonthlyTrafficReset();
+    await runSubscriptionExpirationCheck();
     await runExpirationCheck();
     await runSelfTestTimeoutSweep();
     await runTcpingCleanup();
@@ -243,5 +256,5 @@ export function startScheduler() {
     await runTelegramReminders();
   }, 5000);
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + email/telegram reminders)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + email/telegram reminders)");
 }

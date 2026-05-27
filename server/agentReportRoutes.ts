@@ -100,7 +100,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           });
           if (billed && billed.balanceAfterCents < 0) {
             console.warn(`[TrafficBilling] user=${rule.userId} balance negative, disabling rules`);
-            await db.disableAllUserRules(rule.userId);
+            await db.setUserForwardAccess(rule.userId, false);
             await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
           }
         } else {
@@ -120,13 +120,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         // 流量超额：自动禁用该用户所有规则
         if (user.trafficLimit > 0 && user.trafficUsed >= user.trafficLimit) {
           console.log(`[Traffic] User ${user.id} traffic exceeded limit, disabling rules`);
-          await db.disableAllUserRules(user.id);
+          await db.setUserForwardAccess(user.id, false);
           await refreshUserRuleAgents(user.id, "traffic-limit-exceeded");
         }
         // 账户到期：自动禁用该用户所有规则
         if (user.expiresAt && new Date(user.expiresAt) <= new Date()) {
           console.log(`[Traffic] User ${user.id} account expired, disabling rules`);
-          await db.disableAllUserRules(user.id);
+          await db.setUserForwardAccess(user.id, false);
           await refreshUserRuleAgents(user.id, "user-expired");
         }
       }
