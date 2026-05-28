@@ -93,4 +93,4 @@ docs: update agent deployment instructions
 
 ## 许可证
 
-提交贡献即表示你同意你的代码将在 [MIT License](LICENSE) 下发布。
+提交贡献即表示你同意你的代码将在 [GNU Affero General Public License v3.0 only](LICENSE) 下发布。
