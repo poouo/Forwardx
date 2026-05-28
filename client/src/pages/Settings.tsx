@@ -1501,7 +1501,9 @@ function SystemInfoSection() {
   const [migrationCodeTick, setMigrationCodeTick] = useState(Date.now());
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
+  const [showDockerUpgradeScript, setShowDockerUpgradeScript] = useState(false);
   const previousUpgradeStatus = useRef<string | null>(null);
+  const shownDockerUpgradeVersion = useRef<string | null>(null);
   const lastPanelUpdateCheck = useRef(0);
 
   useEffect(() => {
@@ -1739,6 +1741,26 @@ function SystemInfoSection() {
     }
   };
 
+  const copyTextToClipboard = async (text: string) => {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    if (copied) toast.success("已复制到剪贴板");
+    else toast.error("复制失败，请手动复制");
+  };
+
   const startUpgradeMutation = trpc.system.startUpgrade.useMutation({
     onSuccess: async () => {
       toast.success("升级任务已启动");
@@ -1770,6 +1792,12 @@ function SystemInfoSection() {
 
   const updateInfo = upgradeStatus?.update;
   const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
+  const isDockerDeployment = !!upgradeStatus?.docker || !!settings?.upgrade?.docker;
+  const dockerPanelUpgradeCommand =
+    upgradeStatus?.manualUpgradeCommand ||
+    settings?.upgrade?.manualUpgradeCommand ||
+    manualPanelUpgradeCommands[1].command;
+  const androidApkDownloadUrl = settings?.androidApkDownloadUrl || "";
   const isUpgradeRunning = upgradeStatus?.job.status === "running";
   const upgradeProgress = getUpgradeProgress(upgradeStatus?.job);
   const upgradeErrorLogs = (upgradeStatus?.job?.logs || []).slice(-80).join("\n");
@@ -1779,6 +1807,14 @@ function SystemInfoSection() {
   const tunnelProtocolEnabledCount = tunnelForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
   const totalProtocolEnabledCount = directProtocolEnabledCount + tunnelProtocolEnabledCount;
   const totalProtocolCount = directForwardProtocolKeys.length + tunnelForwardProtocolKeys.length;
+
+  useEffect(() => {
+    if (!isDockerDeployment || !updateInfo?.hasUpdate || !updateInfo.latestVersion) return;
+    if (shownDockerUpgradeVersion.current === updateInfo.latestVersion) return;
+    shownDockerUpgradeVersion.current = updateInfo.latestVersion;
+    setShowDockerUpgradeScript(true);
+  }, [isDockerDeployment, updateInfo?.hasUpdate, updateInfo?.latestVersion]);
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -2324,9 +2360,11 @@ function SystemInfoSection() {
           {!upgradeEnabled && (
             <Alert>
               <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>当前环境尚未启用一键升级</AlertTitle>
+              <AlertTitle>{isDockerDeployment ? "Docker 部署请使用一键升级脚本" : "当前环境尚未启用一键升级"}</AlertTitle>
               <AlertDescription>
-                配置 <code>FORWARDX_UPGRADE_COMMAND</code> 后可一键升级。
+                {isDockerDeployment
+                  ? "检查到新版本后可复制脚本到服务器执行，脚本会覆盖原有 ForwardX 容器。"
+                  : <>配置 <code>FORWARDX_UPGRADE_COMMAND</code> 后可一键升级。</>}
               </AlertDescription>
             </Alert>
           )}
@@ -2364,7 +2402,7 @@ function SystemInfoSection() {
               disabled={checkingUpdate || isUpgradeRunning}
               className="gap-2"
             >
-              <RefreshCw className={`h-4 w-4 ${checkingUpdate ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-4 w-4 ${checkingUpdate ? "forwardx-icon-spin" : ""}`} />
               {checkingUpdate ? "检查中..." : "检查更新"}
             </Button>
             <Button
@@ -2373,17 +2411,21 @@ function SystemInfoSection() {
                   toast.error("请先检查更新");
                   return;
                 }
+                if (isDockerDeployment) {
+                  setShowDockerUpgradeScript(true);
+                  return;
+                }
                 if (!upgradeEnabled) {
                   toast.error("未配置升级命令，无法自动升级");
                   return;
                 }
                 setShowUpgradeConfirm(true);
               }}
-              disabled={!updateInfo?.hasUpdate || !upgradeEnabled || isUpgradeRunning || startUpgradeMutation.isPending}
+              disabled={!updateInfo?.hasUpdate || (!upgradeEnabled && !isDockerDeployment) || isUpgradeRunning || startUpgradeMutation.isPending}
               className="gap-2"
             >
               <Rocket className="h-4 w-4" />
-              {isUpgradeRunning ? "升级中..." : "升级并重启"}
+              {isUpgradeRunning ? "升级中..." : isDockerDeployment ? "查看升级脚本" : "升级并重启"}
             </Button>
             {updateInfo?.releaseUrl && (
               <Button variant="ghost" asChild className="gap-2">
@@ -2531,6 +2573,39 @@ function SystemInfoSection() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showDockerUpgradeScript} onOpenChange={setShowDockerUpgradeScript}>
+        <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Rocket className="h-5 w-5 text-primary" />
+              Docker 一键升级脚本
+            </DialogTitle>
+            <DialogDescription>
+              检测到新版本 {updateInfo?.latestVersion || ""}，请在服务器执行以下命令升级 Docker 部署。
+            </DialogDescription>
+          </DialogHeader>
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>升级会重建原有 ForwardX 容器</AlertTitle>
+            <AlertDescription>
+              脚本会复用当前部署目录的 .env 配置，只重建容器，不删除 Docker 数据卷；原有数据库和 /data 数据会保留。
+            </AlertDescription>
+          </Alert>
+          <code className="block max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+            {dockerPanelUpgradeCommand}
+          </code>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowDockerUpgradeScript(false)}>
+              关闭
+            </Button>
+            <Button className="gap-2" onClick={() => copyTextToClipboard(dockerPanelUpgradeCommand)}>
+              <Copy className="h-4 w-4" />
+              复制脚本
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -2580,9 +2655,33 @@ function SystemInfoSection() {
             <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
           </a>
 
+          {androidApkDownloadUrl && (
+            <a
+              href={androidApkDownloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
+                  <Download className="h-4 w-4 text-emerald-600" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Android APK 下载</p>
+                  <p className="text-xs text-muted-foreground truncate font-mono">{androidApkDownloadUrl}</p>
+                </div>
+              </div>
+              <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+            </a>
+          )}
+
           <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">
             <span>当前版本</span>
             <code className="font-mono">v{settings?.version}</code>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Android APP</span>
+            <code className="font-mono">v{settings?.androidAppVersion}</code>
           </div>
         </CardContent>
       </Card>

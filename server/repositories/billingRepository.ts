@@ -217,6 +217,7 @@ export async function listUserSubscriptions(userId?: number) {
       planId: userSubscriptions.planId,
       planName: subscriptionPlans.name,
       priceCents: subscriptionPlans.priceCents,
+      currency: subscriptionPlans.currency,
       durationDays: subscriptionPlans.durationDays,
       portCount: subscriptionPlans.portCount,
       trafficLimit: subscriptionPlans.trafficLimit,
@@ -835,6 +836,21 @@ export async function findAvailableSubscriptionPortBlock(portCount: number, host
   return null;
 }
 
+function pickSameActiveSubscription(subscriptions: any[], planId: number) {
+  const samePlan = subscriptions.filter((sub: any) => Number(sub.planId) === Number(planId));
+  if (samePlan.length === 0) return null;
+  return samePlan.sort((a: any, b: any) => {
+    const aExpires = a.expiresAt ? new Date(a.expiresAt).getTime() : Number.POSITIVE_INFINITY;
+    const bExpires = b.expiresAt ? new Date(b.expiresAt).getTime() : Number.POSITIVE_INFINITY;
+    if (aExpires !== bExpires) return bExpires - aExpires;
+    return Number(b.id || 0) - Number(a.id || 0);
+  })[0];
+}
+
+function addSubscriptionDays(base: Date, days: number) {
+  return new Date(base.getTime() + days * 24 * 3600 * 1000);
+}
+
 export async function applySubscriptionToUser(userId: number, planId: number, source: "admin" | "payment" | "redeem" | "balance", paymentOrderNo?: string | null, startsAt?: Date, overrideDurationDays?: number | null) {
   const plan = await getSubscriptionPlanById(planId);
   if (!plan) throw new Error("套餐不存在");
@@ -843,14 +859,72 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const tunnelIds = (plan as any).tunnelIds || [];
   const forwardGroupIds = (plan as any).forwardGroupIds || [];
   if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐未绑定任何主机、隧道或转发组");
-  const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
-  if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
   const now = startsAt || new Date();
   const durationDays = Number(overrideDurationDays || plan.durationDays);
-  const expiresAt = durationDays > 0 ? new Date(now.getTime() + durationDays * 24 * 3600 * 1000) : null;
-  const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0 ? nextMonthlyTrafficReset(now, expiresAt) : null;
+  const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const user = await getUserById(userId);
-  const hadActiveSubscription = (await getActiveUserSubscriptions(userId)).length > 0;
+  const hadActiveSubscription = activeSubscriptions.length > 0;
+  const sameActiveSubscription = pickSameActiveSubscription(activeSubscriptions as any[], planId);
+  if (sameActiveSubscription) {
+    const currentExpiresAt = sameActiveSubscription.expiresAt ? new Date(sameActiveSubscription.expiresAt) : null;
+    const baseExpiresAt = currentExpiresAt && Number.isFinite(currentExpiresAt.getTime()) && currentExpiresAt.getTime() > now.getTime()
+      ? currentExpiresAt
+      : now;
+    const expiresAt = !currentExpiresAt
+      ? null
+      : durationDays > 0
+        ? addSubscriptionDays(baseExpiresAt, durationDays)
+        : null;
+    const existingNextTrafficResetAt = sameActiveSubscription.nextTrafficResetAt ? new Date(sameActiveSubscription.nextTrafficResetAt) : null;
+    let nextTrafficResetAt = existingNextTrafficResetAt && Number.isFinite(existingNextTrafficResetAt.getTime())
+      ? existingNextTrafficResetAt
+      : null;
+    if (Number(plan.trafficLimit || 0) > 0) {
+      if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
+        nextTrafficResetAt = !existingNextTrafficResetAt && currentExpiresAt && expiresAt && currentExpiresAt.getTime() > now.getTime() && currentExpiresAt.getTime() < expiresAt.getTime()
+          ? currentExpiresAt
+          : nextMonthlyTrafficReset(now, expiresAt);
+      }
+      if (expiresAt && nextTrafficResetAt && nextTrafficResetAt.getTime() >= expiresAt.getTime()) {
+        nextTrafficResetAt = null;
+      }
+    } else {
+      nextTrafficResetAt = null;
+    }
+
+    let portRangeStart = Number(sameActiveSubscription.portRangeStart || 0);
+    let portRangeEnd = Number(sameActiveSubscription.portRangeEnd || 0);
+    const updateData: Partial<InsertUserSubscription> = {
+      status: "active",
+      expiresAt,
+      nextTrafficResetAt,
+    } as any;
+    if (paymentOrderNo) {
+      (updateData as any).paymentOrderNo = paymentOrderNo;
+    }
+    if (!portRangeStart || !portRangeEnd) {
+      const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
+      if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
+      portRangeStart = block.start;
+      portRangeEnd = block.end;
+      (updateData as any).portRangeStart = block.start;
+      (updateData as any).portRangeEnd = block.end;
+    }
+    await updateUserSubscription(Number(sameActiveSubscription.id), updateData);
+    await syncUserSubscriptionEntitlements(userId);
+    return {
+      subscriptionId: Number(sameActiveSubscription.id),
+      portRangeStart,
+      portRangeEnd,
+      expiresAt,
+      extended: true,
+    };
+  }
+
+  const block = await findAvailableSubscriptionPortBlock(Number(plan.portCount) || 1, hostIds, tunnelIds, forwardGroupIds);
+  if (!block) throw new Error("套餐可用端口不足，无法分配连续端口段");
+  const expiresAt = durationDays > 0 ? addSubscriptionDays(now, durationDays) : null;
+  const nextTrafficResetAt = Number(plan.trafficLimit || 0) > 0 ? nextMonthlyTrafficReset(now, expiresAt) : null;
   const subscriptionId = await createUserSubscription({
     userId,
     planId,
@@ -1106,8 +1180,13 @@ export async function listBalanceTransactions(userId?: number, limit = 100) {
     })
     .from(balanceTransactions)
     .leftJoin(users, eq(balanceTransactions.userId, users.id));
-  if (userId !== undefined) return base.where(eq(balanceTransactions.userId, userId)).orderBy(desc(balanceTransactions.createdAt)).limit(limit);
-  return base.orderBy(desc(balanceTransactions.createdAt)).limit(limit);
+  const rows = userId !== undefined
+    ? await base.where(eq(balanceTransactions.userId, userId)).orderBy(desc(balanceTransactions.createdAt)).limit(limit)
+    : await base.orderBy(desc(balanceTransactions.createdAt)).limit(limit);
+  return (rows as any[]).map((row) => ({
+    ...row,
+    typeLabel: balanceTypeLabel(row.type),
+  }));
 }
 
 function normalizeBillingLimit(limit = 100) {

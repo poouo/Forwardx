@@ -30,6 +30,16 @@ function orderTypeText(type?: string | null) {
   return "余额";
 }
 
+function balanceTypeText(type?: string | null) {
+  if (type === "admin_recharge") return "管理员充值";
+  if (type === "payment") return "在线充值入账";
+  if (type === "purchase") return "余额消费";
+  if (type === "redeem") return "兑换入账";
+  if (type === "traffic_billing") return "流量计费";
+  if (type === "traffic_addon_purchase") return "购买附加流量";
+  return type || "余额变动";
+}
+
 function ledgerTone(item: any) {
   if (item.kind === "balance" && Number(item.amountCents) < 0) return "text-destructive";
   if (item.kind === "balance" && Number(item.amountCents) > 0) return "text-emerald-600";
@@ -215,7 +225,7 @@ export default function Wallet() {
                 {(wallet?.transactions || []).map((tx: any) => (
                   <TableRow key={tx.id}>
                     <TableCell>
-                      <Badge variant="outline">{tx.type}</Badge>
+                      <Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge>
                     </TableCell>
                     <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}>
                       {money(tx.amountCents)}

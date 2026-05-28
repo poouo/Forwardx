@@ -163,6 +163,19 @@
     animation: forwardx-boot-spin 0.85s linear infinite;
   }
 
+  .forwardx-spinner {
+    animation: forwardx-boot-spin 0.85s linear infinite !important;
+    transform-origin: 50% 50%;
+    will-change: transform;
+  }
+
+  .forwardx-icon-spin {
+    animation: forwardx-boot-spin 0.85s linear infinite !important;
+    transform-box: fill-box;
+    transform-origin: 50% 50%;
+    will-change: transform;
+  }
+
   .boot-text {
     color: #172033;
     font-size: 14px;

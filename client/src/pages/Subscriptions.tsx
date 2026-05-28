@@ -3,9 +3,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
-import { CalendarClock, CheckCircle2, Gauge, Package, RefreshCw, ShoppingBag, WalletCards } from "lucide-react";
+import { CalendarClock, CheckCircle2, CreditCard, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -62,8 +63,17 @@ export default function Subscriptions() {
   const [, setLocation] = useLocation();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
   const { data: wallet } = trpc.billing.me.useQuery();
+  const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
+  const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
+    enabled: !!storeStatus?.enabled,
+  });
   const { data: subscriptions = [], isLoading } = trpc.plans.mySubscriptions.useQuery();
   const [selected, setSelected] = useState<{ sub: any; addon: any } | null>(null);
+  const [renewingSub, setRenewingSub] = useState<any | null>(null);
+  const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("stripe");
+  const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
+  const [discountCode, setDiscountCode] = useState("");
+  const [discountPreview, setDiscountPreview] = useState<any | null>(null);
 
   const activeCount = useMemo(
     () => subscriptions.filter((sub: any) => sub.status === "active" && (!sub.expiresAt || new Date(sub.expiresAt) > new Date())).length,
@@ -82,9 +92,79 @@ export default function Subscriptions() {
     onError: (error) => toast.error(error.message || "购买附加流量失败"),
   });
 
+  const closeRenewDialog = () => {
+    setRenewingSub(null);
+    setDiscountCode("");
+    setDiscountPreview(null);
+  };
+
+  const createOrder = trpc.payment.createOrder.useMutation({
+    onSuccess: (order) => {
+      toast.success("续费订单已创建");
+      closeRenewDialog();
+      utils.payment.myOrders.invalidate();
+      utils.plans.mySubscriptions.invalidate();
+      utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
+      if (order?.payUrl) window.open(order.payUrl, "_blank", "noopener,noreferrer");
+    },
+    onError: (error) => toast.error(error.message || "创建续费订单失败"),
+  });
+
+  const renewWithBalance = trpc.billing.purchasePlanWithBalance.useMutation({
+    onSuccess: () => {
+      toast.success("套餐已续费");
+      closeRenewDialog();
+      utils.plans.mySubscriptions.invalidate();
+      utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
+      utils.dashboard.userTraffic.invalidate();
+    },
+    onError: (error) => toast.error(error.message || "续费失败"),
+  });
+
+  const previewDiscount = trpc.billing.previewDiscount.useMutation({
+    onSuccess: (data) => {
+      setDiscountPreview(data);
+      toast.success("折扣码已应用");
+    },
+    onError: (error) => {
+      setDiscountPreview(null);
+      toast.error(error.message || "折扣码不可用");
+    },
+  });
+
+  const openRenew = (sub: any) => {
+    const firstMethod = paymentMethods[0]?.value as "alipay" | "wxpay" | "stripe" | undefined;
+    if (firstMethod) setPaymentType(firstMethod);
+    setPayMode(firstMethod ? "gateway" : "balance");
+    setDiscountCode("");
+    setDiscountPreview(null);
+    setRenewingSub(sub);
+  };
+
+  const confirmRenew = () => {
+    if (!renewingSub?.planId) return;
+    const planId = Number(renewingSub.planId);
+    const code = billingFeatures?.discountEnabled ? discountCode.trim() || undefined : undefined;
+    if (payMode === "balance") {
+      renewWithBalance.mutate({ planId, discountCode: code });
+      return;
+    }
+    createOrder.mutate({
+      amount: Number(renewingSub.priceCents || 0) / 100,
+      paymentType,
+      planId,
+      discountCode: code,
+    });
+  };
+
   const selectedPrice = Number(selected?.addon?.priceCents || 0);
   const balance = Number(wallet?.balanceCents || 0);
   const balanceEnough = balance >= selectedPrice;
+  const renewingPrice = Number(renewingSub?.priceCents || 0);
+  const renewFinalAmountCents = Number(discountPreview?.finalAmountCents ?? renewingPrice);
+  const renewBalanceEnough = balance >= renewFinalAmountCents;
 
   return (
     <DashboardLayout>
@@ -128,11 +208,12 @@ export default function Subscriptions() {
             const addons = isActive && Number(sub.trafficLimit || 0) > 0 ? (sub.trafficAddons || []) : [];
             const currentAddonBytes = Number(sub.activeTrafficAddonBytes || 0);
             const validUntil = cycleEnd(sub);
+            const canRenew = !!storeStatus?.enabled && !!sub.planId && sub.status !== "cancelled";
 
             return (
               <Card key={sub.id} className="flex flex-col">
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <CardTitle className="flex items-center gap-2 truncate">
                         <Package className="h-5 w-5 shrink-0" />
@@ -140,7 +221,21 @@ export default function Subscriptions() {
                       </CardTitle>
                       <CardDescription className="mt-2">{sourceLabel(sub.source)}</CardDescription>
                     </div>
-                    <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                      <Badge variant={isActive ? "default" : "secondary"}>{statusLabel(sub.status)}</Badge>
+                      {canRenew && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openRenew(sub)}
+                          disabled={createOrder.isPending || renewWithBalance.isPending}
+                        >
+                          <CreditCard className="mr-2 h-3.5 w-3.5" />
+                          续费
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="flex-1 space-y-4">
@@ -215,6 +310,104 @@ export default function Subscriptions() {
           })}
         </div>
 
+        <Dialog open={!!renewingSub} onOpenChange={(open) => !open && closeRenewDialog()}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <CreditCard className="h-5 w-5" />
+                续费套餐
+              </DialogTitle>
+              <DialogDescription>
+                再次购买 {renewingSub?.planName || "当前套餐"} 会延长当前订阅有效期。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4">
+              <div className="rounded-lg border bg-muted/20 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">原价</span>
+                  <span>{money(renewingPrice, renewingSub?.currency || "CNY")}</span>
+                </div>
+                {discountPreview && (
+                  <div className="mt-1 flex items-center justify-between text-emerald-600">
+                    <span>优惠</span>
+                    <span>-{money(discountPreview.discountAmountCents, renewingSub?.currency || "CNY")}</span>
+                  </div>
+                )}
+                <div className="mt-2 flex items-center justify-between font-medium">
+                  <span>应付</span>
+                  <span>{money(renewFinalAmountCents, renewingSub?.currency || "CNY")}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>当前到期</span>
+                  <span>{dateTime(renewingSub?.expiresAt)}</span>
+                </div>
+              </div>
+
+              {billingFeatures?.discountEnabled && (
+                <div className="flex gap-2">
+                  <Input value={discountCode} onChange={(e) => setDiscountCode(e.target.value.toUpperCase())} placeholder="折扣码（可选）" />
+                  <Button
+                    variant="outline"
+                    onClick={() => renewingSub && previewDiscount.mutate({ code: discountCode, amountCents: renewingPrice, planId: Number(renewingSub.planId) })}
+                    disabled={!discountCode.trim() || previewDiscount.isPending}
+                  >
+                    <TicketPercent className="mr-2 h-4 w-4" /> 应用
+                  </Button>
+                </div>
+              )}
+
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPayMode("balance")}
+                  className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
+                    payMode === "balance" ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"
+                  }`}
+                >
+                  <span className="flex items-center gap-2 font-medium"><WalletCards className="h-4 w-4" /> 余额支付（{money(balance)}）</span>
+                  {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
+                </button>
+                {paymentMethods.map((method: any) => (
+                  <button
+                    key={method.value}
+                    type="button"
+                    onClick={() => { setPayMode("gateway"); setPaymentType(method.value); }}
+                    className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
+                      payMode === "gateway" && paymentType === method.value
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border/60 bg-background/60 hover:bg-muted/60"
+                    }`}
+                  >
+                    <span className="font-medium">{method.label}</span>
+                    {payMode === "gateway" && paymentType === method.value && <CheckCircle2 className="h-4 w-4" />}
+                  </button>
+                ))}
+                {paymentMethods.length === 0 && (
+                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                    暂无在线支付方式。
+                  </div>
+                )}
+              </div>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={closeRenewDialog}>取消</Button>
+              <Button
+                onClick={confirmRenew}
+                disabled={
+                  !renewingSub ||
+                  createOrder.isPending ||
+                  renewWithBalance.isPending ||
+                  (payMode === "gateway" && paymentMethods.length === 0) ||
+                  (payMode === "balance" && !renewBalanceEnough)
+                }
+              >
+                {(createOrder.isPending || renewWithBalance.isPending) ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
+                {payMode === "balance" ? (renewBalanceEnough ? "余额续费" : "余额不足") : "去支付"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -246,7 +439,7 @@ export default function Subscriptions() {
                 onClick={() => selected && purchaseAddon.mutate({ addonId: Number(selected.addon.id), subscriptionId: Number(selected.sub.id) })}
                 disabled={!selected || purchaseAddon.isPending || !balanceEnough}
               >
-                {purchaseAddon.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
+                {purchaseAddon.isPending ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
                 {balanceEnough ? "余额购买" : "余额不足"}
               </Button>
             </DialogFooter>

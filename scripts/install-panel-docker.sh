@@ -43,6 +43,20 @@ compose_cmd() {
   fi
 }
 
+load_existing_env() {
+  local env_file="$APP_DIR/.env"
+  if [ ! -f "$env_file" ]; then
+    return
+  fi
+  local value
+  value="$(grep -E '^PORT=' "$env_file" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$value" ]; then PORT="$value"; fi
+  value="$(grep -E '^COMPOSE_PROJECT_NAME=' "$env_file" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$value" ]; then PROJECT_NAME="$value"; fi
+  value="$(grep -E '^FORWARDX_CONTAINER_NAME=' "$env_file" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$value" ]; then CONTAINER_NAME="$value"; fi
+}
+
 install_base_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
@@ -90,13 +104,36 @@ fetch_source_refs() {
 
 sync_source() {
   local target="${FORWARDX_TARGET_VERSION:-}"
+  local env_backup=""
+  local data_backup=""
+  if [ -f "$APP_DIR/.env" ]; then
+    env_backup="$(mktemp /tmp/forwardx-env.XXXXXX)"
+    cp "$APP_DIR/.env" "$env_backup"
+  fi
+  if [ -d "$APP_DIR/data" ]; then
+    data_backup="$(mktemp -d /tmp/forwardx-data.XXXXXX)"
+    cp -a "$APP_DIR/data/." "$data_backup/"
+  fi
   if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" remote set-url origin "$REPO_URL" || true
     fetch_source_refs
   else
     rm -rf "$APP_DIR"
     git clone "$REPO_URL" "$APP_DIR"
+    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+      cp "$env_backup" "$APP_DIR/.env"
+    fi
+    if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
+      mkdir -p "$APP_DIR/data"
+      cp -a "$data_backup/." "$APP_DIR/data/"
+    fi
     fetch_source_refs
+  fi
+  if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+    rm -f "$env_backup"
+  fi
+  if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
+    rm -rf "$data_backup"
   fi
 
   if [ -z "$target" ]; then
@@ -125,15 +162,31 @@ FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
 EOF
 }
 
+remove_existing_panel_containers() {
+  local ids_by_name=""
+  local ids_by_compose=""
+  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+  ids_by_name="$(docker ps -aq --filter "name=^/${CONTAINER_NAME}$" 2>/dev/null || true)"
+  ids_by_compose="$(docker ps -aq \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=forwardx" 2>/dev/null || true)"
+  if [ -n "$ids_by_name" ] || [ -n "$ids_by_compose" ]; then
+    printf "%s\n%s\n" "$ids_by_name" "$ids_by_compose" | awk 'NF && !seen[$0]++' | while IFS= read -r id; do
+      docker rm -f "$id" 2>/dev/null || true
+    done
+  fi
+}
+
 start_panel() {
   cd "$APP_DIR"
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+  remove_existing_panel_containers
   compose_cmd -p "$PROJECT_NAME" up -d --build --remove-orphans forwardx
 }
 
 install_panel() {
   require_root
   install_docker
+  load_existing_env
   sync_source
   write_env
   start_panel
@@ -143,10 +196,12 @@ install_panel() {
 
 upgrade_panel() {
   require_root
+  load_existing_env
   install_docker
   sync_source
   start_panel
   echo "[完成] ForwardX Docker 面板已覆盖旧容器并重启"
+  echo "[信息] 已保留 .env 配置、Docker 数据卷和部署目录内的 data 数据"
 }
 
 uninstall_panel() {

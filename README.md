@@ -1,11 +1,11 @@
-# ForwardX
+# ForwardX 转发管理面板
 
-> ForwardX转发管理面板
+> 面向多台 Linux 服务器的端口转发、加密隧道、转发组、用户权限、套餐与流量计费统一管理面板。
 
-ForwardX 是一个面向 Linux 多主机环境的转发管理面板。它通过 Agent 管理主机、隧道、转发规则、转发组、用户权限和流量数据，适合把多台服务器统一组织成可观测、可切换、可授权的网络入口。
+ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、转发组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.12-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.28-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -13,7 +13,7 @@ ForwardX 是一个面向 Linux 多主机环境的转发管理面板。它通过 
 
 ForwardX 不只是一个端口转发工具。更贴切的定位是：
 
-**ForwardX转发管理面板**
+**ForwardX 转发管理面板**
 
 它把端口转发、隧道链路、主机入口、转发组、DDNS 故障转移、用户配额和流量统计放在同一个控制面里管理。你可以把它理解为一个轻量的多机器网络入口管理面板。
 
@@ -265,28 +265,10 @@ pnpm check:versions
 
 ## Android APK
 
-ForwardX Android 客户端基于 Capacitor 复用当前 React 面板，并通过移动端 Token 访问后端：
+ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
-- APK 登录页需要同时填写面板地址、账号和密码，配置会保存在本机；退出登录后会清除登录态，重新打开时保留配置供用户修改。
-- Android 端未登录时不会展示网页主页，会直接进入登录页；登录成功后直接进入后台仪表盘。
-- Android 端支持流量到期通知、套餐到期通知和 APK 更新检查；通知开关默认关闭。
-- Android APK 使用 `shared/versions.ts` 中的 `ANDROID_APP_VERSION` 独立版本号，不随面板 `APP_VERSION` 自动变化。本地没有 Android SDK 时，可通过 GitHub Actions 的 `Android APK` workflow 构建；推送面板 `v*.*.*` 标签时，只有当前 Android 版本尚未发布过对应 APK，才会构建并上传到该 Release，也可以手动触发 workflow 后从 artifact 下载。
-
-正式发布 APK 必须使用稳定的 release 签名，否则 Android 会因为签名不同而拒绝覆盖安装。GitHub Actions 在未配置私有签名 Secrets 时，会使用仓库内置的 community fallback keystore 构建 release APK；这能保证本项目默认发布的后续 APK 之间可以覆盖更新。若你要发布自己的私有构建，建议先在本地生成专用 keystore：
-
-```bash
-keytool -genkeypair -v -keystore forwardx-release.jks -alias forwardx -keyalg RSA -keysize 2048 -validity 10000
-base64 -w 0 forwardx-release.jks
-```
-
-然后在 GitHub 仓库 `Settings -> Secrets and variables -> Actions` 添加：
-
-- `ANDROID_KEYSTORE_BASE64`：上一步输出的 base64 内容
-- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码
-- `ANDROID_KEY_ALIAS`：例如 `forwardx`
-- `ANDROID_KEY_PASSWORD`：key 密码
-
-`Android APK` workflow 的正式发布会强制使用 release 签名；手动触发时可以选择 debug 构建，但 debug APK 只适合测试，不会上传到 GitHub Release。已经安装过早期 debug 签名包，或安装过其他 keystore 签名包的手机，第一次切换到当前 release 签名包时需要先卸载旧包再安装；之后只要继续使用同一个 keystore，并且 `versionCode` 递增，就可以正常覆盖更新。
+下载地址：
+https://github.com/poouo/Forwardx/releases/download/v2.3.25/forwardx-android-v2.3.25.apk
 
 常用命令：
 

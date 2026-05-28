@@ -45,6 +45,16 @@ function normalizeCodeInput(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 64);
 }
 
+function balanceTypeText(type?: string | null) {
+  if (type === "admin_recharge") return "管理员充值";
+  if (type === "payment") return "在线充值入账";
+  if (type === "purchase") return "余额消费";
+  if (type === "redeem") return "兑换入账";
+  if (type === "traffic_billing") return "流量计费";
+  if (type === "traffic_addon_purchase") return "购买附加流量";
+  return type || "余额变动";
+}
+
 function downloadCodeTextFile(codes: string[], filename = `redemption-codes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`) {
   if (!codes.length || typeof window === "undefined") return;
   const blob = new Blob([codes.join("\r\n")], { type: "text/plain;charset=utf-8" });
@@ -418,7 +428,7 @@ export default function Billing() {
                     {transactions.map((tx: any) => (
                       <TableRow key={tx.id}>
                         <TableCell>{tx.username || `#${tx.userId}`}</TableCell>
-                        <TableCell><Badge variant="outline">{tx.type}</Badge></TableCell>
+                        <TableCell><Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge></TableCell>
                         <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}>{money(tx.amountCents)}</TableCell>
                         <TableCell>{money(tx.balanceAfterCents)}</TableCell>
                         <TableCell>{tx.description || "-"}</TableCell>

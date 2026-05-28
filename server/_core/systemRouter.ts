@@ -5,6 +5,7 @@ import { ENV } from "../env";
 import { spawn } from "child_process";
 import fs from "fs";
 import net from "net";
+import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getFilteredPanelLogs, getPanelLogSummary } from "./panelLogger";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import { sendMail } from "../email";
@@ -30,6 +31,8 @@ export { AGENT_VERSION, ANDROID_APP_VERSION, APP_VERSION } from "../../shared/ve
 export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
+const ANDROID_APK_DOWNLOAD_URL =
+  `${REPO_URL}/releases/download/v${ANDROID_APP_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
@@ -51,6 +54,12 @@ type UpdateInfo = {
   publishedAt: string | null;
   checkedAt: string;
   error?: string;
+};
+
+type DeploymentInfo = {
+  docker: boolean;
+  dockerSocket: boolean;
+  manualUpgradeCommand: string;
 };
 
 type UpgradeJob = {
@@ -261,6 +270,15 @@ function appendManualUpgradeHint() {
   appendUpgradeLog(`[ForwardX] Docker: ${MANUAL_DOCKER_UPGRADE_COMMAND}`);
 }
 
+function getDeploymentInfo(): DeploymentInfo {
+  const docker = isDockerRuntime();
+  return {
+    docker,
+    dockerSocket: fs.existsSync("/var/run/docker.sock"),
+    manualUpgradeCommand: docker ? MANUAL_DOCKER_UPGRADE_COMMAND : MANUAL_LOCAL_UPGRADE_COMMAND,
+  };
+}
+
 function parseForwardProtocolSettings(value: string | null | undefined) {
   if (!value) return null;
   try {
@@ -333,6 +351,7 @@ export const systemRouter = router({
       telegramBotUrl: TELEGRAM_BOT_URL,
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
+      androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
@@ -347,6 +366,7 @@ export const systemRouter = router({
       telegramBotUrl: TELEGRAM_BOT_URL,
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
+      androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       panelPublicUrl: all.panelPublicUrl ?? "",
       webPort: ENV.port,
@@ -400,9 +420,10 @@ export const systemRouter = router({
       agentEncryption: "aes-256-ctr+hmac-sha256", // 加密方案标识
       upgrade: {
         enabled: !!ENV.upgradeCommand.trim(),
-        docker: fs.existsSync("/.dockerenv") || fs.existsSync("/var/run/docker.sock"),
-        dockerSocket: fs.existsSync("/var/run/docker.sock"),
+        docker: getDeploymentInfo().docker,
+        dockerSocket: getDeploymentInfo().dockerSocket,
         commandConfigured: !!ENV.upgradeCommand.trim(),
+        manualUpgradeCommand: getDeploymentInfo().manualUpgradeCommand,
       },
       telegram: {
         enabled: all.telegramBotEnabled === "true" || (!!ENV.telegramBotToken.trim() && all.telegramBotEnabled !== "false"),
@@ -652,8 +673,7 @@ export const systemRouter = router({
       update: lastUpdateInfo,
       job: upgradeJob,
       upgradeEnabled: !!ENV.upgradeCommand.trim(),
-      docker: fs.existsSync("/.dockerenv") || fs.existsSync("/var/run/docker.sock"),
-      dockerSocket: fs.existsSync("/var/run/docker.sock"),
+      ...getDeploymentInfo(),
     };
   }),
 

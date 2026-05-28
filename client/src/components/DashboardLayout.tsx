@@ -888,7 +888,7 @@ function DashboardLayoutContent({
             >
               <div className="flex items-center gap-2">
                 {displayUpgradeJob?.status === "running" ? (
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                  <Loader2 className="forwardx-icon-spin h-4 w-4 shrink-0" />
                 ) : displayUpgradeJob?.status === "success" ? (
                   <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 ) : displayUpgradeJob?.status === "error" ? (
@@ -924,7 +924,7 @@ function DashboardLayoutContent({
                             {step.done ? (
                               <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
                             ) : step.active ? (
-                              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                              <Loader2 className="forwardx-icon-spin h-3 w-3 shrink-0" />
                             ) : (
                               <span className="h-3 w-3 shrink-0 rounded-full border border-primary/25" />
                             )}
@@ -997,7 +997,7 @@ function DashboardLayoutContent({
                   className="cursor-pointer"
                 >
                   {checkingMobileUpdate ? (
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" />
                   ) : (
                     <Download className="mr-2 h-4 w-4" />
                   )}
@@ -1129,7 +1129,7 @@ function DashboardLayoutContent({
                           {step.done ? (
                             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
                           ) : step.active ? (
-                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+                            <Loader2 className="forwardx-icon-spin h-3.5 w-3.5 shrink-0 text-primary" />
                           ) : (
                             <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-border" />
                           )}
@@ -1175,7 +1175,7 @@ function DashboardLayoutContent({
               onClick={() => upgradeTargetVersion && startUpgradeMutation.mutate({ targetVersion: upgradeTargetVersion })}
             >
               {startUpgradeMutation.isPending || displayUpgradeJob?.status === "running" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="forwardx-icon-spin h-4 w-4" />
               ) : (
                 <Rocket className="h-4 w-4" />
               )}
@@ -1317,7 +1317,7 @@ function DashboardLayoutContent({
               <div className="flex flex-col items-center gap-3">
                 <div className={`flex h-48 w-48 items-center justify-center rounded-lg border bg-white p-3 ${twoFactorSetupExpired ? "opacity-45" : ""}`}>
                   {beginTwoFactorSetupMutation.isPending ? (
-                    <Loader2 className="h-6 w-6 animate-spin text-slate-500" />
+                    <Loader2 className="forwardx-icon-spin h-6 w-6 text-slate-500" />
                   ) : twoFactorQrCode ? (
                     <img src={twoFactorQrCode} alt="2FA 绑定二维码" className="h-full w-full" />
                   ) : (
