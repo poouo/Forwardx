@@ -7,6 +7,10 @@ import { portsRulesRouter } from "./rules.ports";
 import { selfTestRulesRouter } from "./rules.selfTest";
 import { trafficRulesRouter } from "./rules.traffic";
 
+function isForwardGroupRule(rule: any) {
+  return !!(rule?.forwardGroupId || rule?.isForwardGroupTemplate || rule?.forwardGroupRuleId || rule?.forwardGroupMemberId);
+}
+
 export const rulesRouter = router({
   list: protectedProcedure
     .input(z.object({
@@ -17,9 +21,12 @@ export const rulesRouter = router({
     .query(async ({ input, ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       const rules = await db.getForwardRules(isAdmin ? input?.userId : ctx.user.id, input?.hostId);
-      if (input?.tunnelId === undefined) return rules;
-      if (input.tunnelId === null) return rules.filter((rule: any) => !rule.tunnelId);
-      return rules.filter((rule: any) => Number(rule.tunnelId || 0) === Number(input.tunnelId));
+      const visibleRules = isAdmin
+        ? rules
+        : rules.filter((rule: any) => !isForwardGroupRule(rule));
+      if (input?.tunnelId === undefined) return visibleRules;
+      if (input.tunnelId === null) return visibleRules.filter((rule: any) => !rule.tunnelId);
+      return visibleRules.filter((rule: any) => Number(rule.tunnelId || 0) === Number(input.tunnelId));
     }),
   getById: protectedProcedure
     .input(z.object({ id: z.number() }))
@@ -27,6 +34,7 @@ export const rulesRouter = router({
       const rule = await db.getForwardRuleById(input.id);
       if (!rule) return null;
       if (ctx.user.role !== "admin" && rule.userId !== ctx.user.id) return null;
+      if (ctx.user.role !== "admin" && isForwardGroupRule(rule)) return null;
       return rule;
     }),
   ...portsRulesRouter._def.procedures,

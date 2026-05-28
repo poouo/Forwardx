@@ -367,16 +367,16 @@ function RulesContent() {
 
   const openCreate = () => {
     resetForm();
-    const firstForwardType = usableForwardTypes[0];
+    const firstForwardType = canUseLocalForward ? usableForwardTypes[0] : undefined;
     const firstTunnel = canUseGost
       ? supportedTunnels[0]
       : null;
-    const firstGroup = availableForwardGroups[0];
-    if ((hosts && hosts.length > 0) || firstGroup) {
+    const firstGroup = canUseForwardGroup ? availableForwardGroups[0] : null;
+    if (firstForwardType || firstTunnel || firstGroup) {
       setForm({
         ...defaultForm,
-        routeMode: firstForwardType && hosts?.[0] ? "local" : firstTunnel ? "tunnel" : firstGroup ? "group" : "local",
-        hostId: firstForwardType && hosts?.[0] ? hosts[0].id : firstTunnel ? firstTunnel.entryHostId : null,
+        routeMode: firstForwardType ? "local" : firstTunnel ? "tunnel" : firstGroup ? "group" : "local",
+        hostId: firstForwardType ? hosts?.[0]?.id ?? null : firstTunnel ? firstTunnel.entryHostId : null,
         forwardType: firstTunnel && !firstForwardType ? "gost" : firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
         tunnelId: firstTunnel && !firstForwardType ? firstTunnel.id : null,
         forwardGroupId: !firstForwardType && !firstTunnel && firstGroup ? Number(firstGroup.id) : null,
@@ -540,9 +540,11 @@ function RulesContent() {
     () => allowedForwardTypes.filter((t) => isProtocolEnabled(t)),
     [allowedForwardTypes, isProtocolEnabled]
   );
-  const canUseLocalForward = usableForwardTypes.length > 0;
+  const hasHostChoices = (hosts?.length || 0) > 0;
+  const canUseLocalForward = hasHostChoices && usableForwardTypes.length > 0;
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardGroup = user?.role === "admin" && availableForwardGroups.length > 0;
+  const canCreateRule = canUseLocalForward || canUseGost || canUseForwardGroup;
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
     return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
@@ -1050,7 +1052,7 @@ function RulesContent() {
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">转发规则</h1>
           <p className="text-muted-foreground mt-1 text-xs sm:text-sm">
-            管理端口、隧道和转发组规则
+            {user?.role === "admin" ? "管理端口、隧道和转发组规则" : "管理端口和隧道转发规则"}
           </p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
@@ -1069,7 +1071,12 @@ function RulesContent() {
             复制规则
           </Button>
           {canAdd ? (
-            <Button onClick={openCreate} className="col-span-2 gap-2 sm:col-span-1" disabled={!hosts || hosts.length === 0 || (usableForwardTypes.length === 0 && !canUseGost)}>
+            <Button
+              onClick={openCreate}
+              className="col-span-2 gap-2 sm:col-span-1"
+              disabled={!canCreateRule}
+              title={!canCreateRule ? "暂无可用主机或隧道" : undefined}
+            >
               <Plus className="h-4 w-4" />
               添加规则
             </Button>
@@ -1119,7 +1126,7 @@ function RulesContent() {
               {hosts?.map((h: any) => (
                 <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
               ))}
-              {forwardGroups && forwardGroups.length > 0 && (
+              {user?.role === "admin" && forwardGroups && forwardGroups.length > 0 && (
                 <>
                   {(forwardGroups || []).map((group: any) => (
                     <SelectItem key={`group-${group.id}`} value={`group:${group.id}`}>
@@ -1141,7 +1148,7 @@ function RulesContent() {
               <SelectItem value="realm">realm</SelectItem>
               <SelectItem value="socat">socat</SelectItem>
               <SelectItem value="gost">gost</SelectItem>
-              <SelectItem value="forward-group">转发组</SelectItem>
+              {user?.role === "admin" && <SelectItem value="forward-group">转发组</SelectItem>}
             </SelectContent>
           </Select>
           <Select value={filterTunnel} onValueChange={setFilterTunnel}>
@@ -1381,11 +1388,11 @@ function RulesContent() {
               </div>
               <p className="text-lg font-medium">暂无转发规则</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                {hosts && hosts.length > 0
+                {canCreateRule
                   ? "创建转发规则开始端口转发"
-                  : "请先添加主机，然后创建转发规则"}
+                  : "请先获得可用主机或隧道授权，然后创建转发规则"}
               </p>
-              {hosts && hosts.length > 0 && canAdd && (usableForwardTypes.length > 0 || canUseGost) && (
+              {canAdd && canCreateRule && (
                 <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
                   <Plus className="h-4 w-4" />
                   创建第一条规则
@@ -1432,13 +1439,13 @@ function RulesContent() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="rounded-lg border border-border/60 bg-muted/25 p-1">
-              <div className="grid grid-cols-3 gap-1">
+              <div className={`grid gap-1 ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-2"}`}>
                 <button
                   type="button"
                   className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward)}
                   onClick={() => setRouteMode("local")}
                   disabled={!canUseLocalForward}
-                  title={!canUseLocalForward ? unsupportedProtocolTitle : undefined}
+                  title={!canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
                   <span className="truncate">端口转发</span>
@@ -1448,21 +1455,23 @@ function RulesContent() {
                   className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost)}
                   onClick={() => setRouteMode("tunnel")}
                   disabled={!canUseGost}
-                  title={!canUseGost ? unsupportedProtocolTitle : undefined}
+                  title={!canUseGost ? "暂无可用隧道" : undefined}
                 >
                   <Network className="h-4 w-4 shrink-0" />
                   <span className="truncate">隧道转发</span>
                 </button>
-                <button
-                  type="button"
-                  className={routeModeOptionClass(form.routeMode === "group", !canUseForwardGroup)}
-                  onClick={() => setRouteMode("group")}
-                  disabled={!canUseForwardGroup}
-                  title={!canUseForwardGroup ? "暂无可用转发组" : undefined}
-                >
-                  <Layers3 className="h-4 w-4 shrink-0" />
-                  <span className="truncate">转发组</span>
-                </button>
+                {user?.role === "admin" && (
+                  <button
+                    type="button"
+                    className={routeModeOptionClass(form.routeMode === "group", !canUseForwardGroup)}
+                    onClick={() => setRouteMode("group")}
+                    disabled={!canUseForwardGroup}
+                    title={!canUseForwardGroup ? "暂无可用转发组" : undefined}
+                  >
+                    <Layers3 className="h-4 w-4 shrink-0" />
+                    <span className="truncate">转发组</span>
+                  </button>
+                )}
               </div>
               <div className="mt-2 rounded-md bg-background/55 px-3 py-2 text-xs leading-5 text-muted-foreground">
                 {form.routeMode === "local" && "主机直接转发到目标地址。"}
@@ -1700,7 +1709,7 @@ function RulesContent() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isPending || !form.name || (form.routeMode !== "group" && !form.hostId) || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && portStatus === "used") || (form.routeMode === "local" && usableForwardTypes.length === 0) || (form.routeMode === "tunnel" && !form.tunnelId) || (form.routeMode === "group" && !form.forwardGroupId)}
+              disabled={isPending || !form.name || (form.routeMode !== "group" && !form.hostId) || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (form.routeMode === "group" && !form.forwardGroupId)}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
             </Button>

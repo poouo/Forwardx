@@ -30,7 +30,7 @@ import TrafficBilling from "./pages/TrafficBilling";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
-  if (loading) return <AppLoadingScreen message="正在验证登录状态" />;
+  if (loading) return <AppLoadingScreen />;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
@@ -85,7 +85,7 @@ function SetupGate() {
     return <Router />;
   }
 
-  if (setup.isLoading) return <AppLoadingScreen message="正在初始化面板" />;
+  if (setup.isLoading) return <AppLoadingScreen />;
 
   const ready = !!setup.data?.setupComplete;
   if (!ready && location !== "/setup") return <Redirect to="/setup" />;

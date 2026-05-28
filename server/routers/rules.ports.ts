@@ -19,7 +19,6 @@ export const portsRulesRouter = router({
       excludeRuleId: z.number().optional(),
     }))
     .query(async ({ input, ctx }) => {
-      await requireHostUseAccess(ctx, input.hostId);
       let rangeStart: number | null | undefined;
       let rangeEnd: number | null | undefined;
       if (input.tunnelId) {
@@ -27,6 +26,8 @@ export const portsRulesRouter = router({
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
         rangeStart = (tunnel as any).portRangeStart;
         rangeEnd = (tunnel as any).portRangeEnd;
+      } else {
+        await requireHostUseAccess(ctx, input.hostId);
       }
       if (rangeStart != null && rangeEnd != null && (input.sourcePort < rangeStart || input.sourcePort > rangeEnd)) {
         return { used: true, reason: `端口必须在隧道允许范围 ${rangeStart}-${rangeEnd} 内` };
@@ -57,14 +58,17 @@ export const portsRulesRouter = router({
         return { port };
       }
       if (!input.hostId) throw new Error("请选择主机");
-      const { host } = await requireHostUseAccess(ctx, input.hostId);
-      let rangeStart = (host as any).portRangeStart;
-      let rangeEnd = (host as any).portRangeEnd;
+      let rangeStart: number | null | undefined;
+      let rangeEnd: number | null | undefined;
       if (input.tunnelId) {
         const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
         rangeStart = (tunnel as any).portRangeStart;
         rangeEnd = (tunnel as any).portRangeEnd;
+      } else {
+        const { host } = await requireHostUseAccess(ctx, input.hostId);
+        rangeStart = (host as any).portRangeStart;
+        rangeEnd = (host as any).portRangeEnd;
       }
       if (ctx.user.role !== "admin") {
         const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);

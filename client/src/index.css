@@ -142,13 +142,16 @@
     place-items: center;
     width: 56px;
     height: 56px;
-    border: 1px solid rgba(37, 99, 235, 0.18);
+    border: 1px solid rgba(148, 163, 184, 0.28);
     border-radius: 14px;
     background: #ffffff;
-    color: #2563eb;
-    font-size: 18px;
-    font-weight: 700;
     box-shadow: 0 16px 40px rgba(31, 41, 55, 0.08);
+  }
+
+  .boot-logo img {
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
   }
 
   .boot-spinner {
@@ -160,15 +163,10 @@
     animation: forwardx-boot-spin 0.85s linear infinite;
   }
 
-  .boot-title {
-    font-size: 16px;
-    font-weight: 700;
-    line-height: 1;
-  }
-
   .boot-text {
-    color: #64748b;
-    font-size: 13px;
+    color: #172033;
+    font-size: 14px;
+    font-weight: 500;
   }
 
   @keyframes forwardx-boot-spin {

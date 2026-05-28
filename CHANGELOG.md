@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.22] - 2026-05-28
+
+### Fixed
+
+- Hid forwarding-group navigation and rule controls from regular users while keeping admin access intact.
+- Fixed traffic-billed tunnel users being unable to add forwarding rules when they do not also have direct host permissions.
+- Unified the first-load and in-app loading screens on the Android APK logo and simplified the loading text to avoid flicker.
+
+### Changed
+
+- Bumped panel version to 2.3.22. Agent version remains 2.2.49.
+
 ## [2.3.11] - 2026-05-26
 
 ### Added

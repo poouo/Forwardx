@@ -641,7 +641,7 @@ function DashboardLayoutContent({
 
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
-    : mainMenuItems.filter((item) => item.path !== "/hosts" && item.path !== "/tunnels");
+    : mainMenuItems.filter((item) => !["/hosts", "/tunnels", "/forward-groups"].includes(item.path));
   const userStoreMenuItems = !isAdmin
     ? [
         { icon: ReceiptText, label: "账单中心", path: "/wallet" },
