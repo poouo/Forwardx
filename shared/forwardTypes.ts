@@ -2,14 +2,6 @@ export const FORWARD_TYPES = ["iptables", "nftables", "realm", "socat", "gost"] 
 
 export type ForwardType = (typeof FORWARD_TYPES)[number];
 
-// 连接数和 IP 数统计精度受限的转发类型（用户态代理，非内核级转发）。
-// 这些类型通过 conntrack 近似统计连接，但无法像 iptables/nftables
-// 那样在内核层面精确限制和计数每 IP 连接。
-export const FORWARD_TYPES_WITH_APPROXIMATE_STATS: ReadonlySet<ForwardType> = new Set(["realm", "socat", "gost"]);
-
-// 基于 FORWARD_TYPES_WITH_APPROXIMATE_STATS 对应的中文提示
-export const APPROXIMATE_STATS_HINT = "连接数和 IP 数统计基于 conntrack 近似值，实际精度受转发工具自身连接管理影响，仅供参考";
-
 export const FORWARD_TYPE_LABELS: Record<ForwardType, string> = {
   iptables: "iptables",
   nftables: "nftables",

@@ -51,6 +51,9 @@ type config struct {
 	PanelURL       string `json:"panelUrl"`
 	Token          string `json:"token"`
 	FXPVersion     int    `json:"fxpVersion"`
+	RelayExitHost  string `json:"relayExitHost,omitempty"`
+	RelayExitPort  int    `json:"relayExitPort,omitempty"`
+	RelayKey       string `json:"relayKey,omitempty"`
 }
 
 type helloFrame struct {
@@ -199,6 +202,8 @@ func main() {
 		err = runEntry(ctx.done, cfg, baseAEAD)
 	case "exit":
 		err = runExit(ctx.done, cfg, baseAEAD)
+	case "relay":
+		err = runRelay(ctx.done, cfg, baseAEAD)
 	default:
 		err = fmt.Errorf("unknown role %q", cfg.Role)
 	}
@@ -548,6 +553,102 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 		return err
 	}
 	return sec.writeFrame(buf[:n])
+}
+
+// runRelay acts as an intermediate hop in a multi-hop FXP chain.
+// It listens for encrypted connections from the upstream, reads the helloFrame,
+// connects to the next downstream hop with a new key, re-sends the helloFrame,
+// and bidirectionally relays decrypted frames between the two secure connections.
+func runRelay(done <-chan struct{}, cfg config, upstreamAEAD cipher.AEAD) error {
+	if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayKey == "" {
+		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
+	}
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
+	if err != nil {
+		return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
+	}
+	log.Printf("relay listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+	go func() {
+		<-done
+		_ = ln.Close()
+	}()
+	downSec, err := newSecureConn(nil, cfg.RelayKey)
+	if err != nil {
+		return fmt.Errorf("relay downstream crypto: %w", err)
+	}
+	downstreamAEAD := downSec.aead
+	for {
+		upConn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go func() {
+			if err := handleRelaySession(upConn, cfg, upstreamAEAD, downstreamAEAD); err != nil && !isClosedErr(err) {
+				log.Printf("relay session error: %v", err)
+			}
+		}()
+	}
+}
+
+func handleRelaySession(upConn net.Conn, cfg config, upstreamAEAD, downstreamAEAD cipher.AEAD) error {
+	defer upConn.Close()
+	// Accept upstream encrypted connection (like exit)
+	upSec, err := newExitSecureConn(upConn, cfg, upstreamAEAD)
+	if err != nil {
+		probeDelay()
+		return err
+	}
+	frame, err := upSec.readFrame()
+	if err != nil {
+		probeDelay()
+		return err
+	}
+	var hello helloFrame
+	if err := json.Unmarshal(frame, &hello); err != nil {
+		probeDelay()
+		return err
+	}
+	// Connect to downstream (like entry)
+	downConn, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.RelayExitHost, strconv.Itoa(cfg.RelayExitPort)), 10*time.Second)
+	if err != nil {
+		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
+		return err
+	}
+	defer downConn.Close()
+	downSec, err := newEntrySecureConn(downConn, cfg, downstreamAEAD)
+	if err != nil {
+		return err
+	}
+	// Re-send helloFrame to downstream
+	helloBytes, _ := json.Marshal(hello)
+	if err := downSec.writeFrame(helloBytes); err != nil {
+		return err
+	}
+	// Bidirectional relay: upstream ↔ downstream
+	return relayBidir(upSec, downSec)
+}
+
+func relayBidir(up *secureConn, down *secureConn) error {
+	errCh := make(chan error, 2)
+	go func() { errCh <- relayCopy(up, down) }()
+	go func() { errCh <- relayCopy(down, up) }()
+	err := <-errCh
+	return err
+}
+
+func relayCopy(src, dst *secureConn) error {
+	for {
+		frame, err := src.readFrame()
+		if err != nil {
+			return err
+		}
+		if err := dst.writeFrame(frame); err != nil {
+			return err
+		}
+	}
 }
 
 func copyPlainToSecure(dst *secureConn, src net.Conn, bytesPerSecond int64, counter *atomic.Uint64) error {

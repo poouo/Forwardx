@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.53"
+var Version = "2.2.54"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -142,6 +142,9 @@ type fxpSpec struct {
 	PanelURL       string `json:"panelUrl,omitempty"`
 	Token          string `json:"token,omitempty"`
 	FXPVersion     int    `json:"fxpVersion,omitempty"`
+	RelayExitHost  string `json:"relayExitHost,omitempty"`
+	RelayExitPort  int    `json:"relayExitPort,omitempty"`
+	RelayKey       string `json:"relayKey,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -900,6 +903,9 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.FormatBool(spec.BlockHTTP),
 		strconv.FormatBool(spec.BlockSocks),
 		strconv.FormatBool(spec.BlockTLS),
+		spec.RelayExitHost,
+		strconv.Itoa(spec.RelayExitPort),
+		spec.RelayKey,
 	}, "|")
 }
 

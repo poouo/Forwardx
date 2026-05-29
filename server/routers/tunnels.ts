@@ -1,12 +1,13 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
-import { isIP } from "net";
+const isValidHostOrIp = (value: string) => /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(value) && value.length <= 253;
 import * as db from "../db";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
+import * as hopRepo from "../repositories/tunnelRepository";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.literal("2")])
@@ -15,7 +16,7 @@ const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.
 const normalizeTunnelConnect = (connectHost?: string | null) => {
   const host = String(connectHost || "").trim();
   if (!host) return null;
-  if (isIP(host) === 0) throw new Error("指定出口 IP 无效");
+  if (!isValidHostOrIp(host)) throw new Error("指定出口地址无效，请输入有效的 IP 或域名");
   return host;
 };
 
@@ -102,39 +103,55 @@ export const tunnelsRouter = router({
         blockHttp: z.boolean().optional().default(false),
         blockSocks: z.boolean().optional().default(false),
         blockTls: z.boolean().optional().default(false),
+        hopHostIds: z.array(z.number()).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        if (input.portRangeStart != null && input.portRangeEnd != null && input.portRangeStart > input.portRangeEnd) {
-          throw new Error("隧道可用端口范围起始值不能大于结束值");
-        }
-        if (input.entryHostId === input.exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
-        const entry = await requireHostAccess(ctx, input.entryHostId);
-        const exit = await requireHostAccess(ctx, input.exitHostId);
-        if (!entry || !exit) throw new Error("主机不存在");
-        await requireTunnelProtocolEnabled(input);
-        let listenPort = Number(input.listenPort) || 0;
-        if (listenPort > 0) {
-          const start = (exit as any).portRangeStart;
-          const end = (exit as any).portRangeEnd;
-          if (start != null && end != null && (listenPort < start || listenPort > end)) {
-            throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
-          }
-          const used = await db.isPortUsedOnHost(input.exitHostId, listenPort);
-          if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
-          const tunnelUsed = await db.isTunnelListenPortUsed(input.exitHostId, listenPort);
-          if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
+        const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 2) ? input.hopHostIds : null;
+        if (hopHostIds) {
+          // Multi-hop tunnel: validate hosts
+          if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道的主机不能重复");
+          for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
+          if (input.listenPort !== 0) throw new Error("多级隧道端口由系统自动分配");
         } else {
-          listenPort = await db.findAvailableTunnelExitPort(
-            input.exitHostId,
-            (exit as any).portRangeStart,
-            (exit as any).portRangeEnd,
-          ) ?? 0;
-          if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+          if (input.portRangeStart != null && input.portRangeEnd != null && input.portRangeStart > input.portRangeEnd) {
+            throw new Error("隧道可用端口范围起始值不能大于结束值");
+          }
+          if (input.entryHostId === input.exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
+          const entry = await requireHostAccess(ctx, input.entryHostId);
+          const exit = await requireHostAccess(ctx, input.exitHostId);
+          if (!entry || !exit) throw new Error("主机不存在");
+        }
+        await requireTunnelProtocolEnabled(input);
+
+        // Determine entry/exit host IDs
+        const entryHostId = hopHostIds ? hopHostIds[0] : input.entryHostId;
+        const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : input.exitHostId;
+
+        let listenPort = Number(input.listenPort) || 0;
+        if (!hopHostIds) {
+          if (listenPort > 0) {
+            const exit = await db.getHostById(exitHostId) as any;
+            const start = exit?.portRangeStart;
+            const end = exit?.portRangeEnd;
+            if (start != null && end != null && (listenPort < start || listenPort > end)) {
+              throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
+            }
+            const used = await db.isPortUsedOnHost(exitHostId, listenPort);
+            if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
+            const tunnelUsed = await db.isTunnelListenPortUsed(exitHostId, listenPort);
+            if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
+          } else {
+            const exit = await db.getHostById(exitHostId) as any;
+            listenPort = await db.findAvailableTunnelExitPort(exitHostId, exit?.portRangeStart, exit?.portRangeEnd) ?? 0;
+            if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
+          }
         }
         const secret = crypto.randomBytes(32).toString("hex");
         const connectHost = normalizeTunnelConnect(input.connectHost);
         const id = await db.createTunnel({
           ...input,
+          entryHostId,
+          exitHostId,
           fxpVersion: input.mode === "forwardx" ? input.fxpVersion : 1,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
@@ -147,7 +164,27 @@ export const tunnelsRouter = router({
           secret,
           userId: ctx.user.id,
         } as any);
-        pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
+        // Create hops for multi-hop tunnels
+        if (hopHostIds) {
+          const hops: { hostId: number; listenPort: number }[] = [];
+          for (let i = 0; i < hopHostIds.length; i++) {
+            let port = 0;
+            if (i === hopHostIds.length - 1) {
+              port = listenPort; // Last hop = exit listen port (auto-assigned above)
+            } else {
+              const host = await db.getHostById(hopHostIds[i]) as any;
+              port = await db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd) ?? 0;
+              if (!port) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
+            }
+            hops.push({ hostId: hopHostIds[i], listenPort: port });
+          }
+          await hopRepo.createTunnelHops(id, hops);
+        }
+        if (hopHostIds) {
+          for (const hostId of hopHostIds) pushAgentRefresh(hostId, "tunnel-created");
+        } else {
+          pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
+        }
         return { id, listenPort };
       }),
     update: protectedProcedure

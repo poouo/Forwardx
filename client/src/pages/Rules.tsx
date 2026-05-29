@@ -61,8 +61,6 @@ import {
 import {
   FORWARD_TYPES,
   FORWARD_TYPE_LABELS,
-  FORWARD_TYPES_WITH_APPROXIMATE_STATS,
-  APPROXIMATE_STATS_HINT,
   FORWARD_PROTOCOL_LABELS,
   normalizeForwardProtocolSettings,
   type ForwardType,
@@ -1030,57 +1028,38 @@ function RulesContent() {
     </div>
   );
 
-  const renderRouteBadge = (rule: any) => {
-    const isApproximate = FORWARD_TYPES_WITH_APPROXIMATE_STATS.has(rule.forwardType as ForwardType);
-    const badge = (
-      <Badge
-        variant="outline"
-        className={`whitespace-nowrap text-[10px] ${
-          rule.forwardGroupId
-            ? "border-emerald-500/30 text-emerald-600"
-            : rule.forwardType === "iptables" || rule.forwardType === "nftables"
-            ? "border-primary/30 text-primary"
-            : rule.forwardType === "socat"
-            ? "border-chart-5/30 text-chart-5"
-            : rule.forwardType === "gost"
-            ? "border-chart-4/30 text-chart-4"
-            : "border-chart-3/30 text-chart-3"
-        }`}
-      >
-        {rule.forwardGroupId ? (
-          <><Layers3 className="h-3 w-3 mr-1" />转发组</>
-        ) : rule.forwardType === "gost" && rule.tunnelId ? (
-          <><Network className="h-3 w-3 mr-1" />{tunnelDisplayById.get(Number(rule.tunnelId))?.badgeLabel || "隧道"}</>
-        ) : rule.forwardType === "iptables" ? (
-          <><Shield className="h-3 w-3 mr-1" />iptables</>
-        ) : rule.forwardType === "nftables" ? (
-          <><Shield className="h-3 w-3 mr-1" />nftables</>
-        ) : rule.forwardType === "socat" ? (
-          <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
-        ) : rule.forwardType === "gost" ? (
-          <><Network className="h-3 w-3 mr-1" />gost</>
-        ) : (
-          <><Zap className="h-3 w-3 mr-1" />realm</>
-        )}
-      </Badge>
-    );
-    if (!isApproximate) return badge;
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex items-center gap-1 cursor-help">
-              {badge}
-              <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[260px] text-xs">
-            {APPROXIMATE_STATS_HINT}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  };
+  const renderRouteBadge = (rule: any) => (
+    <Badge
+      variant="outline"
+      className={`whitespace-nowrap text-[10px] ${
+        rule.forwardGroupId
+          ? "border-emerald-500/30 text-emerald-600"
+          : rule.forwardType === "iptables" || rule.forwardType === "nftables"
+          ? "border-primary/30 text-primary"
+          : rule.forwardType === "socat"
+          ? "border-chart-5/30 text-chart-5"
+          : rule.forwardType === "gost"
+          ? "border-chart-4/30 text-chart-4"
+          : "border-chart-3/30 text-chart-3"
+      }`}
+    >
+      {rule.forwardGroupId ? (
+        <><Layers3 className="h-3 w-3 mr-1" />转发组</>
+      ) : rule.forwardType === "gost" && rule.tunnelId ? (
+        <><Network className="h-3 w-3 mr-1" />{tunnelDisplayById.get(Number(rule.tunnelId))?.badgeLabel || "隧道"}</>
+      ) : rule.forwardType === "iptables" ? (
+        <><Shield className="h-3 w-3 mr-1" />iptables</>
+      ) : rule.forwardType === "nftables" ? (
+        <><Shield className="h-3 w-3 mr-1" />nftables</>
+      ) : rule.forwardType === "socat" ? (
+        <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
+      ) : rule.forwardType === "gost" ? (
+        <><Network className="h-3 w-3 mr-1" />gost</>
+      ) : (
+        <><Zap className="h-3 w-3 mr-1" />realm</>
+      )}
+    </Badge>
+  );
 
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
@@ -1791,11 +1770,6 @@ function RulesContent() {
                       ))}
                     </SelectContent>
                   </Select>
-                  {FORWARD_TYPES_WITH_APPROXIMATE_STATS.has(form.forwardType as ForwardType) && (
-                    <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                      {APPROXIMATE_STATS_HINT}
-                    </p>
-                  )}
                 </div>
               )}
               <div className="space-y-2">

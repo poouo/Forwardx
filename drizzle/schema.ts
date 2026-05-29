@@ -288,6 +288,16 @@ export const tunnels = table("tunnels", {
 export type Tunnel = typeof tunnels.$inferSelect;
 export type InsertTunnel = typeof tunnels.$inferInsert;
 
+export const tunnelHops = table("tunnel_hops", {
+  id: serial("id"),
+  tunnelId: int("tunnelId").notNull(),
+  seq: int("seq").notNull(),
+  hostId: int("hostId").notNull(),
+  listenPort: int("listenPort").notNull().default(0),
+});
+export type TunnelHop = typeof tunnelHops.$inferSelect;
+export type InsertTunnelHop = typeof tunnelHops.$inferInsert;
+
 export const hostMetrics = table("host_metrics", {
   id: serial("id"),
   hostId: int("hostId").notNull(),

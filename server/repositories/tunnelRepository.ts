@@ -1,6 +1,6 @@
 ﻿import crypto from "crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { tunnels, InsertTunnel, forwardRules, userTunnelPermissions } from "../../drizzle/schema";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { tunnels, InsertTunnel, forwardRules, userTunnelPermissions, tunnelHops, InsertTunnelHop } from "../../drizzle/schema";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Tunnel Queries ====================
@@ -135,9 +135,9 @@ export async function findAvailableTunnelExitPort(
     eq(forwardRules.pendingDelete, false),
   ));
   const used = new Set<number>();
-  usedRulePorts.forEach((r) => used.add(Number(r.port)));
-  usedTunnelPorts.forEach((r) => used.add(Number(r.port)));
-  usedExitPorts.forEach((r) => {
+  usedRulePorts.forEach((r: any) => used.add(Number(r.port)));
+  usedTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
+  usedExitPorts.forEach((r: any) => {
     if (r.port != null) used.add(Number(r.port));
   });
   const highStart = Math.max(start, end - 9999);
@@ -234,5 +234,44 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
     if (!usedPorts.has(p)) return p;
   }
   return null;
+}
+
+// ==================== Tunnel Hops (Multi-hop) ====================
+
+export async function getTunnelHops(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(tunnelHops).where(eq(tunnelHops.tunnelId, tunnelId)).orderBy(asc(tunnelHops.seq));
+}
+
+export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number }[]) {
+  const db = await getDb();
+  if (!db || hops.length === 0) return;
+  // Delete existing hops first
+  await db.delete(tunnelHops).where(eq(tunnelHops.tunnelId, tunnelId));
+  // Insert new hops
+  for (let i = 0; i < hops.length; i++) {
+    await db.insert(tunnelHops).values({
+      tunnelId,
+      seq: i,
+      hostId: hops[i].hostId,
+      listenPort: hops[i].listenPort,
+    });
+  }
+}
+
+export async function deleteTunnelHops(tunnelId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(tunnelHops).where(eq(tunnelHops.tunnelId, tunnelId));
+}
+
+export async function getTunnelsByHopHost(hostId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
+  const ids = Array.from(new Set(rows.map((r: any) => r.tunnelId)));
+  if (ids.length === 0) return [];
+  return db.select().from(tunnels).where(sql`${tunnels.id} IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})`);
 }
 

@@ -4,6 +4,8 @@ import { AGENT_VERSION } from "./_core/systemRouter";
 import { isHostMetricsWatching } from "./agentEvents";
 import { isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
+import * as hopRepo from "./repositories/tunnelRepository";
+import crypto from "crypto";
 import {
   getForwardProtocolSettings,
   isRuleProtocolEnabled,
@@ -775,6 +777,116 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             fxpVersion: tunnelFxpVersion(tunnel),
           } : undefined,
         });
+      }
+    }
+
+    // ============ Multi-hop tunnel actions ============
+    const hopKey = (secret: string, idx: number) =>
+      crypto.createHash("sha256").update(`${secret}|hop|${idx}`).digest("hex");
+
+    // Find multi-hop tunnels involving this host
+    if (hostTunnels && hostTunnels.length > 0) {
+      for (const tunnel of hostTunnels as any[]) {
+        const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
+        if (!hops || hops.length < 2) continue; // Not a multi-hop tunnel
+
+        const hostIdx = hops.findIndex((h: any) => Number(h.hostId) === host.id);
+        if (hostIdx < 0) continue; // This host is not a hop in this tunnel
+
+        const isFXP = isForwardXTunnel(tunnel);
+        const tunnelKey = tunnelSecretSeed(tunnel);
+        const shouldApply = tunnel.isEnabled && !tunnel.isRunning;
+        const shouldRemove = !tunnel.isEnabled && tunnel.isRunning;
+
+        if (!shouldApply && !shouldRemove) continue;
+
+        const op = shouldApply ? "apply" : "remove";
+        const { seq, listenPort } = hops[hostIdx] as any;
+        const isFirst = seq === 0;
+        const isLast = seq === hops.length - 1;
+
+        if (isFXP) {
+          // ForwardX multi-hop
+          const fxpSpec: any = {
+            role: isFirst ? "entry" : isLast ? "exit" : "relay",
+            tunnelId: tunnel.id,
+            ruleId: 0,
+            listenPort: Number(listenPort),
+            protocol: "both",
+            key: hopKey(tunnelKey, seq),
+            fxpVersion: tunnelFxpVersion(tunnel),
+          };
+          if (isFirst) {
+            // Entry: connect to next hop
+            const nextHop = hops[1];
+            const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
+            const nextIp = nextHost ? (nextHost.entryIp || nextHost.ipv4 || nextHost.ipv6 || nextHost.ip || "") : "";
+            fxpSpec.exitHost = String(nextIp).trim();
+            fxpSpec.exitPort = Number(nextHop.listenPort);
+          } else if (!isLast) {
+            // Relay: receive from upstream, forward to downstream
+            const nextHop = hops[seq + 1];
+            const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
+            const nextIp = nextHost ? (nextHost.entryIp || nextHost.ipv4 || nextHost.ipv6 || nextHost.ip || "") : "";
+            fxpSpec.relayExitHost = String(nextIp).trim();
+            fxpSpec.relayExitPort = Number(nextHop.listenPort);
+            fxpSpec.relayKey = hopKey(tunnelKey, seq + 1);
+          }
+          // Exit (isLast): just listens, target from helloFrame via rules
+
+          actions.push({
+            tunnelId: tunnel.id,
+            statusType: "tunnel",
+            ruleId: 0,
+            op,
+            forwardType: "forwardx-tunnel",
+            sourcePort: Number(listenPort),
+            targetIp: host.ip,
+            targetPort: Number(listenPort),
+            protocol: "tcp",
+            commands: [],
+            fxp: shouldApply ? fxpSpec : undefined,
+          } as any);
+        } else {
+          // GOST multi-hop: each hop creates a GOST relay entry
+          // Entry listens and forwards to next hop; intermediate relays forward onward
+          const isGostEntry = isFirst;
+          const isGostExit = isLast;
+          if (shouldApply) {
+            const nextOrTargetAddr = isGostExit
+              ? `127.0.0.1:0` // Exit will have rules pointing to it
+              : (() => {
+                  const nextHop = hops[seq + 1];
+                  return `127.0.0.1:${nextHop.listenPort}`; // relay to next hop
+                })();
+            // Use buildTunnelReloadCmds for GOST config updates
+            actions.push({
+              tunnelId: tunnel.id,
+              statusType: "tunnel",
+              ruleId: 0,
+              op: "apply",
+              forwardType: "gost-tunnel",
+              sourcePort: Number(listenPort),
+              targetIp: host.ip,
+              targetPort: Number(listenPort),
+              protocol: "tcp",
+              commands: buildTunnelReloadCmds(),
+            } as any);
+          } else {
+            actions.push({
+              tunnelId: tunnel.id,
+              statusType: "tunnel",
+              ruleId: 0,
+              op: "remove",
+              forwardType: "gost-tunnel",
+              sourcePort: Number(listenPort),
+              targetIp: host.ip,
+              targetPort: Number(listenPort),
+              protocol: "tcp",
+              commands: buildTunnelReloadCmds(),
+            } as any);
+          }
+        }
       }
     }
 
