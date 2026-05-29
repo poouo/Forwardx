@@ -47,7 +47,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type GroupType = "host" | "tunnel";
@@ -119,6 +119,7 @@ function ForwardGroupsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<GroupForm>(makeDefaultForm());
+  const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
 
@@ -136,6 +137,7 @@ function ForwardGroupsContent() {
     setForm(makeDefaultForm());
     setEditingId(null);
     setDragMemberKey(null);
+    savedMembersRef.current = { host: [], tunnel: [] };
   };
 
   const openCreate = () => {
@@ -628,7 +630,14 @@ function ForwardGroupsContent() {
                 <Label>组类型</Label>
                 <Select
                   value={form.groupType}
-                  onValueChange={(v) => setForm({ ...form, groupType: v as GroupType, members: [] })}
+                  onValueChange={(v) => {
+                    const newType = v as GroupType;
+                    // Save current members before switching
+                    savedMembersRef.current[form.groupType] = form.members;
+                    // Restore saved members for the target type (or empty if never added)
+                    const restored = savedMembersRef.current[newType] || [];
+                    setForm({ ...form, groupType: newType, members: restored });
+                  }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
