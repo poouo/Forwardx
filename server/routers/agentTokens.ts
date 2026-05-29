@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { protectedProcedure, router } from "../_core/trpc";
-import { generateFullInstallScript } from "../agentInstallScripts";
+import { generateInstallScript } from "../agentInstallScripts";
 import * as db from "../db";
 import { maskToken } from "./helpers";
 
@@ -63,7 +63,7 @@ export const agentTokensRouter = router({
       const fallbackHost = reqAny?.get?.("host") || "localhost:3000";
       const fallbackProto = reqAny?.protocol || "http";
       const panelUrl = input.panelUrl || `${fallbackProto}://${fallbackHost}`;
-      const script = generateFullInstallScript(panelUrl, token.token);
+      const script = generateInstallScript(panelUrl, token.token);
       return { script, token: token.token };
     }),
 });

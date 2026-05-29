@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.32] - 2026-05-30
+
+### Added
+
+- Target addresses now support domain names in addition to IP addresses. The heartbeat handler resolves domains to IPs on each cycle and automatically re-applies forwarding rules when the resolved IP changes, ensuring forwarding stays online through DNS migrations.
+- Forwarding rules that use user-space proxies (realm, socat, gost) now show an amber notice in the UI that connection and IP counts are conntrack-based approximations.
+
+### Fixed
+
+- Fixed Go Agent connection count reporting that was storing absolute conntrack snapshot values instead of deltas, causing massively inflated connection totals in the dashboard.
+- Fixed counting chain traffic undercount in the shell-based Agent by removing it entirely and requiring the Go Agent binary for all installations. The Go Agent reads all five mangle hook points and takes the maximum to avoid double-counting.
+- Cleaned up stale filter-table cleanup commands in the server-side counting chain removal logic.
+
+### Changed
+
+- Rewrote the one-click install script as a self-contained Go Agent installer. The legacy shell-based Agent has been retired.
+- Bumped panel version to 2.3.32 and Agent target version to 2.2.53.
+
 ## [2.3.31] - 2026-05-29
 
 ### Fixed

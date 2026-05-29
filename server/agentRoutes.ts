@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { appendPanelLog } from "./_core/panelLogger";
-import { generateFullInstallScript, generateInstallScript } from "./agentInstallScripts";
+import { generateInstallScript } from "./agentInstallScripts";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
 import { agentEncryptionMiddleware } from "./agentEncryptionMiddleware";
 import { isAgentVersionAtLeast } from "./agentRouteUtils";
@@ -164,21 +164,9 @@ registerAgentReportRoutes(agentRouter);
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
   const panelUrl = await resolvePanelUrl(req);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(generateInstallScript(panelUrl));
-});
-
-// 完整安装脚本（由 Agent 引导脚本调用）
-agentRouter.get("/api/agent/full-install.sh", async (req: Request, res: Response) => {
-  const token = req.query.token as string;
-  if (!token) {
-    res.status(400).send("echo '[错误] 缺少 Token 参数'");
-    return;
-  }
-
-  const panelUrl = await resolvePanelUrl(req);
-
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(generateFullInstallScript(panelUrl, token));
+  // token 可选：如果 URL 中传了 token，嵌入脚本；否则从命令行参数读取
+  const token = (req.query.token as string) || "";
+  res.send(generateInstallScript(panelUrl, token || undefined));
 });
 
 export { agentRouter };

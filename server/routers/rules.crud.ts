@@ -27,7 +27,10 @@ export const crudRulesRouter = router({
       tunnelId: z.number().nullable().optional(),
       forwardGroupId: z.number().nullable().optional(),
       sourcePort: z.number().min(0).max(65535), // 0 = 随机分配
-      targetIp: z.string().min(1).max(64),
+      targetIp: z.string().min(1).max(253).refine(
+        (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
+        "请输入有效的 IP 地址或域名"
+      ),
       targetPort: z.number().min(1).max(65535),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -222,7 +225,10 @@ export const crudRulesRouter = router({
       tunnelExitPort: z.number().min(1).max(65535).nullable().optional(),
       forwardGroupId: z.number().nullable().optional(),
       sourcePort: z.number().min(1).max(65535).optional(),
-      targetIp: z.string().min(1).max(64).optional(),
+      targetIp: z.string().min(1).max(253).refine(
+        (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
+        "请输入有效的 IP 地址或域名"
+      ).optional(),
       targetPort: z.number().min(1).max(65535).optional(),
       isEnabled: z.boolean().optional(),
     }))

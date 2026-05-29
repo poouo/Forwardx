@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.52"
+var Version = "2.2.53"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -657,15 +657,16 @@ func collectTraffic(cfg Config) {
 		if forwardType == "nftables" {
 			in, out = nftablesBytes(ruleID, port)
 		}
-		prevRuleID, prevIn, prevOut := readPrev(port)
+		curConns := conntrackConnections(port)
+		prevRuleID, prevIn, prevOut, prevConns := readPrev(port)
 		if prevRuleID <= 0 || prevRuleID != ruleID {
 			prevIn, prevOut = in, out
+			prevConns = curConns
 		}
-		din, dout := delta(in, prevIn), delta(out, prevOut)
-		writePrev(port, ruleID, in, out)
-		conns := conntrackConnections(port)
-		if din > 0 || dout > 0 || conns > 0 {
-			stats = append(stats, map[string]any{"ruleId": ruleID, "bytesIn": din, "bytesOut": dout, "connections": conns})
+		din, dout, dconns := delta(in, prevIn), delta(out, prevOut), delta(curConns, prevConns)
+		writePrev(port, ruleID, in, out, curConns)
+		if din > 0 || dout > 0 || dconns > 0 {
+			stats = append(stats, map[string]any{"ruleId": ruleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 		}
 	}
 	if len(stats) > 0 {
@@ -792,28 +793,38 @@ func nftablesChainBytes(chain string) uint64 {
 	return v
 }
 
-func readPrev(port string) (int, uint64, uint64) {
-	b, err := os.ReadFile("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+func readPrev(port string) (int, uint64, uint64, uint64) {
+	raw, err := os.ReadFile("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	if err != nil {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) < 2 {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
+	// 4-line format (current): ruleID, in, out, conns
+	if len(lines) >= 4 {
+		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
+		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
+		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
+		prevConns, _ := strconv.ParseUint(strings.TrimSpace(lines[3]), 10, 64)
+		return rid, prevIn, prevOut, prevConns
+	}
+	// 3-line legacy format: ruleID, in, out (no conns)
 	if len(lines) >= 3 {
 		rid, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
-		a, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
-		c, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
-		return rid, a, c
+		prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
+		prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[2]), 10, 64)
+		return rid, prevIn, prevOut, 0
 	}
-	a, _ := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
-	c, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
-	return 0, a, c
+	// 2-line legacy format: in, out (no ruleID, no conns)
+	prevIn, _ := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
+	prevOut, _ := strconv.ParseUint(strings.TrimSpace(lines[1]), 10, 64)
+	return 0, prevIn, prevOut, 0
 }
 
-func writePrev(port string, ruleID int, in, out uint64) {
-	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n", ruleID, in, out)), 0644)
+func writePrev(port string, ruleID int, in, out, conns uint64) {
+	_ = os.WriteFile("/var/lib/forwardx-agent/traffic_"+port+".prev", []byte(fmt.Sprintf("%d\n%d\n%d\n%d\n", ruleID, in, out, conns)), 0644)
 }
 
 func delta(cur, prev uint64) uint64 {

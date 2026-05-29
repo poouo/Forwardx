@@ -9,6 +9,22 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
+import { isIP } from "net";
+import { resolve4 } from "dns/promises";
+
+// DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
+const resolvedIpCache = new Map<number, string>();
+
+async function resolveTargetIp(raw: string): Promise<string> {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return trimmed;
+  if (isIP(trimmed)) return trimmed;
+  try {
+    const ips = await resolve4(trimmed);
+    if (ips.length > 0) return ips[0];
+  } catch { /* fall through */ }
+  return trimmed; // 解析失败返回原值
+}
 
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => {
@@ -124,14 +140,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
       `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
       `iptables -t mangle -X FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -F FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -X FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -F FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -X FWX_OUT_${port} 2>/dev/null || true`,
       ];
       if (targetIp && Number(targetPort) > 0) {
         for (const proto of protos) {
@@ -223,8 +231,84 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       "",
     ].join("\n");
     const agentHostRules = await db.getForwardRulesForAgent(host.id);
+    // DNS 预解析：将域名转换为 IP，缓存中比较检测变更
+    const dnsChangedRuleIds = new Set<number>();
+    for (const rule of agentHostRules as any[]) {
+      if (!rule.targetIp) continue;
+      const resolved = await resolveTargetIp(rule.targetIp);
+      const cachedIp = resolvedIpCache.get(rule.id);
+      if (cachedIp && cachedIp !== resolved) {
+        // IP 变更：标记为需要重新下发
+        dnsChangedRuleIds.add(rule.id);
+      }
+      resolvedIpCache.set(rule.id, resolved);
+      // 保存原始值（域名），将 rule.targetIp 替换为解析后的 IP
+      (rule as any)._originalTargetIp = rule.targetIp;
+      rule.targetIp = resolved;
+    }
+
+    // DNS 变更的规则：生成清理旧 IP 规则的动作
+    const buildDnsChangeCleanup = (rule: any, oldIp: string): string[] => {
+      const port = rule.sourcePort;
+      const proto = rule.protocol === "both" ? "tcp" : (rule.protocol || "tcp");
+      const cmds: string[] = [];
+      if (rule.forwardType === "iptables") {
+        cmds.push(`iptables -t nat -D PREROUTING -p ${proto} --dport ${port} -j DNAT --to-destination ${oldIp}:${rule.targetPort} 2>/dev/null || true`);
+        cmds.push(`iptables -t nat -D POSTROUTING -p ${proto} -d ${oldIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
+        if (rule.protocol === "both") {
+          cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination ${oldIp}:${rule.targetPort} 2>/dev/null || true`);
+          cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${oldIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
+        }
+        cmds.push(`iptables -D FORWARD -p ${proto} -d ${oldIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
+        cmds.push(`iptables -D FORWARD -p ${proto} -s ${oldIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`);
+        // 清理旧 IP 对应的 mangle FORWARD 计数规则
+        cmds.push(`iptables -t mangle -D FORWARD -p tcp -d ${oldIp} --dport ${rule.targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
+        cmds.push(`iptables -t mangle -D FORWARD -p udp -d ${oldIp} --dport ${rule.targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
+        cmds.push(`iptables -t mangle -D FORWARD -p tcp -s ${oldIp} --sport ${rule.targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
+        cmds.push(`iptables -t mangle -D FORWARD -p udp -s ${oldIp} --sport ${rule.targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
+      } else if (rule.forwardType === "nftables") {
+        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx prerouting 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx prerouting handle "$h" 2>/dev/null || true; done`);
+        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx postrouting 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx postrouting handle "$h" 2>/dev/null || true; done`);
+        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx forward 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx forward handle "$h" 2>/dev/null || true; done`);
+      }
+      // 刷新计数链（apply 时会重建）
+      cmds.push(`iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`);
+      cmds.push(`iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`);
+      return cmds;
+    };
+
+    // 对 DNS 变更且正在运行的规则，先生成清理动作，再通过 isRunning=false 触发重新下发
+    for (const rule of agentHostRules as any[]) {
+      if (!dnsChangedRuleIds.has(rule.id)) continue;
+      if (!rule.isEnabled || !rule.isRunning) continue;
+      const oldIp = resolvedIpCache.get(rule.id) || rule._originalTargetIp || rule.targetIp;
+      const ruleResolvedIp = rule.targetIp; // 已经是新解析的 IP
+      const cleanupCmds = buildDnsChangeCleanup(rule, oldIp);
+      if (cleanupCmds.length > 0) {
+        actions.push({
+          ruleId: rule.id,
+          op: "remove",
+          forwardType: rule.forwardType,
+          sourcePort: rule.sourcePort,
+          targetIp: ruleResolvedIp,
+          targetPort: rule.targetPort,
+          protocol: rule.protocol,
+          networkInterface: hostInterface,
+          commands: cleanupCmds,
+        } as any);
+      }
+      // 重置 isRunning 让主循环生成 apply 动作
+      rule.isRunning = false;
+      console.log(`[DNS] rule=${rule.id} target changed: ${oldIp} → ${ruleResolvedIp}, re-applying`);
+    }
+
     const agentAllRules = await db.getForwardRulesForAgent(undefined);
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
+
+    // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
+    // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
+    const processTarget = (rule: any) => (rule as any)._originalTargetIp || rule.targetIp;
+
     const gostRules = agentHostRules
       .filter((r: any) => {
         if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost") return false;
@@ -370,7 +454,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             service.forwarder = {
               nodes: [{
                 name: `target-${r.id}`,
-                addr: `${r.targetIp}:${r.targetPort}`,
+                addr: `${processTarget(r)}:${r.targetPort}`,
                 connector: { type: proto },
                 dialer: { type: proto },
               }],
@@ -445,7 +529,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
         const targetAddr = hasProtocolPolicy(tunnel)
           ? `127.0.0.1:${guardListenPort(rule)}`
-          : `${rule.targetIp}:${rule.targetPort}`;
+          : `${processTarget(rule)}:${rule.targetPort}`;
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -777,7 +861,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const udpFlag = rule.protocol === "udp" || rule.protocol === "both" ? "--udp" : "";
           // 如果主机配置了网卡，realm 使用 --interface 绑定
           const ifaceFlag = hostInterface ? `--interface ${hostInterface}` : "";
-          const realmCmd = `/usr/local/bin/realm -l 0.0.0.0:${rule.sourcePort} -r ${rule.targetIp}:${rule.targetPort} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
+          const realmCmd = `/usr/local/bin/realm -l 0.0.0.0:${rule.sourcePort} -r ${processTarget(rule)}:${rule.targetPort} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
           const unit = [
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -836,7 +920,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat TCP-LISTEN:${rule.sourcePort},fork,reuseaddr TCP:${rule.targetIp}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat TCP-LISTEN:${rule.sourcePort},fork,reuseaddr TCP:${processTarget(rule)}:${rule.targetPort}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -852,7 +936,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat UDP-LISTEN:${rule.sourcePort},fork,reuseaddr UDP:${rule.targetIp}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat UDP-LISTEN:${rule.sourcePort},fork,reuseaddr UDP:${processTarget(rule)}:${rule.targetPort}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -881,7 +965,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             });
           } else {
             const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
-            const socatCmd = `/usr/bin/socat ${protoUpper}-LISTEN:${rule.sourcePort},fork,reuseaddr ${protoUpper}:${rule.targetIp}:${rule.targetPort}`;
+            const socatCmd = `/usr/bin/socat ${protoUpper}-LISTEN:${rule.sourcePort},fork,reuseaddr ${protoUpper}:${processTarget(rule)}:${rule.targetPort}`;
             const unit = [
               "[Unit]",
               `Description=ForwardX socat ${rule.protocol} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
