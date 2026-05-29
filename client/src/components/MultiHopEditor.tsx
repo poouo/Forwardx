@@ -1,30 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ReactFlow,
-  Controls,
-  Background,
-  MiniMap,
-  addEdge,
-  useNodesState,
-  useEdgesState,
-  type Connection,
-  type Node,
-  type Edge,
-  MarkerType,
-  BackgroundVariant,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Trash2, ArrowRight } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus, Trash2, GripVertical, ArrowDown } from "lucide-react";
 
 interface Host {
   id: number;
   name: string;
-  entryIp?: string;
-  ipv4?: string;
-  ipv6?: string;
-  ip?: string;
+}
+
+interface HopEntry {
+  hostId: number;
+  hostName: string;
 }
 
 interface MultiHopEditorProps {
@@ -33,249 +26,194 @@ interface MultiHopEditorProps {
   onChange?: (hopHostIds: number[]) => void;
 }
 
+const ROLE_LABELS: Record<number, string> = { 0: "入口", "-1": "出口" };
 const ROLE_COLORS: Record<string, string> = {
-  entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
-  relay: "border-amber-500/40 bg-amber-500/10 text-amber-600",
-  exit: "border-blue-500/40 bg-blue-500/10 text-blue-600",
+  first: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
+  mid: "border-amber-500/40 bg-amber-500/10 text-amber-600",
+  last: "border-blue-500/40 bg-blue-500/10 text-blue-600",
 };
-
-const ROLE_LABELS: Record<string, string> = {
-  entry: "入口",
-  relay: "中转",
-  exit: "出口",
-};
-
-function buildInitial(hosts: Host[], initialHopIds?: number[]) {
-  const selectedIds = initialHopIds || [];
-  const selected = selectedIds
-    .map((id) => hosts.find((h) => h.id === id))
-    .filter(Boolean) as Host[];
-
-  const nodes: Node[] = selected.map((host, i) => ({
-    id: `hop-${host.id}`,
-    type: "default",
-    position: { x: i * 220, y: 80 },
-    data: {
-      label: host.name,
-      hostId: host.id,
-      role: i === 0 ? "entry" : i === selected.length - 1 ? "exit" : "relay",
-    },
-  }));
-
-  const edges: Edge[] = [];
-  for (let i = 0; i < selected.length - 1; i++) {
-    edges.push({
-      id: `edge-${selected[i].id}-${selected[i + 1].id}`,
-      source: `hop-${selected[i].id}`,
-      target: `hop-${selected[i + 1].id}`,
-      type: "smoothstep",
-      animated: true,
-      markerEnd: { type: MarkerType.ArrowClosed },
-      style: { stroke: "#6366f1", strokeWidth: 2 },
-    });
-  }
-
-  return { nodes, edges };
-}
 
 export default function MultiHopEditor({ hosts, initialHopIds, onChange }: MultiHopEditorProps) {
-  const initial = useMemo(() => buildInitial(hosts, initialHopIds), [hosts, initialHopIds]);
-  const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
+  const [hops, setHops] = useState<HopEntry[]>(() => {
+    if (!initialHopIds?.length) return [];
+    return initialHopIds
+      .map((id) => hosts.find((h) => h.id === id))
+      .filter(Boolean)
+      .map((h) => ({ hostId: h!.id, hostName: h!.name }));
+  });
 
+  const prevRef = useRef<string>("");
+  const hostById = new Map(hosts.map((h) => [h.id, h]));
+
+  // Sync initialHopIds when editing existing tunnel
   useEffect(() => {
-    const currentJson = JSON.stringify(initialHopIds || []);
-    const nodesJson = JSON.stringify(nodes.map(n => n.data.hostId));
-    // Only reset from props if they differ (not on every render)
-    if (currentJson !== nodesJson && initialHopIds?.length) {
-      const { nodes: newNodes, edges: newEdges } = buildInitial(hosts, initialHopIds);
-      setNodes(newNodes);
-      setEdges(newEdges);
+    const json = JSON.stringify(initialHopIds || []);
+    const currentJson = JSON.stringify(hops.map((h) => h.hostId));
+    if (json !== prevRef.current && initialHopIds?.length && currentJson !== json) {
+      prevRef.current = json;
+      const restored = initialHopIds
+        .map((id) => hosts.find((h) => h.id === id))
+        .filter(Boolean)
+        .map((h) => ({ hostId: h!.id, hostName: h!.name }));
+      setHops(restored);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(initialHopIds), hosts]);
+  }, [initialHopIds, hosts, hops]);
 
-  const onConnect = useCallback(
-    (conn: Connection) => {
-      // Only allow one incoming and one outgoing per node
-      const hasOutgoing = edges.some((e) => e.source === conn.source);
-      const hasIncoming = edges.some((e) => e.target === conn.target);
-      if (hasOutgoing || hasIncoming) return;
-      setEdges((eds) => addEdge({ ...conn, type: "smoothstep", animated: true, markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: "#6366f1", strokeWidth: 2 } }, eds));
-    },
-    [edges, setEdges],
-  );
-
-  const orderedHopIds = useMemo(() => {
-    if (edges.length === 0) {
-      return nodes.map((n) => n.data.hostId as number);
-    }
-    // Topological sort: find the node with no incoming edges (entry)
-    const inDegree = new Map<string, number>();
-    const outMap = new Map<string, string[]>();
-    for (const e of edges) {
-      inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
-      const outs = outMap.get(e.source) || [];
-      outs.push(e.target);
-      outMap.set(e.source, outs);
-    }
-    // Start from node with no incoming edges
-    const startNode = nodes.find((n) => !inDegree.has(n.id));
-    if (!startNode) return nodes.map((n) => n.data.hostId as number);
-
-    const order: string[] = [];
-    const visited = new Set<string>();
-    const queue = [startNode.id];
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      order.push(id);
-      const children = outMap.get(id) || [];
-      queue.push(...children);
-    }
-    return order.map((nodeId) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      return node?.data.hostId as number;
-    }).filter(Boolean);
-  }, [nodes, edges]);
-
-  const prevHopIdsRef = useRef<string>("");
+  // Notify parent of changes
   useEffect(() => {
-    const json = JSON.stringify(orderedHopIds);
-    if (json !== prevHopIdsRef.current && orderedHopIds.length > 0) {
-      prevHopIdsRef.current = json;
-      onChange?.(orderedHopIds);
+    const ids = hops.map((h) => h.hostId);
+    const json = JSON.stringify(ids);
+    if (json !== prevRef.current && ids.length > 0) {
+      prevRef.current = json;
+      onChange?.(ids);
     }
-  }, [orderedHopIds, onChange]);
+  }, [hops, onChange]);
 
-  const addHost = (host: Host) => {
-    if (nodes.some((n) => n.data.hostId === host.id)) return;
-    const idx = nodes.length;
-    const newNode: Node = {
-      id: `hop-${host.id}-${Date.now()}`,
-      type: "default",
-      position: { x: idx * 220, y: 80 },
-      data: { label: host.name, hostId: host.id, role: "relay" },
-    };
-    setNodes((nds) => [...nds, newNode]);
+  const selectedIds = new Set(hops.map((h) => h.hostId));
+  const availableHosts = hosts.filter((h) => !selectedIds.has(h.id));
 
-    // Auto-connect to last node if exists
-    if (nodes.length > 0) {
-      const lastNode = nodes[nodes.length - 1];
-      setEdges((eds) => [...eds, {
-        id: `edge-${lastNode.data.hostId}-${host.id}`,
-        source: lastNode.id,
-        target: newNode.id,
-        type: "smoothstep",
-        animated: true,
-        markerEnd: { type: MarkerType.ArrowClosed },
-        style: { stroke: "#6366f1", strokeWidth: 2 },
-      }]);
-    }
+  const addHop = (hostId: string) => {
+    const id = Number(hostId);
+    if (!id || selectedIds.has(id)) return;
+    const host = hostById.get(id);
+    if (!host) return;
+    setHops((prev) => [...prev, { hostId: host.id, hostName: host.name }]);
   };
 
-  const removeNode = (nodeId: string) => {
-    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
-    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+  const removeHop = (idx: number) => {
+    setHops((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const selectedHostIds = new Set(nodes.map((n) => n.data.hostId as number));
-  const availableHosts = hosts.filter((h) => !selectedHostIds.has(h.id));
+  const moveHop = (fromIdx: number, toIdx: number) => {
+    if (toIdx < 0 || toIdx >= hops.length) return;
+    setHops((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, item);
+      return next;
+    });
+  };
+
+  // HTML5 drag-and-drop handlers
+  const dragIdxRef = useRef<number>(-1);
+  const onDragStart = (idx: number) => (e: React.DragEvent) => {
+    dragIdxRef.current = idx;
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const onDragOver = (idx: number) => (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  };
+  const onDrop = (idx: number) => () => {
+    const from = dragIdxRef.current;
+    if (from >= 0 && from !== idx) moveHop(from, idx);
+    dragIdxRef.current = -1;
+  };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">多级隧道链路</span>
-        <span className="text-xs text-muted-foreground">
-          点击主机添加，拖拽端口连线，按链路顺序连接
-        </span>
+        <span className="text-xs text-muted-foreground">上到下依次为 入口 → 中转 → 出口</span>
       </div>
 
-      <div className="flex gap-3">
-        {/* Host selector sidebar */}
-        <div className="w-40 shrink-0 space-y-1.5">
-          <p className="text-[11px] text-muted-foreground">可用主机</p>
-          {availableHosts.length === 0 && (
-            <p className="text-[11px] text-muted-foreground italic">已全部添加</p>
-          )}
-          {availableHosts.map((host) => (
-            <button
-              key={host.id}
-              className="flex w-full items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-left text-xs hover:bg-accent transition-colors"
-              onClick={() => addHost(host)}
-            >
-              <Plus className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="truncate">{host.name}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Flow canvas */}
-        <div className="flex-1 rounded-lg border border-border bg-card" style={{ height: 280 }}>
-          {nodes.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              从左侧点击主机添加到链路
-            </div>
-          ) : (
-            <ReactFlow
-              nodes={nodes.map((n, i) => {
-                const role = i === 0 ? "entry" : i === nodes.length - 1 ? "exit" : "relay";
-                return {
-                  ...n,
-                  data: { ...n.data, role },
-                  style: {
-                    padding: "10px 14px",
-                    borderRadius: 8,
-                    border: "2px solid",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    width: 140,
-                  },
-                };
-              })}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              fitView
-              fitViewOptions={{ padding: 0.3 }}
-              proOptions={{ hideAttribution: true }}
-              nodesDraggable
-              nodesConnectable
-              elementsSelectable
-              deleteKeyCode={["Backspace", "Delete"]}
-              onNodesDelete={(deleted) => {
-                // Already handled by React Flow's built-in deletion
-              }}
-            >
-              <Controls showInteractive={false} />
-              <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
-              <MiniMap
-                style={{ width: 120, height: 80 }}
-                nodeColor={(n) => {
-                  const role = n.data?.role || "relay";
-                  return role === "entry" ? "#10b981" : role === "exit" ? "#3b82f6" : "#f59e0b";
-                }}
-              />
-            </ReactFlow>
-          )}
-        </div>
+      {/* Add host selector */}
+      <div className="flex items-center gap-2">
+        <Select value="" onValueChange={addHop}>
+          <SelectTrigger className="h-9 text-sm">
+            <SelectValue placeholder="添加主机到链路..." />
+          </SelectTrigger>
+          <SelectContent>
+            {availableHosts.length === 0 && (
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
+            )}
+            {availableHosts.map((host) => (
+              <SelectItem key={host.id} value={String(host.id)}>
+                {host.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {hops.length > 0 && (
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {hops.length} 台主机
+          </span>
+        )}
       </div>
 
-      {/* Node role legend */}
-      {nodes.length > 0 && (
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-muted-foreground">链路顺序：</span>
-          {nodes.map((n, i) => {
-            const role = i === 0 ? "entry" : i === nodes.length - 1 ? "exit" : "relay";
+      {/* Hop list with drag-to-reorder */}
+      {hops.length === 0 ? (
+        <div className="flex items-center justify-center rounded-lg border border-dashed border-border py-8 text-sm text-muted-foreground">
+          从上方下拉框添加主机到链路
+        </div>
+      ) : (
+        <div className="space-y-1 rounded-lg border border-border bg-card p-2">
+          {hops.map((hop, i) => {
+            const isFirst = i === 0;
+            const isLast = i === hops.length - 1;
+            const role = isFirst ? "入口" : isLast ? "出口" : "中转";
+            const roleColor = isFirst ? "first" : isLast ? "last" : "mid";
+
             return (
-              <span key={n.id} className="flex items-center gap-1">
-                {i > 0 && <ArrowRight className="h-3 w-3 text-muted-foreground" />}
-                <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${ROLE_COLORS[role]}`}>
-                  {(n.data as any).label as string} · {ROLE_LABELS[role]}
+              <div
+                key={`${hop.hostId}-${i}`}
+                className="flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-colors hover:border-border"
+                draggable
+                onDragStart={onDragStart(i)}
+                onDragOver={onDragOver(i)}
+                onDrop={onDrop(i)}
+              >
+                {/* Drag handle */}
+                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing" />
+
+                {/* Sequence badge */}
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                  {i + 1}
+                </span>
+
+                {/* Host name */}
+                <span className="flex-1 truncate text-sm font-medium">{hop.hostName}</span>
+
+                {/* Role badge */}
+                <Badge variant="outline" className={`text-[10px] px-1.5 py-0 shrink-0 ${ROLE_COLORS[roleColor]}`}>
+                  {role}
                 </Badge>
-              </span>
+
+                {/* Move up */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  disabled={isFirst}
+                  onClick={() => moveHop(i, i - 1)}
+                  title="上移"
+                >
+                  <ArrowDown className="h-3 w-3 rotate-180" />
+                </Button>
+
+                {/* Move down */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  disabled={isLast}
+                  onClick={() => moveHop(i, i + 1)}
+                  title="下移"
+                >
+                  <ArrowDown className="h-3 w-3" />
+                </Button>
+
+                {/* Delete */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeHop(i)}
+                  title="移除"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             );
           })}
         </div>
