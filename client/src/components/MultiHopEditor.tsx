@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Controls,
@@ -84,10 +84,16 @@ export default function MultiHopEditor({ hosts, initialHopIds, onChange }: Multi
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
 
   useEffect(() => {
-    const { nodes: newNodes, edges: newEdges } = buildInitial(hosts, initialHopIds);
-    setNodes(newNodes);
-    setEdges(newEdges);
-  }, [hosts, initialHopIds, setNodes, setEdges]);
+    const currentJson = JSON.stringify(initialHopIds || []);
+    const nodesJson = JSON.stringify(nodes.map(n => n.data.hostId));
+    // Only reset from props if they differ (not on every render)
+    if (currentJson !== nodesJson && initialHopIds?.length) {
+      const { nodes: newNodes, edges: newEdges } = buildInitial(hosts, initialHopIds);
+      setNodes(newNodes);
+      setEdges(newEdges);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(initialHopIds), hosts]);
 
   const onConnect = useCallback(
     (conn: Connection) => {
@@ -134,8 +140,13 @@ export default function MultiHopEditor({ hosts, initialHopIds, onChange }: Multi
     }).filter(Boolean);
   }, [nodes, edges]);
 
+  const prevHopIdsRef = useRef<string>("");
   useEffect(() => {
-    onChange?.(orderedHopIds);
+    const json = JSON.stringify(orderedHopIds);
+    if (json !== prevHopIdsRef.current && orderedHopIds.length > 0) {
+      prevHopIdsRef.current = json;
+      onChange?.(orderedHopIds);
+    }
   }, [orderedHopIds, onChange]);
 
   const addHost = (host: Host) => {
