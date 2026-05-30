@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.58"
+var Version = "2.2.59"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -413,6 +413,7 @@ func handleAction(cfg Config, a action) {
 	ok := true
 	actionMessage := &actionMessage{}
 	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
+	logActionPortHandoff(a)
 	if a.Op == "apply" {
 		if a.Unit != "" && a.ServiceName != "" {
 			ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
@@ -446,6 +447,44 @@ func handleAction(cfg Config, a action) {
 		logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
 	} else {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
+	}
+}
+
+func logActionPortHandoff(a action) {
+	if a.SourcePort <= 0 {
+		return
+	}
+	port := strconv.Itoa(a.SourcePort)
+	localRuleID := readRuleIDByPort(port)
+	localForwardType := readForwardTypeByPort(port)
+	if localRuleID <= 0 && localForwardType == "" {
+		return
+	}
+	if a.Op == "apply" && (localRuleID != a.RuleID || (localForwardType != "" && localForwardType != a.ForwardType)) {
+		logf(
+			"runtime handoff port=%d oldRule=%d oldForwardType=%s newRule=%d newForwardType=%s tunnel=%d hasFXP=%v commands=%d",
+			a.SourcePort,
+			localRuleID,
+			localForwardType,
+			a.RuleID,
+			a.ForwardType,
+			a.TunnelID,
+			a.Fxp != nil,
+			len(a.Commands),
+		)
+	}
+	if a.Op == "remove" {
+		logf(
+			"runtime remove port=%d localRule=%d localForwardType=%s rule=%d forwardType=%s tunnel=%d hasFXP=%v commands=%d",
+			a.SourcePort,
+			localRuleID,
+			localForwardType,
+			a.RuleID,
+			a.ForwardType,
+			a.TunnelID,
+			a.Fxp != nil,
+			len(a.Commands),
+		)
 	}
 }
 
@@ -999,6 +1038,9 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		} else {
 			actionMessage.set("fxp runtime exited immediately")
 		}
+		if owner := listenPortOwnerSummary(spec.ListenPort); owner != "" {
+			logf("fxp listen port owner role=%s tunnel=%d rule=%d listen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, owner)
+		}
 		return false
 	case <-time.After(300 * time.Millisecond):
 	}
@@ -1400,6 +1442,87 @@ func runShell(cmd string) bool {
 	return true
 }
 
+func listenPortOwnerSummary(port int) string {
+	if port <= 0 {
+		return ""
+	}
+	portText := strconv.Itoa(port)
+	type probe struct {
+		name       string
+		args       []string
+		filterPort bool
+	}
+	probes := []probe{
+		{name: "ss", args: []string{"-ltnup"}, filterPort: true},
+		{name: "lsof", args: []string{"-nP", "-iTCP:" + portText, "-sTCP:LISTEN"}},
+		{name: "lsof", args: []string{"-nP", "-iUDP:" + portText}},
+		{name: "fuser", args: []string{"-v", "-n", "tcp", portText}},
+		{name: "fuser", args: []string{"-v", "-n", "udp", portText}},
+	}
+	for _, p := range probes {
+		if _, err := exec.LookPath(p.name); err != nil {
+			continue
+		}
+		out, _ := exec.Command(p.name, p.args...).CombinedOutput()
+		text := strings.TrimSpace(string(out))
+		if p.filterPort {
+			text = filterListenPortLines(text, portText)
+		}
+		if text == "" {
+			continue
+		}
+		return compactLogOutput(p.name + " " + strings.Join(p.args, " ") + ": " + text)
+	}
+	return ""
+}
+
+func filterListenPortLines(text, portText string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	matched := []string{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if listenPortLineMatches(line, portText) {
+			matched = append(matched, line)
+		}
+	}
+	return strings.Join(matched, "\n")
+}
+
+func listenPortLineMatches(line, portText string) bool {
+	needle := ":" + portText
+	offset := 0
+	for {
+		idx := strings.Index(line[offset:], needle)
+		if idx < 0 {
+			return false
+		}
+		end := offset + idx + len(needle)
+		if end >= len(line) || line[end] < '0' || line[end] > '9' {
+			return true
+		}
+		offset = end
+	}
+}
+
+func compactLogOutput(text string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n"), "\n")
+	parts := []string{}
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	compact := strings.Join(parts, " | ")
+	if len(compact) > 900 {
+		return compact[:900] + "..."
+	}
+	return compact
+}
+
 func osInfo() string {
 	if b, err := os.ReadFile("/etc/os-release"); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
@@ -1595,7 +1718,7 @@ func rememberAgentLog(message, createdAt string) {
 
 func isImportantAgentLog(message string) bool {
 	lower := strings.ToLower(message)
-	keywords := []string{"error", "failed", "warn", "timeout", "upgrade", "selftest", "protocol", "fxp", "migrated"}
+	keywords := []string{"error", "failed", "warn", "timeout", "upgrade", "selftest", "protocol", "fxp", "migrated", "runtime", "handoff"}
 	for _, keyword := range keywords {
 		if strings.Contains(lower, keyword) {
 			return true

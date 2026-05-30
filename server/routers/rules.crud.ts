@@ -215,6 +215,7 @@ export const crudRulesRouter = router({
   update: protectedProcedure
     .input(z.object({
       id: z.number(),
+      hostId: z.number().optional(),
       name: z.string().min(1).max(128).optional(),
       forwardType: forwardTypeSchema.optional(),
       protocol: z.enum(["tcp", "udp", "both"]).optional(),
@@ -270,6 +271,7 @@ export const crudRulesRouter = router({
           isForwardGroupTemplate: true,
         };
         delete data.id;
+        delete data.hostId;
         const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
@@ -284,6 +286,7 @@ export const crudRulesRouter = router({
       let selectedTunnelForRule: any = null;
       let nextTunnelIdForRule: number | null = null;
       let nextForwardTypeForRule = rule.forwardType;
+      let nextHostIdForRule = Number(input.hostId ?? rule.hostId);
       {
         const nextForwardType = input.forwardType ?? rule.forwardType;
         nextForwardTypeForRule = nextForwardType;
@@ -294,9 +297,7 @@ export const crudRulesRouter = router({
           const access = await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelIdForRule);
           selectedTunnelForRule = access.tunnel;
           if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
-          if (selectedTunnelForRule.entryHostId !== rule.hostId) {
-            throw new Error("Tunnel entry host must match the rule host");
-          }
+          nextHostIdForRule = Number(selectedTunnelForRule.entryHostId);
           if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx") {
             const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!access.isTrafficBillingResource });
             if (!(owner as any)?.canAddRules) {
@@ -305,46 +306,55 @@ export const crudRulesRouter = router({
           }
         }
       }
+      const nextIsTunnelForward = nextForwardTypeForRule === "gost" && Number(nextTunnelIdForRule || 0) > 0;
+      if (!nextIsTunnelForward && input.hostId !== undefined && Number(input.hostId) !== Number(rule.hostId)) {
+        throw new Error("端口转发不支持直接切换入口，请新建规则");
+      }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
       if (!nextTunnelIdForRule) {
-        await requireHostUseAccess(ctx, rule.hostId);
+        await requireHostUseAccess(ctx, nextHostIdForRule);
       }
 
       if (input.isEnabled === true && ctx.user.role !== "admin") {
         const activeTunnelId = Number(nextTunnelIdForRule || 0);
         const resourceAccess = activeTunnelId
           ? await requireTunnelUseOrTrafficBillingAccess(ctx, activeTunnelId)
-          : await requireHostUseAccess(ctx, rule.hostId);
+          : await requireHostUseAccess(ctx, nextHostIdForRule);
         const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!resourceAccess.isTrafficBillingResource });
         if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
           throw new Error("套餐已到期，请续费后再启用规则");
         }
       }
 
-      if (input.sourcePort) {
-        const host = await db.getHostById(rule.hostId);
+      const nextSourcePortForRule = input.sourcePort ?? rule.sourcePort;
+      const shouldCheckSourcePort = input.sourcePort !== undefined
+        || Number(nextHostIdForRule) !== Number(rule.hostId)
+        || Number(nextTunnelIdForRule || 0) !== Number((rule as any).tunnelId || 0);
+      if (shouldCheckSourcePort) {
+        const host = await db.getHostById(nextHostIdForRule);
         if (host) {
           const rangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
           const rangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
           if (rangeStart != null && rangeEnd != null) {
-            if (input.sourcePort < rangeStart || input.sourcePort > rangeEnd) {
+            if (nextSourcePortForRule < rangeStart || nextSourcePortForRule > rangeEnd) {
               throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
             }
           }
           if (ctx.user.role !== "admin") {
-            const planRange = await db.getUserPlanPortRange(ctx.user.id, rule.hostId, nextTunnelIdForRule || undefined);
-            if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
+            const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostIdForRule, nextTunnelIdForRule || undefined);
+            if (planRange && (nextSourcePortForRule < planRange.start || nextSourcePortForRule > planRange.end)) {
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }
-          const used = await db.isPortUsedOnHost(rule.hostId, input.sourcePort, rule.id);
+          const used = await db.isPortUsedOnHost(nextHostIdForRule, nextSourcePortForRule, rule.id);
           if (used) {
-            throw new Error(`端口 ${input.sourcePort} 已被其他规则占用`);
+            throw new Error(`端口 ${nextSourcePortForRule} 已被其他规则占用`);
           }
         }
       }
 
       const { id, ...data } = input;
+      (data as any).hostId = nextHostIdForRule;
       if ((data.forwardType ?? rule.forwardType) !== "gost") {
         (data as any).gostMode = "direct";
         (data as any).gostRelayHost = null;
@@ -359,7 +369,7 @@ export const crudRulesRouter = router({
         if (nextTunnelId) {
           const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId)).tunnel;
           if (!tunnel.isEnabled) throw new Error("所选隧道已停用");
-          if (tunnel.entryHostId !== rule.hostId) {
+          if (Number(tunnel.entryHostId) !== Number(nextHostIdForRule)) {
             throw new Error("所选隧道的入口 Agent 必须与规则所属主机一致");
           }
           if (nextTunnelId !== (rule as any).tunnelId || !(rule as any).tunnelExitPort) {
@@ -377,7 +387,7 @@ export const crudRulesRouter = router({
       }
       if (data.isEnabled === true) {
         const sourcePort = Number(data.sourcePort ?? rule.sourcePort);
-        const used = await db.isPortUsedOnHost(rule.hostId, sourcePort, rule.id);
+        const used = await db.isPortUsedOnHost(nextHostIdForRule, sourcePort, rule.id);
         if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;
         (data as any).disabledByTunnel = false;
@@ -395,6 +405,7 @@ export const crudRulesRouter = router({
         "gostRelayPort",
         "tunnelId",
         "tunnelExitPort",
+        "hostId",
       ];
       const keyFieldChanged = watchedFields.some((f) => {
         const v = data[f];
@@ -409,6 +420,10 @@ export const crudRulesRouter = router({
           const affectedTunnel = await db.getTunnelById(affectedTunnelId);
           await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
           if (affectedTunnel) pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
+        }
+        if (Number(rule.hostId) !== Number(nextHostIdForRule)) {
+          pushAgentRefresh(Number(rule.hostId), "forward-rule-updated-old-host");
+          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host");
         }
       }
       await db.updateForwardRule(id, data);

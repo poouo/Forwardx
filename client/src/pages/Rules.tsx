@@ -813,6 +813,7 @@ function RulesContent() {
     if (editingId) {
       updateMutation.mutate({
         id: editingId,
+        hostId: form.routeMode === "group" ? undefined : form.hostId!,
         name: form.name,
         forwardType: form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel" ? "gost" : form.forwardType,
         protocol: form.protocol,

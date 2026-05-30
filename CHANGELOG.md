@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.47] - 2026-05-30
+
+### Fixed
+
+- Prevented regular port forwarding rules from being edited directly onto a different entry host.
+- Allowed tunnel forwarding rule edits to switch to tunnels with different entry hosts by rebinding the rule to the selected tunnel entry.
+- Added Agent runtime handoff and bind-owner logs to diagnose GOST/ForwardX tunnel switching on reused entry ports.
+
+### Changed
+
+- Bumped panel version to 2.3.47 and Agent target version to 2.2.59.
+
 ## [2.3.46] - 2026-05-30
 
 ### Fixed
