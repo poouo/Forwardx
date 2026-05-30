@@ -9,7 +9,7 @@ import {
   tcpingStats, InsertTcpingStat,
   tunnelLatencyStats, InsertTunnelLatencyStat,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, getDatabaseKind, nowDate } from "../dbRuntime";
+import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw } from "../dbRuntime";
 import { clampPositiveInt } from "./repositoryUtils";
 
 // ==================== Host Metrics Queries ====================
@@ -356,22 +356,50 @@ export async function cleanOldTcpingStats(retainHours: number = 48) {
   await db.delete(tcpingStats).where(sql`${tcpingStats.recordedAt} < ${cutoff}`);
 }
 
-export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise<number> {
+export type TimedOutForwardTest = {
+  id: number;
+  ruleId: number;
+  hostId: number;
+  message: string | null;
+};
+
+export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise<TimedOutForwardTest[]> {
   const db = await getDb();
-  if (!db) return 0;
+  if (!db) return [];
   const cutoffSec = Math.floor((Date.now() - ttlSeconds * 1000) / 1000);
   const nowSec = Math.floor(Date.now() / 1000);
+  const staleTests = await queryRaw<TimedOutForwardTest>(
+    `SELECT id, ruleId, hostId, message
+     FROM forward_tests
+     WHERE status IN ('pending', 'running')
+       AND updatedAt < ?`,
+    [cutoffSec],
+  );
+  if (staleTests.length === 0) return [];
   const messageExpr = getDatabaseKind() === "sqlite"
     ? "('自测超时：Agent 未在' || ? || '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')"
     : "CONCAT('自测超时：Agent 未在', ?, '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')";
+  const ids = staleTests.map((test) => Number(test.id)).filter((id) => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
   const info: any = await executeRaw(
     `UPDATE forward_tests
      SET status = 'timeout',
          message = COALESCE(NULLIF(message, ''), ${messageExpr}),
          updatedAt = ?
-     WHERE status IN ('pending', 'running')
+     WHERE id IN (${placeholders})
+       AND status IN ('pending', 'running')
        AND updatedAt < ?`,
-    [ttlSeconds, nowSec, cutoffSec],
+    [ttlSeconds, nowSec, ...ids, cutoffSec],
   );
-  return Number(info?.affectedRows ?? info?.changes ?? 0);
+  const changed = Number(info?.affectedRows ?? info?.changes ?? 0);
+  if (changed <= 0) return [];
+  return queryRaw<TimedOutForwardTest>(
+    `SELECT id, ruleId, hostId, message
+     FROM forward_tests
+     WHERE id IN (${placeholders})
+       AND status = 'timeout'
+       AND updatedAt = ?`,
+    [...ids, nowSec],
+  );
 }

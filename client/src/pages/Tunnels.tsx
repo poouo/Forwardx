@@ -166,6 +166,12 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 
+const tunnelRuntimeFamily = (mode?: string | null) =>
+  String(mode || "").toLowerCase() === "forwardx" ? "forwardx" : "gost";
+
+const isEstablishedMultiHopTunnel = (tunnel: any | null | undefined) =>
+  Array.isArray(tunnel?.hopHostIds) && tunnel.hopHostIds.length >= 3;
+
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
@@ -417,17 +423,23 @@ function TunnelSelfTestDialog({
               {isTesting ? "正在测试中" : isSuccess && latencyMs !== null && latencyMs !== undefined ? `${latencyMs} ms` : "--"}
             </span>
           </div>
+          {!isTesting && isFailed && tunnel?.lastTestMessage && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+              <span className="font-medium">失败原因：</span>
+              <span className="break-all">{tunnel.lastTestMessage}</span>
+            </div>
+          )}
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             onClick={() => testMutation.mutate({ id: tunnelId })}
-            disabled={testMutation.isPending}
+            disabled={isTesting}
             className="gap-2"
           >
-            {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
-            运行测试
+            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+            {isTesting ? "测试中..." : "运行测试"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -482,6 +494,12 @@ function TunnelsContent() {
     isReady: !isLoading && !!tunnels,
   });
   const pagedTunnels = tunnelPagination.items;
+  const editingTunnel = useMemo(
+    () => editingId ? (tunnels || []).find((tunnel: any) => Number(tunnel.id) === Number(editingId)) || null : null,
+    [editingId, tunnels]
+  );
+  const lockRuntimeFamily = isEstablishedMultiHopTunnel(editingTunnel);
+  const runtimeFamilyLockTitle = "多级隧道创建后不能在 GOST 和 ForwardX 自定义加密之间切换，请删除后重新添加";
   const selectedExitHost = useMemo(
     () => hosts?.find((h: any) => h.id === form.exitHostId),
     [hosts, form.exitHostId]
@@ -595,6 +613,14 @@ function TunnelsContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
+    if (
+      lockRuntimeFamily
+      && editingTunnel
+      && tunnelRuntimeFamily(form.mode) !== tunnelRuntimeFamily(editingTunnel.mode)
+    ) {
+      toast.error(runtimeFamilyLockTitle);
+      return;
+    }
     let hasPrivateHop = false;
     for (let i = 1; i < orderedHopConnectHosts.length; i++) {
       const value = String(orderedHopConnectHosts[i] || "").trim();
@@ -631,6 +657,9 @@ function TunnelsContent() {
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+  const editingRuntimeFamily = tunnelRuntimeFamily(editingTunnel?.mode);
+  const gostRuntimeDisabled = enabledGostTunnelModes.length === 0 || (lockRuntimeFamily && editingRuntimeFamily === "forwardx");
+  const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false || (lockRuntimeFamily && editingRuntimeFamily === "gost");
   const handleViewModeChange = (nextViewMode: TunnelViewMode) => {
     setViewMode(nextViewMode);
     storeTunnelViewMode(nextViewMode);
@@ -1150,13 +1179,13 @@ function TunnelsContent() {
                     const nextMode = enabledGostTunnelModes.includes(form.mode) ? form.mode : enabledGostTunnelModes[0];
                     if (nextMode) setForm({ ...form, mode: nextMode });
                   }}
-                  disabled={enabledGostTunnelModes.length === 0}
-                  title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
+                  disabled={gostRuntimeDisabled}
+                  title={lockRuntimeFamily && editingRuntimeFamily === "forwardx" ? runtimeFamilyLockTitle : (enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined)}
                   className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
                     gostTunnelModes.includes(form.mode)
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
-                  } ${enabledGostTunnelModes.length === 0 ? "cursor-not-allowed opacity-50" : ""}`}
+                  } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <Network className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                   <span className="space-y-1">
@@ -1173,13 +1202,13 @@ function TunnelsContent() {
                       fxpVersion: hasExplicitFxpVersion ? prev.fxpVersion : 2,
                     }))
                   }
-                  disabled={forwardProtocolSettings.forwardx === false}
-                  title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
+                  disabled={forwardxRuntimeDisabled}
+                  title={lockRuntimeFamily && editingRuntimeFamily === "gost" ? runtimeFamilyLockTitle : (forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined)}
                   className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
                     form.mode === "forwardx"
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
-                  } ${forwardProtocolSettings.forwardx === false ? "cursor-not-allowed opacity-50" : ""}`}
+                  } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                   <span className="space-y-1">
@@ -1188,6 +1217,11 @@ function TunnelsContent() {
                   </span>
                 </button>
               </div>
+              {lockRuntimeFamily && (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
+                  {runtimeFamilyLockTitle}
+                </p>
+              )}
             </div>
             {form.mode !== "forwardx" && enabledGostTunnelModes.length === 0 && (
               <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">

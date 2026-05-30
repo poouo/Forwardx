@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.48] - 2026-05-30
+
+### Fixed
+
+- Fixed tunnel latency self-tests getting stuck in `pending` when an Agent did not report back before the timeout window.
+- Prevented repeated tunnel latency self-test clicks while a test is already running.
+- Prevented established multi-hop tunnels from switching between GOST and ForwardX custom-encryption runtime families; delete and recreate the tunnel instead.
+
+### Changed
+
+- Added a confirmation dialog before bulk one-click Agent upgrades are dispatched.
+- Bumped panel version to 2.3.48. Agent target version remains 2.2.59.
+
 ## [2.3.47] - 2026-05-30
 
 ### Fixed

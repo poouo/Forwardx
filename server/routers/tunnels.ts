@@ -15,6 +15,9 @@ const MAX_TUNNEL_HOPS = 5;
 const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.literal("2")])
   .transform((value) => Number(value));
 
+const tunnelRuntimeFamily = (mode?: string | null) =>
+  String(mode || "").toLowerCase() === "forwardx" ? "forwardx" : "gost";
+
 const normalizeTunnelConnect = (connectHost?: string | null) => {
   const host = String(connectHost || "").trim();
   if (!host) return null;
@@ -239,9 +242,18 @@ export const tunnelsRouter = router({
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
-        await requireTunnelProtocolEnabled({ ...tunnel, mode: input.mode ?? tunnel.mode });
         const existingHops = await hopRepo.getTunnelHops(input.id);
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
+        const existingIsMultiHop = existingHopHostIds.length >= 3;
+        const nextModeForRuntime = input.mode ?? (tunnel as any).mode;
+        if (
+          existingIsMultiHop
+          && input.mode !== undefined
+          && tunnelRuntimeFamily(input.mode) !== tunnelRuntimeFamily((tunnel as any).mode)
+        ) {
+          throw new Error("多级隧道创建后不支持在 GOST 和 ForwardX 自定义加密之间切换，请删除后重新添加");
+        }
+        await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
           ? ((input as any).hopHostIds as number[]).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
           : undefined;

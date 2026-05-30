@@ -1,7 +1,17 @@
 import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
+import { appendPanelLog } from "./_core/panelLogger";
+import { parseSelfTestMeta } from "./agentRouteUtils";
 import { getEmailConfig, sendMail } from "./email";
 import { sendTelegramMessage } from "./telegramBot";
+import { recordTunnelHopTestResult } from "./tunnelHopTestState";
+
+type TimedOutForwardTest = {
+  id: number;
+  ruleId: number;
+  hostId: number;
+  message: string | null;
+};
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -75,11 +85,55 @@ async function runExpirationCheck() {
   }
 }
 
+async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], ttlSeconds: number) {
+  const settledTunnelIds = new Set<number>();
+
+  const settleTunnel = async (tunnelId: number, message: string, logSuffix: string) => {
+    if (!Number.isFinite(tunnelId) || tunnelId <= 0 || settledTunnelIds.has(tunnelId)) return;
+    settledTunnelIds.add(tunnelId);
+    await db.updateTunnelRunningStatus(tunnelId, false);
+    await db.updateTunnelTestResult(tunnelId, { status: "failed", latencyMs: null, message });
+    await db.insertTunnelLatencyStat({ tunnelId, latencyMs: null, isTimeout: true });
+    appendPanelLog("warn", `[TunnelTest] tunnel=${tunnelId} timeout after ${ttlSeconds}s ${logSuffix}`);
+  };
+
+  for (const test of timedOutTests) {
+    const meta = parseSelfTestMeta(test.message);
+    if (!meta || typeof meta.tunnelId !== "number") continue;
+
+    if (meta.kind === "tunnel") {
+      await settleTunnel(
+        meta.tunnelId,
+        `隧道链路自测超时：Agent 未在 ${ttlSeconds} 秒内上报结果`,
+        `test=${test.id} host=${test.hostId}`,
+      );
+      continue;
+    }
+
+    if (meta.kind === "tunnel-hop") {
+      const hopLabel = String((meta as any).hopLabel || "hop");
+      const message = `多级隧道逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const aggregate = recordTunnelHopTestResult(Number(test.id), {
+        success: false,
+        latencyMs: null,
+        message,
+        hopLabel,
+      });
+      if (aggregate) {
+        await settleTunnel(aggregate.tunnelId, aggregate.message, `test=${test.id} aggregate=true`);
+      } else {
+        await settleTunnel(meta.tunnelId, message, `test=${test.id} host=${test.hostId} hop=${hopLabel}`);
+      }
+    }
+  }
+}
+
 async function runSelfTestTimeoutSweep() {
   try {
-    const n = await db.timeoutStaleForwardTests(60);
-    if (n > 0) {
-      console.log(`[Scheduler] Self-test timeout sweep: ${n} test(s) marked as timeout`);
+    const timedOutTests = await db.timeoutStaleForwardTests(60);
+    if (timedOutTests.length > 0) {
+      await settleTimedOutTunnelTests(timedOutTests, 60);
+      console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }
   } catch (error) {
     console.error("[Scheduler] Self-test timeout sweep error:", error);

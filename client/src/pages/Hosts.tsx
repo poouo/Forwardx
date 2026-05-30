@@ -417,6 +417,7 @@ function HostsContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
+  const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -468,6 +469,7 @@ function HostsContent() {
   const upgradeAgentsMutation = trpc.hosts.requestAgentUpgradeMany.useMutation({
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
+      setBulkUpgradeDialogOpen(false);
       toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台`);
     },
     onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
@@ -603,6 +605,14 @@ function HostsContent() {
   const requestAllAgentUpgrades = () => {
     if (bulkUpgradeableHosts.length === 0) {
       toast.info("暂无需要升级的 Agent");
+      return;
+    }
+    setBulkUpgradeDialogOpen(true);
+  };
+  const confirmAllAgentUpgrades = () => {
+    if (bulkUpgradeableHosts.length === 0) {
+      toast.info("暂无需要升级的 Agent");
+      setBulkUpgradeDialogOpen(false);
       return;
     }
     upgradeAgentsMutation.mutate({
@@ -960,6 +970,48 @@ function HostsContent() {
             >
               {upgradeAgentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               {upgradeAgentMutation.isPending ? "下发中..." : "确认升级"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Agent Upgrade Dialog */}
+      <Dialog open={bulkUpgradeDialogOpen} onOpenChange={setBulkUpgradeDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="h-5 w-5 text-primary" />
+              一键升级 Agent
+            </DialogTitle>
+            <DialogDescription>
+              点击确认后才会向可升级的 Agent 下发升级任务。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">升级数量</span>
+              <span className="font-medium">{bulkUpgradeableHosts.length} 台</span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">目标版本</span>
+              <span className="font-mono">v{latestAgentVersion || "-"}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setBulkUpgradeDialogOpen(false)}
+              disabled={upgradeAgentsMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
+              onClick={confirmAllAgentUpgrades}
+            >
+              {upgradeAgentsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {upgradeAgentsMutation.isPending ? "下发中..." : "确认升级"}
             </Button>
           </DialogFooter>
         </DialogContent>
