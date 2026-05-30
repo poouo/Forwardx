@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.42] - 2026-05-30
+
+### Fixed
+
+- Fixed ForwardX multi-hop tunnels so rule traffic enters the configured hop chain instead of bypassing relay nodes.
+- Fixed FXP relay downstream encryption handshakes to use the relay segment key, restoring data forwarding through multi-hop relay chains.
+- Allowed intermediate tunnel hop Agents to report tunnel runtime status.
+
+### Changed
+
+- Bumped panel version to 2.3.42 and Agent target version to 2.2.55.
+
 ## [2.3.32] - 2026-05-30
 
 ### Added

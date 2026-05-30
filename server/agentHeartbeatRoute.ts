@@ -408,7 +408,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!exit) return "";
       return hostTunnelAddress(exit);
     };
-    const tunnelExitHostById = new Map<number, string>();
+    const tunnelExitEndpointById = new Map<number, { host: string; port: number }>();
     const hostIngressAddressById = new Map<number, string>();
     const getHostIngressAddress = async (hostId: number) => {
       const id = Number(hostId);
@@ -420,17 +420,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       hostIngressAddressById.set(id, addr);
       return addr;
     };
+    const getHopDialAddress = async (hop: any) => {
+      const configured = String((hop as any)?.connectHost || "").trim();
+      if (configured) return configured;
+      return getHostIngressAddress(Number((hop as any)?.hostId));
+    };
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.entryHostId === host.id && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
-        tunnelExitHostById.set(tunnel.id, await tunnelExitHostAddress(tunnel));
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        const nextHop = Array.isArray(hops) && hops.length >= 2 ? (hops[1] as any) : null;
+        tunnelExitEndpointById.set(tunnel.id, {
+          host: nextHop ? await getHopDialAddress(nextHop) : await tunnelExitHostAddress(tunnel),
+          port: nextHop ? Number(nextHop.listenPort) : Number(tunnel.listenPort),
+        });
       }
     }
     const tunnelProbes = (hostTunnels as any[])
       .filter((tunnel: any) => tunnel.entryHostId === host.id && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel))
       .map((tunnel: any) => ({
         tunnelId: tunnel.id,
-        targetIp: tunnelExitHostById.get(tunnel.id) || "",
-        targetPort: Number(tunnel.listenPort) || 0,
+        targetIp: tunnelExitEndpointById.get(tunnel.id)?.host || "",
+        targetPort: Number(tunnelExitEndpointById.get(tunnel.id)?.port) || 0,
         protocol: "tcp",
       }))
       .filter((probe: any) => probe.targetIp && probe.targetPort > 0);
@@ -465,7 +475,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (tunnel && isForwardXTunnel(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
         return protos.map((proto) => {
-          const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
+          const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
@@ -493,7 +503,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       .flatMap((r: any) => {
         const tunnel = tunnelById.get((r as any).tunnelId) as any;
         if (isForwardXTunnel(tunnel)) return [];
-        const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
+        const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
         if (!tunnel || !tunnelExitHost || !(r as any).tunnelExitPort) return [];
         const tunnelHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
         const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
@@ -798,6 +808,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.exitHostId !== host.id) continue;
+      const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+      if (Array.isArray(existingHops) && existingHops.length >= 3) continue;
       const fxpTunnel = isForwardXTunnel(tunnel);
       const shouldRefreshExit = fxpTunnel
         ? !tunnel.isRunning
@@ -865,8 +877,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         const isFXP = isForwardXTunnel(tunnel);
         const tunnelKey = tunnelSecretSeed(tunnel);
-        const shouldApply = tunnel.isEnabled && !tunnel.isRunning;
-        const shouldRemove = !tunnel.isEnabled && tunnel.isRunning;
+        const shouldApply = isFXP ? tunnel.isEnabled : tunnel.isEnabled && !tunnel.isRunning;
+        const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && tunnel.isRunning;
 
         if (!shouldApply && !shouldRemove) continue;
 
@@ -876,9 +888,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const isLast = seq === hops.length - 1;
 
         if (isFXP) {
+          if (isFirst) continue;
           // ForwardX multi-hop
           const fxpSpec: any = {
-            role: isFirst ? "entry" : isLast ? "exit" : "relay",
+            role: isLast ? "exit" : "relay",
             tunnelId: tunnel.id,
             ruleId: 0,
             listenPort: Number(listenPort),
@@ -886,18 +899,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             key: hopKey(tunnelKey, seq),
             fxpVersion: tunnelFxpVersion(tunnel),
           };
-          if (isFirst) {
-            // Entry: connect to next hop
-            const nextHop = hops[1];
-            const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
-            const nextIp = nextHost ? hostTunnelAddress(nextHost) : "";
-            fxpSpec.exitHost = String(nextIp).trim();
-            fxpSpec.exitPort = Number(nextHop.listenPort);
-          } else if (!isLast) {
+          if (!isLast) {
             // Relay: receive from upstream, forward to downstream
             const nextHop = hops[seq + 1];
-            const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
-            const nextIp = nextHost ? hostTunnelAddress(nextHost) : "";
+            const nextIp = await getHopDialAddress(nextHop);
             fxpSpec.relayExitHost = String(nextIp).trim();
             fxpSpec.relayExitPort = Number(nextHop.listenPort);
             fxpSpec.relayKey = hopKey(tunnelKey, seq + 1);
@@ -915,7 +920,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: Number(listenPort),
             protocol: "tcp",
             commands: [],
-            fxp: shouldApply ? fxpSpec : undefined,
+            fxp: fxpSpec,
           } as any);
         } else {
           // GOST multi-hop: each hop creates a GOST relay entry
@@ -979,7 +984,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
       }
 
-      if (rule.isEnabled && !rule.isRunning) {
+      const isForwardXMultiHopRule = !!ruleTunnel
+        && isForwardXTunnel(ruleTunnel)
+        && Array.isArray(tunnelHopsByTunnelId.get(Number(ruleTunnel.id)))
+        && (tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) || []).length >= 3;
+      if (rule.isEnabled && (!rule.isRunning || isForwardXMultiHopRule)) {
         const cmds: string[] = [];
         if (rule.forwardType === "iptables") {
           const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
@@ -1176,7 +1185,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         } else if (rule.forwardType === "gost") {
           const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
           if (tunnel && isForwardXTunnel(tunnel)) {
-            const tunnelExitHost = tunnelExitHostById.get(tunnel.id);
+            const tunnelHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+            const nextHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[1] as any) : null;
+            const tunnelEndpoint = tunnelExitEndpointById.get(tunnel.id);
+            const tunnelExitHost = nextHop ? await getHopDialAddress(nextHop) : tunnelEndpoint?.host;
+            const tunnelExitPort = nextHop ? Number(nextHop.listenPort) : Number(tunnel.listenPort);
+            const tunnelKey = nextHop ? hopKey(tunnelSecretSeed(tunnel), Number(nextHop.seq)) : tunnelSecretSeed(tunnel);
             const rateLimits = userRateLimits(Number(rule.userId));
             const accessLimits = userAccessLimits(Number(rule.userId));
             actions.push({
@@ -1188,7 +1202,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
-              commands: [
+              commands: rule.isRunning && isForwardXMultiHopRule ? [] : [
                 ...buildGostReloadCmds(),
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -1200,10 +1214,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 listenPort: rule.sourcePort,
                 protocol: rule.protocol,
                 exitHost: tunnelExitHost,
-                exitPort: tunnel.listenPort,
+                exitPort: tunnelExitPort,
                 targetIp: rule.targetIp,
                 targetPort: rule.targetPort,
-                key: tunnelSecretSeed(tunnel),
+                key: tunnelKey,
                 fxpVersion: tunnelFxpVersion(tunnel),
                 ...rateLimits,
                 ...accessLimits,

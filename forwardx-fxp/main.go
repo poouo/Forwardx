@@ -618,7 +618,9 @@ func handleRelaySession(upConn net.Conn, cfg config, upstreamAEAD, downstreamAEA
 		return err
 	}
 	defer downConn.Close()
-	downSec, err := newEntrySecureConn(downConn, cfg, downstreamAEAD)
+	downCfg := cfg
+	downCfg.Key = cfg.RelayKey
+	downSec, err := newEntrySecureConn(downConn, downCfg, downstreamAEAD)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { appendPanelLog } from "./_core/panelLogger";
 import { pushAgentRefresh } from "./agentEvents";
+import * as hopRepo from "./repositories/tunnelRepository";
 
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
@@ -80,7 +81,10 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         return;
       }
       const tunnel = await db.getTunnelById(tunnelId);
-      if (!tunnel || (tunnel.entryHostId !== host.id && tunnel.exitHostId !== host.id)) {
+      const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
+      const isTunnelHop = Array.isArray(hops)
+        && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
+      if (!tunnel || (tunnel.entryHostId !== host.id && tunnel.exitHostId !== host.id && !isTunnelHop)) {
         res.status(404).json({ error: "tunnel not found" });
         return;
       }

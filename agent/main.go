@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.54"
+var Version = "2.2.55"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
