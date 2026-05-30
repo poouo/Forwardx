@@ -122,6 +122,22 @@ function isValidConnectHost(value: string) {
   return true;
 }
 
+function sameNumberArray(a: number[], b: number[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameNullableStringArray(a: Array<string | null>, b: Array<string | null>) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if ((a[i] || null) !== (b[i] || null)) return false;
+  }
+  return true;
+}
+
 function tunnelEndpointName(tunnel: any | null | undefined, role: "entry" | "exit", hosts: any[] | undefined) {
   const hostId = Number(role === "entry" ? tunnel?.entryHostId : tunnel?.exitHostId);
   const fromList = hosts?.find((host: any) => Number(host.id) === hostId);
@@ -1097,22 +1113,37 @@ function TunnelsContent() {
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
                 onChange={(ids) => {
-                  const normalizedConnectHosts = [...form.hopConnectHosts].slice(0, ids.length);
-                  while (normalizedConnectHosts.length < ids.length) normalizedConnectHosts.push(null);
-                  normalizedConnectHosts[0] = null;
-                  setForm({
-                    ...form,
-                    hopHostIds: ids,
-                    entryHostId: ids[0] ?? null,
-                    exitHostId: ids.length > 1 ? ids[ids.length - 1] : null,
-                    hopConnectHosts: normalizedConnectHosts,
+                  setForm((prev) => {
+                    const normalizedConnectHosts = [...prev.hopConnectHosts].slice(0, ids.length);
+                    while (normalizedConnectHosts.length < ids.length) normalizedConnectHosts.push(null);
+                    normalizedConnectHosts[0] = null;
+                    const nextEntry = ids[0] ?? null;
+                    const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
+                    if (
+                      sameNumberArray(prev.hopHostIds, ids)
+                      && prev.entryHostId === nextEntry
+                      && prev.exitHostId === nextExit
+                      && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
+                    ) {
+                      return prev;
+                    }
+                    return {
+                      ...prev,
+                      hopHostIds: ids,
+                      entryHostId: nextEntry,
+                      exitHostId: nextExit,
+                      hopConnectHosts: normalizedConnectHosts,
+                    };
                   });
                 }}
                 onConnectHostsChange={(hopConnectHosts) => {
-                  const normalizedConnectHosts = [...hopConnectHosts].slice(0, form.hopHostIds.length);
-                  while (normalizedConnectHosts.length < form.hopHostIds.length) normalizedConnectHosts.push(null);
-                  normalizedConnectHosts[0] = null;
-                  setForm({ ...form, hopConnectHosts: normalizedConnectHosts });
+                  setForm((prev) => {
+                    const normalizedConnectHosts = [...hopConnectHosts].slice(0, prev.hopHostIds.length);
+                    while (normalizedConnectHosts.length < prev.hopHostIds.length) normalizedConnectHosts.push(null);
+                    normalizedConnectHosts[0] = null;
+                    if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
+                    return { ...prev, hopConnectHosts: normalizedConnectHosts };
+                  });
                 }}
               />
             </div>
