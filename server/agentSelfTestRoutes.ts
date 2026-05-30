@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { parseSelfTestMeta } from "./agentRouteUtils";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
+import { appendPanelLog } from "./_core/panelLogger";
 
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
@@ -136,6 +137,12 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       } else {
         console.warn(`[SelfTest] tunnel rule entry-port test=${testId} tunnel=${meta.tunnelId} failed entry=${entryTarget} target=${finalTarget}: ${cleanMessage || "unknown"}`);
       }
+    }
+    if (!meta) {
+      appendPanelLog(
+        success ? "info" : "warn",
+        `[SelfTest] rule=${t.ruleId} direct test=${testId} host=${host.id} success=${success} latency=${success && cleanLatency !== null ? `${cleanLatency}ms` : "-"}${cleanMessage ? ` message=${cleanMessage}` : ""}`,
+      );
     }
     res.json({ success: true });
   } catch (error) {

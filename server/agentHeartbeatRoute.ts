@@ -1601,7 +1601,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       panelUrl: await resolvePanelUrl(req),
     } : null;
 
-    const orderedActions = actions.slice().sort((a: any, b: any) => {
+    const normalizedActions = actions.map((action: any) => ({
+      ...action,
+      statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
+    }));
+    const orderedActions = normalizedActions.slice().sort((a: any, b: any) => {
       if (a.op === b.op) return 0;
       return a.op === "remove" ? -1 : 1;
     });

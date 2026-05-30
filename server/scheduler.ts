@@ -133,6 +133,12 @@ async function runSelfTestTimeoutSweep() {
     const timedOutTests = await db.timeoutStaleForwardTests(60);
     if (timedOutTests.length > 0) {
       await settleTimedOutTunnelTests(timedOutTests, 60);
+      for (const test of timedOutTests) {
+        const meta = parseSelfTestMeta(test.message);
+        if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
+        const tunnelPart = meta && typeof meta.tunnelId === "number" ? ` tunnel=${meta.tunnelId}` : "";
+        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${tunnelPart} host=${test.hostId} timeout after 60s test=${test.id}`);
+      }
       console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }
   } catch (error) {

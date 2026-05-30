@@ -58,6 +58,9 @@ export const selfTestRulesRouter = router({
         forwardOk: false,
         message,
       });
+      if (!(rule as any).tunnelId) {
+        appendPanelLog("info", `[SelfTest] rule=${rule.id} queued direct test=${id} from host=${hostId} to target=${rule.targetIp}:${rule.targetPort}`);
+      }
       return { id };
     }),
 

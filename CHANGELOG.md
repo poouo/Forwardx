@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.64] - 2026-05-30
+
+### Fixed
+
+- Added panel logs for direct forwarding rule self-test queue, result, and timeout events so stuck tests show their rule, host, and reason.
+- Normalized Agent action `statusType` values before dispatch so plain rule actions no longer log an empty status type.
+
+### Changed
+
+- Bumped panel version to 2.3.64. Agent target version remains 2.2.61.
+
 ## [2.3.63] - 2026-05-30
 
 ### Fixed
