@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.59] - 2026-05-30
+
+### Fixed
+
+- Routed GOST multi-hop business traffic through per-rule relay ports so middle hops forward to the correct rule-specific exit port instead of the generic tunnel probe port.
+
+### Changed
+
+- Bumped panel version to 2.3.59. Agent target version remains 2.2.60.
+
 ## [2.3.58] - 2026-05-30
 
 ### Fixed
