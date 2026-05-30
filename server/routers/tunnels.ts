@@ -1,4 +1,4 @@
-import { protectedProcedure, router } from "../_core/trpc";
+﻿import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
 const isValidHostOrIp = (value: string) => /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(value) && value.length <= 253;
@@ -86,7 +86,7 @@ export const tunnelsRouter = router({
       return attachTunnelEndpointHosts(tunnels as any[]);
     }),
     listAll: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role !== "admin") throw new Error("无权访问");
+      if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
       return db.getTunnels();
     }),
     latencySeries: protectedProcedure
@@ -126,7 +126,7 @@ export const tunnelsRouter = router({
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts) ? (input as any).hopConnectHosts as Array<string | null> : [];
         if (hopHostIds) {
           // Multi-hop tunnel: validate hosts
-          if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道的主机不能重复");
+          if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
           if (input.listenPort !== 0) throw new Error("多级隧道端口由系统自动分配");
         } else {
@@ -145,9 +145,9 @@ export const tunnelsRouter = router({
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : input.exitHostId;
 
         let listenPort = Number(input.listenPort) || 0;
-        if (!hopHostIds) {
+        {
+          const exit = await db.getHostById(exitHostId) as any;
           if (listenPort > 0) {
-            const exit = await db.getHostById(exitHostId) as any;
             const start = exit?.portRangeStart;
             const end = exit?.portRangeEnd;
             if (start != null && end != null && (listenPort < start || listenPort > end)) {
@@ -158,7 +158,6 @@ export const tunnelsRouter = router({
             const tunnelUsed = await db.isTunnelListenPortUsed(exitHostId, listenPort);
             if (tunnelUsed) throw new Error(`出口 Agent 端口 ${listenPort} 已被其他隧道占用`);
           } else {
-            const exit = await db.getHostById(exitHostId) as any;
             listenPort = await db.findAvailableTunnelExitPort(exitHostId, exit?.portRangeStart, exit?.portRangeEnd) ?? 0;
             if (!listenPort) throw new Error("出口 Agent 已无可用隧道端口");
           }
@@ -192,7 +191,7 @@ export const tunnelsRouter = router({
             } else {
               const host = await db.getHostById(hopHostIds[i]) as any;
               port = await db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd) ?? 0;
-              if (!port) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
+              if (!port) throw new Error(`涓绘満 ${host?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
             const normalizedHopConnectHost = rawConnectHost ? normalizeTunnelConnect(rawConnectHost) : null;
@@ -243,7 +242,7 @@ export const tunnelsRouter = router({
         const hopHostIds = requestedHopHostIds && requestedHopHostIds.length >= 3 ? requestedHopHostIds : null;
         const switchToRegular = requestedHopHostIds !== undefined && requestedHopHostIds.length <= 2;
         if (hopHostIds) {
-          if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道的主机不能重复");
+          if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
         }
         const entryHostId = hopHostIds ? hopHostIds[0] : (input.entryHostId ?? tunnel.entryHostId);
@@ -307,7 +306,7 @@ export const tunnelsRouter = router({
             } else {
               const hopHost = await db.getHostById(hopHostIds[i]) as any;
               port = await db.findAvailableTunnelExitPort(hopHostIds[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
-              if (!port) throw new Error(`主机 ${hopHost?.name || hopHostIds[i]} 已无可用端口`);
+              if (!port) throw new Error(`涓绘満 ${hopHost?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
             const normalizedHopConnectHost = rawConnectHost ? normalizeTunnelConnect(rawConnectHost) : null;
@@ -368,7 +367,17 @@ export const tunnelsRouter = router({
           );
         }
         const target = getTunnelDialHost(tunnel, exit);
-        const targetPort = Number(tunnel.listenPort);
+        let targetPort = Number(tunnel.listenPort) || 0;
+        if (targetPort <= 0) {
+          const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
+          if (Array.isArray(hops) && hops.length >= 2) {
+            targetPort = Number((hops[hops.length - 1] as any).listenPort) || 0;
+            if (targetPort > 0) {
+              await db.updateTunnel(tunnel.id, { listenPort: targetPort } as any);
+              appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort repaired from hops: ${targetPort}`);
+            }
+          }
+        }
         if (!target || !targetPort) {
           const message = `TUNNEL_TEST_TARGET_INVALID target=${target || "-"} port=${targetPort || "-"}`;
           await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
@@ -394,3 +403,4 @@ export const tunnelsRouter = router({
         return { success: false, latencyMs: null, message, pending: true };
       }),
   });
+

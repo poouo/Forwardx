@@ -72,7 +72,6 @@ type TunnelForm = {
   exitHostId: number | null;
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
-  flowDirection: "forward" | "reverse";
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   fxpVersion: 1 | 2;
   listenPort: number;
@@ -97,7 +96,6 @@ const defaultForm: TunnelForm = {
   exitHostId: null,
   hopHostIds: [],
   hopConnectHosts: [],
-  flowDirection: "forward",
   mode: "forwardx",
   fxpVersion: 2,
   listenPort: 0,
@@ -502,7 +500,6 @@ function TunnelsContent() {
       exitHostId: null,
       hopHostIds: [],
       hopConnectHosts: [],
-      flowDirection: "forward",
     });
     setShowDialog(true);
   };
@@ -518,8 +515,7 @@ function TunnelsContent() {
         : [tunnel.entryHostId, tunnel.exitHostId],
       hopConnectHosts: Array.isArray(tunnel.hopConnectHosts) && tunnel.hopConnectHosts.length >= 2
         ? tunnel.hopConnectHosts
-        : [null, tunnel.connectHost || null],
-      flowDirection: "forward",
+        : [null, null],
       mode: tunnel.mode || "tls",
       fxpVersion: normalizeFxpVersion(tunnel.fxpVersion),
       listenPort: tunnel.listenPort,
@@ -567,13 +563,8 @@ function TunnelsContent() {
       toast.error("请填写隧道名称并至少选择两台主机");
       return;
     }
-    const orderedHopHostIds = form.flowDirection === "reverse"
-      ? [...form.hopHostIds].reverse()
-      : [...form.hopHostIds];
-    const orderedHopConnectHosts = (form.flowDirection === "reverse"
-      ? [...form.hopConnectHosts].reverse()
-      : [...form.hopConnectHosts])
-      .slice(0, orderedHopHostIds.length);
+    const orderedHopHostIds = [...form.hopHostIds];
+    const orderedHopConnectHosts = [...form.hopConnectHosts].slice(0, orderedHopHostIds.length);
     while (orderedHopConnectHosts.length < orderedHopHostIds.length) orderedHopConnectHosts.push(null);
     if (orderedHopConnectHosts.length > 0) orderedHopConnectHosts[0] = null;
     const entryHostId = orderedHopHostIds[0] || 0;
@@ -1134,29 +1125,6 @@ function TunnelsContent() {
                   });
                 }}
               />
-            </div>
-            <div className="space-y-2">
-              <Label>流量走向</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                    form.flowDirection === "forward" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"
-                  }`}
-                  onClick={() => setForm({ ...form, flowDirection: "forward" })}
-                >
-                  按当前顺序
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                    form.flowDirection === "reverse" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"
-                  }`}
-                  onClick={() => setForm({ ...form, flowDirection: "reverse" })}
-                >
-                  反向走流量
-                </button>
-              </div>
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
