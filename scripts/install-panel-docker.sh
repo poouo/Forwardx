@@ -102,6 +102,34 @@ fetch_source_refs() {
     "+refs/tags/*:refs/tags/*"
 }
 
+git_ref_exists() {
+  git -C "$APP_DIR" rev-parse --verify --quiet "$1^{commit}" >/dev/null
+}
+
+resolve_checkout_target() {
+  local target="$1"
+  local without_v=""
+
+  if [ -z "$target" ]; then
+    return 1
+  fi
+  if git_ref_exists "$target"; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+  without_v="${target#v}"
+  if [ "$target" = "$without_v" ] && git_ref_exists "v$target"; then
+    printf 'v%s\n' "$target"
+    return 0
+  fi
+  if [ "$target" != "$without_v" ] && git_ref_exists "$without_v"; then
+    printf '%s\n' "$without_v"
+    return 0
+  fi
+
+  return 1
+}
+
 sync_source() {
   local target="${FORWARDX_TARGET_VERSION:-}"
   local resolved_target=""
@@ -138,7 +166,15 @@ sync_source() {
   fi
 
   if [ -n "$target" ]; then
-    resolved_target="$target"
+    if resolved_target="$(resolve_checkout_target "$target")"; then
+      :
+    elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
+      echo "[信息] 未找到目标版本 $target，改为使用 origin/main"
+      resolved_target="origin/main"
+    else
+      echo "[错误] 未找到目标版本 $target"
+      exit 1
+    fi
   elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
     # Manual one-click upgrade should always refresh to latest main commit,
     # even when version number is unchanged.
