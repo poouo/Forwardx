@@ -87,10 +87,15 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
       const tunnelLatency = await db.getLatestTunnelLatency(meta.tunnelId);
-      const tunnelLatencyMs =
+      let tunnelLatencyMs =
         tunnelLatency && !(tunnelLatency as any).isTimeout && typeof (tunnelLatency as any).latencyMs === "number"
           ? Number((tunnelLatency as any).latencyMs)
           : 0;
+      if (tunnelLatencyMs <= 0) {
+        const tunnel = await db.getTunnelById(meta.tunnelId);
+        const last = Number((tunnel as any)?.lastLatencyMs) || 0;
+        if (last > 0) tunnelLatencyMs = last;
+      }
       const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
       const messageParts = [
@@ -176,6 +181,20 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
           kind: "tunnel-hop",
           tunnelId: meta.tunnelId,
           ruleId: 0,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "forward-via-tunnel") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-via-tunnel",
+          tunnelId: meta.tunnelId,
+          ruleId: t.ruleId,
           forwardType: "gost-tunnel",
           protocol: "tcp",
           sourcePort: 0,
