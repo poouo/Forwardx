@@ -376,6 +376,27 @@ export const tunnelsRouter = router({
               await db.updateTunnel(tunnel.id, { listenPort: targetPort } as any);
               appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort repaired from hops: ${targetPort}`);
             }
+          } else {
+            // Legacy/broken data fallback: allocate a valid exit listen port on demand.
+            const allocated = await db.findAvailableTunnelExitPort(
+              tunnel.exitHostId,
+              (exit as any).portRangeStart,
+              (exit as any).portRangeEnd,
+            );
+            if (allocated) {
+              targetPort = Number(allocated) || 0;
+              await db.updateTunnel(tunnel.id, { listenPort: targetPort, isRunning: false } as any);
+              if (Array.isArray(hops) && hops.length > 0) {
+                const repairedHops = hops.map((hop: any, idx: number) => ({
+                  hostId: Number(hop.hostId),
+                  listenPort: idx === hops.length - 1 ? targetPort : Number(hop.listenPort) || 0,
+                  connectHost: String(hop.connectHost || "").trim() || null,
+                }));
+                await hopRepo.createTunnelHops(Number(tunnel.id), repairedHops);
+              }
+              appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort auto-assigned: ${targetPort}`);
+              pushTunnelEndpointRefresh(tunnel as any, "tunnel-test-port-repair");
+            }
           }
         }
         if (!target || !targetPort) {
