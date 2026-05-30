@@ -110,6 +110,7 @@ export const hostsRouter = router({
         hostType: z.enum(["master", "slave"]).default("slave"),
         networkInterface: z.string().max(32).optional(),
         entryIp: z.string().max(128).nullable().optional(),
+        tunnelEntryIp: z.string().max(128).nullable().optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))
@@ -125,6 +126,7 @@ export const hostsRouter = router({
           ...input,
           agentToken,
           networkInterface: input.networkInterface || null,
+          tunnelEntryIp: input.tunnelEntryIp || null,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
           userId: ctx.user.id,
@@ -139,6 +141,7 @@ export const hostsRouter = router({
         hostType: z.enum(["master", "slave"]).optional(),
         networkInterface: z.string().max(32).nullable().optional(),
         entryIp: z.string().max(128).nullable().optional(),
+        tunnelEntryIp: z.string().max(128).nullable().optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))

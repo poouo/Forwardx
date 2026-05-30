@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowDown, GripVertical, Trash2 } from "lucide-react";
+import { ArrowDown, GripVertical, Server, Trash2 } from "lucide-react";
 
 interface Host {
   id: number;
@@ -44,6 +44,16 @@ const ROLE_LABELS: Record<HopRole, string> = {
   exit: "出口",
 };
 
+function reorder<T>(arr: T[], fromIdx: number, toIdx: number): T[] {
+  if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= arr.length || toIdx >= arr.length) {
+    return arr;
+  }
+  const next = [...arr];
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  return next;
+}
+
 export default function MultiHopEditor({
   hosts,
   initialHopIds,
@@ -53,8 +63,10 @@ export default function MultiHopEditor({
 }: MultiHopEditorProps) {
   const hostById = useMemo(() => new Map(hosts.map((host) => [host.id, host])), [hosts]);
   const [hops, setHops] = useState<HopEntry[]>([]);
-  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  const [dragSourceIdx, setDragSourceIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [ghost, setGhost] = useState<{ x: number; y: number; name: string; role: HopRole; index: number } | null>(null);
+
   const prevIdsRef = useRef<string>("");
   const prevConnectRef = useRef<string>("");
   const onChangeRef = useRef<typeof onChange>(onChange);
@@ -70,7 +82,7 @@ export default function MultiHopEditor({
 
   const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
   const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
-    list.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null)))
+    list.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null))),
   );
 
   const buildHopsFromProps = () => {
@@ -86,6 +98,12 @@ export default function MultiHopEditor({
         };
       })
       .filter(Boolean) as HopEntry[];
+  };
+
+  const clearDragState = () => {
+    setDragSourceIdx(null);
+    setDragOverIdx(null);
+    setGhost(null);
   };
 
   useEffect(() => {
@@ -108,7 +126,7 @@ export default function MultiHopEditor({
   }, [hostById, initialHopIds, initialHopConnectHosts]);
 
   useEffect(() => {
-    if (draggingIdx !== null) return;
+    if (dragSourceIdx !== null) return;
     if (syncingFromPropsRef.current) {
       syncingFromPropsRef.current = false;
       prevIdsRef.current = serializeIds(hops);
@@ -129,7 +147,19 @@ export default function MultiHopEditor({
       prevConnectRef.current = connectText;
       onConnectHostsChangeRef.current?.(connectHosts);
     }
-  }, [hops, draggingIdx]);
+  }, [hops, dragSourceIdx]);
+
+  useEffect(() => {
+    const handleWindowDragEnd = () => clearDragState();
+    window.addEventListener("dragend", handleWindowDragEnd);
+    window.addEventListener("drop", handleWindowDragEnd);
+    window.addEventListener("mouseup", handleWindowDragEnd);
+    return () => {
+      window.removeEventListener("dragend", handleWindowDragEnd);
+      window.removeEventListener("drop", handleWindowDragEnd);
+      window.removeEventListener("mouseup", handleWindowDragEnd);
+    };
+  }, []);
 
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
   const availableHosts = hosts.filter((host) => !selectedIds.has(host.id));
@@ -144,16 +174,11 @@ export default function MultiHopEditor({
 
   const removeHop = (idx: number) => {
     setHops((prev) => prev.filter((_, i) => i !== idx));
+    clearDragState();
   };
 
   const moveHop = (fromIdx: number, toIdx: number) => {
-    setHops((prev) => {
-      if (toIdx < 0 || toIdx >= prev.length || fromIdx === toIdx) return prev;
-      const next = [...prev];
-      const [item] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, item);
-      return next;
-    });
+    setHops((prev) => reorder(prev, fromIdx, toIdx));
   };
 
   const updateConnectHost = (idx: number, value: string) => {
@@ -167,8 +192,10 @@ export default function MultiHopEditor({
       emptyDragImageRef.current = img;
     }
     e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
     e.dataTransfer.setDragImage(emptyDragImageRef.current, 0, 0);
-    setDraggingIdx(idx);
+    setDragSourceIdx(idx);
+    setDragOverIdx(idx);
     setGhost({
       x: e.clientX,
       y: e.clientY,
@@ -178,30 +205,37 @@ export default function MultiHopEditor({
     });
   };
 
-  const onDragOverRow = (idx: number) => (e: React.DragEvent) => {
+  const onDragOverContainer = (e: React.DragEvent) => {
+    if (dragSourceIdx === null) return;
     e.preventDefault();
     setGhost((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
-    if (draggingIdx === null || draggingIdx === idx) return;
-    moveHop(draggingIdx, idx);
-    setDraggingIdx(idx);
+  };
+
+  const onDragEnterRow = (idx: number) => (e: React.DragEvent) => {
+    if (dragSourceIdx === null) return;
+    e.preventDefault();
+    setDragOverIdx(idx);
     setGhost((prev) => (prev ? { ...prev, role: getRole(idx, hops.length), index: idx + 1 } : prev));
   };
 
-  const onDragOverContainer = (e: React.DragEvent) => {
-    if (draggingIdx === null) return;
+  const onDropRow = (idx: number) => (e: React.DragEvent) => {
     e.preventDefault();
-    setGhost((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+    if (dragSourceIdx === null) {
+      clearDragState();
+      return;
+    }
+    if (dragSourceIdx !== idx) {
+      setHops((prev) => reorder(prev, dragSourceIdx, idx));
+    }
+    clearDragState();
   };
 
-  const onDragEnd = () => {
-    setDraggingIdx(null);
-    setGhost(null);
-  };
+  const onDragEnd = () => clearDragState();
 
   return (
-    <div className="space-y-3" onDragOver={onDragOverContainer}>
+    <div className="space-y-3" onDragOver={onDragOverContainer} onDrop={(e) => e.preventDefault()}>
       <div className="flex items-center justify-end">
-        <span className="text-xs text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标</span>
+        <span className="text-xs text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标移动</span>
       </div>
 
       <div className="flex items-center gap-2">
@@ -215,7 +249,10 @@ export default function MultiHopEditor({
             )}
             {availableHosts.map((host) => (
               <SelectItem key={host.id} value={String(host.id)}>
-                {host.name}
+                <span className="inline-flex items-center gap-2">
+                  <Server className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>{host.name}</span>
+                </span>
               </SelectItem>
             ))}
           </SelectContent>
@@ -235,64 +272,72 @@ export default function MultiHopEditor({
             const role = getRole(idx, hops.length);
             const isFirst = role === "entry";
             const isLast = role === "exit";
-            const isDragging = draggingIdx === idx;
+            const isDragging = dragSourceIdx === idx;
+            const isDropTarget = dragSourceIdx !== null && dragOverIdx === idx;
             return (
-              <div key={`${hop.hostId}-${idx}`}>
-                <div
-                  className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-all duration-150 ${
-                    isDragging ? "opacity-40 scale-[0.98]" : "opacity-100"
-                  }`}
-                  draggable
-                  onDragStart={onDragStart(idx)}
-                  onDragOver={onDragOverRow(idx)}
-                  onDragEnd={onDragEnd}
+              <div
+                key={hop.hostId}
+                className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-all duration-150 ${
+                  isDragging ? "opacity-55" : "opacity-100"
+                } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
+                draggable
+                onDragStart={onDragStart(idx)}
+                onDragEnter={onDragEnterRow(idx)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setGhost((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+                }}
+                onDrop={onDropRow(idx)}
+                onDragEnd={onDragEnd}
+              >
+                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing" />
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                  {idx + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
+
+                {!isFirst && (
+                  <Input
+                    value={hop.connectHost}
+                    onChange={(e) => updateConnectHost(idx, e.target.value)}
+                    placeholder="留空用默认地址，可填内网 IP/域名"
+                    className="h-8 w-[240px] min-w-[170px] max-w-[42vw]"
+                  />
+                )}
+
+                <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
+                  {ROLE_LABELS[role]}
+                </Badge>
+
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  disabled={isFirst}
+                  onClick={() => moveHop(idx, idx - 1)}
+                  title="上移"
                 >
-                  <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing" />
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                    {idx + 1}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
-                  {!isFirst && (
-                    <Input
-                      value={hop.connectHost}
-                      onChange={(e) => updateConnectHost(idx, e.target.value)}
-                      placeholder="留空用默认地址，可填内网 IP/域名"
-                      className="h-8 w-[240px] min-w-[170px] max-w-[42vw]"
-                    />
-                  )}
-                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
-                    {ROLE_LABELS[role]}
-                  </Badge>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 shrink-0"
-                    disabled={isFirst}
-                    onClick={() => moveHop(idx, idx - 1)}
-                    title="上移"
-                  >
-                    <ArrowDown className="h-3 w-3 rotate-180" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 shrink-0"
-                    disabled={isLast}
-                    onClick={() => moveHop(idx, idx + 1)}
-                    title="下移"
-                  >
-                    <ArrowDown className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeHop(idx)}
-                    title="移除"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                  <ArrowDown className="h-3 w-3 rotate-180" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  disabled={isLast}
+                  onClick={() => moveHop(idx, idx + 1)}
+                  title="下移"
+                >
+                  <ArrowDown className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeHop(idx)}
+                  title="移除"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
             );
           })}

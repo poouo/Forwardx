@@ -86,7 +86,7 @@ const tables: TableDef[] = [
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("ip", "text", { notNull: true }),
       c("ipv4", "text"), c("ipv6", "text"), c("hostType", "varchar", { length: 32, notNull: true, default: "slave" }),
-      c("agentToken", "text"), c("entryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
+      c("agentToken", "text"), c("entryIp", "text"), c("tunnelEntryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
       c("memoryTotal", "bigint"), c("agentVersion", "text"), c("agentUpgradeRequested", "bool", { notNull: true, default: false }),
       c("agentUpgradeTargetVersion", "text"), c("agentUpgradeRequestedAt", "epoch"), c("networkInterface", "text"),
       c("portRangeStart", "int"), c("portRangeEnd", "int"), c("isOnline", "bool", { notNull: true, default: false }),

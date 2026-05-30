@@ -23,7 +23,7 @@ const normalizeTunnelConnect = (connectHost?: string | null) => {
 const getTunnelDialHost = (tunnel: any, exit: any) => {
   const connectHost = String(tunnel?.connectHost || "").trim();
   if (connectHost) return connectHost;
-  return String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit?.ip || "").trim();
+  return String((exit as any).tunnelEntryIp || (exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit?.ip || "").trim();
 };
 
 async function attachTunnelEndpointHosts(tunnels: any[]) {
@@ -63,6 +63,7 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
         ipv4: (host as any).ipv4,
         ipv6: (host as any).ipv6,
         entryIp: (host as any).entryIp,
+        tunnelEntryIp: (host as any).tunnelEntryIp,
         portRangeStart: (host as any).portRangeStart,
         portRangeEnd: (host as any).portRangeEnd,
       };

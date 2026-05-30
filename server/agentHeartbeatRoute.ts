@@ -399,12 +399,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
+    const hostTunnelAddress = (hostLike: any) =>
+      String(hostLike?.tunnelEntryIp || hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
     const tunnelExitHostAddress = async (tunnel: any) => {
       const connectHost = String(tunnel?.connectHost || "").trim();
       if (connectHost) return connectHost;
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
-      return String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit.ip || "").trim();
+      return hostTunnelAddress(exit);
     };
     const tunnelExitHostById = new Map<number, string>();
     const hostIngressAddressById = new Map<number, string>();
@@ -414,7 +416,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const cached = hostIngressAddressById.get(id);
       if (cached !== undefined) return cached;
       const hopHost = await db.getHostById(id) as any;
-      const addr = String(hopHost ? (hopHost.entryIp || hopHost.ipv4 || hopHost.ipv6 || hopHost.ip || "") : "").trim();
+      const addr = hopHost ? hostTunnelAddress(hopHost) : "";
       hostIngressAddressById.set(id, addr);
       return addr;
     };
@@ -871,14 +873,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             // Entry: connect to next hop
             const nextHop = hops[1];
             const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
-            const nextIp = nextHost ? (nextHost.entryIp || nextHost.ipv4 || nextHost.ipv6 || nextHost.ip || "") : "";
+            const nextIp = nextHost ? hostTunnelAddress(nextHost) : "";
             fxpSpec.exitHost = String(nextIp).trim();
             fxpSpec.exitPort = Number(nextHop.listenPort);
           } else if (!isLast) {
             // Relay: receive from upstream, forward to downstream
             const nextHop = hops[seq + 1];
             const nextHost = await db.getHostById(Number(nextHop.hostId)) as any;
-            const nextIp = nextHost ? (nextHost.entryIp || nextHost.ipv4 || nextHost.ipv6 || nextHost.ip || "") : "";
+            const nextIp = nextHost ? hostTunnelAddress(nextHost) : "";
             fxpSpec.relayExitHost = String(nextIp).trim();
             fxpSpec.relayExitPort = Number(nextHop.listenPort);
             fxpSpec.relayKey = hopKey(tunnelKey, seq + 1);

@@ -252,6 +252,7 @@
   }
   html {
     -webkit-tap-highlight-color: transparent;
+    scrollbar-gutter: stable both-edges;
   }
 
   body {
@@ -411,6 +412,46 @@
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
   }
+}
+
+/* Unified scrollbar style and gutter to avoid text overlap with right-side bars */
+:root {
+  --fx-scrollbar-size: 10px;
+}
+
+.scrollbar-gutter-stable {
+  scrollbar-gutter: stable both-edges;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--foreground) 24%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: var(--fx-scrollbar-size);
+  height: var(--fx-scrollbar-size);
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  background-color: color-mix(in oklch, var(--foreground) 24%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--foreground) 36%, transparent);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-auto,
+.overflow-y-auto,
+.overflow-x-auto {
+  scrollbar-gutter: stable both-edges;
 }
 
 @layer components {

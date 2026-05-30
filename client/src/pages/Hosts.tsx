@@ -155,6 +155,7 @@ type HostFormData = {
   hostType: "master" | "slave";
   networkInterface: string;
   entryIp: string;
+  tunnelEntryIp: string;
   portRangeStart: number | null;
   portRangeEnd: number | null;
 };
@@ -165,6 +166,7 @@ const defaultFormData: HostFormData = {
   hostType: "slave",
   networkInterface: "",
   entryIp: "",
+  tunnelEntryIp: "",
   portRangeStart: null,
   portRangeEnd: null,
 };
@@ -512,6 +514,7 @@ function HostsContent() {
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
       entryIp: host.entryIp || host.ip || "",
+      tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
     });
@@ -522,10 +525,12 @@ function HostsContent() {
   const handleSubmit = () => {
     const name = (form.name || "").trim();
     const entry = (form.entryIp || "").trim();
+    const tunnelEntry = (form.tunnelEntryIp || "").trim();
     if (!name) { toast.error("请输入主机名称"); return; }
     if (!entry) { toast.error("请输入入口 IP / 域名"); return; }
     if (name.length > 128) { toast.error("主机名称不能超过 128 个字符"); return; }
     if (entry.length > 128) { toast.error("入口 IP / 域名不能超过 128 个字符"); return; }
+    if (tunnelEntry.length > 128) { toast.error("内网地址不能超过 128 个字符"); return; }
 
     const ps = form.portRangeStart;
     const pe = form.portRangeEnd;
@@ -548,6 +553,7 @@ function HostsContent() {
         hostType: form.hostType,
         networkInterface: ni || null,
         entryIp: entry,
+        tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
       });
@@ -558,6 +564,7 @@ function HostsContent() {
         hostType: form.hostType,
         networkInterface: ni || undefined,
         entryIp: entry,
+        tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
       });
@@ -955,6 +962,20 @@ function HostsContent() {
                 />
                 <p className="text-xs text-muted-foreground">
                   用于转发入口展示和复制。
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  内网地址
+                  <span className="ml-1 text-xs text-muted-foreground">(可选，供隧道链路优先使用)</span>
+                </Label>
+                <Input
+                  placeholder="例如: 10.0.0.8 或 node-a.internal"
+                  value={form.tunnelEntryIp}
+                  onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  留空则默认使用上方“入口 IP / 域名”。
                 </p>
               </div>
               <div className="space-y-2">
