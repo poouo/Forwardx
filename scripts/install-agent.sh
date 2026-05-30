@@ -94,7 +94,8 @@ run_panel_installer() {
   fi
   chmod 700 "$tmp_script"
   # Forward install/upgrade action and token to avoid interactive menu.
-  if bash "$tmp_script" "$mode" "$token" </dev/null; then
+  # Also pass them via env for compatibility with older panel scripts.
+  if ACTION="$mode" TOKEN="$token" bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0
   fi
