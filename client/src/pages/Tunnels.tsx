@@ -1104,12 +1104,12 @@ function TunnelsContent() {
       )}
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="w-[calc(100vw-1.25rem)] max-w-[95vw] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加隧道"}</DialogTitle>
             <DialogDescription>配置入口、出口和监听端口。</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-4 pr-1 sm:pr-2">
             <div className="space-y-2">
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
@@ -1176,7 +1176,7 @@ function TunnelsContent() {
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -1278,7 +1278,7 @@ function TunnelsContent() {
                   多级隧道只统计入口或出口，中间节点不重复统计。
                 </p>
               </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
                 <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
                   <span className="text-sm font-medium">HTTP</span>
                   <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />

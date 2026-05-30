@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -14,12 +14,17 @@ import { ArrowDown, GripVertical, Server, Trash2 } from "lucide-react";
 interface Host {
   id: number;
   name: string;
+  ip?: string | null;
+  ipv4?: string | null;
+  ipv6?: string | null;
+  entryIp?: string | null;
+  tunnelEntryIp?: string | null;
 }
 
 interface HopEntry {
   hostId: number;
   hostName: string;
-  connectHost: string;
+  useTunnelEntryIp: boolean;
 }
 
 type HopRole = "entry" | "mid" | "exit";
@@ -82,7 +87,13 @@ export default function MultiHopEditor({
 
   const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
   const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
-    list.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null))),
+    list.map((hop, idx) => {
+      if (idx === 0) return null;
+      const host = hostById.get(hop.hostId);
+      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+      const privateAddr = String(host?.tunnelEntryIp || "").trim();
+      return hop.useTunnelEntryIp ? (privateAddr || publicAddr || null) : (publicAddr || null);
+    }),
   );
 
   const buildHopsFromProps = () => {
@@ -94,7 +105,12 @@ export default function MultiHopEditor({
         return {
           hostId: host.id,
           hostName: host.name,
-          connectHost: String(initialHopConnectHosts?.[idx] || ""),
+          useTunnelEntryIp: (() => {
+            if (idx === 0) return false;
+            const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
+            const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
+            return !!initialConnectHost && !!tunnelEntryIp && initialConnectHost === tunnelEntryIp;
+          })(),
         };
       })
       .filter(Boolean) as HopEntry[];
@@ -141,7 +157,13 @@ export default function MultiHopEditor({
       onChangeRef.current?.(ids);
     }
 
-    const connectHosts = hops.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null)));
+    const connectHosts = hops.map((hop, idx) => {
+      if (idx === 0) return null;
+      const host = hostById.get(hop.hostId);
+      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+      const privateAddr = String(host?.tunnelEntryIp || "").trim();
+      return hop.useTunnelEntryIp ? (privateAddr || publicAddr || null) : (publicAddr || null);
+    });
     const connectText = JSON.stringify(connectHosts);
     if (connectText !== prevConnectRef.current) {
       prevConnectRef.current = connectText;
@@ -169,7 +191,7 @@ export default function MultiHopEditor({
     if (!id || selectedIds.has(id)) return;
     const host = hostById.get(id);
     if (!host) return;
-    setHops((prev) => [...prev, { hostId: host.id, hostName: host.name, connectHost: "" }]);
+    setHops((prev) => [...prev, { hostId: host.id, hostName: host.name, useTunnelEntryIp: false }]);
   };
 
   const removeHop = (idx: number) => {
@@ -181,8 +203,8 @@ export default function MultiHopEditor({
     setHops((prev) => reorder(prev, fromIdx, toIdx));
   };
 
-  const updateConnectHost = (idx: number, value: string) => {
-    setHops((prev) => prev.map((hop, i) => (i === idx ? { ...hop, connectHost: value } : hop)));
+  const updateUseTunnelEntryIp = (idx: number, enabled: boolean) => {
+    setHops((prev) => prev.map((hop, i) => (i === idx ? { ...hop, useTunnelEntryIp: enabled } : hop)));
   };
 
   const onDragStart = (idx: number) => (e: React.DragEvent) => {
@@ -277,7 +299,7 @@ export default function MultiHopEditor({
             return (
               <div
                 key={hop.hostId}
-                className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-all duration-150 ${
+                className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-colors duration-150 ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable
@@ -296,14 +318,20 @@ export default function MultiHopEditor({
                 </span>
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
 
-                {!isFirst && (
-                  <Input
-                    value={hop.connectHost}
-                    onChange={(e) => updateConnectHost(idx, e.target.value)}
-                    placeholder="留空用默认地址，可填内网 IP/域名"
-                    className="h-8 w-[240px] min-w-[170px] max-w-[42vw]"
-                  />
-                )}
+                <div className="ml-2 flex h-8 w-[190px] shrink-0 items-center justify-end gap-2">
+                  {!isFirst ? (
+                    <>
+                      <span className="whitespace-nowrap text-xs text-muted-foreground">使用内网IP</span>
+                      <Switch
+                        checked={hop.useTunnelEntryIp}
+                        onCheckedChange={(checked) => updateUseTunnelEntryIp(idx, !!checked)}
+                        aria-label={`为${hop.hostName}使用内网IP`}
+                      />
+                    </>
+                  ) : (
+                    <span className="invisible text-xs">占位</span>
+                  )}
+                </div>
 
                 <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
                   {ROLE_LABELS[role]}
