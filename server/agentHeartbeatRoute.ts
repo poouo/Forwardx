@@ -12,11 +12,13 @@ import {
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
 import { isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
+import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4 } from "dns/promises";
 
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
+const tunnelRouteLogCache = new Map<string, string>();
 
 async function resolveTargetIp(raw: string): Promise<string> {
   const trimmed = String(raw || "").trim();
@@ -570,10 +572,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
           const chainHops: any[] = [];
+          const routeParts: string[] = [`entry#${Number(firstHop.hostId)}:${Number((r as any).sourcePort)}`];
           for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
-            const hopAddr = `${await getHopDialAddress(hop)}:${Number(hop.listenPort)}`;
+            const hopDialHost = await getHopDialAddress(hop);
+            const hopAddr = `${hopDialHost}:${Number(hop.listenPort)}`;
             if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
+            routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
             chainHops.push({
               name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
               nodes: [gostTunnelNode(
@@ -585,6 +590,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             });
           }
           if (chainHops.length === 0) return null;
+          routeParts.push(`exit#${Number((tunnelHops[tunnelHops.length - 1] as any).hostId)}:${Number((r as any).tunnelExitPort)}`);
+          const route = routeParts.join(" -> ");
+          const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
+          if (tunnelRouteLogCache.get(routeKey) !== route) {
+            tunnelRouteLogCache.set(routeKey, route);
+            appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
+          }
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry

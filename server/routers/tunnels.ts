@@ -36,6 +36,16 @@ const normalizeTunnelConnect = (connectHost?: string | null) => {
   return host;
 };
 
+const normalizeHopConnectHostsForCompare = (hops: Array<any>) =>
+  hops.map((hop, idx) => {
+    if (idx === 0) return null;
+    const value = typeof hop === "string" || hop === null
+      ? hop
+      : (hop as any)?.connectHost;
+    const text = String(value || "").trim();
+    return text || null;
+  });
+
 const getTunnelDialHost = (tunnel: any, exit: any) => {
   const connectHost = String(tunnel?.connectHost || "").trim();
   if (connectHost) return connectHost;
@@ -256,6 +266,7 @@ export const tunnelsRouter = router({
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
         const existingHops = await hopRepo.getTunnelHops(input.id);
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
+        const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const existingIsMultiHop = existingHopHostIds.length >= 3;
         const nextModeForRuntime = input.mode ?? (tunnel as any).mode;
         if (
@@ -272,6 +283,7 @@ export const tunnelsRouter = router({
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts)
           ? ((input as any).hopConnectHosts as Array<string | null>)
           : [];
+        const normalizedRequestedHopConnectHosts = normalizeHopConnectHostsForCompare(hopConnectHosts);
         const hopHostIds = requestedHopHostIds && requestedHopHostIds.length >= 3 ? requestedHopHostIds : null;
         const switchToRegular = requestedHopHostIds !== undefined && requestedHopHostIds.length <= 2;
         if (hopHostIds) {
@@ -326,21 +338,35 @@ export const tunnelsRouter = router({
         (data as any).exitHostId = exitHostId;
         const normalizedRequestedHopIds = hopHostIds ? hopHostIds : (switchToRegular ? [] : existingHopHostIds);
         const hopChanged = requestedHopHostIds !== undefined
-          && JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds);
+          && (
+            JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
+            || JSON.stringify(normalizedRequestedHopConnectHosts) !== JSON.stringify(existingHopConnectHosts)
+          );
         const keyChanged = ["entryHostId", "exitHostId", "mode", "fxpVersion", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", "blockHttp", "blockSocks", "blockTls"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
         if (hopHostIds) {
           const hops: { hostId: number; listenPort: number; connectHost?: string | null }[] = [];
+          const existingPortByHostId = new Map<number, number>();
+          for (const hop of existingHops || []) {
+            const hostId = Number((hop as any).hostId);
+            const listenPort = Number((hop as any).listenPort);
+            if (hostId > 0 && listenPort > 0 && !existingPortByHostId.has(hostId)) {
+              existingPortByHostId.set(hostId, listenPort);
+            }
+          }
           for (let i = 0; i < hopHostIds.length; i++) {
             let port = 0;
             if (i === hopHostIds.length - 1) {
               port = Number((data as any).listenPort) || Number((tunnel as any).listenPort) || 0;
             } else {
-              const hopHost = await db.getHostById(hopHostIds[i]) as any;
-              port = await db.findAvailableTunnelExitPort(hopHostIds[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
-              if (!port) throw new Error(`涓绘満 ${hopHost?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
+              port = existingPortByHostId.get(hopHostIds[i]) || 0;
+              if (!port) {
+                const hopHost = await db.getHostById(hopHostIds[i]) as any;
+                port = await db.findAvailableTunnelExitPort(hopHostIds[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
+                if (!port) throw new Error(`涓绘満 ${hopHost?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
+              }
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
             const normalizedHopConnectHost = rawConnectHost ? normalizeTunnelConnect(rawConnectHost) : null;

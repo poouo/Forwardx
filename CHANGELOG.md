@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.53] - 2026-05-30
+
+### Fixed
+
+- Fixed multi-hop tunnel drag reordering so changed hop order is saved immediately and triggers a full runtime refresh.
+- Preserved existing hop listener ports when reordering multi-hop tunnels so updated routes replace the old topology cleanly.
+- Added tunnel ids to panel rule-status logs and route diagnostics for GOST multi-hop rules.
+
+### Changed
+
+- Bumped panel version to 2.3.53. Agent target version remains 2.2.59.
+
 ## [2.3.52] - 2026-05-30
 
 ### Fixed
