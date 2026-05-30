@@ -495,17 +495,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (isForwardXTunnel(tunnel)) return [];
         const tunnelExitHost = tunnel ? tunnelExitHostById.get(tunnel.id) : "";
         if (!tunnel || !tunnelExitHost || !(r as any).tunnelExitPort) return [];
+        const tunnelHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
+        const useMultiHopEntry =
+          !!firstHop
+          && Number(firstHop.hostId) === Number(host.id)
+          && Number(firstHop.listenPort) > 0;
+        const chainTargetAddr = useMultiHopEntry
+          ? `127.0.0.1:${Number(firstHop.listenPort)}`
+          : `${tunnelExitHost}:${(r as any).tunnelExitPort}`;
+        const chainNodeName = useMultiHopEntry ? `mhop-entry-${r.id}` : `exit-${r.id}`;
         return [{
           name: `chain-tunnel-${r.id}`,
           hops: [{
             name: `hop-tunnel-${r.id}`,
             nodes: [{
-              name: `exit-${r.id}`,
-              addr: `${tunnelExitHost}:${(r as any).tunnelExitPort}`,
+              name: chainNodeName,
+              addr: chainTargetAddr,
               connector: { type: "relay" },
               dialer: {
-                type: tunnelProtocolType(tunnel.mode),
-                ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+                type: useMultiHopEntry ? "tcp" : tunnelProtocolType(tunnel.mode),
+                ...(!useMultiHopEntry && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
               },
             }],
           }],
