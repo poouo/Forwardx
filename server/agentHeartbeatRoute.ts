@@ -870,7 +870,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
+          commands: await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -892,7 +892,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
+          commands: await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -963,7 +963,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetIp: host.ip,
             targetPort: Number(listenPort),
             protocol: "tcp",
-            commands: [],
+            commands: await buildTunnelReloadCmds(),
             fxp: fxpSpec,
           } as any);
         } else {
@@ -1248,6 +1248,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               networkInterface: hostInterface,
               commands: rule.isRunning && isForwardXMultiHopRule ? [] : [
                 ...buildGostReloadCmds(),
+                ...await buildTunnelReloadCmds(),
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ],

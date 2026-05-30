@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.57"
+var Version = "2.2.58"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -987,11 +987,27 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		return false
 	}
 
+	exited := make(chan error, 1)
+	go func() {
+		exited <- cmd.Wait()
+	}()
+	select {
+	case err := <-exited:
+		_ = os.Remove(configPath)
+		if err != nil {
+			actionMessage.set("fxp runtime exited immediately: %v", err)
+		} else {
+			actionMessage.set("fxp runtime exited immediately")
+		}
+		return false
+	case <-time.After(300 * time.Millisecond):
+	}
+
 	fxpMu.Lock()
 	fxpServers[id] = &fxpProcess{signature: signature, cmd: cmd, configPath: configPath}
 	fxpMu.Unlock()
 	go func() {
-		err := cmd.Wait()
+		err := <-exited
 		fxpMu.Lock()
 		current := fxpServers[id]
 		if current != nil && current.cmd == cmd {

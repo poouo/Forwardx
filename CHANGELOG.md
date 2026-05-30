@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.46] - 2026-05-30
+
+### Fixed
+
+- Fixed switching a multi-hop tunnel from GOST to ForwardX so old GOST tunnel services are stopped before FXP binds the same tunnel ports.
+- Fixed Agent FXP startup reporting so immediate runtime exits, such as port bind failures, are reported as failed instead of `ok=true`.
+
+### Changed
+
+- Bumped panel version to 2.3.46 and Agent target version to 2.2.58.
+
 ## [2.3.45] - 2026-05-30
 
 ### Added
