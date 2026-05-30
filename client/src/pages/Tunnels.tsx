@@ -1,4 +1,4 @@
-import DashboardLayout from "@/components/DashboardLayout";
+﻿import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -70,6 +70,9 @@ type TunnelForm = {
   name: string;
   entryHostId: number | null;
   exitHostId: number | null;
+  hopHostIds: number[];
+  hopConnectHosts: Array<string | null>;
+  flowDirection: "forward" | "reverse";
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   fxpVersion: 1 | 2;
   listenPort: number;
@@ -78,8 +81,6 @@ type TunnelForm = {
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
-  tunnelType: "regular" | "multiHop";
-  hopHostIds: number[];
 };
 
 type TunnelLatencyPoint = {
@@ -94,6 +95,9 @@ const defaultForm: TunnelForm = {
   name: "",
   entryHostId: null,
   exitHostId: null,
+  hopHostIds: [],
+  hopConnectHosts: [],
+  flowDirection: "forward",
   mode: "forwardx",
   fxpVersion: 2,
   listenPort: 0,
@@ -102,8 +106,6 @@ const defaultForm: TunnelForm = {
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
-  tunnelType: "regular",
-  hopHostIds: [],
 };
 
 function isValidPort(port: number, allowZero = false) {
@@ -468,7 +470,15 @@ function TunnelsContent() {
       const fallbackMode = forwardProtocolSettings.forwardx !== false
         ? "forwardx"
         : enabledGostTunnelModes[0] || "forwardx";
-      setForm({ ...defaultForm, mode: fallbackMode, entryHostId: hosts[0].id, exitHostId: hosts[1].id });
+      setForm({
+        ...defaultForm,
+        mode: fallbackMode,
+        entryHostId: hosts[0].id,
+        exitHostId: hosts[1].id,
+        hopHostIds: [hosts[0].id, hosts[1].id],
+        hopConnectHosts: [null, null],
+        flowDirection: "forward",
+      });
     }
     setShowDialog(true);
   };
@@ -479,6 +489,13 @@ function TunnelsContent() {
       name: tunnel.name,
       entryHostId: tunnel.entryHostId,
       exitHostId: tunnel.exitHostId,
+      hopHostIds: Array.isArray(tunnel.hopHostIds) && tunnel.hopHostIds.length >= 2
+        ? tunnel.hopHostIds
+        : [tunnel.entryHostId, tunnel.exitHostId],
+      hopConnectHosts: Array.isArray(tunnel.hopConnectHosts) && tunnel.hopConnectHosts.length >= 2
+        ? tunnel.hopConnectHosts
+        : [null, tunnel.connectHost || null],
+      flowDirection: "forward",
       mode: tunnel.mode || "tls",
       fxpVersion: normalizeFxpVersion(tunnel.fxpVersion),
       listenPort: tunnel.listenPort,
@@ -487,8 +504,6 @@ function TunnelsContent() {
       blockHttp: !!tunnel.blockHttp,
       blockSocks: !!tunnel.blockSocks,
       blockTls: !!tunnel.blockTls,
-      tunnelType: "regular" as const,
-      hopHostIds: [],
     });
     setEditingId(tunnel.id);
     setShowDialog(true);
@@ -524,21 +539,24 @@ function TunnelsContent() {
   });
 
   const handleSubmit = () => {
-    const isMultiHop = form.tunnelType === "multiHop";
-    if (isMultiHop) {
-      if (!form.name || form.hopHostIds.length < 2) {
-        toast.error("请填写隧道名称并至少串联两台主机");
-        return;
-      }
-    } else {
-      if (!form.name || !form.entryHostId || !form.exitHostId) {
-        toast.error("请填写隧道名称和两台 Agent");
-        return;
-      }
-      if (form.entryHostId === form.exitHostId) {
-        toast.error("入口 Agent 和出口 Agent 不能相同");
-        return;
-      }
+    if (!form.name || form.hopHostIds.length < 2) {
+      toast.error("请填写隧道名称并至少选择两台主机");
+      return;
+    }
+    const orderedHopHostIds = form.flowDirection === "reverse"
+      ? [...form.hopHostIds].reverse()
+      : [...form.hopHostIds];
+    const orderedHopConnectHosts = (form.flowDirection === "reverse"
+      ? [...form.hopConnectHosts].reverse()
+      : [...form.hopConnectHosts])
+      .slice(0, orderedHopHostIds.length);
+    while (orderedHopConnectHosts.length < orderedHopHostIds.length) orderedHopConnectHosts.push(null);
+    orderedHopConnectHosts[0] = null;
+    const entryHostId = orderedHopHostIds[0] || 0;
+    const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
+    if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
+      toast.error("请确保入口与出口主机有效且不同");
+      return;
     }
     if (!isValidPort(form.listenPort, true)) {
       toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
@@ -549,30 +567,37 @@ function TunnelsContent() {
       return;
     }
     const connectHost = form.connectHost.trim();
+    const hopExitConnectHost = String(orderedHopConnectHosts[1] || "").trim();
+    const effectiveConnectHost = connectHost || (orderedHopHostIds.length === 2 ? hopExitConnectHost : "");
     if (connectHost && !isValidConnectHost(connectHost)) {
       toast.error("请输入有效的指定出口地址");
       return;
+    }
+    for (let i = 1; i < orderedHopConnectHosts.length; i++) {
+      const value = String(orderedHopConnectHosts[i] || "").trim();
+      if (value && !isValidConnectHost(value)) {
+        toast.error(`第 ${i + 1} 跳指定地址格式无效`);
+        return;
+      }
     }
     const payload: any = {
       name: form.name,
       mode: form.mode,
       fxpVersion: form.mode === "forwardx" ? form.fxpVersion : 1,
       listenPort: form.listenPort,
-      networkType: "public",
-      connectHost: connectHost || null,
+      networkType: effectiveConnectHost ? "private" : "public",
+      connectHost: effectiveConnectHost || null,
       blockHttp: form.blockHttp,
       blockSocks: form.blockSocks,
       blockTls: form.blockTls,
+      entryHostId,
+      exitHostId,
+      hopHostIds: orderedHopHostIds,
+      hopConnectHosts: orderedHopConnectHosts.map((value) => {
+        const text = String(value || "").trim();
+        return text ? text : null;
+      }),
     };
-    if (isMultiHop) {
-      payload.hopHostIds = form.hopHostIds;
-      payload.entryHostId = form.hopHostIds[0] || 0;
-      payload.exitHostId = form.hopHostIds[form.hopHostIds.length - 1] || 0;
-    } else {
-      payload.entryHostId = form.entryHostId;
-      payload.exitHostId = form.exitHostId;
-      payload.networkType = connectHost ? "private" : "public";
-    }
     if (editingId) updateMutation.mutate({ id: editingId, ...payload });
     else createMutation.mutate(payload);
   };
@@ -1066,28 +1091,54 @@ function TunnelsContent() {
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
             </div>
             <div className="space-y-2">
-              <Label>隧道模式</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${form.tunnelType === "regular" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"}`}
-                  onClick={() => setForm({ ...form, tunnelType: "regular", hopHostIds: [] })}
-                >常规隧道</button>
-                <button
-                  type="button"
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${form.tunnelType === "multiHop" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"}`}
-                  onClick={() => setForm({ ...form, tunnelType: "multiHop" })}
-                >多级隧道</button>
-              </div>
-            </div>
-            {form.tunnelType === "multiHop" ? (
+              <Label>主机链路</Label>
               <MultiHopEditor
                 hosts={hosts || []}
                 initialHopIds={form.hopHostIds}
-                onChange={(ids) => setForm({ ...form, hopHostIds: ids })}
+                initialHopConnectHosts={form.hopConnectHosts}
+                onChange={(ids) => {
+                  const normalizedConnectHosts = [...form.hopConnectHosts].slice(0, ids.length);
+                  while (normalizedConnectHosts.length < ids.length) normalizedConnectHosts.push(null);
+                  normalizedConnectHosts[0] = null;
+                  setForm({
+                    ...form,
+                    hopHostIds: ids,
+                    entryHostId: ids[0] ?? null,
+                    exitHostId: ids.length > 1 ? ids[ids.length - 1] : null,
+                    hopConnectHosts: normalizedConnectHosts,
+                  });
+                }}
+                onConnectHostsChange={(hopConnectHosts) => {
+                  const normalizedConnectHosts = [...hopConnectHosts].slice(0, form.hopHostIds.length);
+                  while (normalizedConnectHosts.length < form.hopHostIds.length) normalizedConnectHosts.push(null);
+                  normalizedConnectHosts[0] = null;
+                  setForm({ ...form, hopConnectHosts: normalizedConnectHosts });
+                }}
               />
-            ) : (
-              <div>
+            </div>
+            <div className="space-y-2">
+              <Label>流量走向</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                    form.flowDirection === "forward" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"
+                  }`}
+                  onClick={() => setForm({ ...form, flowDirection: "forward" })}
+                >
+                  按当前顺序
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                    form.flowDirection === "reverse" ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-accent"
+                  }`}
+                  onClick={() => setForm({ ...form, flowDirection: "reverse" })}
+                >
+                  反向走流量
+                </button>
+              </div>
+            </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1153,26 +1204,6 @@ function TunnelsContent() {
                 </p>
               </div>
             )}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>入口 Agent</Label>
-                <Select value={form.entryHostId ? String(form.entryHostId) : ""} onValueChange={(v) => setForm({ ...form, entryHostId: Number(v) })}>
-                  <SelectTrigger><SelectValue placeholder="选择入口" /></SelectTrigger>
-                  <SelectContent>
-                    {hosts?.map((h: any) => <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>出口 Agent</Label>
-                <Select value={form.exitHostId ? String(form.exitHostId) : ""} onValueChange={(v) => setForm({ ...form, exitHostId: Number(v) })}>
-                  <SelectTrigger><SelectValue placeholder="选择出口" /></SelectTrigger>
-                  <SelectContent>
-                    {hosts?.map((h: any) => <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
             <div className="space-y-2">
               <Label>指定出口地址</Label>
               <Input
@@ -1209,7 +1240,7 @@ function TunnelsContent() {
               <div>
                 <Label className="text-sm">协议屏蔽</Label>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  命中屏蔽协议时停用规则。
+                  多级隧道只统计入口或出口，中间节点不重复统计。
                 </p>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -1228,8 +1259,6 @@ function TunnelsContent() {
               </div>
             </div>
           </div>
-          )}
-          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>取消</Button>
             <Button onClick={handleSubmit} disabled={isPending || !isTunnelSupported(form)}>{isPending ? "保存中..." : editingId ? "保存" : "创建"}</Button>
@@ -1247,4 +1276,5 @@ export default function TunnelsPage() {
     </DashboardLayout>
   );
 }
+
 

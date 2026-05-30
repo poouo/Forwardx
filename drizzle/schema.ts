@@ -294,6 +294,7 @@ export const tunnelHops = table("tunnel_hops", {
   seq: int("seq").notNull(),
   hostId: int("hostId").notNull(),
   listenPort: int("listenPort").notNull().default(0),
+  connectHost: text("connectHost"),
 });
 export type TunnelHop = typeof tunnelHops.$inferSelect;
 export type InsertTunnelHop = typeof tunnelHops.$inferInsert;

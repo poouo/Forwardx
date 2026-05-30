@@ -306,6 +306,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const agentAllRules = await db.getForwardRulesForAgent(undefined);
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
+    const tunnelHopsByTunnelId = new Map<number, any[]>();
+    await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
+      const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
+      if (Array.isArray(hops) && hops.length >= 2) {
+        tunnelHopsByTunnelId.set(Number(tunnel.id), hops);
+      }
+    }));
 
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
     // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
@@ -400,6 +407,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return String((exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit.ip || "").trim();
     };
     const tunnelExitHostById = new Map<number, string>();
+    const hostIngressAddressById = new Map<number, string>();
+    const getHostIngressAddress = async (hostId: number) => {
+      const id = Number(hostId);
+      if (!Number.isFinite(id) || id <= 0) return "";
+      const cached = hostIngressAddressById.get(id);
+      if (cached !== undefined) return cached;
+      const hopHost = await db.getHostById(id) as any;
+      const addr = String(hopHost ? (hopHost.entryIp || hopHost.ipv4 || hopHost.ipv6 || hopHost.ip || "") : "").trim();
+      hostIngressAddressById.set(id, addr);
+      return addr;
+    };
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.entryHostId === host.id && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
         tunnelExitHostById.set(tunnel.id, await tunnelExitHostAddress(tunnel));
@@ -506,7 +524,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           : `systemctl stop ${gostServiceName}.service 2>/dev/null || true`,
       ];
     };
-    const buildTunnelReloadCmds = () => {
+    const buildTunnelReloadCmds = async () => {
       const tunnelProbeServices = hostTunnels
         .filter((tunnel: any) => tunnel.exitHostId === host.id && tunnel.isEnabled && !isForwardXTunnel(tunnel) && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel))
         .map((tunnel: any) => ({
@@ -548,7 +566,40 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           },
         }];
       });
-      const services = [...tunnelProbeServices, ...ruleServices];
+      const multiHopRelayServices = await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
+        if (!tunnel || !tunnel.isEnabled || isForwardXTunnel(tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return null;
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        if (!hops || hops.length < 2) return null;
+        const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
+        if (hostIdx < 0 || hostIdx >= hops.length - 1) return null; // not in chain or exit hop
+        const currentHop = hops[hostIdx] as any;
+        const nextHop = hops[hostIdx + 1] as any;
+        const configuredNextAddr = String((nextHop as any).connectHost || "").trim();
+        const nextAddr = configuredNextAddr || await getHostIngressAddress(Number(nextHop.hostId));
+        if (!nextAddr || !Number(nextHop.listenPort)) return null;
+        return {
+          name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
+          addr: `:${Number(currentHop.listenPort)}`,
+          handler: { type: "relay" },
+          listener: {
+            // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
+            type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
+            ...(Number(currentHop.seq) === 0 ? {} : (tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {})),
+          },
+          forwarder: {
+            nodes: [{
+              name: `next-${tunnel.id}-${Number(nextHop.seq)}`,
+              addr: `${nextAddr}:${Number(nextHop.listenPort)}`,
+              connector: { type: "relay" },
+              dialer: {
+                type: tunnelProtocolType(tunnel.mode),
+                ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+              },
+            }],
+          },
+        };
+      }));
+      const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
       const countingCmds = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
@@ -744,7 +795,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: fxpTunnel ? [] : buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -766,7 +817,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: fxpTunnel ? [] : buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -850,15 +901,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         } else {
           // GOST multi-hop: each hop creates a GOST relay entry
           // Entry listens and forwards to next hop; intermediate relays forward onward
-          const isGostEntry = isFirst;
-          const isGostExit = isLast;
           if (shouldApply) {
-            const nextOrTargetAddr = isGostExit
-              ? `127.0.0.1:0` // Exit will have rules pointing to it
-              : (() => {
-                  const nextHop = hops[seq + 1];
-                  return `127.0.0.1:${nextHop.listenPort}`; // relay to next hop
-                })();
             // Use buildTunnelReloadCmds for GOST config updates
             actions.push({
               tunnelId: tunnel.id,
@@ -870,7 +913,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetIp: host.ip,
               targetPort: Number(listenPort),
               protocol: "tcp",
-              commands: buildTunnelReloadCmds(),
+              commands: await buildTunnelReloadCmds(),
             } as any);
           } else {
             actions.push({
@@ -883,7 +926,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetIp: host.ip,
               targetPort: Number(listenPort),
               protocol: "tcp",
-              commands: buildTunnelReloadCmds(),
+              commands: await buildTunnelReloadCmds(),
             } as any);
           }
         }

@@ -15,9 +15,16 @@ export async function getTunnels(userId?: number) {
 export async function getTunnelsByHost(hostId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(tunnels).where(
+  const direct = await db.select({ id: tunnels.id }).from(tunnels).where(
     sql`${tunnels.entryHostId} = ${hostId} OR ${tunnels.exitHostId} = ${hostId}`
-  ).orderBy(desc(tunnels.createdAt));
+  );
+  const hopRows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
+  const ids = Array.from(new Set([
+    ...direct.map((row: any) => Number(row.id)),
+    ...hopRows.map((row: any) => Number(row.tunnelId)),
+  ].filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return [];
+  return db.select().from(tunnels).where(sql`${tunnels.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`).orderBy(desc(tunnels.createdAt));
 }
 
 export async function getTunnelById(id: number) {
@@ -244,7 +251,7 @@ export async function getTunnelHops(tunnelId: number) {
   return db.select().from(tunnelHops).where(eq(tunnelHops.tunnelId, tunnelId)).orderBy(asc(tunnelHops.seq));
 }
 
-export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number }[]) {
+export async function createTunnelHops(tunnelId: number, hops: { hostId: number; listenPort: number; connectHost?: string | null }[]) {
   const db = await getDb();
   if (!db || hops.length === 0) return;
   // Delete existing hops first
@@ -256,6 +263,7 @@ export async function createTunnelHops(tunnelId: number, hops: { hostId: number;
       seq: i,
       hostId: hops[i].hostId,
       listenPort: hops[i].listenPort,
+      connectHost: hops[i].connectHost ?? null,
     });
   }
 }
