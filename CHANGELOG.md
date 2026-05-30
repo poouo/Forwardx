@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.65] - 2026-05-30
+
+### Fixed
+
+- Kept forwarding rule self-test dialogs in the testing state until the newly queued test result is returned, preventing stale previous results from restoring the button too early or leaving the UI stuck.
+- Kept tunnel self-test dialogs in the testing state until the server reports the new pending/completed result, so the visible status matches the active test run.
+
+### Changed
+
+- Bumped panel version to 2.3.65. Agent target version remains 2.2.61.
+
 ## [2.3.64] - 2026-05-30
 
 ### Fixed

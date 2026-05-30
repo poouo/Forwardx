@@ -352,19 +352,53 @@ function TunnelSelfTestDialog({
     refetchOnWindowFocus: false,
   });
   const tunnel = useMemo(() => tunnels?.find((item: any) => item.id === tunnelId), [tunnels, tunnelId]);
+  const [optimisticTesting, setOptimisticTesting] = useState(false);
+  const [startedLastTestAt, setStartedLastTestAt] = useState<string | null>(null);
+  const [sawServerTesting, setSawServerTesting] = useState(false);
   const testMutation = trpc.tunnels.test.useMutation({
     onSuccess: async () => {
       await utils.tunnels.list.invalidate();
     },
-    onError: (e) => toast.error(e.message || "测试失败"),
+    onError: (e) => {
+      setOptimisticTesting(false);
+      setStartedLastTestAt(null);
+      setSawServerTesting(false);
+      toast.error(e.message || "测试失败");
+    },
   });
 
   const status = tunnel?.lastTestStatus as string | undefined;
-  const isTesting = testMutation.isPending || status === "pending";
+  const lastTestAt = tunnel?.lastTestAt ? String(tunnel.lastTestAt) : "";
+  const isServerTesting = status === "pending" || status === "running";
+  const isTesting = testMutation.isPending || optimisticTesting || isServerTesting;
   const isSuccess = status === "success";
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
   const lastFailureToastKey = useRef("");
+
+  useEffect(() => {
+    if (!open) {
+      setOptimisticTesting(false);
+      setStartedLastTestAt(null);
+      setSawServerTesting(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (isServerTesting) setSawServerTesting(true);
+  }, [isServerTesting]);
+
+  useEffect(() => {
+    if (!optimisticTesting || isServerTesting) return;
+    const hasNewTestTimestamp = startedLastTestAt === "__none__"
+      ? !!lastTestAt
+      : !!lastTestAt && lastTestAt !== startedLastTestAt;
+    if (sawServerTesting || hasNewTestTimestamp) {
+      setOptimisticTesting(false);
+      setStartedLastTestAt(null);
+      setSawServerTesting(false);
+    }
+  }, [isServerTesting, lastTestAt, optimisticTesting, sawServerTesting, startedLastTestAt]);
 
   useEffect(() => {
     if (!open) {
@@ -447,7 +481,12 @@ function TunnelSelfTestDialog({
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
-            onClick={() => testMutation.mutate({ id: tunnelId })}
+            onClick={() => {
+              setStartedLastTestAt(lastTestAt || "__none__");
+              setSawServerTesting(false);
+              setOptimisticTesting(true);
+              testMutation.mutate({ id: tunnelId });
+            }}
             disabled={isTesting}
             className="gap-2"
           >
