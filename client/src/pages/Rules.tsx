@@ -2042,21 +2042,47 @@ function SelfTestDialog({
     }
   );
   const [optimisticTesting, setOptimisticTesting] = useState(false);
+  const [activeTestId, setActiveTestId] = useState<number | null>(null);
   const startMutation = trpc.rules.startSelfTest.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
+      const nextTestId = Number(data?.id) || 0;
+      if (nextTestId > 0) {
+        setActiveTestId(nextTestId);
+      } else {
+        setOptimisticTesting(false);
+        setActiveTestId(null);
+      }
       utils.rules.latestTest.invalidate({ ruleId });
     },
-    onError: (e) => toast.error(e?.message || "下发失败"),
+    onError: (e) => {
+      setOptimisticTesting(false);
+      setActiveTestId(null);
+      toast.error(e?.message || "下发失败");
+    },
   });
 
   const status = latest?.status as string | undefined;
   const isServerTesting = status === "pending" || status === "running";
+  const isTerminalStatus = !!status && !isServerTesting;
+  const latestTestId = Number((latest as any)?.id) || 0;
   useEffect(() => {
-    if (!open) setOptimisticTesting(false);
+    if (!open) {
+      setOptimisticTesting(false);
+      setActiveTestId(null);
+    }
   }, [open]);
   useEffect(() => {
-    if (status && status !== "pending" && status !== "running") setOptimisticTesting(false);
-  }, [status]);
+    if (!optimisticTesting || !activeTestId || !isTerminalStatus) return;
+    if (latestTestId >= activeTestId) {
+      setOptimisticTesting(false);
+      setActiveTestId(null);
+    }
+  }, [activeTestId, isTerminalStatus, latestTestId, optimisticTesting]);
+  useEffect(() => {
+    if (!startMutation.isError) return;
+    setOptimisticTesting(false);
+    setActiveTestId(null);
+  }, [startMutation.isError]);
   const isTesting = startMutation.isPending || optimisticTesting || isServerTesting;
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
@@ -2146,16 +2172,17 @@ function SelfTestDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             className="min-w-[112px] gap-2"
-            disabled={startMutation.isPending}
+            disabled={isTesting}
             onClick={() => {
               setOptimisticTesting(true);
+              setActiveTestId(null);
               startMutation.mutate({ ruleId });
             }}
           >
             <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-              {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+              {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
             </span>
-            运行测试
+            {isTesting ? "测试中..." : "运行测试"}
           </Button>
         </DialogFooter>
       </DialogContent>
