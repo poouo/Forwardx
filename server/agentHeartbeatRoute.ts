@@ -497,10 +497,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!tunnel || !tunnelExitHost || !(r as any).tunnelExitPort) return [];
         const tunnelHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
         const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
+        const isMultiHopTunnel = Array.isArray(tunnelHops) && tunnelHops.length >= 3;
         const useMultiHopEntry =
           !!firstHop
           && Number(firstHop.hostId) === Number(host.id)
           && Number(firstHop.listenPort) > 0;
+        // Multi-hop rules on entry host must enter local first-hop listener.
+        // Never downgrade to direct entry->exit dial for multi-hop, otherwise middle hops are bypassed.
+        if (isMultiHopTunnel && Number(firstHop?.hostId) === Number(host.id) && !useMultiHopEntry) {
+          console.warn(`[TunnelRoute] skip direct fallback for multi-hop tunnel=${tunnel.id} rule=${r.id}; invalid first-hop listenPort=${Number(firstHop?.listenPort) || 0}`);
+          return [];
+        }
         const chainTargetAddr = useMultiHopEntry
           ? `127.0.0.1:${Number(firstHop.listenPort)}`
           : `${tunnelExitHost}:${(r as any).tunnelExitPort}`;
