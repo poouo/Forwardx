@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.56] - 2026-05-30
+
+### Fixed
+
+- Added non-billing GOST multi-hop relay traffic sampling so middle hop Agents report `[TunnelTraffic]` diagnostics for active tunnel rules.
+- Kept GOST tunnel traffic billing on the exit host only to avoid double-counting usage across multi-hop relays.
+
+### Changed
+
+- Bumped panel version to 2.3.56. Agent target version remains 2.2.59.
+
 ## [2.3.55] - 2026-05-30
 
 ### Fixed

@@ -81,6 +81,10 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       const tunnel = tunnelId > 0 ? await db.getTunnelById(tunnelId) : null;
       const accountingHostId = trafficAccountingHostId(rule, tunnel);
       if (accountingHostId !== Number(host.id)) {
+        const ruleBytes = bytesIn + bytesOut;
+        if (ruleBytes > 0 && tunnel && !isForwardXTunnel(tunnel)) {
+          console.log(`[TunnelTraffic] host=${host.id} tunnel=${tunnelId} rule=${rule.id} in=${bytesIn} out=${bytesOut} connections=${stat.connections || 0}`);
+        }
         continue;
       }
       await db.insertTrafficStat({

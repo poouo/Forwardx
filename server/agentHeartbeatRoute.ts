@@ -749,6 +749,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
     const guardRules: any[] = [];
+    const addRunningRule = (rule: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }) => {
+      if (!rule.ruleId || !rule.sourcePort) return;
+      const exists = runningRules.some((item) =>
+        Number(item.ruleId) === Number(rule.ruleId) && Number(item.sourcePort) === Number(rule.sourcePort)
+      );
+      if (!exists) runningRules.push(rule);
+    };
 
     const buildDisabledRuleRemovalAction = (rule: any) => {
       const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
@@ -1051,7 +1058,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         const trafficPort = ruleTrafficPort(rule);
         if (!trafficPort) continue;
-        runningRules.push({
+        addRunningRule({
           ruleId: rule.id,
           sourcePort: trafficPort,
           targetIp: rule.targetIp,
@@ -1504,7 +1511,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!rule.isEnabled || !rule.isRunning) continue;
       const trafficPort = Number((rule as any).tunnelExitPort) || 0;
       if (!trafficPort) continue;
-      runningRules.push({
+      addRunningRule({
         ruleId: rule.id,
         sourcePort: trafficPort,
         targetIp: rule.targetIp,
@@ -1512,6 +1519,41 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         protocol: rule.protocol,
         forwardType: "gost-tunnel-exit",
       });
+    }
+
+    const gostMultiHopRelayRules = await Promise.all(agentAllRules
+      .filter((rule: any) => {
+        if (!rule || rule.pendingDelete || !rule.isEnabled || !rule.isRunning) return false;
+        if (rule.forwardType !== "gost" || !rule.tunnelId) return false;
+        const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+        if (!tunnel || isForwardXTunnel(tunnel) || !tunnel.isEnabled) return false;
+        if (!isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
+        if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return false;
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        return Array.isArray(hops) && hops.length >= 3;
+      })
+      .map(async (rule: any) => {
+        const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id)) || [];
+        const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
+        if (hostIdx <= 0 || hostIdx >= hops.length - 1) return null;
+        const currentHop = hops[hostIdx] as any;
+        const nextHop = hops[hostIdx + 1] as any;
+        const nextHost = await getHopDialAddress(nextHop);
+        const sourcePort = Number(currentHop.listenPort) || 0;
+        const targetPort = Number(nextHop.listenPort) || 0;
+        if (!sourcePort || !targetPort || !nextHost) return null;
+        return {
+          ruleId: Number(rule.id),
+          sourcePort,
+          targetIp: nextHost,
+          targetPort,
+          protocol: "tcp",
+          forwardType: "gost-tunnel-hop",
+        };
+      }));
+    for (const runningRule of gostMultiHopRelayRules) {
+      if (runningRule) addRunningRule(runningRule);
     }
 
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
