@@ -7,7 +7,7 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getFilteredPanelLogs, getPanelLogSummary } from "./panelLogger";
-import { clearAgentLogs, getAgentLogs } from "../agentLogStore";
+import { clearAgentLogs, getAgentLogSummary, getAgentLogs } from "../agentLogStore";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
@@ -737,6 +737,7 @@ export const systemRouter = router({
     }).optional())
     .query(({ input }) => ({
       logs: getAgentLogs({ hostId: input?.hostId, level: input?.level || "all" }),
+      summary: getAgentLogSummary({ hostId: input?.hostId }),
       checkedAt: new Date().toISOString(),
     })),
 

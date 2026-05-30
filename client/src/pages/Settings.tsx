@@ -1094,15 +1094,16 @@ function SettingsContent() {
 }
 
 function PanelLogsSection() {
-  const [logLevel, setLogLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
+  const [panelLogLevel, setPanelLogLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
+  const [agentLogLevel, setAgentLogLevel] = useState<"all" | "info" | "warn" | "error">("all");
   const [exportLevel, setExportLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
   const [agentHostId, setAgentHostId] = useState("all");
-  const { data: panelLogs, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: logLevel }, {
+  const { data: panelLogs, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: panelLogLevel }, {
     refetchInterval: 10000,
   });
   const { data: hosts } = trpc.hosts.list.useQuery();
   const { data: agentLogs, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
-    level: logLevel,
+    level: agentLogLevel,
     hostId: agentHostId === "all" ? null : Number(agentHostId),
   }, {
     refetchInterval: 10000,
@@ -1143,12 +1144,19 @@ function PanelLogsSection() {
     return "text-muted-foreground";
   };
   const summary = panelLogs?.summary || {};
+  const agentSummary = agentLogs?.summary || {};
   const levelTabs = [
     { value: "all", label: "全部", count: summary.all || 0 },
     { value: "info", label: "Info", count: summary.info || 0 },
     { value: "warn", label: "Warn", count: summary.warn || 0 },
     { value: "error", label: "Error", count: summary.error || 0 },
     { value: "log", label: "Log", count: summary.log || 0 },
+  ] as const;
+  const agentLevelTabs = [
+    { value: "all", label: "全部", count: agentSummary.all || 0 },
+    { value: "info", label: "Info", count: agentSummary.info || 0 },
+    { value: "warn", label: "Warn", count: agentSummary.warn || 0 },
+    { value: "error", label: "Error", count: agentSummary.error || 0 },
   ] as const;
   return (
     <div className="space-y-4">
@@ -1187,6 +1195,16 @@ function PanelLogsSection() {
           </div>
         </CardHeader>
         <CardContent>
+          <Tabs value={agentLogLevel} onValueChange={(v) => setAgentLogLevel(v as typeof agentLogLevel)} className="space-y-3">
+            <TabsList className="grid h-auto w-full grid-cols-2 bg-muted/50 sm:grid-cols-4">
+              {agentLevelTabs.map((tab) => (
+                <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 gap-1.5 text-xs">
+                  {tab.label}
+                  <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">{tab.count}</span>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
           <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
             {(agentLogs?.logs || []).length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">暂无 Agent 日志</div>
@@ -1243,7 +1261,7 @@ function PanelLogsSection() {
           </div>
         </CardHeader>
         <CardContent>
-          <Tabs value={logLevel} onValueChange={(v) => setLogLevel(v as typeof logLevel)} className="space-y-3">
+          <Tabs value={panelLogLevel} onValueChange={(v) => setPanelLogLevel(v as typeof panelLogLevel)} className="space-y-3">
             <TabsList className="grid h-auto w-full grid-cols-2 bg-muted/50 sm:grid-cols-5">
               {levelTabs.map((tab) => (
                 <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 gap-1.5 text-xs">

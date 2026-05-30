@@ -37,6 +37,16 @@ export function getAgentLogs(input: { hostId?: number | null; level?: string | n
   });
 }
 
+export function getAgentLogSummary(input: { hostId?: number | null } = {}) {
+  const hostId = Number(input.hostId || 0);
+  return logs.reduce<Record<"all" | AgentLogLevel, number>>((acc, entry) => {
+    if (hostId > 0 && entry.hostId !== hostId) return acc;
+    acc.all += 1;
+    acc[entry.level] += 1;
+    return acc;
+  }, { all: 0, info: 0, warn: 0, error: 0 });
+}
+
 export function clearAgentLogs(hostId?: number | null) {
   const id = Number(hostId || 0);
   logs = id > 0 ? logs.filter((entry) => entry.hostId !== id) : [];

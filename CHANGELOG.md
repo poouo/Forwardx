@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.52] - 2026-05-30
+
+### Fixed
+
+- Added Agent log level summaries and independent Agent log filtering in system settings.
+- Fixed GOST tunnel forwarding rule actions so Agent logs and status reports include the tunnel id.
+
+### Changed
+
+- Bumped panel version to 2.3.52. Agent target version remains 2.2.59.
+
 ## [2.3.51] - 2026-05-30
 
 ### Fixed
