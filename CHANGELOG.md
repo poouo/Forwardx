@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.63] - 2026-05-30
+
+### Fixed
+
+- Enabled GOST relay handler `nodelay` on tunnel middle-hop and exit services so relay connectors no longer wait on a response that is buffered behind downstream TLS/application data.
+
+### Changed
+
+- Bumped panel version to 2.3.63. Agent target version remains 2.2.61.
+
 ## [2.3.62] - 2026-05-30
 
 ### Fixed

@@ -499,6 +499,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
       },
     });
+    const gostRelayHandler = () => ({ type: "relay", metadata: { nodelay: true } });
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
@@ -668,7 +669,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: { type: "relay" },
+          handler: gostRelayHandler(),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -693,7 +694,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
-          handler: { type: "relay" },
+          handler: gostRelayHandler(),
           listener: {
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
