@@ -236,7 +236,7 @@ export const tunnelsRouter = router({
             pushAgentRefresh(hostId, "tunnel-created");
           }
         } else {
-          pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
+          await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         }
         return { id, listenPort };
       }),
@@ -390,7 +390,7 @@ export const tunnelsRouter = router({
             await refreshTunnelRuntimeHosts(id, affectedHopHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
           } else {
             clearTunnelRuntimeStatus(id);
-            pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
+            await pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
           }
           if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
           if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
@@ -404,7 +404,7 @@ export const tunnelsRouter = router({
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
         clearTunnelRuntimeStatus(input.id);
-        pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
+        await pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
         await db.deleteTunnel(input.id);
         return { success: true };
       }),
@@ -458,7 +458,7 @@ export const tunnelsRouter = router({
                 await hopRepo.createTunnelHops(Number(tunnel.id), repairedHops);
               }
               appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort auto-assigned: ${targetPort}`);
-              pushTunnelEndpointRefresh(tunnel as any, "tunnel-test-port-repair");
+              await pushTunnelEndpointRefresh(tunnel as any, "tunnel-test-port-repair");
             }
           }
         }

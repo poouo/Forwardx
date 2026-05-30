@@ -36,7 +36,7 @@ export const selfTestRulesRouter = router({
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         if (!tunnel) throw new Error("隧道不存在");
         hostId = tunnel.exitHostId;
-        const pushed = pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
+        const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
         message = JSON.stringify({
           kind: "forward-via-tunnel",
           tunnelId: tunnel.id,

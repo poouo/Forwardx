@@ -208,7 +208,7 @@ export const crudRulesRouter = router({
       if (tunnelId) {
         const tunnel = await db.getTunnelById(tunnelId);
         await db.updateTunnel(tunnelId, { isRunning: false } as any);
-        if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
+        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
       }
       return { id, sourcePort };
     }),
@@ -419,7 +419,7 @@ export const crudRulesRouter = router({
         for (const affectedTunnelId of affectedTunnelIds) {
           const affectedTunnel = await db.getTunnelById(affectedTunnelId);
           await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
-          if (affectedTunnel) pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
+          if (affectedTunnel) await pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
         }
         if (Number(rule.hostId) !== Number(nextHostIdForRule)) {
           pushAgentRefresh(Number(rule.hostId), "forward-rule-updated-old-host");
@@ -442,7 +442,7 @@ export const crudRulesRouter = router({
           if ((child as any).tunnelId) {
             const tunnel = await db.getTunnelById((child as any).tunnelId);
             await db.updateTunnel((child as any).tunnelId, { isRunning: false } as any);
-            if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-group-rule-deleted");
+            if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-group-rule-deleted");
           }
           await db.markForwardRulePendingDelete(Number(child.id));
           pushAgentRefresh(Number(child.hostId), "forward-group-rule-deleted");
@@ -453,7 +453,7 @@ export const crudRulesRouter = router({
       if ((rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-deleted");
+        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-deleted");
       }
       await db.markForwardRulePendingDelete(input.id);
       pushAgentRefresh(rule.hostId, "forward-rule-deleted");
@@ -495,7 +495,7 @@ export const crudRulesRouter = router({
       if ((rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (tunnel) pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
+        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
       }
       if (input.isEnabled) {
         if (ctx.user.role !== "admin") {

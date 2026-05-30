@@ -35,6 +35,11 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
 
     const rule = await db.getForwardRuleById(ruleId);
     if (!rule) {
+      if (!isRunning) {
+        appendPanelLog("info", `[Rule] status ignored missing rule=${ruleId} tunnel=${Number(tunnelId || 0) || "-"} host=${host.id} running=false`);
+        res.json({ success: true, ignored: true });
+        return;
+      }
       res.status(404).json({ error: "rule not found" });
       return;
     }

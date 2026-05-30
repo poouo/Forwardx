@@ -86,14 +86,29 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
   return { tunnel, isTrafficBillingResource };
 }
 
-export function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
-  const entryPushed = pushAgentRefresh(tunnel.entryHostId, `${reason}-entry`);
-  const exitPushed = pushAgentRefresh(tunnel.exitHostId, `${reason}-exit`);
+export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
+  const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
+  const hopHostIds = Array.isArray(hopRows)
+    ? hopRows.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
+    : [];
+  const hostIds = hopHostIds.length >= 3
+    ? hopHostIds
+    : [Number(tunnel.entryHostId), Number(tunnel.exitHostId)].filter((id) => Number.isFinite(id) && id > 0);
+  const uniqueHostIds = Array.from(new Set(hostIds));
+  const pushed = uniqueHostIds.map((hostId) => ({
+    hostId,
+    pushed: pushAgentRefresh(hostId, `${reason}-host-${hostId}`),
+  }));
+  const allPushed = pushed.every((item) => item.pushed);
   appendPanelLog(
-    entryPushed && exitPushed ? "info" : "warn",
-    `[Tunnel] refresh tunnel=${tunnel.id} reason=${reason} entryHost=${tunnel.entryHostId} pushed=${entryPushed} exitHost=${tunnel.exitHostId} pushed=${exitPushed}`,
+    allPushed ? "info" : "warn",
+    `[Tunnel] refresh tunnel=${tunnel.id} reason=${reason} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
-  return { entryPushed, exitPushed };
+  return {
+    entryPushed: pushed.some((item) => item.hostId === Number(tunnel.entryHostId) && item.pushed),
+    exitPushed: pushed.some((item) => item.hostId === Number(tunnel.exitHostId) && item.pushed),
+    hostPushed: pushed,
+  };
 }
 
 export async function refreshUserForwardEndpoints(userId: number, reason: string) {
@@ -111,7 +126,7 @@ export async function refreshUserForwardEndpoints(userId: number, reason: string
     const tunnel = await db.getTunnelById(tunnelId);
     if (!tunnel) continue;
     await db.updateTunnel(tunnelId, { isRunning: false } as any);
-    pushTunnelEndpointRefresh(tunnel, reason);
+    await pushTunnelEndpointRefresh(tunnel, reason);
   }
 }
 

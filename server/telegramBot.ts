@@ -849,7 +849,7 @@ async function refreshRuleEndpoint(rule: any, reason: string) {
   if (rule.tunnelId) {
     const tunnel = await db.getTunnelById(Number(rule.tunnelId));
     await db.updateTunnel(Number(rule.tunnelId), { isRunning: false } as any);
-    if (tunnel) pushTunnelEndpointRefresh(tunnel, reason);
+    if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
   } else {
     pushAgentRefresh(Number(rule.hostId), reason);
   }
@@ -866,7 +866,7 @@ async function refreshUserForwardEndpoints(userId: number, reason: string) {
   for (const tunnelId of tunnelIds) {
     const tunnel = await db.getTunnelById(tunnelId);
     await db.updateTunnel(tunnelId, { isRunning: false } as any);
-    if (tunnel) pushTunnelEndpointRefresh(tunnel, reason);
+    if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
   }
   for (const hostId of hostIds) pushAgentRefresh(hostId, reason);
 }

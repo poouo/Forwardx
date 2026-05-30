@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.54] - 2026-05-30
+
+### Fixed
+
+- Refreshed every host in a multi-hop tunnel when forwarding rules are created, updated, toggled, deleted, or self-tested so middle relay Agents receive the current topology.
+- Treated stale successful removal reports for already-deleted rules as idempotent instead of returning `rule not found`.
+
+### Changed
+
+- Bumped panel version to 2.3.54. Agent target version remains 2.2.59.
+
 ## [2.3.53] - 2026-05-30
 
 ### Fixed
