@@ -487,12 +487,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           && tunnel.exitHostId === host.id;
       });
 
-    const gostServiceConfig = gostRules
-      .flatMap((r: any) => {
+    const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
+      name,
+      addr,
+      connector: { type: "relay" },
+      dialer: {
+        type: dialerType,
+        ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+      },
+    });
+    const gostServiceConfig = (await Promise.all(gostRules
+      .map(async (r: any) => {
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && isForwardXTunnel(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
-        return protos.map((proto) => {
+        return Promise.all(protos.map(async (proto) => {
+          const tunnelHops = tunnel ? tunnelHopsByTunnelId.get(Number(tunnel.id)) : null;
+          const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
+          const isMultiHopTunnel = Array.isArray(tunnelHops) && tunnelHops.length >= 3;
+          const useMultiHopEntry =
+            isMultiHopTunnel
+            && !!firstHop
+            && Number(firstHop.hostId) === Number(host.id);
           const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
@@ -509,22 +525,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 dialer: { type: proto },
               }],
             };
+          } else if (useMultiHopEntry) {
+            const hops = tunnelHops as any[];
+            const exitHop = hops[hops.length - 1] as any;
+            const exitHost = await getHopDialAddress(exitHop);
+            if (!exitHost || !(r as any).tunnelExitPort) return null;
+            service.forwarder = {
+              nodes: [gostTunnelNode(
+                `exit-${r.id}`,
+                `${exitHost}:${Number((r as any).tunnelExitPort)}`,
+                tunnelProtocolType(tunnel.mode),
+                tunnel,
+              )],
+            };
           } else if (!tunnelExitHost || !(r as any).tunnelExitPort) {
             return null;
           }
           return applyGostLimiter(service, Number(r.userId));
-        });
-      })
+        }));
+      })))
+      .flat()
       .filter(Boolean);
-    const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
-      name,
-      addr,
-      connector: { type: "relay" },
-      dialer: {
-        type: dialerType,
-        ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-      },
-    });
     const tunnelGostChains = (await Promise.all(gostRules
       .filter((r: any) => r.isEnabled && r.forwardType === "gost" && r.tunnelId)
       .map(async (r: any) => {
@@ -562,18 +583,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               )],
             });
           }
-          const exitHop = tunnelHops[tunnelHops.length - 1] as any;
-          const exitHost = await getHopDialAddress(exitHop);
-          if (!exitHost) return null;
-          chainHops.push({
-            name: `hop-tunnel-${r.id}-exit`,
-            nodes: [gostTunnelNode(
-              `exit-${r.id}`,
-              `${exitHost}:${Number((r as any).tunnelExitPort)}`,
-              tunnelProtocolType(tunnel.mode),
-              tunnel,
-            )],
-          });
+          if (chainHops.length === 0) return null;
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry
