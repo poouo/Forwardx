@@ -2061,6 +2061,24 @@ function SelfTestDialog({
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
+  const lastFailureToastKey = useRef("");
+  useEffect(() => {
+    if (!open) {
+      lastFailureToastKey.current = "";
+      return;
+    }
+    const message = typeof latest?.message === "string" ? latest.message.trim() : "";
+    if (!isTesting && latest && !isSuccess && message) {
+      const key = `${ruleId}:${status}:${latest?.updatedAt || ""}:${message}`;
+      if (lastFailureToastKey.current !== key) {
+        lastFailureToastKey.current = key;
+        toast.error(isTimeout ? "转发链路自测超时" : "转发链路自测失败", {
+          description: message,
+          duration: 12000,
+        });
+      }
+    }
+  }, [open, isTesting, isSuccess, isTimeout, latest, latest?.message, latest?.updatedAt, ruleId, status]);
   const statusView = (() => {
     if (isTesting) {
       return (

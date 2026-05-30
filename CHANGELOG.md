@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.49] - 2026-05-30
+
+### Changed
+
+- Moved forwarding and tunnel self-test failure details out of the dialog body and into bottom-right notifications.
+- Bumped panel version to 2.3.49. Agent target version remains 2.2.59.
+
 ## [2.3.48] - 2026-05-30
 
 ### Fixed

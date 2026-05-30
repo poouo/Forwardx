@@ -48,7 +48,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -364,6 +364,25 @@ function TunnelSelfTestDialog({
   const isSuccess = status === "success";
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
+  const lastFailureToastKey = useRef("");
+
+  useEffect(() => {
+    if (!open) {
+      lastFailureToastKey.current = "";
+      return;
+    }
+    const message = typeof tunnel?.lastTestMessage === "string" ? tunnel.lastTestMessage.trim() : "";
+    if (!isTesting && isFailed && message) {
+      const key = `${tunnelId}:${status}:${tunnel?.lastTestAt || ""}:${message}`;
+      if (lastFailureToastKey.current !== key) {
+        lastFailureToastKey.current = key;
+        toast.error("隧道链路自测失败", {
+          description: message,
+          duration: 12000,
+        });
+      }
+    }
+  }, [open, isTesting, isFailed, status, tunnel?.lastTestAt, tunnel?.lastTestMessage, tunnelId]);
 
   const statusView = (() => {
     if (isTesting) {
@@ -423,12 +442,6 @@ function TunnelSelfTestDialog({
               {isTesting ? "正在测试中" : isSuccess && latencyMs !== null && latencyMs !== undefined ? `${latencyMs} ms` : "--"}
             </span>
           </div>
-          {!isTesting && isFailed && tunnel?.lastTestMessage && (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-              <span className="font-medium">失败原因：</span>
-              <span className="break-all">{tunnel.lastTestMessage}</span>
-            </div>
-          )}
         </div>
 
         <DialogFooter>
