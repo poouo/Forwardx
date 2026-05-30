@@ -567,46 +567,38 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           return null;
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
-          const chainHops: any[] = [];
           const routeParts: string[] = [`entry#${Number(firstHop.hostId)}:${Number((r as any).sourcePort)}`];
-          for (let i = 1; i < tunnelHops.length - 1; i++) {
+          const firstRelay = tunnelHops[1] as any;
+          const firstRelayHost = await getHopDialAddress(firstRelay);
+          const firstRelayPort = Number(firstRelay.listenPort) || 0;
+          if (!firstRelayHost || !firstRelayPort) return null;
+          for (let i = 1; i < tunnelHops.length; i++) {
             const hop = tunnelHops[i] as any;
             const hopDialHost = await getHopDialAddress(hop);
-            const hopAddr = `${hopDialHost}:${Number(hop.listenPort)}`;
-            if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
-            routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
-            chainHops.push({
-              name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
-              nodes: [gostTunnelNode(
-                `mhop-${r.id}-${Number(hop.seq)}`,
-                hopAddr,
-                tunnelProtocolType(tunnel.mode),
-                tunnel,
-              )],
-            });
+            const hopPort = i === tunnelHops.length - 1
+              ? Number((r as any).tunnelExitPort)
+              : Number(hop.listenPort);
+            if (!hopDialHost || !hopPort) return null;
+            routeParts.push(`${i === tunnelHops.length - 1 ? "exit" : "hop"}#${Number(hop.hostId)}@${hopDialHost}:${hopPort}`);
           }
-          const exitHop = tunnelHops[tunnelHops.length - 1] as any;
-          const exitHost = await getHopDialAddress(exitHop);
-          const exitAddr = `${exitHost}:${Number((r as any).tunnelExitPort)}`;
-          if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
-          chainHops.push({
-            name: `hop-tunnel-${r.id}-exit`,
-            nodes: [gostTunnelNode(
-              `exit-${r.id}`,
-              exitAddr,
-              tunnelProtocolType(tunnel.mode),
-              tunnel,
-            )],
-          });
-          if (chainHops.length === 0) return null;
-          routeParts.push(`exit#${Number(exitHop.hostId)}@${exitAddr}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           if (tunnelRouteLogCache.get(routeKey) !== route) {
             tunnelRouteLogCache.set(routeKey, route);
             appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
           }
-          return { name: `chain-tunnel-${r.id}`, hops: chainHops };
+          return {
+            name: `chain-tunnel-${r.id}`,
+            hops: [{
+              name: `hop-tunnel-${r.id}-first-relay`,
+              nodes: [gostTunnelNode(
+                `mhop-${r.id}-${Number(firstRelay.seq)}`,
+                `${firstRelayHost}:${firstRelayPort}`,
+                tunnelProtocolType(tunnel.mode),
+                tunnel,
+              )],
+            }],
+          };
         }
         const chainTargetAddr = useMultiHopEntry
           ? `127.0.0.1:${Number(firstHop.listenPort)}`
@@ -693,6 +685,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const configuredNextAddr = String((nextHop as any).connectHost || "").trim();
         const nextAddr = configuredNextAddr || await getHostIngressAddress(Number(nextHop.hostId));
         if (!nextAddr || !Number(nextHop.listenPort)) return null;
+        const nextIsExit = hostIdx + 1 === hops.length - 1;
+        const nextPort = nextIsExit ? Number(tunnel.listenPort) : Number(nextHop.listenPort);
+        if (!nextPort) return null;
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
@@ -701,6 +696,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
             ...(Number(currentHop.seq) === 0 ? {} : (tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {})),
+          },
+          forwarder: {
+            nodes: [{
+              name: `next-${tunnel.id}-${Number(nextHop.seq)}`,
+              addr: `${nextAddr}:${nextPort}`,
+              connector: { type: "relay", metadata: { nodelay: true } },
+              dialer: {
+                type: tunnelProtocolType(tunnel.mode),
+                ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+              },
+            }],
           },
         };
       }));

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.58] - 2026-05-30
+
+### Fixed
+
+- Changed GOST multi-hop relay generation so the entry rule dials only the first relay and each relay service explicitly forwards to the next hop or exit.
+
+### Changed
+
+- Bumped panel version to 2.3.58. Agent target version remains 2.2.60.
+
 ## [2.3.57] - 2026-05-30
 
 ### Fixed
