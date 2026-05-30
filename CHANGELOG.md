@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.44] - 2026-05-30
+
+### Fixed
+
+- Fixed GOST multi-hop forwarding rules so the entry rule chain dials the configured middle hops directly and lands on the rule-specific tunnel exit port.
+- Fixed tunnel forwarding rule self-tests to report estimated full-path latency from tunnel-hop latency plus exit-to-target latency, instead of only TCPing the entry listener.
+
+### Changed
+
+- Bumped panel version to 2.3.44 and Agent target version to 2.2.56 so GitHub Release assets can be used for machine updates.
+
 ## [2.3.43] - 2026-05-30
 
 ### Fixed

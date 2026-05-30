@@ -518,29 +518,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
         const isMultiHopTunnel = Array.isArray(tunnelHops) && tunnelHops.length >= 3;
         const useMultiHopEntry =
-          !!firstHop
-          && Number(firstHop.hostId) === Number(host.id)
-          && Number(firstHop.listenPort) > 0;
-        // Multi-hop rules on entry host must enter local first-hop listener.
-        // Never downgrade to direct entry->exit dial for multi-hop, otherwise middle hops are bypassed.
-        if (isMultiHopTunnel && Number(firstHop?.hostId) === Number(host.id) && !useMultiHopEntry) {
-          console.warn(`[TunnelRoute] skip direct fallback for multi-hop tunnel=${tunnel.id} rule=${r.id}; invalid first-hop listenPort=${Number(firstHop?.listenPort) || 0}`);
+          isMultiHopTunnel
+          && !!firstHop
+          && Number(firstHop.hostId) === Number(host.id);
+        // Multi-hop rules on the entry host must build an explicit B->...->exit chain.
+        // Dialing the local first-hop listener only proves the generic probe path and bypasses
+        // the rule-specific tunnelExitPort.
+        if (isMultiHopTunnel && !useMultiHopEntry) {
+          console.warn(`[TunnelRoute] skip direct fallback for multi-hop tunnel=${tunnel.id} rule=${r.id}; entry host mismatch host=${host.id} firstHop=${Number(firstHop?.hostId) || 0}`);
           return null;
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
           const chainHops: any[] = [];
-          for (let i = 0; i < tunnelHops.length - 1; i++) {
+          for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
-            const hopAddr = i === 0
-              ? `127.0.0.1:${Number(hop.listenPort)}`
-              : `${await getHopDialAddress(hop)}:${Number(hop.listenPort)}`;
+            const hopAddr = `${await getHopDialAddress(hop)}:${Number(hop.listenPort)}`;
             if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
             chainHops.push({
               name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
               nodes: [gostTunnelNode(
                 `mhop-${r.id}-${Number(hop.seq)}`,
                 hopAddr,
-                i === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
+                tunnelProtocolType(tunnel.mode),
                 tunnel,
               )],
             });
