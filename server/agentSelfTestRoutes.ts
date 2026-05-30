@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { parseSelfTestMeta } from "./agentRouteUtils";
+import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
@@ -50,6 +51,38 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         console.log(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping success latency=${cleanLatency}ms`);
       } else {
         console.warn(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping failed: ${cleanMessage || "unknown"}`);
+      }
+    }
+    if (meta?.kind === "tunnel-hop" && typeof meta.tunnelId === "number") {
+      const hopLabel = String((meta as any).hopLabel || "hop");
+      const aggregate = recordTunnelHopTestResult(testId, {
+        success,
+        latencyMs: success ? cleanLatency : null,
+        message: cleanMessage,
+        hopLabel,
+      });
+      if (success) {
+        console.log(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} success latency=${cleanLatency ?? "-"}ms`);
+      } else {
+        console.warn(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} failed: ${cleanMessage || "unknown"}`);
+      }
+      if (aggregate) {
+        await db.updateTunnelRunningStatus(aggregate.tunnelId, aggregate.success);
+        await db.updateTunnelTestResult(aggregate.tunnelId, {
+          status: aggregate.success ? "success" : "failed",
+          latencyMs: aggregate.success ? aggregate.latencyMs : null,
+          message: aggregate.message,
+        });
+        await db.insertTunnelLatencyStat({
+          tunnelId: aggregate.tunnelId,
+          latencyMs: aggregate.success ? aggregate.latencyMs : null,
+          isTimeout: !aggregate.success,
+        });
+        if (aggregate.success) {
+          console.log(`[TunnelTest] tunnel=${aggregate.tunnelId} multi-hop total latency=${aggregate.latencyMs}ms`);
+        } else {
+          console.warn(`[TunnelTest] tunnel=${aggregate.tunnelId} multi-hop failed: ${aggregate.message}`);
+        }
       }
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
@@ -127,6 +160,20 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
         selfTests.push({
           testId: t.id,
           kind: "tunnel",
+          tunnelId: meta.tunnelId,
+          ruleId: 0,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "tunnel-hop") {
+        selfTests.push({
+          testId: t.id,
+          kind: "tunnel-hop",
           tunnelId: meta.tunnelId,
           ruleId: 0,
           forwardType: "gost-tunnel",

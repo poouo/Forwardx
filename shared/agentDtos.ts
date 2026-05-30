@@ -25,6 +25,14 @@ export type SelfTestMeta =
       targetPort?: number;
     }
   | {
+      kind: "tunnel-hop";
+      tunnelId: number;
+      targetIp?: string;
+      targetPort?: number;
+      hopLabel?: string;
+      batchId?: string;
+    }
+  | {
       kind: "forward-via-tunnel";
       tunnelId: number;
       targetIp?: string;

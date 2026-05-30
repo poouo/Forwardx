@@ -8,6 +8,7 @@ import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 import * as hopRepo from "../repositories/tunnelRepository";
+import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.literal("2")])
@@ -25,6 +26,9 @@ const getTunnelDialHost = (tunnel: any, exit: any) => {
   if (connectHost) return connectHost;
   return String((exit as any).tunnelEntryIp || (exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit?.ip || "").trim();
 };
+
+const getHostTunnelAddress = (host: any) =>
+  String((host as any)?.tunnelEntryIp || (host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
 async function attachTunnelEndpointHosts(tunnels: any[]) {
   const hostIds = Array.from(new Set(
@@ -406,6 +410,48 @@ export const tunnelsRouter = router({
           appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid test target. exitHost=${exit.id} target=${target || "-"} port=${targetPort || "-"}`);
           return { success: false, latencyMs: null, message };
         }
+        const tunnelHops = await hopRepo.getTunnelHops(Number(tunnel.id));
+        if (Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
+          const batchId = createTunnelHopBatch(Number(tunnel.id));
+          let queued = 0;
+          for (let i = 0; i < tunnelHops.length - 1; i++) {
+            const currentHop = tunnelHops[i] as any;
+            const nextHop = tunnelHops[i + 1] as any;
+            const fromHostId = Number(currentHop.hostId) || 0;
+            const nextHost = await db.getHostById(Number(nextHop.hostId));
+            const nextAddr = String(nextHop.connectHost || "").trim() || getHostTunnelAddress(nextHost);
+            const nextPort = Number(nextHop.listenPort) || 0;
+            if (!fromHostId || !nextAddr || !nextPort) {
+              const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
+              await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
+              await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+              appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid hop target hop=${i + 1} fromHost=${fromHostId} target=${nextAddr || "-"} port=${nextPort || "-"}`);
+              return { success: false, latencyMs: null, message };
+            }
+            const hopLabel = `${i + 1}/${tunnelHops.length - 1} ${fromHostId}->${Number(nextHop.hostId)}`;
+            const payload = {
+              kind: "tunnel-hop",
+              tunnelId: tunnel.id,
+              targetIp: nextAddr,
+              targetPort: nextPort,
+              hopLabel,
+              batchId,
+            };
+            const testId = await db.createForwardTest({
+              ruleId: 0,
+              hostId: fromHostId,
+              userId: tunnel.userId,
+              message: JSON.stringify(payload),
+            } as any);
+            registerTunnelHopTest(batchId, Number(testId));
+            queued += 1;
+            appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued hop tcping ${hopLabel} target=${nextAddr}:${nextPort}`);
+          }
+          const message = `TUNNEL_HOP_TEST_PENDING hops=${queued}`;
+          await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
+          return { success: false, latencyMs: null, message, pending: true };
+        }
+
         const payload = {
           kind: "tunnel",
           tunnelId: tunnel.id,
