@@ -3,6 +3,10 @@ import * as db from "./db";
 import { appendPanelLog } from "./_core/panelLogger";
 import { pushAgentRefresh } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
+import {
+  getTunnelRuntimeReadyCount,
+  recordTunnelRuntimeHostStatus,
+} from "./tunnelRuntimeStatus";
 
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
@@ -86,6 +90,20 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
       if (!tunnel || (tunnel.entryHostId !== host.id && tunnel.exitHostId !== host.id && !isTunnelHop)) {
         res.status(404).json({ error: "tunnel not found" });
+        return;
+      }
+      const hopHostIds = Array.isArray(hops)
+        ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
+        : [];
+      if (hopHostIds.length >= 3) {
+        recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
+        const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
+        await db.updateTunnelRunningStatus(tunnelId, !!isRunning && readyCount >= hopHostIds.length);
+        appendPanelLog(
+          !!isRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
+        );
+        res.json({ success: true });
         return;
       }
       await db.updateTunnelRunningStatus(tunnelId, !!isRunning);

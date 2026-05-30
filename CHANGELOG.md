@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.51] - 2026-05-30
+
+### Fixed
+
+- Fixed multi-hop tunnel refreshes so all hop hosts are refreshed on tunnel updates instead of only the entry and exit hosts.
+- Fixed multi-hop tunnel runtime status so the tunnel is marked running only after every hop host reports a successful apply.
+
+### Changed
+
+- Bumped panel version to 2.3.51. Agent target version remains 2.2.59.
+
 ## [2.3.50] - 2026-05-30
 
 ### Fixed

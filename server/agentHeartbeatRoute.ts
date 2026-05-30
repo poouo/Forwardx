@@ -11,6 +11,7 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
+import { isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { isIP } from "net";
 import { resolve4 } from "dns/promises";
 
@@ -931,8 +932,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         const isFXP = isForwardXTunnel(tunnel);
         const tunnelKey = tunnelSecretSeed(tunnel);
-        const shouldApply = isFXP ? tunnel.isEnabled : tunnel.isEnabled && !tunnel.isRunning;
-        const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && tunnel.isRunning;
+        const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
+        const shouldApply = isFXP ? tunnel.isEnabled : tunnel.isEnabled && !multiHopRuntimeReady;
+        const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
         if (!shouldApply && !shouldRemove) continue;
 

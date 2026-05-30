@@ -9,6 +9,7 @@ import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 import * as hopRepo from "../repositories/tunnelRepository";
 import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
+import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 5;
@@ -17,6 +18,16 @@ const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.
 
 const tunnelRuntimeFamily = (mode?: string | null) =>
   String(mode || "").toLowerCase() === "forwardx" ? "forwardx" : "gost";
+
+async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
+  clearTunnelRuntimeStatus(tunnelId);
+  const uniqueHostIds = Array.from(new Set(hostIds.map((hostId) => Number(hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
+  for (const hostId of uniqueHostIds) {
+    await db.resetAgentRuntimeStateForHost(hostId);
+    pushAgentRefresh(hostId, reason);
+  }
+  appendPanelLog("info", `[Tunnel] refresh runtime tunnel=${tunnelId} reason=${reason} hosts=${uniqueHostIds.join(",") || "-"}`);
+}
 
 const normalizeTunnelConnect = (connectHost?: string | null) => {
   const host = String(connectHost || "").trim();
@@ -209,6 +220,7 @@ export const tunnelsRouter = router({
           await hopRepo.createTunnelHops(id, hops);
         }
         if (hopHostIds) {
+          clearTunnelRuntimeStatus(id);
           for (const hostId of hopHostIds) {
             await db.resetAgentRuntimeStateForHost(hostId);
             pushAgentRefresh(hostId, "tunnel-created");
@@ -347,13 +359,12 @@ export const tunnelsRouter = router({
         }
         if (keyChanged) await db.resetForwardRulesByTunnel(id);
         if (keyChanged) {
-          pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
-          if (hopChanged) {
-            const affectedHostIds = new Set<number>([...existingHopHostIds, ...normalizedRequestedHopIds]);
-            for (const hostId of affectedHostIds) {
-              await db.resetAgentRuntimeStateForHost(hostId);
-              pushAgentRefresh(hostId, "tunnel-hop-updated");
-            }
+          const affectedHopHostIds = Array.from(new Set([...existingHopHostIds, ...normalizedRequestedHopIds]));
+          if (affectedHopHostIds.length >= 3) {
+            await refreshTunnelRuntimeHosts(id, affectedHopHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
+          } else {
+            clearTunnelRuntimeStatus(id);
+            pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
           }
           if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
           if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
@@ -366,6 +377,7 @@ export const tunnelsRouter = router({
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        clearTunnelRuntimeStatus(input.id);
         pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
         await db.deleteTunnel(input.id);
         return { success: true };
