@@ -140,7 +140,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
     appendPanelLog(
       !!isRunning ? "info" : "warn",
-      `[Rule] status rule=${ruleId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+      `[Rule] status rule=${ruleId} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
     );
     res.json({ success: true });
   } catch (error) {

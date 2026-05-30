@@ -144,7 +144,6 @@ export default function MultiHopEditor({
   }, [hostById, initialHopIds, initialHopConnectHosts]);
 
   useEffect(() => {
-    if (dragSourceIdx !== null) return;
     if (syncingFromPropsRef.current) {
       syncingFromPropsRef.current = false;
       prevIdsRef.current = serializeIds(hops);
@@ -171,7 +170,7 @@ export default function MultiHopEditor({
       prevConnectRef.current = connectText;
       onConnectHostsChangeRef.current?.(connectHosts);
     }
-  }, [hops, dragSourceIdx]);
+  }, [hops]);
 
   useEffect(() => {
     const handleWindowDragEnd = () => clearDragState();
