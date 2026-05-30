@@ -493,7 +493,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
       name,
       addr,
-      connector: { type: "relay", metadata: { nodelay: "true" } },
+      connector: { type: "relay", metadata: { nodelay: true } },
       dialer: {
         type: dialerType,
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -602,10 +602,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           routeParts.push(`exit#${Number(exitHop.hostId)}@${exitAddr}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
-          if (tunnelRouteLogCache.get(routeKey) !== route) {
-            tunnelRouteLogCache.set(routeKey, route);
-            appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
-          }
+          tunnelRouteLogCache.set(routeKey, route);
+          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry

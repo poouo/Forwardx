@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.62] - 2026-05-30
+
+### Fixed
+
+- Restored GOST relay `nodelay` metadata to a boolean value and ensured middle-hop relay services stay in proxy mode without a fixed forwarder.
+- Added GOST config summary and restart diagnostics to Agent command output for tunnel troubleshooting.
+
+### Changed
+
+- Bumped panel version to 2.3.62. Agent target version remains 2.2.61.
+
 ## [2.3.61] - 2026-05-30
 
 ### Fixed
