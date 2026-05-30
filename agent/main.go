@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.59"
+var Version = "2.2.60"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -500,6 +500,9 @@ func writeUnitAndRestart(name, unit string) bool {
 }
 
 func writeState(a action) {
+	if a.RuleID <= 0 {
+		return
+	}
 	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
 	port := strconv.Itoa(a.SourcePort)
 	resetTrafficStateIfRuleChanged(port, a.RuleID)

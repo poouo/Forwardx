@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.57] - 2026-05-30
+
+### Fixed
+
+- Fixed Agent tunnel actions with `rule=0` overwriting per-port rule traffic state on GOST multi-hop relay ports.
+- Enabled `nodelay` on GOST relay connectors so multi-hop tunnel connections do not stall while waiting for client request data.
+
+### Changed
+
+- Bumped panel version to 2.3.57 and Agent target version to 2.2.60.
+
 ## [2.3.56] - 2026-05-30
 
 ### Fixed

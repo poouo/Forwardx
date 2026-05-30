@@ -493,7 +493,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
       name,
       addr,
-      connector: { type: "relay" },
+      connector: { type: "relay", metadata: { nodelay: true } },
       dialer: {
         type: dialerType,
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
