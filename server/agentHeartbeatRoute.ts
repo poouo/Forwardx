@@ -1285,6 +1285,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             continue;
           }
           actions.push({
+            tunnelId: tunnel ? tunnel.id : 0,
+            statusType: tunnel ? "rule" : undefined,
             ruleId: rule.id,
             op: "apply",
             forwardType: rule.forwardType,
