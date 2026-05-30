@@ -62,13 +62,19 @@ export default function MultiHopEditor({
   const [ghost, setGhost] = useState<{ x: number; y: number; name: string } | null>(null);
   const prevRef = useRef<string>("");
   const emptyDragImageRef = useRef<HTMLImageElement | null>(null);
+  const prevConnectRef = useRef<string>("");
+  const onChangeRef = useRef<typeof onChange>(onChange);
+  const onConnectHostsChangeRef = useRef<typeof onConnectHostsChange>(onConnectHostsChange);
+  const syncingFromPropsRef = useRef(false);
 
-  useEffect(() => {
-    const currentIds = JSON.stringify(hops.map((hop) => hop.hostId));
-    const nextIds = JSON.stringify(initialHopIds || []);
-    if (!initialHopIds) return;
-    if (currentIds === nextIds) return;
-    const restored = initialHopIds
+  const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
+  const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
+    list.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null)))
+  );
+
+  const buildHopsFromProps = () => {
+    if (!initialHopIds?.length) return [] as HopEntry[];
+    return initialHopIds
       .map((id, idx) => {
         const host = hostById.get(id);
         if (!host) return null;
@@ -79,20 +85,49 @@ export default function MultiHopEditor({
         };
       })
       .filter(Boolean) as HopEntry[];
-    setHops(restored);
-  }, [hostById, initialHopIds, initialHopConnectHosts, hops]);
+  };
 
   useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    onConnectHostsChangeRef.current = onConnectHostsChange;
+  }, [onConnectHostsChange]);
+
+  useEffect(() => {
+    const restored = buildHopsFromProps();
+    setHops((prev) => {
+      if (serializeIds(prev) === serializeIds(restored) && serializeConnectHosts(prev) === serializeConnectHosts(restored)) {
+        return prev;
+      }
+      syncingFromPropsRef.current = true;
+      return restored;
+    });
+  }, [hostById, initialHopIds, initialHopConnectHosts]);
+
+  useEffect(() => {
+    // Avoid feedback loops while dragging; emit once after drag settles.
+    if (draggingIdx !== null) return;
+    if (syncingFromPropsRef.current) {
+      syncingFromPropsRef.current = false;
+      prevRef.current = serializeIds(hops);
+      prevConnectRef.current = serializeConnectHosts(hops);
+      return;
+    }
     const ids = hops.map((hop) => hop.hostId);
     const next = JSON.stringify(ids);
-    if (next === prevRef.current) return;
-    prevRef.current = next;
-    onChange?.(ids);
-  }, [hops, onChange]);
-
-  useEffect(() => {
-    onConnectHostsChange?.(hops.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null))));
-  }, [hops, onConnectHostsChange]);
+    if (next !== prevRef.current) {
+      prevRef.current = next;
+      onChangeRef.current?.(ids);
+    }
+    const connectHosts = hops.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null)));
+    const nextConnect = JSON.stringify(connectHosts);
+    if (nextConnect !== prevConnectRef.current) {
+      prevConnectRef.current = nextConnect;
+      onConnectHostsChangeRef.current?.(connectHosts);
+    }
+  }, [hops, draggingIdx]);
 
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
   const availableHosts = hosts.filter((host) => !selectedIds.has(host.id));
@@ -110,8 +145,8 @@ export default function MultiHopEditor({
   };
 
   const moveHop = (fromIdx: number, toIdx: number) => {
-    if (toIdx < 0 || toIdx >= hops.length || fromIdx === toIdx) return;
     setHops((prev) => {
+      if (toIdx < 0 || toIdx >= prev.length || fromIdx === toIdx) return prev;
       const next = [...prev];
       const [item] = next.splice(fromIdx, 1);
       next.splice(toIdx, 0, item);
@@ -156,8 +191,7 @@ export default function MultiHopEditor({
 
   return (
     <div className="space-y-3" onDragOver={onDragOverContainer}>
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">主机链路</span>
+      <div className="flex items-center justify-end">
         <span className="text-xs text-muted-foreground">上到下为链路顺序，可拖动调整</span>
       </div>
 

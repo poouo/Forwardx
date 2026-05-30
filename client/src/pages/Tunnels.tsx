@@ -138,6 +138,16 @@ function sameNullableStringArray(a: Array<string | null>, b: Array<string | null
   return true;
 }
 
+function normalizeHopConnectHosts(
+  raw: Array<string | null>,
+  hostCount: number,
+): Array<string | null> {
+  const next = [...raw].slice(0, Math.max(0, hostCount));
+  while (next.length < hostCount) next.push(null);
+  if (hostCount > 0) next[0] = null;
+  return next;
+}
+
 function tunnelEndpointName(tunnel: any | null | undefined, role: "entry" | "exit", hosts: any[] | undefined) {
   const hostId = Number(role === "entry" ? tunnel?.entryHostId : tunnel?.exitHostId);
   const fromList = hosts?.find((host: any) => Number(host.id) === hostId);
@@ -482,20 +492,18 @@ function TunnelsContent() {
 
   const openCreate = () => {
     resetForm();
-    if (hosts && hosts.length >= 2) {
-      const fallbackMode = forwardProtocolSettings.forwardx !== false
-        ? "forwardx"
-        : enabledGostTunnelModes[0] || "forwardx";
-      setForm({
-        ...defaultForm,
-        mode: fallbackMode,
-        entryHostId: hosts[0].id,
-        exitHostId: hosts[1].id,
-        hopHostIds: [hosts[0].id, hosts[1].id],
-        hopConnectHosts: [null, null],
-        flowDirection: "forward",
-      });
-    }
+    const fallbackMode = forwardProtocolSettings.forwardx !== false
+      ? "forwardx"
+      : enabledGostTunnelModes[0] || "forwardx";
+    setForm({
+      ...defaultForm,
+      mode: fallbackMode,
+      entryHostId: null,
+      exitHostId: null,
+      hopHostIds: [],
+      hopConnectHosts: [],
+      flowDirection: "forward",
+    });
     setShowDialog(true);
   };
 
@@ -567,7 +575,7 @@ function TunnelsContent() {
       : [...form.hopConnectHosts])
       .slice(0, orderedHopHostIds.length);
     while (orderedHopConnectHosts.length < orderedHopHostIds.length) orderedHopConnectHosts.push(null);
-    orderedHopConnectHosts[0] = null;
+    if (orderedHopConnectHosts.length > 0) orderedHopConnectHosts[0] = null;
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
@@ -1114,9 +1122,7 @@ function TunnelsContent() {
                 initialHopConnectHosts={form.hopConnectHosts}
                 onChange={(ids) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = [...prev.hopConnectHosts].slice(0, ids.length);
-                    while (normalizedConnectHosts.length < ids.length) normalizedConnectHosts.push(null);
-                    normalizedConnectHosts[0] = null;
+                    const normalizedConnectHosts = normalizeHopConnectHosts(prev.hopConnectHosts, ids.length);
                     const nextEntry = ids[0] ?? null;
                     const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
                     if (
@@ -1138,9 +1144,7 @@ function TunnelsContent() {
                 }}
                 onConnectHostsChange={(hopConnectHosts) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = [...hopConnectHosts].slice(0, prev.hopHostIds.length);
-                    while (normalizedConnectHosts.length < prev.hopHostIds.length) normalizedConnectHosts.push(null);
-                    normalizedConnectHosts[0] = null;
+                    const normalizedConnectHosts = normalizeHopConnectHosts(hopConnectHosts, prev.hopHostIds.length);
                     if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
                     return { ...prev, hopConnectHosts: normalizedConnectHosts };
                   });
