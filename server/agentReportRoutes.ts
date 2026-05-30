@@ -9,6 +9,8 @@ import {
   type AgentTrafficStat,
   type AgentTunnelTcpingResult,
 } from "../shared/agentDtos";
+import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
+import { appendAgentLog } from "./agentLogStore";
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -173,24 +175,30 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       return;
     }
 
-    const stats = results
-      .map((r) => ({
-        ruleId: Number(r.ruleId),
-        hostId: host.id,
-        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-        isTimeout: !!r.isTimeout,
-      }))
-      .filter((r) => r.ruleId > 0);
-
-    if (stats.length > 0) {
-      await db.insertTcpingStats(stats);
-    }
-
     for (const r of tunnelResults) {
       const tunnelId = Number(r.tunnelId);
       if (!tunnelId) continue;
       const tunnel = await db.getTunnelById(tunnelId);
-      if (!tunnel || tunnel.entryHostId !== host.id) continue;
+      if (!tunnel) continue;
+      const hopIndex = Number((r as any).hopIndex);
+      const hopCount = Number((r as any).hopCount);
+      if (Number.isFinite(hopIndex) && Number.isFinite(hopCount) && hopCount > 0) {
+        const aggregate = recordTunnelAutoHopLatency({
+          tunnelId,
+          hopIndex,
+          hopCount,
+          latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+          isTimeout: !!r.isTimeout,
+        });
+        if (!aggregate) continue;
+        await db.insertTunnelLatencyStat({
+          tunnelId,
+          latencyMs: aggregate.success ? aggregate.latencyMs : null,
+          isTimeout: !aggregate.success,
+        });
+        continue;
+      }
+      if (tunnel.entryHostId !== host.id) continue;
       await db.insertTunnelLatencyStat({
         tunnelId,
         latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
@@ -198,9 +206,81 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       });
     }
 
+    const stats = [];
+    const tunnelLatencyById = new Map<number, number>();
+    for (const r of results) {
+      const ruleId = Number(r.ruleId);
+      if (ruleId <= 0) continue;
+      const rule = await db.getForwardRuleById(ruleId) as any;
+      const baseLatency = typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null;
+      let latencyMs = baseLatency;
+      if (!r.isTimeout && baseLatency && rule?.tunnelId) {
+        const tunnelId = Number(rule.tunnelId);
+        let tunnelLatency = tunnelLatencyById.get(tunnelId);
+        if (tunnelLatency === undefined) {
+          const latest = await db.getLatestTunnelLatency(tunnelId) as any;
+          tunnelLatency = latest && !latest.isTimeout && typeof latest.latencyMs === "number"
+            ? Number(latest.latencyMs)
+            : 0;
+          if (tunnelLatency <= 0) {
+            const tunnel = await db.getTunnelById(tunnelId) as any;
+            tunnelLatency = Number(tunnel?.lastLatencyMs) || 0;
+          }
+          tunnelLatencyById.set(tunnelId, tunnelLatency);
+        }
+        if (tunnelLatency > 0) latencyMs = baseLatency + tunnelLatency;
+      }
+      stats.push({
+        ruleId,
+        hostId: host.id,
+        latencyMs,
+        isTimeout: !!r.isTimeout,
+      });
+    }
+
+    if (stats.length > 0) {
+      await db.insertTcpingStats(stats);
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent TCPing] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+agentRouter.post("/api/agent/logs", async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const token = authHeader.substring(7);
+    const host = await db.getHostByAgentToken(token);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+    const enabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
+    if (!enabled) {
+      res.json({ success: true, accepted: 0, disabled: true });
+      return;
+    }
+    const entries = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 100) : [];
+    let accepted = 0;
+    for (const item of entries) {
+      const levelRaw = String(item?.level || "info").toLowerCase();
+      const level = levelRaw === "error" ? "error" : (levelRaw === "warn" ? "warn" : "info");
+      const message = String(item?.message || "").trim();
+      if (!message) continue;
+      const createdAt = typeof item?.createdAt === "string" ? item.createdAt : undefined;
+      appendAgentLog(host, level, message, createdAt);
+      accepted += 1;
+    }
+    res.json({ success: true, accepted });
+  } catch (error) {
+    console.error("[Agent Logs] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

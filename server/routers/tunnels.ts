@@ -206,7 +206,10 @@ export const tunnelsRouter = router({
           await hopRepo.createTunnelHops(id, hops);
         }
         if (hopHostIds) {
-          for (const hostId of hopHostIds) pushAgentRefresh(hostId, "tunnel-created");
+          for (const hostId of hopHostIds) {
+            await db.resetAgentRuntimeStateForHost(hostId);
+            pushAgentRefresh(hostId, "tunnel-created");
+          }
         } else {
           pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         }
@@ -335,7 +338,10 @@ export const tunnelsRouter = router({
           pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
           if (hopChanged) {
             const affectedHostIds = new Set<number>([...existingHopHostIds, ...normalizedRequestedHopIds]);
-            for (const hostId of affectedHostIds) pushAgentRefresh(hostId, "tunnel-hop-updated");
+            for (const hostId of affectedHostIds) {
+              await db.resetAgentRuntimeStateForHost(hostId);
+              pushAgentRefresh(hostId, "tunnel-hop-updated");
+            }
           }
           if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
           if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");

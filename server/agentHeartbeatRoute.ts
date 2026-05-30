@@ -435,15 +435,33 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
       }
     }
-    const tunnelProbes = (hostTunnels as any[])
-      .filter((tunnel: any) => tunnel.entryHostId === host.id && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel))
-      .map((tunnel: any) => ({
-        tunnelId: tunnel.id,
-        targetIp: tunnelExitEndpointById.get(tunnel.id)?.host || "",
-        targetPort: Number(tunnelExitEndpointById.get(tunnel.id)?.port) || 0,
-        protocol: "tcp",
-      }))
-      .filter((probe: any) => probe.targetIp && probe.targetPort > 0);
+    const tunnelProbes = (await Promise.all((hostTunnels as any[])
+      .filter((tunnel: any) => tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel))
+      .map(async (tunnel: any) => {
+        const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+        if (Array.isArray(hops) && hops.length >= 3) {
+          const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
+          if (hostIdx < 0 || hostIdx >= hops.length - 1) return null;
+          const nextHop = hops[hostIdx + 1] as any;
+          const targetIp = await getHopDialAddress(nextHop);
+          const targetPort = Number(nextHop.listenPort) || 0;
+          return targetIp && targetPort > 0 ? {
+            tunnelId: tunnel.id,
+            targetIp,
+            targetPort,
+            protocol: "tcp",
+            hopIndex: hostIdx,
+            hopCount: hops.length - 1,
+          } : null;
+        }
+        if (tunnel.entryHostId !== host.id) return null;
+        return {
+          tunnelId: tunnel.id,
+          targetIp: tunnelExitEndpointById.get(tunnel.id)?.host || "",
+          targetPort: Number(tunnelExitEndpointById.get(tunnel.id)?.port) || 0,
+          protocol: "tcp",
+        };
+      }))).filter((probe: any) => probe && probe.targetIp && probe.targetPort > 0);
     const tunnelProtocolPolicy = (tunnel: any) => ({
       blockHttp: !!(tunnel as any)?.blockHttp,
       blockSocks: !!(tunnel as any)?.blockSocks,
@@ -1509,7 +1527,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return a.op === "remove" ? -1 : 1;
     });
 
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, agentUpgrade, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
+    const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

@@ -465,6 +465,13 @@ function HostsContent() {
     },
     onError: (err) => toast.error(err.message || "下发升级任务失败"),
   });
+  const upgradeAgentsMutation = trpc.hosts.requestAgentUpgradeMany.useMutation({
+    onSuccess: (data) => {
+      utils.hosts.list.invalidate();
+      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台`);
+    },
+    onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
+  });
 
   useEffect(() => {
     if (!hosts) return;
@@ -576,6 +583,14 @@ function HostsContent() {
     () => hosts?.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length ?? 0,
     [hosts, latestAgentVersion]
   );
+  const bulkUpgradeableHosts = useMemo(
+    () => (hosts || []).filter((h: any) => {
+      const timedOut = isAgentUpgradeTimedOut(h);
+      const pending = !!h.agentUpgradeRequested && !timedOut;
+      return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
+    }),
+    [hosts, latestAgentVersion]
+  );
   const hostPagination = usePersistentPagination(hosts || [], {
     storageKey: "forwardx.hosts.page",
     pageSize: 12,
@@ -584,6 +599,16 @@ function HostsContent() {
   const pagedHosts = hostPagination.items;
   const requestAgentUpgrade = (host: any) => {
     setUpgradeHost(host);
+  };
+  const requestAllAgentUpgrades = () => {
+    if (bulkUpgradeableHosts.length === 0) {
+      toast.info("暂无需要升级的 Agent");
+      return;
+    }
+    upgradeAgentsMutation.mutate({
+      hostIds: bulkUpgradeableHosts.map((host: any) => Number(host.id)),
+      targetVersion: latestAgentVersion || null,
+    });
   };
 
   const handleCheckAgentUpdate = async () => {
@@ -642,6 +667,18 @@ function HostsContent() {
             <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
             检查 Agent 更新
           </Button>
+          {user?.role === "admin" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
+              disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
+              onClick={requestAllAgentUpgrades}
+            >
+              {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              一键升级 Agent
+            </Button>
+          )}
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}

@@ -27,13 +27,22 @@ import (
 	"time"
 )
 
-var Version = "2.2.56"
+var Version = "2.2.57"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
 var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
 var lastTCPingAt time.Time
+var agentLogUploadEnabled atomic.Bool
+var agentLogMu sync.Mutex
+var agentLogBuffer []agentLogEntry
+
+type agentLogEntry struct {
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"createdAt"`
+}
 
 type Config struct {
 	PanelURL string `json:"panelUrl"`
@@ -56,6 +65,7 @@ type heartbeatResp struct {
 	TunnelProbes []tunnelProbe `json:"tunnelProbes"`
 	GuardRules   []guardRule   `json:"guardRules"`
 	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
+	LogUpload    bool          `json:"agentLogUploadEnabled"`
 	NextInterval int           `json:"nextInterval"`
 }
 
@@ -95,6 +105,8 @@ type tunnelProbe struct {
 	TargetIP   string `json:"targetIp"`
 	TargetPort int    `json:"targetPort"`
 	Protocol   string `json:"protocol"`
+	HopIndex   int    `json:"hopIndex"`
+	HopCount   int    `json:"hopCount"`
 }
 
 type agentUpgrade struct {
@@ -266,6 +278,7 @@ func heartbeat(cfg Config) (int, error) {
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
+	agentLogUploadEnabled.Store(resp.LogUpload)
 	for _, a := range resp.Actions {
 		go handleAction(cfg, a)
 	}
@@ -285,6 +298,7 @@ func heartbeat(cfg Config) (int, error) {
 		collectTCPing(cfg, resp.TunnelProbes)
 		lastTCPingAt = time.Now()
 	}
+	flushAgentLogs(cfg)
 	return resp.NextInterval, nil
 }
 
@@ -717,6 +731,10 @@ func collectTCPing(cfg Config, probes []tunnelProbe) {
 		}
 		latency, reachable := tcpLatency(probe.TargetIP, probe.TargetPort, 3*time.Second)
 		result := map[string]any{"tunnelId": probe.TunnelID}
+		if probe.HopCount > 0 {
+			result["hopIndex"] = probe.HopIndex
+			result["hopCount"] = probe.HopCount
+		}
 		if reachable {
 			result["latencyMs"] = latency
 			result["isTimeout"] = false
@@ -1528,12 +1546,67 @@ func shellQuote(s string) string {
 
 func logf(format string, args ...any) {
 	_ = os.MkdirAll("/var/log/forwardx-agent", 0755)
-	line := time.Now().Format(time.RFC3339) + " " + fmt.Sprintf(format, args...) + "\n"
+	message := fmt.Sprintf(format, args...)
+	createdAt := time.Now().Format(time.RFC3339)
+	line := createdAt + " " + message + "\n"
 	fmt.Print(line)
 	f, err := os.OpenFile("/var/log/forwardx-agent/agent-go.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
 		_, _ = f.WriteString(line)
+	}
+	rememberAgentLog(message, createdAt)
+}
+
+func rememberAgentLog(message, createdAt string) {
+	if !isImportantAgentLog(message) {
+		return
+	}
+	level := "info"
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "panic") {
+		level = "error"
+	} else if strings.Contains(lower, "warn") || strings.Contains(lower, "timeout") {
+		level = "warn"
+	}
+	agentLogMu.Lock()
+	defer agentLogMu.Unlock()
+	agentLogBuffer = append(agentLogBuffer, agentLogEntry{Level: level, Message: message, CreatedAt: createdAt})
+	if len(agentLogBuffer) > 200 {
+		agentLogBuffer = agentLogBuffer[len(agentLogBuffer)-200:]
+	}
+}
+
+func isImportantAgentLog(message string) bool {
+	lower := strings.ToLower(message)
+	keywords := []string{"error", "failed", "warn", "timeout", "upgrade", "selftest", "protocol", "fxp", "migrated"}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func flushAgentLogs(cfg Config) {
+	if !agentLogUploadEnabled.Load() {
+		return
+	}
+	agentLogMu.Lock()
+	if len(agentLogBuffer) == 0 {
+		agentLogMu.Unlock()
+		return
+	}
+	logs := append([]agentLogEntry(nil), agentLogBuffer...)
+	agentLogBuffer = nil
+	agentLogMu.Unlock()
+	if err := post(cfg, "/api/agent/logs", map[string]any{"logs": logs}, &map[string]any{}); err != nil {
+		agentLogMu.Lock()
+		agentLogBuffer = append(logs, agentLogBuffer...)
+		if len(agentLogBuffer) > 200 {
+			agentLogBuffer = agentLogBuffer[len(agentLogBuffer)-200:]
+		}
+		agentLogMu.Unlock()
 	}
 }
 

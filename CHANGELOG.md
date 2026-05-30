@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.45] - 2026-05-30
+
+### Added
+
+- Added one-click batch Agent upgrade from host management.
+- Added optional Agent key-log upload with per-host and aggregate viewing in the logs page.
+
+### Fixed
+
+- Fixed automatic tunnel latency collection for multi-hop tunnels to aggregate fresh per-hop TCPing results instead of storing only the entry-to-next-hop latency.
+- Fixed forwarding rule TCPing stats for tunnel rules to store tunnel latency plus exit-to-target latency, matching the manual self-test path.
+- Reset and refresh old and new multi-hop hosts when tunnel hop topology changes so existing forwarding rules resync cleanly.
+
+### Changed
+
+- Bumped panel version to 2.3.45 and Agent target version to 2.2.57.
+
 ## [2.3.44] - 2026-05-30
 
 ### Fixed

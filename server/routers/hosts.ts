@@ -205,4 +205,27 @@ export const hostsRouter = router({
         const pushed = pushAgentUpgrade(input.hostId, targetVersion, panelUrl);
         return { success: true, pushed };
       }),
+    requestAgentUpgradeMany: adminProcedure
+      .input(z.object({ hostIds: z.array(z.number()).min(1).max(500), targetVersion: z.string().max(64).nullable().optional() }))
+      .mutation(async ({ input }) => {
+        const targetVersion = normalizeVersion(input.targetVersion || AGENT_VERSION);
+        await assertAgentReleaseAssetsReady(targetVersion);
+        const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
+        const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
+        let requested = 0;
+        let pushed = 0;
+        const missing: number[] = [];
+        const uniqueHostIds = Array.from(new Set(input.hostIds.map((id) => Number(id)).filter((id) => id > 0)));
+        for (const hostId of uniqueHostIds) {
+          const host = await db.getHostById(hostId);
+          if (!host) {
+            missing.push(hostId);
+            continue;
+          }
+          await db.requestHostAgentUpgrade(hostId, targetVersion);
+          requested += 1;
+          if (pushAgentUpgrade(hostId, targetVersion, panelUrl)) pushed += 1;
+        }
+        return { success: true, requested, pushed, missing };
+      }),
   });

@@ -72,8 +72,16 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
     `UPDATE ${q}tunnels${q}
      SET ${q}isRunning${q} = ?, ${q}updatedAt${q} = ?
      WHERE ${q}isRunning${q} = ?
-       AND (${q}entryHostId${q} = ? OR ${q}exitHostId${q} = ?)`,
-    [0, now, 1, id, id],
+       AND (
+         ${q}entryHostId${q} = ?
+         OR ${q}exitHostId${q} = ?
+         OR ${q}id${q} IN (
+           SELECT ${q}tunnelId${q}
+           FROM ${q}tunnel_hops${q}
+           WHERE ${q}hostId${q} = ?
+         )
+       )`,
+    [0, now, 1, id, id, id],
   );
 
   await executeRaw(
@@ -85,10 +93,16 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
          OR ${q}tunnelId${q} IN (
            SELECT ${q}id${q}
            FROM ${q}tunnels${q}
-           WHERE ${q}entryHostId${q} = ? OR ${q}exitHostId${q} = ?
-         )
-       )`,
-    [0, now, 1, id, id, id],
+            WHERE ${q}entryHostId${q} = ?
+              OR ${q}exitHostId${q} = ?
+              OR ${q}id${q} IN (
+                SELECT ${q}tunnelId${q}
+                FROM ${q}tunnel_hops${q}
+                WHERE ${q}hostId${q} = ?
+              )
+          )
+        )`,
+    [0, now, 1, id, id, id, id],
   );
 }
 

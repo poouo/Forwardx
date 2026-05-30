@@ -7,6 +7,7 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getFilteredPanelLogs, getPanelLogSummary } from "./panelLogger";
+import { clearAgentLogs, getAgentLogs } from "../agentLogStore";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
@@ -382,7 +383,8 @@ export const systemRouter = router({
       forwardProtocols: normalizeForwardProtocolSettings(
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
-      tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
+        tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
+        agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
       database: {
         type: all.databaseType || (all.mysqlConfigured === "true" ? "mysql" : "sqlite"),
         configured: Boolean(all.databaseConfigured || all.mysqlConfigured),
@@ -457,6 +459,7 @@ export const systemRouter = router({
         homepageHtml: z.string().max(60000).optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
+        agentLogUploadEnabled: z.boolean().optional(),
         email: z.object({
           enabled: z.boolean().optional(),
           host: z.string().max(256).optional(),
@@ -536,6 +539,12 @@ export const systemRouter = router({
         const runtime = input.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
         await db.setSetting("tunnelRuntimeDefault", runtime);
         console.info(`[Settings] tunnel runtime default set to ${runtime}`);
+      }
+      if (input.agentLogUploadEnabled !== undefined) {
+        await db.setSetting("agentLogUploadEnabled", input.agentLogUploadEnabled ? "true" : "false");
+        const hosts = await db.getHosts();
+        for (const host of hosts as any[]) pushAgentRefresh(host.id, "agent-log-upload-setting-updated");
+        console.info(`[Settings] Agent log upload ${input.agentLogUploadEnabled ? "enabled" : "disabled"}`);
       }
       if (input.email) {
         const email = input.email;
@@ -721,6 +730,23 @@ export const systemRouter = router({
     console.info("[PanelLogs] Cleared panel logs");
     return { success: true };
   }),
+  agentLogs: adminProcedure
+    .input(z.object({
+      hostId: z.number().nullable().optional(),
+      level: panelLogLevelSchema.default("all"),
+    }).optional())
+    .query(({ input }) => ({
+      logs: getAgentLogs({ hostId: input?.hostId, level: input?.level || "all" }),
+      checkedAt: new Date().toISOString(),
+    })),
+
+  clearAgentLogs: adminProcedure
+    .input(z.object({ hostId: z.number().nullable().optional() }).optional())
+    .mutation(({ input }) => {
+      clearAgentLogs(input?.hostId);
+      console.info(`[AgentLogs] Cleared logs host=${input?.hostId || "all"}`);
+      return { success: true };
+    }),
   startUpgrade: adminProcedure
     .input(z.object({ targetVersion: z.string().min(1).max(64).optional() }).optional())
     .mutation(async ({ input }) => {

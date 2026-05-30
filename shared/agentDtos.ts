@@ -15,6 +15,8 @@ export type AgentTunnelTcpingResult = {
   tunnelId: number;
   latencyMs?: number | null;
   isTimeout?: boolean;
+  hopIndex?: number;
+  hopCount?: number;
 };
 
 export type SelfTestMeta =

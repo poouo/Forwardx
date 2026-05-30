@@ -1096,7 +1096,15 @@ function SettingsContent() {
 function PanelLogsSection() {
   const [logLevel, setLogLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
   const [exportLevel, setExportLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
+  const [agentHostId, setAgentHostId] = useState("all");
   const { data: panelLogs, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: logLevel }, {
+    refetchInterval: 10000,
+  });
+  const { data: hosts } = trpc.hosts.list.useQuery();
+  const { data: agentLogs, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
+    level: logLevel,
+    hostId: agentHostId === "all" ? null : Number(agentHostId),
+  }, {
     refetchInterval: 10000,
   });
   const exportLogsMutation = trpc.system.exportPanelLogs.useMutation({
@@ -1121,6 +1129,13 @@ function PanelLogsSection() {
     },
     onError: (err) => toast.error(err.message || "清空日志失败"),
   });
+  const clearAgentLogsMutation = trpc.system.clearAgentLogs.useMutation({
+    onSuccess: async () => {
+      toast.success("Agent 日志已清空");
+      await refetchAgentLogs();
+    },
+    onError: (err) => toast.error(err.message || "清空 Agent 日志失败"),
+  });
   const logLevelClass = (level: string) => {
     if (level === "error") return "text-destructive";
     if (level === "warn") return "text-amber-600 dark:text-amber-400";
@@ -1137,6 +1152,59 @@ function PanelLogsSection() {
   ] as const;
   return (
     <div className="space-y-4">
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Server className="h-4 w-4 text-primary" />
+                Agent 日志
+              </CardTitle>
+              <CardDescription>开启 Agent 日志上报后显示关键运行日志。</CardDescription>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Select value={agentHostId} onValueChange={setAgentHostId}>
+                <SelectTrigger className="h-9 w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部主机</SelectItem>
+                  {(hosts || []).map((host: any) => (
+                    <SelectItem key={host.id} value={String(host.id)}>{host.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" onClick={() => refetchAgentLogs()}>刷新</Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => clearAgentLogsMutation.mutate({ hostId: agentHostId === "all" ? null : Number(agentHostId) })}
+                disabled={clearAgentLogsMutation.isPending}
+              >
+                清空 Agent 日志
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+            {(agentLogs?.logs || []).length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">暂无 Agent 日志</div>
+            ) : (
+              <div className="space-y-1">
+                {(agentLogs?.logs || []).slice().reverse().map((entry: any) => (
+                  <div key={entry.id} className="grid gap-2 sm:grid-cols-[150px_120px_56px_1fr]">
+                    <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
+                    <span className="truncate text-muted-foreground">{entry.hostName || `#${entry.hostId}`}</span>
+                    <span className={logLevelClass(entry.level)}>{String(entry.level).toUpperCase()}</span>
+                    <span className="whitespace-pre-wrap break-words text-foreground/90">{entry.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1451,7 +1519,8 @@ type SystemSettingsSaveKey =
   | "homepage"
   | "ddns"
   | "forwardProtocols"
-  | "tunnelRuntime";
+  | "tunnelRuntime"
+  | "agentLogs";
 
 function isValidWebPort(value: string | number) {
   const port = Math.floor(Number(value));
@@ -1479,6 +1548,7 @@ function SystemInfoSection() {
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
   const [tunnelRuntimeDefault, setTunnelRuntimeDefault] = useState<"forwardx" | "gost">("forwardx");
+  const [agentLogUploadEnabled, setAgentLogUploadEnabled] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
   const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
@@ -1521,6 +1591,7 @@ function SystemInfoSection() {
       setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
       setTunnelRuntimeDefault(settings.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx");
+      setAgentLogUploadEnabled(!!settings.agentLogUploadEnabled);
       setDdnsEnabled(!!settings.ddns?.enabled);
       setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
       setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
@@ -1685,6 +1756,10 @@ function SystemInfoSection() {
 
   const handleSaveTunnelRuntimeDefault = () => {
     saveSystemSettings("tunnelRuntime", { tunnelRuntimeDefault });
+  };
+
+  const handleSaveAgentLogs = () => {
+    saveSystemSettings("agentLogs", { agentLogUploadEnabled });
   };
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
@@ -2146,6 +2221,28 @@ function SystemInfoSection() {
                 disabled={isSavingSetting("tunnelRuntime")}
               >
                 保存默认实现
+              </Button>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 lg:grid-cols-[minmax(0,1fr)_160px]">
+            <div>
+              <p className="text-sm font-medium">Agent 日志上报</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                开启后 Agent 会上报关键运行日志，关闭后只保留机器本地日志。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between rounded-md border border-border/40 bg-background/60 px-3 py-2">
+                <span className="text-sm">日志上报</span>
+                <Switch checked={agentLogUploadEnabled} onCheckedChange={setAgentLogUploadEnabled} />
+              </div>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={handleSaveAgentLogs}
+                disabled={isSavingSetting("agentLogs")}
+              >
+                保存日志设置
               </Button>
             </div>
           </div>
