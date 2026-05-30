@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.66] - 2026-05-30
+
+### Fixed
+
+- Forced the Agent to clear stale local runtime before applying a rule when the same port switches to another forwarding type, including old managed services, iptables NAT rules, nftables rules, and traffic baselines.
+- Removed connection/IP limit enforcement from direct port forwarding apply paths while keeping the cleanup in place for stale limit chains; tunnel forwarding still keeps those user access controls.
+- Split socat apply commands into startup prerequisites and non-critical post-start traffic/accounting commands so a working socat service is no longer reported as not running just because counter setup fails.
+- Switched iptables traffic accounting to direct mangle counter rules so reverse tests such as `iperf3 -R` avoid the old per-packet jump through `FWX_IN/FWX_OUT` chains.
+- Moved nftables traffic accounting to dedicated mangle-priority direct counters so client upload traffic, such as `iperf3 -c <host> -p <port>`, is counted continuously as inbound traffic on the forwarding host without an extra per-packet jump through per-rule counter chains.
+
+### Changed
+
+- Bumped panel version to 2.3.66 and Agent target version to 2.2.62.
+
 ## [2.3.65] - 2026-05-30
 
 ### Fixed

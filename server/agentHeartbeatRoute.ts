@@ -97,57 +97,54 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
      * 不设 RETURN，所以只作计数不影响路由。三种转发方式都会经过 mangle 表，覆盖 100% 路径。
      */
     const buildCountingChainCmds = (port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] => {
-      const inCh = `FWX_IN_${port}`;
-      const outCh = `FWX_OUT_${port}`;
       const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
-      const cmds = [
-        // 创建链（如已存在则忽略）
-        `iptables -t mangle -N ${inCh} 2>/dev/null || true`,
-        `iptables -t mangle -N ${outCh} 2>/dev/null || true`,
-        // 挂入（使用 -C 防重）
-        `iptables -t mangle -C PREROUTING -p tcp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p tcp --dport ${port} -j ${inCh}`,
-        `iptables -t mangle -C PREROUTING -p udp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p udp --dport ${port} -j ${inCh}`,
-        `iptables -t mangle -C POSTROUTING -p tcp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p tcp --sport ${port} -j ${outCh}`,
-        `iptables -t mangle -C POSTROUTING -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p udp --sport ${port} -j ${outCh}`,
-        `iptables -t mangle -C INPUT -p tcp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A INPUT -p tcp --dport ${port} -j ${inCh}`,
-        `iptables -t mangle -C INPUT -p udp --dport ${port} -j ${inCh} 2>/dev/null || iptables -t mangle -A INPUT -p udp --dport ${port} -j ${inCh}`,
-        `iptables -t mangle -C OUTPUT -p tcp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport ${port} -j ${outCh}`,
-        `iptables -t mangle -C OUTPUT -p udp --sport ${port} -j ${outCh} 2>/dev/null || iptables -t mangle -A OUTPUT -p udp --sport ${port} -j ${outCh}`,
-      ];
+      const inMarker = `fwx-stat-${port}:in`;
+      const outMarker = `fwx-stat-${port}:out`;
+      const addStatRule = (chain: string, rule: string, marker: string) =>
+        `iptables -t mangle -C ${chain} ${rule} -m comment --comment "${marker}" 2>/dev/null || iptables -t mangle -A ${chain} ${rule} -m comment --comment "${marker}"`;
+      const cmds: string[] = [...buildCountingCleanupCmds(port, targetIp, targetPort, protocol)];
       for (const proto of protos) {
+        cmds.push(addStatRule("PREROUTING", `-p ${proto} --dport ${port}`, inMarker));
+        cmds.push(addStatRule("INPUT", `-p ${proto} --dport ${port}`, inMarker));
+        cmds.push(addStatRule("POSTROUTING", `-p ${proto} --sport ${port}`, outMarker));
+        cmds.push(addStatRule("OUTPUT", `-p ${proto} --sport ${port}`, outMarker));
         if (targetIp && Number(targetPort) > 0) {
-          cmds.push(`iptables -t mangle -C OUTPUT -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh} 2>/dev/null || iptables -t mangle -A OUTPUT -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh}`);
-          cmds.push(`iptables -t mangle -C POSTROUTING -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh} 2>/dev/null || iptables -t mangle -A POSTROUTING -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh}`);
-          cmds.push(`iptables -t mangle -C PREROUTING -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh} 2>/dev/null || iptables -t mangle -A PREROUTING -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh}`);
-          cmds.push(`iptables -t mangle -C INPUT -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh} 2>/dev/null || iptables -t mangle -A INPUT -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh}`);
-          cmds.push(`iptables -t mangle -C FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh} 2>/dev/null || iptables -t mangle -A FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -j ${inCh}`);
-          cmds.push(`iptables -t mangle -C FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh} 2>/dev/null || iptables -t mangle -A FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -j ${outCh}`);
+          cmds.push(addStatRule("FORWARD", `-p ${proto} -d ${targetIp} --dport ${targetPort}`, inMarker));
+          cmds.push(addStatRule("FORWARD", `-p ${proto} -s ${targetIp} --sport ${targetPort}`, outMarker));
         }
       }
       return cmds;
     };
     const buildCountingCleanupCmds = (port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] => {
       const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+      const inMarker = `fwx-stat-${port}:in`;
+      const outMarker = `fwx-stat-${port}:out`;
       const cmds = [
-      `iptables -t mangle -D PREROUTING -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D PREROUTING -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D FORWARD -p tcp -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D FORWARD -p udp -j FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -D FORWARD -p udp -j FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
-      `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
-      `iptables -t mangle -X FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D PREROUTING -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D PREROUTING -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D FORWARD -p tcp -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D FORWARD -p udp -j FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -D FORWARD -p udp -j FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
+        `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
+        `iptables -t mangle -X FWX_OUT_${port} 2>/dev/null || true`,
       ];
-      if (targetIp && Number(targetPort) > 0) {
-        for (const proto of protos) {
+      for (const proto of protos) {
+        cmds.unshift(`iptables -t mangle -D PREROUTING -p ${proto} --dport ${port} -m comment --comment "${inMarker}" 2>/dev/null || true`);
+        cmds.unshift(`iptables -t mangle -D INPUT -p ${proto} --dport ${port} -m comment --comment "${inMarker}" 2>/dev/null || true`);
+        cmds.unshift(`iptables -t mangle -D POSTROUTING -p ${proto} --sport ${port} -m comment --comment "${outMarker}" 2>/dev/null || true`);
+        cmds.unshift(`iptables -t mangle -D OUTPUT -p ${proto} --sport ${port} -m comment --comment "${outMarker}" 2>/dev/null || true`);
+        if (targetIp && Number(targetPort) > 0) {
+          cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -m comment --comment "${inMarker}" 2>/dev/null || true`);
+          cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -m comment --comment "${outMarker}" 2>/dev/null || true`);
           cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
           cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
           cmds.unshift(`iptables -t mangle -D OUTPUT -p ${proto} -d ${targetIp} --dport ${targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
@@ -161,6 +158,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const nftTable = "forwardx";
     const nftChain = (prefix: string, id: number) => `${prefix}_${id}`;
     const nftComment = (rule: any) => `fwx-rule-${Number(rule.id) || 0}`;
+    const nftTrafficPreroutingChain = "traffic_prerouting";
+    const nftTrafficPostroutingChain = "traffic_postrouting";
     const buildNftCleanupCmds = (rule: any): string[] => {
       const ruleId = Number(rule.id) || 0;
       const comment = nftComment(rule);
@@ -168,6 +167,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null || true; done`,
         `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} postrouting 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} postrouting handle "$h" 2>/dev/null || true; done`,
         `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} forward 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} forward handle "$h" 2>/dev/null || true; done`,
+        `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} ${nftTrafficPreroutingChain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${nftTrafficPreroutingChain} handle "$h" 2>/dev/null || true; done`,
+        `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} ${nftTrafficPostroutingChain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${nftTrafficPostroutingChain} handle "$h" 2>/dev/null || true; done`,
         `nft flush chain inet ${nftTable} ${nftChain("in", ruleId)} 2>/dev/null || true`,
         `nft delete chain inet ${nftTable} ${nftChain("in", ruleId)} 2>/dev/null || true`,
         `nft flush chain inet ${nftTable} ${nftChain("out", ruleId)} 2>/dev/null || true`,
@@ -178,8 +179,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const buildNftForwardCmds = (rule: any): string[] => {
       const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
       const ruleId = Number(rule.id) || 0;
-      const inCh = nftChain("in", ruleId);
-      const outCh = nftChain("out", ruleId);
       const comment = nftComment(rule);
       const cmds = [
         `command -v nft >/dev/null 2>&1`,
@@ -188,19 +187,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true`,
         `nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }' 2>/dev/null || true`,
         `nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }' 2>/dev/null || true`,
+        `nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }' 2>/dev/null || true`,
+        `nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }' 2>/dev/null || true`,
         ...buildNftCleanupCmds(rule),
         `nft add table inet ${nftTable} 2>/dev/null || true`,
         `nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true`,
         `nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }' 2>/dev/null || true`,
         `nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }' 2>/dev/null || true`,
-        `nft add chain inet ${nftTable} ${inCh} 2>/dev/null || true`,
-        `nft add chain inet ${nftTable} ${outCh} 2>/dev/null || true`,
-        `nft add rule inet ${nftTable} ${inCh} counter return`,
-        `nft add rule inet ${nftTable} ${outCh} counter return`,
+        `nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }' 2>/dev/null || true`,
+        `nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }' 2>/dev/null || true`,
       ];
       for (const proto of protos) {
-        cmds.push(`nft add rule inet ${nftTable} prerouting ${proto} dport ${rule.sourcePort} counter jump ${inCh} comment "${comment}"`);
-        cmds.push(`nft add rule inet ${nftTable} forward ip protocol ${proto} ip saddr ${rule.targetIp} ${proto} sport ${rule.targetPort} counter jump ${outCh} comment "${comment}"`);
+        cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPreroutingChain} ip protocol ${proto} ${proto} dport ${rule.sourcePort} counter comment "${comment}:in"`);
+        cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPostroutingChain} ip protocol ${proto} ip saddr ${rule.targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
         cmds.push(`nft add rule inet ${nftTable} prerouting ${proto} dport ${rule.sourcePort} dnat ip to ${rule.targetIp}:${rule.targetPort} comment "${comment}"`);
         cmds.push(`nft add rule inet ${nftTable} postrouting ip protocol ${proto} ip daddr ${rule.targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
         cmds.push(`nft add rule inet ${nftTable} forward ip protocol ${proto} ip daddr ${rule.targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
@@ -389,6 +388,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       rule.tunnelId
         ? `u${Number(rule.userId) || 0}_t${Number(rule.tunnelId) || 0}`
         : `u${Number(rule.userId) || 0}_h${host.id}`
+    );
+    const buildRuleAccessLimitCmds = (rule: any): string[] => (
+      rule.tunnelId
+        ? buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))
+        : buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))
     );
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
@@ -627,18 +631,23 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostChains = [...tunnelGostChains];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
-      return [
-        `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
+      const cmds = [
         `mkdir -p /etc/forwardx-gost`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-gost/config.json`,
         `echo "[gost-config] forwardx-gost services=${gostServiceConfig.length} chains=${gostChains.length}"`,
         writeUnitCmd(gostServiceName, gostServiceUnit),
         `systemctl daemon-reload`,
-        `systemctl enable ${gostServiceName}.service 2>/dev/null || true`,
-        gostServiceConfig.length > 0
-          ? `systemctl restart ${gostServiceName}.service || { systemctl status ${gostServiceName}.service --no-pager -l; journalctl -u ${gostServiceName}.service -n 80 --no-pager; exit 1; }`
-          : `systemctl stop ${gostServiceName}.service 2>/dev/null || true`,
       ];
+      if (gostServiceConfig.length > 0) {
+        cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
+        cmds.push(
+          `systemctl enable ${gostServiceName}.service 2>/dev/null || true`,
+          `systemctl restart ${gostServiceName}.service || { systemctl status ${gostServiceName}.service --no-pager -l; journalctl -u ${gostServiceName}.service -n 80 --no-pager; exit 1; }`,
+        );
+      } else {
+        cmds.push(`systemctl stop ${gostServiceName}.service 2>/dev/null || true`);
+      }
+      return cmds;
     };
     const buildTunnelReloadCmds = async () => {
       const tunnelProbeServices = hostTunnels
@@ -1098,7 +1107,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
           // 挂入 mangle 计数链，为 Agent 采样提供准确流量计数器
           for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) cmds.push(c);
-          for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) cmds.push(c);
+          for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "apply",
@@ -1112,7 +1121,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "nftables") {
           cmds.push(...buildNftForwardCmds(rule));
-          for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) cmds.push(c);
+          for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
           actions.push({
             ruleId: rule.id,
             op: "apply",
@@ -1163,15 +1172,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `systemctl restart ${svcName}.service`,
               // 同时为该端口挂入 mangle 计数链，保证 realm 转发也能被准确统计
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
-              ...buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId))),
+              ...buildRuleAccessLimitCmds(rule),
             ],
           });
         } else if (rule.forwardType === "socat") {
           // socat 转发：用户态进程，通过 systemd 管理
           const svcName = `forwardx-socat-${rule.sourcePort}`;
-          const socatCmds: string[] = [];
-          // socat 需要安装
-          socatCmds.push(`command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || apk add --no-cache socat; } 2>/dev/null`);
+          const socatPreCmds: string[] = [
+            ...buildGostReloadCmds(),
+            `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || apk add --no-cache socat; } 2>/dev/null`,
+          ];
+          const socatPostCmds: string[] = [];
 
           // 根据协议生成 socat 命令
           // TCP: socat TCP-LISTEN:sourcePort,fork,reuseaddr TCP:targetIp:targetPort
@@ -1214,8 +1225,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
             ].join("\n");
             // socat both 模式下为该端口挂入 mangle 计数链
-            for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) socatCmds.push(c);
-            for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) socatCmds.push(c);
+            for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) socatPostCmds.push(c);
+            for (const c of buildRuleAccessLimitCmds(rule)) socatPostCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -1225,11 +1236,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
+              preCommands: socatPreCmds,
               svcName: svcNameTcp,
               svcNameExtra: svcNameUdp,
               unit: unitTcp,
               unitExtra: unitUdp,
-              commands: socatCmds,
+              postCommands: socatPostCmds,
             });
           } else {
             const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
@@ -1251,8 +1263,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
             ].join("\n");
             // socat 单协议模式下为该端口挂入 mangle 计数链
-            for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) socatCmds.push(c);
-            for (const c of buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))) socatCmds.push(c);
+            for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) socatPostCmds.push(c);
+            for (const c of buildRuleAccessLimitCmds(rule)) socatPostCmds.push(c);
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -1262,9 +1274,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
+              preCommands: socatPreCmds,
               svcName,
               unit,
-              commands: socatCmds,
+              postCommands: socatPostCmds,
             });
           }
         } else if (rule.forwardType === "gost") {
@@ -1327,7 +1340,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             commands: [
               ...buildGostReloadCmds(),
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
-              ...buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId))),
+              ...buildRuleAccessLimitCmds(rule),
             ],
           });
         }
