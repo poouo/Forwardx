@@ -11,6 +11,7 @@ import * as hopRepo from "../repositories/tunnelRepository";
 import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
+const MAX_TUNNEL_HOPS = 5;
 const fxpVersionSchema = z.union([z.literal(1), z.literal(2), z.literal("1"), z.literal("2")])
   .transform((value) => Number(value));
 
@@ -130,6 +131,7 @@ export const tunnelsRouter = router({
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts) ? (input as any).hopConnectHosts as Array<string | null> : [];
         if (hopHostIds) {
           // Multi-hop tunnel: validate hosts
+          if (hopHostIds.length > MAX_TUNNEL_HOPS) throw new Error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
           if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
           if (input.listenPort !== 0) throw new Error("多级隧道端口由系统自动分配");
@@ -246,6 +248,7 @@ export const tunnelsRouter = router({
         const hopHostIds = requestedHopHostIds && requestedHopHostIds.length >= 3 ? requestedHopHostIds : null;
         const switchToRegular = requestedHopHostIds !== undefined && requestedHopHostIds.length <= 2;
         if (hopHostIds) {
+          if (hopHostIds.length > MAX_TUNNEL_HOPS) throw new Error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
           if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
         }

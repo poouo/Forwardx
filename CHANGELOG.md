@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.43] - 2026-05-30
+
+### Fixed
+
+- Fixed GOST multi-hop tunnel rules so entry chains traverse every configured hop and land on the rule-specific tunnel exit port instead of the tunnel probe port.
+- Fixed tunnel forwarding rule self-tests to prefer entry-port end-to-end probing instead of estimating latency from exit-to-target checks plus tunnel hop probes.
+- Limited multi-hop tunnels to a maximum of five hosts from both the UI and server validation.
+
+### Changed
+
+- Bumped panel version to 2.3.43. Agent target version remains 2.2.55.
+
 ## [2.3.42] - 2026-05-30
 
 ### Fixed

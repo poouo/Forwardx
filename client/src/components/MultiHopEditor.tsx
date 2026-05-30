@@ -33,6 +33,7 @@ interface MultiHopEditorProps {
   hosts: Host[];
   initialHopIds?: number[];
   initialHopConnectHosts?: Array<string | null>;
+  maxHops?: number;
   onChange?: (hopHostIds: number[]) => void;
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
 }
@@ -63,6 +64,7 @@ export default function MultiHopEditor({
   hosts,
   initialHopIds,
   initialHopConnectHosts,
+  maxHops = 5,
   onChange,
   onConnectHostsChange,
 }: MultiHopEditorProps) {
@@ -184,9 +186,11 @@ export default function MultiHopEditor({
   }, []);
 
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
-  const availableHosts = hosts.filter((host) => !selectedIds.has(host.id));
+  const reachedMaxHops = hops.length >= maxHops;
+  const availableHosts = reachedMaxHops ? [] : hosts.filter((host) => !selectedIds.has(host.id));
 
   const addHop = (hostId: string) => {
+    if (reachedMaxHops) return;
     const id = Number(hostId);
     if (!id || selectedIds.has(id)) return;
     const host = hostById.get(id);
@@ -261,12 +265,14 @@ export default function MultiHopEditor({
       </div>
 
       <div className="flex items-center gap-2">
-        <Select value="" onValueChange={addHop}>
+        <Select value="" onValueChange={addHop} disabled={reachedMaxHops}>
           <SelectTrigger className="h-9 text-sm">
-            <SelectValue placeholder="添加主机到链路..." />
+            <SelectValue placeholder={reachedMaxHops ? `最多 ${maxHops} 级` : "添加主机到链路..."} />
           </SelectTrigger>
           <SelectContent>
-            {availableHosts.length === 0 && (
+            {reachedMaxHops ? (
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">最多支持 {maxHops} 级隧道</div>
+            ) : availableHosts.length === 0 && (
               <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
             )}
             {availableHosts.map((host) => (
@@ -280,7 +286,7 @@ export default function MultiHopEditor({
           </SelectContent>
         </Select>
         {hops.length > 0 && (
-          <span className="whitespace-nowrap text-xs text-muted-foreground">{hops.length} 台主机</span>
+          <span className="whitespace-nowrap text-xs text-muted-foreground">{hops.length} / {maxHops} 台主机</span>
         )}
       </div>
 

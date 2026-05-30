@@ -35,18 +35,34 @@ export const selfTestRulesRouter = router({
       if ((rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         if (!tunnel) throw new Error("隧道不存在");
-        hostId = tunnel.exitHostId;
         const pushed = pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
-        message = JSON.stringify({
-          kind: "forward-via-tunnel",
-          tunnelId: tunnel.id,
-          entryHostId: tunnel.entryHostId,
-          exitHostId: tunnel.exitHostId,
-          targetIp: rule.targetIp,
-          targetPort: rule.targetPort,
-          refreshPushed: pushed,
-        });
-        appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${rule.targetIp}:${rule.targetPort}`);
+        const entryHost = await db.getHostById(Number(tunnel.entryHostId));
+        const entryIp = String((entryHost as any)?.entryIp || (entryHost as any)?.ipv4 || (entryHost as any)?.ipv6 || entryHost?.ip || "").trim();
+        if (entryIp) {
+          hostId = tunnel.entryHostId;
+          message = JSON.stringify({
+            kind: "forward-via-tunnel-entry",
+            tunnelId: tunnel.id,
+            entryIp,
+            entrySourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            refreshPushed: pushed,
+          });
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued entry-port end-to-end test from entryHost=${tunnel.entryHostId} to entry=${entryIp}:${rule.sourcePort} target=${rule.targetIp}:${rule.targetPort}`);
+        } else {
+          hostId = tunnel.exitHostId;
+          message = JSON.stringify({
+            kind: "forward-via-tunnel",
+            tunnelId: tunnel.id,
+            entryHostId: tunnel.entryHostId,
+            exitHostId: tunnel.exitHostId,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            refreshPushed: pushed,
+          });
+          appendPanelLog("warn", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} entry address unavailable; queued fallback tunnel+target test from exitHost=${tunnel.exitHostId} to target=${rule.targetIp}:${rule.targetPort}`);
+        }
       }
       const id = await db.createForwardTest({
         ruleId: rule.id,

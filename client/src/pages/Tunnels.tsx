@@ -169,6 +169,7 @@ const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
+const MAX_TUNNEL_HOPS = 5;
 
 function getStoredTunnelViewMode(): TunnelViewMode {
   if (typeof window === "undefined") return "card";
@@ -398,7 +399,7 @@ function TunnelSelfTestDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>隧道链路自测 - {tunnelName}</DialogTitle>
-          <DialogDescription>检测入口到出口连通性。</DialogDescription>
+          <DialogDescription>检测隧道链路可达性。多级隧道显示逐跳 TCPing 估算值。</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
@@ -407,11 +408,11 @@ function TunnelSelfTestDialog({
             <span className="text-sm font-medium">{statusView}</span>
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">入口到出口可达</span>
+            <span className="text-sm text-muted-foreground">链路可达</span>
             <span className="text-sm font-medium">{reachableView}</span>
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">TCP 延迟</span>
+            <span className="text-sm text-muted-foreground">链路估算延迟</span>
             <span className="text-sm font-semibold tabular-nums">
               {isTesting ? "正在测试中" : isSuccess && latencyMs !== null && latencyMs !== undefined ? `${latencyMs} ms` : "--"}
             </span>
@@ -570,6 +571,10 @@ function TunnelsContent() {
   const handleSubmit = () => {
     if (!form.name || form.hopHostIds.length < 2) {
       toast.error("请填写隧道名称并至少选择两台主机");
+      return;
+    }
+    if (form.hopHostIds.length > MAX_TUNNEL_HOPS) {
+      toast.error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
       return;
     }
     const orderedHopHostIds = [...form.hopHostIds];
@@ -1104,6 +1109,7 @@ function TunnelsContent() {
                 hosts={hosts || []}
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
+                maxHops={MAX_TUNNEL_HOPS}
                 onChange={(ids) => {
                   setForm((prev) => {
                     const normalizedConnectHosts = normalizeHopConnectHosts(prev.hopConnectHosts, ids.length);
