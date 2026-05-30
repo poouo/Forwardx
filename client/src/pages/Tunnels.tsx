@@ -590,27 +590,26 @@ function TunnelsContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
-    const connectHost = form.connectHost.trim();
-    const hopExitConnectHost = String(orderedHopConnectHosts[1] || "").trim();
-    const effectiveConnectHost = connectHost || (orderedHopHostIds.length === 2 ? hopExitConnectHost : "");
-    if (connectHost && !isValidConnectHost(connectHost)) {
-      toast.error("请输入有效的指定出口地址");
-      return;
-    }
+    let hasPrivateHop = false;
     for (let i = 1; i < orderedHopConnectHosts.length; i++) {
       const value = String(orderedHopConnectHosts[i] || "").trim();
       if (value && !isValidConnectHost(value)) {
         toast.error(`第 ${i + 1} 跳指定地址格式无效`);
         return;
       }
+      if (!value) continue;
+      const hopHostId = Number(orderedHopHostIds[i] || 0);
+      const hopHost = hosts?.find((h: any) => Number(h.id) === hopHostId);
+      const privateAddr = String((hopHost as any)?.tunnelEntryIp || "").trim();
+      if (privateAddr && value === privateAddr) hasPrivateHop = true;
     }
     const payload: any = {
       name: form.name,
       mode: form.mode,
       fxpVersion: form.mode === "forwardx" ? form.fxpVersion : 1,
       listenPort: form.listenPort,
-      networkType: effectiveConnectHost ? "private" : "public",
-      connectHost: effectiveConnectHost || null,
+      networkType: hasPrivateHop ? "private" : "public",
+      connectHost: null,
       blockHttp: form.blockHttp,
       blockSocks: form.blockSocks,
       blockTls: form.blockTls,
@@ -751,11 +750,6 @@ function TunnelsContent() {
                           </Badge>
                         )}
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
-                        {String(tunnel.connectHost || "").trim() && (
-                          <span className="max-w-full truncate rounded bg-muted/50 px-1.5 py-0.5 text-muted-foreground" title={tunnel.connectHost || ""}>
-                            指定 {tunnel.connectHost || "-"}
-                          </span>
-                        )}
                       </div>
                     </div>
 
@@ -867,11 +861,6 @@ function TunnelsContent() {
                           </Badge>
                         )}
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
-                        {String(tunnel.connectHost || "").trim() && (
-                          <span className="max-w-full truncate rounded bg-muted/50 px-1.5 py-0.5 text-muted-foreground" title={tunnel.connectHost || ""}>
-                            指定 {tunnel.connectHost || "-"}
-                          </span>
-                        )}
                       </div>
                     </div>
 
@@ -972,11 +961,6 @@ function TunnelsContent() {
                           <span>{getHostName(tunnel.entryHostId, tunnel, "entry")}</span>
                           <ArrowRight className="h-3 w-3 text-muted-foreground" />
                           <span>{getHostName(tunnel.exitHostId, tunnel, "exit")}</span>
-                          {String(tunnel.connectHost || "").trim() && (
-                            <span className="max-w-[150px] truncate rounded bg-muted/40 px-1.5 py-0.5 text-muted-foreground" title={tunnel.connectHost || ""}>
-                              指定 {tunnel.connectHost || "-"}
-                            </span>
-                          )}
                           <code className="rounded bg-muted/40 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                         </div>
                       </TableCell>
@@ -1239,18 +1223,6 @@ function TunnelsContent() {
                 </p>
               </div>
             )}
-            <div className="space-y-2">
-              <Label>指定出口地址</Label>
-              <Input
-                value={form.connectHost}
-                onChange={(e) => setForm({ ...form, connectHost: e.target.value })}
-                placeholder="IP 或域名，留空则使用出口 Agent 默认地址"
-                aria-label="指定出口地址"
-              />
-              <p className="text-xs leading-5 text-muted-foreground">
-                可指定出口连接地址，支持 IP 或域名。
-              </p>
-            </div>
             <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
               {form.mode !== "forwardx" && (
               <div className="space-y-2">
