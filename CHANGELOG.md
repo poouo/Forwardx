@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.55] - 2026-05-30
+
+### Fixed
+
+- Forced GOST multi-hop forwarding rules to include the exit rule port as the final chain hop so entry services no longer dial the exit directly outside the hop chain.
+
+### Changed
+
+- Bumped panel version to 2.3.55. Agent target version remains 2.2.59.
+
 ## [2.3.54] - 2026-05-30
 
 ### Fixed

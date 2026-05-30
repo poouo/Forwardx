@@ -529,17 +529,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               }],
             };
           } else if (useMultiHopEntry) {
-            const hops = tunnelHops as any[];
-            const exitHop = hops[hops.length - 1] as any;
-            const exitHost = await getHopDialAddress(exitHop);
-            if (!exitHost || !(r as any).tunnelExitPort) return null;
             service.forwarder = {
-              nodes: [gostTunnelNode(
-                `exit-${r.id}`,
-                `${exitHost}:${Number((r as any).tunnelExitPort)}`,
-                tunnelProtocolType(tunnel.mode),
-                tunnel,
-              )],
+              nodes: [{
+                name: `target-${r.id}`,
+                addr: `${processTarget(r)}:${r.targetPort}`,
+                connector: { type: proto },
+                dialer: { type: proto },
+              }],
             };
           } else if (!tunnelExitHost || !(r as any).tunnelExitPort) {
             return null;
@@ -589,8 +585,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               )],
             });
           }
+          const exitHop = tunnelHops[tunnelHops.length - 1] as any;
+          const exitHost = await getHopDialAddress(exitHop);
+          const exitAddr = `${exitHost}:${Number((r as any).tunnelExitPort)}`;
+          if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
+          chainHops.push({
+            name: `hop-tunnel-${r.id}-exit`,
+            nodes: [gostTunnelNode(
+              `exit-${r.id}`,
+              exitAddr,
+              tunnelProtocolType(tunnel.mode),
+              tunnel,
+            )],
+          });
           if (chainHops.length === 0) return null;
-          routeParts.push(`exit#${Number((tunnelHops[tunnelHops.length - 1] as any).hostId)}:${Number((r as any).tunnelExitPort)}`);
+          routeParts.push(`exit#${Number(exitHop.hostId)}@${exitAddr}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           if (tunnelRouteLogCache.get(routeKey) !== route) {
