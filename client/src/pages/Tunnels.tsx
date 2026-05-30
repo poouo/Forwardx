@@ -442,6 +442,7 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
+  const [hasExplicitFxpVersion, setHasExplicitFxpVersion] = useState(false);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
@@ -492,6 +493,7 @@ function TunnelsContent() {
   const resetForm = () => {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
+    setHasExplicitFxpVersion(false);
     setEditingId(null);
   };
 
@@ -506,6 +508,7 @@ function TunnelsContent() {
       hopHostIds: [],
       hopConnectHosts: [],
     });
+    setHasExplicitFxpVersion(false);
     setShowDialog(true);
   };
 
@@ -531,6 +534,7 @@ function TunnelsContent() {
       blockTls: !!tunnel.blockTls,
     });
     setEditingId(tunnel.id);
+    setHasExplicitFxpVersion(String(tunnel.mode || "").toLowerCase() === "forwardx");
     setShowDialog(true);
   };
 
@@ -1156,7 +1160,13 @@ function TunnelsContent() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setForm({ ...form, mode: "forwardx" })}
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      mode: "forwardx",
+                      fxpVersion: hasExplicitFxpVersion ? prev.fxpVersion : 2,
+                    }))
+                  }
                   disabled={forwardProtocolSettings.forwardx === false}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
                   className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
@@ -1183,7 +1193,10 @@ function TunnelsContent() {
                 <Label>FXP 协议版本</Label>
                 <Select
                   value={String(form.fxpVersion)}
-                  onValueChange={(v) => setForm({ ...form, fxpVersion: normalizeFxpVersion(v) })}
+                  onValueChange={(v) => {
+                    setHasExplicitFxpVersion(true);
+                    setForm({ ...form, fxpVersion: normalizeFxpVersion(v) });
+                  }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
