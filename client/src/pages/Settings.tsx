@@ -1450,7 +1450,8 @@ type SystemSettingsSaveKey =
   | "twoFactor"
   | "homepage"
   | "ddns"
-  | "forwardProtocols";
+  | "forwardProtocols"
+  | "tunnelRuntime";
 
 function isValidWebPort(value: string | number) {
   const port = Math.floor(Number(value));
@@ -1477,6 +1478,7 @@ function SystemInfoSection() {
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
+  const [tunnelRuntimeDefault, setTunnelRuntimeDefault] = useState<"forwardx" | "gost">("forwardx");
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
   const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
@@ -1518,6 +1520,7 @@ function SystemInfoSection() {
       setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
       setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
+      setTunnelRuntimeDefault(settings.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx");
       setDdnsEnabled(!!settings.ddns?.enabled);
       setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
       setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
@@ -1678,6 +1681,10 @@ function SystemInfoSection() {
       { forwardProtocols },
       { onSuccess: () => setShowForwardProtocolDialog(false) },
     );
+  };
+
+  const handleSaveTunnelRuntimeDefault = () => {
+    saveSystemSettings("tunnelRuntime", { tunnelRuntimeDefault });
   };
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
@@ -2113,6 +2120,33 @@ function SystemInfoSection() {
             <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
               <p className="text-xs text-muted-foreground">隧道协议</p>
               <p className="mt-1 text-lg font-semibold">{tunnelProtocolEnabledCount} / {tunnelForwardProtocolKeys.length}</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 lg:grid-cols-[minmax(0,1fr)_160px]">
+            <div>
+              <p className="text-sm font-medium">新建隧道默认实现</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                仅影响“添加隧道”时默认选中项；已创建隧道不受影响。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Select value={tunnelRuntimeDefault} onValueChange={(v) => setTunnelRuntimeDefault(v as "forwardx" | "gost")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="forwardx">ForwardX</SelectItem>
+                  <SelectItem value="gost">GOST</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={handleSaveTunnelRuntimeDefault}
+                disabled={isSavingSetting("tunnelRuntime")}
+              >
+                保存默认实现
+              </Button>
             </div>
           </div>
         </CardContent>

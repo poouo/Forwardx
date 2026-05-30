@@ -382,6 +382,7 @@ export const systemRouter = router({
       forwardProtocols: normalizeForwardProtocolSettings(
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
+      tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
       database: {
         type: all.databaseType || (all.mysqlConfigured === "true" ? "mysql" : "sqlite"),
         configured: Boolean(all.databaseConfigured || all.mysqlConfigured),
@@ -455,6 +456,7 @@ export const systemRouter = router({
         homepageCustomEnabled: z.boolean().optional(),
         homepageHtml: z.string().max(60000).optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
+        tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
         email: z.object({
           enabled: z.boolean().optional(),
           host: z.string().max(256).optional(),
@@ -529,6 +531,11 @@ export const systemRouter = router({
           pushAgentRefresh(host.id, "forward-protocol-settings-updated");
         }
         console.info("[Settings] forward protocol switches updated");
+      }
+      if (input.tunnelRuntimeDefault !== undefined) {
+        const runtime = input.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
+        await db.setSetting("tunnelRuntimeDefault", runtime);
+        console.info(`[Settings] tunnel runtime default set to ${runtime}`);
       }
       if (input.email) {
         const email = input.email;

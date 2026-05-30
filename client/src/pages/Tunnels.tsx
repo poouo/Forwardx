@@ -464,6 +464,15 @@ function TunnelsContent() {
     () => gostTunnelModes.filter((mode) => forwardProtocolSettings[mode] !== false),
     [forwardProtocolSettings]
   );
+  const preferredTunnelRuntime = systemSettings?.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
+  const resolveDefaultTunnelMode = () => {
+    if (preferredTunnelRuntime === "gost") {
+      return enabledGostTunnelModes[0] || (forwardProtocolSettings.forwardx !== false ? "forwardx" : "forwardx");
+    }
+    return forwardProtocolSettings.forwardx !== false
+      ? "forwardx"
+      : (enabledGostTunnelModes[0] || "forwardx");
+  };
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
   const tunnelPagination = usePersistentPagination(tunnels || [], {
     storageKey: "forwardx.tunnels.page",
@@ -481,18 +490,14 @@ function TunnelsContent() {
   };
 
   const resetForm = () => {
-    const fallbackMode = forwardProtocolSettings.forwardx !== false
-      ? "forwardx"
-      : enabledGostTunnelModes[0] || "forwardx";
+    const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
     setEditingId(null);
   };
 
   const openCreate = () => {
     resetForm();
-    const fallbackMode = forwardProtocolSettings.forwardx !== false
-      ? "forwardx"
-      : enabledGostTunnelModes[0] || "forwardx";
+    const fallbackMode = resolveDefaultTunnelMode();
     setForm({
       ...defaultForm,
       mode: fallbackMode,
