@@ -104,6 +104,7 @@ fetch_source_refs() {
 
 sync_source() {
   local target="${FORWARDX_TARGET_VERSION:-}"
+  local resolved_target=""
   local env_backup=""
   local data_backup=""
   if [ -f "$APP_DIR/.env" ]; then
@@ -136,13 +137,22 @@ sync_source() {
     rm -rf "$data_backup"
   fi
 
-  if [ -z "$target" ]; then
-    target="$(latest_tag)"
-  fi
   if [ -n "$target" ]; then
-    git -C "$APP_DIR" checkout -f "$target"
+    resolved_target="$target"
+  elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
+    # Manual one-click upgrade should always refresh to latest main commit,
+    # even when version number is unchanged.
+    resolved_target="origin/main"
   else
-    git -C "$APP_DIR" checkout -f main
+    resolved_target="$(latest_tag)"
+    if [ -z "$resolved_target" ]; then
+      resolved_target="origin/main"
+    fi
+  fi
+
+  git -C "$APP_DIR" checkout -f "$resolved_target"
+  if [ "$resolved_target" = "origin/main" ]; then
+    git -C "$APP_DIR" checkout -B main origin/main
   fi
 }
 

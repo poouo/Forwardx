@@ -124,6 +124,7 @@ install_deps() {
 
 sync_source() {
   local target="${FORWARDX_TARGET_VERSION:-}"
+  local resolved_target=""
   if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" remote set-url origin "$REPO_URL" || true
     fetch_source_refs
@@ -133,13 +134,22 @@ sync_source() {
     fetch_source_refs
   fi
 
-  if [ -z "$target" ]; then
-    target="$(latest_tag)"
-  fi
   if [ -n "$target" ]; then
-    git -C "$APP_DIR" checkout -f "$target"
+    resolved_target="$target"
+  elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
+    # Manual one-click upgrade should always refresh to latest main commit,
+    # even when version number is unchanged.
+    resolved_target="origin/main"
   else
-    git -C "$APP_DIR" checkout -f main
+    resolved_target="$(latest_tag)"
+    if [ -z "$resolved_target" ]; then
+      resolved_target="origin/main"
+    fi
+  fi
+
+  git -C "$APP_DIR" checkout -f "$resolved_target"
+  if [ "$resolved_target" = "origin/main" ]; then
+    git -C "$APP_DIR" checkout -B main origin/main
   fi
 }
 
