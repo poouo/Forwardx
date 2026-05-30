@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.60] - 2026-05-30
+
+### Fixed
+
+- Reverted GOST multi-hop business routing to use the existing hop listener ports instead of new rule-specific relay ports that may be blocked by host firewalls.
+- Serialized Agent action execution so concurrent tunnel/rule applies no longer race while writing GOST configs and restarting services.
+
+### Changed
+
+- Bumped panel version to 2.3.60 and Agent target version to 2.2.61.
+
 ## [2.3.59] - 2026-05-30
 
 ### Fixed

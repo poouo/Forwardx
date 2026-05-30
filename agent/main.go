@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.60"
+var Version = "2.2.61"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -37,6 +37,12 @@ var lastTCPingAt time.Time
 var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
 var agentLogBuffer []agentLogEntry
+var actionQueue = make(chan actionJob, 128)
+
+type actionJob struct {
+	cfg    Config
+	action action
+}
 
 type agentLogEntry struct {
 	Level     string `json:"level"`
@@ -196,6 +202,7 @@ func main() {
 	}
 
 	_ = register(cfg)
+	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
 	for {
@@ -280,7 +287,7 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	agentLogUploadEnabled.Store(resp.LogUpload)
 	for _, a := range resp.Actions {
-		go handleAction(cfg, a)
+		enqueueAction(cfg, a)
 	}
 	for _, t := range resp.SelfTests {
 		go handleSelfTest(cfg, t)
@@ -300,6 +307,16 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	flushAgentLogs(cfg)
 	return resp.NextInterval, nil
+}
+
+func enqueueAction(cfg Config, a action) {
+	actionQueue <- actionJob{cfg: cfg, action: a}
+}
+
+func actionWorker() {
+	for job := range actionQueue {
+		handleAction(job.cfg, job.action)
+	}
 }
 
 func selfTestPoller(cfg Config) {

@@ -479,8 +479,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return policy.blockHttp || policy.blockSocks || policy.blockTls;
     };
     const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
-    const multiHopRuleRelayPort = (rule: any, hop: any) =>
-      20000 + ((Number(rule.id) * 97 + Number(hop.seq) * 31) % 25000);
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
         if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost" || !r.tunnelId) return false;
@@ -569,38 +567,46 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           return null;
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
+          const chainHops: any[] = [];
           const routeParts: string[] = [`entry#${Number(firstHop.hostId)}:${Number((r as any).sourcePort)}`];
-          const firstRelay = tunnelHops[1] as any;
-          const firstRelayHost = await getHopDialAddress(firstRelay);
-          const firstRelayPort = multiHopRuleRelayPort(r, firstRelay);
-          if (!firstRelayHost || !firstRelayPort) return null;
-          for (let i = 1; i < tunnelHops.length; i++) {
+          for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
             const hopDialHost = await getHopDialAddress(hop);
-            const hopPort = i === tunnelHops.length - 1
-              ? Number((r as any).tunnelExitPort)
-              : multiHopRuleRelayPort(r, hop);
-            if (!hopDialHost || !hopPort) return null;
-            routeParts.push(`${i === tunnelHops.length - 1 ? "exit" : "hop"}#${Number(hop.hostId)}@${hopDialHost}:${hopPort}`);
+            const hopAddr = `${hopDialHost}:${Number(hop.listenPort)}`;
+            if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
+            routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
+            chainHops.push({
+              name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
+              nodes: [gostTunnelNode(
+                `mhop-${r.id}-${Number(hop.seq)}`,
+                hopAddr,
+                tunnelProtocolType(tunnel.mode),
+                tunnel,
+              )],
+            });
           }
+          const exitHop = tunnelHops[tunnelHops.length - 1] as any;
+          const exitHost = await getHopDialAddress(exitHop);
+          const exitAddr = `${exitHost}:${Number((r as any).tunnelExitPort)}`;
+          if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
+          chainHops.push({
+            name: `hop-tunnel-${r.id}-exit`,
+            nodes: [gostTunnelNode(
+              `exit-${r.id}`,
+              exitAddr,
+              tunnelProtocolType(tunnel.mode),
+              tunnel,
+            )],
+          });
+          if (chainHops.length === 0) return null;
+          routeParts.push(`exit#${Number(exitHop.hostId)}@${exitAddr}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           if (tunnelRouteLogCache.get(routeKey) !== route) {
             tunnelRouteLogCache.set(routeKey, route);
             appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
           }
-          return {
-            name: `chain-tunnel-${r.id}`,
-            hops: [{
-              name: `hop-tunnel-${r.id}-first-relay`,
-              nodes: [gostTunnelNode(
-                `mhop-${r.id}-${Number(firstRelay.seq)}`,
-                `${firstRelayHost}:${firstRelayPort}`,
-                tunnelProtocolType(tunnel.mode),
-                tunnel,
-              )],
-            }],
-          };
+          return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry
           ? `127.0.0.1:${Number(firstHop.listenPort)}`
@@ -712,53 +718,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           },
         };
       }));
-      const multiHopRuleRelayServices = (await Promise.all(agentAllRules
-        .filter((rule: any) => {
-          if (!rule || rule.pendingDelete || !rule.isEnabled || rule.forwardType !== "gost" || !rule.tunnelId) return false;
-          if (!rule.tunnelExitPort) return false;
-          const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
-          if (!tunnel || isForwardXTunnel(tunnel) || !tunnel.isEnabled) return false;
-          if (!isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return false;
-          if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return false;
-          const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
-          return Array.isArray(hops) && hops.length >= 3;
-        })
-        .map(async (rule: any) => {
-          const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
-          const hops = tunnelHopsByTunnelId.get(Number(tunnel.id)) || [];
-          const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
-          if (hostIdx <= 0 || hostIdx >= hops.length - 1) return null;
-          const currentHop = hops[hostIdx] as any;
-          const nextHop = hops[hostIdx + 1] as any;
-          const nextAddr = await getHopDialAddress(nextHop);
-          const nextIsExit = hostIdx + 1 === hops.length - 1;
-          const listenPort = multiHopRuleRelayPort(rule, currentHop);
-          const nextPort = nextIsExit
-            ? Number(rule.tunnelExitPort)
-            : multiHopRuleRelayPort(rule, nextHop);
-          if (!listenPort || !nextAddr || !nextPort) return null;
-          return {
-            name: `fwx-mhop-rule-${tunnel.id}-${Number(rule.id)}-${Number(currentHop.seq)}`,
-            addr: `:${listenPort}`,
-            handler: { type: "relay" },
-            listener: {
-              type: tunnelProtocolType(tunnel.mode),
-              ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-            },
-            forwarder: {
-              nodes: [{
-                name: `next-rule-${Number(rule.id)}-${Number(nextHop.seq)}`,
-                addr: `${nextAddr}:${nextPort}`,
-                connector: { type: "relay", metadata: { nodelay: true } },
-                dialer: {
-                  type: tunnelProtocolType(tunnel.mode),
-                  ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-                },
-              }],
-            },
-          };
-        }))).filter(Boolean);
-      const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean), ...multiHopRuleRelayServices];
+      const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
       const countingCmds = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
@@ -1594,11 +1554,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const currentHop = hops[hostIdx] as any;
         const nextHop = hops[hostIdx + 1] as any;
         const nextHost = await getHopDialAddress(nextHop);
-        const nextIsExit = hostIdx + 1 === hops.length - 1;
-        const sourcePort = multiHopRuleRelayPort(rule, currentHop);
-        const targetPort = nextIsExit
-          ? Number(rule.tunnelExitPort)
-          : multiHopRuleRelayPort(rule, nextHop);
+        const sourcePort = Number(currentHop.listenPort) || 0;
+        const targetPort = Number(nextHop.listenPort) || 0;
         if (!sourcePort || !targetPort || !nextHost) return null;
         return {
           ruleId: Number(rule.id),
