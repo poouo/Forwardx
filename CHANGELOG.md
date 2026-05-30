@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.61] - 2026-05-30
+
+### Fixed
+
+- Removed the leftover GOST multi-hop relay forwarder that sent middle-hop traffic to the generic tunnel probe port instead of allowing the entry chain to reach the rule-specific exit port.
+- Made GOST relay metadata and exit target forwarding more explicit for better compatibility and diagnostics.
+
+### Changed
+
+- Bumped panel version to 2.3.61. Agent target version remains 2.2.61.
+
 ## [2.3.60] - 2026-05-30
 
 ### Fixed

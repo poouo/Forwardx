@@ -493,7 +493,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
       name,
       addr,
-      connector: { type: "relay", metadata: { nodelay: true } },
+      connector: { type: "relay", metadata: { nodelay: "true" } },
       dialer: {
         type: dialerType,
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -632,11 +632,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
         `mkdir -p /etc/forwardx-gost`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-gost/config.json`,
+        `echo "[gost-config] forwardx-gost services=${gostServiceConfig.length} chains=${gostChains.length}"`,
         writeUnitCmd(gostServiceName, gostServiceUnit),
         `systemctl daemon-reload`,
         `systemctl enable ${gostServiceName}.service 2>/dev/null || true`,
         gostServiceConfig.length > 0
-          ? `systemctl restart ${gostServiceName}.service`
+          ? `systemctl restart ${gostServiceName}.service || { systemctl status ${gostServiceName}.service --no-pager -l; journalctl -u ${gostServiceName}.service -n 80 --no-pager; exit 1; }`
           : `systemctl stop ${gostServiceName}.service 2>/dev/null || true`,
       ];
     };
@@ -678,6 +679,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             nodes: [{
               name: `target-${rule.id}`,
               addr: targetAddr,
+              connector: { type: "tcp" },
+              dialer: { type: "tcp" },
             }],
           },
         }];
@@ -689,13 +692,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
         if (hostIdx < 0 || hostIdx >= hops.length - 1) return null; // not in chain or exit hop
         const currentHop = hops[hostIdx] as any;
-        const nextHop = hops[hostIdx + 1] as any;
-        const configuredNextAddr = String((nextHop as any).connectHost || "").trim();
-        const nextAddr = configuredNextAddr || await getHostIngressAddress(Number(nextHop.hostId));
-        if (!nextAddr || !Number(nextHop.listenPort)) return null;
-        const nextIsExit = hostIdx + 1 === hops.length - 1;
-        const nextPort = nextIsExit ? Number(tunnel.listenPort) : Number(nextHop.listenPort);
-        if (!nextPort) return null;
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
@@ -704,17 +700,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
             ...(Number(currentHop.seq) === 0 ? {} : (tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {})),
-          },
-          forwarder: {
-            nodes: [{
-              name: `next-${tunnel.id}-${Number(nextHop.seq)}`,
-              addr: `${nextAddr}:${nextPort}`,
-              connector: { type: "relay", metadata: { nodelay: true } },
-              dialer: {
-                type: tunnelProtocolType(tunnel.mode),
-                ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
-              },
-            }],
           },
         };
       }));
@@ -729,6 +714,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
         `mkdir -p /etc/forwardx-tunnels`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-tunnels/config.json`,
+        `echo "[gost-config] forwardx-tunnels services=${services.length}"`,
         writeUnitCmd("forwardx-tunnels", [
           "[Unit]",
           "Description=ForwardX managed gost tunnels",
@@ -747,7 +733,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ].join("\n")),
         `systemctl daemon-reload`,
         `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
-        services.length > 0 ? `systemctl restart forwardx-tunnels.service` : `systemctl stop forwardx-tunnels.service 2>/dev/null || true`,
+        services.length > 0
+          ? `systemctl restart forwardx-tunnels.service || { systemctl status forwardx-tunnels.service --no-pager -l; journalctl -u forwardx-tunnels.service -n 80 --no-pager; exit 1; }`
+          : `systemctl stop forwardx-tunnels.service 2>/dev/null || true`,
         ...countingCmds,
       ];
     };
