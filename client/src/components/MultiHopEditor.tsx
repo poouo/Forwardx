@@ -22,6 +22,8 @@ interface HopEntry {
   connectHost: string;
 }
 
+type HopRole = "entry" | "mid" | "exit";
+
 interface MultiHopEditorProps {
   hosts: Host[];
   initialHopIds?: number[];
@@ -30,10 +32,16 @@ interface MultiHopEditorProps {
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
 }
 
-const ROLE_COLORS: Record<string, string> = {
-  first: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
+const ROLE_COLORS: Record<HopRole, string> = {
+  entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
   mid: "border-amber-500/40 bg-amber-500/10 text-amber-600",
-  last: "border-blue-500/40 bg-blue-500/10 text-blue-600",
+  exit: "border-blue-500/40 bg-blue-500/10 text-blue-600",
+};
+
+const ROLE_LABELS: Record<HopRole, string> = {
+  entry: "入口",
+  mid: "中转",
+  exit: "出口",
 };
 
 export default function MultiHopEditor({
@@ -44,28 +52,21 @@ export default function MultiHopEditor({
   onConnectHostsChange,
 }: MultiHopEditorProps) {
   const hostById = useMemo(() => new Map(hosts.map((host) => [host.id, host])), [hosts]);
-  const [hops, setHops] = useState<HopEntry[]>(() => {
-    if (!initialHopIds?.length) return [];
-    return initialHopIds
-      .map((id, idx) => {
-        const host = hostById.get(id);
-        if (!host) return null;
-        return {
-          hostId: host.id,
-          hostName: host.name,
-          connectHost: String(initialHopConnectHosts?.[idx] || ""),
-        };
-      })
-      .filter(Boolean) as HopEntry[];
-  });
+  const [hops, setHops] = useState<HopEntry[]>([]);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
-  const [ghost, setGhost] = useState<{ x: number; y: number; name: string } | null>(null);
-  const prevRef = useRef<string>("");
-  const emptyDragImageRef = useRef<HTMLImageElement | null>(null);
+  const [ghost, setGhost] = useState<{ x: number; y: number; name: string; role: HopRole; index: number } | null>(null);
+  const prevIdsRef = useRef<string>("");
   const prevConnectRef = useRef<string>("");
   const onChangeRef = useRef<typeof onChange>(onChange);
   const onConnectHostsChangeRef = useRef<typeof onConnectHostsChange>(onConnectHostsChange);
   const syncingFromPropsRef = useRef(false);
+  const emptyDragImageRef = useRef<HTMLImageElement | null>(null);
+
+  const getRole = (idx: number, total: number): HopRole => {
+    if (idx === 0) return "entry";
+    if (idx === total - 1) return "exit";
+    return "mid";
+  };
 
   const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
   const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
@@ -107,24 +108,25 @@ export default function MultiHopEditor({
   }, [hostById, initialHopIds, initialHopConnectHosts]);
 
   useEffect(() => {
-    // Avoid feedback loops while dragging; emit once after drag settles.
     if (draggingIdx !== null) return;
     if (syncingFromPropsRef.current) {
       syncingFromPropsRef.current = false;
-      prevRef.current = serializeIds(hops);
+      prevIdsRef.current = serializeIds(hops);
       prevConnectRef.current = serializeConnectHosts(hops);
       return;
     }
+
     const ids = hops.map((hop) => hop.hostId);
-    const next = JSON.stringify(ids);
-    if (next !== prevRef.current) {
-      prevRef.current = next;
+    const idsText = JSON.stringify(ids);
+    if (idsText !== prevIdsRef.current) {
+      prevIdsRef.current = idsText;
       onChangeRef.current?.(ids);
     }
+
     const connectHosts = hops.map((hop, idx) => (idx === 0 ? null : (hop.connectHost.trim() || null)));
-    const nextConnect = JSON.stringify(connectHosts);
-    if (nextConnect !== prevConnectRef.current) {
-      prevConnectRef.current = nextConnect;
+    const connectText = JSON.stringify(connectHosts);
+    if (connectText !== prevConnectRef.current) {
+      prevConnectRef.current = connectText;
       onConnectHostsChangeRef.current?.(connectHosts);
     }
   }, [hops, draggingIdx]);
@@ -167,7 +169,13 @@ export default function MultiHopEditor({
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setDragImage(emptyDragImageRef.current, 0, 0);
     setDraggingIdx(idx);
-    setGhost({ x: e.clientX, y: e.clientY, name: hops[idx]?.hostName || "" });
+    setGhost({
+      x: e.clientX,
+      y: e.clientY,
+      name: hops[idx]?.hostName || "",
+      role: getRole(idx, hops.length),
+      index: idx + 1,
+    });
   };
 
   const onDragOverRow = (idx: number) => (e: React.DragEvent) => {
@@ -176,6 +184,7 @@ export default function MultiHopEditor({
     if (draggingIdx === null || draggingIdx === idx) return;
     moveHop(draggingIdx, idx);
     setDraggingIdx(idx);
+    setGhost((prev) => (prev ? { ...prev, role: getRole(idx, hops.length), index: idx + 1 } : prev));
   };
 
   const onDragOverContainer = (e: React.DragEvent) => {
@@ -192,7 +201,7 @@ export default function MultiHopEditor({
   return (
     <div className="space-y-3" onDragOver={onDragOverContainer}>
       <div className="flex items-center justify-end">
-        <span className="text-xs text-muted-foreground">上到下为链路顺序，可拖动调整</span>
+        <span className="text-xs text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标</span>
       </div>
 
       <div className="flex items-center gap-2">
@@ -223,13 +232,12 @@ export default function MultiHopEditor({
       ) : (
         <div className="space-y-2 rounded-lg border border-border bg-card p-2">
           {hops.map((hop, idx) => {
-            const isFirst = idx === 0;
-            const isLast = idx === hops.length - 1;
-            const role = isFirst ? "入口" : isLast ? "出口" : "中转";
-            const roleColor = isFirst ? "first" : isLast ? "last" : "mid";
+            const role = getRole(idx, hops.length);
+            const isFirst = role === "entry";
+            const isLast = role === "exit";
             const isDragging = draggingIdx === idx;
             return (
-              <div key={`${hop.hostId}-${idx}`} className="space-y-2">
+              <div key={`${hop.hostId}-${idx}`}>
                 <div
                   className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-all duration-150 ${
                     isDragging ? "opacity-40 scale-[0.98]" : "opacity-100"
@@ -243,9 +251,17 @@ export default function MultiHopEditor({
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                     {idx + 1}
                   </span>
-                  <span className="flex-1 truncate text-sm font-medium">{hop.hostName}</span>
-                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[roleColor]}`}>
-                    {role}
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
+                  {!isFirst && (
+                    <Input
+                      value={hop.connectHost}
+                      onChange={(e) => updateConnectHost(idx, e.target.value)}
+                      placeholder="留空用默认地址，可填内网 IP/域名"
+                      className="h-8 w-[240px] min-w-[170px] max-w-[42vw]"
+                    />
+                  )}
+                  <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
+                    {ROLE_LABELS[role]}
                   </Badge>
                   <Button
                     variant="ghost"
@@ -277,16 +293,6 @@ export default function MultiHopEditor({
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
-                {!isFirst && (
-                  <div className="rounded-md border border-border/50 bg-muted/20 px-2 py-2">
-                    <p className="mb-1 text-xs text-muted-foreground">指定该跳入口 IP/域名（可填内网地址）</p>
-                    <Input
-                      value={hop.connectHost}
-                      onChange={(e) => updateConnectHost(idx, e.target.value)}
-                      placeholder="留空则使用主机默认入口地址"
-                    />
-                  </div>
-                )}
               </div>
             );
           })}
@@ -295,10 +301,18 @@ export default function MultiHopEditor({
 
       {ghost && (
         <div
-          className="pointer-events-none fixed z-[120] -translate-x-1/2 -translate-y-1/2 rounded-md border border-primary/30 bg-card px-3 py-2 text-sm font-medium shadow-lg shadow-primary/20"
+          className="pointer-events-none fixed z-[120] -translate-x-1/2 -translate-y-1/2 rounded-md border border-primary/40 bg-card px-3 py-2 text-sm shadow-2xl transition-transform duration-75"
           style={{ left: `${ghost.x}px`, top: `${ghost.y}px` }}
         >
-          {ghost.name}
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+              {ghost.index}
+            </span>
+            <span className="max-w-[220px] truncate font-medium">{ghost.name}</span>
+            <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[ghost.role]}`}>
+              {ROLE_LABELS[ghost.role]}
+            </Badge>
+          </div>
         </div>
       )}
     </div>
