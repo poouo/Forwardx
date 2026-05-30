@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.50] - 2026-05-30
+
+### Fixed
+
+- Fixed GOST multi-hop forwarding so entry rules use intermediate hops as the chain and the exit rule port as the final forwarder target.
+
+### Changed
+
+- Bumped panel version to 2.3.50. Agent target version remains 2.2.59.
+
 ## [2.3.49] - 2026-05-30
 
 ### Changed
