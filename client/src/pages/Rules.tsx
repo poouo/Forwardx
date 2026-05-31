@@ -1112,7 +1112,7 @@ function RulesContent() {
 
   const renderLatestLatency = (rule: any) => {
     const t = trafficByRule.get(rule.id);
-    if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">—</span>;
+    if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">未测试</span>;
     if (t.latestLatencyIsTimeout) {
       return (
         <span className="flex items-center gap-1 text-xs text-destructive">
@@ -1127,7 +1127,7 @@ function RulesContent() {
         </span>
       );
     }
-    return <span className="text-xs text-muted-foreground">—</span>;
+    return <span className="text-xs text-muted-foreground">未测试</span>;
   };
 
   const renderRuleActions = (rule: any) => {
@@ -1258,10 +1258,10 @@ function RulesContent() {
               <div className="mb-1 text-muted-foreground">近 24h 流量</div>
               {renderRuleTraffic(rule)}
             </div>
-            <div className="sm:col-span-2">
-              <div className="mb-1 text-muted-foreground">延迟</div>
-              {renderLatestLatency(rule)}
-            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-muted-foreground">延迟</span>
+            {renderLatestLatency(rule)}
           </div>
           <div className="flex justify-end border-t border-border/40 pt-2">
             {renderRuleActions(rule)}

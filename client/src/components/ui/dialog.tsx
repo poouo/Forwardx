@@ -3,7 +3,32 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
 
-const Dialog = DialogPrimitive.Root
+const Dialog = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) => {
+  const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
+  const isOpen = open ?? internalOpen
+
+  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
+    setInternalOpen(nextOpen)
+    onOpenChange?.(nextOpen)
+  }, [onOpenChange])
+
+  React.useLayoutEffect(() => {
+    if (!isOpen || typeof document === "undefined") return
+    const count = Number(document.body.dataset.dialogScrollLock || "0") + 1
+    document.body.dataset.dialogScrollLock = String(count)
+    return () => {
+      const nextCount = Number(document.body.dataset.dialogScrollLock || "1") - 1
+      if (nextCount > 0) {
+        document.body.dataset.dialogScrollLock = String(nextCount)
+      } else {
+        delete document.body.dataset.dialogScrollLock
+      }
+    }
+  }, [isOpen])
+
+  return <DialogPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
+}
+Dialog.displayName = DialogPrimitive.Root.displayName
 const DialogTrigger = DialogPrimitive.Trigger
 const DialogPortal = DialogPrimitive.Portal
 const DialogClose = DialogPrimitive.Close
