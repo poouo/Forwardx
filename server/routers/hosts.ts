@@ -5,6 +5,7 @@ import * as db from "../db";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
 import { requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
+import { isAgentVersionAtLeast } from "../agentRouteUtils";
 
 const AGENT_UPGRADE_ASSET_NAMES = [
   "forwardx-agent-linux-amd64",
@@ -13,6 +14,7 @@ const AGENT_UPGRADE_ASSET_NAMES = [
   "forwardx-fxp-linux-arm64",
 ];
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
+const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
 
 let lastHostUpgradeCleanupAt = 0;
 let hostUpgradeCleanupRunning = false;
@@ -25,6 +27,34 @@ function githubRepoParts(repoUrl: string) {
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/#?]+)/i);
   if (!match) throw new Error("GitHub 仓库地址格式不正确");
   return { owner: match[1], repo: match[2].replace(/\.git$/i, "") };
+}
+
+async function releaseAssetExistsViaDownloadUrl(tag: string, assetName: string) {
+  const { owner, repo } = githubRepoParts(REPO_URL);
+  const url = `https://github.com/${owner}/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`;
+  const headers = {
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    "User-Agent": `ForwardX/${APP_VERSION}`,
+  };
+  let res = await fetch(`${url}?_=${Date.now()}`, {
+    cache: "no-store",
+    method: "HEAD",
+    redirect: "follow",
+    headers,
+  });
+  if (res.status === 405) {
+    res = await fetch(`${url}?_=${Date.now()}`, {
+      cache: "no-store",
+      method: "GET",
+      redirect: "follow",
+      headers: {
+        ...headers,
+        Range: "bytes=0-0",
+      },
+    });
+  }
+  return res.ok;
 }
 
 async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersion = APP_VERSION) {
@@ -45,6 +75,14 @@ async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersio
     throw new Error(`Agent v${normalizedAgentVersion} 所需的 Release ${tag} 尚未生成，可能仍在构建中，请稍后再试`);
   }
   if (!res.ok) {
+    if (GITHUB_API_LIMIT_STATUSES.has(res.status)) {
+      const missingByUrl: string[] = [];
+      for (const name of AGENT_UPGRADE_ASSET_NAMES) {
+        if (!await releaseAssetExistsViaDownloadUrl(tag, name)) missingByUrl.push(name);
+      }
+      if (missingByUrl.length === 0) return;
+      throw new Error(`GitHub API 已限流，且无法通过下载直链确认 Release ${tag} 的 Agent 资产，请稍后再试：${missingByUrl.join(", ")}`);
+    }
     throw new Error(`无法验证 Release ${tag} 的 Agent 资产：${res.status} ${res.statusText}`);
   }
   const release = await res.json() as { assets?: Array<{ name?: string; state?: string; size?: number }> };
@@ -56,6 +94,28 @@ async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersio
   if (missing.length > 0) {
     throw new Error(`Agent v${normalizedAgentVersion} 所需的 Release ${tag} 资产还未构建完成，请稍后再试：${missing.join(", ")}`);
   }
+}
+
+async function clearCompletedHostAgentUpgradeRequests<T extends any[]>(hostRows: T): Promise<T> {
+  const completedIds: number[] = [];
+  const cleanedRows = hostRows.map((host: any) => {
+    const targetVersion = host.agentUpgradeTargetVersion || AGENT_VERSION;
+    if (host.agentUpgradeRequested && host.agentVersion && isAgentVersionAtLeast(host.agentVersion, targetVersion)) {
+      completedIds.push(Number(host.id));
+      return {
+        ...host,
+        agentUpgradeRequested: false,
+        agentUpgradeTargetVersion: null,
+      };
+    }
+    return host;
+  }) as T;
+  await Promise.all(completedIds.map((id) => db.clearHostAgentUpgradeRequest(id)));
+  return cleanedRows;
+}
+
+async function getHostsWithUpgradeStateCleanup(userId?: number) {
+  return clearCompletedHostAgentUpgradeRequests(await db.getHosts(userId));
 }
 
 function scheduleStaleHostUpgradeCleanup() {
@@ -76,19 +136,19 @@ export const hostsRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       if (isAdmin) scheduleStaleHostUpgradeCleanup();
-      if (isAdmin) return db.getHosts();
+      if (isAdmin) return getHostsWithUpgradeStateCleanup();
       // 普通用户：返回自己创建的主机 + 普通授权主机 + 已授权的流量计费主机
       const [allowedHostIds, billingResourceIds] = await Promise.all([
         db.getUserAllowedHostIds(ctx.user.id),
         db.getUserUsableTrafficBillingResourceIds(ctx.user.id),
       ]);
-      const allHosts = await db.getHosts();
+      const allHosts = await getHostsWithUpgradeStateCleanup();
       const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
       return allHosts.filter(h => allowedSet.has(h.id) || h.userId === ctx.user.id);
     }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
     listAll: adminProcedure.query(async () => {
-      return db.getHosts();
+      return getHostsWithUpgradeStateCleanup();
     }),
     getById: protectedProcedure
       .input(z.object({ id: z.number() }))
