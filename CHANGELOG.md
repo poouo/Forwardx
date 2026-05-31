@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.68] - 2026-05-31
+
+### Fixed
+
+- Improved mobile dashboard and user-management traffic summary cards so large traffic values wrap and display completely instead of being truncated with ellipses.
+- Hid decorative stat icons on small screens and let inbound/outbound traffic cards span the full mobile width for better APP readability.
+- Allowed subscription traffic and addon traffic values in user management to wrap instead of being clipped on narrow screens.
+
+### Changed
+
+- Bumped panel version to 2.3.68. Agent target version remains 2.2.63.
+
 ## [2.3.67] - 2026-05-31
 
 ### Fixed
