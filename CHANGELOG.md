@@ -1,15 +1,16 @@
 # Changelog
 
-## [2.3.71] - 2026-05-31
+## [2.3.72] - 2026-05-31
 
 ### Fixed
 
 - Cleared stale Agent upgrade states from host lists when an Agent has already reported the requested target version.
 - Allowed Agent release asset checks to fall back to direct GitHub Release download URLs when the GitHub API is rate limited.
+- Added an Agent self-upgrade lock timeout so a failed upgrade launcher cannot permanently block later upgrade retries.
 
 ### Changed
 
-- Bumped panel version to 2.3.71. Agent target version remains 2.2.65.
+- Bumped panel version to 2.3.72 and Agent target version to 2.2.66.
 - Bumped Android APP version to 2.3.26 so the APK includes the latest mobile UI layout fixes.
 
 ## [2.3.70] - 2026-05-31

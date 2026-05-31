@@ -27,8 +27,10 @@ import (
 	"time"
 )
 
-var Version = "2.2.65"
+var Version = "2.2.66"
+const selfUpgradeLockTimeout = 10 * time.Minute
 var upgradeStarted int32
+var upgradeStartedAt int64
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
 var protocolGuardMu sync.Mutex
@@ -1561,9 +1563,17 @@ func (w fxpLogWriter) Write(p []byte) (int, error) {
 }
 
 func selfUpgrade(cfg Config, up *agentUpgrade) {
+	now := time.Now()
 	if !atomic.CompareAndSwapInt32(&upgradeStarted, 0, 1) {
-		logf("self-upgrade already started, ignoring duplicate request")
-		return
+		startedAt := time.Unix(atomic.LoadInt64(&upgradeStartedAt), 0)
+		if startedAt.IsZero() || now.Sub(startedAt) < selfUpgradeLockTimeout {
+			logf("self-upgrade already started at %s, ignoring duplicate request", startedAt.Format(time.RFC3339))
+			return
+		}
+		logf("self-upgrade lock expired after %s, allowing retry", now.Sub(startedAt).Round(time.Second))
+		atomic.StoreInt64(&upgradeStartedAt, now.Unix())
+	} else {
+		atomic.StoreInt64(&upgradeStartedAt, now.Unix())
 	}
 	panel := strings.TrimRight(up.PanelURL, "/")
 	if panel == "" {
@@ -1572,7 +1582,10 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --max-time 30 "%s/api/agent/install.sh" | PANEL_URL="%s" bash -s -- upgrade %s`, panel, panel, shellQuote(cfg.Token))
 	cmd := fmt.Sprintf(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=forwardx-agent-upgrade --collect /bin/sh -lc %s; else nohup sh -lc %s >/var/log/forwardx-agent/agent-upgrade.log 2>&1 < /dev/null & fi`, shellQuote(upgradeCmd), shellQuote(upgradeCmd))
 	logf("self-upgrade requested target=%s", up.TargetVersion)
-	_ = runShell(cmd)
+	if !runShell(cmd) {
+		atomic.StoreInt32(&upgradeStarted, 0)
+		atomic.StoreInt64(&upgradeStartedAt, 0)
+	}
 }
 
 func post(cfg Config, path string, payload any, out any) error {
