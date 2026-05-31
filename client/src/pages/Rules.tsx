@@ -45,6 +45,7 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowUpFromLine,
+  Timer,
   Stethoscope,
   CheckCircle2,
   XCircle,
@@ -276,6 +277,10 @@ function RulesContent() {
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
+  const visibleRuleIdsForMetrics = useMemo(() => {
+    const sourceRules = selectedScopeRules || rules || [];
+    return Array.from(new Set(sourceRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)));
+  }, [rules, selectedScopeRules]);
 
   const walletBalanceKnown = wallet?.balanceCents !== undefined && wallet?.balanceCents !== null;
   const manuallyPaused = (user as any)?.forwardAccessPauseReason === "manual";
@@ -327,16 +332,23 @@ function RulesContent() {
 
   // 近 24h 按规则汇总的流量
   const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
-    { hours: 24 },
+    { hours: 24, ruleIds: visibleRuleIdsForMetrics },
     {
-      enabled: secondaryQueriesReady && !!rules && rules.length > 0,
+      enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
       refetchInterval: 30000,
       staleTime: 15000,
       refetchOnWindowFocus: false,
     }
   );
   const trafficByRule = useMemo(() => {
-    const m = new Map<number, { bytesIn: number; bytesOut: number; connections: number }>();
+    const m = new Map<number, {
+      bytesIn: number;
+      bytesOut: number;
+      connections: number;
+      latestLatencyMs: number | null;
+      latestLatencyIsTimeout: boolean;
+      latestLatencyAt: Date | string | null;
+    }>();
     (trafficSummary || []).forEach((t: any) => {
       const rid = Number(t.ruleId);
       const prev = m.get(rid);
@@ -344,11 +356,21 @@ function RulesContent() {
         prev.bytesIn += Number(t.bytesIn) || 0;
         prev.bytesOut += Number(t.bytesOut) || 0;
         prev.connections += Number(t.connections) || 0;
+        const prevAt = prev.latestLatencyAt ? new Date(prev.latestLatencyAt).getTime() : 0;
+        const nextAt = t.latestLatencyAt ? new Date(t.latestLatencyAt).getTime() : 0;
+        if (nextAt > prevAt) {
+          prev.latestLatencyMs = t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs);
+          prev.latestLatencyIsTimeout = !!t.latestLatencyIsTimeout;
+          prev.latestLatencyAt = t.latestLatencyAt || null;
+        }
       } else {
         m.set(rid, {
           bytesIn: Number(t.bytesIn) || 0,
           bytesOut: Number(t.bytesOut) || 0,
           connections: Number(t.connections) || 0,
+          latestLatencyMs: t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs),
+          latestLatencyIsTimeout: !!t.latestLatencyIsTimeout,
+          latestLatencyAt: t.latestLatencyAt || null,
         });
       }
     });
@@ -1088,6 +1110,26 @@ function RulesContent() {
     );
   };
 
+  const renderLatestLatency = (rule: any) => {
+    const t = trafficByRule.get(rule.id);
+    if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">—</span>;
+    if (t.latestLatencyIsTimeout) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-destructive">
+          <Timer className="h-3 w-3" /> 超时
+        </span>
+      );
+    }
+    if (typeof t.latestLatencyMs === "number" && Number.isFinite(t.latestLatencyMs)) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-chart-3">
+          <Timer className="h-3 w-3" /> {t.latestLatencyMs} ms
+        </span>
+      );
+    }
+    return <span className="text-xs text-muted-foreground">—</span>;
+  };
+
   const renderRuleActions = (rule: any) => {
     const supported = isRuleSupported(rule);
     if (!supported) {
@@ -1215,6 +1257,10 @@ function RulesContent() {
             <div className="sm:col-span-2">
               <div className="mb-1 text-muted-foreground">近 24h 流量</div>
               {renderRuleTraffic(rule)}
+            </div>
+            <div className="sm:col-span-2">
+              <div className="mb-1 text-muted-foreground">延迟</div>
+              {renderLatestLatency(rule)}
             </div>
           </div>
           <div className="flex justify-end border-t border-border/40 pt-2">
@@ -1432,7 +1478,7 @@ function RulesContent() {
                           <TableHead>转发配置</TableHead>
                           <TableHead className="w-[150px]">链路</TableHead>
                           <TableHead className="w-[86px]">协议</TableHead>
-                          <TableHead className="w-[120px]">24h 流量</TableHead>
+                          <TableHead className="w-[140px]">24h 流量 / 延迟</TableHead>
                           <TableHead className="w-[76px] text-center">开关</TableHead>
                           <TableHead className="w-[164px] text-right">操作</TableHead>
                         </TableRow>
@@ -1495,7 +1541,12 @@ function RulesContent() {
                                   <TableCell>
                                     <Badge variant="secondary" className="text-[10px] uppercase">{rule.protocol}</Badge>
                                   </TableCell>
-                                  <TableCell>{renderRuleTraffic(rule)}</TableCell>
+                                  <TableCell>
+                                    <div className="space-y-1">
+                                      {renderRuleTraffic(rule)}
+                                      {renderLatestLatency(rule)}
+                                    </div>
+                                  </TableCell>
                                   <TableCell className="text-center">
                                     {supported ? (
                                       <Switch

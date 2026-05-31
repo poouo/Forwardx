@@ -63,7 +63,7 @@ export async function getUserUsableTrafficBillingResourceIds(userId: number) {
   if (!(await isTrafficBillingEnabled())) return { hostIds: [], tunnelIds: [] };
   const db = await getDb();
   if (!db) return { hostIds: [], tunnelIds: [] };
-  const rows = await db
+  const permittedRows = await db
     .select({
       resourceType: userTrafficBillingPermissions.resourceType,
       resourceId: userTrafficBillingPermissions.resourceId,
@@ -73,11 +73,23 @@ export async function getUserUsableTrafficBillingResourceIds(userId: number) {
       eq(trafficBillingConfigs.resourceType, userTrafficBillingPermissions.resourceType),
       eq(trafficBillingConfigs.resourceId, userTrafficBillingPermissions.resourceId),
       eq(trafficBillingConfigs.enabled, true),
+      eq(trafficBillingConfigs.requiresPermission, true),
     ))
     .where(eq(userTrafficBillingPermissions.userId, userId));
+  const publicRows = await db
+    .select({
+      resourceType: trafficBillingConfigs.resourceType,
+      resourceId: trafficBillingConfigs.resourceId,
+    })
+    .from(trafficBillingConfigs)
+    .where(and(
+      eq(trafficBillingConfigs.enabled, true),
+      eq(trafficBillingConfigs.requiresPermission, false),
+    ));
+  const rows = [...permittedRows, ...publicRows];
   return {
-    hostIds: rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)),
-    tunnelIds: rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)),
+    hostIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "host").map((row: any) => Number(row.resourceId)))),
+    tunnelIds: Array.from(new Set(rows.filter((row: any) => row.resourceType === "tunnel").map((row: any) => Number(row.resourceId)))),
   };
 }
 
@@ -95,6 +107,14 @@ export async function setUserTrafficBillingPermissions(userId: number, hostIds: 
 export async function checkUserTrafficBillingPermission(userId: number, resourceType: TrafficBillingResourceType, resourceId: number) {
   const db = await getDb();
   if (!db) return false;
+  const configRows = await db.select().from(trafficBillingConfigs).where(and(
+    eq(trafficBillingConfigs.resourceType, resourceType),
+    eq(trafficBillingConfigs.resourceId, resourceId),
+    eq(trafficBillingConfigs.enabled, true),
+  )).limit(1);
+  const config = configRows[0] as any;
+  if (!config) return false;
+  if (!config.requiresPermission) return true;
   const rows = await db.select().from(userTrafficBillingPermissions).where(and(
     eq(userTrafficBillingPermissions.userId, userId),
     eq(userTrafficBillingPermissions.resourceType, resourceType),
@@ -108,16 +128,24 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
   if (!db) throw new Error("Database not available");
   const resourceType = String((data as any).resourceType || "") as TrafficBillingResourceType;
   const resourceId = Number((data as any).resourceId || 0);
+  const id = Number((data as any).id || 0);
   if (resourceType !== "host" && resourceType !== "tunnel") throw new Error("资源类型无效");
   if (resourceId <= 0) throw new Error("资源无效");
   const payload = {
     resourceType,
     resourceId,
     enabled: !!(data as any).enabled,
+    requiresPermission: !!(data as any).requiresPermission,
     pricePerGbCents: normalizePrice(Number((data as any).pricePerGbCents || 0)),
     multiplier: normalizeMultiplier(Number((data as any).multiplier || 100)),
     updatedAt: nowDate(),
   };
+  if (id > 0) {
+    const byId = await db.select().from(trafficBillingConfigs).where(eq(trafficBillingConfigs.id, id)).limit(1);
+    if (!byId[0]) throw new Error("计费配置不存在");
+    await db.update(trafficBillingConfigs).set(payload as any).where(eq(trafficBillingConfigs.id, id));
+    return { ...byId[0], ...payload };
+  }
   const existing = await db.select().from(trafficBillingConfigs).where(and(
     eq(trafficBillingConfigs.resourceType, resourceType),
     eq(trafficBillingConfigs.resourceId, resourceId),
@@ -126,8 +154,8 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
     await db.update(trafficBillingConfigs).set(payload as any).where(eq(trafficBillingConfigs.id, existing[0].id));
     return { ...existing[0], ...payload };
   }
-  const id = await insertAndGetId("traffic_billing_configs", { ...payload, createdAt: nowDate() });
-  return { id, ...payload };
+  const createdId = await insertAndGetId("traffic_billing_configs", { ...payload, createdAt: nowDate() });
+  return { id: createdId, ...payload };
 }
 
 export async function deleteTrafficBillingConfig(id: number) {

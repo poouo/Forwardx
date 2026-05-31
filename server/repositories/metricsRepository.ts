@@ -97,9 +97,13 @@ export async function getTrafficSummaryByRule(opts: {
   userId?: number;
   hostId?: number;
   since?: Date;
+  ruleIds?: number[];
 } = {}) {
   const db = await getDb();
-  if (!db) return [] as Array<{ ruleId: number; hostId: number; bytesIn: number; bytesOut: number; connections: number }>;
+  if (!db) return [] as Array<{ ruleId: number; hostId: number; bytesIn: number; bytesOut: number; connections: number; latestLatencyMs: number | null; latestLatencyIsTimeout: boolean; latestLatencyAt: Date | null }>;
+  const requestedRuleIds = Array.from(new Set((opts.ruleIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
   const conds: any[] = [];
   if (opts.hostId) conds.push(eq(trafficStats.hostId, opts.hostId));
   if (opts.since) conds.push(gte(trafficStats.recordedAt, opts.since));
@@ -165,7 +169,91 @@ export async function getTrafficSummaryByRule(opts: {
     const ok = new Set(ruleIds);
     result = result.filter((r) => ok.has(r.ruleId));
   }
-  return result;
+
+  let visibleRequestedRows: Array<{ id: number; hostId: number }> = [];
+  if (requestedRuleIds.length > 0) {
+    const requestedConds: any[] = [
+      sql`${forwardRules.id} IN (${sql.join(requestedRuleIds.map(id => sql`${id}`), sql`, `)})`,
+      eq(forwardRules.pendingDelete, false),
+    ];
+    if (opts.userId) requestedConds.push(eq(forwardRules.userId, opts.userId));
+    if (opts.hostId) requestedConds.push(eq(forwardRules.hostId, opts.hostId));
+    const rows = await db
+      .select({
+        id: forwardRules.id,
+        hostId: forwardRules.hostId,
+      })
+      .from(forwardRules)
+      .where(and(...requestedConds));
+    visibleRequestedRows = (rows as any[]).map((row) => ({
+      id: Number(row.id),
+      hostId: Number(row.hostId),
+    }));
+    const visibleRequestedIds = new Set(visibleRequestedRows.map((row) => row.id));
+    result = result.filter((item) => visibleRequestedIds.has(item.ruleId));
+    const existingKeys = new Set(result.map((item) => `${item.ruleId}:${item.hostId}`));
+    for (const row of visibleRequestedRows) {
+      const key = `${row.id}:${row.hostId}`;
+      if (!existingKeys.has(key)) {
+        result.push({
+          ruleId: row.id,
+          hostId: row.hostId,
+          bytesIn: 0,
+          bytesOut: 0,
+          connections: 0,
+        });
+        existingKeys.add(key);
+      }
+    }
+  }
+
+  if (result.length === 0) return result.map((item) => ({ ...item, latestLatencyMs: null, latestLatencyIsTimeout: false, latestLatencyAt: null }));
+
+  const ruleIds = Array.from(new Set(result.map((r) => r.ruleId)));
+  const childLatencyRows = ruleIds.length > 0
+    ? await db
+      .select({
+        id: forwardRules.id,
+        parentId: forwardRules.forwardGroupRuleId,
+      })
+      .from(forwardRules)
+      .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = 0`)
+    : [];
+  const parentByChildRule = new Map<number, number>();
+  for (const row of childLatencyRows as any[]) {
+    const childId = Number(row.id);
+    const parentId = Number(row.parentId);
+    if (childId > 0 && parentId > 0) parentByChildRule.set(childId, parentId);
+  }
+  const latencyRuleIds = Array.from(new Set([
+    ...ruleIds,
+    ...Array.from(parentByChildRule.keys()),
+  ]));
+  const latestRows = await db
+    .select({
+      ruleId: tcpingStats.ruleId,
+      latencyMs: tcpingStats.latencyMs,
+      isTimeout: tcpingStats.isTimeout,
+      recordedAt: tcpingStats.recordedAt,
+    })
+    .from(tcpingStats)
+    .where(sql`${tcpingStats.ruleId} IN (${sql.join(latencyRuleIds.map(id => sql`${id}`), sql`, `)})`)
+    .orderBy(desc(tcpingStats.recordedAt));
+  const latestByRule = new Map<number, any>();
+  for (const row of latestRows as any[]) {
+    const rowRuleId = Number(row.ruleId);
+    const ruleId = parentByChildRule.get(rowRuleId) || rowRuleId;
+    if (!latestByRule.has(ruleId)) latestByRule.set(ruleId, row);
+  }
+  return result.map((item) => {
+    const latest = latestByRule.get(item.ruleId);
+    return {
+      ...item,
+      latestLatencyMs: latest && latest.isTimeout ? null : latest?.latencyMs ?? null,
+      latestLatencyIsTimeout: !!latest?.isTimeout,
+      latestLatencyAt: latest?.recordedAt ?? null,
+    };
+  });
 }
 
 /** 按时间分桶聚合某条规则的流量序列 */

@@ -490,8 +490,8 @@ function ProfileContent() {
           </CardHeader>
           <CardContent className="space-y-4">
             {telegramStatus?.bound ? (
-              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_180px]">
-                <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
+              <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:flex-row sm:items-center">
+                <div className="grid min-w-0 flex-1 gap-3 sm:grid-cols-2">
                   <div className="min-w-0">
                     <p className="text-xs text-muted-foreground">Telegram</p>
                     <p className="mt-1 truncate font-medium">
@@ -505,7 +505,7 @@ function ProfileContent() {
                     </p>
                   </div>
                 </div>
-                <Button variant="destructive" className="w-full gap-2 self-end" onClick={() => setShowTelegramUnbindConfirm(true)} disabled={unbindTelegramMutation.isPending}>
+                <Button variant="destructive" size="sm" className="w-full gap-2 sm:w-auto sm:shrink-0" onClick={() => setShowTelegramUnbindConfirm(true)} disabled={unbindTelegramMutation.isPending}>
                   <Link2Off className="h-4 w-4" />
                   {unbindTelegramMutation.isPending ? "解绑中..." : "解绑 Telegram"}
                 </Button>

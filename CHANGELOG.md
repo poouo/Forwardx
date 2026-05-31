@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.3.79] - 2026-06-01
+
+### Added
+
+- Added the latest forwarding latency next to each rule's recent 24h traffic, including mobile cards and desktop table views.
+- Added editable traffic billing configuration dialogs with permission-mode control, allowing public balance-based billing items or permission-required items.
+
+### Fixed
+
+- Kept rule latency visible even when a rule has no recent 24h traffic by loading the latest TCPing result for the visible rule set.
+- Fixed select-menu scroll locking so opening dropdowns no longer causes page-width flicker.
+- Improved Profile, Settings, Traffic Billing, and User Management mobile layout alignment for APP/WebView screens.
+
+### Changed
+
+- Traffic billing permission assignment now only lists resources that explicitly require permission.
+- Bumped panel version to 2.3.79. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.33 so the APK includes the latest rule latency and mobile UI updates.
+
 ## [2.3.78] - 2026-06-01
 
 ### Fixed

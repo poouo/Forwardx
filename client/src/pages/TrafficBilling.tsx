@@ -2,13 +2,14 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
-import { Coins, Gauge, Plus, ReceiptText, Server, Trash2, Route } from "lucide-react";
+import { Coins, Gauge, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -73,19 +74,37 @@ function MobileInfoRow({
   );
 }
 
+type BillingResourceType = "host" | "tunnel";
+
+type BillingConfigForm = {
+  id?: number;
+  resourceType: BillingResourceType;
+  resourceId: string;
+  price: string;
+  multiplier: string;
+  enabled: boolean;
+  requiresPermission: boolean;
+};
+
+const defaultBillingConfigForm = (): BillingConfigForm => ({
+  resourceType: "host",
+  resourceId: "",
+  price: "",
+  multiplier: "1",
+  enabled: true,
+  requiresPermission: false,
+});
+
 export default function TrafficBilling() {
   const utils = trpc.useUtils();
   const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
   const { data: tunnels = [] } = trpc.tunnels.listAll.useQuery();
   const { data } = trpc.trafficBilling.configs.useQuery();
   const { data: records = [] } = trpc.trafficBilling.records.useQuery({ limit: 100 });
-  const [resourceType, setResourceType] = useState<"host" | "tunnel">("host");
-  const [resourceId, setResourceId] = useState("");
-  const [price, setPrice] = useState("");
-  const [multiplier, setMultiplier] = useState("1");
-  const [enabled, setEnabled] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
 
-  const resources = resourceType === "host" ? hosts : tunnels;
+  const resources = configForm.resourceType === "host" ? hosts : tunnels;
   const totalCharged = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.amountCents || 0), 0), [records]);
   const totalGb = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.billedGb || 0), 0), [records]);
 
@@ -100,9 +119,8 @@ export default function TrafficBilling() {
     onSuccess: () => {
       utils.trafficBilling.configs.invalidate();
       toast.success("计费配置已保存");
-      setResourceId("");
-      setPrice("");
-      setMultiplier("1");
+      setDialogOpen(false);
+      setConfigForm(defaultBillingConfigForm());
     },
     onError: (error) => toast.error(error.message || "保存失败"),
   });
@@ -114,14 +132,40 @@ export default function TrafficBilling() {
     onError: (error) => toast.error(error.message || "删除失败"),
   });
 
+  const openCreate = () => {
+    setConfigForm(defaultBillingConfigForm());
+    setDialogOpen(true);
+  };
+
+  const openEdit = (config: any) => {
+    setConfigForm({
+      id: Number(config.id),
+      resourceType: config.resourceType === "tunnel" ? "tunnel" : "host",
+      resourceId: String(config.resourceId || ""),
+      price: String((Number(config.pricePerGbCents || 0) / 100).toFixed(2)).replace(/\.00$/, ""),
+      multiplier: String((Number(config.multiplier || 100) / 100).toFixed(2)).replace(/\.00$/, ""),
+      enabled: config.enabled !== false,
+      requiresPermission: !!config.requiresPermission,
+    });
+    setDialogOpen(true);
+  };
+
   const handleSave = () => {
-    const id = Number(resourceId);
-    const pricePerGbCents = Math.round(Number(price || 0) * 100);
-    const multiplierValue = Math.round(Number(multiplier || 1) * 100);
+    const id = Number(configForm.resourceId);
+    const pricePerGbCents = Math.round(Number(configForm.price || 0) * 100);
+    const multiplierValue = Math.round(Number(configForm.multiplier || 1) * 100);
     if (!id) return toast.error("请选择资源");
     if (pricePerGbCents <= 0) return toast.error("请输入有效单价");
     if (multiplierValue < 1 || multiplierValue > 3000) return toast.error("倍率必须在 0.01 - 30 之间");
-    saveConfig.mutate({ resourceType, resourceId: id, enabled, pricePerGbCents, multiplier: multiplierValue });
+    saveConfig.mutate({
+      id: configForm.id,
+      resourceType: configForm.resourceType,
+      resourceId: id,
+      enabled: configForm.enabled,
+      requiresPermission: configForm.requiresPermission,
+      pricePerGbCents,
+      multiplier: multiplierValue,
+    });
   };
 
   return (
@@ -132,9 +176,14 @@ export default function TrafficBilling() {
             <h1 className="text-2xl font-semibold tracking-tight">流量计费管理</h1>
             <p className="text-sm text-muted-foreground">按资源设置流量单价。</p>
           </div>
-          <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
-            <span className="text-sm text-muted-foreground">功能开关</span>
-            <Switch checked={!!data?.enabled} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
+              <span className="text-sm text-muted-foreground">功能开关</span>
+              <Switch checked={!!data?.enabled} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+            </div>
+            <Button onClick={openCreate}>
+              <Plus className="mr-2 h-4 w-4" /> 新增计费项
+            </Button>
           </div>
         </div>
 
@@ -164,38 +213,8 @@ export default function TrafficBilling() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Plus className="h-5 w-5" /> 新增计费资源</CardTitle>
-            <CardDescription>按 GB 阶梯扣费。</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-[140px_1fr_140px_140px_90px_auto] md:items-end">
-            <div className="space-y-2">
-              <Label>类型</Label>
-              <Select value={resourceType} onValueChange={(value: "host" | "tunnel") => { setResourceType(value); setResourceId(""); }}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="host">主机</SelectItem><SelectItem value="tunnel">隧道</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>资源</Label>
-              <Select value={resourceId} onValueChange={setResourceId}>
-                <SelectTrigger><SelectValue placeholder="选择资源" /></SelectTrigger>
-                <SelectContent>
-                  {resources.map((item: any) => (
-                    <SelectItem key={item.id} value={String(item.id)}>{item.name} #{item.id}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2"><Label>单价 / GB</Label><Input type="number" min={0} step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} /></div>
-            <div className="space-y-2"><Label>倍率</Label><Input type="number" min={0.01} max={30} step="0.01" value={multiplier} onChange={(e) => setMultiplier(e.target.value)} /></div>
-            <div className="space-y-2"><Label>启用</Label><div className="flex h-10 items-center"><Switch checked={enabled} onCheckedChange={setEnabled} /></div></div>
-            <Button onClick={handleSave} disabled={saveConfig.isPending}>保存</Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
             <CardTitle>计费配置</CardTitle>
+            <CardDescription>按 GB 扣费，可设置是否需要额外授权。</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-3 md:hidden">
@@ -206,14 +225,24 @@ export default function TrafficBilling() {
                       {config.resourceType === "host" ? <Server className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Route className="h-4 w-4 shrink-0 text-muted-foreground" />}
                       <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
                     </div>
-                    <Button variant="ghost" size="icon" className="-mr-2 -mt-2 shrink-0 text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="-mr-2 -mt-2 flex shrink-0 items-center gap-1">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(config)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
                     <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
                     <MobileInfoRow label="单价">{money(config.pricePerGbCents)} / GB</MobileInfoRow>
                     <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
+                    <MobileInfoRow label="权限">
+                      <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
+                        {config.requiresPermission ? "需要授权" : "余额可用"}
+                      </Badge>
+                    </MobileInfoRow>
                     <MobileInfoRow label="状态"><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></MobileInfoRow>
                   </div>
                 </div>
@@ -224,7 +253,7 @@ export default function TrafficBilling() {
             </div>
             <div className="hidden overflow-x-auto md:block">
               <Table>
-              <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>权限</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
               <TableBody>
                 {(data?.configs || []).map((config: any) => (
                   <TableRow key={config.id}>
@@ -236,9 +265,17 @@ export default function TrafficBilling() {
                     </TableCell>
                     <TableCell>{money(config.pricePerGbCents)} / GB</TableCell>
                     <TableCell>{(Number(config.multiplier || 100) / 100).toFixed(2)}x</TableCell>
+                    <TableCell>
+                      <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
+                        {config.requiresPermission ? "需要授权" : "余额可用"}
+                      </Badge>
+                    </TableCell>
                     <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}><Trash2 className="h-4 w-4" /></Button>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" onClick={() => openEdit(config)}><Pencil className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -294,6 +331,64 @@ export default function TrafficBilling() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{configForm.id ? "编辑计费项" : "新增计费项"}</DialogTitle>
+            <DialogDescription>设置计费资源、单价倍率和使用权限。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>类型</Label>
+              <Select
+                value={configForm.resourceType}
+                onValueChange={(value: BillingResourceType) => setConfigForm((current) => ({ ...current, resourceType: value, resourceId: "" }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="host">主机</SelectItem><SelectItem value="tunnel">隧道</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>资源</Label>
+              <Select value={configForm.resourceId} onValueChange={(resourceId) => setConfigForm((current) => ({ ...current, resourceId }))}>
+                <SelectTrigger><SelectValue placeholder="选择资源" /></SelectTrigger>
+                <SelectContent>
+                  {resources.map((item: any) => (
+                    <SelectItem key={item.id} value={String(item.id)}>{item.name} #{item.id}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>单价 / GB</Label>
+              <Input type="number" min={0} step="0.01" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder="例如 0.5" />
+            </div>
+            <div className="space-y-2">
+              <Label>倍率</Label>
+              <Input type="number" min={0.01} max={30} step="0.01" value={configForm.multiplier} onChange={(e) => setConfigForm((current) => ({ ...current, multiplier: e.target.value }))} />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
+              <div className="min-w-0">
+                <Label className="text-sm">启用计费项</Label>
+                <p className="mt-1 text-xs text-muted-foreground">停用后该资源不再作为流量计费资源使用。</p>
+              </div>
+              <Switch className="shrink-0" checked={configForm.enabled} onCheckedChange={(enabled) => setConfigForm((current) => ({ ...current, enabled }))} />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
+              <div className="min-w-0">
+                <Label className="text-sm">需要额外计费权限</Label>
+                <p className="mt-1 text-xs text-muted-foreground">关闭时普通用户有余额即可使用；开启时需要在用户管理中单独授权。</p>
+              </div>
+              <Switch className="shrink-0" checked={configForm.requiresPermission} onCheckedChange={(requiresPermission) => setConfigForm((current) => ({ ...current, requiresPermission }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saveConfig.isPending}>取消</Button>
+            <Button onClick={handleSave} disabled={saveConfig.isPending}>{saveConfig.isPending ? "保存中..." : "保存"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }

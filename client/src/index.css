@@ -264,6 +264,12 @@
     min-height: 100vh;
   }
 
+  body[data-select-scroll-lock][data-scroll-locked] {
+    overflow-y: scroll !important;
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+  }
+
   html.capacitor-native,
   html.capacitor-native body,
   html.capacitor-native #root {

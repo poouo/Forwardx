@@ -15,6 +15,7 @@ export const trafficRulesRouter = router({
       z.object({
         hours: z.number().min(1).max(24 * 30).default(24),
         hostId: z.number().optional(),
+        ruleIds: z.array(z.number()).max(1000).optional(),
       })
     )
     .query(async ({ input, ctx }) => {
@@ -24,6 +25,7 @@ export const trafficRulesRouter = router({
         userId: isAdmin ? undefined : ctx.user.id,
         hostId: input.hostId,
         since,
+        ruleIds: input.ruleIds,
       });
     }),
   trafficSeries: protectedProcedure

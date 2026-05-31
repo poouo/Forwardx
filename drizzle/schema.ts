@@ -546,6 +546,7 @@ export const trafficBillingConfigs = table("traffic_billing_configs", {
   resourceType: varchar("resourceType", { length: 16 }).notNull(), // host | tunnel
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),
+  requiresPermission: boolean("requiresPermission").notNull().default(false),
   pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
   multiplier: int("multiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 30x = 3000
   createdAt: epoch("createdAt").notNull().default(nowDefault()),

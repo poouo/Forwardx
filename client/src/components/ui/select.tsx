@@ -3,7 +3,32 @@ import * as SelectPrimitive from "@radix-ui/react-select"
 import { Check, ChevronDown, ChevronUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-const Select = SelectPrimitive.Root
+const Select = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) => {
+  const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
+  const isOpen = open ?? internalOpen
+
+  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
+    setInternalOpen(nextOpen)
+    onOpenChange?.(nextOpen)
+  }, [onOpenChange])
+
+  React.useLayoutEffect(() => {
+    if (!isOpen || typeof document === "undefined") return
+    const count = Number(document.body.dataset.selectScrollLock || "0") + 1
+    document.body.dataset.selectScrollLock = String(count)
+    return () => {
+      const nextCount = Number(document.body.dataset.selectScrollLock || "1") - 1
+      if (nextCount > 0) {
+        document.body.dataset.selectScrollLock = String(nextCount)
+      } else {
+        delete document.body.dataset.selectScrollLock
+      }
+    }
+  }, [isOpen])
+
+  return <SelectPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
+}
+Select.displayName = SelectPrimitive.Root.displayName
 const SelectGroup = SelectPrimitive.Group
 const SelectValue = SelectPrimitive.Value
 

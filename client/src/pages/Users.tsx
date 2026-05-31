@@ -825,8 +825,8 @@ function UsersContent() {
   };
 
   const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
-  const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled).map((item: any) => Number(item.resourceId)));
-  const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled).map((item: any) => Number(item.resourceId)));
+  const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
+  const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const selectedAllowedHosts = (allHosts || []).filter((h: any) => allowedHostIds.includes(Number(h.id)));
   const availableAllowedHosts = (allHosts || []).filter((h: any) => !allowedHostIds.includes(Number(h.id)));
   const selectedAllowedTunnels = (allTunnels || []).filter((t: any) => allowedTunnelIds.includes(Number(t.id)));
@@ -1163,14 +1163,16 @@ function UsersContent() {
                             <UserAvatar user={u} className="h-8 w-8 shrink-0" />
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium leading-none">{u.username || "未命名"}</p>
-                              <Badge variant={u.role === "admin" ? "default" : "outline"} className="mt-1 h-5 w-fit px-1.5 text-[10px]">
-                                {u.role === "admin" ? "管理员" : "普通用户"}
-                              </Badge>
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit px-1.5 text-[10px]">
+                                  {u.role === "admin" ? "管理员" : "普通用户"}
+                                </Badge>
+                                {u.id === currentUser?.id && (
+                                  <span className="text-[10px] font-medium text-primary">当前登录</span>
+                                )}
+                              </div>
                               {u.displayRemark && (
                                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{u.displayRemark}</p>
-                              )}
-                              {u.id === currentUser?.id && (
-                                <p className="text-[10px] text-primary">当前登录</p>
                               )}
                               {u.accountEnabled === false && (
                                 <Badge variant="destructive" className="mt-1 h-5 w-fit px-1.5 text-[10px]">账户禁用</Badge>

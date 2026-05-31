@@ -648,8 +648,10 @@ function SettingsContent() {
                           </TableCell>
                           <TableCell>
                             {t.host ? (
-                              <div className="flex min-w-0 items-start gap-2 text-xs leading-5">
-                                <Server className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <div className="flex min-w-0 items-center gap-2 text-xs leading-5">
+                                <span className="flex h-9 w-4 shrink-0 items-center justify-center">
+                                  <Server className="h-3.5 w-3.5 text-muted-foreground" />
+                                </span>
                                 <div className="min-w-0">
                                   <span className="block max-w-[220px] truncate font-medium" title={t.host.name}>
                                     {t.host.name}
@@ -1951,7 +1953,7 @@ function SystemInfoSection() {
         </CardHeader>
         <CardContent>
           <div className="rounded-lg border border-border/40 bg-muted/15 p-4">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px] lg:items-end">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
               <div className="min-w-0 space-y-2">
                 <Label htmlFor="site-title">网站标题</Label>
                 <Input
@@ -1964,7 +1966,7 @@ function SystemInfoSection() {
                   用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
                 </p>
               </div>
-              <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
+              <Button className="w-full lg:w-auto lg:min-w-40" onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
                 保存网站标题
               </Button>
             </div>
@@ -2147,24 +2149,29 @@ function SystemInfoSection() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3 lg:grid-cols-2">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm font-medium">启用 DDNS</p>
                 <p className="text-xs text-muted-foreground">关闭后不更新域名。</p>
               </div>
-              <Switch checked={ddnsEnabled} onCheckedChange={setDdnsEnabled} />
+              <Switch className="shrink-0" checked={ddnsEnabled} onCheckedChange={setDdnsEnabled} />
             </div>
-            <div className="space-y-2 lg:col-span-2">
-              <Label>服务商</Label>
-              <Select value={ddnsProvider} onValueChange={(v) => setDdnsProvider(v as any)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="disabled">不使用</SelectItem>
-                  <SelectItem value="cloudflare">Cloudflare</SelectItem>
-                  <SelectItem value="webhook">自定义 Webhook</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">服务商</p>
+                <p className="text-xs text-muted-foreground">选择用于同步域名的 DDNS 服务。</p>
+              </div>
+              <div className="w-full sm:w-56">
+                <Select value={ddnsProvider} onValueChange={(v) => setDdnsProvider(v as any)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="disabled">不使用</SelectItem>
+                    <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                    <SelectItem value="webhook">自定义 Webhook</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
 
