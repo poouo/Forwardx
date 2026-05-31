@@ -293,7 +293,7 @@ function ProfileContent() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 sm:gap-6">
+    <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">个人资料</h1>

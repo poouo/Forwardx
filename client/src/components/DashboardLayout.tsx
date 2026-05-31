@@ -58,6 +58,7 @@ import {
   RefreshCw,
   ExternalLink,
   Image,
+  type LucideIcon,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -80,17 +81,18 @@ import { UserAvatar } from "@/components/UserAvatar";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
+type SidebarNavItem = { icon: LucideIcon; label: string; path: string };
 
-const mainMenuItems = [
+const mainMenuItems: SidebarNavItem[] = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
   { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
-const profileMenuItem = { icon: UserRound, label: "个人资料", path: "/profile" };
+const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile" };
 
-const adminMenuItems = [
+const adminMenuItems: SidebarNavItem[] = [
   { icon: CreditCard, label: "支付对接", path: "/payments" },
   { icon: WalletCards, label: "账单与兑换", path: "/billing" },
   { icon: Coins, label: "流量计费管理", path: "/traffic-billing" },
@@ -731,6 +733,7 @@ function DashboardLayoutContent({
     displayUpgradeJob?.status === "success" ||
     displayUpgradeJob?.status === "error"
   );
+  const managementMenuItems: SidebarNavItem[] = isAdmin ? [...adminMenuItems, profileMenuItem] : [profileMenuItem];
   const navigateFromSidebar = (path: string) => {
     setLocation(path);
     if (isMobile) {
@@ -738,6 +741,51 @@ function DashboardLayoutContent({
       setOpenMobile(false);
     }
   };
+  const navigateFromAccountMenu = (path: string) => {
+    setAccountMenuOpen(false);
+    window.requestAnimationFrame(() => navigateFromSidebar(path));
+  };
+  const openPanelUpdateFromAccountMenu = async () => {
+    if (!isAdmin) return;
+    setAccountMenuOpen(false);
+    if (
+      hasPanelUpdate ||
+      displayUpgradeJob?.status === "running" ||
+      displayUpgradeJob?.status === "success" ||
+      displayUpgradeJob?.status === "error"
+    ) {
+      setShowUpgradeDialog(true);
+      refetchUpgradeStatus();
+      return;
+    }
+    try {
+      const latestInfo = await utils.system.checkUpdate.fetch({ force: true });
+      await refetchUpgradeStatus();
+      if (latestInfo?.hasUpdate) {
+        setShowUpgradeDialog(true);
+      } else {
+        toast.success("当前已是最新版本");
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "检查更新失败");
+    }
+  };
+  const renderSidebarItems = (items: SidebarNavItem[]) => items.map((item) => {
+    const isActive = location === item.path;
+    return (
+      <SidebarMenuItem key={item.path}>
+        <SidebarMenuButton
+          isActive={isActive}
+          onClick={() => navigateFromSidebar(item.path)}
+          tooltip={item.label}
+          className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", mobileAuth.isNative && "text-[13px]")}
+        >
+          <item.icon className={`h-4 w-4 ${isActive ? "text-primary" : ""}`} />
+          <span>{item.label}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  });
 
   useEffect(() => {
     openMobileRef.current = openMobile;
@@ -836,75 +884,18 @@ function DashboardLayoutContent({
               主菜单
             </SidebarGroupLabel>
             <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
-              {[...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem].map((item) => {
-                const isActive = location === item.path;
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => navigateFromSidebar(item.path)}
-                      tooltip={item.label}
-                      className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", mobileAuth.isNative && "text-[13px]")}
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
+              {renderSidebarItems([...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem])}
             </SidebarMenu>
           </SidebarGroup>
 
-          {isAdmin && (
-            <SidebarGroup className={cn("mt-1 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-                管理
-              </SidebarGroupLabel>
-              <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
-                {[...adminMenuItems, profileMenuItem].map((item) => {
-                  const isActive = location === item.path;
-                  return (
-                    <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        onClick={() => navigateFromSidebar(item.path)}
-                        tooltip={item.label}
-                        className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", mobileAuth.isNative && "text-[13px]")}
-                      >
-                        <item.icon
-                          className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                        />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroup>
-          )}
-
-          {!isAdmin && (
-            <SidebarGroup className={cn("mt-1 pt-2 mobile-sidebar-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-                管理
-              </SidebarGroupLabel>
-              <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={location === profileMenuItem.path}
-                    onClick={() => navigateFromSidebar(profileMenuItem.path)}
-                    tooltip={profileMenuItem.label}
-                    className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", mobileAuth.isNative && "text-[13px]")}
-                  >
-                    <profileMenuItem.icon className={`h-4 w-4 ${location === profileMenuItem.path ? "text-primary" : ""}`} />
-                    <span>{profileMenuItem.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroup>
-          )}
+          <SidebarGroup className={cn("mt-1 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
+            <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+              管理
+            </SidebarGroupLabel>
+            <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
+              {renderSidebarItems(managementMenuItems)}
+            </SidebarMenu>
+          </SidebarGroup>
 
           {/* Theme toggle for collapsed sidebar */}
           {isCollapsed && (
@@ -1000,7 +991,7 @@ function DashboardLayoutContent({
               </div>
             </button>
           )}
-          <DropdownMenu open={accountMenuOpen} onOpenChange={setAccountMenuOpen}>
+          <DropdownMenu open={accountMenuOpen} onOpenChange={setAccountMenuOpen} modal={false}>
             <DropdownMenuTrigger asChild>
               <button
                 className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1027,7 +1018,7 @@ function DashboardLayoutContent({
               </div>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => navigateFromSidebar("/profile")}
+                onClick={() => navigateFromAccountMenu("/profile")}
                 className="cursor-pointer"
               >
                 <UserRound className="mr-2 h-4 w-4" />
@@ -1035,10 +1026,7 @@ function DashboardLayoutContent({
               </DropdownMenuItem>
               {!mobileAuth.isNative && isAdmin && (
                 <DropdownMenuItem
-                  onClick={() => {
-                    setShowUpgradeDialog(true);
-                    setAccountMenuOpen(false);
-                  }}
+                  onClick={openPanelUpdateFromAccountMenu}
                   className="cursor-pointer"
                 >
                   <Download className="mr-2 h-4 w-4" />

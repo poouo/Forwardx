@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.75] - 2026-05-31
+
+### Fixed
+
+- Unified the Profile sidebar item with the Management group styling so it aligns with User Management, System Settings, and other management entries.
+- Removed the Profile page's separate centered content width so its left edge and page rhythm match the rest of the admin pages.
+- Prevented the account menu Profile navigation from causing a scrollbar-related page flicker.
+- Changed the account menu software update action to show a simple "already latest" toast when the panel has no available update instead of opening the upgrade dialog.
+
+### Changed
+
+- Bumped panel version to 2.3.75. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.29 so the APK includes the latest sidebar/profile UI refinements.
+
 ## [2.3.74] - 2026-05-31
 
 ### Changed
