@@ -86,6 +86,7 @@ function StatCard({
   icon: Icon,
   tone,
   loading,
+  className,
 }: {
   title: string;
   value: string | number;
@@ -93,22 +94,23 @@ function StatCard({
   icon: React.ElementType;
   tone: string;
   loading?: boolean;
+  className?: string;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`}>
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
-      <CardContent className="relative p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 space-y-1.5">
+      <CardContent className="relative p-3 sm:p-5">
+        <div className="flex items-start justify-between gap-2 sm:gap-4">
+          <div className="min-w-0 flex-1 space-y-1.5">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
             {loading ? (
               <Skeleton className="h-7 w-14 max-w-full rounded-md sm:h-8 sm:w-20" />
             ) : (
-              <p className="truncate text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+              <p className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl">{value}</p>
             )}
-            {subtitle && <p className="text-xs text-muted-foreground/80">{subtitle}</p>}
+            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
           </div>
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm`}>
+          <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
             <Icon className="h-5 w-5 text-white" />
           </div>
         </div>
@@ -410,6 +412,7 @@ function DashboardContent() {
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-violet-500 to-violet-600"
           loading={isLoading}
+          className="col-span-2 sm:col-span-1"
         />
         <StatCard
           title="出站流量"
@@ -418,6 +421,7 @@ function DashboardContent() {
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={isLoading}
+          className="col-span-2 sm:col-span-1"
         />
       </div>
 
