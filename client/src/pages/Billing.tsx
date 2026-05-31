@@ -563,7 +563,7 @@ export default function Billing() {
                     <div key={tx.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="break-words text-sm font-medium">{tx.username || `#${tx.userId}`}</p>
+                          <p className="break-words text-sm font-medium">{tx.name || tx.username || `#${tx.userId}`}</p>
                           <p className="mt-1 text-xs text-muted-foreground">{dateText(tx.createdAt)}</p>
                         </div>
                         <div className={`shrink-0 text-right text-sm font-medium ${Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}`}>{money(tx.amountCents)}</div>
@@ -585,7 +585,7 @@ export default function Billing() {
                   <TableBody>
                     {transactions.map((tx: any) => (
                       <TableRow key={tx.id}>
-                        <TableCell>{tx.username || `#${tx.userId}`}</TableCell>
+                        <TableCell>{tx.name || tx.username || `#${tx.userId}`}</TableCell>
                         <TableCell><Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge></TableCell>
                         <TableCell className={Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}>{money(tx.amountCents)}</TableCell>
                         <TableCell>{money(tx.balanceAfterCents)}</TableCell>

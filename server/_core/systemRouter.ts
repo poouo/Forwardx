@@ -34,7 +34,7 @@ export const REPO_URL = "https://github.com/poouo/Forwardx";
 /** Telegram 双向消息机器人：用户可通过此反馈问题、接收补充信息 */
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
 const ANDROID_APK_DOWNLOAD_URL =
-  `${REPO_URL}/releases/download/v${ANDROID_APP_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
+  `${REPO_URL}/releases/download/v${APP_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";

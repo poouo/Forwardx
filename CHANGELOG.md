@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.77] - 2026-05-31
+
+### Added
+
+- Added an administrator account enable/disable control for users. Disabled accounts can no longer log in, active sessions are invalidated, and the user is shown a clear disabled-account message.
+- Added an administrator action to remove a user's bound 2FA after confirmation when the user loses access.
+- Added editable display names separate from administrator remarks, with account menus and user-facing dashboard labels preferring the display name.
+
+### Changed
+
+- Disabling an account now invalidates that user's active forwarding rules without changing the independent forwarding master switch; re-enabled users must manually start rules again.
+- Reworked User Management mobile actions into account status, edit, and more menus with shorter mobile status labels.
+- Changed traffic/resource permission editing to add selected hosts/tunnels on demand instead of rendering every resource by default.
+- Updated the Android APK direct download URL to point at the current panel release asset.
+- Bumped panel version to 2.3.77. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.31 so the APK includes the latest account and mobile UI updates.
+
 ## [2.3.76] - 2026-05-31
 
 ### Fixed

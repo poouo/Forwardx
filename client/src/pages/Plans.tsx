@@ -440,7 +440,7 @@ export default function Plans() {
                 <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{sub.username || `用户 #${sub.userId}`}</p>
+                      <p className="break-words text-sm font-medium">{sub.name || sub.username || `用户 #${sub.userId}`}</p>
                       <p className="mt-1 break-words text-xs text-muted-foreground">{sub.planName || `套餐 #${sub.planId}`}</p>
                     </div>
                     <Badge variant="outline" className="shrink-0">{sub.source === "payment" ? "购买" : "后台分配"}</Badge>
@@ -469,7 +469,7 @@ export default function Plans() {
               <TableBody>
                 {subscriptions.slice(0, 20).map((sub: any) => (
                   <TableRow key={sub.id}>
-                    <TableCell>{sub.username || `用户 #${sub.userId}`}</TableCell>
+                    <TableCell>{sub.name || sub.username || `用户 #${sub.userId}`}</TableCell>
                     <TableCell>{sub.planName || `套餐 #${sub.planId}`}</TableCell>
                     <TableCell>{sub.portRangeStart}-{sub.portRangeEnd}</TableCell>
                     <TableCell><Badge variant="outline">{sub.source === "payment" ? "购买" : "后台分配"}</Badge></TableCell>
@@ -648,7 +648,7 @@ export default function Plans() {
               <Select value={assignUserId} onValueChange={setAssignUserId}>
                 <SelectTrigger><SelectValue placeholder="选择用户" /></SelectTrigger>
                 <SelectContent>
-                  {users.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.username}</SelectItem>)}
+                  {users.map((user: any) => <SelectItem key={user.id} value={String(user.id)}>{user.name || user.username}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

@@ -11,6 +11,7 @@ import { useLocation } from "wouter";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Browser } from "@capacitor/browser";
+import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
 
@@ -67,6 +68,8 @@ type TwoFactorChallengeState = {
 };
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
+const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
+const DISPLAY_NAME_MAX_LENGTH = 24;
 
 function getWelcomeName(user: any) {
   return String(user?.name || user?.username || "用户").trim() || "用户";
@@ -105,6 +108,14 @@ export default function Login() {
   const telegramWidgetRef = useRef<HTMLDivElement | null>(null);
   const { resolvedTheme, setTheme } = useTheme();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const message = window.sessionStorage.getItem(LOGIN_NOTICE_TOAST_KEY);
+    if (!message) return;
+    window.sessionStorage.removeItem(LOGIN_NOTICE_TOAST_KEY);
+    toast.error(message);
+  }, []);
 
   useEffect(() => {
     const nextMode = new URLSearchParams(location.split("?")[1] || "").get("mode") === "register" ? "register" : "login";
@@ -185,6 +196,9 @@ export default function Login() {
         }
       } else {
         toast.error(msg || "登录失败");
+        if (msg === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) {
+          mobileAuth.clear();
+        }
         if (showCaptcha) refreshCaptcha();
       }
     },
@@ -200,6 +214,7 @@ export default function Login() {
       window.location.href = "/";
     },
     onError: (error) => {
+      if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       toast.error(error.message || "Telegram 登录失败");
     },
   });
@@ -211,6 +226,7 @@ export default function Login() {
       window.location.href = "/";
     },
     onError: (error) => {
+      if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       toast.error(error.message || "Telegram 登录失败");
     },
   });
@@ -226,6 +242,7 @@ export default function Login() {
     },
     onError: (error) => {
       setMobileTelegramLogin(null);
+      if (error.message === ACCOUNT_DISABLED_ERR_MSG) mobileAuth.clear();
       toast.error(error.message || "Telegram 登录失败");
     },
     onSettled: () => {
@@ -244,6 +261,7 @@ export default function Login() {
       window.location.href = "/";
     },
     onError: (error) => {
+      if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       toast.error(error.message || "双重验证失败");
     },
   });
@@ -481,6 +499,10 @@ export default function Login() {
     }
     if (!captchaAnswer.trim()) {
       toast.error("请输入验证码答案");
+      return;
+    }
+    if (name.trim().length > DISPLAY_NAME_MAX_LENGTH) {
+      toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
       return;
     }
     if (!captchaQuery.data?.captchaId) {
@@ -801,6 +823,7 @@ export default function Login() {
                   placeholder="显示名称"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  maxLength={DISPLAY_NAME_MAX_LENGTH}
                   disabled={isPending}
                 />
               </div>

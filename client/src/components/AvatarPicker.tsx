@@ -1,4 +1,4 @@
-import { ChangeEvent, useRef } from "react";
+import { ChangeEvent, ReactNode, useRef } from "react";
 import { Image, Shuffle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -13,6 +13,7 @@ type AvatarPickerProps = {
   randomDisabled?: boolean;
   randomLoading?: boolean;
   onRandom?: () => void;
+  actions?: ReactNode;
   className?: string;
   onError?: (message: string) => void;
 };
@@ -25,6 +26,7 @@ export function AvatarPicker({
   randomDisabled,
   randomLoading,
   onRandom,
+  actions,
   className,
   onError,
 }: AvatarPickerProps) {
@@ -63,6 +65,7 @@ export function AvatarPicker({
             <Shuffle className="h-4 w-4" />
             {randomLoading ? "随机中..." : "随机"}
           </Button>
+          {actions}
         </div>
       </div>
       <input

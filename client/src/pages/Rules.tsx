@@ -925,7 +925,7 @@ function RulesContent() {
 
   const getRuleOwnerName = (rule: any) => {
     const owner = userById.get(Number(rule.userId));
-    return owner?.displayRemark || owner?.name || owner?.username || `用户 #${rule.userId}`;
+    return owner?.name || owner?.username || `用户 #${rule.userId}`;
   };
 
   /** 获取主机的入口地址：优先用用户自定义的 entryIp，未填则回退 ip */
@@ -1309,7 +1309,8 @@ function RulesContent() {
                 <SelectItem value="all">所有用户</SelectItem>
                 {(users || []).map((item: any) => (
                   <SelectItem key={item.id} value={String(item.id)}>
-                    {item.displayRemark || item.name || item.username}
+                    {item.name || item.username}
+                    {item.displayRemark ? ` · ${item.displayRemark}` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>

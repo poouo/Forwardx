@@ -101,6 +101,7 @@ export const users = table("users", {
   avatarChangeDay: varchar("avatarChangeDay", { length: 16 }),
   avatarChangeCount: int("avatarChangeCount").notNull().default(0),
   role: varchar("role", { length: 32 }).notNull().default("user"), // 'user' | 'admin'
+  accountEnabled: boolean("accountEnabled").notNull().default(true),
   // ===== 权限控制 =====
   canAddRules: boolean("canAddRules").notNull().default(false), // 是否允许添加转发规则
   forwardAccessPauseReason: varchar("forwardAccessPauseReason", { length: 64 }),

@@ -1,5 +1,6 @@
 import * as db from "./db";
 import { ENV } from "./env";
+import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
 import { pushAgentRefresh } from "./agentEvents";
 import { pushTunnelEndpointRefresh } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
@@ -765,6 +766,10 @@ async function handleMobileLoginStart(message: TelegramMessage, code: string, us
     await sendMessage(message.chat.id, "当前 Telegram 未绑定任何 ForwardX 账户，请先使用账号密码登录后绑定 Telegram。", bindPromptKeyboard());
     return;
   }
+  if ((user as any).accountEnabled === false) {
+    await sendMessage(message.chat.id, ACCOUNT_DISABLED_ERR_MSG);
+    return;
+  }
   await sendMessage(
     message.chat.id,
     [
@@ -781,6 +786,10 @@ async function confirmMobileLogin(chatId: number | string, messageId: number, co
   const normalized = code.trim().toUpperCase();
   if (!hasMobileTelegramLoginChallenge(normalized)) {
     await editMessage(chatId, messageId, "APP 登录请求已过期，请回到 ForwardX APP 重新发起。");
+    return;
+  }
+  if ((user as any).accountEnabled === false) {
+    await editMessage(chatId, messageId, ACCOUNT_DISABLED_ERR_MSG);
     return;
   }
   await db.createTelegramLoginCode(user.id, normalized, new Date(Date.now() + LOGIN_CODE_TTL_MS));
@@ -982,6 +991,10 @@ async function handleMessage(message: TelegramMessage) {
   }
   if (command === "/start" || command === "/help") {
     if (identity.user) {
+      if ((identity.user as any).accountEnabled === false) {
+        await sendMessage(message.chat.id, ACCOUNT_DISABLED_ERR_MSG);
+        return;
+      }
       await sendMainMenu(message.chat.id, identity.user);
     } else {
       await sendBindPrompt(message.chat.id);
@@ -990,6 +1003,10 @@ async function handleMessage(message: TelegramMessage) {
   }
   if (command === "/bind") {
     if (identity.user) {
+      if ((identity.user as any).accountEnabled === false) {
+        await sendMessage(message.chat.id, ACCOUNT_DISABLED_ERR_MSG);
+        return;
+      }
       await sendMainMenu(message.chat.id, identity.user);
       return;
     }
@@ -1006,6 +1023,10 @@ async function handleMessage(message: TelegramMessage) {
       return;
     }
     await sendBindPrompt(message.chat.id);
+    return;
+  }
+  if ((user as any).accountEnabled === false) {
+    await sendMessage(message.chat.id, ACCOUNT_DISABLED_ERR_MSG);
     return;
   }
 
@@ -1045,6 +1066,10 @@ async function handleCallback(query: TelegramCallbackQuery) {
   const data = query.data || "";
   if (data === "fx:bind:start") {
     if (user) {
+      if ((user as any).accountEnabled === false) {
+        await editMessage(chatId, messageId, ACCOUNT_DISABLED_ERR_MSG);
+        return;
+      }
       await editMainMenu(chatId, messageId, user);
     } else {
       await editBindCodePrompt(chatId, messageId, identity.telegramId);
@@ -1058,6 +1083,10 @@ async function handleCallback(query: TelegramCallbackQuery) {
   }
   if (!user) {
     await editMessage(chatId, messageId, "当前 Telegram 尚未绑定 ForwardX 账户。请先完成绑定。", bindPromptKeyboard());
+    return;
+  }
+  if ((user as any).accountEnabled === false) {
+    await editMessage(chatId, messageId, ACCOUNT_DISABLED_ERR_MSG);
     return;
   }
 

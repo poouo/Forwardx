@@ -8,6 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -41,7 +48,7 @@ import {
   ArrowDownToLine,
   ArrowRightLeft,
   ArrowUpFromLine,
-  KeyRound,
+  ShieldOff,
   Package,
   Plus,
   Shield,
@@ -58,6 +65,8 @@ import {
   WalletCards,
   Send,
   Mail,
+  MoreHorizontal,
+  Pencil,
 } from "lucide-react";
 import { useState, useEffect, useMemo, type ElementType } from "react";
 import { toast } from "sonner";
@@ -93,7 +102,7 @@ function formatSpeed(bytesPerSecond: number | string | null | undefined): string
 }
 
 function userLabel(user: any) {
-  return user?.username || user?.name || `#${user?.id}`;
+  return user?.name || user?.username || `#${user?.id}`;
 }
 
 function formatCurrencyCny(cents: number | string | null | undefined): string {
@@ -208,6 +217,7 @@ function UsersContent() {
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [resetUserName, setResetUserName] = useState("");
   const [resetUsernameInput, setResetUsernameInput] = useState("");
+  const [resetDisplayNameInput, setResetDisplayNameInput] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetAvatarInput, setResetAvatarInput] = useState("");
   const [showResetTraffic, setShowResetTraffic] = useState(false);
@@ -223,6 +233,12 @@ function UsersContent() {
   const [emailTo, setEmailTo] = useState("");
   const [emailSubject, setEmailSubject] = useState("");
   const [emailContent, setEmailContent] = useState("");
+  const [deleteUserId, setDeleteUserId] = useState<number | null>(null);
+  const [deleteUserName, setDeleteUserName] = useState("");
+  const [showDeleteUser, setShowDeleteUser] = useState(false);
+  const [removeTwoFactorUserId, setRemoveTwoFactorUserId] = useState<number | null>(null);
+  const [removeTwoFactorUserName, setRemoveTwoFactorUserName] = useState("");
+  const [showRemoveTwoFactor, setShowRemoveTwoFactor] = useState(false);
 
   // Traffic settings dialog
   const [showTrafficSettings, setShowTrafficSettings] = useState(false);
@@ -264,6 +280,10 @@ function UsersContent() {
   const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
   const [trafficBillingHostIds, setTrafficBillingHostIds] = useState<number[]>([]);
   const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
+  const [addAllowedHostId, setAddAllowedHostId] = useState("");
+  const [addAllowedTunnelId, setAddAllowedTunnelId] = useState("");
+  const [addBillingHostId, setAddBillingHostId] = useState("");
+  const [addBillingTunnelId, setAddBillingTunnelId] = useState("");
   const { data: allHosts } = trpc.hosts.listAll.useQuery();
   const { data: allTunnels } = trpc.tunnels.listAll.useQuery();
   const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery();
@@ -374,8 +394,22 @@ function UsersContent() {
     onSuccess: () => {
       utils.users.list.invalidate();
       toast.success("用户已删除");
+      setShowDeleteUser(false);
+      setDeleteUserId(null);
+      setDeleteUserName("");
     },
     onError: (err) => toast.error(err.message || "删除用户失败"),
+  });
+
+  const removeTwoFactorMutation = trpc.users.removeTwoFactor.useMutation({
+    onSuccess: (data) => {
+      utils.users.list.invalidate();
+      toast.success(data.removed ? "双因素认证已移除" : "该用户未绑定双因素认证");
+      setShowRemoveTwoFactor(false);
+      setRemoveTwoFactorUserId(null);
+      setRemoveTwoFactorUserName("");
+    },
+    onError: (err) => toast.error(err.message || "移除双因素认证失败"),
   });
 
   const sendEmailMutation = trpc.users.sendEmail.useMutation({
@@ -415,6 +449,15 @@ function UsersContent() {
       toast.success("用户转发权限已更新");
     },
     onError: (err) => toast.error(err.message || "更新转发权限失败"),
+  });
+
+  const updateAccountEnabledMutation = trpc.users.setAccountEnabled.useMutation({
+    onSuccess: (_, variables) => {
+      utils.users.list.invalidate();
+      utils.rules.list.invalidate();
+      toast.success(variables.enabled ? "账户已启用" : "账户已禁用，已有规则已失效");
+    },
+    onError: (err) => toast.error(err.message || "更新账户状态失败"),
   });
 
   const adminRechargeMutation = trpc.billing.adminRecharge.useMutation({
@@ -488,6 +531,10 @@ function UsersContent() {
       toast.error("请输入用户名");
       return;
     }
+    if (newUserName.trim().length > 24) {
+      toast.error("显示名称最多 24 个字符");
+      return;
+    }
     if (newUserPassword.length < 6) {
       toast.error("密码至少6个字符");
       return;
@@ -508,6 +555,10 @@ function UsersContent() {
       toast.error("请输入账号");
       return;
     }
+    if (resetDisplayNameInput.trim().length > 24) {
+      toast.error("显示名称最多 24 个字符");
+      return;
+    }
     if (password && password.length < 6) {
       toast.error("密码至少6个字符");
       return;
@@ -515,6 +566,7 @@ function UsersContent() {
     resetPasswordMutation.mutate({
       userId: resetUserId,
       username,
+      name: resetDisplayNameInput.trim() || null,
       avatar: resetAvatarInput || migrateLegacyAvatarValue("", `user-${resetUserId}`),
       newPassword: password || undefined,
     });
@@ -523,6 +575,52 @@ function UsersContent() {
   const handleResetTraffic = () => {
     if (!resetTrafficUserId) return;
     resetTrafficMutation.mutate({ userId: resetTrafficUserId });
+  };
+
+  const openRechargeDialog = (u: any) => {
+    setRechargeUserId(u.id);
+    setRechargeUserName(userLabel(u));
+    setRechargeAmount("");
+    setShowRecharge(true);
+  };
+
+  const openResetTrafficDialog = (u: any) => {
+    setResetTrafficUserId(u.id);
+    setResetTrafficUserName(userLabel(u));
+    setShowResetTraffic(true);
+  };
+
+  const openAccountDialog = (u: any) => {
+    setResetUserId(u.id);
+    setResetUserName(userLabel(u));
+    setResetUsernameInput(u.username || "");
+    setResetDisplayNameInput(u.name || u.username || "");
+    setResetNewPassword("");
+    setResetAvatarInput(migrateLegacyAvatarValue(u.avatar, `user-${u.id}`));
+    setShowResetPassword(true);
+  };
+
+  const confirmDeleteUser = (u: any) => {
+    if (u.id === currentUser?.id) return;
+    setDeleteUserId(u.id);
+    setDeleteUserName(userLabel(u));
+    setShowDeleteUser(true);
+  };
+
+  const openRemoveTwoFactorDialog = (u: any) => {
+    setRemoveTwoFactorUserId(u.id);
+    setRemoveTwoFactorUserName(userLabel(u));
+    setShowRemoveTwoFactor(true);
+  };
+
+  const handleDeleteUser = () => {
+    if (!deleteUserId) return;
+    deleteMutation.mutate({ userId: deleteUserId });
+  };
+
+  const handleRemoveTwoFactor = () => {
+    if (!removeTwoFactorUserId) return;
+    removeTwoFactorMutation.mutate({ userId: removeTwoFactorUserId });
   };
 
   const openSendEmail = (u: any) => {
@@ -595,6 +693,10 @@ function UsersContent() {
     setAllowedTunnelIds([]);
     setTrafficBillingHostIds([]);
     setTrafficBillingTunnelIds([]);
+    setAddAllowedHostId("");
+    setAddAllowedTunnelId("");
+    setAddBillingHostId("");
+    setAddBillingTunnelId("");
     setShowTrafficSettings(true);
   };
 
@@ -642,10 +744,32 @@ function UsersContent() {
     });
   };
 
-  const toggleHostPermission = (hostId: number) => {
-    setAllowedHostIds(prev =>
-      prev.includes(hostId) ? prev.filter(id => id !== hostId) : [...prev, hostId]
-    );
+  const addHostPermission = (value: string) => {
+    const hostId = Number(value);
+    if (!Number.isFinite(hostId)) return;
+    setAllowedHostIds(prev => (prev.includes(hostId) ? prev : [...prev, hostId]));
+    setAddAllowedHostId("");
+  };
+
+  const addTunnelPermission = (value: string) => {
+    const tunnelId = Number(value);
+    if (!Number.isFinite(tunnelId)) return;
+    setAllowedTunnelIds(prev => (prev.includes(tunnelId) ? prev : [...prev, tunnelId]));
+    setAddAllowedTunnelId("");
+  };
+
+  const addTrafficBillingHost = (value: string) => {
+    const hostId = Number(value);
+    if (!Number.isFinite(hostId)) return;
+    setTrafficBillingHostIds(prev => (prev.includes(hostId) ? prev : [...prev, hostId]));
+    setAddBillingHostId("");
+  };
+
+  const addTrafficBillingTunnel = (value: string) => {
+    const tunnelId = Number(value);
+    if (!Number.isFinite(tunnelId)) return;
+    setTrafficBillingTunnelIds(prev => (prev.includes(tunnelId) ? prev : [...prev, tunnelId]));
+    setAddBillingTunnelId("");
   };
 
   const handleRecharge = () => {
@@ -708,27 +832,95 @@ function UsersContent() {
     extendSubscriptionMutation.mutate({ id: extendSubscriptionId, days });
   };
 
-  const toggleTunnelPermission = (tunnelId: number) => {
-    setAllowedTunnelIds(prev =>
-      prev.includes(tunnelId) ? prev.filter(id => id !== tunnelId) : [...prev, tunnelId]
-    );
-  };
-
-  const toggleTrafficBillingHost = (hostId: number) => {
-    setTrafficBillingHostIds(prev =>
-      prev.includes(hostId) ? prev.filter(id => id !== hostId) : [...prev, hostId]
-    );
-  };
-
-  const toggleTrafficBillingTunnel = (tunnelId: number) => {
-    setTrafficBillingTunnelIds(prev =>
-      prev.includes(tunnelId) ? prev.filter(id => id !== tunnelId) : [...prev, tunnelId]
-    );
-  };
-
   const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
   const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled).map((item: any) => Number(item.resourceId)));
   const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled).map((item: any) => Number(item.resourceId)));
+  const selectedAllowedHosts = (allHosts || []).filter((h: any) => allowedHostIds.includes(Number(h.id)));
+  const availableAllowedHosts = (allHosts || []).filter((h: any) => !allowedHostIds.includes(Number(h.id)));
+  const selectedAllowedTunnels = (allTunnels || []).filter((t: any) => allowedTunnelIds.includes(Number(t.id)));
+  const availableAllowedTunnels = (allTunnels || []).filter((t: any) => !allowedTunnelIds.includes(Number(t.id)));
+  const billableHosts = (allHosts || []).filter((h: any) => billableHostIds.has(Number(h.id)));
+  const availableBillingHosts = billableHosts.filter((h: any) => !trafficBillingHostIds.includes(Number(h.id)));
+  const selectedBillingHosts = billableHosts.filter((h: any) => trafficBillingHostIds.includes(Number(h.id)));
+  const billableTunnels = (allTunnels || []).filter((t: any) => billableTunnelIds.has(Number(t.id)));
+  const availableBillingTunnels = billableTunnels.filter((t: any) => !trafficBillingTunnelIds.includes(Number(t.id)));
+  const selectedBillingTunnels = billableTunnels.filter((t: any) => trafficBillingTunnelIds.includes(Number(t.id)));
+
+  const renderAccountEnabledControl = (u: any, compact = false) => {
+    const enabled = u.accountEnabled !== false;
+    const isSelf = u.id === currentUser?.id;
+    return (
+      <div
+        className={
+          compact
+            ? "flex min-w-0 items-center justify-between gap-2 rounded-md border border-border/50 px-2 py-1.5"
+            : "flex min-w-[132px] items-center justify-end gap-2"
+        }
+      >
+        {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">账户</span>}
+        <Switch
+          checked={enabled}
+          disabled={isSelf || updateAccountEnabledMutation.isPending}
+          onCheckedChange={(checked) => updateAccountEnabledMutation.mutate({ userId: u.id, enabled: checked })}
+          className="shrink-0"
+        />
+        <Badge
+          variant="outline"
+          className={
+            enabled
+              ? "h-5 w-fit shrink-0 whitespace-nowrap border-chart-2/30 px-2 py-0 text-[10px] text-chart-2"
+              : "h-5 w-fit shrink-0 whitespace-nowrap border-destructive/30 px-2 py-0 text-[10px] text-destructive"
+          }
+        >
+          {enabled ? (compact ? "启用" : "账户启用") : compact ? "禁用" : "账户禁用"}
+        </Badge>
+      </div>
+    );
+  };
+
+  const renderUserMoreMenu = (u: any, triggerClassName = "h-8 px-2") => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" className={triggerClassName} title="更多操作">
+          <MoreHorizontal className="h-4 w-4" />
+          <span className="text-xs">更多</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuItem onSelect={() => openRechargeDialog(u)}>
+          <WalletCards className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>余额充值</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openTrafficSettings(u)}>
+          <Settings className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>流量与权限</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!u.emailVerified || !u.email} onSelect={() => openSendEmail(u)}>
+          <Mail className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>发送邮件</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => openResetTrafficDialog(u)}>
+          <RotateCcw className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>重置流量</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!u.twoFactorEnabled} onSelect={() => openRemoveTwoFactorDialog(u)}>
+          <ShieldOff className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>移除 2FA</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={u.id === currentUser?.id}
+          onSelect={() => confirmDeleteUser(u)}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="mr-2 h-4 w-4" />
+          <span>删除用户</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -839,6 +1031,9 @@ function UsersContent() {
                       {u.id === currentUser?.id && (
                         <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-primary">当前</Badge>
                       )}
+                      {u.accountEnabled === false && (
+                        <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">账户禁用</Badge>
+                      )}
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-foreground">
                       #{u.id}{u.displayRemark ? ` · ${u.displayRemark}` : ""}
@@ -927,50 +1122,13 @@ function UsersContent() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 pt-1">
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => {
-                      setRechargeUserId(u.id);
-                      setRechargeUserName(userLabel(u));
-                      setRechargeAmount("");
-                      setShowRecharge(true);
-                    }}>
-                      <WalletCards className="mr-1 h-3.5 w-3.5" />
-                      充值
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 pt-1">
+                    {renderAccountEnabledControl(u, true)}
+                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => openAccountDialog(u)}>
+                      <Pencil className="mr-1 h-3.5 w-3.5" />
+                      编辑
                     </Button>
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => openTrafficSettings(u)}>
-                      <Settings className="mr-1 h-3.5 w-3.5" />
-                      权限
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" disabled={!u.emailVerified || !u.email} onClick={() => openSendEmail(u)}>
-                      <Mail className="mr-1 h-3.5 w-3.5" />
-                      邮件
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => {
-                      setResetTrafficUserId(u.id);
-                      setResetTrafficUserName(userLabel(u));
-                      setShowResetTraffic(true);
-                    }}>
-                      <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                      重置
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => {
-                      setResetUserId(u.id);
-                      setResetUserName(userLabel(u));
-                      setResetUsernameInput(u.username || "");
-                      setResetNewPassword("");
-                      setResetAvatarInput(migrateLegacyAvatarValue(u.avatar, `user-${u.id}`));
-                      setShowResetPassword(true);
-                    }}>
-                      <KeyRound className="mr-1 h-3.5 w-3.5" />
-                      账户
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs text-destructive hover:text-destructive" disabled={u.id === currentUser?.id} onClick={() => {
-                      if (u.id === currentUser?.id) return;
-                      if (confirm(`确定要删除用户 "${userLabel(u)}" 吗？`)) deleteMutation.mutate({ userId: u.id });
-                    }}>
-                      <Trash2 className="mr-1 h-3.5 w-3.5" />
-                      删除
-                    </Button>
+                    {renderUserMoreMenu(u, "h-9 justify-center gap-1 rounded-md border border-border/50 px-2 text-xs")}
                   </div>
                 </div>
               </div>
@@ -1009,9 +1167,9 @@ function UsersContent() {
                     <TableHead className="hidden w-[140px] whitespace-nowrap xl:table-cell">Telegram</TableHead>
                     <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
-                    <TableHead className="hidden w-[160px] whitespace-nowrap lg:table-cell">权限</TableHead>
+                    <TableHead className="hidden w-[160px] whitespace-nowrap lg:table-cell">转发总开关</TableHead>
                     <TableHead className="hidden w-[150px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
-                    <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
+                    <TableHead className="w-[330px] whitespace-nowrap text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1037,6 +1195,9 @@ function UsersContent() {
                               )}
                               {u.id === currentUser?.id && (
                                 <p className="text-[10px] text-primary">当前登录</p>
+                              )}
+                              {u.accountEnabled === false && (
+                                <Badge variant="destructive" className="mt-1 h-5 w-fit px-1.5 text-[10px]">账户禁用</Badge>
                               )}
                               {u.role !== "admin" && (
                                 <div className="mt-2 flex w-fit items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-2 py-1 lg:hidden">
@@ -1180,82 +1341,19 @@ function UsersContent() {
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-2">
+                            {renderAccountEnabledControl(u)}
                             <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="余额充值"
-                              onClick={() => {
-                                setRechargeUserId(u.id);
-                                setRechargeUserName(userLabel(u));
-                                setRechargeAmount("");
-                                setShowRecharge(true);
-                              }}
-                            >
-                              <WalletCards className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="流量与权限设置"
-                              onClick={() => openTrafficSettings(u)}
-                            >
-                              <Settings className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title={u.emailVerified ? "发送邮件" : "邮箱未验证"}
-                              disabled={!u.emailVerified || !u.email}
-                              onClick={() => openSendEmail(u)}
-                            >
-                              <Mail className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="重置流量"
-                              onClick={() => {
-                                setResetTrafficUserId(u.id);
-                                setResetTrafficUserName(userLabel(u));
-                                setShowResetTraffic(true);
-                              }}
-                            >
-                              <RotateCcw className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-1 px-2 text-xs"
                               title="账户信息"
-                              onClick={() => {
-                                setResetUserId(u.id);
-                                setResetUserName(userLabel(u));
-                                setResetUsernameInput(u.username || "");
-                                setResetNewPassword("");
-                                setResetAvatarInput(migrateLegacyAvatarValue(u.avatar, `user-${u.id}`));
-                                setShowResetPassword(true);
-                              }}
+                              onClick={() => openAccountDialog(u)}
                             >
-                              <KeyRound className="h-3.5 w-3.5" />
+                              <Pencil className="h-3.5 w-3.5" />
+                              编辑
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive"
-                              disabled={u.id === currentUser?.id}
-                              onClick={() => {
-                                if (u.id === currentUser?.id) return;
-                                if (confirm(`确定要删除用户 "${userLabel(u)}" 吗？`))
-                                  deleteMutation.mutate({ userId: u.id });
-                              }}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            {renderUserMoreMenu(u, "h-8 gap-1 rounded-md border border-border/50 px-2 text-xs")}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -1428,6 +1526,7 @@ function UsersContent() {
                 value={newUserName}
                 onChange={(e) => setNewUserName(e.target.value)}
                 placeholder="请输入显示名称"
+                maxLength={24}
               />
             </div>
             <div className="space-y-2">
@@ -1468,6 +1567,16 @@ function UsersContent() {
                 onChange={(e) => setResetUsernameInput(e.target.value)}
                 placeholder="请输入账号"
                 autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="reset-display-name">显示名称</Label>
+              <Input
+                id="reset-display-name"
+                value={resetDisplayNameInput}
+                onChange={(e) => setResetDisplayNameInput(e.target.value)}
+                placeholder="请输入显示名称"
+                maxLength={24}
               />
             </div>
             <div className="space-y-2">
@@ -1519,6 +1628,52 @@ function UsersContent() {
             </Button>
             <Button onClick={handleResetTraffic} disabled={resetTrafficMutation.isPending}>
               {resetTrafficMutation.isPending ? "重置中..." : "确认重置"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showRemoveTwoFactor} onOpenChange={setShowRemoveTwoFactor}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>移除双因素认证</DialogTitle>
+          <DialogDescription>
+            确认移除 "{removeTwoFactorUserName}" 已绑定的 2FA？移除后该用户下次登录不再需要双因素验证码。
+          </DialogDescription>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowRemoveTwoFactor(false)}
+              disabled={removeTwoFactorMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRemoveTwoFactor}
+              disabled={removeTwoFactorMutation.isPending}
+            >
+              {removeTwoFactorMutation.isPending ? "移除中..." : "确认移除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showDeleteUser} onOpenChange={setShowDeleteUser}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>删除用户</DialogTitle>
+          <DialogDescription>
+            确认删除用户 "{deleteUserName}"？该操作会移除该用户的权限配置，且不可撤销。
+          </DialogDescription>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteUser(false)}
+              disabled={deleteMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteUser} disabled={deleteMutation.isPending}>
+              {deleteMutation.isPending ? "删除中..." : "确认删除"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1737,26 +1892,26 @@ function UsersContent() {
               <div className="space-y-2">
                 <Label className="text-sm font-medium">允许使用的转发方式</Label>
                 <p className="text-xs text-muted-foreground">全部关闭则禁止转发。</p>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
-                    <span className="text-xs font-medium">iptables</span>
-                    <Switch checked={allowIptables} onCheckedChange={setAllowIptables} />
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
+                  <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-xs font-medium">iptables</span>
+                    <Switch className="shrink-0" checked={allowIptables} onCheckedChange={setAllowIptables} />
                   </div>
-                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
-                    <span className="text-xs font-medium">nftables</span>
-                    <Switch checked={allowNftables} onCheckedChange={setAllowNftables} />
+                  <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-xs font-medium">nftables</span>
+                    <Switch className="shrink-0" checked={allowNftables} onCheckedChange={setAllowNftables} />
                   </div>
-                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
-                    <span className="text-xs font-medium">realm</span>
-                    <Switch checked={allowRealm} onCheckedChange={setAllowRealm} />
+                  <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-xs font-medium">realm</span>
+                    <Switch className="shrink-0" checked={allowRealm} onCheckedChange={setAllowRealm} />
                   </div>
-                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
-                    <span className="text-xs font-medium">socat</span>
-                    <Switch checked={allowSocat} onCheckedChange={setAllowSocat} />
+                  <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-xs font-medium">socat</span>
+                    <Switch className="shrink-0" checked={allowSocat} onCheckedChange={setAllowSocat} />
                   </div>
-                  <div className="flex items-center justify-between rounded-lg border border-border/40 p-2">
-                    <span className="text-xs font-medium">gost</span>
-                    <Switch checked={allowGost} onCheckedChange={setAllowGost} />
+                  <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-xs font-medium">gost</span>
+                    <Switch className="shrink-0" checked={allowGost} onCheckedChange={setAllowGost} />
                   </div>
                 </div>
               </div>
@@ -1903,45 +2058,77 @@ function UsersContent() {
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                分配普通资源和计费资源。
+                默认不展开全部资源，按需选择要授权给该用户的主机、隧道和计费资源。
               </p>
 
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <Label className="text-sm font-medium">端口转发主机</Label>
                   <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
                 </div>
-                {allHosts && allHosts.length > 0 ? (
+                <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权的主机" : "暂无可添加主机"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableAllowedHosts.map((h: any) => (
+                      <SelectItem key={h.id} value={String(h.id)}>
+                        {h.name} {h.ip ? `· ${h.ip}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedAllowedHosts.length > 0 ? (
                   <div className="space-y-2">
-                    {allHosts.map((h: any) => (
-                      <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                    {selectedAllowedHosts.map((h: any) => (
+                      <div key={h.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-sm font-medium truncate">{h.name}</span>
                           <span className="text-[10px] text-muted-foreground font-mono truncate">{h.ip}</span>
                         </div>
-                        <Switch
-                          checked={allowedHostIds.includes(h.id)}
-                          onCheckedChange={() => toggleHostPermission(h.id)}
-                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(h.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">暂无可用主机</p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权主机，可从上方选择添加。
+                  </p>
                 )}
               </div>
 
               <Separator />
 
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <Label className="text-sm font-medium">隧道转发</Label>
                   <Badge variant="outline" className="text-[10px]">{allowedTunnelIds.length} 条</Badge>
                 </div>
-                {allTunnels && allTunnels.length > 0 ? (
+                <Select value={addAllowedTunnelId} onValueChange={addTunnelPermission} disabled={!availableAllowedTunnels.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableAllowedTunnels.length ? "选择要授权的隧道" : "暂无可添加隧道"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableAllowedTunnels.map((t: any) => (
+                      <SelectItem key={t.id} value={String(t.id)}>
+                        {t.name} · {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedAllowedTunnels.length > 0 ? (
                   <div className="space-y-2">
-                    {allTunnels.map((t: any) => (
-                      <div key={t.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                    {selectedAllowedTunnels.map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium truncate">{t.name}</span>
@@ -1951,54 +2138,94 @@ function UsersContent() {
                             {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
                           </p>
                         </div>
-                        <Switch
-                          checked={allowedTunnelIds.includes(t.id)}
-                          onCheckedChange={() => toggleTunnelPermission(t.id)}
-                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setAllowedTunnelIds(prev => prev.filter(id => id !== Number(t.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">暂无可用隧道</p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权隧道，可从上方选择添加。
+                  </p>
                 )}
               </div>
 
               <Separator />
 
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <Label className="text-sm font-medium">流量计费主机</Label>
                   <Badge variant="outline" className="text-[10px]">{trafficBillingHostIds.length} 台</Badge>
                 </div>
-                {allHosts?.filter((h: any) => billableHostIds.has(Number(h.id))).length ? (
+                <Select value={addBillingHostId} onValueChange={addTrafficBillingHost} disabled={!availableBillingHosts.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableBillingHosts.length ? "选择要授权计费的主机" : "暂无可添加计费主机"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableBillingHosts.map((h: any) => (
+                      <SelectItem key={h.id} value={String(h.id)}>
+                        {h.name} {h.ip ? `· ${h.ip}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedBillingHosts.length > 0 ? (
                   <div className="space-y-2">
-                    {allHosts.filter((h: any) => billableHostIds.has(Number(h.id))).map((h: any) => (
-                      <div key={h.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                    {selectedBillingHosts.map((h: any) => (
+                      <div key={h.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex min-w-0 items-center gap-2">
                           <span className="truncate text-sm font-medium">{h.name}</span>
                           <span className="truncate font-mono text-[10px] text-muted-foreground">{h.ip}</span>
                         </div>
-                        <Switch
-                          checked={trafficBillingHostIds.includes(h.id)}
-                          onCheckedChange={() => toggleTrafficBillingHost(h.id)}
-                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setTrafficBillingHostIds(prev => prev.filter(id => id !== Number(h.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">暂无已启用计费的主机</p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权计费主机，可从上方选择添加。
+                  </p>
                 )}
               </div>
 
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <Label className="text-sm font-medium">流量计费隧道</Label>
                   <Badge variant="outline" className="text-[10px]">{trafficBillingTunnelIds.length} 条</Badge>
                 </div>
-                {allTunnels?.filter((t: any) => billableTunnelIds.has(Number(t.id))).length ? (
+                <Select value={addBillingTunnelId} onValueChange={addTrafficBillingTunnel} disabled={!availableBillingTunnels.length}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder={availableBillingTunnels.length ? "选择要授权计费的隧道" : "暂无可添加计费隧道"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableBillingTunnels.map((t: any) => (
+                      <SelectItem key={t.id} value={String(t.id)}>
+                        {t.name} · {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedBillingTunnels.length > 0 ? (
                   <div className="space-y-2">
-                    {allTunnels.filter((t: any) => billableTunnelIds.has(Number(t.id))).map((t: any) => (
-                      <div key={t.id} className="flex items-center justify-between rounded-lg border border-border/40 p-2.5">
+                    {selectedBillingTunnels.map((t: any) => (
+                      <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-medium">{t.name}</span>
@@ -2008,15 +2235,23 @@ function UsersContent() {
                             {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
                           </p>
                         </div>
-                        <Switch
-                          checked={trafficBillingTunnelIds.includes(t.id)}
-                          onCheckedChange={() => toggleTrafficBillingTunnel(t.id)}
-                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="移除授权"
+                          onClick={() => setTrafficBillingTunnelIds(prev => prev.filter(id => id !== Number(t.id)))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground">暂无已启用计费的隧道</p>
+                  <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                    暂未授权计费隧道，可从上方选择添加。
+                  </p>
                 )}
               </div>
             </TabsContent>

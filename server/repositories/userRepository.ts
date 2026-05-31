@@ -55,7 +55,7 @@ export async function authenticateUser(username: string, password: string) {
   if (!user) return null;
   if (!verifyPassword(password, user.password)) return null;
   const db = await getDb();
-  if (db) {
+  if (db && (user as any).accountEnabled !== false) {
     await db.update(users).set({ lastSignedIn: nowDate(), updatedAt: nowDate() }).where(eq(users.id, user.id));
   }
   return user;
@@ -244,6 +244,7 @@ export async function createUser(data: { username: string; password: string; nam
     emailVerifiedAt: data.emailVerifiedAt ?? null,
     avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
     role: data.role ?? "user",
+    accountEnabled: true,
     canAddRules: data.canAddRules ?? false,
   });
 }
@@ -261,6 +262,7 @@ export async function registerUser(data: { username: string; password: string; n
     emailVerifiedAt: data.emailVerifiedAt ?? null,
     avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
     role: "user",
+    accountEnabled: true,
     canAddRules: false,
   });
 }
@@ -410,6 +412,7 @@ export async function getAllUsers() {
       avatarChangeDay: users.avatarChangeDay,
       avatarChangeCount: users.avatarChangeCount,
       role: users.role,
+      accountEnabled: users.accountEnabled,
       canAddRules: users.canAddRules,
       forwardAccessPauseReason: users.forwardAccessPauseReason,
       maxRules: users.maxRules,
@@ -500,6 +503,27 @@ export async function setUserForwardAccess(userId: number, enabled: boolean, rea
   }
 }
 
+export async function setUserAccountEnabled(userId: number, enabled: boolean) {
+  const db = await getDb();
+  if (!db) return;
+  const now = nowDate();
+  await db.update(users).set({
+    accountEnabled: enabled,
+    updatedAt: now,
+  }).where(eq(users.id, userId));
+  if (!enabled) {
+    await db.update(forwardRules).set({
+      isEnabled: false,
+      disabledByUser: true,
+      updatedAt: now,
+    }).where(and(
+      eq(forwardRules.userId, userId),
+      eq(forwardRules.isEnabled, true),
+      eq(forwardRules.pendingDelete, false),
+    ));
+  }
+}
+
 /** 手动重置用户流量 */
 export async function resetUserTraffic(userId: number) {
   const db = await getDb();
@@ -575,6 +599,7 @@ export async function getUserTrafficSummaries() {
     displayRemark: users.displayRemark,
     avatar: users.avatar,
     role: users.role,
+    accountEnabled: users.accountEnabled,
     trafficLimit: users.trafficLimit,
     trafficUsed: users.trafficUsed,
     canAddRules: users.canAddRules,

@@ -30,6 +30,8 @@ import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+const DISPLAY_NAME_MAX_LENGTH = 24;
+
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -43,6 +45,7 @@ function ProfileContent() {
   const { user, logout } = useAuth();
   const utils = trpc.useUtils();
   const [avatarDraft, setAvatarDraft] = useState("");
+  const [displayNameDraft, setDisplayNameDraft] = useState("");
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -76,6 +79,19 @@ function ProfileContent() {
   useEffect(() => {
     if (user) setAvatarDraft(migrateLegacyAvatarValue((user as any).avatar, `user-${user.id}`));
   }, [user?.id, (user as any)?.avatar]);
+
+  useEffect(() => {
+    if (user) setDisplayNameDraft(String(user.name || user.username || ""));
+  }, [user?.id, user?.name, user?.username]);
+
+  const updateProfileMutation = trpc.auth.updateProfile.useMutation({
+    onSuccess: () => {
+      utils.auth.me.invalidate();
+      utils.users.list.invalidate();
+      toast.success("显示名称已更新");
+    },
+    onError: (error) => toast.error(error.message || "显示名称更新失败"),
+  });
 
   const updateAvatarMutation = trpc.users.updateAvatar.useMutation({
     onSuccess: (data) => {
@@ -240,6 +256,23 @@ function ProfileContent() {
     updateAvatarMutation.mutate({ avatar: avatarDraft });
   };
 
+  const handleSaveDisplayName = () => {
+    const nextName = displayNameDraft.trim();
+    if (!nextName) {
+      toast.error("显示名称不能为空");
+      return;
+    }
+    if (nextName.length > DISPLAY_NAME_MAX_LENGTH) {
+      toast.error(`显示名称最多 ${DISPLAY_NAME_MAX_LENGTH} 个字符`);
+      return;
+    }
+    if (nextName === String(user?.name || user?.username || "")) {
+      toast.info("显示名称没有变化");
+      return;
+    }
+    updateProfileMutation.mutate({ name: nextName });
+  };
+
   const handleChangePassword = () => {
     if (!oldPassword) {
       toast.error("请输入当前密码");
@@ -341,19 +374,37 @@ function ProfileContent() {
             <UserAvatar user={user as any} className="h-14 w-14" />
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+            <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]" : "lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.2fr)_minmax(120px,0.5fr)]"}`}>
               <div className="min-w-0">
                 <p className="text-xs text-muted-foreground">账号</p>
-                <p className="mt-1 truncate font-medium">{user?.username || "-"}</p>
+                <p className="mt-2 truncate font-medium">{user?.username || "-"}</p>
               </div>
-              <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">显示名称</p>
-                <p className="mt-1 truncate font-medium">{user?.name || user?.username || "-"}</p>
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="profile-display-name" className="text-xs text-muted-foreground">显示名称</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="profile-display-name"
+                    value={displayNameDraft}
+                    onChange={(e) => setDisplayNameDraft(e.target.value)}
+                    maxLength={DISPLAY_NAME_MAX_LENGTH}
+                    placeholder={user?.username || "请输入显示名称"}
+                    className="h-9 min-w-0"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 shrink-0"
+                    onClick={handleSaveDisplayName}
+                    disabled={updateProfileMutation.isPending}
+                  >
+                    {updateProfileMutation.isPending ? "保存中..." : "保存"}
+                  </Button>
+                </div>
               </div>
               {!avatarQuotaUnlimited && (
                 <div className="min-w-0">
                   <p className="text-xs text-muted-foreground">今日剩余</p>
-                  <p className="mt-1 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
+                  <p className="mt-2 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
                 </div>
               )}
             </div>
@@ -366,17 +417,23 @@ function ProfileContent() {
               randomLoading={randomAvatarMutation.isPending}
               onRandom={() => randomAvatarMutation.mutate()}
               onError={(message) => toast.error(message)}
+              actions={(
+                <Button
+                  type="button"
+                  size="sm"
+                  className="gap-2"
+                  onClick={handleSaveAvatar}
+                  disabled={avatarBusy || avatarQuotaExhausted}
+                >
+                  {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
+                </Button>
+              )}
             />
             {avatarQuotaExhausted && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
                 今日头像修改次数已用完，明天可继续修改。
               </div>
             )}
-            <div className="flex justify-end">
-              <Button className="w-full sm:w-auto" onClick={handleSaveAvatar} disabled={avatarBusy || avatarQuotaExhausted}>
-                {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
-              </Button>
-            </div>
           </CardContent>
         </Card>
 

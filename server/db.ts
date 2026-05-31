@@ -81,6 +81,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     email: input.email,
     avatar: randomMultiavatarValue(`admin-${input.email}-${Date.now()}`),
     role: "admin",
+    accountEnabled: true,
     canAddRules: true,
     allowForwardXTunnel: true,
     createdAt: nowDate(),

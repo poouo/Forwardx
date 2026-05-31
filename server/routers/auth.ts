@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
-import { COOKIE_NAME } from "../../shared/const";
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME } from "../../shared/const";
+import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
@@ -26,6 +27,7 @@ const EMAIL_CODE_TTL_MS = 5 * 60 * 1000;
 const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
 const TWO_FACTOR_ISSUER = "ForwardX";
+const DISPLAY_NAME_MAX_LENGTH = 24;
 
 function generateCaptcha(): { captchaId: string; question: string } {
   const a = Math.floor(Math.random() * 20) + 1;
@@ -105,6 +107,9 @@ function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: strin
 }
 
 function createLoginSession(ctx: any, user: any, mobile?: boolean) {
+  if (user?.accountEnabled === false) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
+  }
   const token = jwt.sign({ userId: user.id }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
   const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
@@ -164,6 +169,10 @@ function verifyEmailCode(email: string, code?: string) {
 export const authRouter = router({
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) return null;
+    if ((ctx.user as any).accountEnabled === false) {
+      ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+      throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
+    }
     return sanitizeUser(ctx.user);
   }),
 
@@ -241,6 +250,10 @@ export const authRouter = router({
         }
         throw new Error("用户名或密码错误");
       }
+      if ((user as any).accountEnabled === false) {
+        console.warn(`[Auth] Login rejected disabled userId=${user.id} username=${maskIdentifier(user.username)} ip=${ip}`);
+        throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
+      }
 
       const twoFactorEnabled = (await db.getSetting("twoFactorEnabled")) === "true";
       if (twoFactorEnabled && user.twoFactorEnabled && user.twoFactorSecret) {
@@ -273,6 +286,9 @@ export const authRouter = router({
       if (!user?.twoFactorEnabled || !user.twoFactorSecret) {
         throw new Error("当前账户未启用双重验证");
       }
+      if ((user as any).accountEnabled === false) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
+      }
       if (!verifyTotpToken(user.twoFactorSecret, input.code)) {
         console.warn(`[Auth] 2FA challenge failed userId=${user.id} ip=${getRequestIp(ctx)}`);
         recordTwoFactorChallengeFailure(input.challengeId);
@@ -288,7 +304,7 @@ export const authRouter = router({
     .input(z.object({
       username: z.string().email("用户名必须是邮箱格式").max(64),
       password: z.string().min(6, "密码至少6个字符"),
-      name: z.string().max(64).optional(),
+      name: z.string().trim().max(DISPLAY_NAME_MAX_LENGTH).optional(),
       email: z.string().email("邮箱格式不正确").optional(),
       emailCode: z.string().optional(),
       captchaId: z.string(),
@@ -429,13 +445,14 @@ export const authRouter = router({
 
   updateProfile: protectedProcedure
     .input(z.object({
-      name: z.string().min(1).max(64).optional(),
+      name: z.string().trim().min(1).max(DISPLAY_NAME_MAX_LENGTH).optional(),
       email: z.string().email().max(320).optional(),
       displayRemark: z.string().trim().max(24).nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       await db.updateUserProfile(ctx.user.id, {
         ...input,
+        name: input.name === undefined ? undefined : input.name.trim(),
         displayRemark: input.displayRemark === undefined ? undefined : input.displayRemark?.trim() || null,
       });
       console.info(`[Auth] Profile updated userId=${ctx.user.id}`);

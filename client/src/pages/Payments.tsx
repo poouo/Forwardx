@@ -697,7 +697,7 @@ export default function Payments() {
                 <div key={order.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{order.username || `#${order.userId}`}</p>
+                      <p className="break-words text-sm font-medium">{order.name || order.username || `#${order.userId}`}</p>
                       <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{order.outTradeNo}</p>
                     </div>
                     <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
@@ -744,7 +744,7 @@ export default function Payments() {
                   {(orders || []).map((order) => (
                     <TableRow key={order.id}>
                       <TableCell className="font-mono text-xs">{order.outTradeNo}</TableCell>
-                      <TableCell>{order.username || `#${order.userId}`}</TableCell>
+                      <TableCell>{order.name || order.username || `#${order.userId}`}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           <Badge variant="secondary">{providerLabel(order.provider)}</Badge>

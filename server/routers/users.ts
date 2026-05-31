@@ -6,6 +6,8 @@ import { isValidAvatarValue } from "../../shared/avatar";
 import { ensureAdminOrSelf, refreshUserForwardEndpoints } from "./helpers";
 import { getEmailConfig, sendMail } from "../email";
 
+const DISPLAY_NAME_MAX_LENGTH = 24;
+
 function actorLabel(ctx: { user?: { id: number; username?: string } | null }) {
   return ctx.user ? `adminId=${ctx.user.id}` : "adminId=unknown";
 }
@@ -43,7 +45,7 @@ export const usersRouter = router({
       .input(z.object({
         username: z.string().min(1).max(64),
         password: z.string().min(6),
-        name: z.string().optional(),
+        name: z.string().trim().max(DISPLAY_NAME_MAX_LENGTH).optional(),
         email: z.string().email().optional(),
         canAddRules: z.boolean().default(false),
       }))
@@ -81,7 +83,7 @@ export const usersRouter = router({
       .input(z.object({
         userId: z.number(),
         username: z.string().trim().min(1).max(64).optional(),
-        name: z.string().trim().max(64).nullable().optional(),
+        name: z.string().trim().max(DISPLAY_NAME_MAX_LENGTH).nullable().optional(),
         avatar: z.string().max(90 * 1024).optional(),
         newPassword: z.string().max(128).optional(),
       }))
@@ -142,10 +144,23 @@ export const usersRouter = router({
     delete: adminProcedure
       .input(z.object({ userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
+        if (input.userId === ctx.user.id) throw new Error("不能删除当前登录账户");
         await db.deleteUserPermissions(input.userId);
         await db.deleteUser(input.userId);
         console.info(`[Users] Deleted user userId=${input.userId} ${actorLabel(ctx)}`);
         return { success: true };
+      }),
+    removeTwoFactor: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const target = await db.getUserById(input.userId);
+        if (!target) throw new Error("用户不存在");
+        if (!target.twoFactorEnabled && !target.twoFactorSecret) {
+          return { success: true, removed: false };
+        }
+        await db.disableUserTwoFactor(input.userId);
+        console.info(`[Users] Removed 2FA userId=${input.userId} ${actorLabel(ctx)}`);
+        return { success: true, removed: true };
       }),
     /** 获取某用户的主机权限列表 */
     getHostPermissions: adminProcedure
@@ -284,6 +299,21 @@ export const usersRouter = router({
         await db.setUserForwardAccess(input.userId, input.enabled);
         await refreshUserForwardEndpoints(input.userId, input.enabled ? "user-forward-enabled" : "user-forward-disabled");
         console.info(`[Users] Forward access ${input.enabled ? "enabled" : "disabled"} userId=${input.userId} ${actorLabel(ctx)}`);
+        return { success: true };
+      }),
+    setAccountEnabled: adminProcedure
+      .input(z.object({ userId: z.number(), enabled: z.boolean() }))
+      .mutation(async ({ input, ctx }) => {
+        if (input.userId === ctx.user.id && !input.enabled) {
+          throw new Error("不能禁用当前登录账户");
+        }
+        const target = await db.getUserById(input.userId);
+        if (!target) throw new Error("用户不存在");
+        await db.setUserAccountEnabled(input.userId, input.enabled);
+        if (!input.enabled) {
+          await refreshUserForwardEndpoints(input.userId, "user-account-disabled");
+        }
+        console.info(`[Users] Account ${input.enabled ? "enabled" : "disabled"} userId=${input.userId} ${actorLabel(ctx)}`);
         return { success: true };
       }),
     /** 手动重置用户流量 */

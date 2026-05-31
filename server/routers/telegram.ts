@@ -1,10 +1,11 @@
 import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { createHash, createHmac, timingSafeEqual } from "crypto";
-import { COOKIE_NAME } from "../../shared/const";
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME } from "../../shared/const";
 import { getSessionCookieOptions } from "../_core/cookies";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
+import { TRPCError } from "@trpc/server";
 import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
@@ -78,6 +79,9 @@ function verifyTelegramWidgetLogin(payload: z.infer<typeof telegramWidgetLoginSc
 }
 
 function setLoginCookie(ctx: any, user: any, options: { mobile?: boolean } = {}) {
+  if (user?.accountEnabled === false) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
+  }
   const token = jwt.sign({ userId: user.id }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
   const { password, ...safeUser } = user;

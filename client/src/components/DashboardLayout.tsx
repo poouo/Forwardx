@@ -690,6 +690,8 @@ function DashboardLayoutContent({
   const telegramBotUrl = (telegramBind?.botUsername || telegramStatus?.botUsername)
     ? `https://t.me/${telegramBind?.botUsername || telegramStatus?.botUsername}`
     : "";
+  const accountDisplayName = String(user?.name || "").trim() || String(user?.username || "").trim() || "账号";
+  const accountUsername = String(user?.username || "").trim() || accountDisplayName;
 
   useEffect(() => {
     if (telegramStatus?.bound) {
@@ -1019,11 +1021,11 @@ function DashboardLayoutContent({
             <DropdownMenuTrigger asChild>
               <button
                 className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title={user?.name || user?.username || "账号菜单"}
+                title={accountDisplayName}
               >
                 <UserAvatar user={user as any} className="h-9 w-9 shrink-0" />
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-                  <p className="truncate text-sm font-medium leading-none">账号菜单</p>
+                  <p className="truncate text-sm font-medium leading-none">{accountDisplayName}</p>
                   <p className="mt-1.5 truncate text-xs text-muted-foreground">
                     {isAdmin ? "管理员" : "用户"} · {telegramStatus?.bound ? "TG 已绑定" : "TG 未绑定"}
                   </p>
@@ -1035,8 +1037,8 @@ function DashboardLayoutContent({
                 <div className="flex items-start gap-2">
                   <UserAvatar user={user as any} className="h-8 w-8 shrink-0" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{user?.username}</p>
-                    <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? "管理员" : "普通用户"}</p>
+                    <p className="truncate text-sm font-medium">{accountDisplayName}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? "管理员" : "普通用户"} · {accountUsername}</p>
                   </div>
                 </div>
               </div>
