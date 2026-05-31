@@ -97,6 +97,9 @@ export const users = table("users", {
   emailVerified: boolean("emailVerified").notNull().default(false),
   emailVerifiedAt: epoch("emailVerifiedAt"),
   displayRemark: text("displayRemark"),
+  avatar: text("avatar"),
+  avatarChangeDay: varchar("avatarChangeDay", { length: 16 }),
+  avatarChangeCount: int("avatarChangeCount").notNull().default(0),
   role: varchar("role", { length: 32 }).notNull().default("user"), // 'user' | 'admin'
   // ===== 权限控制 =====
   canAddRules: boolean("canAddRules").notNull().default(false), // 是否允许添加转发规则

@@ -62,11 +62,13 @@ import {
   UserPlus,
   Server,
   Wifi,
+  Image,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { fileToImageDataUrl } from "@/lib/avatar";
 
 function getUpgradeProgress(job: any) {
   const status = job?.status || "idle";
@@ -1531,6 +1533,7 @@ function TelegramBotSettingsCard() {
 }
 
 type SystemSettingsSaveKey =
+  | "branding"
   | "panelUrl"
   | "registration"
   | "twoFactor"
@@ -1556,6 +1559,8 @@ function SystemInfoSection() {
     refetchInterval: 1000,
   });
   const [panelUrlInput, setPanelUrlInput] = useState("");
+  const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
+  const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
   const [webPortInput, setWebPortInput] = useState("");
   const [showWebPortConfirm, setShowWebPortConfirm] = useState(false);
   const [webPortCountdown, setWebPortCountdown] = useState(5);
@@ -1601,6 +1606,8 @@ function SystemInfoSection() {
   useEffect(() => {
     if (settings) {
       setPanelUrlInput(settings.panelPublicUrl || "");
+      setSiteTitleInput(settings.siteTitle || "ForwardX");
+      setSiteLogoDataUrl(settings.siteLogoDataUrl || "");
       setWebPortInput(String(settings.webPort || 3000));
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
@@ -1699,6 +1706,24 @@ function SystemInfoSection() {
       return;
     }
     saveSystemSettings("panelUrl", { panelPublicUrl: v });
+  };
+
+  const handleLogoUpload = async (file?: File | null) => {
+    if (!file) return;
+    try {
+      setSiteLogoDataUrl(await fileToImageDataUrl(file));
+    } catch (error: any) {
+      toast.error(error?.message || "Logo 处理失败");
+    }
+  };
+
+  const handleSaveBranding = () => {
+    saveSystemSettings("branding", {
+      siteTitle: siteTitleInput.trim(),
+      siteLogoDataUrl,
+    }, {
+      onSuccess: () => utils.system.publicInfo.invalidate(),
+    });
   };
 
   const openWebPortConfirm = () => {
@@ -1928,6 +1953,68 @@ function SystemInfoSection() {
 
   return (
     <div className="space-y-4">
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Image className="h-4 w-4 text-primary" />
+            品牌显示
+          </CardTitle>
+          <CardDescription>
+            配置后台显示的网站标题和 Logo。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
+            <div className="space-y-2">
+              <Label htmlFor="site-title">网站标题</Label>
+              <Input
+                id="site-title"
+                value={siteTitleInput}
+                onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
+                placeholder="ForwardX"
+              />
+            </div>
+            <div className="flex items-end gap-3">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-border/50 bg-background">
+                {siteLogoDataUrl ? (
+                  <img src={siteLogoDataUrl} alt="Logo" className="h-12 w-12 object-contain" />
+                ) : (
+                  <img src="/logo-light.png" alt="Logo" className="h-12 w-12 object-contain dark:hidden" />
+                )}
+                {!siteLogoDataUrl && (
+                  <img src="/logo-dark.png" alt="Logo" className="hidden h-12 w-12 object-contain dark:block" />
+                )}
+              </div>
+              <div className="grid flex-1 gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <label className="gap-2">
+                    <Image className="h-4 w-4" />
+                    上传 Logo
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleLogoUpload(e.target.files?.[0]);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setSiteLogoDataUrl("")}>
+                  使用默认
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
+              保存品牌显示
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 面板公开访问地址 */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>

@@ -1,5 +1,4 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Progress } from "@/components/ui/progress";
 import {
   DropdownMenu,
@@ -35,6 +34,7 @@ import {
   Shield,
   Network,
   KeyRound,
+  UserRound,
   Sun,
   Moon,
   Rocket,
@@ -57,6 +57,7 @@ import {
   Download,
   RefreshCw,
   ExternalLink,
+  Image,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -74,12 +75,15 @@ import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { cn } from "@/lib/utils";
 import { PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { AvatarPicker } from "@/components/AvatarPicker";
+import { UserAvatar } from "@/components/UserAvatar";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 
 const mainMenuItems = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
+  { icon: UserRound, label: "个人资料", path: "/profile" },
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
@@ -180,20 +184,6 @@ function DashboardLayoutContent({
   const isAdmin = user?.role === "admin";
   const utils = trpc.useUtils();
   const { resolvedTheme, setTheme } = useTheme();
-  const logoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
-  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
-  const logoMark = logoLoadFailed ? (
-    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-      <Zap className="h-4 w-4" />
-    </div>
-  ) : (
-    <img
-      src={logoSrc}
-      alt="ForwardX"
-      className="h-7 w-7 shrink-0 object-contain"
-      onError={() => setLogoLoadFailed(true)}
-    />
-  );
   const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
     enabled: isAdmin,
     refetchOnWindowFocus: false,
@@ -220,6 +210,21 @@ function DashboardLayoutContent({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
+  const logoSrc = publicInfo?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+  const logoMark = logoLoadFailed ? (
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+      <Zap className="h-4 w-4" />
+    </div>
+  ) : (
+    <img
+      src={logoSrc}
+      alt={siteTitle}
+      className="h-7 w-7 shrink-0 object-contain"
+      onError={() => setLogoLoadFailed(true)}
+    />
+  );
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [showTelegramDialog, setShowTelegramDialog] = useState(false);
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
@@ -315,6 +320,16 @@ function DashboardLayoutContent({
   }, [popupAnnouncement?.id]);
 
   useEffect(() => {
+    setLogoLoadFailed(false);
+  }, [logoSrc]);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.title = siteTitle;
+    }
+  }, [siteTitle]);
+
+  useEffect(() => {
     if (upgradeStatus?.job?.status !== "running" || backgroundUpgrade) return;
     const targetVersion = upgradeStatus.job.targetVersion;
     if (!targetVersion) return;
@@ -353,6 +368,8 @@ function DashboardLayoutContent({
 
   // Change password dialog state
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showAvatarDialog, setShowAvatarDialog] = useState(false);
+  const [avatarDraft, setAvatarDraft] = useState("");
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -369,6 +386,30 @@ function DashboardLayoutContent({
       toast.error(error.message || "密码修改失败");
     },
   });
+
+  const updateAvatarMutation = trpc.users.updateAvatar.useMutation({
+    onSuccess: () => {
+      utils.auth.me.invalidate();
+      utils.users.list.invalidate();
+      toast.success("头像已更新");
+      setShowAvatarDialog(false);
+    },
+    onError: (error) => toast.error(error.message || "头像更新失败"),
+  });
+
+  const openAvatarDialog = () => {
+    setAvatarDraft(String((user as any)?.avatar || ""));
+    setShowAvatarDialog(true);
+    setAccountMenuOpen(false);
+  };
+
+  const handleSaveAvatar = () => {
+    if (!avatarDraft) {
+      toast.error("请选择头像");
+      return;
+    }
+    updateAvatarMutation.mutate({ avatar: avatarDraft });
+  };
 
   const createTelegramBindMutation = trpc.telegram.createBindCode.useMutation({
     onSuccess: (data) => {
@@ -751,7 +792,7 @@ function DashboardLayoutContent({
                 <div className="flex items-center gap-2 min-w-0">
                   {logoMark}
                   <span className="font-bold tracking-tight truncate text-base">
-                    ForwardX
+                    {siteTitle}
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -781,7 +822,7 @@ function DashboardLayoutContent({
                 onClick={toggleSidebar}
                 className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="Toggle navigation"
-                title="ForwardX"
+                title={siteTitle}
               >
                 {logoMark}
               </button>
@@ -944,11 +985,7 @@ function DashboardLayoutContent({
                 className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 title={user?.name || user?.username || "账号菜单"}
               >
-                <Avatar className="h-9 w-9 border shrink-0">
-                  <AvatarFallback className="text-xs font-medium bg-primary/10 text-primary">
-                    {user?.username?.charAt(0).toUpperCase() || "U"}
-                  </AvatarFallback>
-                </Avatar>
+                <UserAvatar user={user as any} className="h-9 w-9 shrink-0" />
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-sm font-medium leading-none">账号菜单</p>
                   <p className="mt-1.5 truncate text-xs text-muted-foreground">
@@ -960,6 +997,7 @@ function DashboardLayoutContent({
             <DropdownMenuContent align="end" className="w-56">
               <div className="px-2 py-1.5">
                 <div className="flex items-start gap-2">
+                  <UserAvatar user={user as any} className="h-8 w-8 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{user?.username}</p>
                     <p className="mt-1 truncate text-xs text-muted-foreground">{isAdmin ? "管理员" : "普通用户"}</p>
@@ -968,26 +1006,22 @@ function DashboardLayoutContent({
               </div>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => setShowChangePassword(true)}
+                onClick={() => navigateFromSidebar("/profile")}
                 className="cursor-pointer"
               >
-                <KeyRound className="mr-2 h-4 w-4" />
-                <span>修改密码</span>
+                <UserRound className="mr-2 h-4 w-4" />
+                <span>个人资料</span>
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={openTelegramDialog}
-                className="cursor-pointer"
-              >
-                <Send className="mr-2 h-4 w-4" />
-                <span>{telegramStatus?.bound ? "Telegram 已绑定" : "绑定 Telegram"}</span>
-              </DropdownMenuItem>
-              {twoFactorStatus?.globalEnabled && (
+              {!mobileAuth.isNative && isAdmin && (
                 <DropdownMenuItem
-                  onClick={openTwoFactorDialog}
+                  onClick={() => {
+                    setShowUpgradeDialog(true);
+                    setAccountMenuOpen(false);
+                  }}
                   className="cursor-pointer"
                 >
-                  <Shield className="mr-2 h-4 w-4" />
-                  <span>{twoFactorStatus?.enabled ? "双重验证已启用" : "绑定双重验证"}</span>
+                  <Download className="mr-2 h-4 w-4" />
+                  <span>软件更新</span>
                 </DropdownMenuItem>
               )}
               {mobileAuth.isNative && (
@@ -1025,7 +1059,7 @@ function DashboardLayoutContent({
               <div className="flex items-center gap-3">
                 <div className="flex flex-col gap-1">
                   <span className="tracking-tight text-foreground">
-                    {activeMenuItem?.label ?? "ForwardX"}
+                    {activeMenuItem?.label ?? siteTitle}
                   </span>
                 </div>
               </div>
@@ -1266,6 +1300,29 @@ function DashboardLayoutContent({
               disabled={changePasswordMutation.isPending}
             >
               {changePasswordMutation.isPending ? "修改中..." : "确认修改"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAvatarDialog} onOpenChange={setShowAvatarDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>头像设置</DialogTitle>
+          <DialogDescription>选择预设头像或上传自定义头像。</DialogDescription>
+          <AvatarPicker
+            value={avatarDraft}
+            onChange={setAvatarDraft}
+            fallback={user?.id || user?.username}
+            disabled={updateAvatarMutation.isPending}
+            onError={(message) => toast.error(message)}
+            className="py-2"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAvatarDialog(false)} disabled={updateAvatarMutation.isPending}>
+              取消
+            </Button>
+            <Button onClick={handleSaveAvatar} disabled={updateAvatarMutation.isPending}>
+              {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
             </Button>
           </DialogFooter>
         </DialogContent>

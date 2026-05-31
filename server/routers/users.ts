@@ -2,6 +2,7 @@ import { protectedProcedure, adminProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
 import { FORWARD_TYPES } from "../../shared/forwardTypes";
+import { isValidAvatarValue } from "../../shared/avatar";
 import { ensureAdminOrSelf, refreshUserForwardEndpoints } from "./helpers";
 import { getEmailConfig, sendMail } from "../email";
 
@@ -81,6 +82,7 @@ export const usersRouter = router({
         userId: z.number(),
         username: z.string().trim().min(1).max(64).optional(),
         name: z.string().trim().max(64).nullable().optional(),
+        avatar: z.string().max(90 * 1024).optional(),
         newPassword: z.string().max(128).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -93,14 +95,49 @@ export const usersRouter = router({
         }
         const password = input.newPassword?.trim() || "";
         if (password && password.length < 6) throw new Error("密码至少6个字符");
-        if (!username && input.name === undefined && !password) throw new Error("没有需要保存的修改");
+        if (input.avatar !== undefined && !isValidAvatarValue(input.avatar)) throw new Error("头像格式不支持或超过 50K");
+        if (!username && input.name === undefined && input.avatar === undefined && !password) throw new Error("没有需要保存的修改");
         await db.updateUserAccount(input.userId, {
           username,
           name: input.name,
+          avatar: input.avatar,
           password: password || undefined,
         });
         console.info(`[Users] Updated account userId=${input.userId} usernameChanged=${!!username && username !== target.username} passwordChanged=${!!password} ${actorLabel(ctx)}`);
         return { success: true };
+      }),
+    updateAvatar: protectedProcedure
+      .input(z.object({
+        userId: z.number().optional(),
+        avatar: z.string().max(90 * 1024),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const userId = input.userId ?? ctx.user.id;
+        ensureAdminOrSelf(ctx, userId);
+        if (!isValidAvatarValue(input.avatar)) throw new Error("头像格式不支持或超过 50K");
+        const target = await db.getUserById(userId);
+        if (!target) throw new Error("用户不存在");
+        const quota = await db.updateUserAvatarWithQuota(userId, input.avatar, { countQuota: userId === ctx.user.id });
+        console.info(`[Users] Updated avatar userId=${userId} ${actorLabel(ctx)}`);
+        return { success: true, quota };
+      }),
+    randomAvatar: protectedProcedure
+      .input(z.object({ userId: z.number().optional() }).optional())
+      .mutation(async ({ input, ctx }) => {
+        const userId = input?.userId ?? ctx.user.id;
+        ensureAdminOrSelf(ctx, userId);
+        const target = await db.getUserById(userId);
+        if (!target) throw new Error("用户不存在");
+        const result = await db.updateUserAvatarRandomWithQuota(userId, { countQuota: userId === ctx.user.id });
+        console.info(`[Users] Randomized avatar userId=${userId} ${actorLabel(ctx)}`);
+        return { success: true, ...result };
+      }),
+    avatarQuota: protectedProcedure
+      .input(z.object({ userId: z.number().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const userId = input?.userId ?? ctx.user.id;
+        ensureAdminOrSelf(ctx, userId);
+        return db.getUserAvatarQuota(userId);
       }),
     delete: adminProcedure
       .input(z.object({ userId: z.number() }))

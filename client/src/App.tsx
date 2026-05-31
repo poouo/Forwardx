@@ -16,6 +16,7 @@ import Rules from "./pages/Rules";
 import ForwardGroups from "./pages/ForwardGroups";
 import Tunnels from "./pages/Tunnels";
 import Users from "./pages/Users";
+import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Payments from "./pages/Payments";
 import Plans from "./pages/Plans";
@@ -44,6 +45,7 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/homepage-preview" component={HomepagePreview} />
       <Route path="/" component={Home} />
+      <Route path="/profile" component={Profile} />
       <Route path="/hosts">{() => <AdminRoute component={Hosts} />}</Route>
       <Route path="/rules" component={Rules} />
       <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroups} />}</Route>

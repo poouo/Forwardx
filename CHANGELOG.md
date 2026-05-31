@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.73] - 2026-05-31
+
+### Added
+
+- Added configurable site title/logo branding and user avatars with preset/random/custom upload support.
+- Added a dedicated Profile page for avatar, password, Telegram binding, 2FA, software update, and logout actions.
+
+### Changed
+
+- Moved account security and binding settings into Profile while keeping the sidebar account menu focused on Profile, software update, and logout.
+- Limited self-service avatar changes to 3 times per user per day, with random avatar updates handled by the backend.
+- Improved mobile/APP account, payment, billing, traffic-billing, and plan-management layouts so key fields fit without horizontal scrolling.
+- Bumped panel version to 2.3.73. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.27 so the APK includes the latest Profile and mobile UI updates.
+
 ## [2.3.72] - 2026-05-31
 
 ### Fixed

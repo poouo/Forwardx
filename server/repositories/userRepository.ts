@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
+import { AVATAR_DAILY_CHANGE_LIMIT, normalizeAvatarValue, randomAvatarPreset } from "../../shared/avatar";
 
 export type ForwardAccessPauseReason = "manual" | "traffic_billing_balance" | "traffic_limit" | "expired" | null;
 
@@ -69,7 +70,7 @@ export async function verifyUserPassword(userId: number, password: string) {
   return verifyPassword(password, user.password);
 }
 
-export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null }) {
+export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null }) {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
@@ -234,6 +235,7 @@ export async function createUser(data: { username: string; password: string; nam
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
+    avatar: randomAvatarPreset(),
     role: data.role ?? "user",
     canAddRules: data.canAddRules ?? false,
   });
@@ -250,6 +252,7 @@ export async function registerUser(data: { username: string; password: string; n
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
+    avatar: randomAvatarPreset(),
     role: "user",
     canAddRules: false,
   });
@@ -261,7 +264,7 @@ export async function resetUserPassword(userId: number, newPassword: string) {
   await db.update(users).set({ password: hashPassword(newPassword), updatedAt: nowDate() }).where(eq(users.id, userId));
 }
 
-export async function updateUserAccount(userId: number, data: { username?: string; name?: string | null; password?: string }) {
+export async function updateUserAccount(userId: number, data: { username?: string; name?: string | null; password?: string; avatar?: string | null }) {
   const db = await getDb();
   if (!db) return;
   const current = await getUserById(userId);
@@ -278,9 +281,60 @@ export async function updateUserAccount(userId: number, data: { username?: strin
   }
   const password = data.password?.trim();
   if (password) patch.password = hashPassword(password);
+  if (data.avatar !== undefined) {
+    patch.avatar = normalizeAvatarValue(data.avatar) || randomAvatarPreset();
+  }
   if (Object.keys(patch).length > 1) {
     await db.update(users).set(patch).where(eq(users.id, userId));
   }
+}
+
+function avatarChangeDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+export async function getUserAvatarQuota(userId: number) {
+  const user = await getUserById(userId);
+  const today = avatarChangeDayKey();
+  const used = user?.avatarChangeDay === today ? Number(user?.avatarChangeCount || 0) : 0;
+  return {
+    limit: AVATAR_DAILY_CHANGE_LIMIT,
+    used,
+    remaining: Math.max(0, AVATAR_DAILY_CHANGE_LIMIT - used),
+    day: today,
+  };
+}
+
+export async function updateUserAvatarWithQuota(userId: number, avatar: string, options: { countQuota?: boolean } = {}) {
+  const db = await getDb();
+  if (!db) return getUserAvatarQuota(userId);
+  const normalized = normalizeAvatarValue(avatar) || randomAvatarPreset();
+  const current = await getUserById(userId);
+  if (!current) throw new Error("用户不存在");
+
+  const patch: Record<string, unknown> = {
+    avatar: normalized,
+    updatedAt: nowDate(),
+  };
+
+  if (options.countQuota && normalized !== current.avatar) {
+    const today = avatarChangeDayKey();
+    const used = current.avatarChangeDay === today ? Number(current.avatarChangeCount || 0) : 0;
+    if (used >= AVATAR_DAILY_CHANGE_LIMIT) {
+      throw new Error(`头像每天最多修改 ${AVATAR_DAILY_CHANGE_LIMIT} 次`);
+    }
+    patch.avatarChangeDay = today;
+    patch.avatarChangeCount = used + 1;
+  }
+
+  await db.update(users).set(patch).where(eq(users.id, userId));
+  return getUserAvatarQuota(userId);
+}
+
+export async function updateUserAvatarRandomWithQuota(userId: number, options: { countQuota?: boolean } = {}) {
+  const avatar = randomAvatarPreset();
+  const quota = await updateUserAvatarWithQuota(userId, avatar, options);
+  return { avatar, quota };
 }
 
 export async function getAllUsers() {
@@ -295,6 +349,9 @@ export async function getAllUsers() {
       emailVerified: users.emailVerified,
       emailVerifiedAt: users.emailVerifiedAt,
       displayRemark: users.displayRemark,
+      avatar: users.avatar,
+      avatarChangeDay: users.avatarChangeDay,
+      avatarChangeCount: users.avatarChangeCount,
       role: users.role,
       canAddRules: users.canAddRules,
       forwardAccessPauseReason: users.forwardAccessPauseReason,
@@ -459,6 +516,7 @@ export async function getUserTrafficSummaries() {
     name: users.name,
     email: users.email,
     displayRemark: users.displayRemark,
+    avatar: users.avatar,
     role: users.role,
     trafficLimit: users.trafficLimit,
     trafficUsed: users.trafficUsed,

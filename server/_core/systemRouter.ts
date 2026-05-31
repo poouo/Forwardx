@@ -18,6 +18,7 @@ import {
   TUNNEL_PROTOCOLS,
   normalizeForwardProtocolSettings,
 } from "../../shared/forwardTypes";
+import { isValidBrandLogoValue } from "../../shared/avatar";
 import { AGENT_VERSION, ANDROID_APP_VERSION, APP_VERSION } from "../../shared/versions";
 
 export { AGENT_VERSION, ANDROID_APP_VERSION, APP_VERSION } from "../../shared/versions";
@@ -45,6 +46,8 @@ const forwardProtocolSettingsSchema = z.object(
   ) as Record<(typeof FORWARD_TYPES[number] | typeof TUNNEL_PROTOCOLS[number]), z.ZodOptional<z.ZodBoolean>>
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
+const siteTitleSchema = z.string().trim().max(64);
+const brandLogoSchema = z.string().max(90 * 1024);
 
 type UpdateInfo = {
   currentVersion: string;
@@ -354,6 +357,8 @@ export const systemRouter = router({
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
+      siteTitle: all.siteTitle || "ForwardX",
+      siteLogoDataUrl: all.siteLogoDataUrl || "",
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
     }));
@@ -369,6 +374,8 @@ export const systemRouter = router({
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
+      siteTitle: all.siteTitle || "ForwardX",
+      siteLogoDataUrl: all.siteLogoDataUrl || "",
       panelPublicUrl: all.panelPublicUrl ?? "",
       webPort: ENV.port,
       webPortManagement: {
@@ -452,6 +459,8 @@ export const systemRouter = router({
     .input(
       z.object({
         panelPublicUrl: z.string().max(256).optional(),
+        siteTitle: siteTitleSchema.optional(),
+        siteLogoDataUrl: brandLogoSchema.optional(),
         registrationEnabled: z.boolean().optional(),
         twoFactorEnabled: z.boolean().optional(),
         homepageEnabled: z.boolean().optional(),
@@ -505,6 +514,19 @@ export const systemRouter = router({
         const normalized = v.replace(/\/+$/, "");
         await db.setSetting("panelPublicUrl", normalized || null);
         console.info(`[Settings] panelPublicUrl ${normalized ? "updated" : "cleared"}`);
+      }
+      if (input.siteTitle !== undefined) {
+        const title = input.siteTitle.trim();
+        await db.setSetting("siteTitle", title || null);
+        console.info(`[Settings] site title ${title ? "updated" : "cleared"}`);
+      }
+      if (input.siteLogoDataUrl !== undefined) {
+        const logo = input.siteLogoDataUrl.trim();
+        if (!isValidBrandLogoValue(logo)) {
+          throw new Error("Logo 格式不支持或超过 50K");
+        }
+        await db.setSetting("siteLogoDataUrl", logo || null);
+        console.info(`[Settings] site logo ${logo ? "updated" : "cleared"}`);
       }
       if (input.registrationEnabled !== undefined) {
         await db.setSetting("registrationEnabled", input.registrationEnabled ? "true" : "false");

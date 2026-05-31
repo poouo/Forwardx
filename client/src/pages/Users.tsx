@@ -1,6 +1,9 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { AvatarPicker } from "@/components/AvatarPicker";
+import { UserAvatar } from "@/components/UserAvatar";
+import { avatarPreset } from "@/lib/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -206,6 +209,7 @@ function UsersContent() {
   const [resetUserName, setResetUserName] = useState("");
   const [resetUsernameInput, setResetUsernameInput] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetAvatarInput, setResetAvatarInput] = useState("");
   const [showResetTraffic, setShowResetTraffic] = useState(false);
   const [resetTrafficUserId, setResetTrafficUserId] = useState<number | null>(null);
   const [resetTrafficUserName, setResetTrafficUserName] = useState("");
@@ -361,6 +365,7 @@ function UsersContent() {
       setShowResetPassword(false);
       setResetUsernameInput("");
       setResetNewPassword("");
+      setResetAvatarInput("");
     },
     onError: (err) => toast.error(err.message || "更新账户信息失败"),
   });
@@ -510,6 +515,7 @@ function UsersContent() {
     resetPasswordMutation.mutate({
       userId: resetUserId,
       username,
+      avatar: resetAvatarInput || avatarPreset(`user-${resetUserId}`),
       newPassword: password || undefined,
     });
   };
@@ -823,13 +829,7 @@ function UsersContent() {
             return (
               <div key={u.id} className="rounded-lg border border-border/50 bg-card/70 p-3 shadow-sm">
                 <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted/50">
-                    {u.role === "admin" ? (
-                      <Shield className="h-4 w-4 text-amber-400" />
-                    ) : (
-                      <User className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </div>
+                  <UserAvatar user={u} className="h-10 w-10 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <p className="min-w-0 max-w-full truncate text-sm font-semibold">{u.username || "未命名"}</p>
@@ -958,6 +958,7 @@ function UsersContent() {
                       setResetUserName(userLabel(u));
                       setResetUsernameInput(u.username || "");
                       setResetNewPassword("");
+                      setResetAvatarInput(u.avatar || avatarPreset(`user-${u.id}`));
                       setShowResetPassword(true);
                     }}>
                       <KeyRound className="mr-1 h-3.5 w-3.5" />
@@ -1028,13 +1029,7 @@ function UsersContent() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2.5">
-                            <div className="h-8 w-8 rounded-full bg-muted/50 flex items-center justify-center">
-                              {u.role === "admin" ? (
-                                <Shield className="h-3.5 w-3.5 text-amber-400" />
-                              ) : (
-                                <User className="h-3.5 w-3.5 text-muted-foreground" />
-                              )}
-                            </div>
+                            <UserAvatar user={u} className="h-8 w-8 shrink-0" />
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium leading-none">{u.username || "未命名"}</p>
                               {u.displayRemark && (
@@ -1242,6 +1237,7 @@ function UsersContent() {
                                 setResetUserName(userLabel(u));
                                 setResetUsernameInput(u.username || "");
                                 setResetNewPassword("");
+                                setResetAvatarInput(u.avatar || avatarPreset(`user-${u.id}`));
                                 setShowResetPassword(true);
                               }}
                             >
@@ -1482,6 +1478,16 @@ function UsersContent() {
                 value={resetNewPassword}
                 onChange={(e) => setResetNewPassword(e.target.value)}
                 placeholder="留空不修改密码"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>用户头像</Label>
+              <AvatarPicker
+                value={resetAvatarInput}
+                onChange={setResetAvatarInput}
+                fallback={resetUserId || resetUsernameInput}
+                disabled={resetPasswordMutation.isPending}
+                onError={(message) => toast.error(message)}
               />
             </div>
           </div>

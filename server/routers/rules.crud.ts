@@ -307,8 +307,9 @@ export const crudRulesRouter = router({
         }
       }
       const nextIsTunnelForward = nextForwardTypeForRule === "gost" && Number(nextTunnelIdForRule || 0) > 0;
-      if (!nextIsTunnelForward && input.hostId !== undefined && Number(input.hostId) !== Number(rule.hostId)) {
-        throw new Error("端口转发不支持直接切换入口，请新建规则");
+      const currentIsTunnelForward = rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0;
+      if (currentIsTunnelForward !== nextIsTunnelForward) {
+        throw new Error("端口转发和隧道转发不能相互切换，请新建规则");
       }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
       if (!nextTunnelIdForRule) {
@@ -411,6 +412,8 @@ export const crudRulesRouter = router({
         const v = data[f];
         return v !== undefined && v !== (rule as any)[f];
       });
+      const oldHostIdForRule = Number(rule.hostId);
+      const hostChanged = Number(oldHostIdForRule) !== Number(nextHostIdForRule);
       if (keyFieldChanged) {
         (data as any).isRunning = false;
         const affectedTunnelIds = new Set<number>();
@@ -421,12 +424,16 @@ export const crudRulesRouter = router({
           await db.updateTunnel(affectedTunnelId, { isRunning: false } as any);
           if (affectedTunnel) await pushTunnelEndpointRefresh(affectedTunnel, "forward-rule-updated");
         }
-        if (Number(rule.hostId) !== Number(nextHostIdForRule)) {
-          pushAgentRefresh(Number(rule.hostId), "forward-rule-updated-old-host");
-          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host");
-        }
       }
       await db.updateForwardRule(id, data);
+      if (keyFieldChanged) {
+        if (hostChanged) {
+          pushAgentRefresh(oldHostIdForRule, "forward-rule-updated-old-host");
+          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host");
+        } else if (!nextTunnelIdForRule) {
+          pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated");
+        }
+      }
       return { success: true, reset: keyFieldChanged };
     }),
   delete: protectedProcedure

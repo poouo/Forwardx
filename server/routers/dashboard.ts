@@ -62,6 +62,7 @@ export const dashboardRouter = router({
         id: user.id,
         username: user.username,
         name: user.name,
+        avatar: user.avatar,
         role: user.role,
         trafficLimit: user.trafficLimit,
         trafficUsed: user.trafficUsed,

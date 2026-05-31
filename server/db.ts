@@ -11,6 +11,7 @@ import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
 import { connectDatabase, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
+import { randomAvatarPreset } from "../shared/avatar";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -73,6 +74,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     password: hashPassword(input.password),
     name: input.name?.trim() || input.email,
     email: input.email,
+    avatar: randomAvatarPreset(),
     role: "admin",
     canAddRules: true,
     allowForwardXTunnel: true,
@@ -92,6 +94,7 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     username: input.email,
     email: input.email,
     name: input.name?.trim() || input.email,
+    avatar: (admin as any).avatar || randomAvatarPreset(),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

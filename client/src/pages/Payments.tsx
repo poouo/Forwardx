@@ -33,7 +33,7 @@ import {
   ShieldCheck,
   WalletCards,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 type PaymentConfigForm = {
@@ -229,6 +229,23 @@ function CallbackItem({ label, value }: { label: string; value: string }) {
           <Copy className="h-3.5 w-3.5" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+function MobileOrderInfoRow({
+  label,
+  children,
+  valueClassName = "",
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
     </div>
   );
 }
@@ -675,7 +692,41 @@ export default function Payments() {
             <CardDescription>套餐订单和测试订单。</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto">
+            <div className="grid gap-3 md:hidden">
+              {(orders || []).map((order) => (
+                <div key={order.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium">{order.username || `#${order.userId}`}</p>
+                      <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{order.outTradeNo}</p>
+                    </div>
+                    <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
+                      {formatMoney(order.amountCents, order.currency)}
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                    <MobileOrderInfoRow label="通道">
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Badge variant="secondary">{providerLabel(order.provider)}</Badge>
+                        <Badge variant="outline">{paymentTypeLabel(order.paymentType)}</Badge>
+                      </div>
+                    </MobileOrderInfoRow>
+                    <MobileOrderInfoRow label="状态">{statusBadge(order.status)}</MobileOrderInfoRow>
+                    <MobileOrderInfoRow label="网关流水" valueClassName="font-mono text-xs text-muted-foreground">
+                      {order.tradeNo || "-"}
+                    </MobileOrderInfoRow>
+                    <MobileOrderInfoRow label="创建时间">{formatDate(order.createdAt)}</MobileOrderInfoRow>
+                    <MobileOrderInfoRow label="支付时间">{formatDate(order.paidAt)}</MobileOrderInfoRow>
+                  </div>
+                </div>
+              ))}
+              {(orders || []).length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  暂无支付订单
+                </div>
+              )}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow>

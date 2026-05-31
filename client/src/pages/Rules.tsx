@@ -1592,9 +1592,9 @@ function RulesContent() {
               <div className={`grid gap-1 ${canUseForwardGroup ? "grid-cols-3" : "grid-cols-2"}`}>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward)}
+                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward || (!!editingId && form.routeMode !== "local"))}
                   onClick={() => setRouteMode("local")}
-                  disabled={!canUseLocalForward}
+                  disabled={!canUseLocalForward || (!!editingId && form.routeMode !== "local")}
                   title={!canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
@@ -1602,9 +1602,9 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost)}
+                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost || (!!editingId && form.routeMode !== "tunnel"))}
                   onClick={() => setRouteMode("tunnel")}
-                  disabled={!canUseGost}
+                  disabled={!canUseGost || (!!editingId && form.routeMode !== "tunnel")}
                   title={!canUseGost ? "暂无可用隧道" : undefined}
                 >
                   <Network className="h-4 w-4 shrink-0" />
@@ -1613,9 +1613,9 @@ function RulesContent() {
                 {canUseForwardGroup && (
                   <button
                     type="button"
-                    className={routeModeOptionClass(form.routeMode === "group", !canUseForwardGroup)}
+                    className={routeModeOptionClass(form.routeMode === "group", !canUseForwardGroup || (!!editingId && form.routeMode !== "group"))}
                     onClick={() => setRouteMode("group")}
-                    disabled={!canUseForwardGroup}
+                    disabled={!canUseForwardGroup || (!!editingId && form.routeMode !== "group")}
                     title={!canUseForwardGroup ? "暂无可用转发组" : undefined}
                   >
                     <Layers3 className="h-4 w-4 shrink-0" />
@@ -1742,8 +1742,12 @@ function RulesContent() {
                   <Label>所属主机</Label>
                   <Select
                     value={form.hostId ? String(form.hostId) : ""}
-                    onValueChange={(v) => setForm({ ...form, hostId: parseInt(v), tunnelId: null })}
-                    disabled={!!editingId}
+                    onValueChange={(v) => {
+                      latestPortCheckRef.current += 1;
+                      setPortStatus("idle");
+                      setPortRangeError(null);
+                      setForm({ ...form, hostId: parseInt(v), tunnelId: null });
+                    }}
                   >
                     <SelectTrigger><SelectValue placeholder="选择主机" /></SelectTrigger>
                     <SelectContent>
