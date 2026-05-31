@@ -260,10 +260,10 @@ export default function MultiHopEditor({
   return (
     <div className="space-y-3" onDragOver={onDragOverContainer} onDrop={(e) => e.preventDefault()}>
       <div className="flex items-center justify-end">
-        <span className="text-xs text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标移动</span>
+        <span className="text-right text-xs leading-5 text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标移动</span>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Select value="" onValueChange={addHop} disabled={reachedMaxHops}>
           <SelectTrigger className="h-9 text-sm">
             <SelectValue placeholder={reachedMaxHops ? `最多 ${maxHops} 级` : "添加主机到链路..."} />
@@ -285,7 +285,7 @@ export default function MultiHopEditor({
           </SelectContent>
         </Select>
         {hops.length > 0 && (
-          <span className="whitespace-nowrap text-xs text-muted-foreground">{hops.length} / {maxHops} 台主机</span>
+          <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{hops.length} / {maxHops} 台主机</span>
         )}
       </div>
 
@@ -304,7 +304,7 @@ export default function MultiHopEditor({
             return (
               <div
                 key={hop.hostId}
-                className={`flex items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-colors duration-150 ${
+                className={`flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-colors duration-150 sm:flex-nowrap ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable
@@ -323,7 +323,7 @@ export default function MultiHopEditor({
                 </span>
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
 
-                <div className="ml-2 flex h-8 w-[190px] shrink-0 items-center justify-end gap-2">
+                <div className="order-last flex h-8 w-full items-center justify-start gap-2 sm:order-none sm:ml-2 sm:w-[190px] sm:shrink-0 sm:justify-end">
                   {!isFirst ? (
                     <>
                       <span className="whitespace-nowrap text-xs text-muted-foreground">使用内网IP</span>
@@ -334,7 +334,7 @@ export default function MultiHopEditor({
                       />
                     </>
                   ) : (
-                    <span className="invisible text-xs">占位</span>
+                    <span className="hidden text-xs sm:invisible sm:block">占位</span>
                   )}
                 </div>
 

@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.62"
+var Version = "2.2.63"
 var upgradeStarted int32
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
@@ -513,10 +513,45 @@ func logActionPortHandoff(a action) {
 }
 
 func cleanupStaleRuntimeBeforeApply(a action) {
-	if a.Op != "apply" || a.SourcePort <= 0 || a.RuleID <= 0 {
+	if a.Op != "apply" || a.SourcePort <= 0 {
 		return
 	}
 	port := strconv.Itoa(a.SourcePort)
+	if a.StatusType == "tunnel" && a.TunnelID > 0 {
+		localTunnelID := readTunnelIDByPort(port)
+		localForwardType := readTunnelForwardTypeByPort(port)
+		if localTunnelID <= 0 && localForwardType == "" {
+			if a.ForwardType == "gost-tunnel" {
+				stopFXPByPort(a.TunnelID, a.SourcePort)
+				for _, cmd := range fxpPortCleanupCmds(port) {
+					_ = runShell(cmd)
+				}
+			}
+			return
+		}
+		if localTunnelID == a.TunnelID && (localForwardType == "" || localForwardType == a.ForwardType) {
+			return
+		}
+		logf(
+			"tunnel runtime cleanup before apply port=%d oldTunnel=%d oldForwardType=%s newTunnel=%d newForwardType=%s",
+			a.SourcePort,
+			localTunnelID,
+			localForwardType,
+			a.TunnelID,
+			a.ForwardType,
+		)
+		if localForwardType == "forwardx-tunnel" && localTunnelID > 0 {
+			stopFXPByPort(localTunnelID, a.SourcePort)
+		}
+		for _, cmd := range managedPortCleanupCmds(port) {
+			_ = runShell(cmd)
+		}
+		removeTunnelStateByPort(port)
+		return
+	}
+	if a.RuleID <= 0 {
+		return
+	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
 	if localRuleID <= 0 && localForwardType == "" {
@@ -572,6 +607,10 @@ func writeUnitAndRestart(name, unit string) bool {
 }
 
 func writeState(a action) {
+	if a.StatusType == "tunnel" && a.TunnelID > 0 && a.SourcePort > 0 {
+		writeTunnelState(a)
+		return
+	}
 	if a.RuleID <= 0 {
 		return
 	}
@@ -583,6 +622,13 @@ func writeState(a action) {
 	if a.TargetIP != "" && a.TargetPort > 0 {
 		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", a.TargetIP, a.TargetPort)), 0644)
 	}
+}
+
+func writeTunnelState(a action) {
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	port := strconv.Itoa(a.SourcePort)
+	_ = os.WriteFile("/var/lib/forwardx-agent/tunnel_"+port+".id", []byte(strconv.Itoa(a.TunnelID)), 0644)
+	_ = os.WriteFile("/var/lib/forwardx-agent/tunnel_"+port+".fwtype", []byte(a.ForwardType), 0644)
 }
 
 func writeRunningRuleState(r runningRule) {
@@ -610,6 +656,23 @@ func readRuleIDByPort(port string) int {
 
 func readForwardTypeByPort(port string) string {
 	b, err := os.ReadFile("/var/lib/forwardx-agent/port_" + port + ".fwtype")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func readTunnelIDByPort(port string) int {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/tunnel_" + port + ".id")
+	if err != nil {
+		return 0
+	}
+	id, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return id
+}
+
+func readTunnelForwardTypeByPort(port string) string {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/tunnel_" + port + ".fwtype")
 	if err != nil {
 		return ""
 	}
@@ -674,37 +737,37 @@ func nftRuleCleanupCmd(ruleID int) string {
 }
 
 func managedPortCleanupCmds(port string) []string {
-	cmds := []string{
-		"systemctl stop forwardx-socat-" + port + ".service forwardx-socat-tcp-" + port + ".service forwardx-socat-udp-" + port + ".service forwardx-realm-" + port + ".service 2>/dev/null || true",
-		"systemctl disable forwardx-socat-" + port + ".service forwardx-socat-tcp-" + port + ".service forwardx-socat-udp-" + port + ".service forwardx-realm-" + port + ".service 2>/dev/null || true",
-		"rm -f /etc/systemd/system/forwardx-socat-" + port + ".service /etc/systemd/system/forwardx-socat-tcp-" + port + ".service /etc/systemd/system/forwardx-socat-udp-" + port + ".service /etc/systemd/system/forwardx-realm-" + port + ".service",
+	cmds := append(fxpPortCleanupCmds(port),
+		"systemctl stop forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
+		"systemctl disable forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
+		"rm -f /etc/systemd/system/forwardx-socat-"+port+".service /etc/systemd/system/forwardx-socat-tcp-"+port+".service /etc/systemd/system/forwardx-socat-udp-"+port+".service /etc/systemd/system/forwardx-realm-"+port+".service",
 		"systemctl daemon-reload",
-		"iptables -t mangle -D PREROUTING -p tcp --dport " + port + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p udp --dport " + port + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p tcp --dport " + port + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p udp --dport " + port + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p tcp --sport " + port + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p udp --sport " + port + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p tcp --sport " + port + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p udp --sport " + port + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p tcp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p udp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p tcp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p udp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p tcp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p udp --dport " + port + " -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p tcp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p udp --sport " + port + " -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p tcp -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p udp -j FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p udp -j FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -F FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -X FWX_IN_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -F FWX_OUT_" + port + " 2>/dev/null || true",
-		"iptables -t mangle -X FWX_OUT_" + port + " 2>/dev/null || true",
-		"rm -f /var/lib/forwardx-agent/traffic_" + port + ".prev /var/lib/forwardx-agent/port_" + port + ".rule /var/lib/forwardx-agent/port_" + port + ".fwtype /var/lib/forwardx-agent/target_" + port + ".info 2>/dev/null || true",
-	}
+		"iptables -t mangle -D PREROUTING -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
+		"iptables -t mangle -D PREROUTING -p udp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p udp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p tcp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p udp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p tcp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p udp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
+		"iptables -t mangle -D PREROUTING -p tcp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D PREROUTING -p udp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p tcp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D POSTROUTING -p udp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p tcp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D INPUT -p udp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p tcp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D OUTPUT -p udp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D FORWARD -p tcp -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D FORWARD -p udp -j FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -D FORWARD -p udp -j FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -F FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -X FWX_IN_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -F FWX_OUT_"+port+" 2>/dev/null || true",
+		"iptables -t mangle -X FWX_OUT_"+port+" 2>/dev/null || true",
+		"rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true",
+	)
 	if targetIP, targetPort, ok := readTargetInfo(port); ok {
 		tp := strconv.Itoa(targetPort)
 		targetCmds := []string{
@@ -730,11 +793,24 @@ func managedPortCleanupCmds(port string) []string {
 	return cmds
 }
 
+func fxpPortCleanupCmds(port string) []string {
+	return []string{
+		"pkill -f 'forwardx-fxp.*fxp-.*-" + port + "\\.json' 2>/dev/null || true",
+		"rm -f /run/forwardx-agent/fxp-*-" + port + ".json 2>/dev/null || true",
+	}
+}
+
 func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".rule")
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".fwtype")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
+	removeTunnelStateByPort(port)
+}
+
+func removeTunnelStateByPort(port string) {
+	_ = os.Remove("/var/lib/forwardx-agent/tunnel_" + port + ".id")
+	_ = os.Remove("/var/lib/forwardx-agent/tunnel_" + port + ".fwtype")
 }
 
 func atoi(s string) int {
@@ -801,6 +877,7 @@ func removeState(port int) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".fwtype")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + p + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
+	removeTunnelStateByPort(p)
 }
 
 func collectTraffic(cfg Config) {
@@ -1234,6 +1311,35 @@ func stopFXP(spec fxpSpec) {
 	}
 	if s.configPath != "" {
 		_ = os.Remove(s.configPath)
+	}
+}
+
+func stopFXPByPort(tunnelID int, listenPort int) {
+	if tunnelID <= 0 || listenPort <= 0 {
+		return
+	}
+	prefix := ":" + strconv.Itoa(tunnelID) + ":"
+	suffix := ":" + strconv.Itoa(listenPort)
+	var specs []fxpSpec
+	fxpMu.Lock()
+	for id := range fxpServers {
+		if strings.Contains(id, prefix) && strings.HasSuffix(id, suffix) {
+			parts := strings.Split(id, ":")
+			if len(parts) != 4 {
+				continue
+			}
+			ruleID, _ := strconv.Atoi(parts[2])
+			specs = append(specs, fxpSpec{
+				Role:       parts[0],
+				TunnelID:   tunnelID,
+				RuleID:     ruleID,
+				ListenPort: listenPort,
+			})
+		}
+	}
+	fxpMu.Unlock()
+	for _, spec := range specs {
+		stopFXP(spec)
 	}
 }
 

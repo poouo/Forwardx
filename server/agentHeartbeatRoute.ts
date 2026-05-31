@@ -718,8 +718,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return buildCountingChainCmds(Number(rule.tunnelExitPort), rule.targetIp, rule.targetPort, rule.protocol);
       });
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
-      return [
-        `command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`,
+      const cmds = [
         `mkdir -p /etc/forwardx-tunnels`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-tunnels/config.json`,
         `echo "[gost-config] forwardx-tunnels services=${services.length}"`,
@@ -740,12 +739,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           "",
         ].join("\n")),
         `systemctl daemon-reload`,
-        `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
-        services.length > 0
-          ? `systemctl restart forwardx-tunnels.service || { systemctl status forwardx-tunnels.service --no-pager -l; journalctl -u forwardx-tunnels.service -n 80 --no-pager; exit 1; }`
-          : `systemctl stop forwardx-tunnels.service 2>/dev/null || true`,
-        ...countingCmds,
       ];
+      if (services.length > 0) {
+        cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
+        cmds.push(
+          `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
+          `systemctl restart forwardx-tunnels.service || { systemctl status forwardx-tunnels.service --no-pager -l; journalctl -u forwardx-tunnels.service -n 80 --no-pager; exit 1; }`,
+        );
+      } else {
+        cmds.push(`systemctl stop forwardx-tunnels.service 2>/dev/null || true`);
+      }
+      cmds.push(...countingCmds);
+      return cmds;
     };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
@@ -982,8 +987,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const isLast = seq === hops.length - 1;
 
         if (isFXP) {
-          if (isFirst) continue;
           // ForwardX multi-hop
+          if (isFirst) {
+            actions.push({
+              tunnelId: tunnel.id,
+              statusType: "tunnel",
+              ruleId: 0,
+              op,
+              forwardType: "forwardx-tunnel",
+              sourcePort: Number(listenPort),
+              targetIp: host.ip,
+              targetPort: Number(listenPort),
+              protocol: "tcp",
+              commands: await buildTunnelReloadCmds(),
+            } as any);
+            continue;
+          }
           const fxpSpec: any = {
             role: isLast ? "exit" : "relay",
             tunnelId: tunnel.id,

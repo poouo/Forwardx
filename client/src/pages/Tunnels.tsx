@@ -166,12 +166,6 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 
-const tunnelRuntimeFamily = (mode?: string | null) =>
-  String(mode || "").toLowerCase() === "forwardx" ? "forwardx" : "gost";
-
-const isEstablishedMultiHopTunnel = (tunnel: any | null | undefined) =>
-  Array.isArray(tunnel?.hopHostIds) && tunnel.hopHostIds.length >= 3;
-
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
@@ -550,8 +544,6 @@ function TunnelsContent() {
     () => editingId ? (tunnels || []).find((tunnel: any) => Number(tunnel.id) === Number(editingId)) || null : null,
     [editingId, tunnels]
   );
-  const lockRuntimeFamily = isEstablishedMultiHopTunnel(editingTunnel);
-  const runtimeFamilyLockTitle = "多级隧道创建后不能在 GOST 和 ForwardX 自定义加密之间切换，请删除后重新添加";
   const selectedExitHost = useMemo(
     () => hosts?.find((h: any) => h.id === form.exitHostId),
     [hosts, form.exitHostId]
@@ -665,14 +657,6 @@ function TunnelsContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
-    if (
-      lockRuntimeFamily
-      && editingTunnel
-      && tunnelRuntimeFamily(form.mode) !== tunnelRuntimeFamily(editingTunnel.mode)
-    ) {
-      toast.error(runtimeFamilyLockTitle);
-      return;
-    }
     let hasPrivateHop = false;
     for (let i = 1; i < orderedHopConnectHosts.length; i++) {
       const value = String(orderedHopConnectHosts[i] || "").trim();
@@ -709,9 +693,8 @@ function TunnelsContent() {
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;
-  const editingRuntimeFamily = tunnelRuntimeFamily(editingTunnel?.mode);
-  const gostRuntimeDisabled = enabledGostTunnelModes.length === 0 || (lockRuntimeFamily && editingRuntimeFamily === "forwardx");
-  const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false || (lockRuntimeFamily && editingRuntimeFamily === "gost");
+  const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
+  const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
   const handleViewModeChange = (nextViewMode: TunnelViewMode) => {
     setViewMode(nextViewMode);
     storeTunnelViewMode(nextViewMode);
@@ -1174,12 +1157,12 @@ function TunnelsContent() {
       )}
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="w-[calc(100vw-1.25rem)] max-w-[95vw] sm:max-w-2xl">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加隧道"}</DialogTitle>
             <DialogDescription>配置入口、出口和监听端口。</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 pr-1 sm:pr-2">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 sm:pr-2">
             <div className="space-y-2">
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
@@ -1232,7 +1215,7 @@ function TunnelsContent() {
                     if (nextMode) setForm({ ...form, mode: nextMode });
                   }}
                   disabled={gostRuntimeDisabled}
-                  title={lockRuntimeFamily && editingRuntimeFamily === "forwardx" ? runtimeFamilyLockTitle : (enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined)}
+                  title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
                   className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
                     gostTunnelModes.includes(form.mode)
                       ? "border-primary bg-primary/5 text-foreground"
@@ -1255,7 +1238,7 @@ function TunnelsContent() {
                     }))
                   }
                   disabled={forwardxRuntimeDisabled}
-                  title={lockRuntimeFamily && editingRuntimeFamily === "gost" ? runtimeFamilyLockTitle : (forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined)}
+                  title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
                   className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
                     form.mode === "forwardx"
                       ? "border-primary bg-primary/5 text-foreground"
@@ -1269,11 +1252,6 @@ function TunnelsContent() {
                   </span>
                 </button>
               </div>
-              {lockRuntimeFamily && (
-                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
-                  {runtimeFamilyLockTitle}
-                </p>
-              )}
             </div>
             {form.mode !== "forwardx" && enabledGostTunnelModes.length === 0 && (
               <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
