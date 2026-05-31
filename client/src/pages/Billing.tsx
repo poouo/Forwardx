@@ -631,7 +631,7 @@ export default function Billing() {
                   <Input type="datetime-local" value={redeemExpiresAt} onChange={(e) => setRedeemExpiresAt(e.target.value)} />
                   <p className="text-xs text-muted-foreground">不选择则永久有效。</p>
                 </div>
-                <div className="flex items-end md:col-span-2"><Button onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" /> 生成兑换码</Button></div>
+                <div className="flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" /> 生成兑换码</Button></div>
               </CardContent>
             </Card>
             <Card>
@@ -759,7 +759,7 @@ export default function Billing() {
                     })}
                   </div>
                 </div>
-                <div className="flex items-end md:col-span-2"><Button onClick={submitDiscount} disabled={createDiscountCode.isPending}><TicketPercent className="mr-2 h-4 w-4" /> 创建折扣码</Button></div>
+                <div className="flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitDiscount} disabled={createDiscountCode.isPending}><TicketPercent className="mr-2 h-4 w-4" /> 创建折扣码</Button></div>
               </CardContent>
             </Card>
             <Card>
