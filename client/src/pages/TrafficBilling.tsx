@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { Coins, Gauge, Plus, ReceiptText, Server, Trash2, Route } from "lucide-react";
-import { useMemo, useState, type ElementType } from "react";
+import { useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
 function money(cents?: number | null) {
@@ -44,15 +44,32 @@ function TrafficBillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="truncate text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            {subtitle && <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p>}
+            <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
           </div>
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm`}>
+          <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
             <Icon className="h-5 w-5 text-white" />
           </div>
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function MobileInfoRow({
+  label,
+  children,
+  valueClassName = "",
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
+    </div>
   );
 }
 
@@ -181,7 +198,32 @@ export default function TrafficBilling() {
             <CardTitle>计费配置</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
+            <div className="grid gap-3 md:hidden">
+              {(data?.configs || []).map((config: any) => (
+                <div key={config.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {config.resourceType === "host" ? <Server className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Route className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                      <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
+                    </div>
+                    <Button variant="ghost" size="icon" className="-mr-2 -mt-2 shrink-0 text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                    <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
+                    <MobileInfoRow label="单价">{money(config.pricePerGbCents)} / GB</MobileInfoRow>
+                    <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
+                    <MobileInfoRow label="状态"><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></MobileInfoRow>
+                  </div>
+                </div>
+              ))}
+              {(data?.configs || []).length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无计费配置</div>
+              )}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <Table>
               <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
               <TableBody>
                 {(data?.configs || []).map((config: any) => (
@@ -202,6 +244,7 @@ export default function TrafficBilling() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
 
@@ -210,7 +253,29 @@ export default function TrafficBilling() {
             <CardTitle className="flex items-center gap-2"><Coins className="h-5 w-5" /> 扣费记录</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
+            <div className="grid gap-3 md:hidden">
+              {records.map((record: any) => (
+                <div key={record.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium">{record.name || record.username || `#${record.userId}`}</p>
+                      <p className="mt-1 break-words text-xs text-muted-foreground">{record.ruleName || `#${record.ruleId}`}</p>
+                    </div>
+                    <div className="shrink-0 text-right text-sm font-medium text-destructive">-{money(record.amountCents)}</div>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                    <MobileInfoRow label="资源">{record.resourceType === "host" ? "主机" : "隧道"} #{record.resourceId}</MobileInfoRow>
+                    <MobileInfoRow label="流量">{formatBytes(record.bytes)} / 计费 {record.billedGb}GB</MobileInfoRow>
+                    <MobileInfoRow label="时间">{record.createdAt ? new Date(record.createdAt).toLocaleString() : "-"}</MobileInfoRow>
+                  </div>
+                </div>
+              ))}
+              {records.length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无扣费记录</div>
+              )}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <Table>
               <TableHeader><TableRow><TableHead>用户</TableHead><TableHead>规则</TableHead><TableHead>资源</TableHead><TableHead>流量</TableHead><TableHead>金额</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
               <TableBody>
                 {records.map((record: any) => (
@@ -225,6 +290,7 @@ export default function TrafficBilling() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </div>

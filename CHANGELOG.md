@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.69] - 2026-05-31
+
+### Fixed
+
+- Optimized Billing and redemption/discount code lists for mobile APP screens with card-style rows so all ledger, validity, usage, and action fields are visible without horizontal scrolling.
+- Optimized Traffic Billing configuration and deduction records for mobile APP screens, including wrapping long stat values and resource details.
+- Optimized Plan Management package and subscription lists for mobile APP screens, keeping price, resources, limits, status, and actions visible on narrow screens.
+
+### Changed
+
+- Bumped panel version to 2.3.69. Agent target version remains 2.2.63.
+
 ## [2.3.68] - 2026-05-31
 
 ### Fixed

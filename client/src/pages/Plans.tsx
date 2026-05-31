@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { planResourceParts } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 type PlanForm = {
@@ -98,6 +98,23 @@ const durationOptions = [
 
 function durationLabel(days?: number | null) {
   return durationOptions.find((item) => Number(item.value) === Number(days))?.label || `${days || 30} 天`;
+}
+
+function MobileInfoRow({
+  label,
+  children,
+  valueClassName = "",
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
+    </div>
+  );
 }
 
 function toForm(plan: any): PlanForm {
@@ -314,7 +331,50 @@ export default function Plans() {
             <CardDescription>订阅后分配连续端口段。</CardDescription>
           </CardHeader>
           <CardContent>
-            <Table>
+            <div className="grid gap-3 md:hidden">
+              {plans.map((plan: any) => (
+                <div key={plan.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium">{plan.name}</p>
+                      <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || "无描述"}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setForm(toForm(plan)); setEditing(true); }}>编辑</Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                    <MobileInfoRow label="价格">{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
+                    <MobileInfoRow label="资源">
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {planResourceParts(plan).map((item) => (
+                          <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
+                        ))}
+                      </div>
+                    </MobileInfoRow>
+                    <MobileInfoRow label="端口">{plan.portCount} 个端口</MobileInfoRow>
+                    <MobileInfoRow label="规则/流量">规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</MobileInfoRow>
+                    <MobileInfoRow label="连接/IP">连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"}</MobileInfoRow>
+                    <MobileInfoRow label="限速">{speed(plan.rateLimitMbps)}</MobileInfoRow>
+                    <MobileInfoRow label="附加流量">{plan.trafficAddons?.length || 0} 档</MobileInfoRow>
+                    <MobileInfoRow label="状态">
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
+                        <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
+                      </div>
+                    </MobileInfoRow>
+                  </div>
+                </div>
+              ))}
+              {!isLoading && plans.length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">还没有套餐</div>
+              )}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>套餐</TableHead>
@@ -365,6 +425,7 @@ export default function Plans() {
                 )}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
 
@@ -374,7 +435,28 @@ export default function Plans() {
             <CardDescription>订阅记录。</CardDescription>
           </CardHeader>
           <CardContent>
-            <Table>
+            <div className="grid gap-3 md:hidden">
+              {subscriptions.slice(0, 20).map((sub: any) => (
+                <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium">{sub.username || `用户 #${sub.userId}`}</p>
+                      <p className="mt-1 break-words text-xs text-muted-foreground">{sub.planName || `套餐 #${sub.planId}`}</p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0">{sub.source === "payment" ? "购买" : "后台分配"}</Badge>
+                  </div>
+                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                    <MobileInfoRow label="端口段">{sub.portRangeStart}-{sub.portRangeEnd}</MobileInfoRow>
+                    <MobileInfoRow label="到期时间">{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString() : "永久"}</MobileInfoRow>
+                  </div>
+                </div>
+              ))}
+              {subscriptions.length === 0 && (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无订阅记录</div>
+              )}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>用户</TableHead>
@@ -396,12 +478,13 @@ export default function Plans() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </div>
 
       <Dialog open={editing} onOpenChange={setEditing}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-3xl sm:max-h-[90svh]">
           <DialogHeader>
             <DialogTitle>{form.id ? "编辑套餐" : "新增套餐"}</DialogTitle>
             <DialogDescription>选择订阅后可用资源。</DialogDescription>

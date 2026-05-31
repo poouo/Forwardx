@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
-import { useEffect, useMemo, useState, type ElementType } from "react";
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -61,10 +61,10 @@ function BillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="truncate text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            {subtitle && <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p>}
+            <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
           </div>
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm`}>
+          <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
             <Icon className="h-5 w-5 text-white" />
           </div>
         </div>
@@ -93,8 +93,8 @@ function BillingToggleCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="text-2xl font-bold tracking-tight">{enabled ? "已开启" : "已关闭"}</p>
-            <p className="truncate text-xs text-muted-foreground/80">入口状态</p>
+            <p className="break-words text-2xl font-bold tracking-tight">{enabled ? "已开启" : "已关闭"}</p>
+            <p className="break-words text-xs text-muted-foreground/80">入口状态</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <Switch checked={enabled} onCheckedChange={onCheckedChange} />
@@ -146,6 +146,23 @@ function ledgerIcon(item: any) {
   if (item.kind === "payment") return CreditCard;
   if (item.kind === "subscription") return Package;
   return WalletCards;
+}
+
+function MobileInfoRow({
+  label,
+  children,
+  valueClassName = "",
+}: {
+  label: string;
+  children: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
+    </div>
+  );
 }
 
 export default function Billing() {
@@ -445,8 +462,45 @@ export default function Billing() {
                   </SelectContent>
                 </Select>
               </CardHeader>
-              <CardContent className="overflow-x-auto">
-                <Table>
+              <CardContent>
+                <div className="grid gap-3 md:hidden">
+                  {ledger.map((item: any) => {
+                    const Icon = ledgerIcon(item);
+                    const relatedInfo = item.paymentOrderNo || item.tradeNo || (item.planId ? `plan#${item.planId}` : "-");
+                    return (
+                      <div key={item.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted/30">
+                              <Icon className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="break-words text-sm font-medium">{item.title}</p>
+                              <p className="mt-0.5 break-words text-xs text-muted-foreground">{item.description || "-"}</p>
+                            </div>
+                          </div>
+                          <div className={`shrink-0 text-right text-sm font-medium ${ledgerTone(item)}`}>
+                            {item.kind === "subscription" && Number(item.amountCents || 0) === 0 ? "-" : money(item.amountCents, item.currency || "CNY")}
+                          </div>
+                        </div>
+                        <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                          <MobileInfoRow label="用户">{item.name || item.username || `#${item.userId}`}</MobileInfoRow>
+                          <MobileInfoRow label="类型"><Badge variant="outline">{item.category}</Badge></MobileInfoRow>
+                          <MobileInfoRow label="状态">
+                            <Badge variant={item.status === "completed" || item.status === "paid" || item.status === "active" ? "default" : "secondary"}>{item.statusLabel || item.status}</Badge>
+                          </MobileInfoRow>
+                          <MobileInfoRow label="关联" valueClassName="font-mono text-xs text-muted-foreground">{relatedInfo}</MobileInfoRow>
+                          <MobileInfoRow label="时间">{dateText(item.createdAt)}</MobileInfoRow>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {ledger.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无账单流水</div>
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>用户</TableHead>
@@ -492,6 +546,7 @@ export default function Billing() {
                     )}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -502,8 +557,30 @@ export default function Billing() {
                 <CardTitle className="flex items-center gap-2"><WalletCards className="h-5 w-5" /> 余额流水</CardTitle>
                 <CardDescription>余额变动记录。</CardDescription>
               </CardHeader>
-              <CardContent className="overflow-x-auto">
-                <Table>
+              <CardContent>
+                <div className="grid gap-3 md:hidden">
+                  {transactions.map((tx: any) => (
+                    <div key={tx.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="break-words text-sm font-medium">{tx.username || `#${tx.userId}`}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{dateText(tx.createdAt)}</p>
+                        </div>
+                        <div className={`shrink-0 text-right text-sm font-medium ${Number(tx.amountCents) >= 0 ? "text-emerald-600" : "text-destructive"}`}>{money(tx.amountCents)}</div>
+                      </div>
+                      <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                        <MobileInfoRow label="类型"><Badge variant="outline">{tx.typeLabel || balanceTypeText(tx.type)}</Badge></MobileInfoRow>
+                        <MobileInfoRow label="余额">{money(tx.balanceAfterCents)}</MobileInfoRow>
+                        <MobileInfoRow label="说明">{tx.description || "-"}</MobileInfoRow>
+                      </div>
+                    </div>
+                  ))}
+                  {transactions.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无余额流水</div>
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                   <TableHeader><TableRow><TableHead>用户</TableHead><TableHead>类型</TableHead><TableHead>金额</TableHead><TableHead>余额</TableHead><TableHead>说明</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
                   <TableBody>
                     {transactions.map((tx: any) => (
@@ -518,6 +595,7 @@ export default function Billing() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -584,8 +662,44 @@ export default function Billing() {
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="overflow-x-auto">
-                <Table>
+              <CardContent>
+                <div className="grid gap-3 md:hidden">
+                  {filteredRedemptionCodes.map((code: any) => {
+                    const content = code.type === "plan" ? `${code.planName || `套餐 #${code.planId}`} / ${code.durationDays || 30} 天` : money(code.amountCents);
+                    const usage = code.usedAt ? `${code.usedByUsername || code.usedByUserId} 于 ${dateText(code.usedAt)}` : "未使用";
+                    return (
+                      <div key={code.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={selectedRedemptionSet.has(Number(code.id))}
+                            onChange={(event) => toggleRedemptionCode(Number(code.id), event.target.checked)}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="min-w-0 break-all font-mono text-sm font-medium">{code.code}</p>
+                              <Button variant="ghost" size="icon" className="-mr-2 -mt-2 shrink-0 text-destructive" onClick={() => deleteRedemptionCode.mutate({ id: code.id })}>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                              <MobileInfoRow label="类型"><Badge variant="outline">{code.type === "plan" ? "套餐" : "余额"}</Badge></MobileInfoRow>
+                              <MobileInfoRow label="内容">{content}</MobileInfoRow>
+                              <MobileInfoRow label="有效期">{dateText(code.startsAt)} - {dateText(code.expiresAt)}</MobileInfoRow>
+                              <MobileInfoRow label="使用">{usage}</MobileInfoRow>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {filteredRedemptionCodes.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无兑换码</div>
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                   <TableHeader><TableRow><TableHead className="w-12"><input type="checkbox" checked={allFilteredRedemptionSelected} onChange={(event) => toggleAllFilteredRedemptionCodes(event.target.checked)} disabled={filteredRedemptionCodes.length === 0} /></TableHead><TableHead>兑换码</TableHead><TableHead>类型</TableHead><TableHead>内容</TableHead><TableHead>有效期</TableHead><TableHead>使用情况</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                   <TableBody>
                     {filteredRedemptionCodes.map((code: any) => (
@@ -606,6 +720,7 @@ export default function Billing() {
                     )}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -649,8 +764,35 @@ export default function Billing() {
             </Card>
             <Card>
               <CardHeader><CardTitle>折扣码列表</CardTitle></CardHeader>
-              <CardContent className="overflow-x-auto">
-                <Table>
+              <CardContent>
+                <div className="grid gap-3 md:hidden">
+                  {discountCodes.map((code: any) => {
+                    const status = discountStatus(code);
+                    const planNames = code.planIds?.length ? code.planIds.map((id: number) => plans.find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐";
+                    return (
+                      <div key={code.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="min-w-0 break-all font-mono text-sm font-medium">{code.code}</p>
+                          <Button variant="ghost" size="icon" className="-mr-2 -mt-2 shrink-0 text-destructive" onClick={() => deleteDiscountCode.mutate({ id: code.id })}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                          <MobileInfoRow label="优惠">{code.discountType === "percent" ? `${code.discountValue}%` : money(code.discountValue)}</MobileInfoRow>
+                          <MobileInfoRow label="套餐">{planNames}</MobileInfoRow>
+                          <MobileInfoRow label="状态"><Badge variant={status === "生效中" ? "default" : "secondary"}>{status}</Badge></MobileInfoRow>
+                          <MobileInfoRow label="次数">{code.usedCount || 0} / {code.maxUses || "不限"}</MobileInfoRow>
+                          <MobileInfoRow label="有效期">{dateText(code.startsAt)} - {dateText(code.expiresAt)}</MobileInfoRow>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {discountCodes.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无折扣码</div>
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
                   <TableHeader><TableRow><TableHead>折扣码</TableHead><TableHead>优惠</TableHead><TableHead>适用套餐</TableHead><TableHead>状态</TableHead><TableHead>次数</TableHead><TableHead>有效期</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                   <TableBody>
                     {discountCodes.map((code: any) => {
@@ -669,6 +811,7 @@ export default function Billing() {
                     })}
                   </TableBody>
                 </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
