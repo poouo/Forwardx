@@ -333,7 +333,7 @@ export default function TrafficBilling() {
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-3xl sm:max-h-[90svh]">
           <DialogHeader>
             <DialogTitle>{configForm.id ? "编辑计费项" : "新增计费项"}</DialogTitle>
             <DialogDescription>设置计费资源、单价倍率和使用权限。</DialogDescription>

@@ -265,7 +265,7 @@
   }
 
   body[data-select-scroll-lock][data-scroll-locked],
-  body[data-dialog-scroll-lock][data-scroll-locked] {
+  body[data-dialog-scroll-lock] {
     overflow-y: scroll !important;
     padding-right: 0 !important;
     margin-right: 0 !important;

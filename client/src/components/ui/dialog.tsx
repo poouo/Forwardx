@@ -6,25 +6,54 @@ import { X } from "lucide-react"
 const Dialog = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) => {
   const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
   const isOpen = open ?? internalOpen
+  const lockActiveRef = React.useRef(false)
+  const releaseTimerRef = React.useRef<number | null>(null)
 
   const handleOpenChange = React.useCallback((nextOpen: boolean) => {
     setInternalOpen(nextOpen)
     onOpenChange?.(nextOpen)
   }, [onOpenChange])
 
-  React.useLayoutEffect(() => {
-    if (!isOpen || typeof document === "undefined") return
-    const count = Number(document.body.dataset.dialogScrollLock || "0") + 1
-    document.body.dataset.dialogScrollLock = String(count)
-    return () => {
-      const nextCount = Number(document.body.dataset.dialogScrollLock || "1") - 1
-      if (nextCount > 0) {
-        document.body.dataset.dialogScrollLock = String(nextCount)
-      } else {
-        delete document.body.dataset.dialogScrollLock
-      }
+  const releaseScrollLock = React.useCallback(() => {
+    if (!lockActiveRef.current || typeof document === "undefined") return
+    const nextCount = Number(document.body.dataset.dialogScrollLock || "1") - 1
+    if (nextCount > 0) {
+      document.body.dataset.dialogScrollLock = String(nextCount)
+    } else {
+      delete document.body.dataset.dialogScrollLock
     }
-  }, [isOpen])
+    lockActiveRef.current = false
+  }, [])
+
+  React.useLayoutEffect(() => {
+    if (typeof document === "undefined") return
+    if (isOpen) {
+      if (releaseTimerRef.current !== null) {
+        window.clearTimeout(releaseTimerRef.current)
+        releaseTimerRef.current = null
+      }
+      if (!lockActiveRef.current) {
+        const count = Number(document.body.dataset.dialogScrollLock || "0") + 1
+        document.body.dataset.dialogScrollLock = String(count)
+        lockActiveRef.current = true
+      }
+      return
+    }
+    if (lockActiveRef.current && releaseTimerRef.current === null) {
+      releaseTimerRef.current = window.setTimeout(() => {
+        releaseTimerRef.current = null
+        releaseScrollLock()
+      }, 360)
+    }
+  }, [isOpen, releaseScrollLock])
+
+  React.useLayoutEffect(() => () => {
+    if (releaseTimerRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(releaseTimerRef.current)
+      releaseTimerRef.current = null
+    }
+    releaseScrollLock()
+  }, [releaseScrollLock])
 
   return <DialogPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
 }
