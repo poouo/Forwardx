@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.70] - 2026-05-31
+
+### Fixed
+
+- Bumped the Agent target version to 2.2.65 so upgraded Agents no longer report a version inside the legacy panel-versioned Agent range and can clear the pending upgrade state normally.
+
+### Changed
+
+- Bumped panel version to 2.3.70 and Agent target version to 2.2.65.
+
 ## [2.3.69] - 2026-05-31
 
 ### Fixed
