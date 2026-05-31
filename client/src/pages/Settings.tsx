@@ -62,13 +62,11 @@ import {
   UserPlus,
   Server,
   Wifi,
-  Image,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-import { fileToImageDataUrl } from "@/lib/avatar";
 
 function getUpgradeProgress(job: any) {
   const status = job?.status || "idle";
@@ -1560,7 +1558,6 @@ function SystemInfoSection() {
   });
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
-  const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
   const [webPortInput, setWebPortInput] = useState("");
   const [showWebPortConfirm, setShowWebPortConfirm] = useState(false);
   const [webPortCountdown, setWebPortCountdown] = useState(5);
@@ -1607,7 +1604,6 @@ function SystemInfoSection() {
     if (settings) {
       setPanelUrlInput(settings.panelPublicUrl || "");
       setSiteTitleInput(settings.siteTitle || "ForwardX");
-      setSiteLogoDataUrl(settings.siteLogoDataUrl || "");
       setWebPortInput(String(settings.webPort || 3000));
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
@@ -1708,19 +1704,9 @@ function SystemInfoSection() {
     saveSystemSettings("panelUrl", { panelPublicUrl: v });
   };
 
-  const handleLogoUpload = async (file?: File | null) => {
-    if (!file) return;
-    try {
-      setSiteLogoDataUrl(await fileToImageDataUrl(file));
-    } catch (error: any) {
-      toast.error(error?.message || "Logo 处理失败");
-    }
-  };
-
   const handleSaveBranding = () => {
     saveSystemSettings("branding", {
       siteTitle: siteTitleInput.trim(),
-      siteLogoDataUrl,
     }, {
       onSuccess: () => utils.system.publicInfo.invalidate(),
     });
@@ -1956,168 +1942,112 @@ function SystemInfoSection() {
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Image className="h-4 w-4 text-primary" />
+            <Globe className="h-4 w-4 text-primary" />
             品牌显示
           </CardTitle>
           <CardDescription>
-            配置后台显示的网站标题和 Logo。
+            配置后台显示的网站标题。
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
-            <div className="space-y-2">
-              <Label htmlFor="site-title">网站标题</Label>
+        <CardContent>
+          <div className="rounded-lg border border-border/40 bg-muted/15 p-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_160px] lg:items-end">
+              <div className="min-w-0 space-y-2">
+                <Label htmlFor="site-title">网站标题</Label>
+                <Input
+                  id="site-title"
+                  value={siteTitleInput}
+                  onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
+                  placeholder="ForwardX"
+                />
+                <p className="text-xs text-muted-foreground">
+                  用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
+                </p>
+              </div>
+              <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
+                保存网站标题
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        {/* 面板公开访问地址 */}
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe className="h-4 w-4 text-primary" />
+              面板公开访问地址
+            </CardTitle>
+            <CardDescription>
+              Agent 安装和回调使用此地址。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Input
-                id="site-title"
-                value={siteTitleInput}
-                onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
-                placeholder="ForwardX"
+                placeholder="例如: https://forwardx.example.com 或 http://1.2.3.4:3000"
+                value={panelUrlInput}
+                onChange={(e) => setPanelUrlInput(e.target.value)}
+                className="flex-1"
               />
+              <Button
+                onClick={handleSavePanelUrl}
+                disabled={isSavingSetting("panelUrl")}
+              >
+                保存
+              </Button>
             </div>
-            <div className="flex items-end gap-3">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-border/50 bg-background">
-                {siteLogoDataUrl ? (
-                  <img src={siteLogoDataUrl} alt="Logo" className="h-12 w-12 object-contain" />
-                ) : (
-                  <img src="/logo-light.png" alt="Logo" className="h-12 w-12 object-contain dark:hidden" />
-                )}
-                {!siteLogoDataUrl && (
-                  <img src="/logo-dark.png" alt="Logo" className="hidden h-12 w-12 object-contain dark:block" />
-                )}
-              </div>
-              <div className="grid flex-1 gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <label className="gap-2">
-                    <Image className="h-4 w-4" />
-                    上传 Logo
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,image/gif"
-                      className="hidden"
-                      onChange={(e) => {
-                        handleLogoUpload(e.target.files?.[0]);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setSiteLogoDataUrl("")}>
-                  使用默认
-                </Button>
-              </div>
+            <p className="text-xs text-muted-foreground">
+              留空使用当前访问地址。需以 http:// 或 https:// 开头。
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wifi className="h-4 w-4 text-primary" />
+              Web 服务监听端口
+            </CardTitle>
+            <CardDescription>
+              修改本地部署面板的 Web 访问端口。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={65535}
+                value={webPortInput}
+                onChange={(e) => setWebPortInput(e.target.value.replace(/\D/g, "").slice(0, 5))}
+                disabled={!settings?.webPortManagement?.enabled}
+                className="flex-1"
+              />
+              <Button
+                onClick={openWebPortConfirm}
+                disabled={!settings?.webPortManagement?.enabled || updateWebPortMutation.isPending}
+              >
+                修改端口
+              </Button>
             </div>
-          </div>
-          <div className="flex justify-end">
-            <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
-              保存品牌显示
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* 面板公开访问地址 */}
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Globe className="h-4 w-4 text-primary" />
-            面板公开访问地址
-          </CardTitle>
-          <CardDescription>
-            Agent 安装和回调使用此地址。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-col sm:flex-row gap-2">
-            <Input
-              placeholder="例如: https://forwardx.example.com 或 http://1.2.3.4:3000"
-              value={panelUrlInput}
-              onChange={(e) => setPanelUrlInput(e.target.value)}
-              className="flex-1"
-            />
-            <Button
-              onClick={handleSavePanelUrl}
-              disabled={isSavingSetting("panelUrl")}
-            >
-              保存
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            留空使用当前访问地址。需以 http:// 或 https:// 开头。
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Wifi className="h-4 w-4 text-primary" />
-            Web 服务监听端口
-          </CardTitle>
-          <CardDescription>
-            修改本地部署面板的 Web 访问端口。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={65535}
-              value={webPortInput}
-              onChange={(e) => setWebPortInput(e.target.value.replace(/\D/g, "").slice(0, 5))}
-              disabled={!settings?.webPortManagement?.enabled}
-              className="flex-1"
-            />
-            <Button
-              onClick={openWebPortConfirm}
-              disabled={!settings?.webPortManagement?.enabled || updateWebPortMutation.isPending}
-            >
-              修改端口
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            当前监听端口：{settings?.webPort || 3000}。修改后服务会重启，请使用新端口访问后台。
-          </p>
-          {!settings?.webPortManagement?.enabled && (
-            <Alert>
-              <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>Docker 部署不支持后台修改端口</AlertTitle>
-              <AlertDescription>
-                Docker 用户请自行配置端口映射；非 Docker 部署可在此修改监听端口。
-              </AlertDescription>
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <UserPlus className="h-4 w-4 text-primary" />
-            用户注册
-          </CardTitle>
-          <CardDescription>
-            控制新用户自助注册。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-            <div>
-              <p className="text-sm font-medium">开放注册</p>
-              <p className="text-xs text-muted-foreground">
-                关闭后仅管理员可添加用户。
-              </p>
-            </div>
-            <Switch checked={registrationEnabled} onCheckedChange={setRegistrationEnabled} />
-          </div>
-          <div className="flex justify-end">
-            <Button onClick={handleSaveRegistration} disabled={isSavingSetting("registration")}>
-              保存注册设置
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            <p className="text-xs text-muted-foreground">
+              当前监听端口：{settings?.webPort || 3000}。修改后服务会重启，请使用新端口访问后台。
+            </p>
+            {!settings?.webPortManagement?.enabled && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Docker 部署不支持后台修改端口</AlertTitle>
+                <AlertDescription>
+                  Docker 用户请自行配置端口映射；非 Docker 部署可在此修改监听端口。
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       <Dialog open={showWebPortConfirm} onOpenChange={setShowWebPortConfirm}>
         <DialogContent className="sm:max-w-md">
@@ -2148,33 +2078,63 @@ function SystemInfoSection() {
         </DialogContent>
       </Dialog>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Shield className="h-4 w-4 text-primary" />
-            双重验证
-          </CardTitle>
-          <CardDescription>
-            账号可绑定 2FA 动态验证码。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-            <div>
-              <p className="text-sm font-medium">启用 2FA 软件支持</p>
-              <p className="text-xs text-muted-foreground">
-                关闭后隐藏绑定入口。
-              </p>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <UserPlus className="h-4 w-4 text-primary" />
+              用户注册
+            </CardTitle>
+            <CardDescription>
+              控制新用户自助注册。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">开放注册</p>
+                <p className="text-xs text-muted-foreground">
+                  关闭后仅管理员可添加用户。
+                </p>
+              </div>
+              <Switch checked={registrationEnabled} onCheckedChange={setRegistrationEnabled} />
             </div>
-            <Switch checked={twoFactorEnabled} onCheckedChange={setTwoFactorEnabled} />
-          </div>
-          <div className="flex justify-end">
-            <Button onClick={handleSaveTwoFactor} disabled={isSavingSetting("twoFactor")}>
-              保存双重验证设置
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            <div className="flex justify-end">
+              <Button onClick={handleSaveRegistration} disabled={isSavingSetting("registration")}>
+                保存注册设置
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Shield className="h-4 w-4 text-primary" />
+              双重验证
+            </CardTitle>
+            <CardDescription>
+              账号可绑定 2FA 动态验证码。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">启用 2FA 软件支持</p>
+                <p className="text-xs text-muted-foreground">
+                  关闭后隐藏绑定入口。
+                </p>
+              </div>
+              <Switch checked={twoFactorEnabled} onCheckedChange={setTwoFactorEnabled} />
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={handleSaveTwoFactor} disabled={isSavingSetting("twoFactor")}>
+                保存双重验证设置
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>

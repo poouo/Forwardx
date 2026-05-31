@@ -15,6 +15,9 @@ type AvatarPickerProps = {
   onRandom?: () => void;
   actions?: ReactNode;
   className?: string;
+  controlsClassName?: string;
+  gridClassName?: string;
+  previewClassName?: string;
   onError?: (message: string) => void;
 };
 
@@ -28,6 +31,9 @@ export function AvatarPicker({
   onRandom,
   actions,
   className,
+  controlsClassName,
+  gridClassName,
+  previewClassName,
   onError,
 }: AvatarPickerProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -54,8 +60,8 @@ export function AvatarPicker({
 
   return (
     <div className={cn("space-y-3", className)}>
-      <div className="flex items-center gap-3">
-        <UserAvatar user={{ id: fallback, username: String(fallback || ""), avatar: value }} className="h-14 w-14" />
+      <div className={cn("flex items-center gap-3", controlsClassName)}>
+        <UserAvatar user={{ id: fallback, username: String(fallback || ""), avatar: value }} className={cn("h-14 w-14", previewClassName)} />
         <div className="flex min-w-0 flex-wrap gap-2">
           <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => inputRef.current?.click()} disabled={disabled}>
             <Upload className="h-4 w-4" />
@@ -76,7 +82,7 @@ export function AvatarPicker({
         onChange={handleUpload}
         disabled={disabled}
       />
-      <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
+      <div className={cn("grid grid-cols-6 gap-2 sm:grid-cols-8", gridClassName)}>
         {DEFAULT_AVATAR_SEEDS.map((seed) => {
           const preset = multiavatarValue(seed);
           const selected = value === preset;

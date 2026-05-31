@@ -77,6 +77,7 @@ import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { cn } from "@/lib/utils";
 import { PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 
@@ -205,6 +206,12 @@ function DashboardLayoutContent({
   });
   const { data: telegramStatus } = trpc.telegram.status.useQuery(undefined, {
     enabled: !!user,
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      if (!status || status.bound) return false;
+      const expiresAt = status.pendingBind?.expiresAt ? new Date(status.pendingBind.expiresAt).getTime() : 0;
+      return expiresAt > Date.now() ? 2000 : false;
+    },
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -453,54 +460,9 @@ function DashboardLayoutContent({
   };
 
   const copyText = async (text: string) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success("已复制到剪贴板");
-        return;
-      } catch (error) {
-        console.warn("[Clipboard] navigator.clipboard failed, fallback to execCommand:", error);
-      }
-    }
-
-    const host =
-      (document.querySelector('[role="dialog"][data-state="open"]') as HTMLElement | null) ||
-      document.body;
-    const textarea = document.createElement("textarea");
-    let copied = false;
-    try {
-      textarea.value = text;
-      textarea.setAttribute("readonly", "");
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      textarea.style.pointerEvents = "none";
-      textarea.style.left = "0";
-      textarea.style.top = "0";
-      textarea.style.width = "1px";
-      textarea.style.height = "1px";
-      host.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, text.length);
-      copied = document.execCommand("copy");
-    } catch (error) {
-      console.warn("[Clipboard] execCommand fallback failed:", error);
-      copied = false;
-    } finally {
-      if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
-    }
-
-    if (copied) {
-      toast.success("已复制到剪贴板");
-      return;
-    }
-
-    try {
-      window.prompt("复制失败，请手动选中并复制：", text);
-      toast.warning("未能自动写入剪贴板，已弹出手动复制窗口");
-    } catch {
-      toast.error("复制失败，请手动复制");
-    }
+    const copied = await copyTextToClipboard(text);
+    if (copied) toast.success("已复制到剪贴板");
+    else toast.error("复制失败，请长按或手动选中复制");
   };
 
   const openTelegramDialog = () => {
@@ -1020,13 +982,13 @@ function DashboardLayoutContent({
           <DropdownMenu open={accountMenuOpen} onOpenChange={setAccountMenuOpen} modal={false}>
             <DropdownMenuTrigger asChild>
               <button
-                className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2.5 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 title={accountDisplayName}
               >
                 <UserAvatar user={user as any} className="h-9 w-9 shrink-0" />
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-                  <p className="truncate text-sm font-medium leading-none">{accountDisplayName}</p>
-                  <p className="mt-1.5 truncate text-xs text-muted-foreground">
+                  <p className="truncate text-sm font-medium leading-5">{accountDisplayName}</p>
+                  <p className="mt-1 truncate text-xs leading-4 text-muted-foreground">
                     {isAdmin ? "管理员" : "用户"} · {telegramStatus?.bound ? "TG 已绑定" : "TG 未绑定"}
                   </p>
                 </div>

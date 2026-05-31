@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.78] - 2026-06-01
+
+### Fixed
+
+- Fixed Telegram bind-code copy on browsers and APP WebViews where the Clipboard API is unavailable by adding a fallback copy path.
+- Kept Profile Telegram binding status live while a bind code is pending so successful bot binding is reflected without refreshing.
+- Improved Profile mobile and desktop layout alignment for account, avatar, Telegram, and 2FA cards.
+
+### Changed
+
+- Simplified system branding settings to edit only the website title and no longer expose Logo editing.
+- Refined User Management account rows so role information is shown with the account and account status/actions are aligned more cleanly.
+- Bumped panel version to 2.3.78. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.32 so the APK includes the latest Profile, Settings, and User Management mobile UI updates.
+
 ## [2.3.77] - 2026-05-31
 
 ### Added

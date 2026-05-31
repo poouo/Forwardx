@@ -370,14 +370,6 @@ function UsersContent() {
     onError: (err) => toast.error(err.message || "创建用户失败"),
   });
 
-  const updateRoleMutation = trpc.users.updateRole.useMutation({
-    onSuccess: () => {
-      utils.users.list.invalidate();
-      toast.success("用户角色已更新");
-    },
-    onError: (err) => toast.error(err.message || "更新角色失败"),
-  });
-
   const resetPasswordMutation = trpc.users.resetPassword.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -891,9 +883,9 @@ function UsersContent() {
           <WalletCards className="mr-2 h-4 w-4 text-muted-foreground" />
           <span>余额充值</span>
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => openTrafficSettings(u)}>
-          <Settings className="mr-2 h-4 w-4 text-muted-foreground" />
-          <span>流量与权限</span>
+        <DropdownMenuItem onSelect={() => openAccountDialog(u)}>
+          <User className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>账户信息</span>
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!u.emailVerified || !u.email} onSelect={() => openSendEmail(u)}>
           <Mail className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -1026,7 +1018,7 @@ function UsersContent() {
                     <div className="flex flex-wrap items-center gap-1.5">
                       <p className="min-w-0 max-w-full truncate text-sm font-semibold">{u.username || "未命名"}</p>
                       <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 px-1.5 text-[10px]">
-                        {u.role === "admin" ? "管理员" : "用户"}
+                        {u.role === "admin" ? "管理员" : "普通用户"}
                       </Badge>
                       {u.id === currentUser?.id && (
                         <Badge variant="outline" className="h-5 px-1.5 text-[10px] text-primary">当前</Badge>
@@ -1092,26 +1084,7 @@ function UsersContent() {
                     {speedLimit > 0 && <span className="col-span-2">限速: {formatSpeed(speedLimit)}</span>}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <Select
-                      value={u.role}
-                      onValueChange={(v: "user" | "admin") => {
-                        if (u.id === currentUser?.id) {
-                          toast.error("不能修改自己的角色");
-                          return;
-                        }
-                        updateRoleMutation.mutate({ userId: u.id, role: v });
-                      }}
-                      disabled={u.id === currentUser?.id}
-                    >
-                      <SelectTrigger className="h-9 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="admin">管理员</SelectItem>
-                        <SelectItem value="user">普通用户</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  <div className="grid gap-2">
                     <div className="flex h-9 items-center justify-between rounded-md border border-border/50 px-2">
                       <span className="text-xs text-muted-foreground">转发</span>
                       <Switch
@@ -1124,7 +1097,7 @@ function UsersContent() {
 
                   <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 pt-1">
                     {renderAccountEnabledControl(u, true)}
-                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => openAccountDialog(u)}>
+                    <Button variant="outline" size="sm" className="h-9 px-2 text-xs" onClick={() => openTrafficSettings(u)}>
                       <Pencil className="mr-1 h-3.5 w-3.5" />
                       编辑
                     </Button>
@@ -1161,15 +1134,15 @@ function UsersContent() {
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="w-[60px] whitespace-nowrap">ID</TableHead>
-                    <TableHead className="w-[240px] whitespace-nowrap">用户</TableHead>
-                    <TableHead className="hidden w-[140px] whitespace-nowrap sm:table-cell">角色</TableHead>
+                    <TableHead className="w-[260px] whitespace-nowrap">用户</TableHead>
                     <TableHead className="w-[170px] whitespace-nowrap">流量使用</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap xl:table-cell">Telegram</TableHead>
                     <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
                     <TableHead className="hidden w-[160px] whitespace-nowrap lg:table-cell">转发总开关</TableHead>
                     <TableHead className="hidden w-[150px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
-                    <TableHead className="w-[330px] whitespace-nowrap text-right">操作</TableHead>
+                    <TableHead className="w-[150px] whitespace-nowrap text-center">账户状态</TableHead>
+                    <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1190,6 +1163,9 @@ function UsersContent() {
                             <UserAvatar user={u} className="h-8 w-8 shrink-0" />
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium leading-none">{u.username || "未命名"}</p>
+                              <Badge variant={u.role === "admin" ? "default" : "outline"} className="mt-1 h-5 w-fit px-1.5 text-[10px]">
+                                {u.role === "admin" ? "管理员" : "普通用户"}
+                              </Badge>
                               {u.displayRemark && (
                                 <p className="mt-0.5 truncate text-xs text-muted-foreground">{u.displayRemark}</p>
                               )}
@@ -1214,37 +1190,6 @@ function UsersContent() {
                               )}
                             </div>
                           </div>
-                        </TableCell>
-                        <TableCell className="hidden sm:table-cell">
-                          <Select
-                            value={u.role}
-                            onValueChange={(v: "user" | "admin") => {
-                              if (u.id === currentUser?.id) {
-                                toast.error("不能修改自己的角色");
-                                return;
-                              }
-                              updateRoleMutation.mutate({ userId: u.id, role: v });
-                            }}
-                            disabled={u.id === currentUser?.id}
-                          >
-                            <SelectTrigger className="w-28 h-8 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="admin">
-                                <div className="flex items-center gap-1.5">
-                                  <Shield className="h-3 w-3 text-amber-400" />
-                                  管理员
-                                </div>
-                              </SelectItem>
-                              <SelectItem value="user">
-                                <div className="flex items-center gap-1.5">
-                                  <User className="h-3 w-3" />
-                                  普通用户
-                                </div>
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
                         </TableCell>
                         <TableCell>
                           <div className="space-y-1 min-w-[140px]">
@@ -1340,15 +1285,19 @@ function UsersContent() {
                             )}
                           </div>
                         </TableCell>
+                        <TableCell className="text-center">
+                          <div className="flex justify-center">
+                            {renderAccountEnabledControl(u)}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-2">
-                            {renderAccountEnabledControl(u)}
                             <Button
                               variant="outline"
                               size="sm"
                               className="h-8 gap-1 px-2 text-xs"
-                              title="账户信息"
-                              onClick={() => openAccountDialog(u)}
+                              title="流量与权限"
+                              onClick={() => openTrafficSettings(u)}
                             >
                               <Pencil className="h-3.5 w-3.5" />
                               编辑

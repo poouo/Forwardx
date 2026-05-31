@@ -1,13 +1,14 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import DashboardLayout from "@/components/DashboardLayout";
-import { UserAvatar } from "@/components/UserAvatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { migrateLegacyAvatarValue } from "@/lib/avatar";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { trpc } from "@/lib/trpc";
@@ -33,12 +34,9 @@ import { toast } from "sonner";
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
 async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success("已复制到剪贴板");
-  } catch {
-    toast.error("复制失败，请手动复制");
-  }
+  const copied = await copyTextToClipboard(text);
+  if (copied) toast.success("已复制到剪贴板");
+  else toast.error("复制失败，请长按或手动选中复制");
 }
 
 function ProfileContent() {
@@ -51,6 +49,7 @@ function ProfileContent() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
   const [telegramBindTick, setTelegramBindTick] = useState(Date.now());
+  const [showTelegramUnbindConfirm, setShowTelegramUnbindConfirm] = useState(false);
   const [twoFactorSetup, setTwoFactorSetup] = useState<{ setupId: string; secret: string; otpauthUrl: string; expiresAt: Date; expiresInSeconds: number } | null>(null);
   const [twoFactorQrCode, setTwoFactorQrCode] = useState("");
   const [twoFactorSetupTick, setTwoFactorSetupTick] = useState(Date.now());
@@ -68,6 +67,12 @@ function ProfileContent() {
   });
   const { data: telegramStatus } = trpc.telegram.status.useQuery(undefined, {
     enabled: !!user,
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      if (!status || status.bound) return false;
+      const expiresAt = status.pendingBind?.expiresAt ? new Date(status.pendingBind.expiresAt).getTime() : 0;
+      return expiresAt > Date.now() ? 2000 : false;
+    },
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -137,6 +142,7 @@ function ProfileContent() {
   const unbindTelegramMutation = trpc.telegram.unbind.useMutation({
     onSuccess: () => {
       setTelegramBind(null);
+      setShowTelegramUnbindConfirm(false);
       utils.telegram.status.invalidate();
       toast.success("Telegram 已解绑");
     },
@@ -361,9 +367,9 @@ function ProfileContent() {
         </Badge>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
+      <div className="grid gap-4 xl:grid-cols-2">
         <Card className="border-border/50 bg-card/70">
-          <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <CardHeader>
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
                 <UserRound className="h-4 w-4 text-primary" />
@@ -371,13 +377,12 @@ function ProfileContent() {
               </CardTitle>
               <CardDescription>低于 50K 的头像会直接上传，较大的图片会自动压缩。</CardDescription>
             </div>
-            <UserAvatar user={user as any} className="h-14 w-14" />
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]" : "lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.2fr)_minmax(120px,0.5fr)]"}`}>
-              <div className="min-w-0">
+            <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" : "lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.15fr)_minmax(112px,0.45fr)]"}`}>
+              <div className="flex min-w-0 flex-col justify-center">
                 <p className="text-xs text-muted-foreground">账号</p>
-                <p className="mt-2 truncate font-medium">{user?.username || "-"}</p>
+                <p className="mt-2 truncate text-base font-medium">{user?.username || "-"}</p>
               </div>
               <div className="min-w-0 space-y-2">
                 <Label htmlFor="profile-display-name" className="text-xs text-muted-foreground">显示名称</Label>
@@ -392,7 +397,6 @@ function ProfileContent() {
                   />
                   <Button
                     type="button"
-                    variant="outline"
                     className="h-9 shrink-0"
                     onClick={handleSaveDisplayName}
                     disabled={updateProfileMutation.isPending}
@@ -402,33 +406,38 @@ function ProfileContent() {
                 </div>
               </div>
               {!avatarQuotaUnlimited && (
-                <div className="min-w-0">
+                <div className="flex min-w-0 flex-col justify-center">
                   <p className="text-xs text-muted-foreground">今日剩余</p>
                   <p className="mt-2 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
                 </div>
               )}
             </div>
-            <AvatarPicker
-              value={avatarDraft}
-              onChange={setAvatarDraft}
-              fallback={user?.id || user?.username}
-              disabled={avatarBusy || avatarQuotaExhausted}
-              randomDisabled={avatarQuotaExhausted}
-              randomLoading={randomAvatarMutation.isPending}
-              onRandom={() => randomAvatarMutation.mutate()}
-              onError={(message) => toast.error(message)}
-              actions={(
-                <Button
-                  type="button"
-                  size="sm"
-                  className="gap-2"
-                  onClick={handleSaveAvatar}
-                  disabled={avatarBusy || avatarQuotaExhausted}
-                >
-                  {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
-                </Button>
-              )}
-            />
+            <div className="rounded-lg border border-border/40 bg-muted/10 p-3">
+              <AvatarPicker
+                value={avatarDraft}
+                onChange={setAvatarDraft}
+                fallback={user?.id || user?.username}
+                disabled={avatarBusy || avatarQuotaExhausted}
+                randomDisabled={avatarQuotaExhausted}
+                randomLoading={randomAvatarMutation.isPending}
+                onRandom={() => randomAvatarMutation.mutate()}
+                onError={(message) => toast.error(message)}
+                controlsClassName="items-center"
+                previewClassName="h-16 w-16"
+                gridClassName="grid-cols-5 sm:grid-cols-6 2xl:grid-cols-8"
+                actions={(
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="gap-2"
+                    onClick={handleSaveAvatar}
+                    disabled={avatarBusy || avatarQuotaExhausted}
+                  >
+                    {updateAvatarMutation.isPending ? "保存中..." : "保存头像"}
+                  </Button>
+                )}
+              />
+            </div>
             {avatarQuotaExhausted && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
                 今日头像修改次数已用完，明天可继续修改。
@@ -496,7 +505,7 @@ function ProfileContent() {
                     </p>
                   </div>
                 </div>
-                <Button variant="outline" className="w-full gap-2 self-end" onClick={() => unbindTelegramMutation.mutate()} disabled={unbindTelegramMutation.isPending}>
+                <Button variant="destructive" className="w-full gap-2 self-end" onClick={() => setShowTelegramUnbindConfirm(true)} disabled={unbindTelegramMutation.isPending}>
                   <Link2Off className="h-4 w-4" />
                   {unbindTelegramMutation.isPending ? "解绑中..." : "解绑 Telegram"}
                 </Button>
@@ -720,6 +729,36 @@ function ProfileContent() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={showTelegramUnbindConfirm} onOpenChange={setShowTelegramUnbindConfirm}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-md">
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+            解绑 Telegram
+          </DialogTitle>
+          <DialogDescription>
+            解绑后将无法继续通过 Telegram 接收提醒或登录。确认要解绑当前 Telegram 账号吗？
+          </DialogDescription>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowTelegramUnbindConfirm(false)}
+              disabled={unbindTelegramMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              className="gap-2"
+              onClick={() => unbindTelegramMutation.mutate()}
+              disabled={unbindTelegramMutation.isPending}
+            >
+              <Link2Off className="h-4 w-4" />
+              {unbindTelegramMutation.isPending ? "解绑中..." : "确认解绑"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
