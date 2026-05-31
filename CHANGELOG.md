@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.67] - 2026-05-31
+
+### Fixed
+
+- Allowed existing multi-hop tunnels to switch between GOST and ForwardX custom-encryption runtimes during edit, with all hop Agents refreshed so the new runtime is applied.
+- Added Agent-side tunnel port runtime state and stale FXP cleanup so switching a multi-hop tunnel between GOST and ForwardX clears the old listener before applying the new one.
+- Stopped requiring or starting `gost` for the managed tunnel service when a host has no active GOST tunnel services, so plain iptables/nftables forwarding does not start GOST.
+- Improved the multi-hop tunnel editor on mobile/app screens so hop rows wrap cleanly and the edit dialog remains scrollable on small viewports.
+
+### Changed
+
+- Bumped panel version to 2.3.67 and Agent target version to 2.2.63.
+
 ## [2.3.66] - 2026-05-30
 
 ### Fixed
