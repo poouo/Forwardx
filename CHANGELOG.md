@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.76] - 2026-05-31
+
+### Fixed
+
+- Kept generated Telegram bind codes visible across Profile page refreshes and APP/WebView remounts by returning the active pending bind code from the Telegram status API.
+- Changed Telegram bind codes to a 5-minute validity window with an on-screen countdown, copy action, expired state, and regenerate action.
+- Added a direct Telegram jump link that opens the configured bot with the bind code so users can complete binding from the Start flow.
+
+### Changed
+
+- Moved Profile to the first item in the Management sidebar group.
+- Placed Telegram binding and 2FA cards on the same row on wide Profile layouts while keeping mobile screens stacked.
+- Bumped panel version to 2.3.76. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.30 so the APK includes the latest Profile binding UI.
+
 ## [2.3.75] - 2026-05-31
 
 ### Fixed

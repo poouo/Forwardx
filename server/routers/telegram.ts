@@ -9,7 +9,7 @@ import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
 
-const BIND_CODE_TTL_MS = 10 * 60 * 1000;
+const BIND_CODE_TTL_MS = 5 * 60 * 1000;
 const MOBILE_LOGIN_TTL_MS = 5 * 60 * 1000;
 
 function randomCode(length = 24) {
@@ -97,12 +97,37 @@ export const telegramRouter = router({
   status: protectedProcedure.query(async ({ ctx }) => {
     const settings = await getTelegramSettings();
     const user = await db.getUserById(ctx.user.id);
+    let pendingBind: {
+      code: string;
+      expiresAt: Date;
+      expiresInSeconds: number;
+      botUsername: string;
+      configured: boolean;
+      enabled: boolean;
+    } | null = null;
+    if (!user?.telegramId && user?.telegramBindCode && user.telegramBindCodeExpiresAt) {
+      const expiresAt = new Date(user.telegramBindCodeExpiresAt);
+      const expiresInSeconds = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+      if (expiresInSeconds > 0) {
+        pendingBind = {
+          code: user.telegramBindCode,
+          expiresAt,
+          expiresInSeconds,
+          botUsername: settings.botUsername,
+          configured: settings.configured,
+          enabled: settings.enabled,
+        };
+      } else {
+        await db.clearTelegramBindCode(user.id);
+      }
+    }
     return {
       enabled: settings.enabled,
       configured: settings.configured,
       botUsername: settings.botUsername,
       polling: settings.polling,
       bound: !!user?.telegramId,
+      pendingBind,
       account: user?.telegramId
         ? {
             id: user.telegramId,

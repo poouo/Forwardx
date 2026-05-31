@@ -66,6 +66,7 @@ import QRCode from "qrcode";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -250,6 +251,7 @@ function DashboardLayoutContent({
     }
   });
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
+  const [telegramBindTick, setTelegramBindTick] = useState(Date.now());
   const [showTwoFactorDialog, setShowTwoFactorDialog] = useState(false);
   const [twoFactorSetup, setTwoFactorSetup] = useState<{ setupId: string; secret: string; otpauthUrl: string; expiresAt: Date; expiresInSeconds: number } | null>(null);
   const [twoFactorQrCode, setTwoFactorQrCode] = useState("");
@@ -416,6 +418,7 @@ function DashboardLayoutContent({
   const createTelegramBindMutation = trpc.telegram.createBindCode.useMutation({
     onSuccess: (data) => {
       setTelegramBind(data);
+      setTelegramBindTick(Date.now());
       setShowTelegramDialog(true);
       utils.telegram.status.invalidate();
       toast.success("Telegram 绑定码已生成");
@@ -589,10 +592,20 @@ function DashboardLayoutContent({
     return () => window.clearInterval(timer);
   }, [showTwoFactorDialog, twoFactorSetup, twoFactorStatus?.enabled]);
 
+  useEffect(() => {
+    if (!telegramBind?.expiresAt) return;
+    const timer = window.setInterval(() => setTelegramBindTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [telegramBind?.expiresAt]);
+
   const twoFactorSetupExpiresAt = twoFactorSetup?.expiresAt ? new Date(twoFactorSetup.expiresAt).getTime() : 0;
   const twoFactorSetupRemaining = twoFactorSetupExpiresAt ? Math.max(0, Math.ceil((twoFactorSetupExpiresAt - twoFactorSetupTick) / 1000)) : 0;
   const twoFactorSetupExpired = !!twoFactorSetup && twoFactorSetupRemaining <= 0;
   const twoFactorSetupRemainingLabel = `${Math.floor(twoFactorSetupRemaining / 60)}:${String(twoFactorSetupRemaining % 60).padStart(2, "0")}`;
+  const telegramBindExpiresAt = telegramBind?.expiresAt ? new Date(telegramBind.expiresAt).getTime() : 0;
+  const telegramBindRemaining = telegramBindExpiresAt ? Math.max(0, Math.ceil((telegramBindExpiresAt - telegramBindTick) / 1000)) : 0;
+  const telegramBindExpired = !!telegramBind && telegramBindRemaining <= 0;
+  const telegramBindRemainingLabel = `${Math.floor(telegramBindRemaining / 60)}:${String(telegramBindRemaining % 60).padStart(2, "0")}`;
 
   const openTwoFactorDialog = () => {
     setShowTwoFactorDialog(true);
@@ -678,6 +691,17 @@ function DashboardLayoutContent({
     ? `https://t.me/${telegramBind?.botUsername || telegramStatus?.botUsername}`
     : "";
 
+  useEffect(() => {
+    if (telegramStatus?.bound) {
+      if (telegramBind) setTelegramBind(null);
+      return;
+    }
+    if (!telegramBind && telegramStatus?.pendingBind?.code) {
+      setTelegramBind(telegramStatus.pendingBind);
+      setTelegramBindTick(Date.now());
+    }
+  }, [telegramBind, telegramStatus?.bound, telegramStatus?.pendingBind]);
+
   const toggleTheme = () => {
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
@@ -694,7 +718,7 @@ function DashboardLayoutContent({
     : [];
 
   const allMenuItems = isAdmin
-    ? [...visibleMainMenuItems, announcementsMenuItem, ...adminMenuItems, profileMenuItem]
+    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, ...adminMenuItems]
     : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, profileMenuItem];
 
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
@@ -733,7 +757,7 @@ function DashboardLayoutContent({
     displayUpgradeJob?.status === "success" ||
     displayUpgradeJob?.status === "error"
   );
-  const managementMenuItems: SidebarNavItem[] = isAdmin ? [...adminMenuItems, profileMenuItem] : [profileMenuItem];
+  const managementMenuItems: SidebarNavItem[] = isAdmin ? [profileMenuItem, ...adminMenuItems] : [profileMenuItem];
   const navigateFromSidebar = (path: string) => {
     setLocation(path);
     if (isMobile) {
@@ -1516,8 +1540,20 @@ function DashboardLayoutContent({
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                   <p className="text-xs text-muted-foreground">绑定码</p>
                   <div className="mt-1 flex items-center gap-2">
-                    <code className="flex-1 break-all font-mono text-lg font-semibold tracking-widest">{telegramBind.code}</code>
-                    <Button variant="outline" size="icon" onClick={() => copyText(telegramBind.code)}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <code className={`break-all font-mono text-lg font-semibold tracking-widest ${telegramBindExpired ? "text-muted-foreground line-through" : ""}`}>
+                          {telegramBind.code}
+                        </code>
+                        <Badge variant={telegramBindExpired ? "destructive" : "outline"} className="shrink-0">
+                          {telegramBindExpired ? "已过期" : `${telegramBindRemainingLabel} 后过期`}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {telegramBindExpired ? "绑定码已过期，请重新生成。" : "5 分钟内有效，可复制备用，也可以直接打开 Telegram 完成绑定。"}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="icon" onClick={() => copyText(telegramBind.code)} disabled={telegramBindExpired}>
                       <Copy className="h-4 w-4" />
                     </Button>
                   </div>
@@ -1525,11 +1561,11 @@ function DashboardLayoutContent({
                 <p className="text-xs text-muted-foreground">
                   打开 Telegram 点 Start，或发送 <code>/bind {telegramBind.code}</code>。
                 </p>
-                {telegramBindUrl && (
+                {telegramBindUrl && !telegramBindExpired && (
                   <Button variant="outline" asChild className="w-full gap-2">
                     <a href={telegramBindUrl} target="_blank" rel="noopener noreferrer">
                       <Send className="h-4 w-4" />
-                      使用 Telegram 绑定
+                      打开 Telegram 完成绑定
                     </a>
                   </Button>
                 )}
@@ -1581,7 +1617,7 @@ function DashboardLayoutContent({
                 onClick={() => createTelegramBindMutation.mutate()}
                 disabled={createTelegramBindMutation.isPending || telegramStatus?.configured === false}
               >
-                {createTelegramBindMutation.isPending ? "生成中..." : "生成绑定码"}
+                {createTelegramBindMutation.isPending ? "生成中..." : telegramBindExpired ? "重新生成绑定码" : "生成绑定码"}
               </Button>
             )}
           </DialogFooter>
