@@ -1,5 +1,5 @@
-export const APP_VERSION = "2.3.73";
-export const ANDROID_APP_VERSION = "2.3.27";
+export const APP_VERSION = "2.3.74";
+export const ANDROID_APP_VERSION = "2.3.28";
 export const AGENT_VERSION = "2.2.66";
 
 export const LEGACY_PANEL_VERSIONED_AGENT_MIN = "2.2.63";

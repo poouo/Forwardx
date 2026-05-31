@@ -1,43 +1,57 @@
 export const AVATAR_MAX_BYTES = 50 * 1024;
 export const AVATAR_MAX_DATA_URL_LENGTH = 90 * 1024;
-export const AVATAR_PRESET_PREFIX = "preset:";
+export const MULTIAVATAR_PREFIX = "multiavatar:";
+export const LEGACY_AVATAR_PRESET_PREFIX = "preset:";
 export const AVATAR_DAILY_CHANGE_LIMIT = 3;
+export const AVATAR_RANDOM_WINDOW_MS = 60 * 1000;
+export const AVATAR_RANDOM_WINDOW_LIMIT = 10;
 
-export const DEFAULT_AVATAR_SEEDS = [
-  "nova",
-  "orbit",
-  "ember",
-  "pixel",
-  "mint",
-  "coral",
-  "sunrise",
-  "aurora",
-  "cobalt",
-  "meadow",
-  "plum",
-  "lagoon",
-];
-
-const PRESET_RE = /^preset:[a-z0-9_-]{1,48}$/i;
+const MULTIAVATAR_RE = /^multiavatar:[a-z0-9_-]{1,80}$/i;
+const LEGACY_PRESET_RE = /^preset:[a-z0-9_-]{1,80}$/i;
 const IMAGE_DATA_URL_RE = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
 
-export function avatarPreset(seed: string) {
-  const normalized = String(seed || "")
+function normalizeSeed(seed: string) {
+  return String(seed || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-  return `${AVATAR_PRESET_PREFIX}${normalized || "nova"}`;
+    .slice(0, 80);
 }
 
-export function randomAvatarPreset() {
-  const seed = DEFAULT_AVATAR_SEEDS[Math.floor(Math.random() * DEFAULT_AVATAR_SEEDS.length)] || "nova";
-  return avatarPreset(`${seed}-${Math.random().toString(36).slice(2, 8)}`);
+export function multiavatarValue(seed: string) {
+  return `${MULTIAVATAR_PREFIX}${normalizeSeed(seed) || "forwardx"}`;
 }
 
-export function isAvatarPreset(value?: string | null) {
-  return PRESET_RE.test(String(value || ""));
+function randomSeed() {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function randomMultiavatarValue(seed = randomSeed()) {
+  return multiavatarValue(seed);
+}
+
+export function isMultiavatarValue(value?: string | null) {
+  return MULTIAVATAR_RE.test(String(value || ""));
+}
+
+export function isLegacyAvatarPreset(value?: string | null) {
+  return LEGACY_PRESET_RE.test(String(value || ""));
+}
+
+export function migrateLegacyAvatarValue(value?: string | null, fallback?: string | number | null) {
+  const text = String(value || "").trim();
+  if (isMultiavatarValue(text)) return text;
+  if (isLegacyAvatarPreset(text)) return multiavatarValue(text.slice(LEGACY_AVATAR_PRESET_PREFIX.length));
+  return multiavatarValue(String(fallback || "forwardx"));
+}
+
+export function multiavatarSeedFromValue(value?: string | null, fallback?: string | number | null) {
+  const text = String(value || "").trim();
+  if (isMultiavatarValue(text)) return text.slice(MULTIAVATAR_PREFIX.length);
+  if (isLegacyAvatarPreset(text)) return text.slice(LEGACY_AVATAR_PRESET_PREFIX.length);
+  return normalizeSeed(String(fallback || "forwardx"));
 }
 
 export function getAvatarDataUrlByteLength(value: string) {
@@ -53,7 +67,7 @@ export function getAvatarDataUrlByteLength(value: string) {
 export function isValidAvatarValue(value?: string | null) {
   const text = String(value || "").trim();
   if (!text) return false;
-  if (isAvatarPreset(text)) return true;
+  if (isMultiavatarValue(text)) return true;
   if (text.length > AVATAR_MAX_DATA_URL_LENGTH) return false;
   if (!IMAGE_DATA_URL_RE.test(text)) return false;
   return getAvatarDataUrlByteLength(text) <= AVATAR_MAX_BYTES;

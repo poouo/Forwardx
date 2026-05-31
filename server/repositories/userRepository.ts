@@ -2,7 +2,14 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
-import { AVATAR_DAILY_CHANGE_LIMIT, normalizeAvatarValue, randomAvatarPreset } from "../../shared/avatar";
+import {
+  AVATAR_DAILY_CHANGE_LIMIT,
+  AVATAR_RANDOM_WINDOW_LIMIT,
+  AVATAR_RANDOM_WINDOW_MS,
+  migrateLegacyAvatarValue,
+  normalizeAvatarValue,
+  randomMultiavatarValue,
+} from "../../shared/avatar";
 
 export type ForwardAccessPauseReason = "manual" | "traffic_billing_balance" | "traffic_limit" | "expired" | null;
 
@@ -235,7 +242,7 @@ export async function createUser(data: { username: string; password: string; nam
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomAvatarPreset(),
+    avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
     role: data.role ?? "user",
     canAddRules: data.canAddRules ?? false,
   });
@@ -252,7 +259,7 @@ export async function registerUser(data: { username: string; password: string; n
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomAvatarPreset(),
+    avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
     role: "user",
     canAddRules: false,
   });
@@ -282,7 +289,7 @@ export async function updateUserAccount(userId: number, data: { username?: strin
   const password = data.password?.trim();
   if (password) patch.password = hashPassword(password);
   if (data.avatar !== undefined) {
-    patch.avatar = normalizeAvatarValue(data.avatar) || randomAvatarPreset();
+    patch.avatar = normalizeAvatarValue(data.avatar) || randomMultiavatarValue(`user-${userId}`);
   }
   if (Object.keys(patch).length > 1) {
     await db.update(users).set(patch).where(eq(users.id, userId));
@@ -296,28 +303,31 @@ function avatarChangeDayKey(date = new Date()) {
 export async function getUserAvatarQuota(userId: number) {
   const user = await getUserById(userId);
   const today = avatarChangeDayKey();
-  const used = user?.avatarChangeDay === today ? Number(user?.avatarChangeCount || 0) : 0;
+  const isAdmin = user?.role === "admin";
+  const used = !isAdmin && user?.avatarChangeDay === today ? Number(user?.avatarChangeCount || 0) : 0;
   return {
     limit: AVATAR_DAILY_CHANGE_LIMIT,
     used,
-    remaining: Math.max(0, AVATAR_DAILY_CHANGE_LIMIT - used),
+    remaining: isAdmin ? AVATAR_DAILY_CHANGE_LIMIT : Math.max(0, AVATAR_DAILY_CHANGE_LIMIT - used),
     day: today,
+    unlimited: isAdmin,
   };
 }
 
-export async function updateUserAvatarWithQuota(userId: number, avatar: string, options: { countQuota?: boolean } = {}) {
+export async function updateUserAvatarWithQuota(userId: number, avatar: string, options: { actorRole?: string; countQuota?: boolean } = {}) {
   const db = await getDb();
   if (!db) return getUserAvatarQuota(userId);
-  const normalized = normalizeAvatarValue(avatar) || randomAvatarPreset();
+  const normalized = normalizeAvatarValue(avatar) || randomMultiavatarValue(`user-${userId}`);
   const current = await getUserById(userId);
   if (!current) throw new Error("用户不存在");
+  const isSelfServiceLimited = options.countQuota && options.actorRole !== "admin" && current.role !== "admin";
 
   const patch: Record<string, unknown> = {
     avatar: normalized,
     updatedAt: nowDate(),
   };
 
-  if (options.countQuota && normalized !== current.avatar) {
+  if (isSelfServiceLimited && normalized !== current.avatar) {
     const today = avatarChangeDayKey();
     const used = current.avatarChangeDay === today ? Number(current.avatarChangeCount || 0) : 0;
     if (used >= AVATAR_DAILY_CHANGE_LIMIT) {
@@ -331,10 +341,57 @@ export async function updateUserAvatarWithQuota(userId: number, avatar: string, 
   return getUserAvatarQuota(userId);
 }
 
-export async function updateUserAvatarRandomWithQuota(userId: number, options: { countQuota?: boolean } = {}) {
-  const avatar = randomAvatarPreset();
+const randomAvatarWindows = new Map<number, { windowStart: number; count: number }>();
+
+export function checkAvatarRandomRateLimit(userId: number) {
+  const now = Date.now();
+  const current = randomAvatarWindows.get(userId);
+  if (!current || now - current.windowStart >= AVATAR_RANDOM_WINDOW_MS) {
+    randomAvatarWindows.set(userId, { windowStart: now, count: 1 });
+    return {
+      limit: AVATAR_RANDOM_WINDOW_LIMIT,
+      remaining: AVATAR_RANDOM_WINDOW_LIMIT - 1,
+      resetAt: new Date(now + AVATAR_RANDOM_WINDOW_MS),
+    };
+  }
+  if (current.count >= AVATAR_RANDOM_WINDOW_LIMIT) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((AVATAR_RANDOM_WINDOW_MS - (now - current.windowStart)) / 1000));
+    throw new Error(`随机头像生成过于频繁，请 ${retryAfterSeconds} 秒后再试`);
+  }
+  current.count += 1;
+  return {
+    limit: AVATAR_RANDOM_WINDOW_LIMIT,
+    remaining: Math.max(0, AVATAR_RANDOM_WINDOW_LIMIT - current.count),
+    resetAt: new Date(current.windowStart + AVATAR_RANDOM_WINDOW_MS),
+  };
+}
+
+export async function updateUserAvatarRandomWithQuota(userId: number, options: { actorRole?: string; countQuota?: boolean } = {}) {
+  const rateLimit = checkAvatarRandomRateLimit(userId);
+  const avatar = randomMultiavatarValue(`user-${userId}-${Date.now()}-${rateLimit.remaining}`);
   const quota = await updateUserAvatarWithQuota(userId, avatar, options);
-  return { avatar, quota };
+  return { avatar, quota, rateLimit };
+}
+
+export async function normalizeLegacyUserAvatar(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  const current = await getUserById(userId);
+  if (!current?.avatar || !String(current.avatar).startsWith("preset:")) return;
+  await db.update(users).set({ avatar: migrateLegacyAvatarValue(current.avatar, `user-${userId}`), updatedAt: nowDate() }).where(eq(users.id, userId));
+}
+
+export async function migrateLegacyUserAvatars() {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db.select({ id: users.id, avatar: users.avatar }).from(users);
+  let migrated = 0;
+  for (const row of rows) {
+    if (!String(row.avatar || "").startsWith("preset:")) continue;
+    await db.update(users).set({ avatar: migrateLegacyAvatarValue(row.avatar, `user-${row.id}`), updatedAt: nowDate() }).where(eq(users.id, row.id));
+    migrated += 1;
+  }
+  return migrated;
 }
 
 export async function getAllUsers() {

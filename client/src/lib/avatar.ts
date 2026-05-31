@@ -1,67 +1,51 @@
+import multiavatar from "@multiavatar/multiavatar/esm";
 import {
   AVATAR_MAX_BYTES,
-  AVATAR_PRESET_PREFIX,
-  DEFAULT_AVATAR_SEEDS,
-  avatarPreset,
   getAvatarDataUrlByteLength,
-  isAvatarPreset,
+  isMultiavatarValue,
   isValidAvatarValue,
+  migrateLegacyAvatarValue,
+  multiavatarSeedFromValue,
+  multiavatarValue,
 } from "@shared/avatar";
 
 export {
   AVATAR_MAX_BYTES,
-  DEFAULT_AVATAR_SEEDS,
-  avatarPreset,
   getAvatarDataUrlByteLength,
   isValidAvatarValue,
+  migrateLegacyAvatarValue,
+  multiavatarValue,
 };
 
-const backgrounds = ["#0ea5e9", "#14b8a6", "#f97316", "#a855f7", "#e11d48", "#22c55e", "#6366f1", "#f59e0b"];
-const accents = ["#ffffff", "#fef3c7", "#dbeafe", "#fce7f3", "#ecfeff", "#f0fdf4"];
-
-function hashSeed(seed: string) {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function pick<T>(items: T[], hash: number, shift = 0) {
-  return items[(hash >>> shift) % items.length];
-}
+export const DEFAULT_AVATAR_SEEDS = [
+  "forwardx-nova",
+  "forwardx-orbit",
+  "forwardx-ember",
+  "forwardx-pixel",
+  "forwardx-mint",
+  "forwardx-coral",
+  "forwardx-sunrise",
+  "forwardx-aurora",
+  "forwardx-cobalt",
+  "forwardx-meadow",
+  "forwardx-plum",
+  "forwardx-lagoon",
+];
 
 function svgToDataUrl(svg: string) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-export function avatarSeedFromValue(value?: string | null, fallback?: string | number | null) {
-  const raw = String(value || "");
-  if (raw.startsWith(AVATAR_PRESET_PREFIX)) return raw.slice(AVATAR_PRESET_PREFIX.length);
-  return String(fallback || "user");
-}
-
-export function renderPresetAvatar(seed: string) {
-  const normalized = avatarSeedFromValue(seed);
-  const hash = hashSeed(normalized);
-  const bg = pick(backgrounds, hash);
-  const accent = pick(accents, hash, 5);
-  const bg2 = pick(backgrounds, hash, 11);
-  const eyeY = 41 + (hash % 6);
-  const mouthY = 66 + ((hash >>> 3) % 5);
-  const radius = 34 + ((hash >>> 6) % 8);
-  const mouth = (hash >>> 9) % 2 === 0
-    ? `<path d="M39 ${mouthY}c7 7 19 7 26 0" fill="none" stroke="#172554" stroke-width="5" stroke-linecap="round"/>`
-    : `<path d="M40 ${mouthY}c6 4 18 4 24 0" fill="none" stroke="#172554" stroke-width="5" stroke-linecap="round"/>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 104 104"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="${bg}"/><stop offset="1" stop-color="${bg2}"/></linearGradient></defs><rect width="104" height="104" rx="52" fill="url(#g)"/><circle cx="52" cy="54" r="${radius}" fill="${accent}" opacity=".92"/><circle cx="40" cy="${eyeY}" r="5" fill="#172554"/><circle cx="64" cy="${eyeY}" r="5" fill="#172554"/>${mouth}<path d="M24 26c10-10 24-13 38-9 10 3 17 9 23 18-16-6-36-6-61-9z" fill="#fff" opacity=".22"/></svg>`;
-  return svgToDataUrl(svg);
+export function renderMultiavatar(seed: string) {
+  return svgToDataUrl(multiavatar(seed));
 }
 
 export function avatarSrc(value?: string | null, fallback?: string | number | null) {
   const text = String(value || "").trim();
-  if (text && !isAvatarPreset(text)) return text;
-  return renderPresetAvatar(text || avatarPreset(String(fallback || "user")));
+  if (isMultiavatarValue(text) || text.startsWith("preset:") || !text) {
+    return renderMultiavatar(multiavatarSeedFromValue(text, fallback));
+  }
+  return text;
 }
 
 export function avatarInitial(user?: { username?: string | null; name?: string | null } | null) {

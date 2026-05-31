@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.73",
+  "version": "2.3.74",
   "description": "ForwardX 杞彂绠＄悊闈㈡澘锛氬涓绘満绔彛杞彂銆佸姞瀵嗛毀閬撱€佽浆鍙戠粍銆佺敤鎴锋潈闄愩€佸椁愬拰娴侀噺璁¤垂缁熶竴绠＄悊绯荤粺",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -26,6 +26,7 @@
     "@capacitor/core": "^8.3.4",
     "@capacitor/local-notifications": "^8.2.0",
     "@capacitor/preferences": "^8.0.1",
+    "@multiavatar/multiavatar": "^1.0.7",
     "@radix-ui/react-avatar": "^1.1.11",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
@@ -87,4 +88,3 @@
     "wouter": "^3.3.0"
   }
 }
-

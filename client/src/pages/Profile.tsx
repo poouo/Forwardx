@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { avatarPreset } from "@/lib/avatar";
+import { migrateLegacyAvatarValue } from "@/lib/avatar";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { trpc } from "@/lib/trpc";
@@ -22,14 +22,12 @@ import {
   Loader2,
   LogOut,
   RefreshCw,
-  Rocket,
   Send,
   Shield,
   UserRound,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
-import { useLocation } from "wouter";
 import { toast } from "sonner";
 
 async function copyText(text: string) {
@@ -43,7 +41,6 @@ async function copyText(text: string) {
 
 function ProfileContent() {
   const { user, logout } = useAuth();
-  const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const [avatarDraft, setAvatarDraft] = useState("");
   const [oldPassword, setOldPassword] = useState("");
@@ -75,15 +72,8 @@ function ProfileContent() {
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const { data: panelUpdateInfo, isFetching: checkingPanelUpdate } = trpc.system.checkUpdate.useQuery(undefined, {
-    enabled: !!user && isAdmin && !mobileAuth.isNative,
-    refetchOnWindowFocus: false,
-    retry: false,
-    staleTime: 60 * 1000,
-  });
-
   useEffect(() => {
-    if (user) setAvatarDraft(String((user as any).avatar || avatarPreset(`user-${user.id}`)));
+    if (user) setAvatarDraft(migrateLegacyAvatarValue((user as any).avatar, `user-${user.id}`));
   }, [user?.id, (user as any)?.avatar]);
 
   const updateAvatarMutation = trpc.users.updateAvatar.useMutation({
@@ -91,7 +81,7 @@ function ProfileContent() {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
       utils.users.avatarQuota.invalidate();
-      toast.success(`头像已更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
+      toast.success(data.quota?.unlimited ? "头像已更新" : `头像已更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
     },
     onError: (error) => toast.error(error.message || "头像更新失败"),
   });
@@ -102,7 +92,7 @@ function ProfileContent() {
       utils.auth.me.invalidate();
       utils.users.list.invalidate();
       utils.users.avatarQuota.invalidate();
-      toast.success(`头像已随机更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
+      toast.success(data.quota?.unlimited ? "头像已随机更新" : `头像已随机更新，今日剩余 ${data.quota?.remaining ?? 0} 次`);
     },
     onError: (error) => toast.error(error.message || "随机头像失败"),
   });
@@ -201,7 +191,8 @@ function ProfileContent() {
   }, [twoFactorSetup, twoFactorStatus?.enabled]);
 
   const avatarQuotaRemaining = avatarQuota?.remaining ?? 3;
-  const avatarQuotaExhausted = avatarQuotaRemaining <= 0;
+  const avatarQuotaUnlimited = !!avatarQuota?.unlimited || user?.role === "admin";
+  const avatarQuotaExhausted = !avatarQuotaUnlimited && avatarQuotaRemaining <= 0;
   const avatarBusy = updateAvatarMutation.isPending || randomAvatarMutation.isPending;
   const twoFactorSetupExpiresAt = twoFactorSetup?.expiresAt ? new Date(twoFactorSetup.expiresAt).getTime() : 0;
   const twoFactorSetupRemaining = twoFactorSetupExpiresAt ? Math.max(0, Math.ceil((twoFactorSetupExpiresAt - twoFactorSetupTick) / 1000)) : 0;
@@ -292,7 +283,7 @@ function ProfileContent() {
       setCheckingMobileUpdate(true);
       const result = await checkMobileAppUpdate({ silent: false });
       setMobileUpdateInfo(result);
-      if (result?.hasUpdate) toast.success(`发现 APP 新版本 v${result.latestVersion}`);
+      if (result?.hasUpdate) toast.success(`发现 APP 新版本 v${result.latestVersion.replace(/^v/i, "")}`);
       else if (result) toast.success(result.hasApk ? "当前 APP 已是最新版本" : "当前版本暂无 APK 更新");
     } catch (error: any) {
       toast.error(error?.message || "APP 更新检查失败");
@@ -306,7 +297,7 @@ function ProfileContent() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">个人资料</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理账号安全、头像、Telegram 与软件更新。</p>
+          <p className="mt-1 text-sm text-muted-foreground">管理账号安全、头像和 Telegram。</p>
         </div>
         <Badge variant="outline" className="w-fit gap-1.5 px-3 py-1.5">
           <UserRound className="h-3.5 w-3.5" />
@@ -327,7 +318,7 @@ function ProfileContent() {
             <UserAvatar user={user as any} className="h-14 w-14" />
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-3">
+            <div className={`grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm ${avatarQuotaUnlimited ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
               <div className="min-w-0">
                 <p className="text-xs text-muted-foreground">账号</p>
                 <p className="mt-1 truncate font-medium">{user?.username || "-"}</p>
@@ -336,10 +327,12 @@ function ProfileContent() {
                 <p className="text-xs text-muted-foreground">显示名称</p>
                 <p className="mt-1 truncate font-medium">{user?.name || user?.username || "-"}</p>
               </div>
-              <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">今日剩余</p>
-                <p className="mt-1 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
-              </div>
+              {!avatarQuotaUnlimited && (
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">今日剩余</p>
+                  <p className="mt-1 truncate font-medium">{avatarQuotaRemaining} / {avatarQuota?.limit ?? 3} 次</p>
+                </div>
+              )}
             </div>
             <AvatarPicker
               value={avatarDraft}
@@ -578,68 +571,45 @@ function ProfileContent() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      {mobileAuth.isNative && (
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Download className="h-4 w-4 text-primary" />
               软件更新
             </CardTitle>
-            <CardDescription>{mobileAuth.isNative ? "检查 Android APP 是否有新版本。" : "查看当前运行环境的更新入口。"}</CardDescription>
+            <CardDescription>检查 Android APP 是否有新版本。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {mobileAuth.isNative ? (
-              <>
-                {mobileUpdateInfo && (
-                  <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs text-muted-foreground">当前版本</p>
-                      <p className="mt-1 font-mono">v{mobileUpdateInfo.currentVersion || "-"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">最新版本</p>
-                      <p className="mt-1 font-mono text-primary">v{mobileUpdateInfo.latestVersion || "-"}</p>
-                    </div>
-                  </div>
-                )}
-                <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-                  {mobileUpdateInfo?.hasUpdate && (
-                    <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={() => openMobileReleasePage(mobileUpdateInfo.releaseUrl)}>
-                      <ExternalLink className="h-4 w-4" />
-                      前往下载
-                    </Button>
-                  )}
-                  <Button className="w-full gap-2 sm:w-auto" onClick={handleMobileUpdateCheck} disabled={checkingMobileUpdate}>
-                    {checkingMobileUpdate ? <RefreshCw className="forwardx-icon-spin h-4 w-4" /> : <Download className="h-4 w-4" />}
-                    {checkingMobileUpdate ? "检查中..." : "检查 APP 更新"}
-                  </Button>
+            {mobileUpdateInfo && (
+              <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">当前版本</p>
+                  <p className="mt-1 font-mono">{mobileUpdateInfo.currentVersion ? `v${mobileUpdateInfo.currentVersion.replace(/^v/i, "")}` : "-"}</p>
                 </div>
-              </>
-            ) : isAdmin ? (
-              <>
-                <div className="grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm sm:grid-cols-2">
-                  <div>
-                    <p className="text-xs text-muted-foreground">当前版本</p>
-                    <p className="mt-1 font-mono">v{panelUpdateInfo?.currentVersion || "-"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">最新版本</p>
-                    <p className="mt-1 font-mono text-primary">{checkingPanelUpdate ? "检查中..." : `v${panelUpdateInfo?.latestVersion || "-"}`}</p>
-                  </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">最新版本</p>
+                  <p className="mt-1 font-mono text-primary">{mobileUpdateInfo.latestVersion ? `v${mobileUpdateInfo.latestVersion.replace(/^v/i, "")}` : "-"}</p>
                 </div>
-                <Button className="w-full gap-2 sm:w-auto" onClick={() => setLocation("/settings")}>
-                  <Rocket className="h-4 w-4" />
-                  前往系统更新
-                </Button>
-              </>
-            ) : (
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
-                当前为 Web 登录环境，无需检查 APP 更新。
               </div>
             )}
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              {mobileUpdateInfo?.hasUpdate && (
+                <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={() => openMobileReleasePage(mobileUpdateInfo.releaseUrl)}>
+                  <ExternalLink className="h-4 w-4" />
+                  前往下载
+                </Button>
+              )}
+              <Button className="w-full gap-2 sm:w-auto" onClick={handleMobileUpdateCheck} disabled={checkingMobileUpdate}>
+                {checkingMobileUpdate ? <RefreshCw className="forwardx-icon-spin h-4 w-4" /> : <Download className="h-4 w-4" />}
+                {checkingMobileUpdate ? "检查中..." : "检查 APP 更新"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
+      )}
 
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card className="border-border/50 bg-card/70">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">

@@ -3,7 +3,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
-import { avatarPreset } from "@/lib/avatar";
+import { migrateLegacyAvatarValue } from "@/lib/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -515,7 +515,7 @@ function UsersContent() {
     resetPasswordMutation.mutate({
       userId: resetUserId,
       username,
-      avatar: resetAvatarInput || avatarPreset(`user-${resetUserId}`),
+      avatar: resetAvatarInput || migrateLegacyAvatarValue("", `user-${resetUserId}`),
       newPassword: password || undefined,
     });
   };
@@ -958,7 +958,7 @@ function UsersContent() {
                       setResetUserName(userLabel(u));
                       setResetUsernameInput(u.username || "");
                       setResetNewPassword("");
-                      setResetAvatarInput(u.avatar || avatarPreset(`user-${u.id}`));
+                      setResetAvatarInput(migrateLegacyAvatarValue(u.avatar, `user-${u.id}`));
                       setShowResetPassword(true);
                     }}>
                       <KeyRound className="mr-1 h-3.5 w-3.5" />
@@ -1237,7 +1237,7 @@ function UsersContent() {
                                 setResetUserName(userLabel(u));
                                 setResetUsernameInput(u.username || "");
                                 setResetNewPassword("");
-                                setResetAvatarInput(u.avatar || avatarPreset(`user-${u.id}`));
+                                setResetAvatarInput(migrateLegacyAvatarValue(u.avatar, `user-${u.id}`));
                                 setShowResetPassword(true);
                               }}
                             >

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.74] - 2026-05-31
+
+### Changed
+
+- Switched generated user avatars to Multiavatar and migrated legacy `preset:` avatar values to the new `multiavatar:` format.
+- Applied the 3 successful avatar changes per day limit only to normal users; administrators are no longer limited by the daily avatar quota.
+- Added a random-avatar generation rate limit of 10 requests per minute.
+- Moved Profile into the Management sidebar group for both administrators and normal users.
+- Limited the Profile software update card to Android APP environments; Web panel updates remain under System Settings.
+- Fixed APP update version display so versions are not shown with a duplicated `v` prefix.
+- Bumped panel version to 2.3.74. Agent target version remains 2.2.66.
+- Bumped Android APP version to 2.3.28 so the APK includes the latest profile and avatar updates.
+
 ## [2.3.73] - 2026-05-31
 
 ### Added

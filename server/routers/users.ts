@@ -117,7 +117,7 @@ export const usersRouter = router({
         if (!isValidAvatarValue(input.avatar)) throw new Error("头像格式不支持或超过 50K");
         const target = await db.getUserById(userId);
         if (!target) throw new Error("用户不存在");
-        const quota = await db.updateUserAvatarWithQuota(userId, input.avatar, { countQuota: userId === ctx.user.id });
+        const quota = await db.updateUserAvatarWithQuota(userId, input.avatar, { actorRole: ctx.user.role, countQuota: userId === ctx.user.id });
         console.info(`[Users] Updated avatar userId=${userId} ${actorLabel(ctx)}`);
         return { success: true, quota };
       }),
@@ -128,7 +128,7 @@ export const usersRouter = router({
         ensureAdminOrSelf(ctx, userId);
         const target = await db.getUserById(userId);
         if (!target) throw new Error("用户不存在");
-        const result = await db.updateUserAvatarRandomWithQuota(userId, { countQuota: userId === ctx.user.id });
+        const result = await db.updateUserAvatarRandomWithQuota(userId, { actorRole: ctx.user.role, countQuota: userId === ctx.user.id });
         console.info(`[Users] Randomized avatar userId=${userId} ${actorLabel(ctx)}`);
         return { success: true, ...result };
       }),

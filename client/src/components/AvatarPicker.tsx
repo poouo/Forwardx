@@ -2,7 +2,7 @@ import { ChangeEvent, useRef } from "react";
 import { Image, Shuffle, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UserAvatar } from "@/components/UserAvatar";
-import { DEFAULT_AVATAR_SEEDS, avatarPreset, fileToImageDataUrl } from "@/lib/avatar";
+import { DEFAULT_AVATAR_SEEDS, fileToImageDataUrl, multiavatarValue } from "@/lib/avatar";
 import { cn } from "@/lib/utils";
 
 type AvatarPickerProps = {
@@ -46,8 +46,8 @@ export function AvatarPicker({
       onRandom();
       return;
     }
-    const seed = DEFAULT_AVATAR_SEEDS[Math.floor(Math.random() * DEFAULT_AVATAR_SEEDS.length)] || "nova";
-    onChange(avatarPreset(`${seed}-${Math.random().toString(36).slice(2, 8)}`));
+    const seed = DEFAULT_AVATAR_SEEDS[Math.floor(Math.random() * DEFAULT_AVATAR_SEEDS.length)] || "forwardx";
+    onChange(multiavatarValue(`${seed}-${Math.random().toString(36).slice(2, 8)}`));
   };
 
   return (
@@ -75,7 +75,7 @@ export function AvatarPicker({
       />
       <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
         {DEFAULT_AVATAR_SEEDS.map((seed) => {
-          const preset = avatarPreset(seed);
+          const preset = multiavatarValue(seed);
           const selected = value === preset;
           return (
             <button

@@ -11,7 +11,8 @@ import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
 import { connectDatabase, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
-import { randomAvatarPreset } from "../shared/avatar";
+import { randomMultiavatarValue } from "../shared/avatar";
+import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -41,6 +42,10 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    const migratedAvatars = await migrateLegacyUserAvatars();
+    if (migratedAvatars > 0) {
+      console.log(`[Database] Migrated legacy preset avatars count=${migratedAvatars}`);
+    }
     const hasAdmin = await hasAdminUser();
     console.log(`[Database] Initialization complete (${kind}, ${hasAdmin ? "admin exists" : "no admin yet"})`);
     return { configured: true, ready: true, hasAdmin, kind } as const;
@@ -74,7 +79,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     password: hashPassword(input.password),
     name: input.name?.trim() || input.email,
     email: input.email,
-    avatar: randomAvatarPreset(),
+    avatar: randomMultiavatarValue(`admin-${input.email}-${Date.now()}`),
     role: "admin",
     canAddRules: true,
     allowForwardXTunnel: true,
@@ -94,7 +99,9 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     username: input.email,
     email: input.email,
     name: input.name?.trim() || input.email,
-    avatar: (admin as any).avatar || randomAvatarPreset(),
+    avatar: (admin as any).avatar?.startsWith?.("preset:")
+      ? randomMultiavatarValue(`admin-${input.email}-${Date.now()}`)
+      : (admin as any).avatar || randomMultiavatarValue(`admin-${input.email}-${Date.now()}`),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

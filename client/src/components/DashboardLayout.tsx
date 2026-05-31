@@ -83,12 +83,12 @@ const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
 
 const mainMenuItems = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
-  { icon: UserRound, label: "个人资料", path: "/profile" },
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
   { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
+const profileMenuItem = { icon: UserRound, label: "个人资料", path: "/profile" };
 
 const adminMenuItems = [
   { icon: CreditCard, label: "支付对接", path: "/payments" },
@@ -692,8 +692,8 @@ function DashboardLayoutContent({
     : [];
 
   const allMenuItems = isAdmin
-    ? [...visibleMainMenuItems, announcementsMenuItem, ...adminMenuItems]
-    : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem];
+    ? [...visibleMainMenuItems, announcementsMenuItem, ...adminMenuItems, profileMenuItem]
+    : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, profileMenuItem];
 
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
   const upgradeJob = upgradeStatus?.job;
@@ -863,7 +863,7 @@ function DashboardLayoutContent({
                 管理
               </SidebarGroupLabel>
               <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
-                {adminMenuItems.map((item) => {
+                {[...adminMenuItems, profileMenuItem].map((item) => {
                   const isActive = location === item.path;
                   return (
                     <SidebarMenuItem key={item.path}>
@@ -881,6 +881,27 @@ function DashboardLayoutContent({
                     </SidebarMenuItem>
                   );
                 })}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
+
+          {!isAdmin && (
+            <SidebarGroup className={cn("mt-1 pt-2 mobile-sidebar-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+                管理
+              </SidebarGroupLabel>
+              <SidebarMenu className="px-2 py-1 mobile-sidebar-menu">
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={location === profileMenuItem.path}
+                    onClick={() => navigateFromSidebar(profileMenuItem.path)}
+                    tooltip={profileMenuItem.label}
+                    className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", mobileAuth.isNative && "text-[13px]")}
+                  >
+                    <profileMenuItem.icon className={`h-4 w-4 ${location === profileMenuItem.path ? "text-primary" : ""}`} />
+                    <span>{profileMenuItem.label}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroup>
           )}
@@ -1234,11 +1255,11 @@ function DashboardLayoutContent({
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-lg border border-border/40 bg-muted/25 p-3">
                 <p className="text-xs text-muted-foreground">当前版本</p>
-                <p className="mt-1 font-mono">v{mobileUpdateInfo?.currentVersion || "-"}</p>
+                <p className="mt-1 font-mono">{mobileUpdateInfo?.currentVersion ? `v${mobileUpdateInfo.currentVersion.replace(/^v/i, "")}` : "-"}</p>
               </div>
               <div className="rounded-lg border border-primary/25 bg-primary/10 p-3">
                 <p className="text-xs text-muted-foreground">最新版本</p>
-                <p className="mt-1 font-mono text-primary">v{mobileUpdateInfo?.latestVersion || "-"}</p>
+                <p className="mt-1 font-mono text-primary">{mobileUpdateInfo?.latestVersion ? `v${mobileUpdateInfo.latestVersion.replace(/^v/i, "")}` : "-"}</p>
               </div>
             </div>
           </div>
