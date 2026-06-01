@@ -88,16 +88,22 @@ jobs:
         with:
           script: |
             const androidVersion = '${{ steps.release.outputs.android_version }}';
+            const releaseTag = '${{ steps.release.outputs.version }}';
             const expectedName = `forwardx-android-${androidVersion}.apk`;
-            const releases = await github.paginate(github.rest.repos.listReleases, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              per_page: 20,
-            });
-            const existing = releases.flatMap((release) => release.assets || []).some((asset) => asset.name === expectedName);
+            let existing = false;
+            try {
+              const { data: release } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: releaseTag,
+              });
+              existing = (release.assets || []).some((asset) => asset.name === expectedName);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
             core.setOutput('exists', existing ? 'true' : 'false');
             if (existing) {
-              core.notice(`Android APK ${expectedName} already exists; skipping APK rebuild for this panel release.`);
+              core.notice(`Android APK ${expectedName} already exists in ${releaseTag}; skipping APK rebuild for this panel release.`);
             }
 
       - name: Build web assets

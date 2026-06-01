@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.93] - 2026-06-01
+
+### Fixed
+
+- Fixed Android APK release publishing so panel releases whose Android app version is unchanged still attach the existing APK version to the current release tag.
+- Bumped panel version to 2.3.93 and pointed the Android APK download URL at the matching release tag.
+
 ## [2.3.92] - 2026-06-01
 
 ### Fixed
