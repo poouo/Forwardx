@@ -1,11 +1,24 @@
 # Changelog
 
+## [2.3.90] - 2026-06-01
+
+### Changed
+
+- Removed the ForwardX FXP V1/V2 protocol selection and legacy V1 runtime path; custom encrypted tunnels now use a single current protocol.
+- Bumped panel version to 2.3.90 and Agent target version to 2.2.75.
+- Android APP version remains 2.3.34 and the APK release pointer is updated to 2.3.90 because this change does not require a native APP build.
+
+### Fixed
+
+- Prevented repeated Agent apply cycles from running disruptive cleanup commands against an already-running ForwardX custom encrypted tunnel.
+- Kept live FXP processes intact when Agent local port state is missing but the runtime signature still matches, avoiding mid-test disconnects during long iperf3 runs.
+
 ## [2.3.89] - 2026-06-01
 
 ### Fixed
 
 - Hardened Agent runtime handoff when a previously deleted port is reused or a listener switches between GOST and ForwardX custom encrypted tunnels.
-- Made ForwardX FXP connections close stale half-open sessions cleanly, enable TCP keepalive, and avoid rejecting new V2 sessions only because Agent host clocks are out of sync.
+- Made ForwardX FXP connections close stale half-open sessions cleanly, enable TCP keepalive, and avoid rejecting new sessions only because Agent host clocks are out of sync.
 - Bumped panel version to 2.3.89 and Agent target version to 2.2.74 for the runtime handoff and FXP stability fixes.
 - Android APP version remains 2.3.34 because this Agent/runtime fix does not require a native APP build.
 

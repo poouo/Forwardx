@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.74"
+var Version = "2.2.75"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -191,7 +191,6 @@ type fxpSpec struct {
 	BlockTLS       bool   `json:"blockTls"`
 	PanelURL       string `json:"panelUrl,omitempty"`
 	Token          string `json:"token,omitempty"`
-	FXPVersion     int    `json:"fxpVersion,omitempty"`
 	RelayExitHost  string `json:"relayExitHost,omitempty"`
 	RelayExitPort  int    `json:"relayExitPort,omitempty"`
 	RelayKey       string `json:"relayKey,omitempty"`
@@ -869,18 +868,22 @@ func handleAction(cfg Config, a action) {
 	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
-		cleanupStaleRuntimeBeforeApply(a)
-		for _, cmd := range a.PreCommands {
-			ok = runShell(cmd) && ok
-		}
-		if a.Unit != "" && a.ServiceName != "" {
-			ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
-		}
-		if a.UnitExtra != "" && a.ServiceNameExtra != "" {
-			ok = writeUnitAndRestart(a.ServiceNameExtra, a.UnitExtra) && ok
-		}
-		for _, cmd := range a.Commands {
-			ok = runShell(cmd) && ok
+		preserveRunningFXP := cleanupStaleRuntimeBeforeApply(a)
+		if preserveRunningFXP {
+			logf("action preserves already-running fxp rule=%d tunnel=%d port=%d; skipping disruptive apply commands", a.RuleID, a.TunnelID, a.SourcePort)
+		} else {
+			for _, cmd := range a.PreCommands {
+				ok = runShell(cmd) && ok
+			}
+			if a.Unit != "" && a.ServiceName != "" {
+				ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
+			}
+			if a.UnitExtra != "" && a.ServiceNameExtra != "" {
+				ok = writeUnitAndRestart(a.ServiceNameExtra, a.UnitExtra) && ok
+			}
+			for _, cmd := range a.Commands {
+				ok = runShell(cmd) && ok
+			}
 		}
 		if a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
@@ -953,23 +956,31 @@ func logActionPortHandoff(a action) {
 	}
 }
 
-func cleanupStaleRuntimeBeforeApply(a action) {
+func cleanupStaleRuntimeBeforeApply(a action) bool {
 	if a.Op != "apply" || a.SourcePort <= 0 {
-		return
+		return false
 	}
 	port := strconv.Itoa(a.SourcePort)
 	if a.StatusType == "tunnel" && a.TunnelID > 0 {
 		localTunnelID := readTunnelIDByPort(port)
 		localForwardType := readTunnelForwardTypeByPort(port)
 		if localTunnelID <= 0 && localForwardType == "" {
+			if fxpMatchesRunning(a.Fxp) {
+				writeState(a)
+				return true
+			}
 			if actionUsesManagedListener(a) {
 				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
-			return
+			return false
 		}
 		if localTunnelID == a.TunnelID && (localForwardType == "" || localForwardType == a.ForwardType) {
-			return
+			if fxpMatchesRunning(a.Fxp) {
+				writeState(a)
+				return true
+			}
+			return false
 		}
 		logf(
 			"tunnel runtime cleanup before apply port=%d oldTunnel=%d oldForwardType=%s newTunnel=%d newForwardType=%s",
@@ -990,22 +1001,30 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 		}
 		waitForActionListenPortFree(a, 2*time.Second)
 		removeTunnelStateByPort(port)
-		return
+		return false
 	}
 	if a.RuleID <= 0 {
-		return
+		return false
 	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
 	if localRuleID <= 0 && localForwardType == "" {
+		if fxpMatchesRunning(a.Fxp) {
+			writeState(a)
+			return true
+		}
 		if actionUsesManagedListener(a) {
 			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
-		return
+		return false
 	}
 	if localRuleID == a.RuleID && (localForwardType == "" || localForwardType == a.ForwardType) {
-		return
+		if fxpMatchesRunning(a.Fxp) {
+			writeState(a)
+			return true
+		}
+		return false
 	}
 	logf(
 		"runtime cleanup before apply port=%d oldRule=%d oldForwardType=%s newRule=%d newForwardType=%s",
@@ -1031,6 +1050,7 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 		_ = runShell(cmd)
 	}
 	waitForActionListenPortFree(a, 2*time.Second)
+	return false
 }
 
 func actionUsesManagedListener(a action) bool {
@@ -1051,6 +1071,25 @@ func cleanupUnknownManagedListener(port string, listenPort int, forwardType stri
 	for _, cmd := range managedListenerCleanupCmds(port) {
 		_ = runShell(cmd)
 	}
+}
+
+func fxpMatchesRunning(spec *fxpSpec) bool {
+	if spec == nil {
+		return false
+	}
+	normalized := *spec
+	normalized.Role = strings.ToLower(strings.TrimSpace(normalized.Role))
+	normalized.Protocol = normalizeRuntimeProtocol(normalized.Protocol)
+	id := fxpServerID(normalized)
+	signature := fxpServerSignature(normalized)
+	fxpMu.Lock()
+	existing := fxpServers[id]
+	matches := existing != nil && existing.signature == signature && existing.cmd != nil && existing.cmd.Process != nil
+	fxpMu.Unlock()
+	if matches {
+		logf("fxp %s already running with missing local state tunnel=%d rule=%d listen=:%d protocol=%s", normalized.Role, normalized.TunnelID, normalized.RuleID, normalized.ListenPort, normalized.Protocol)
+	}
+	return matches
 }
 
 func waitForActionListenPortFree(a action, timeout time.Duration) bool {
@@ -1305,7 +1344,7 @@ func managedListenerCleanupCmds(port string) []string {
 
 func fxpPortCleanupCmds(port string) []string {
 	return []string{
-		"pkill -f 'forwardx-fxp.*fxp-.*-" + port + "\\.json' 2>/dev/null || true",
+		"for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-" + port + "\\.json' 2>/dev/null || true); do kill \"$pid\" 2>/dev/null || true; done",
 		"rm -f /run/forwardx-agent/fxp-*-" + port + ".json 2>/dev/null || true",
 	}
 }
@@ -1690,7 +1729,6 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.TargetIP,
 		strconv.Itoa(spec.TargetPort),
 		spec.Key,
-		strconv.Itoa(spec.FXPVersion),
 		strconv.FormatInt(spec.LimitIn, 10),
 		strconv.FormatInt(spec.LimitOut, 10),
 		strconv.Itoa(spec.MaxConnections),

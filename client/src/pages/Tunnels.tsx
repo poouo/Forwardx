@@ -73,7 +73,6 @@ type TunnelForm = {
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
-  fxpVersion: 1 | 2;
   listenPort: number;
   networkType: "public" | "private";
   connectHost: string;
@@ -97,7 +96,6 @@ const defaultForm: TunnelForm = {
   hopHostIds: [],
   hopConnectHosts: [],
   mode: "forwardx",
-  fxpVersion: 2,
   listenPort: 0,
   networkType: "public",
   connectHost: "",
@@ -188,10 +186,6 @@ function storeTunnelViewMode(viewMode: TunnelViewMode) {
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
-}
-
-function normalizeFxpVersion(value: unknown): 1 | 2 {
-  return Number(value) === 2 ? 2 : 1;
 }
 
 function formatTunnelLatencyTime(value: string | Date) {
@@ -501,7 +495,6 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
-  const [hasExplicitFxpVersion, setHasExplicitFxpVersion] = useState(false);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
@@ -556,7 +549,6 @@ function TunnelsContent() {
   const resetForm = () => {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
-    setHasExplicitFxpVersion(false);
     setEditingId(null);
   };
 
@@ -571,7 +563,6 @@ function TunnelsContent() {
       hopHostIds: [],
       hopConnectHosts: [],
     });
-    setHasExplicitFxpVersion(false);
     setShowDialog(true);
   };
 
@@ -588,7 +579,6 @@ function TunnelsContent() {
         ? tunnel.hopConnectHosts
         : [null, null],
       mode: tunnel.mode || "tls",
-      fxpVersion: normalizeFxpVersion(tunnel.fxpVersion),
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
@@ -597,7 +587,6 @@ function TunnelsContent() {
       blockTls: !!tunnel.blockTls,
     });
     setEditingId(tunnel.id);
-    setHasExplicitFxpVersion(String(tunnel.mode || "").toLowerCase() === "forwardx");
     setShowDialog(true);
   };
 
@@ -673,7 +662,6 @@ function TunnelsContent() {
     const payload: any = {
       name: form.name,
       mode: form.mode,
-      fxpVersion: form.mode === "forwardx" ? form.fxpVersion : 1,
       listenPort: form.listenPort,
       networkType: hasPrivateHop ? "private" : "public",
       connectHost: null,
@@ -813,11 +801,6 @@ function TunnelsContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
                         </Badge>
-                        {tunnel.mode === "forwardx" && (
-                          <Badge variant="secondary" className="text-[10px]">
-                            FXP V{normalizeFxpVersion(tunnel.fxpVersion)}
-                          </Badge>
-                        )}
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                       </div>
                     </div>
@@ -924,11 +907,6 @@ function TunnelsContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
                         </Badge>
-                        {tunnel.mode === "forwardx" && (
-                          <Badge variant="secondary" className="text-[10px]">
-                            FXP V{normalizeFxpVersion(tunnel.fxpVersion)}
-                          </Badge>
-                        )}
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                       </div>
                     </div>
@@ -1038,11 +1016,6 @@ function TunnelsContent() {
                           <Badge variant="outline" className="text-[10px]">
                             {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
                           </Badge>
-                          {tunnel.mode === "forwardx" && (
-                            <Badge variant="secondary" className="text-[10px]">
-                              FXP V{normalizeFxpVersion(tunnel.fxpVersion)}
-                            </Badge>
-                          )}
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
@@ -1234,7 +1207,6 @@ function TunnelsContent() {
                     setForm((prev) => ({
                       ...prev,
                       mode: "forwardx",
-                      fxpVersion: hasExplicitFxpVersion ? prev.fxpVersion : 2,
                     }))
                   }
                   disabled={forwardxRuntimeDisabled}
@@ -1257,27 +1229,6 @@ function TunnelsContent() {
               <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
                 {unsupportedProtocolTitle}
               </p>
-            )}
-            {form.mode === "forwardx" && (
-              <div className="space-y-2">
-                <Label>FXP 协议版本</Label>
-                <Select
-                  value={String(form.fxpVersion)}
-                  onValueChange={(v) => {
-                    setHasExplicitFxpVersion(true);
-                    setForm({ ...form, fxpVersion: normalizeFxpVersion(v) });
-                  }}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="2">V2 增强版</SelectItem>
-                    <SelectItem value="1">V1 兼容版</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  推荐使用 V2；V1 仅用于兼容旧版本。
-                </p>
-              </div>
             )}
             <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
               {form.mode !== "forwardx" && (

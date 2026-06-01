@@ -4,30 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 )
 
 func TestForwardXTCPRoundTrip(t *testing.T) {
-	testForwardXTCPRoundTrip(t, fxpVersionV2)
-}
-
-func TestForwardXTCPRoundTripV1(t *testing.T) {
-	testForwardXTCPRoundTrip(t, fxpVersionV1)
-}
-
-func TestForwardXRelayTCPRoundTripV2(t *testing.T) {
-	testForwardXRelayTCPRoundTrip(t, fxpVersionV2)
-}
-
-func TestForwardXRelayTCPRoundTripV1(t *testing.T) {
-	testForwardXRelayTCPRoundTrip(t, fxpVersionV1)
-}
-
-func testForwardXTCPRoundTrip(t *testing.T, fxpVersion int) {
-	t.Helper()
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -47,10 +29,6 @@ func testForwardXTCPRoundTrip(t *testing.T, fxpVersion int) {
 	}()
 
 	key := "test-key"
-	sec, err := newSecureConn(nil, key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	targetPort := targetLn.Addr().(*net.TCPAddr).Port
 	exitPort := freeTCPPort(t)
 	entryPort := freeTCPPort(t)
@@ -66,8 +44,7 @@ func testForwardXTCPRoundTrip(t *testing.T, fxpVersion int) {
 			ListenPort: exitPort,
 			Protocol:   "tcp",
 			Key:        key,
-			FXPVersion: fxpVersion,
-		}, sec.aead)
+		})
 	}()
 	waitForTCP(t, exitPort)
 
@@ -83,8 +60,7 @@ func testForwardXTCPRoundTrip(t *testing.T, fxpVersion int) {
 			TargetIP:   "127.0.0.1",
 			TargetPort: targetPort,
 			Key:        key,
-			FXPVersion: fxpVersion,
-		}, sec.aead)
+		})
 	}()
 	waitForTCP(t, entryPort)
 
@@ -105,8 +81,7 @@ func testForwardXTCPRoundTrip(t *testing.T, fxpVersion int) {
 	}
 }
 
-func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
-	t.Helper()
+func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -127,14 +102,6 @@ func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
 
 	upstreamKey := "entry-to-relay-key"
 	downstreamKey := "relay-to-exit-key"
-	upSec, err := newSecureConn(nil, upstreamKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	downSec, err := newSecureConn(nil, downstreamKey)
-	if err != nil {
-		t.Fatal(err)
-	}
 	targetPort := targetLn.Addr().(*net.TCPAddr).Port
 	exitPort := freeTCPPort(t)
 	relayPort := freeTCPPort(t)
@@ -153,8 +120,7 @@ func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
 			ListenPort: exitPort,
 			Protocol:   "tcp",
 			Key:        downstreamKey,
-			FXPVersion: fxpVersion,
-		}, downSec.aead)
+		})
 	}()
 	waitForTCP(t, exitPort)
 
@@ -165,11 +131,10 @@ func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
 			ListenPort:    relayPort,
 			Protocol:      "tcp",
 			Key:           upstreamKey,
-			FXPVersion:    fxpVersion,
 			RelayExitHost: "127.0.0.1",
 			RelayExitPort: exitPort,
 			RelayKey:      downstreamKey,
-		}, upSec.aead)
+		})
 	}()
 	waitForTCP(t, relayPort)
 
@@ -185,8 +150,7 @@ func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
 			TargetIP:   "127.0.0.1",
 			TargetPort: targetPort,
 			Key:        upstreamKey,
-			FXPVersion: fxpVersion,
-		}, upSec.aead)
+		})
 	}()
 	waitForTCP(t, entryPort)
 
@@ -207,7 +171,7 @@ func testForwardXRelayTCPRoundTrip(t *testing.T, fxpVersion int) {
 	}
 }
 
-func TestFxpV2RejectsReplaySalt(t *testing.T) {
+func TestFxpRejectsReplaySalt(t *testing.T) {
 	c1, s1 := net.Pipe()
 	defer c1.Close()
 	defer s1.Close()
@@ -215,8 +179,8 @@ func TestFxpV2RejectsReplaySalt(t *testing.T) {
 	defer c2.Close()
 	defer s2.Close()
 
-	cfg := config{Role: "exit", TunnelID: 77, RuleID: 0, ListenPort: 12345, Key: "replay-key", FXPVersion: fxpVersionV2}
-	salt := make([]byte, fxpV2SaltSize)
+	cfg := config{Role: "exit", TunnelID: 77, RuleID: 0, ListenPort: 12345, Key: "replay-key"}
+	salt := make([]byte, fxpSaltSize)
 	for i := range salt {
 		salt[i] = byte(i + 1)
 	}
@@ -227,7 +191,7 @@ func TestFxpV2RejectsReplaySalt(t *testing.T) {
 
 	errCh := make(chan error, 2)
 	go func() {
-		sec, err := newV2ServerSecureConn(s1, cfg)
+		sec, err := newServerSecureConn(s1, cfg)
 		if err == nil {
 			_ = sec.conn.Close()
 		}
@@ -236,11 +200,11 @@ func TestFxpV2RejectsReplaySalt(t *testing.T) {
 	if _, err := writeFull(c1, salt); err != nil {
 		t.Fatal(err)
 	}
-	client, err := newV2SecureConn(c1, cfg.Key, salt, true)
+	client, err := newSessionSecureConn(c1, cfg.Key, salt, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hello, _ := json.Marshal(v2Handshake{V: fxpVersionV2, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
+	hello, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
 	if err := client.writeFrame(hello); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +216,7 @@ func TestFxpV2RejectsReplaySalt(t *testing.T) {
 	}
 
 	go func() {
-		sec, err := newV2ServerSecureConn(s2, cfg)
+		sec, err := newServerSecureConn(s2, cfg)
 		if err == nil {
 			_ = sec.conn.Close()
 		}
@@ -263,24 +227,6 @@ func TestFxpV2RejectsReplaySalt(t *testing.T) {
 	}
 	if err := <-errCh; err == nil {
 		t.Fatal("expected replayed salt to be rejected")
-	}
-}
-
-func TestReadConfigDefaultsMissingFxpVersionToV1(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "fxp-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if _, err := f.WriteString(`{"role":"entry","listenPort":1000,"exitHost":"127.0.0.1","exitPort":1001,"targetIp":"127.0.0.1","targetPort":1002,"key":"k"}`); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := readConfig(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.FXPVersion != fxpVersionV1 {
-		t.Fatalf("missing fxpVersion should default to v1, got %d", cfg.FXPVersion)
 	}
 }
 

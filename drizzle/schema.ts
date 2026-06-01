@@ -276,7 +276,6 @@ export const tunnels = table("tunnels", {
   entryHostId: int("entryHostId").notNull(),
   exitHostId: int("exitHostId").notNull(),
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
-  fxpVersion: int("fxpVersion").notNull().default(1),
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
   portRangeStart: int("portRangeStart"),

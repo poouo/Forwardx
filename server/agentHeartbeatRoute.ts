@@ -514,10 +514,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       blockSocks: !!(tunnel as any)?.blockSocks,
       blockTls: !!(tunnel as any)?.blockTls,
     });
-    const tunnelFxpVersion = (tunnel: any) => {
-      const version = Number((tunnel as any)?.fxpVersion || 1);
-      return version === 2 ? 2 : 1;
-    };
     const hasProtocolPolicy = (tunnel: any) => {
       const policy = tunnelProtocolPolicy(tunnel);
       return policy.blockHttp || policy.blockSocks || policy.blockTls;
@@ -932,7 +928,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: rule.sourcePort,
             protocol: rule.protocol,
             key: tunnelSecretSeed(tunnel),
-            fxpVersion: tunnelFxpVersion(tunnel),
           } : undefined,
         };
       }
@@ -972,7 +967,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: tunnel.listenPort,
             protocol: "both",
             key: tunnelSecretSeed(tunnel),
-            fxpVersion: tunnelFxpVersion(tunnel),
           } : undefined,
         });
       } else if ((!tunnel.isEnabled || !tunnelProtocolEnabled) && tunnel.isRunning) {
@@ -994,7 +988,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: tunnel.listenPort,
             protocol: "both",
             key: tunnelSecretSeed(tunnel),
-            fxpVersion: tunnelFxpVersion(tunnel),
           } : undefined,
         });
       }
@@ -1050,7 +1043,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: Number(listenPort),
             protocol: "both",
             key: hopKey(tunnelKey, seq),
-            fxpVersion: tunnelFxpVersion(tunnel),
           };
           if (!isLast) {
             // Relay: receive from upstream, forward to downstream
@@ -1382,7 +1374,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
-              commands: rule.isRunning && isForwardXMultiHopRule ? [] : [
+              commands: rule.isRunning ? [] : [
                 ...buildGostReloadCmds(),
                 ...await buildTunnelReloadCmds(),
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -1399,7 +1391,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 targetIp: failover ? "127.0.0.1" : rule.targetIp,
                 targetPort: failover ? failoverProxyPort(rule) : rule.targetPort,
                 key: tunnelKey,
-                fxpVersion: tunnelFxpVersion(tunnel),
                 ...rateLimits,
                 ...accessLimits,
                 accessScope: accessScopeForRule(rule),
@@ -1583,7 +1574,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               listenPort: rule.sourcePort,
               protocol: rule.protocol,
               key: tunnelSecretSeed(tunnel),
-              fxpVersion: tunnelFxpVersion(tunnel),
             } : undefined,
           });
         }
