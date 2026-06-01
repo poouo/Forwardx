@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.91] - 2026-06-01
+
+### Fixed
+
+- Restored the established FXP wire encryption context for the current custom encrypted tunnel protocol so multi-hop chains keep working during rolling Agent upgrades.
+- Changed Agent cleanup commands for FXP, socat, realm, and uninstall cleanup scripts so process matching cannot terminate the cleanup shell itself.
+- Clarified Agent logs for matching already-running FXP runtimes so healthy reuse is no longer reported as missing local state.
+- Bumped panel version to 2.3.91 and Agent target version to 2.2.76.
+- Android APP version remains 2.3.34 and the APK release pointer is updated to 2.3.91 because this Agent cleanup fix does not require a native APP build.
+
 ## [2.3.90] - 2026-06-01
 
 ### Changed

@@ -231,6 +231,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
       ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
     ];
+    const killByPatternCmd = (pattern: string) =>
+      `for pid in $(pgrep -f '${pattern}' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`;
     const writeUnitCmd = (svcName: string, unit: string) =>
       `printf '%s' '${Buffer.from(unit, "utf8").toString("base64")}' | base64 -d > /etc/systemd/system/${svcName}.service`;
     const gostServiceName = "forwardx-gost";
@@ -866,7 +868,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             `systemctl disable ${svcName}.service 2>/dev/null || true`,
             `rm -f /etc/systemd/system/${svcName}.service`,
             `systemctl daemon-reload`,
-            `pkill -f "realm .*:${rule.sourcePort}" 2>/dev/null || true`,
+            killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
             `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
             ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -892,7 +894,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
         }
         removeCmds.push(`systemctl daemon-reload`);
-        removeCmds.push(`pkill -f "socat.*LISTEN:${rule.sourcePort}" 2>/dev/null || true`);
+        removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
         removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
         removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
@@ -1478,7 +1480,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `systemctl disable ${svcName}.service 2>/dev/null || true`,
               `rm -f /etc/systemd/system/${svcName}.service`,
               `systemctl daemon-reload`,
-              `pkill -f "realm .*:${rule.sourcePort}" 2>/dev/null || true`,
+              killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
               `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
@@ -1520,7 +1522,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
           }
           removeCmds.push(`systemctl daemon-reload`);
-          removeCmds.push(`pkill -f "socat.*LISTEN:${rule.sourcePort}" 2>/dev/null || true`);
+          removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);

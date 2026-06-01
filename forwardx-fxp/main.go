@@ -117,12 +117,13 @@ const (
 	fxpHandshakeWindow  = 5 * time.Minute
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
+	fxpMasterContext    = "forwardx-fxp-v2 master"
 )
 
 var (
-	fxpSessionInfo = []byte("forwardx-fxp session")
-	fxpLengthAD    = []byte("forwardx-fxp length")
-	fxpPayloadAD   = []byte("forwardx-fxp payload")
+	fxpSessionInfo = []byte("forwardx-fxp-v2 session")
+	fxpLengthAD    = []byte("forwardx-fxp-v2 length")
+	fxpPayloadAD   = []byte("forwardx-fxp-v2 payload")
 	fxpReplaySeen  = newReplayCache(fxpHandshakeWindow, 100000)
 )
 
@@ -896,7 +897,7 @@ func blake3Derive(secret, salt, context []byte, length int) []byte {
 	material = append(material, secret...)
 	material = append(material, salt...)
 	keyMaterial := make([]byte, 32)
-	blake3.DeriveKey(keyMaterial, "forwardx-fxp master", context)
+	blake3.DeriveKey(keyMaterial, fxpMasterContext, context)
 	deriver := blake3.New(length, keyMaterial)
 	_, _ = deriver.Write(material)
 	out := make([]byte, length)

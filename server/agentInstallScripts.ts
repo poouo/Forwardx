@@ -136,7 +136,7 @@ export function generateInstallScript(defaultPanelUrl: string, token?: string): 
     '  echo "[信息] Go Agent 文件已删除"',
     '',
     '  echo "[步骤 4/5] 清理转发进程和 iptables 规则..."',
-    '  pkill -f "/usr/local/bin/forwardx-fxp" 2>/dev/null || true',
+    '  for pid in $(pgrep -f "[/]usr/local/bin/forwardx-fxp" 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done',
     '  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service; do',
     '    if [ -f "$SVC" ]; then',
     '      SVCNAME=$(basename "$SVC" .service)',
