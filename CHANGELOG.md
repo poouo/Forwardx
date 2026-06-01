@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.87] - 2026-06-01
+
+### Changed
+
+- Changed iperf3 server startup so the Agent automatically selects an available listener port and the panel displays commands using that actual port.
+- Kept the iperf3 idle shutdown at 3 minutes and removed the manual iperf3 port field from the network-test form.
+- Added clearer Agent-side errors when an iperf3 listener port is unavailable and filtered pipe-close noise from iperf3 output.
+- Bumped Android APP version to 2.3.34 so the APK includes the latest network-test UI.
+- Bumped panel version to 2.3.87. Agent target version is now 2.2.73 for automatic iperf3 port selection.
+
 ## [2.3.86] - 2026-06-01
 
 ### Changed

@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.72"
+var Version = "2.2.73"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -431,10 +431,7 @@ func reportIperf3Result(cfg Config, result iperf3Result) {
 
 func runIperf3Task(cfg Config, task iperf3Task) iperf3Result {
 	port := task.Port
-	if port <= 0 {
-		port = 5201
-	}
-	if port < 1 || port > 65535 {
+	if port < 0 || port > 65535 {
 		return iperf3Result{
 			TaskID:    task.TaskID,
 			Op:        task.Op,
@@ -456,6 +453,22 @@ func runIperf3Task(cfg Config, task iperf3Task) iperf3Result {
 			UpdatedAt: time.Now().Format(time.RFC3339Nano),
 		}
 	}
+	if port == 0 {
+		selectedPort, err := pickAvailableIperf3Port()
+		if err != nil {
+			message := fmt.Sprintf("Agent 无法自动分配 iperf3 监听端口：%v", err)
+			return iperf3Result{
+				TaskID:    task.TaskID,
+				Op:        task.Op,
+				Port:      port,
+				Status:    "error",
+				Output:    message,
+				Error:     message,
+				UpdatedAt: time.Now().Format(time.RFC3339Nano),
+			}
+		}
+		port = selectedPort
+	}
 	if _, err := exec.LookPath("iperf3"); err != nil {
 		message := "Agent 未安装 iperf3，请重新运行安装脚本或手动安装 iperf3"
 		return iperf3Result{
@@ -475,6 +488,19 @@ func startIperf3Server(cfg Config, task iperf3Task, port int) iperf3Result {
 	iperf3Mu.Lock()
 	if iperf3Server != nil {
 		iperf3Server.stopLocked("启动新的 iperf3 服务端，已停止旧实例")
+	}
+	if err := checkIperf3PortAvailable(port); err != nil {
+		iperf3Mu.Unlock()
+		message := formatIperf3PortError(port, err)
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "error",
+			Output:    message,
+			Error:     message,
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
 	}
 	cmd := exec.Command("iperf3", "-s", "-p", strconv.Itoa(port))
 	stdout, err := cmd.StdoutPipe()
@@ -539,6 +565,35 @@ func iperf3StartError(task iperf3Task, port int, err error) iperf3Result {
 		Error:     message,
 		UpdatedAt: time.Now().Format(time.RFC3339Nano),
 	}
+}
+
+func checkIperf3PortAvailable(port int) error {
+	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+func pickAvailableIperf3Port() (int, error) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || addr.Port <= 0 {
+		return 0, fmt.Errorf("无法读取自动分配的端口")
+	}
+	return addr.Port, nil
+}
+
+func formatIperf3PortError(port int, err error) string {
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage of each socket address") {
+		return fmt.Sprintf("iperf3 监听端口 %d 已被占用，请换一个端口，或在服务器上停止占用该端口的进程后重试。", port)
+	}
+	return fmt.Sprintf("iperf3 监听端口 %d 不可用：%v", port, err)
 }
 
 func stopIperf3Server(reason string) string {
@@ -1849,6 +1904,10 @@ func (p *iperf3Process) readPipe(r io.Reader, wg *sync.WaitGroup) {
 		p.appendLine(scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "file already closed") || strings.Contains(message, "closed pipe") {
+			return
+		}
 		p.appendLine(fmt.Sprintf("读取 iperf3 输出失败：%v", err))
 	}
 }

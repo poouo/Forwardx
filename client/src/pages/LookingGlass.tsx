@@ -259,7 +259,7 @@ function Iperf3Output({
           </div>
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
             <p className="text-xs text-muted-foreground">监听端口</p>
-            <p className="mt-1 font-mono text-sm">{status?.port || 5201}</p>
+            <p className="mt-1 font-mono text-sm">{status?.port ? status.port : "启动后自动分配"}</p>
           </div>
         </div>
 
@@ -268,14 +268,14 @@ function Iperf3Output({
           <p className="mt-1 text-xs text-muted-foreground">服务端无人使用 3 分钟后会自动停止；客户端测试产生输出时会刷新空闲计时。</p>
           <div className="mt-3 space-y-2">
             <div className="flex flex-col gap-2 rounded-md border border-border/40 bg-background/60 p-2 sm:flex-row sm:items-center sm:justify-between">
-              <code className="break-all font-mono text-xs">{commands?.upload || "iperf3 -c <host> -p 5201"}</code>
+              <code className="break-all font-mono text-xs">{commands?.upload || "启动后显示上传测试命令"}</code>
               <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5" disabled={!commands?.upload} onClick={() => commands?.upload && onCopy(commands.upload)}>
                 <Copy className="h-3.5 w-3.5" />
                 复制
               </Button>
             </div>
             <div className="flex flex-col gap-2 rounded-md border border-border/40 bg-background/60 p-2 sm:flex-row sm:items-center sm:justify-between">
-              <code className="break-all font-mono text-xs">{commands?.download || "iperf3 -c <host> -p 5201 -R"}</code>
+              <code className="break-all font-mono text-xs">{commands?.download || "启动后显示下载测试命令"}</code>
               <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5" disabled={!commands?.download} onClick={() => commands?.download && onCopy(commands.download)}>
                 <Copy className="h-3.5 w-3.5" />
                 复制
@@ -298,7 +298,6 @@ export default function LookingGlass() {
   const [method, setMethod] = useState<Method>("ping");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("443");
-  const [iperf3Port, setIperf3Port] = useState("5201");
   const [hostId, setHostId] = useState("");
   const [activeTaskId, setActiveTaskId] = useState("");
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
@@ -352,12 +351,7 @@ export default function LookingGlass() {
   const iperf3Busy = iperf3State === "queued" || iperf3State === "starting" || iperf3State === "stopping";
   const iperf3Running = iperf3State === "running";
   const isIperf3Method = method === "iperf3";
-  const numericIperf3Port = Number(iperf3Port);
-  const canSubmit =
-    Number(hostId) > 0 &&
-    (isIperf3Method
-      ? Number.isInteger(numericIperf3Port) && numericIperf3Port >= 1 && numericIperf3Port <= 65535
-      : target.trim().length > 0);
+  const canSubmit = Number(hostId) > 0 && (isIperf3Method || target.trim().length > 0);
   const resolvedAddresses = useMemo(() => latestResult?.resolvedAddresses || [], [latestResult?.resolvedAddresses]);
   const runningOutput = useMemo(() => {
     if ((runState !== "queued" && runState !== "running") || !runStartedAt) return liveOutput;
@@ -452,6 +446,11 @@ export default function LookingGlass() {
     return () => window.clearInterval(timer);
   }, [runState]);
 
+  useEffect(() => {
+    if (!isIperf3Method || !currentIperf3?.port) return;
+    setIperf3Port(String(currentIperf3.port));
+  }, [currentIperf3?.port, isIperf3Method]);
+
   const copyText = async (text: string) => {
     const copied = await copyTextToClipboard(text);
     if (copied) toast.success("已复制");
@@ -511,11 +510,7 @@ export default function LookingGlass() {
       iperf3Stop.mutate({ hostId: Number(hostId) });
       return;
     }
-    if (!Number.isInteger(numericIperf3Port) || numericIperf3Port < 1 || numericIperf3Port > 65535) {
-      toast.error("请输入 1-65535 的 iperf3 端口");
-      return;
-    }
-    iperf3Start.mutate({ hostId: Number(hostId), port: numericIperf3Port });
+    iperf3Start.mutate({ hostId: Number(hostId) });
   };
 
   const runTest = () => {
@@ -684,21 +679,8 @@ export default function LookingGlass() {
               )}
 
               {isIperf3Method && (
-                <div className="space-y-2">
-                  <Label htmlFor="looking-glass-iperf3-port">iperf3 监听端口</Label>
-                  <Input
-                    id="looking-glass-iperf3-port"
-                    value={iperf3Port}
-                    onChange={(event) => setIperf3Port(event.target.value.replace(/\D/g, "").slice(0, 5))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") runTest();
-                    }}
-                    inputMode="numeric"
-                    placeholder="5201"
-                    className="font-mono"
-                    disabled={iperf3Running || iperf3Busy}
-                  />
-                  <p className="text-xs text-muted-foreground">请确保服务器安全组和系统防火墙放行该端口，客户端将直连选中的 Agent 主机。</p>
+                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  Agent 会自动选择一个可用端口启动 iperf3 服务端，启动后右侧会显示正确的客户端命令。请确保服务器安全组和系统防火墙允许客户端访问该端口。
                 </div>
               )}
 

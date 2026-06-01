@@ -12,7 +12,7 @@ import {
   type LookingGlassTaskStatus,
 } from "../lookingGlassAgentTasks";
 import {
-  DEFAULT_IPERF3_SERVER_PORT,
+  AUTO_IPERF3_SERVER_PORT,
   enqueueIperf3AgentTask,
   getIperf3Status,
   hasActiveIperf3Task,
@@ -155,15 +155,17 @@ function decorateStatus(status: LookingGlassTaskStatus, host: any) {
 
 function decorateIperf3Status(status: Iperf3Status, host: any) {
   const address = normalizeAgentPublicAddress(host);
-  const port = Number(status.port || DEFAULT_IPERF3_SERVER_PORT);
+  const port = Number(status.port || AUTO_IPERF3_SERVER_PORT);
+  const hasPort = port > 0;
   return {
     ...status,
+    port,
     hostId: Number(host.id),
     hostName: String(host.name || `Host #${host.id}`),
     hostAddress: address,
     commands: {
-      upload: `iperf3 -c ${address} -p ${port}`,
-      download: `iperf3 -c ${address} -p ${port} -R`,
+      upload: hasPort ? `iperf3 -c ${address} -p ${port}` : "",
+      download: hasPort ? `iperf3 -c ${address} -p ${port} -R` : "",
     },
   };
 }
@@ -223,7 +225,6 @@ export const lookingGlassRouter = router({
   iperf3Start: protectedProcedure
     .input(z.object({
       hostId: z.number().int().positive(),
-      port: z.number().int().min(1).max(65535).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       await assertNetworkTestAllowed(ctx);
@@ -235,7 +236,6 @@ export const lookingGlassRouter = router({
       normalizeAgentPublicAddress(host);
       const { status } = enqueueIperf3AgentTask(input.hostId, {
         op: "start",
-        port: input.port || DEFAULT_IPERF3_SERVER_PORT,
       });
       pushAgentRefresh(input.hostId, "iperf3-start");
       return decorateIperf3Status(status, host);
@@ -250,7 +250,7 @@ export const lookingGlassRouter = router({
       const current = getIperf3Status(input.hostId);
       const { status } = enqueueIperf3AgentTask(input.hostId, {
         op: "stop",
-        port: current.port || DEFAULT_IPERF3_SERVER_PORT,
+        port: current.port || AUTO_IPERF3_SERVER_PORT,
       });
       pushAgentRefresh(input.hostId, "iperf3-stop");
       return decorateIperf3Status(status, host);

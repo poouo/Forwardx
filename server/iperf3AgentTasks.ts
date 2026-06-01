@@ -38,7 +38,7 @@ type Iperf3State = Iperf3Status & {
   timer?: NodeJS.Timeout;
 };
 
-const DEFAULT_IPERF3_PORT = 5201;
+const AUTO_IPERF3_PORT = 0;
 const queues = new Map<number, Iperf3AgentTask[]>();
 const states = new Map<number, Iperf3State>();
 
@@ -50,7 +50,7 @@ function toStatus(state?: Iperf3State): Iperf3Status {
   if (!state) {
     return {
       state: "idle",
-      port: DEFAULT_IPERF3_PORT,
+      port: AUTO_IPERF3_PORT,
       output: "iperf3 服务端未启动",
       updatedAt: nowIso(),
     };
@@ -84,7 +84,7 @@ export function enqueueIperf3AgentTask(hostId: number, input: { op: Iperf3TaskOp
   if (input.op === "stop" && current && (current.state === "queued" || current.state === "starting" || current.state === "stopping")) {
     throw new Error("该测试主机已有 iperf3 服务端任务正在处理，请稍后再试");
   }
-  const port = Number(input.port || DEFAULT_IPERF3_PORT);
+  const port = input.port === undefined || input.port === null ? AUTO_IPERF3_PORT : Number(input.port);
   const task: Iperf3AgentTask = {
     taskId: crypto.randomUUID(),
     op: input.op,
@@ -136,7 +136,7 @@ export function completeIperf3AgentTask(hostId: number, result: Iperf3AgentResul
     hostId,
     taskId: String(result.taskId || previous?.taskId || ""),
     state: result.status,
-    port: Number(result.port || previous?.port || DEFAULT_IPERF3_PORT),
+    port: Number(result.port || previous?.port || AUTO_IPERF3_PORT),
     output: String(result.output || ""),
     pid: result.pid === undefined ? previous?.pid : result.pid,
     startedAt: result.startedAt || previous?.startedAt,
@@ -156,4 +156,4 @@ export function hasActiveIperf3Task(hostId: number) {
   return !!state && (state.state === "queued" || state.state === "starting" || state.state === "running" || state.state === "stopping");
 }
 
-export const DEFAULT_IPERF3_SERVER_PORT = DEFAULT_IPERF3_PORT;
+export const AUTO_IPERF3_SERVER_PORT = AUTO_IPERF3_PORT;
