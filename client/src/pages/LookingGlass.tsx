@@ -12,8 +12,8 @@ import {
   CheckCircle2,
   Clock3,
   Copy,
-  Download,
   ExternalLink,
+  Gauge,
   Globe2,
   Loader2,
   RadioTower,
@@ -183,7 +183,7 @@ export default function LookingGlass() {
   });
   const availableHosts = useMemo(() => hosts || [], [hosts]);
   const selectedHost = availableHosts.find((host: any) => String(host.id) === hostId) as any;
-  const downloadLinks = trpc.lookingGlass.downloadLinks.useQuery(
+  const speedTestLinks = trpc.lookingGlass.speedTestLinks.useQuery(
     { hostId: Number(hostId) },
     {
       enabled: Number(hostId) > 0,
@@ -323,7 +323,7 @@ export default function LookingGlass() {
             </div>
             <h1 className="text-xl font-bold tracking-tight sm:text-2xl">网络测试</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，并提供固定大小文件下载测试。
+              从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，并提供浏览器直连 Agent 的速度测试。
             </p>
           </div>
           <Button variant="outline" className="w-full gap-2 sm:w-auto" asChild>
@@ -338,7 +338,7 @@ export default function LookingGlass() {
           <Globe2 className="h-4 w-4" />
           <AlertTitle>网络测试</AlertTitle>
           <AlertDescription>
-            固定文件下载测试参考 hybula/lookingglass 的测试文件列表方式实现，ForwardX 会为选中的 Agent 主机生成临时下载链接；网络测试会拒绝内网、环回、链路本地或保留地址。
+            速度测试参考 hybula/lookingglass 的固定大小测试方式实现，ForwardX 只生成临时签名链接；测速数据流由浏览器直连选中的 Agent 主机，不经过面板中转。网络测试会拒绝内网、环回、链路本地或保留地址。
           </AlertDescription>
         </Alert>
 
@@ -459,28 +459,28 @@ export default function LookingGlass() {
               <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-medium">文件下载测试</p>
+                    <p className="text-sm font-medium">速度测试</p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      链接由选中的 Agent 主机提供，默认端口 3091。
+                      测速页由选中的 Agent 主机提供，默认端口 3091，浏览器直连该主机。
                     </p>
                   </div>
-                  {downloadLinks.isFetching && <Loader2 className="forwardx-icon-spin h-4 w-4 text-muted-foreground" />}
+                  {speedTestLinks.isFetching && <Loader2 className="forwardx-icon-spin h-4 w-4 text-muted-foreground" />}
                 </div>
-                {downloadLinks.error ? (
-                  <p className="mt-3 text-xs text-destructive">{downloadLinks.error.message}</p>
-                ) : downloadLinks.data ? (
+                {speedTestLinks.error ? (
+                  <p className="mt-3 text-xs text-destructive">{speedTestLinks.error.message}</p>
+                ) : speedTestLinks.data ? (
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                    {downloadLinks.data.files.map((file: any) => (
-                      <Button key={file.value} variant="outline" size="sm" asChild className="gap-2">
-                        <a href={file.url} target="_blank" rel="noopener noreferrer" download={file.filename}>
-                          <Download className="h-4 w-4" />
-                          {file.label}
+                    {speedTestLinks.data.tests.map((test: any) => (
+                      <Button key={test.value} variant="outline" size="sm" asChild className="gap-2">
+                        <a href={test.url} target="_blank" rel="noopener noreferrer">
+                          <Gauge className="h-4 w-4" />
+                          {test.label}
                         </a>
                       </Button>
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-3 text-xs text-muted-foreground">选择主机后生成下载链接。</p>
+                  <p className="mt-3 text-xs text-muted-foreground">选择主机后生成测速链接。</p>
                 )}
               </div>
 

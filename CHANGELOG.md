@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.84] - 2026-06-01
+
+### Changed
+
+- Replaced Agent-hosted download-test links with direct browser-to-Agent speed-test pages.
+- Added a real-time speed chart on the Agent speed-test page with current, average, peak, and transferred data metrics.
+- Clarified network-test copy so users know speed-test traffic goes directly to the selected Agent host and does not pass through the panel.
+- Bumped panel version to 2.3.84. Agent target version is now 2.2.70 for the direct speed-test service.
+- Android APP version remains 2.3.33 because this web-panel and Agent change does not require a native APP build.
+
 ## [2.3.83] - 2026-06-01
 
 ### Added
