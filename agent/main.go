@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.73"
+var Version = "2.2.74"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -962,11 +962,9 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 		localTunnelID := readTunnelIDByPort(port)
 		localForwardType := readTunnelForwardTypeByPort(port)
 		if localTunnelID <= 0 && localForwardType == "" {
-			if a.ForwardType == "gost-tunnel" {
-				stopFXPByPort(a.TunnelID, a.SourcePort)
-				for _, cmd := range fxpPortCleanupCmds(port) {
-					_ = runShell(cmd)
-				}
+			if actionUsesManagedListener(a) {
+				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
+				waitForActionListenPortFree(a, 2*time.Second)
 			}
 			return
 		}
@@ -984,9 +982,13 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 		if localForwardType == "forwardx-tunnel" && localTunnelID > 0 {
 			stopFXPByPort(localTunnelID, a.SourcePort)
 		}
+		if a.Fxp != nil {
+			stopFXPByListenPort(a.SourcePort)
+		}
 		for _, cmd := range managedPortCleanupCmds(port) {
 			_ = runShell(cmd)
 		}
+		waitForActionListenPortFree(a, 2*time.Second)
 		removeTunnelStateByPort(port)
 		return
 	}
@@ -996,6 +998,10 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
 	if localRuleID <= 0 && localForwardType == "" {
+		if actionUsesManagedListener(a) {
+			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
+			waitForActionListenPortFree(a, 2*time.Second)
+		}
 		return
 	}
 	if localRuleID == a.RuleID && (localForwardType == "" || localForwardType == a.ForwardType) {
@@ -1012,6 +1018,9 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 	if localForwardType == "forwardx" && localRuleID > 0 {
 		stopFXP(fxpSpec{Role: "entry", RuleID: localRuleID, ListenPort: a.SourcePort, Protocol: "both"})
 	}
+	if a.Fxp != nil {
+		stopFXPByListenPort(a.SourcePort)
+	}
 	if localRuleID > 0 {
 		stopFailoverProxy(localRuleID, a.SourcePort)
 	}
@@ -1021,6 +1030,35 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 	for _, cmd := range managedPortCleanupCmds(port) {
 		_ = runShell(cmd)
 	}
+	waitForActionListenPortFree(a, 2*time.Second)
+}
+
+func actionUsesManagedListener(a action) bool {
+	if a.Fxp != nil {
+		return true
+	}
+	switch a.ForwardType {
+	case "realm", "socat", "gost", "forwardx", "forwardx-tunnel", "gost-tunnel":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanupUnknownManagedListener(port string, listenPort int, forwardType string) {
+	logf("runtime cleanup unknown local state port=%s newForwardType=%s", port, forwardType)
+	stopFXPByListenPort(listenPort)
+	for _, cmd := range managedListenerCleanupCmds(port) {
+		_ = runShell(cmd)
+	}
+}
+
+func waitForActionListenPortFree(a action, timeout time.Duration) bool {
+	spec := a.Fxp
+	if spec == nil && a.SourcePort > 0 {
+		spec = &fxpSpec{ListenPort: a.SourcePort, Protocol: a.Protocol}
+	}
+	return waitForFXPListenPortFree(spec, a.SourcePort, timeout)
 }
 
 func runPostCommands(commands []string, actionMessage *actionMessage) {
@@ -1200,7 +1238,7 @@ func nftRuleCleanupCmd(ruleID int) string {
 }
 
 func managedPortCleanupCmds(port string) []string {
-	cmds := append(fxpPortCleanupCmds(port),
+	cmds := append(managedListenerCleanupCmds(port),
 		"systemctl stop forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
 		"systemctl disable forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
 		"rm -f /etc/systemd/system/forwardx-socat-"+port+".service /etc/systemd/system/forwardx-socat-tcp-"+port+".service /etc/systemd/system/forwardx-socat-udp-"+port+".service /etc/systemd/system/forwardx-realm-"+port+".service",
@@ -1253,6 +1291,15 @@ func managedPortCleanupCmds(port string) []string {
 		}
 		cmds = append(targetCmds, cmds...)
 	}
+	return cmds
+}
+
+func managedListenerCleanupCmds(port string) []string {
+	cmds := append([]string{}, fxpPortCleanupCmds(port)...)
+	cmds = append(cmds,
+		"pkill -f 'socat .*LISTEN:"+port+"' 2>/dev/null || true",
+		"pkill -f 'realm .*:"+port+"' 2>/dev/null || true",
+	)
 	return cmds
 }
 
@@ -1677,6 +1724,8 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp runtime missing: install /usr/local/bin/forwardx-fxp to use custom encrypted tunnels")
 		return false
 	}
+	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
+	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)
@@ -1689,6 +1738,15 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	fxpMu.Unlock()
 	stopFXP(spec)
+	stopFXPByListenPort(spec.ListenPort)
+	for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(spec.ListenPort)) {
+		_ = runShell(cmd)
+	}
+	if !waitForFXPListenPortFree(&spec, spec.ListenPort, 3*time.Second) {
+		owner := listenPortOwnerSummary(spec.ListenPort)
+		actionMessage.set("fxp listen port still busy role=%s tunnel=%d rule=%d listen=:%d owner=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, owner)
+		return false
+	}
 
 	if err := os.MkdirAll("/run/forwardx-agent", 0700); err != nil {
 		actionMessage.set("fxp create runtime dir failed: %v", err)
@@ -1803,6 +1861,107 @@ func stopFXPByPort(tunnelID int, listenPort int) {
 	fxpMu.Unlock()
 	for _, spec := range specs {
 		stopFXP(spec)
+	}
+}
+
+func stopFXPByListenPort(listenPort int) {
+	if listenPort <= 0 {
+		return
+	}
+	suffix := ":" + strconv.Itoa(listenPort)
+	var specs []fxpSpec
+	fxpMu.Lock()
+	for id := range fxpServers {
+		if !strings.HasSuffix(id, suffix) {
+			continue
+		}
+		parts := strings.Split(id, ":")
+		if len(parts) != 4 {
+			continue
+		}
+		tunnelID, _ := strconv.Atoi(parts[1])
+		ruleID, _ := strconv.Atoi(parts[2])
+		specs = append(specs, fxpSpec{
+			Role:       parts[0],
+			TunnelID:   tunnelID,
+			RuleID:     ruleID,
+			ListenPort: listenPort,
+		})
+	}
+	fxpMu.Unlock()
+	for _, spec := range specs {
+		stopFXP(spec)
+	}
+}
+
+func waitForFXPListenPortFree(spec *fxpSpec, listenPort int, timeout time.Duration) bool {
+	if spec == nil || listenPort <= 0 {
+		return true
+	}
+	protos := runtimeProtocols(spec.Protocol)
+	if len(protos) == 0 {
+		protos = []string{"tcp"}
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		busy := false
+		for _, proto := range protos {
+			if listenPortBusy(proto, listenPort) {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func listenPortBusy(proto string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	switch proto {
+	case "udp":
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	default:
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			return true
+		}
+		_ = ln.Close()
+		return false
+	}
+}
+
+func runtimeProtocols(protocol string) []string {
+	switch normalizeRuntimeProtocol(protocol) {
+	case "udp":
+		return []string{"udp"}
+	case "both":
+		return []string{"tcp", "udp"}
+	default:
+		return []string{"tcp"}
+	}
+}
+
+func normalizeRuntimeProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "udp":
+		return "udp"
+	case "both", "tcp+udp":
+		return "both"
+	default:
+		return "tcp"
 	}
 }
 

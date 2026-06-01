@@ -115,17 +115,20 @@ const (
 	fxpVersionV1 = 1
 	fxpVersionV2 = 2
 
-	fxpV2SaltSize    = 32
-	fxpV2MaxFrame    = 16 * 1024 * 1024
-	fxpV2EntryToExit = uint32(1)
-	fxpV2ExitToEntry = uint32(2)
+	fxpV2SaltSize        = 32
+	fxpV2MaxFrame        = 16 * 1024 * 1024
+	fxpV2EntryToExit     = uint32(1)
+	fxpV2ExitToEntry     = uint32(2)
+	fxpV2HandshakeWindow = 5 * time.Minute
+	fxpTCPKeepAlive      = 30 * time.Second
+	fxpHalfCloseLinger   = 30 * time.Second
 )
 
 var (
 	fxpV2Info     = []byte("forwardx-fxp-v2 session")
 	fxpV2LenAD    = []byte("forwardx-fxp-v2 length")
 	fxpV2DataAD   = []byte("forwardx-fxp-v2 payload")
-	fxpReplaySeen = newReplayCache(60*time.Second, 100000)
+	fxpReplaySeen = newReplayCache(fxpV2HandshakeWindow, 100000)
 )
 
 type connGate struct {
@@ -279,6 +282,32 @@ func protocolHas(cfg config, network string) bool {
 	return cfg.Protocol == "both" || cfg.Protocol == network
 }
 
+func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{Timeout: timeout, KeepAlive: fxpTCPKeepAlive}
+	conn, err := d.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return nil, err
+	}
+	enableTCPKeepAlive(conn)
+	return conn, nil
+}
+
+func enableTCPKeepAlive(conn net.Conn) {
+	tcp, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tcp.SetNoDelay(true)
+	_ = tcp.SetKeepAlive(true)
+	_ = tcp.SetKeepAlivePeriod(fxpTCPKeepAlive)
+}
+
+func closeWriteConn(conn net.Conn) {
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.CloseWrite()
+	}
+}
+
 func runEntry(done <-chan struct{}, cfg config, aead cipher.AEAD) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
@@ -341,6 +370,7 @@ func acceptEntryTCP(ln net.Listener, cfg config, aead cipher.AEAD, gate *connGat
 		if err != nil {
 			return err
 		}
+		enableTCPKeepAlive(client)
 		release, ok := gate.acquire(client.RemoteAddr())
 		if !ok {
 			_ = client.Close()
@@ -372,7 +402,7 @@ func handleEntryTCP(client net.Conn, cfg config, aead cipher.AEAD) error {
 			return nil
 		}
 	}
-	exit, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.ExitHost, strconv.Itoa(cfg.ExitPort)), 10*time.Second)
+	exit, err := dialTCP(cfg.ExitHost, cfg.ExitPort, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial exit: %w", err)
 	}
@@ -400,11 +430,7 @@ func handleEntryTCP(client net.Conn, cfg config, aead cipher.AEAD) error {
 	counter.in.Add(uint64(len(first)))
 	stopReporting := startTrafficReporter(cfg, counter)
 	defer stopReporting()
-	errCh := make(chan error, 2)
-	go func() { errCh <- copyPlainToSecure(sec, client, cfg.LimitIn, &counter.in) }()
-	go func() { errCh <- copySecureToPlain(client, sec, cfg.LimitOut, &counter.out) }()
-	err = <-errCh
-	return err
+	return proxyPlainSecure(client, sec, cfg.LimitIn, cfg.LimitOut, counter)
 }
 
 func serveEntryUDP(conn *net.UDPConn, cfg config, aead cipher.AEAD) error {
@@ -429,7 +455,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, aead cipher.AEAD) error {
 }
 
 func udpRoundTripToExit(cfg config, aead cipher.AEAD, payload []byte) ([]byte, error) {
-	exit, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.ExitHost, strconv.Itoa(cfg.ExitPort)), 10*time.Second)
+	exit, err := dialTCP(cfg.ExitHost, cfg.ExitPort, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -477,6 +503,7 @@ func runExit(done <-chan struct{}, cfg config, aead cipher.AEAD) error {
 			}
 			return err
 		}
+		enableTCPKeepAlive(conn)
 		go func() {
 			if err := handleExitSession(conn, cfg, aead); err != nil && !isClosedErr(err) {
 				log.Printf("exit session error: %v", err)
@@ -517,16 +544,12 @@ func handleExitSession(conn net.Conn, cfg config, aead cipher.AEAD) error {
 }
 
 func handleExitTCP(sec *secureConn, hello helloFrame) error {
-	target, err := net.DialTimeout("tcp", net.JoinHostPort(hello.TargetIP, strconv.Itoa(hello.TargetPort)), 10*time.Second)
+	target, err := dialTCP(hello.TargetIP, hello.TargetPort, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial target: %w", err)
 	}
 	defer target.Close()
-	errCh := make(chan error, 2)
-	go func() { errCh <- copySecureToPlain(target, sec, 0, nil) }()
-	go func() { errCh <- copyPlainToSecure(sec, target, 0, nil) }()
-	err = <-errCh
-	return err
+	return proxyPlainSecure(target, sec, 0, 0, nil)
 }
 
 func handleExitUDP(sec *secureConn, hello helloFrame) error {
@@ -585,6 +608,7 @@ func runRelay(done <-chan struct{}, cfg config, upstreamAEAD cipher.AEAD) error 
 			}
 			return err
 		}
+		enableTCPKeepAlive(upConn)
 		go func() {
 			if err := handleRelaySession(upConn, cfg, upstreamAEAD, downstreamAEAD); err != nil && !isClosedErr(err) {
 				log.Printf("relay session error: %v", err)
@@ -612,7 +636,7 @@ func handleRelaySession(upConn net.Conn, cfg config, upstreamAEAD, downstreamAEA
 		return err
 	}
 	// Connect to downstream (like entry)
-	downConn, err := net.DialTimeout("tcp", net.JoinHostPort(cfg.RelayExitHost, strconv.Itoa(cfg.RelayExitPort)), 10*time.Second)
+	downConn, err := dialTCP(cfg.RelayExitHost, cfg.RelayExitPort, 10*time.Second)
 	if err != nil {
 		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
 		return err
@@ -637,8 +661,10 @@ func relayBidir(up *secureConn, down *secureConn) error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- relayCopy(up, down) }()
 	go func() { errCh <- relayCopy(down, up) }()
-	err := <-errCh
-	return err
+	return waitBidirectional(errCh, func() {
+		_ = up.conn.Close()
+		_ = down.conn.Close()
+	})
 }
 
 func relayCopy(src, dst *secureConn) error {
@@ -647,9 +673,51 @@ func relayCopy(src, dst *secureConn) error {
 		if err != nil {
 			return err
 		}
+		if len(frame) == 0 {
+			return dst.writeFrame(nil)
+		}
 		if err := dst.writeFrame(frame); err != nil {
 			return err
 		}
+	}
+}
+
+func proxyPlainSecure(plain net.Conn, sec *secureConn, inLimit, outLimit int64, counter *trafficCounter) error {
+	errCh := make(chan error, 2)
+	var inCounter, outCounter *atomic.Uint64
+	if counter != nil {
+		inCounter = &counter.in
+		outCounter = &counter.out
+	}
+	go func() { errCh <- copyPlainToSecure(sec, plain, inLimit, inCounter) }()
+	go func() { errCh <- copySecureToPlain(plain, sec, outLimit, outCounter) }()
+	return waitBidirectional(errCh, func() {
+		_ = plain.Close()
+		_ = sec.conn.Close()
+	})
+}
+
+func waitBidirectional(errCh <-chan error, closeAll func()) error {
+	first := <-errCh
+	if first != nil && !isClosedErr(first) {
+		closeAll()
+		return first
+	}
+	timer := time.NewTimer(fxpHalfCloseLinger)
+	defer timer.Stop()
+	select {
+	case second := <-errCh:
+		if second != nil && !isClosedErr(second) {
+			closeAll()
+			return second
+		}
+		return nil
+	case <-timer.C:
+		closeAll()
+		if first != nil && !isClosedErr(first) {
+			return first
+		}
+		return nil
 	}
 }
 
@@ -669,7 +737,7 @@ func copyPlainToSecure(dst *secureConn, src net.Conn, bytesPerSecond int64, coun
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				return dst.writeFrame(nil)
 			}
 			return err
 		}
@@ -687,7 +755,8 @@ func copySecureToPlain(dst net.Conn, src *secureConn, bytesPerSecond int64, coun
 			return err
 		}
 		if len(frame) == 0 {
-			continue
+			closeWriteConn(dst)
+			return nil
 		}
 		limiter.wait(len(frame))
 		if _, err := dst.Write(frame); err != nil {
@@ -814,8 +883,11 @@ func newV2ServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 	if err := json.Unmarshal(ack, &hs); err != nil || hs.V != fxpVersionV2 || hs.TunnelID != cfg.TunnelID {
 		return nil, errors.New("fxp v2 handshake rejected")
 	}
-	if ts := time.Unix(hs.TS, 0); hs.TS <= 0 || time.Since(ts) > 30*time.Second || time.Until(ts) > 30*time.Second {
+	if hs.TS <= 0 {
 		return nil, errors.New("fxp v2 handshake rejected")
+	}
+	if ts := time.Unix(hs.TS, 0); time.Since(ts) > fxpV2HandshakeWindow || time.Until(ts) > fxpV2HandshakeWindow {
+		log.Printf("fxp v2 handshake clock skew tunnel=%d skew=%s; accepting because salt replay protection is independent of wall-clock sync", cfg.TunnelID, time.Since(ts))
 	}
 	reply, _ := json.Marshal(v2Handshake{V: fxpVersionV2, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
 	if err := sec.writeFrame(reply); err != nil {

@@ -1944,47 +1944,65 @@ function SystemInfoSection() {
 
   return (
     <div className="space-y-4">
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Globe className="h-4 w-4 text-primary" />
-            品牌与网络测试
-          </CardTitle>
-          <CardDescription>
-            配置后台显示的网站标题和网络测试入口。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-lg border border-border/40 bg-muted/15 p-4">
-            <div className="grid gap-4 xl:grid-cols-[minmax(220px,0.8fr)_minmax(260px,1fr)_auto] xl:items-center">
-              <div className="min-w-0 space-y-2">
-                <Label htmlFor="site-title">网站标题</Label>
-                <Input
-                  id="site-title"
-                  value={siteTitleInput}
-                  onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
-                  placeholder="ForwardX"
-                />
-                <p className="text-xs text-muted-foreground">
-                  用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
-                </p>
-              </div>
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/55 p-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">普通用户可见网络测试</p>
-                  <p className="text-xs text-muted-foreground">
-                    关闭后侧边栏入口和接口都会对普通用户禁用。
-                  </p>
-                </div>
-                <Switch className="shrink-0" checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
-              </div>
-              <Button className="w-full lg:w-auto lg:min-w-40" onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
-                保存设置
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe className="h-4 w-4 text-primary" />
+              网站标题
+            </CardTitle>
+            <CardDescription>
+              配置后台显示的品牌名称。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                id="site-title"
+                value={siteTitleInput}
+                onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
+                placeholder="ForwardX"
+                className="flex-1"
+              />
+              <Button
+                onClick={handleSaveBranding}
+                disabled={isSavingSetting("branding")}
+              >
+                保存
               </Button>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+            <p className="text-xs text-muted-foreground">
+              用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wifi className="h-4 w-4 text-primary" />
+              网络测试
+            </CardTitle>
+            <CardDescription>
+              配置普通用户是否可见网络测试入口。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">普通用户可见网络测试</p>
+                <p className="text-xs text-muted-foreground">
+                  关闭后侧边栏入口和接口都会对普通用户禁用。
+                </p>
+              </div>
+              <Switch className="shrink-0" checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
+            </div>
+            <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
+              保存
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
       <div className="grid gap-4 xl:grid-cols-2">
         {/* 面板公开访问地址 */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">

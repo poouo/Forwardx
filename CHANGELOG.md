@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.89] - 2026-06-01
+
+### Fixed
+
+- Hardened Agent runtime handoff when a previously deleted port is reused or a listener switches between GOST and ForwardX custom encrypted tunnels.
+- Made ForwardX FXP connections close stale half-open sessions cleanly, enable TCP keepalive, and avoid rejecting new V2 sessions only because Agent host clocks are out of sync.
+- Bumped panel version to 2.3.89 and Agent target version to 2.2.74 for the runtime handoff and FXP stability fixes.
+- Android APP version remains 2.3.34 because this Agent/runtime fix does not require a native APP build.
+
 ## [2.3.88] - 2026-06-01
 
 ### Fixed
