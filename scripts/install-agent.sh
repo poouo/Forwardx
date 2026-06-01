@@ -176,9 +176,18 @@ do_uninstall() {
   rm -f "/etc/systemd/system/$SERVICE_NAME.service"
   systemctl daemon-reload 2>/dev/null || true
 
-  pkill -f "/usr/local/bin/forwardx-fxp" 2>/dev/null || true
-  pkill -f "realm -l" 2>/dev/null || true
-  pkill -f "socat.*LISTEN" 2>/dev/null || true
+  for pid in $(pgrep -f "[/]usr/local/bin/forwardx-fxp" 2>/dev/null || true); do
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
+    kill "$pid" 2>/dev/null || true
+  done
+  for pid in $(pgrep -f "[r]ealm -l" 2>/dev/null || true); do
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
+    kill "$pid" 2>/dev/null || true
+  done
+  for pid in $(pgrep -f "[s]ocat.*LISTEN" 2>/dev/null || true); do
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
+    kill "$pid" 2>/dev/null || true
+  done
 
   for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service; do
     if [ -f "$SVC" ]; then

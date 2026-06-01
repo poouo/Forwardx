@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.75"
+var Version = "2.2.76"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1087,7 +1087,7 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 	matches := existing != nil && existing.signature == signature && existing.cmd != nil && existing.cmd.Process != nil
 	fxpMu.Unlock()
 	if matches {
-		logf("fxp %s already running with missing local state tunnel=%d rule=%d listen=:%d protocol=%s", normalized.Role, normalized.TunnelID, normalized.RuleID, normalized.ListenPort, normalized.Protocol)
+		logf("fxp %s already running with matching runtime tunnel=%d rule=%d listen=:%d protocol=%s", normalized.Role, normalized.TunnelID, normalized.RuleID, normalized.ListenPort, normalized.Protocol)
 	}
 	return matches
 }
@@ -1336,15 +1336,15 @@ func managedPortCleanupCmds(port string) []string {
 func managedListenerCleanupCmds(port string) []string {
 	cmds := append([]string{}, fxpPortCleanupCmds(port)...)
 	cmds = append(cmds,
-		"pkill -f 'socat .*LISTEN:"+port+"' 2>/dev/null || true",
-		"pkill -f 'realm .*:"+port+"' 2>/dev/null || true",
+		"for pid in $(pgrep -f '[s]ocat .*LISTEN:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
+		"for pid in $(pgrep -f '[r]ealm .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
 	)
 	return cmds
 }
 
 func fxpPortCleanupCmds(port string) []string {
 	return []string{
-		"for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-" + port + "\\.json' 2>/dev/null || true); do kill \"$pid\" 2>/dev/null || true; done",
+		"for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-" + port + "\\.json' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
 		"rm -f /run/forwardx-agent/fxp-*-" + port + ".json 2>/dev/null || true",
 	}
 }

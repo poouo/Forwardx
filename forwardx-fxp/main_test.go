@@ -230,6 +230,21 @@ func TestFxpRejectsReplaySalt(t *testing.T) {
 	}
 }
 
+func TestFxpWireContextRemainsStable(t *testing.T) {
+	if string(fxpSessionInfo) != "forwardx-fxp-v2 session" {
+		t.Fatalf("unexpected session context %q", string(fxpSessionInfo))
+	}
+	if string(fxpLengthAD) != "forwardx-fxp-v2 length" {
+		t.Fatalf("unexpected length AD %q", string(fxpLengthAD))
+	}
+	if string(fxpPayloadAD) != "forwardx-fxp-v2 payload" {
+		t.Fatalf("unexpected payload AD %q", string(fxpPayloadAD))
+	}
+	if fxpMasterContext != "forwardx-fxp-v2 master" {
+		t.Fatalf("unexpected master context %q", fxpMasterContext)
+	}
+}
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
