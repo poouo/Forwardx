@@ -99,6 +99,9 @@ export function enqueueLookingGlassAgentTask(
   input: Omit<LookingGlassAgentTask, "taskId" | "createdAt">,
   timeoutMs = 60_000,
 ) {
+  if (hasActiveLookingGlassTask(hostId)) {
+    throw new Error("该测试主机已有网络测试正在执行，请等待完成后再开始新的测试");
+  }
   const task: LookingGlassAgentTask = {
     ...input,
     taskId: crypto.randomUUID(),
@@ -127,7 +130,7 @@ export function enqueueLookingGlassAgentTask(
   return { task, status: toStatus(state) };
 }
 
-export function takeLookingGlassAgentTasks(hostId: number, limit = 4) {
+export function takeLookingGlassAgentTasks(hostId: number, limit = 1) {
   const queue = queues.get(hostId) || [];
   const tasks = queue.splice(0, limit);
   if (queue.length > 0) queues.set(hostId, queue);
@@ -182,4 +185,11 @@ export function getLookingGlassAgentTaskStatus(hostId: number, taskId: string) {
   const state = states.get(taskId);
   if (!state || state.hostId !== hostId) return null;
   return toStatus(state);
+}
+
+export function hasActiveLookingGlassTask(hostId: number) {
+  for (const state of states.values()) {
+    if (state.hostId === hostId && !TERMINAL_STATES.has(state.status)) return true;
+  }
+  return false;
 }

@@ -16,6 +16,7 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
+import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
@@ -1725,7 +1726,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, lookingGlassTests, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 ? 2 : 30 });
+    const iperf3Tasks = takeIperf3AgentTasks(host.id);
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

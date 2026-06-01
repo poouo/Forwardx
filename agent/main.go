@@ -28,11 +28,10 @@ import (
 	"time"
 )
 
-var Version = "2.2.71"
+var Version = "2.2.72"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
-const lookingGlassSpeedTestPort = 3091
-const lookingGlassSpeedTestDuration = 10 * time.Second
+const iperf3IdleTimeout = 3 * time.Minute
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -47,6 +46,8 @@ var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
 var agentLogBuffer []agentLogEntry
 var actionQueue = make(chan actionJob, 128)
+var iperf3Mu sync.Mutex
+var iperf3Server *iperf3Process
 
 type actionJob struct {
 	cfg    Config
@@ -80,6 +81,7 @@ type heartbeatResp struct {
 	TunnelProbes      []tunnelProbe      `json:"tunnelProbes"`
 	GuardRules        []guardRule        `json:"guardRules"`
 	LookingGlassTests []lookingGlassTask `json:"lookingGlassTests"`
+	Iperf3Tasks       []iperf3Task       `json:"iperf3Tasks"`
 	AgentUpgrade      *agentUpgrade      `json:"agentUpgrade"`
 	LogUpload         bool               `json:"agentLogUploadEnabled"`
 	NextInterval      int                `json:"nextInterval"`
@@ -234,7 +236,6 @@ func main() {
 	_ = register(cfg)
 	go actionWorker()
 	go selfTestPoller(cfg)
-	go lookingGlassSpeedTestServer(cfg)
 	go agentEventStream(cfg)
 	for {
 		nextInterval, err := heartbeat(cfg)
@@ -326,6 +327,9 @@ func heartbeat(cfg Config) (int, error) {
 	for _, task := range resp.LookingGlassTests {
 		go handleLookingGlassTask(cfg, task)
 	}
+	for _, task := range resp.Iperf3Tasks {
+		go handleIperf3Task(cfg, task)
+	}
 	syncRunningRuleState(resp.RunningRules)
 	for _, r := range resp.RunningRules {
 		writeRunningRuleState(r)
@@ -407,6 +411,145 @@ func reportLookingGlassProgress(cfg Config, result lookingGlassResult) {
 	if err := post(cfg, "/api/agent/looking-glass-progress", map[string]any{"result": result}, &map[string]any{}); err != nil {
 		logf("looking glass progress report failed task=%s method=%s target=%s: %v", result.TaskID, result.Method, result.ResolvedAddress, err)
 	}
+}
+
+func handleIperf3Task(cfg Config, task iperf3Task) {
+	result := runIperf3Task(cfg, task)
+	if err := post(cfg, "/api/agent/iperf3-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
+		logf("iperf3 result report failed task=%s op=%s port=%d: %v", task.TaskID, task.Op, task.Port, err)
+	}
+}
+
+func reportIperf3Result(cfg Config, result iperf3Result) {
+	if result.UpdatedAt == "" {
+		result.UpdatedAt = time.Now().Format(time.RFC3339Nano)
+	}
+	if err := post(cfg, "/api/agent/iperf3-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
+		logf("iperf3 status report failed task=%s op=%s port=%d: %v", result.TaskID, result.Op, result.Port, err)
+	}
+}
+
+func runIperf3Task(cfg Config, task iperf3Task) iperf3Result {
+	port := task.Port
+	if port <= 0 {
+		port = 5201
+	}
+	if port < 1 || port > 65535 {
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "error",
+			Output:    "iperf3 端口必须在 1-65535 之间",
+			Error:     "invalid iperf3 port",
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
+	}
+	if task.Op == "stop" {
+		output := stopIperf3Server("用户从面板停止 iperf3 服务端")
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "stopped",
+			Output:    output,
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
+	}
+	if _, err := exec.LookPath("iperf3"); err != nil {
+		message := "Agent 未安装 iperf3，请重新运行安装脚本或手动安装 iperf3"
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "error",
+			Output:    message,
+			Error:     message,
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
+	}
+	return startIperf3Server(cfg, task, port)
+}
+
+func startIperf3Server(cfg Config, task iperf3Task, port int) iperf3Result {
+	iperf3Mu.Lock()
+	if iperf3Server != nil {
+		iperf3Server.stopLocked("启动新的 iperf3 服务端，已停止旧实例")
+	}
+	cmd := exec.Command("iperf3", "-s", "-p", strconv.Itoa(port))
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		iperf3Mu.Unlock()
+		return iperf3StartError(task, port, err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		iperf3Mu.Unlock()
+		return iperf3StartError(task, port, err)
+	}
+	if err := cmd.Start(); err != nil {
+		iperf3Mu.Unlock()
+		return iperf3StartError(task, port, err)
+	}
+	startedAt := time.Now()
+	process := &iperf3Process{
+		taskID:    task.TaskID,
+		port:      port,
+		cfg:       cfg,
+		cmd:       cmd,
+		startedAt: startedAt,
+		output:    "iperf3 服务端已启动，等待客户端连接...",
+		done:      make(chan struct{}),
+	}
+	process.lastActivity.Store(startedAt.UnixNano())
+	iperf3Server = process
+	iperf3Mu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go process.readPipe(stdout, &wg)
+	go process.readPipe(stderr, &wg)
+	go process.watchIdleTimeout()
+	go func() {
+		err := cmd.Wait()
+		wg.Wait()
+		process.markExited(err)
+	}()
+
+	return iperf3Result{
+		TaskID:    task.TaskID,
+		Op:        "start",
+		Port:      port,
+		Status:    "running",
+		Output:    process.currentOutput(),
+		PID:       cmd.Process.Pid,
+		StartedAt: startedAt.Format(time.RFC3339Nano),
+		UpdatedAt: time.Now().Format(time.RFC3339Nano),
+	}
+}
+
+func iperf3StartError(task iperf3Task, port int, err error) iperf3Result {
+	message := fmt.Sprintf("iperf3 服务端启动失败：%v", err)
+	return iperf3Result{
+		TaskID:    task.TaskID,
+		Op:        task.Op,
+		Port:      port,
+		Status:    "error",
+		Output:    message,
+		Error:     message,
+		UpdatedAt: time.Now().Format(time.RFC3339Nano),
+	}
+}
+
+func stopIperf3Server(reason string) string {
+	iperf3Mu.Lock()
+	defer iperf3Mu.Unlock()
+	if iperf3Server == nil {
+		return "iperf3 服务端未在运行"
+	}
+	output := iperf3Server.stopLocked(reason)
+	iperf3Server = nil
+	return output
 }
 
 func runLookingGlassTask(cfg Config, task lookingGlassTask) lookingGlassResult {
@@ -592,177 +735,6 @@ func runLookingGlassCommand(name string, args []string, timeout time.Duration, o
 	}
 	report(outputText)
 	return strings.TrimSpace(outputText), &code, timedOut
-}
-
-func lookingGlassSpeedTestServer(cfg Config) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/forwardx-looking-glass/speedtest-download", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if err := validateLookingGlassSpeedTestRequest(r, cfg.Token, "download"); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		streamLookingGlassSpeedTest(w, r, lookingGlassSpeedTestDuration)
-	})
-	mux.HandleFunc("/forwardx-looking-glass/speedtest-upload", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if err := validateLookingGlassSpeedTestRequest(r, cfg.Token, "upload"); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-		received, err := drainLookingGlassUpload(r, lookingGlassSpeedTestDuration)
-		if err != nil {
-			logf("looking glass upload test read error: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"receivedBytes":%d}`, received)))
-	})
-	mux.HandleFunc("/forwardx-looking-glass/speedtest", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "speed test is embedded in the ForwardX panel", http.StatusGone)
-	})
-	mux.HandleFunc("/forwardx-looking-glass/speedtest-stream", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if err := validateLookingGlassSpeedTestRequest(r, cfg.Token, "download"); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		streamLookingGlassSpeedTest(w, r, lookingGlassSpeedTestDuration)
-	})
-
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", lookingGlassSpeedTestPort),
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	for {
-		if err := server.ListenAndServe(); err != nil {
-			logf("looking glass speed test server error: %v", err)
-			time.Sleep(10 * time.Second)
-		}
-	}
-}
-
-func streamLookingGlassSpeedTest(w http.ResponseWriter, r *http.Request, duration time.Duration) {
-	flusher, _ := w.(http.Flusher)
-	chunk := make([]byte, 64*1024)
-	deadline := time.Now().Add(duration)
-	lastFlush := time.Now()
-	for time.Now().Before(deadline) {
-		select {
-		case <-r.Context().Done():
-			return
-		default:
-		}
-		written, err := w.Write(chunk)
-		if err != nil {
-			return
-		}
-		if flusher != nil && time.Since(lastFlush) >= 250*time.Millisecond {
-			flusher.Flush()
-			lastFlush = time.Now()
-		}
-		if written == 0 {
-			return
-		}
-	}
-	if flusher != nil {
-		flusher.Flush()
-	}
-}
-
-func drainLookingGlassUpload(r *http.Request, duration time.Duration) (int64, error) {
-	deadline := time.Now().Add(duration)
-	buffer := make([]byte, 64*1024)
-	var total int64
-	for time.Now().Before(deadline) {
-		select {
-		case <-r.Context().Done():
-			return total, r.Context().Err()
-		default:
-		}
-		if r.Body == nil {
-			return total, nil
-		}
-		n, err := r.Body.Read(buffer)
-		if n > 0 {
-			total += int64(n)
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return total, nil
-			}
-			return total, err
-		}
-	}
-	return total, nil
-}
-
-func validateLookingGlassSpeedTestRequest(r *http.Request, token string, mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != "download" && mode != "upload" {
-		return errors.New("unsupported speed test mode")
-	}
-	expires, err := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
-	if err != nil || expires < time.Now().Unix() {
-		return errors.New("link expired")
-	}
-	expected := signLookingGlassSpeedTest(token, mode, expires)
-	provided := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sig")))
-	if len(provided) != len(expected) || !hmac.Equal([]byte(provided), []byte(expected)) {
-		return errors.New("invalid signature")
-	}
-	return nil
-}
-
-func signLookingGlassSpeedTest(token string, size string, expires int64) string {
-	mac := hmac.New(sha256.New, []byte(token))
-	_, _ = mac.Write([]byte(fmt.Sprintf("%s:%d", size, expires)))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-type lookingGlassZeroReader struct{}
-
-func (lookingGlassZeroReader) ReadAt(p []byte, off int64) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	for i := range p {
-		p[i] = 0
-	}
-	return len(p), nil
 }
 
 func mapBool(ok bool, yes string, no string) string {
@@ -1810,6 +1782,150 @@ type lookingGlassResult struct {
 	StartedAt         string   `json:"startedAt"`
 	FinishedAt        string   `json:"finishedAt"`
 	Error             string   `json:"error,omitempty"`
+}
+
+type iperf3Task struct {
+	TaskID    string `json:"taskId"`
+	Op        string `json:"op"`
+	Port      int    `json:"port"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type iperf3Result struct {
+	TaskID    string `json:"taskId"`
+	Op        string `json:"op"`
+	Port      int    `json:"port"`
+	Status    string `json:"status"`
+	Output    string `json:"output"`
+	PID       int    `json:"pid,omitempty"`
+	StartedAt string `json:"startedAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type iperf3Process struct {
+	taskID       string
+	port         int
+	cfg          Config
+	cmd          *exec.Cmd
+	startedAt    time.Time
+	outputMu     sync.Mutex
+	output       string
+	done         chan struct{}
+	doneOnce     sync.Once
+	lastActivity atomic.Int64
+}
+
+func (p *iperf3Process) appendLine(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	p.lastActivity.Store(time.Now().UnixNano())
+	p.outputMu.Lock()
+	defer p.outputMu.Unlock()
+	if p.output == "" {
+		p.output = line
+		return
+	}
+	if len(p.output) > 32000 {
+		p.output = p.output[len(p.output)-24000:]
+		p.output = "... 输出已截断\n" + p.output
+	}
+	p.output += "\n" + line
+}
+
+func (p *iperf3Process) currentOutput() string {
+	p.outputMu.Lock()
+	defer p.outputMu.Unlock()
+	return strings.TrimSpace(p.output)
+}
+
+func (p *iperf3Process) readPipe(r io.Reader, wg *sync.WaitGroup) {
+	defer wg.Done()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	for scanner.Scan() {
+		p.appendLine(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		p.appendLine(fmt.Sprintf("读取 iperf3 输出失败：%v", err))
+	}
+}
+
+func (p *iperf3Process) watchIdleTimeout() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			last := time.Unix(0, p.lastActivity.Load())
+			if time.Since(last) < iperf3IdleTimeout {
+				continue
+			}
+			var result *iperf3Result
+			iperf3Mu.Lock()
+			if iperf3Server == p {
+				p.stopLocked("3 分钟无客户端测试，已自动停止 iperf3 服务端")
+				iperf3Server = nil
+				result = &iperf3Result{
+					TaskID:    p.taskID,
+					Op:        "stop",
+					Port:      p.port,
+					Status:    "stopped",
+					Output:    p.currentOutput(),
+					StartedAt: p.startedAt.Format(time.RFC3339Nano),
+				}
+			}
+			iperf3Mu.Unlock()
+			if result != nil {
+				reportIperf3Result(p.cfg, *result)
+			}
+			return
+		case <-p.done:
+			return
+		}
+	}
+}
+
+func (p *iperf3Process) stopLocked(reason string) string {
+	p.appendLine(reason)
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	p.doneOnce.Do(func() { close(p.done) })
+	return p.currentOutput()
+}
+
+func (p *iperf3Process) markExited(err error) {
+	status := "stopped"
+	errText := ""
+	if err != nil && !strings.Contains(err.Error(), "killed") {
+		status = "error"
+		errText = fmt.Sprintf("iperf3 服务端异常退出：%v", err)
+		p.appendLine(errText)
+	} else {
+		p.appendLine("iperf3 服务端已停止")
+	}
+	p.doneOnce.Do(func() { close(p.done) })
+	var result *iperf3Result
+	iperf3Mu.Lock()
+	if iperf3Server == p {
+		iperf3Server = nil
+		result = &iperf3Result{
+			TaskID:    p.taskID,
+			Op:        "stop",
+			Port:      p.port,
+			Status:    status,
+			Output:    p.currentOutput(),
+			StartedAt: p.startedAt.Format(time.RFC3339Nano),
+			Error:     errText,
+		}
+	}
+	iperf3Mu.Unlock()
+	if result != nil {
+		reportIperf3Result(p.cfg, *result)
+	}
 }
 
 type failoverProxy struct {

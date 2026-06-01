@@ -1,4 +1,3 @@
-import crypto from "crypto";
 import dns from "dns";
 import net from "net";
 import { TRPCError } from "@trpc/server";
@@ -6,17 +5,24 @@ import { z } from "zod";
 import { protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
-import { enqueueLookingGlassAgentTask, getLookingGlassAgentTaskStatus, type LookingGlassTaskStatus } from "../lookingGlassAgentTasks";
+import {
+  enqueueLookingGlassAgentTask,
+  getLookingGlassAgentTaskStatus,
+  hasActiveLookingGlassTask,
+  type LookingGlassTaskStatus,
+} from "../lookingGlassAgentTasks";
+import {
+  DEFAULT_IPERF3_SERVER_PORT,
+  enqueueIperf3AgentTask,
+  getIperf3Status,
+  hasActiveIperf3Task,
+  type Iperf3Status,
+} from "../iperf3AgentTasks";
 import { requireHostAccess } from "./helpers";
-
-const AGENT_SPEED_TEST_PORT = 3091;
-const SPEED_TEST_LINK_TTL_SECONDS = 10 * 60;
-const SPEED_TEST_DURATION_SECONDS = 10;
 
 const methodSchema = z.enum(["ping", "ping6", "traceroute", "traceroute6", "mtr", "mtr6", "tcp"]);
 
 type LookingGlassMethod = z.infer<typeof methodSchema>;
-type SpeedTestMode = "download" | "upload";
 
 async function assertNetworkTestAllowed(ctx: { user: { role: string } }) {
   if (ctx.user.role === "admin") return;
@@ -107,10 +113,10 @@ async function resolvePublicTarget(target: string, method: LookingGlassMethod) {
   };
 }
 
-function normalizeSpeedTestAddress(host: any) {
+function normalizeAgentPublicAddress(host: any) {
   const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
   if (!raw || raw.toLowerCase() === "unknown") {
-    throw new Error("该主机缺少可用于速度测试的公网地址");
+    throw new Error("该主机缺少可用于 iperf3 测试的公网地址");
   }
 
   let value = raw.replace(/^https?:\/\//i, "");
@@ -121,22 +127,9 @@ function normalizeSpeedTestAddress(host: any) {
     value = value.split(":")[0];
   }
   if (!value || value.toLowerCase() === "unknown") {
-    throw new Error("该主机缺少可用于速度测试的公网地址");
+    throw new Error("该主机缺少可用于 iperf3 测试的公网地址");
   }
   return value;
-}
-
-function speedTestProtocol(host: any) {
-  const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
-  return /^https:\/\//i.test(raw) ? "https" : "http";
-}
-
-function formatUrlHost(host: string) {
-  return net.isIP(host) === 6 ? `[${host}]` : host;
-}
-
-function signSpeedTestRequest(agentToken: string, mode: SpeedTestMode, expires: number) {
-  return crypto.createHmac("sha256", agentToken).update(`${mode}:${expires}`).digest("hex");
 }
 
 function hostHasIpv6(host: any) {
@@ -160,6 +153,21 @@ function decorateStatus(status: LookingGlassTaskStatus, host: any) {
   };
 }
 
+function decorateIperf3Status(status: Iperf3Status, host: any) {
+  const address = normalizeAgentPublicAddress(host);
+  const port = Number(status.port || DEFAULT_IPERF3_SERVER_PORT);
+  return {
+    ...status,
+    hostId: Number(host.id),
+    hostName: String(host.name || `Host #${host.id}`),
+    hostAddress: address,
+    commands: {
+      upload: `iperf3 -c ${address} -p ${port}`,
+      download: `iperf3 -c ${address} -p ${port} -R`,
+    },
+  };
+}
+
 export const lookingGlassRouter = router({
   clientInfo: protectedProcedure.query(({ ctx }) => {
     return { ip: getRequestIp(ctx.req) };
@@ -178,6 +186,9 @@ export const lookingGlassRouter = router({
       const method = input.method;
       const target = normalizeTarget(input.target);
       const host = await requireHostAccess(ctx, input.hostId);
+      if (hasActiveIperf3Task(input.hostId)) {
+        throw new Error("该测试主机已有 iperf3 服务端测试正在执行，请停止或等待结束后再开始新的网络测试");
+      }
       if (method.endsWith("6") && !hostHasIpv6(host)) {
         throw new Error(`测试主机「${(host as any).name || `Host #${input.hostId}`}」未检测到 IPv6 地址，无法执行 ${methodMetaLabel(method)} 测试`);
       }
@@ -209,37 +220,48 @@ export const lookingGlassRouter = router({
       return decorateStatus(status, host);
     }),
 
-  speedTestSession: protectedProcedure
+  iperf3Start: protectedProcedure
+    .input(z.object({
+      hostId: z.number().int().positive(),
+      port: z.number().int().min(1).max(65535).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await assertNetworkTestAllowed(ctx);
+      const host = await requireHostAccess(ctx, input.hostId) as any;
+      if (!String(host?.agentToken || "")) throw new Error("该主机未绑定 Agent，无法启动 iperf3 服务端");
+      if (hasActiveLookingGlassTask(input.hostId)) {
+        throw new Error("该测试主机已有网络测试正在执行，请等待完成后再启动 iperf3 服务端");
+      }
+      normalizeAgentPublicAddress(host);
+      const { status } = enqueueIperf3AgentTask(input.hostId, {
+        op: "start",
+        port: input.port || DEFAULT_IPERF3_SERVER_PORT,
+      });
+      pushAgentRefresh(input.hostId, "iperf3-start");
+      return decorateIperf3Status(status, host);
+    }),
+
+  iperf3Stop: protectedProcedure
+    .input(z.object({ hostId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await assertNetworkTestAllowed(ctx);
+      const host = await requireHostAccess(ctx, input.hostId) as any;
+      if (!String(host?.agentToken || "")) throw new Error("该主机未绑定 Agent，无法停止 iperf3 服务端");
+      const current = getIperf3Status(input.hostId);
+      const { status } = enqueueIperf3AgentTask(input.hostId, {
+        op: "stop",
+        port: current.port || DEFAULT_IPERF3_SERVER_PORT,
+      });
+      pushAgentRefresh(input.hostId, "iperf3-stop");
+      return decorateIperf3Status(status, host);
+    }),
+
+  iperf3Status: protectedProcedure
     .input(z.object({ hostId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertNetworkTestAllowed(ctx);
       const host = await requireHostAccess(ctx, input.hostId) as any;
-      const agentToken = String(host?.agentToken || "");
-      if (!agentToken) throw new Error("该主机未绑定 Agent，无法启动速度测试");
-
-      const address = normalizeSpeedTestAddress(host);
-      const protocol = speedTestProtocol(host);
-      const expires = Math.floor(Date.now() / 1000) + SPEED_TEST_LINK_TTL_SECONDS;
-      const base = `${protocol}://${formatUrlHost(address)}:${AGENT_SPEED_TEST_PORT}/forwardx-looking-glass`;
-      const buildUrl = (mode: SpeedTestMode) => {
-        const params = new URLSearchParams({
-          mode,
-          expires: String(expires),
-          sig: signSpeedTestRequest(agentToken, mode, expires),
-        });
-        const path = mode === "download" ? "speedtest-download" : "speedtest-upload";
-        return `${base}/${path}?${params.toString()}`;
-      };
-      return {
-        hostId: input.hostId,
-        hostName: String(host?.name || `Host #${input.hostId}`),
-        hostAddress: address,
-        port: AGENT_SPEED_TEST_PORT,
-        durationSeconds: SPEED_TEST_DURATION_SECONDS,
-        expiresAt: new Date(expires * 1000),
-        downloadUrl: buildUrl("download"),
-        uploadUrl: buildUrl("upload"),
-      };
+      return decorateIperf3Status(getIperf3Status(input.hostId), host);
     }),
 });
 

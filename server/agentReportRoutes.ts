@@ -12,6 +12,7 @@ import {
 import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { appendAgentLog } from "./agentLogStore";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
+import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -115,6 +116,44 @@ agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: 
     res.json({ success: ok });
   } catch (error) {
     console.error("[Agent LookingGlassProgress] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const token = authHeader.substring(7);
+    const host = await db.getHostByAgentToken(token);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+
+    const result = req.body?.result;
+    if (!result?.taskId) {
+      res.status(400).json({ error: "result.taskId is required" });
+      return;
+    }
+    const ok = completeIperf3AgentTask(host.id, {
+      taskId: String(result.taskId),
+      op: result.op === "stop" ? "stop" : "start",
+      port: Number(result.port || 5201),
+      status: result.status === "stopped" ? "stopped" : result.status === "error" ? "error" : "running",
+      output: String(result.output || ""),
+      pid: result.pid === undefined || result.pid === null ? null : Number(result.pid),
+      startedAt: result.startedAt ? String(result.startedAt) : undefined,
+      updatedAt: result.updatedAt ? String(result.updatedAt) : undefined,
+      error: result.error ? String(result.error) : undefined,
+    });
+    res.json({ success: ok });
+  } catch (error) {
+    console.error("[Agent Iperf3] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

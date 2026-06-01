@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.86] - 2026-06-01
+
+### Changed
+
+- Moved iperf3 into the network-test type dropdown and removed the browser-based upload/download speed-test flow.
+- Added Agent-managed iperf3 server tasks with client command display, one-test-at-a-time protection, and automatic shutdown after 3 minutes without client activity.
+- Updated Agent install and upgrade scripts to install iperf3 as a required dependency.
+- Bumped panel version to 2.3.86. Agent target version is now 2.2.72 for Agent-managed iperf3 server testing.
+- Android APP version remains 2.3.33 because this web-panel and Agent change does not require a native APP build.
+
 ## [2.3.85] - 2026-06-01
 
 ### Changed

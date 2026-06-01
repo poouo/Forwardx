@@ -6,6 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   Activity,
   AlertTriangle,
@@ -22,19 +25,18 @@ import {
   Terminal,
   Wifi,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
 import { toast } from "sonner";
-import { trpc } from "@/lib/trpc";
-import { copyTextToClipboard } from "@/lib/clipboard";
-import { cn } from "@/lib/utils";
 
-type Method = "ping" | "ping6" | "traceroute" | "traceroute6" | "mtr" | "mtr6" | "tcp";
+type Method = "ping" | "ping6" | "traceroute" | "traceroute6" | "mtr" | "mtr6" | "tcp" | "iperf3";
+type NetworkMethod = Exclude<Method, "iperf3">;
 type RunState = "idle" | "queued" | "running" | "success" | "warning" | "error";
+type Iperf3State = "idle" | "queued" | "starting" | "running" | "stopping" | "stopped" | "error";
 
 type LookingGlassResult = {
   taskId: string;
   status?: "queued" | "running" | "success" | "error" | "timeout";
-  method: Method;
+  method: NetworkMethod;
   target: string;
   port?: number;
   sourceHostId?: number;
@@ -47,167 +49,62 @@ type LookingGlassResult = {
   durationMs: number;
   startedAt: string | Date;
   finishedAt: string | Date;
+  clientIp?: string;
+  error?: string;
 };
 
-type SpeedPhase = "idle" | "download" | "upload" | "complete" | "error";
-type SpeedPoint = { phase: "download" | "upload"; second: number; rate: number };
-type SpeedMetrics = {
-  current: number;
-  downloadAvg: number;
-  uploadAvg: number;
-  downloadPeak: number;
-  uploadPeak: number;
-  downloadBytes: number;
-  uploadBytes: number;
-  downloadSeconds: number;
-  uploadSeconds: number;
-};
-
-const initialSpeedMetrics: SpeedMetrics = {
-  current: 0,
-  downloadAvg: 0,
-  uploadAvg: 0,
-  downloadPeak: 0,
-  uploadPeak: 0,
-  downloadBytes: 0,
-  uploadBytes: 0,
-  downloadSeconds: 0,
-  uploadSeconds: 0,
+type Iperf3Status = {
+  taskId?: string;
+  state: Iperf3State;
+  port: number;
+  output: string;
+  pid?: number | null;
+  startedAt?: string;
+  updatedAt: string;
+  error?: string;
+  hostId: number;
+  hostName: string;
+  hostAddress: string;
+  commands: {
+    upload: string;
+    download: string;
+  };
 };
 
 const methods: Array<{
   value: Method;
   label: string;
   description: string;
-  icon: React.ElementType;
+  icon: ElementType;
 }> = [
-  { value: "ping", label: "Ping IPv4", description: "ICMP 连通性与往返延迟", icon: Wifi },
-  { value: "ping6", label: "Ping IPv6", description: "IPv6 ICMP 连通性", icon: Wifi },
-  { value: "traceroute", label: "Traceroute IPv4", description: "查看公网路由路径", icon: Route },
-  { value: "traceroute6", label: "Traceroute IPv6", description: "查看 IPv6 路由路径", icon: Route },
-  { value: "mtr", label: "MTR IPv4", description: "连续路由质量报告", icon: Activity },
-  { value: "mtr6", label: "MTR IPv6", description: "IPv6 连续路由质量报告", icon: Activity },
-  { value: "tcp", label: "TCPing", description: "测试目标端口连接延迟", icon: RadioTower },
+  { value: "ping", label: "Ping IPv4", description: "测试 IPv4 ICMP 连通性和往返延迟", icon: Wifi },
+  { value: "ping6", label: "Ping IPv6", description: "测试 IPv6 ICMP 连通性和往返延迟", icon: Wifi },
+  { value: "traceroute", label: "Traceroute IPv4", description: "查看 IPv4 公网路由路径", icon: Route },
+  { value: "traceroute6", label: "Traceroute IPv6", description: "查看 IPv6 公网路由路径", icon: Route },
+  { value: "mtr", label: "MTR IPv4", description: "连续检测 IPv4 路由质量和丢包情况", icon: Activity },
+  { value: "mtr6", label: "MTR IPv6", description: "连续检测 IPv6 路由质量和丢包情况", icon: Activity },
+  { value: "tcp", label: "TCPing", description: "测试目标 TCP 端口连接延迟", icon: RadioTower },
+  { value: "iperf3", label: "iperf3 服务端", description: "在选中 Agent 上启动 iperf3 服务端并展示客户端命令", icon: Gauge },
 ];
 
 const examples = ["1.1.1.1", "8.8.8.8", "github.com", "cloudflare.com"];
 
-function formatDateTime(value: string | Date) {
+function methodMeta(method: Method) {
+  return methods.find((item) => item.value === method) || methods[0];
+}
+
+function formatDateTime(value: string | Date | undefined) {
+  if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString("zh-CN", { hour12: false });
-}
-
-function methodMeta(method: Method) {
-  return methods.find((item) => item.value === method) || methods[0];
 }
 
 function resultOk(result?: LookingGlassResult | null) {
   return !!result && !result.timedOut && result.exitCode === 0;
 }
 
-function bytesToMbps(bytes: number, seconds: number) {
-  return seconds > 0 ? (bytes * 8) / seconds / 1_000_000 : 0;
-}
-
-function formatSpeed(value: number) {
-  if (!Number.isFinite(value)) return "0.00";
-  return value.toFixed(2);
-}
-
-function formatMegabytes(bytes: number) {
-  if (!Number.isFinite(bytes)) return "0.00";
-  return (bytes / 1024 / 1024).toFixed(2);
-}
-
-function speedErrorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error || "速度测试失败");
-  if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(message)) {
-    return "浏览器无法直连 Agent 测速端口。请确认选中主机的 3091 端口可公网访问；如果面板使用 HTTPS，测速端口也需要通过 HTTPS 暴露，否则浏览器会拦截跨协议请求。";
-  }
-  return message;
-}
-
-function drawSpeedChart(canvas: HTMLCanvasElement | null, points: SpeedPoint[], previousPoints: SpeedPoint[] = points, progress = 1) {
-  if (!canvas) return;
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  const rect = canvas.getBoundingClientRect();
-  const ratio = window.devicePixelRatio || 1;
-  const width = Math.max(320, Math.floor((rect.width || 640) * ratio));
-  const height = Math.max(220, Math.floor((rect.height || 260) * ratio));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = "rgba(15, 23, 42, 0.96)";
-  context.fillRect(0, 0, width, height);
-
-  const padding = { left: 44 * ratio, right: 16 * ratio, top: 22 * ratio, bottom: 30 * ratio };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const maxRate = Math.max(10, ...points.map((point) => point.rate), ...previousPoints.map((point) => point.rate));
-  const pointAt = (items: SpeedPoint[], index: number) => items[Math.min(index, Math.max(0, items.length - 1))] || items[0];
-  const smoothPoints = points.map((point, index) => {
-    const previous = pointAt(previousPoints, index);
-    if (!previous || previous.phase !== point.phase) return point;
-    const eased = 1 - Math.pow(1 - progress, 3);
-    return {
-      ...point,
-      second: previous.second + (point.second - previous.second) * eased,
-      rate: previous.rate + (point.rate - previous.rate) * eased,
-    };
-  });
-  const toX = (point: SpeedPoint) => {
-    const second = point.phase === "download" ? point.second : 10 + point.second;
-    return padding.left + (Math.min(20, Math.max(0, second)) / 20) * plotWidth;
-  };
-  const toY = (rate: number) => padding.top + plotHeight - (Math.min(maxRate, rate) / maxRate) * plotHeight;
-
-  context.strokeStyle = "rgba(148, 163, 184, 0.18)";
-  context.lineWidth = ratio;
-  for (let i = 0; i <= 4; i++) {
-    const y = padding.top + (plotHeight * i) / 4;
-    context.beginPath();
-    context.moveTo(padding.left, y);
-    context.lineTo(width - padding.right, y);
-    context.stroke();
-  }
-  const splitX = padding.left + plotWidth / 2;
-  context.strokeStyle = "rgba(148, 163, 184, 0.28)";
-  context.beginPath();
-  context.moveTo(splitX, padding.top);
-  context.lineTo(splitX, padding.top + plotHeight);
-  context.stroke();
-
-  context.fillStyle = "rgba(203, 213, 225, 0.82)";
-  context.font = `${12 * ratio}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
-  context.fillText(`${maxRate.toFixed(1)} Mbps`, 8 * ratio, padding.top + 4 * ratio);
-  context.fillText("下载 10s", padding.left, height - 9 * ratio);
-  context.fillText("上传 10s", splitX + 10 * ratio, height - 9 * ratio);
-
-  const drawLine = (phase: "download" | "upload", color: string) => {
-    const phasePoints = smoothPoints.filter((point) => point.phase === phase);
-    if (phasePoints.length < 2) return;
-    context.beginPath();
-    phasePoints.forEach((point, index) => {
-      const x = toX(point);
-      const y = toY(point.rate);
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
-    context.strokeStyle = color;
-    context.lineWidth = 2.4 * ratio;
-    context.stroke();
-  };
-
-  drawLine("download", "#38bdf8");
-  drawLine("upload", "#22c55e");
-}
-
-function buildPendingOutput(method: Method, hostName: string, target: string, port?: string) {
+function buildPendingOutput(method: NetworkMethod, hostName: string, target: string, port?: string) {
   const lines = [
     `[${new Date().toLocaleTimeString("zh-CN", { hour12: false })}] 已创建网络测试任务`,
     `测试主机: ${hostName || "-"}`,
@@ -219,82 +116,33 @@ function buildPendingOutput(method: Method, hostName: string, target: string, po
   return lines.join("\n");
 }
 
+function iperf3StateLabel(state?: Iperf3State) {
+  if (state === "queued") return "排队中";
+  if (state === "starting") return "启动中";
+  if (state === "running") return "运行中";
+  if (state === "stopping") return "停止中";
+  if (state === "stopped") return "已停止";
+  if (state === "error") return "异常";
+  return "等待";
+}
+
 function ResultOutput({
   result,
   liveOutput,
   state,
-  speedPhase,
-  speedMetrics,
-  speedPoints,
-  speedCanvasRef,
-  speedMessage,
 }: {
   result: LookingGlassResult | null;
   liveOutput: string;
   state: RunState;
-  speedPhase: SpeedPhase;
-  speedMetrics: SpeedMetrics;
-  speedPoints: SpeedPoint[];
-  speedCanvasRef: React.RefObject<HTMLCanvasElement | null>;
-  speedMessage: string;
 }) {
   const isRunning = state === "queued" || state === "running";
   const ok = resultOk(result);
   const title = result ? methodMeta(result.method).label : "网络测试结果";
   const output = result?.output || liveOutput || "选择主机、测试类型和目标后开始执行。";
   const statusLabel = isRunning ? "执行中" : result ? (ok ? "完成" : result.timedOut ? "超时" : "异常") : "等待";
-  const hasSpeedResult = speedPhase !== "idle" || speedPoints.length > 0;
-  const speedRunning = speedPhase === "download" || speedPhase === "upload";
 
   return (
-    <div className="space-y-5">
-      {hasSpeedResult && (
-        <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="flex items-center gap-2 text-sm">
-                {speedRunning ? <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" /> : <Gauge className="h-4 w-4 text-primary" />}
-                <span>速度测试</span>
-                <Badge variant={speedPhase === "complete" ? "secondary" : "outline"}>
-                  {speedPhase === "download" ? "下载中" : speedPhase === "upload" ? "上传中" : speedPhase === "complete" ? "完成" : speedPhase === "error" ? "异常" : "等待"}
-                </Badge>
-              </CardTitle>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>当前 {formatSpeed(speedMetrics.current)} Mbps</span>
-                <span>下载峰值 {formatSpeed(speedMetrics.downloadPeak)} Mbps</span>
-                <span>上传峰值 {formatSpeed(speedMetrics.uploadPeak)} Mbps</span>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4 p-4">
-            <div className="grid gap-3 sm:grid-cols-4">
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">当前速率</p>
-                <p className="mt-1 font-mono text-lg font-semibold">{formatSpeed(speedMetrics.current)}</p>
-                <p className="text-[11px] text-muted-foreground">Mbps</p>
-              </div>
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">下载平均</p>
-                <p className="mt-1 font-mono text-lg font-semibold">{formatSpeed(speedMetrics.downloadAvg)}</p>
-                <p className="text-[11px] text-muted-foreground">{formatMegabytes(speedMetrics.downloadBytes)} MB</p>
-              </div>
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">上传平均</p>
-                <p className="mt-1 font-mono text-lg font-semibold">{formatSpeed(speedMetrics.uploadAvg)}</p>
-                <p className="text-[11px] text-muted-foreground">{formatMegabytes(speedMetrics.uploadBytes)} MB</p>
-              </div>
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground">进度</p>
-                <p className="mt-1 font-mono text-lg font-semibold">{Math.min(20, speedMetrics.downloadSeconds + speedMetrics.uploadSeconds).toFixed(1)}s</p>
-                <p className="text-[11px] text-muted-foreground">下载 10s / 上传 10s</p>
-              </div>
-            </div>
-            <canvas ref={speedCanvasRef} className="h-[260px] w-full rounded-lg border border-border/40 bg-slate-950" />
-            <p className={cn("text-xs", speedPhase === "error" ? "text-destructive" : "text-muted-foreground")}>{speedMessage}</p>
-          </CardContent>
-        </Card>
-      )}
-      <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
+    <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
       <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
@@ -346,15 +194,111 @@ function ResultOutput({
           {output}
         </pre>
       </CardContent>
-      </Card>
-    </div>
+    </Card>
+  );
+}
+
+function Iperf3Output({
+  status,
+  loading,
+  onCopy,
+}: {
+  status?: Iperf3Status;
+  loading: boolean;
+  onCopy: (text: string) => void;
+}) {
+  const state = status?.state || "idle";
+  const isBusy = state === "queued" || state === "starting" || state === "stopping";
+  const isRunning = state === "running";
+  const output = status?.output || "选择测试主机后点击开始测试，Agent 会启动 iperf3 服务端。";
+  const commands = status?.commands;
+
+  return (
+    <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
+      <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
+            {loading || isBusy ? (
+              <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
+            ) : isRunning ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+            ) : state === "error" ? (
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+            ) : (
+              <Gauge className="h-4 w-4 text-primary" />
+            )}
+            <span className="truncate">iperf3 服务端</span>
+            <Badge
+              variant={isRunning ? "secondary" : "outline"}
+              className={cn(isRunning && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}
+            >
+              {iperf3StateLabel(state)}
+            </Badge>
+          </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1.5"
+            disabled={!output.trim()}
+            onClick={() => onCopy(output)}
+          >
+            <Copy className="h-3.5 w-3.5" />
+            复制状态
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+            <p className="text-xs text-muted-foreground">测试主机</p>
+            <p className="mt-1 truncate text-sm font-medium">{status?.hostName || "-"}</p>
+          </div>
+          <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+            <p className="text-xs text-muted-foreground">监听地址</p>
+            <p className="mt-1 break-all font-mono text-sm">{status?.hostAddress || "-"}</p>
+          </div>
+          <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+            <p className="text-xs text-muted-foreground">监听端口</p>
+            <p className="mt-1 font-mono text-sm">{status?.port || 5201}</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+          <p className="text-sm font-medium">客户端运行指令</p>
+          <p className="mt-1 text-xs text-muted-foreground">服务端无人使用 3 分钟后会自动停止；客户端测试产生输出时会刷新空闲计时。</p>
+          <div className="mt-3 space-y-2">
+            <div className="flex flex-col gap-2 rounded-md border border-border/40 bg-background/60 p-2 sm:flex-row sm:items-center sm:justify-between">
+              <code className="break-all font-mono text-xs">{commands?.upload || "iperf3 -c <host> -p 5201"}</code>
+              <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5" disabled={!commands?.upload} onClick={() => commands?.upload && onCopy(commands.upload)}>
+                <Copy className="h-3.5 w-3.5" />
+                复制
+              </Button>
+            </div>
+            <div className="flex flex-col gap-2 rounded-md border border-border/40 bg-background/60 p-2 sm:flex-row sm:items-center sm:justify-between">
+              <code className="break-all font-mono text-xs">{commands?.download || "iperf3 -c <host> -p 5201 -R"}</code>
+              <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5" disabled={!commands?.download} onClick={() => commands?.download && onCopy(commands.download)}>
+                <Copy className="h-3.5 w-3.5" />
+                复制
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {status?.error && <p className="text-xs text-destructive">{status.error}</p>}
+        <pre className="min-h-[180px] max-h-[360px] overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+          {output}
+        </pre>
+      </CardContent>
+    </Card>
   );
 }
 
 export default function LookingGlass() {
+  const utils = trpc.useUtils();
   const [method, setMethod] = useState<Method>("ping");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("443");
+  const [iperf3Port, setIperf3Port] = useState("5201");
   const [hostId, setHostId] = useState("");
   const [activeTaskId, setActiveTaskId] = useState("");
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
@@ -363,34 +307,30 @@ export default function LookingGlass() {
   const [history, setHistory] = useState<LookingGlassResult[]>([]);
   const [runState, setRunState] = useState<RunState>("idle");
   const [liveOutput, setLiveOutput] = useState("");
-  const [speedPhase, setSpeedPhase] = useState<SpeedPhase>("idle");
-  const [speedPoints, setSpeedPoints] = useState<SpeedPoint[]>([]);
-  const [speedMetrics, setSpeedMetrics] = useState<SpeedMetrics>(initialSpeedMetrics);
-  const [speedMessage, setSpeedMessage] = useState("选择主机后可在当前页面开始测速。");
-  const speedCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const speedAbortRef = useRef<AbortController | null>(null);
-  const speedPreviousPointsRef = useRef<SpeedPoint[]>([]);
-  const speedAnimationRef = useRef<number | null>(null);
   const completedTaskIdsRef = useRef<Set<string>>(new Set());
+
   const { data: hosts } = trpc.hosts.list.useQuery(undefined, {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
   const availableHosts = useMemo(() => hosts || [], [hosts]);
   const selectedHost = availableHosts.find((host: any) => String(host.id) === hostId) as any;
-  const speedTestSession = trpc.lookingGlass.speedTestSession.useQuery(
-    { hostId: Number(hostId) },
-    {
-      enabled: Number(hostId) > 0,
-      staleTime: 60_000,
-      refetchOnWindowFocus: false,
-      retry: false,
-    },
-  );
   const clientInfo = trpc.lookingGlass.clientInfo.useQuery(undefined, {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const iperf3Status = trpc.lookingGlass.iperf3Status.useQuery(
+    { hostId: Number(hostId) },
+    {
+      enabled: Number(hostId) > 0,
+      refetchInterval: (query) => {
+        const state = (query.state.data as Iperf3Status | undefined)?.state;
+        return state === "queued" || state === "starting" || state === "stopping" ? 1000 : state === "running" ? 5000 : false;
+      },
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  );
   const taskStatus = trpc.lookingGlass.status.useQuery(
     { hostId: Number(hostId), taskId: activeTaskId },
     {
@@ -403,6 +343,28 @@ export default function LookingGlass() {
       retry: false,
     },
   );
+
+  const selected = methodMeta(method);
+  const Icon = selected.icon;
+  const currentIperf3 = iperf3Status.data as Iperf3Status | undefined;
+  const iperf3State = currentIperf3?.state || "idle";
+  const networkBusy = runState === "queued" || runState === "running" || taskStatus.isFetching && !!activeTaskId;
+  const iperf3Busy = iperf3State === "queued" || iperf3State === "starting" || iperf3State === "stopping";
+  const iperf3Running = iperf3State === "running";
+  const isIperf3Method = method === "iperf3";
+  const numericIperf3Port = Number(iperf3Port);
+  const canSubmit =
+    Number(hostId) > 0 &&
+    (isIperf3Method
+      ? Number.isInteger(numericIperf3Port) && numericIperf3Port >= 1 && numericIperf3Port <= 65535
+      : target.trim().length > 0);
+  const resolvedAddresses = useMemo(() => latestResult?.resolvedAddresses || [], [latestResult?.resolvedAddresses]);
+  const runningOutput = useMemo(() => {
+    if ((runState !== "queued" && runState !== "running") || !runStartedAt) return liveOutput;
+    const seconds = Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000));
+    return `${liveOutput}\n运行时间: ${seconds}s`;
+  }, [liveOutput, runStartedAt, runState, runTick]);
+
   const mutation = trpc.lookingGlass.start.useMutation({
     onMutate: () => {
       setRunState("queued");
@@ -417,8 +379,31 @@ export default function LookingGlass() {
     },
     onError: (error) => {
       setRunState("error");
+      setRunStartedAt(null);
       setLiveOutput((value) => `${value}\n执行失败: ${error.message || "测试失败"}`);
       toast.error(error.message || "测试失败");
+    },
+  });
+
+  const iperf3Start = trpc.lookingGlass.iperf3Start.useMutation({
+    onSuccess: (result) => {
+      utils.lookingGlass.iperf3Status.setData({ hostId: Number(hostId) }, result as Iperf3Status);
+      utils.lookingGlass.iperf3Status.invalidate({ hostId: Number(hostId) });
+      toast.success("iperf3 服务端启动任务已下发");
+    },
+    onError: (error) => {
+      toast.error(error.message || "iperf3 服务端启动失败");
+    },
+  });
+
+  const iperf3Stop = trpc.lookingGlass.iperf3Stop.useMutation({
+    onSuccess: (result) => {
+      utils.lookingGlass.iperf3Status.setData({ hostId: Number(hostId) }, result as Iperf3Status);
+      utils.lookingGlass.iperf3Status.invalidate({ hostId: Number(hostId) });
+      toast.success("iperf3 服务端停止任务已下发");
+    },
+    onError: (error) => {
+      toast.error(error.message || "iperf3 服务端停止失败");
     },
   });
 
@@ -430,24 +415,27 @@ export default function LookingGlass() {
       setRunState(status.status);
       return;
     }
-    setLatestResult(status);
+    const completed = { ...status, clientIp: clientInfo.data?.ip || status.clientIp };
+    setLatestResult(completed);
     const alreadyCompleted = completedTaskIdsRef.current.has(status.taskId);
     if (!alreadyCompleted) {
       completedTaskIdsRef.current.add(status.taskId);
-      setHistory((items) => [status, ...items].slice(0, 4));
+      setHistory((items) => [completed, ...items].slice(0, 4));
     }
     setRunState(resultOk(status) ? "success" : "warning");
+    setRunStartedAt(null);
     if (!alreadyCompleted) {
       if (status.status === "success") toast.success("网络测试完成");
       else if (status.status === "timeout") toast.warning("网络测试超时");
       else toast.warning(status.error || "测试返回异常状态");
     }
     setActiveTaskId("");
-  }, [taskStatus.data]);
+  }, [clientInfo.data?.ip, taskStatus.data]);
 
   useEffect(() => {
     if (!taskStatus.error || !activeTaskId) return;
     setRunState("error");
+    setRunStartedAt(null);
     setLiveOutput((value) => `${value}\n状态查询失败: ${taskStatus.error.message}`);
     toast.error(taskStatus.error.message || "状态查询失败");
     setActiveTaskId("");
@@ -464,56 +452,23 @@ export default function LookingGlass() {
     return () => window.clearInterval(timer);
   }, [runState]);
 
-  useEffect(() => {
-    const previous = speedPreviousPointsRef.current;
-    if (speedAnimationRef.current) window.cancelAnimationFrame(speedAnimationRef.current);
-    const startedAt = performance.now();
-    const duration = 420;
-    const animate = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / duration);
-      drawSpeedChart(speedCanvasRef.current, speedPoints, previous, progress);
-      if (progress < 1) {
-        speedAnimationRef.current = window.requestAnimationFrame(animate);
-      } else {
-        speedPreviousPointsRef.current = speedPoints;
-        speedAnimationRef.current = null;
-      }
-    };
-    speedAnimationRef.current = window.requestAnimationFrame(animate);
-    return () => {
-      if (speedAnimationRef.current) window.cancelAnimationFrame(speedAnimationRef.current);
-    };
-  }, [speedPoints]);
+  const copyText = async (text: string) => {
+    const copied = await copyTextToClipboard(text);
+    if (copied) toast.success("已复制");
+    else toast.error("复制失败");
+  };
 
-  useEffect(() => {
-    const onResize = () => drawSpeedChart(speedCanvasRef.current, speedPoints, speedPoints, 1);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [speedPoints]);
-
-  useEffect(() => {
-    setSpeedPhase("idle");
-    setSpeedPoints([]);
-    speedPreviousPointsRef.current = [];
-    setSpeedMetrics(initialSpeedMetrics);
-    setSpeedMessage(Number(hostId) > 0 ? "点击开始测速，将依次执行下载 10 秒和上传 10 秒。" : "选择主机后可在当前页面开始测速。");
-    speedAbortRef.current?.abort();
-    speedAbortRef.current = null;
-  }, [hostId]);
-
-  const selected = methodMeta(method);
-  const Icon = selected.icon;
-  const canSubmit = Number(hostId) > 0 && target.trim().length > 0;
-  const resolvedAddresses = useMemo(() => latestResult?.resolvedAddresses || [], [latestResult?.resolvedAddresses]);
-  const runningOutput = useMemo(() => {
-    if ((runState !== "queued" && runState !== "running") || !runStartedAt) return liveOutput;
-    const seconds = Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000));
-    return `${liveOutput}\n运行时间: ${seconds}s`;
-  }, [liveOutput, runStartedAt, runState, runTick]);
-
-  const runTest = () => {
+  const runNetworkTest = () => {
     if (!Number(hostId)) {
       toast.error("请选择测试主机");
+      return;
+    }
+    if (networkBusy) {
+      toast.warning("当前已有网络测试正在执行");
+      return;
+    }
+    if (iperf3Running || iperf3Busy) {
+      toast.warning("请先等待或停止当前 iperf3 服务端测试");
       return;
     }
     if (!target.trim()) {
@@ -525,174 +480,66 @@ export default function LookingGlass() {
       toast.error("请输入 1-65535 的端口");
       return;
     }
+    const networkMethod = method as NetworkMethod;
     setRunState("queued");
     setRunStartedAt(Date.now());
     setLatestResult(null);
     setActiveTaskId("");
-    setLiveOutput(buildPendingOutput(method, selectedHost?.name || "", target.trim(), port));
+    setLiveOutput(buildPendingOutput(networkMethod, selectedHost?.name || "", target.trim(), port));
     mutation.mutate({
-      method,
+      method: networkMethod,
       target: target.trim(),
       hostId: Number(hostId),
-      ...(method === "tcp" ? { port: numericPort } : {}),
+      ...(networkMethod === "tcp" ? { port: numericPort } : {}),
     });
   };
 
-  const runDownloadSpeedTest = async (url: string, controller: AbortController) => {
-    const response = await fetch(url, { cache: "no-store", signal: controller.signal });
-    if (!response.ok || !response.body) throw new Error(`下载测速连接失败：${response.status} ${response.statusText}`);
-    const reader = response.body.getReader();
-    const startedAt = performance.now();
-    let lastTick = startedAt;
-    let intervalBytes = 0;
-    let totalBytes = 0;
-    let peak = 0;
-    try {
-      while (performance.now() - startedAt < 10_000) {
-        const next = await reader.read();
-        if (next.done) break;
-        const now = performance.now();
-        totalBytes += next.value.byteLength;
-        intervalBytes += next.value.byteLength;
-        if (now - lastTick >= 500) {
-          const seconds = (now - lastTick) / 1000;
-          const current = bytesToMbps(intervalBytes, seconds);
-          peak = Math.max(peak, current);
-          const elapsed = Math.min(10, (now - startedAt) / 1000);
-          const avg = bytesToMbps(totalBytes, elapsed);
-          setSpeedMetrics((value) => ({
-            ...value,
-            current,
-            downloadAvg: avg,
-            downloadPeak: peak,
-            downloadBytes: totalBytes,
-            downloadSeconds: elapsed,
-          }));
-          setSpeedPoints((items) => [...items, { phase: "download", second: elapsed, rate: current }].slice(-80));
-          intervalBytes = 0;
-          lastTick = now;
-        }
-      }
-    } finally {
-      await reader.cancel().catch(() => {});
-    }
-    const elapsed = Math.min(10, Math.max(0.001, (performance.now() - startedAt) / 1000));
-    const avg = bytesToMbps(totalBytes, elapsed);
-    setSpeedMetrics((value) => ({
-      ...value,
-      current: 0,
-      downloadAvg: avg,
-      downloadPeak: Math.max(peak, avg),
-      downloadBytes: totalBytes,
-      downloadSeconds: elapsed,
-    }));
-  };
-
-  const makeUploadStream = (onBytes: (bytes: number) => void, controller: AbortController) => {
-    return new ReadableStream<Uint8Array>({
-      pull(streamController) {
-        if (controller.signal.aborted) {
-          streamController.close();
-          return;
-        }
-        const chunk = new Uint8Array(64 * 1024);
-        streamController.enqueue(chunk);
-        onBytes(chunk.byteLength);
-      },
-      cancel() {
-        controller.abort();
-      },
-    });
-  };
-
-  const runUploadSpeedTest = async (url: string, controller: AbortController) => {
-    const startedAt = performance.now();
-    let lastTick = startedAt;
-    let intervalBytes = 0;
-    let totalBytes = 0;
-    let peak = 0;
-    const stream = makeUploadStream((bytes) => {
-      const now = performance.now();
-      totalBytes += bytes;
-      intervalBytes += bytes;
-      if (now - lastTick >= 500) {
-        const seconds = (now - lastTick) / 1000;
-        const current = bytesToMbps(intervalBytes, seconds);
-        peak = Math.max(peak, current);
-        const elapsed = Math.min(10, (now - startedAt) / 1000);
-        const avg = bytesToMbps(totalBytes, elapsed);
-        setSpeedMetrics((value) => ({
-          ...value,
-          current,
-          uploadAvg: avg,
-          uploadPeak: peak,
-          uploadBytes: totalBytes,
-          uploadSeconds: elapsed,
-        }));
-        setSpeedPoints((items) => [...items, { phase: "upload", second: elapsed, rate: current }].slice(-80));
-        intervalBytes = 0;
-        lastTick = now;
-      }
-      if (now - startedAt >= 10_000) controller.abort();
-    }, controller);
-
-    try {
-      await fetch(url, {
-        method: "POST",
-        body: stream,
-        cache: "no-store",
-        signal: controller.signal,
-        // @ts-expect-error Chromium requires this option for streaming request bodies.
-        duplex: "half",
-      });
-    } catch (error) {
-      if (!controller.signal.aborted) throw error;
-    }
-    const elapsed = Math.min(10, Math.max(0.001, (performance.now() - startedAt) / 1000));
-    const avg = bytesToMbps(totalBytes, elapsed);
-    setSpeedMetrics((value) => ({
-      ...value,
-      current: 0,
-      uploadAvg: avg,
-      uploadPeak: Math.max(peak, avg),
-      uploadBytes: totalBytes,
-      uploadSeconds: elapsed,
-    }));
-  };
-
-  const runSpeedTest = async () => {
-    if (!speedTestSession.data) {
-      toast.error("请选择可用的测试主机");
+  const runIperf3Action = () => {
+    if (!Number(hostId)) {
+      toast.error("请选择测试主机");
       return;
     }
-    speedAbortRef.current?.abort();
-    const downloadController = new AbortController();
-    speedAbortRef.current = downloadController;
-    setSpeedPhase("download");
-    setSpeedPoints([]);
-    setSpeedMetrics(initialSpeedMetrics);
-    setSpeedMessage("下载测速中，浏览器正在直连 Agent 读取数据流。");
-    try {
-      await runDownloadSpeedTest(speedTestSession.data.downloadUrl, downloadController);
-      const uploadController = new AbortController();
-      speedAbortRef.current = uploadController;
-      setSpeedPhase("upload");
-      setSpeedMessage("上传测速中，浏览器正在直连 Agent 发送数据流。");
-      await runUploadSpeedTest(speedTestSession.data.uploadUrl, uploadController);
-      setSpeedPhase("complete");
-      setSpeedMessage("速度测试完成。");
-      toast.success("速度测试完成");
-    } catch (error) {
-      const message = speedErrorMessage(error);
-      setSpeedPhase("error");
-      setSpeedMessage(message);
-      toast.error(message);
-    } finally {
-      speedAbortRef.current = null;
+    if (networkBusy) {
+      toast.warning("当前已有网络测试正在执行");
+      return;
     }
+    if (iperf3Busy || iperf3Start.isPending || iperf3Stop.isPending) {
+      toast.warning("iperf3 服务端任务正在处理中");
+      return;
+    }
+    if (iperf3Running) {
+      iperf3Stop.mutate({ hostId: Number(hostId) });
+      return;
+    }
+    if (!Number.isInteger(numericIperf3Port) || numericIperf3Port < 1 || numericIperf3Port > 65535) {
+      toast.error("请输入 1-65535 的 iperf3 端口");
+      return;
+    }
+    iperf3Start.mutate({ hostId: Number(hostId), port: numericIperf3Port });
   };
 
-  const speedRunning = speedPhase === "download" || speedPhase === "upload";
+  const runTest = () => {
+    if (isIperf3Method) runIperf3Action();
+    else runNetworkTest();
+  };
+
+  const submitDisabled =
+    !canSubmit ||
+    mutation.isPending ||
+    iperf3Start.isPending ||
+    iperf3Stop.isPending ||
+    networkBusy ||
+    iperf3Busy ||
+    (!isIperf3Method && iperf3Running);
+  const submitLabel = isIperf3Method
+    ? iperf3Running
+      ? "停止 iperf3 服务端"
+      : iperf3Busy || iperf3Start.isPending
+        ? "iperf3 处理中..."
+        : "启动 iperf3 服务端"
+    : mutation.isPending || networkBusy
+      ? "测试中..."
+      : "开始测试";
 
   return (
     <DashboardLayout>
@@ -711,7 +558,7 @@ export default function LookingGlass() {
             </div>
             <h1 className="text-xl font-bold tracking-tight sm:text-2xl">网络测试</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，并在当前页面执行浏览器直连 Agent 的速度测试。
+              从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，或临时启动 iperf3 服务端进行直连测试。
             </p>
           </div>
           <Button variant="outline" className="w-full gap-2 sm:w-auto" asChild>
@@ -726,7 +573,7 @@ export default function LookingGlass() {
           <Globe2 className="h-4 w-4" />
           <AlertTitle>网络测试</AlertTitle>
           <AlertDescription>
-            速度测试固定执行下载 10 秒和上传 10 秒，测速数据流由浏览器直连选中的 Agent 主机，不经过面板中转。网络测试会拒绝内网、环回、链路本地或保留地址。
+            同一时间只允许执行一个测试。普通网络测试会拒绝内网、环回、链路本地或保留地址；iperf3 服务端空闲 3 分钟后会自动停止。
           </AlertDescription>
         </Alert>
 
@@ -782,36 +629,38 @@ export default function LookingGlass() {
                 <p className="text-xs text-muted-foreground">{selected.description}</p>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="looking-glass-target">目标地址</Label>
-                <Input
-                  id="looking-glass-target"
-                  value={target}
-                  onChange={(event) => setTarget(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") runTest();
-                  }}
-                  placeholder="example.com 或 1.1.1.1"
-                  spellCheck={false}
-                  className="font-mono"
-                />
-                <div className="flex flex-wrap gap-2">
-                  {examples.map((example) => (
-                    <button
-                      key={example}
-                      type="button"
-                      onClick={() => setTarget(example)}
-                      className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-                    >
-                      {example}
-                    </button>
-                  ))}
+              {!isIperf3Method && (
+                <div className="space-y-2">
+                  <Label htmlFor="looking-glass-target">目标地址</Label>
+                  <Input
+                    id="looking-glass-target"
+                    value={target}
+                    onChange={(event) => setTarget(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") runTest();
+                    }}
+                    placeholder="example.com 或 1.1.1.1"
+                    spellCheck={false}
+                    className="font-mono"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {examples.map((example) => (
+                      <button
+                        key={example}
+                        type="button"
+                        onClick={() => setTarget(example)}
+                        className="rounded-full border border-border/50 bg-background/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                      >
+                        {example}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {method === "tcp" && (
                 <div className="space-y-2">
-                  <Label htmlFor="looking-glass-port">端口</Label>
+                  <Label htmlFor="looking-glass-port">目标端口</Label>
                   <Select value={port} onValueChange={setPort}>
                     <SelectTrigger id="looking-glass-port">
                       <SelectValue />
@@ -834,60 +683,46 @@ export default function LookingGlass() {
                 </div>
               )}
 
-              <Button className="w-full gap-2" onClick={runTest} disabled={!canSubmit || mutation.isPending || runState === "queued" || runState === "running"}>
-                {mutation.isPending || runState === "queued" || runState === "running" ? <Loader2 className="forwardx-icon-spin h-4 w-4" /> : <Terminal className="h-4 w-4" />}
-                {mutation.isPending || runState === "queued" || runState === "running" ? "测试中..." : "开始测试"}
+              {isIperf3Method && (
+                <div className="space-y-2">
+                  <Label htmlFor="looking-glass-iperf3-port">iperf3 监听端口</Label>
+                  <Input
+                    id="looking-glass-iperf3-port"
+                    value={iperf3Port}
+                    onChange={(event) => setIperf3Port(event.target.value.replace(/\D/g, "").slice(0, 5))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") runTest();
+                    }}
+                    inputMode="numeric"
+                    placeholder="5201"
+                    className="font-mono"
+                    disabled={iperf3Running || iperf3Busy}
+                  />
+                  <p className="text-xs text-muted-foreground">请确保服务器安全组和系统防火墙放行该端口，客户端将直连选中的 Agent 主机。</p>
+                </div>
+              )}
+
+              <Button className="w-full gap-2" onClick={runTest} disabled={submitDisabled}>
+                {mutation.isPending || networkBusy || iperf3Start.isPending || iperf3Stop.isPending || iperf3Busy ? (
+                  <Loader2 className="forwardx-icon-spin h-4 w-4" />
+                ) : isIperf3Method ? (
+                  <Gauge className="h-4 w-4" />
+                ) : (
+                  <Terminal className="h-4 w-4" />
+                )}
+                {submitLabel}
               </Button>
+
+              {!isIperf3Method && iperf3Running && (
+                <p className="text-xs text-amber-600 dark:text-amber-300">当前 iperf3 服务端正在运行，请先切换到 iperf3 服务端并停止后再执行其他测试。</p>
+              )}
 
               <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                 <p className="text-xs font-medium text-muted-foreground">当前访问 IP</p>
                 <p className="mt-1 break-all font-mono text-sm">{clientInfo.data?.ip || "正在获取..."}</p>
               </div>
 
-              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-medium">速度测试</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      固定下载 10 秒、上传 10 秒，默认端口 3091，浏览器直连该主机。
-                    </p>
-                  </div>
-                  {speedTestSession.isFetching && <Loader2 className="forwardx-icon-spin h-4 w-4 text-muted-foreground" />}
-                </div>
-                {speedTestSession.error && (
-                  <p className="mt-3 text-xs text-destructive">{speedTestSession.error.message}</p>
-                )}
-                <Button
-                  className="mt-3 w-full gap-2"
-                  variant="outline"
-                  onClick={runSpeedTest}
-                  disabled={!speedTestSession.data || speedRunning || speedTestSession.isFetching}
-                >
-                  {speedRunning ? <Loader2 className="forwardx-icon-spin h-4 w-4" /> : <Gauge className="h-4 w-4" />}
-                  {speedPhase === "download" ? "下载测速中..." : speedPhase === "upload" ? "上传测速中..." : "开始速度测试"}
-                </Button>
-                <p className={cn("mt-2 text-xs", speedPhase === "error" ? "text-destructive" : "text-muted-foreground")}>{speedMessage}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-md border border-border/40 bg-background/45 p-2">
-                    <p className="text-[11px] text-muted-foreground">下载平均</p>
-                    <p className="mt-1 font-mono text-sm">{formatSpeed(speedMetrics.downloadAvg)} Mbps</p>
-                  </div>
-                  <div className="rounded-md border border-border/40 bg-background/45 p-2">
-                    <p className="text-[11px] text-muted-foreground">上传平均</p>
-                    <p className="mt-1 font-mono text-sm">{formatSpeed(speedMetrics.uploadAvg)} Mbps</p>
-                  </div>
-                  <div className="rounded-md border border-border/40 bg-background/45 p-2">
-                    <p className="text-[11px] text-muted-foreground">下载数据</p>
-                    <p className="mt-1 font-mono text-sm">{formatMegabytes(speedMetrics.downloadBytes)} MB</p>
-                  </div>
-                  <div className="rounded-md border border-border/40 bg-background/45 p-2">
-                    <p className="text-[11px] text-muted-foreground">上传数据</p>
-                    <p className="mt-1 font-mono text-sm">{formatMegabytes(speedMetrics.uploadBytes)} MB</p>
-                  </div>
-                </div>
-              </div>
-
-              {latestResult && (
+              {latestResult && !isIperf3Method && (
                 <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
                   <p className="text-xs font-medium text-muted-foreground">最近解析</p>
                   <p className="mt-1 font-mono text-sm">{latestResult.resolvedAddress}</p>
@@ -899,16 +734,15 @@ export default function LookingGlass() {
             </CardContent>
           </Card>
 
-          <ResultOutput
-            result={latestResult}
-            liveOutput={runningOutput}
-            state={runState}
-            speedPhase={speedPhase}
-            speedMetrics={speedMetrics}
-            speedPoints={speedPoints}
-            speedCanvasRef={speedCanvasRef}
-            speedMessage={speedMessage}
-          />
+          {isIperf3Method ? (
+            <Iperf3Output
+              status={currentIperf3}
+              loading={iperf3Status.isFetching || iperf3Start.isPending || iperf3Stop.isPending}
+              onCopy={copyText}
+            />
+          ) : (
+            <ResultOutput result={latestResult} liveOutput={runningOutput} state={runState} />
+          )}
         </div>
 
         {history.length > 0 && (
@@ -926,6 +760,7 @@ export default function LookingGlass() {
                     type="button"
                     onClick={() => {
                       setLatestResult(item);
+                      setMethod(item.method);
                       setRunState(resultOk(item) ? "success" : "warning");
                     }}
                     className="rounded-lg border border-border/40 bg-background/45 p-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/5"
@@ -941,6 +776,7 @@ export default function LookingGlass() {
                     </div>
                     <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{item.resolvedAddress}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{item.sourceHostName || "Agent 主机"} / {formatDateTime(item.startedAt)}</p>
+                    <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">访问 IP: {item.clientIp || clientInfo.data?.ip || "-"}</p>
                   </button>
                 );
               })}
