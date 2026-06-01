@@ -866,7 +866,7 @@ function DashboardLayoutContent({
           </div>
         </SidebarHeader>
 
-        <SidebarContent className="gap-1 mobile-sidebar-content">
+        <SidebarContent className="gap-1 pb-2 mobile-sidebar-content">
           <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
             <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
               主菜单
@@ -876,7 +876,7 @@ function DashboardLayoutContent({
             </SidebarMenu>
           </SidebarGroup>
 
-          <SidebarGroup className={cn("mt-1 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
+          <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
             <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
               管理
             </SidebarGroupLabel>

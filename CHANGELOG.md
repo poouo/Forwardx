@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.80] - 2026-06-01
+
+### Fixed
+
+- Fixed sidebar navigation overlap on short browser heights by keeping menu groups from shrinking into each other and letting the navigation area scroll cleanly above the account footer.
+- Kept the Android APK download URL pinned to the existing APP release when only the panel version changes.
+
+### Changed
+
+- Bumped panel version to 2.3.80. Agent target version remains 2.2.66.
+- Android APP version remains 2.3.33 because this fix does not require a new native APP build.
+
 ## [2.3.79] - 2026-06-01
 
 ### Added

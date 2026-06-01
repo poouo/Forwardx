@@ -243,7 +243,7 @@ const SidebarContent = React.forwardRef<HTMLDivElement, React.ComponentProps<"di
 SidebarContent.displayName = "SidebarContent"
 
 const SidebarGroup = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">>(({ className, ...props }, ref) => {
-  return <div ref={ref} data-sidebar="group" className={cn("relative flex w-full min-w-0 flex-col p-2", className)} {...props} />
+  return <div ref={ref} data-sidebar="group" className={cn("relative flex w-full min-w-0 shrink-0 flex-col p-2", className)} {...props} />
 })
 SidebarGroup.displayName = "SidebarGroup"
 
