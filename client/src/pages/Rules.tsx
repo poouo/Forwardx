@@ -97,7 +97,22 @@ type RuleFormData = {
   sourcePort: number;
   targetIp: string;
   targetPort: number;
+  failoverEnabled: boolean;
+  failoverTargets: FailoverTargetForm[];
+  failoverSeconds: number;
+  recoverSeconds: number;
+  autoFailback: boolean;
 };
+
+type FailoverTargetForm = {
+  targetIp: string;
+  targetPort: number;
+};
+
+const emptyFailoverTargets = (): FailoverTargetForm[] => ([
+  { targetIp: "", targetPort: 0 },
+  { targetIp: "", targetPort: 0 },
+]);
 
 const defaultForm: RuleFormData = {
   hostId: null,
@@ -113,6 +128,11 @@ const defaultForm: RuleFormData = {
   sourcePort: 0,
   targetIp: "",
   targetPort: 0,
+  failoverEnabled: false,
+  failoverTargets: emptyFailoverTargets(),
+  failoverSeconds: 60,
+  recoverSeconds: 120,
+  autoFailback: true,
 };
 
 const gostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
@@ -189,6 +209,52 @@ function routeModeOptionClass(active: boolean, disabled = false) {
 
 function isValidPort(port: number, allowZero = false) {
   return Number.isInteger(port) && port >= (allowZero ? 0 : 1) && port <= 65535;
+}
+
+function isValidTargetHost(value: string) {
+  return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
+}
+
+function parseRuleFailoverTargets(raw: unknown): FailoverTargetForm[] {
+  const fallback = emptyFailoverTargets();
+  if (!raw) return fallback;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(parsed)) return fallback;
+    const rows = parsed
+      .map((target: any) => ({
+        targetIp: String(target?.targetIp || "").trim(),
+        targetPort: Number(target?.targetPort || 0),
+      }))
+      .filter((target) => target.targetIp && isValidPort(target.targetPort))
+      .slice(0, 2);
+    return [...rows, ...fallback].slice(0, 2);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeFailoverTargetsForSubmit(rows: FailoverTargetForm[]) {
+  const targets: FailoverTargetForm[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const targetIp = String(row.targetIp || "").trim();
+    const targetPort = Number(row.targetPort || 0);
+    const hasIp = targetIp.length > 0;
+    const hasPort = targetPort > 0;
+    if (!hasIp && !hasPort) continue;
+    if (!hasIp || !hasPort) {
+      return { error: `备用目标 ${index + 1} 需要同时填写地址和端口` };
+    }
+    if (!isValidTargetHost(targetIp)) {
+      return { error: `备用目标 ${index + 1} 地址格式不正确` };
+    }
+    if (!isValidPort(targetPort)) {
+      return { error: `备用目标 ${index + 1} 端口必须在 1-65535 之间` };
+    }
+    targets.push({ targetIp, targetPort });
+  }
+  return { targets };
 }
 
 function RulesContent() {
@@ -457,7 +523,7 @@ function RulesContent() {
   };
 
   const resetForm = () => {
-    setForm(defaultForm);
+    setForm({ ...defaultForm, failoverTargets: emptyFailoverTargets() });
     setEditingId(null);
     setPortStatus("idle");
   };
@@ -472,6 +538,7 @@ function RulesContent() {
     if (firstForwardType || firstTunnel || firstGroup) {
       setForm({
         ...defaultForm,
+        failoverTargets: emptyFailoverTargets(),
         routeMode: firstForwardType ? "local" : firstTunnel ? "tunnel" : firstGroup ? "group" : "local",
         hostId: firstForwardType ? hosts?.[0]?.id ?? null : firstTunnel ? firstTunnel.entryHostId : null,
         forwardType: firstTunnel && !firstForwardType ? "gost" : firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
@@ -513,6 +580,11 @@ function RulesContent() {
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
+      failoverEnabled: !!rule.failoverEnabled,
+      failoverTargets: parseRuleFailoverTargets(rule.failoverTargets),
+      failoverSeconds: Number(rule.failoverSeconds || 60),
+      recoverSeconds: Number(rule.recoverSeconds || 120),
+      autoFailback: rule.autoFailback !== false,
     });
     setEditingId(rule.id);
     setPortStatus("idle");
@@ -824,6 +896,37 @@ function RulesContent() {
       toast.error("目标端口必须在 1-65535 之间");
       return;
     }
+    const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargets);
+    if (failoverSubmit.error) {
+      toast.error(failoverSubmit.error);
+      return;
+    }
+    const failoverTargets = failoverSubmit.targets || [];
+    if (form.failoverEnabled) {
+      if (form.protocol !== "tcp") {
+        toast.error("故障转移当前仅支持 TCP 协议");
+        return;
+      }
+      if (failoverTargets.length === 0) {
+        toast.error("开启故障转移后至少需要填写一个备用目标");
+        return;
+      }
+      if (!Number.isInteger(form.failoverSeconds) || form.failoverSeconds < 10 || form.failoverSeconds > 3600) {
+        toast.error("故障转移时间必须在 10-3600 秒之间");
+        return;
+      }
+      if (!Number.isInteger(form.recoverSeconds) || form.recoverSeconds < 10 || form.recoverSeconds > 3600) {
+        toast.error("恢复观察时间必须在 10-3600 秒之间");
+        return;
+      }
+    }
+    const failoverPayload = {
+      failoverEnabled: form.failoverEnabled,
+      failoverTargets: form.failoverEnabled ? failoverTargets : [],
+      failoverSeconds: form.failoverSeconds || 60,
+      recoverSeconds: form.recoverSeconds || 120,
+      autoFailback: form.autoFailback,
+    };
     if (form.routeMode !== "group" && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
       return;
@@ -848,6 +951,7 @@ function RulesContent() {
         isEnabled: portStatus === "available" ? true : undefined,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
+        ...failoverPayload,
       });
     } else {
       createMutation.mutate({
@@ -863,6 +967,7 @@ function RulesContent() {
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
+        ...failoverPayload,
       });
     }
   };
@@ -1048,6 +1153,11 @@ function RulesContent() {
       <code className={`truncate rounded bg-muted/40 px-1.5 py-0.5 ${compact ? "max-w-full" : "max-w-[180px]"}`}>
         {rule.targetIp}:{rule.targetPort}
       </code>
+      {rule.failoverEnabled && (
+        <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
+          故障转移 {parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length}
+        </Badge>
+      )}
     </div>
   );
 
@@ -1632,7 +1742,7 @@ function RulesContent() {
           setShowDialog(open);
         }}
       >
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑规则" : "添加转发规则"}</DialogTitle>
             <DialogDescription>
@@ -1831,7 +1941,14 @@ function RulesContent() {
               )}
               <div className="space-y-2">
                 <Label>协议</Label>
-                <Select value={form.protocol} onValueChange={(v) => setForm({ ...form, protocol: v as any })}>
+                <Select
+                  value={form.protocol}
+                  onValueChange={(v) => setForm({
+                    ...form,
+                    protocol: v as any,
+                    failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
+                  })}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="tcp">TCP</SelectItem>
@@ -1910,6 +2027,96 @@ function RulesContent() {
                 />
               </div>
             </div>
+            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <Label className="text-sm">故障转移</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">目标端口不可达时切换到备用目标。</p>
+                </div>
+                <Switch
+                  checked={form.failoverEnabled}
+                  onCheckedChange={(checked) => setForm({
+                    ...form,
+                    failoverEnabled: checked,
+                    protocol: checked ? "tcp" : form.protocol,
+                  })}
+                />
+              </div>
+              {form.failoverEnabled && (
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {form.failoverTargets.map((target, index) => (
+                      <div key={index} className="space-y-2 rounded-md border border-border/50 bg-background/55 p-3">
+                        <Label className="text-xs text-muted-foreground">备用目标 {index + 1}</Label>
+                        <div className="grid grid-cols-[minmax(0,1fr)_88px] gap-2">
+                          <Input
+                            value={target.targetIp}
+                            onChange={(event) => {
+                              const rows = form.failoverTargets.map((item, rowIndex) => (
+                                rowIndex === index ? { ...item, targetIp: event.target.value } : item
+                              ));
+                              setForm({ ...form, failoverTargets: rows });
+                            }}
+                            placeholder="地址，可留空"
+                            className="font-mono text-sm"
+                            spellCheck={false}
+                          />
+                          <Input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            step={1}
+                            value={target.targetPort || ""}
+                            onChange={(event) => {
+                              const rows = form.failoverTargets.map((item, rowIndex) => (
+                                rowIndex === index ? { ...item, targetPort: parseInt(event.target.value) || 0 } : item
+                              ));
+                              setForm({ ...form, failoverTargets: rows });
+                            }}
+                            placeholder="端口"
+                            inputMode="numeric"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label>故障转移时间（秒）</Label>
+                      <Input
+                        type="number"
+                        min={10}
+                        max={3600}
+                        step={1}
+                        value={form.failoverSeconds || ""}
+                        onChange={(event) => setForm({ ...form, failoverSeconds: parseInt(event.target.value) || 0 })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>恢复观察时间（秒）</Label>
+                      <Input
+                        type="number"
+                        min={10}
+                        max={3600}
+                        step={1}
+                        value={form.recoverSeconds || ""}
+                        onChange={(event) => setForm({ ...form, recoverSeconds: parseInt(event.target.value) || 0 })}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                      <div>
+                        <Label className="text-sm">恢复后切回</Label>
+                        <p className="mt-1 text-xs text-muted-foreground">主目标稳定后自动回切。</p>
+                      </div>
+                      <Switch
+                        checked={form.autoFailback}
+                        onCheckedChange={(checked) => setForm({ ...form, autoFailback: checked })}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>
@@ -1917,7 +2124,7 @@ function RulesContent() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isPending || !form.name || (form.routeMode !== "group" && !form.hostId) || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (form.routeMode === "group" && !form.forwardGroupId)}
+              disabled={isPending || !form.name || (form.routeMode !== "group" && !form.hostId) || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (form.routeMode === "group" && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
             </Button>

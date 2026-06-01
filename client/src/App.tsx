@@ -28,6 +28,7 @@ import Announcements from "./pages/Announcements";
 import Setup from "./pages/Setup";
 import EmailSettings from "./pages/EmailSettings";
 import HomepagePreview from "./pages/HomepagePreview";
+import LookingGlass from "./pages/LookingGlass";
 import TrafficBilling from "./pages/TrafficBilling";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
@@ -36,6 +37,20 @@ function AdminRoute({ component: Component }: { component: ComponentType }) {
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
+}
+
+function LookingGlassRoute() {
+  const { user, loading } = useAuth();
+  const publicInfo = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return <AppLoadingScreen />;
+  if (!user) return <Redirect to="/login" />;
+  if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
+  return <LookingGlass />;
 }
 
 function Router() {
@@ -48,6 +63,7 @@ function Router() {
       <Route path="/profile" component={Profile} />
       <Route path="/hosts">{() => <AdminRoute component={Hosts} />}</Route>
       <Route path="/rules" component={Rules} />
+      <Route path="/looking-glass" component={LookingGlassRoute} />
       <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroups} />}</Route>
       <Route path="/tunnels">{() => <AdminRoute component={Tunnels} />}</Route>
       <Route path="/users">{() => <AdminRoute component={Users} />}</Route>

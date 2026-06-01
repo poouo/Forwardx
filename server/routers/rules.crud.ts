@@ -6,6 +6,82 @@ import { forwardTypeSchema } from "./schemas";
 import { pushTunnelEndpointRefresh, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 
+const targetHostSchema = z.string().min(1).max(253).refine(
+  (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
+  "请输入有效的 IP 地址或域名"
+);
+
+const failoverTargetSchema = z.object({
+  targetIp: z.string().max(253).optional().default(""),
+  targetPort: z.number().int().min(0).max(65535).optional().default(0),
+});
+const strictFailoverTargetSchema = z.object({
+  targetIp: targetHostSchema,
+  targetPort: z.number().int().min(1).max(65535),
+});
+
+const failoverInputShape = {
+  failoverEnabled: z.boolean().optional(),
+  failoverTargets: z.array(failoverTargetSchema).max(2).optional(),
+  failoverSeconds: z.number().int().min(10).max(3600).optional(),
+  recoverSeconds: z.number().int().min(10).max(3600).optional(),
+  autoFailback: z.boolean().optional(),
+} as const;
+
+type FailoverInput = {
+  failoverEnabled?: boolean;
+  failoverTargets?: Array<{ targetIp?: string; targetPort?: number }>;
+  failoverSeconds?: number;
+  recoverSeconds?: number;
+  autoFailback?: boolean;
+};
+
+function parseFailoverTargets(raw: unknown) {
+  if (!raw || typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((target) => ({ targetIp: String(target?.targetIp || "").trim(), targetPort: Number(target?.targetPort) }))
+      .filter((target) => target.targetIp && target.targetPort >= 1 && target.targetPort <= 65535)
+      .slice(0, 2);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) {
+  const enabled = !!input.failoverEnabled;
+  const targets: Array<{ targetIp: string; targetPort: number }> = [];
+  if (enabled && protocol && protocol !== "tcp") {
+    throw new Error("故障转移当前仅支持 TCP 协议");
+  }
+  if (enabled) {
+    for (const target of input.failoverTargets || []) {
+      const targetIp = String(target.targetIp || "").trim();
+      const targetPort = Number(target.targetPort || 0);
+      if (!targetIp && !targetPort) continue;
+      if (!targetIp || !targetPort) {
+        throw new Error("备用目标需要同时填写地址和端口，完全空白的行可以保留");
+      }
+      const parsed = strictFailoverTargetSchema.safeParse({ targetIp, targetPort });
+      if (!parsed.success) throw new Error("备用目标地址或端口格式不正确");
+      targets.push(parsed.data);
+      if (targets.length >= 2) break;
+    }
+  }
+  if (enabled && targets.length === 0) {
+    throw new Error("开启故障转移后至少需要配置一个备用地址");
+  }
+  return {
+    failoverEnabled: enabled,
+    failoverTargets: enabled ? JSON.stringify(targets) : null,
+    failoverSeconds: input.failoverSeconds ?? 60,
+    recoverSeconds: input.recoverSeconds ?? 120,
+    autoFailback: input.autoFailback ?? true,
+  };
+}
+
 async function requireForwardAccessReady(userId: number, options?: { allowTrafficBillingRecovery?: boolean }) {
   const check = await db.ensureUserForwardAccessReady(userId, options);
   if (!check.allowed) {
@@ -32,6 +108,7 @@ export const crudRulesRouter = router({
         "请输入有效的 IP 地址或域名"
       ),
       targetPort: z.number().min(1).max(65535),
+      ...failoverInputShape,
     }))
     .mutation(async ({ input, ctx }) => {
       // 权限检查：管理员或有 canAddRules 权限的用户
@@ -76,6 +153,7 @@ export const crudRulesRouter = router({
         const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort });
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
         const forwardType = (group as any).groupType === "tunnel" ? "gost" : input.forwardType;
+        if (input.failoverEnabled && input.protocol !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
         if (ctx.user.role !== "admin") {
           const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
           if (allowedRaw !== null && allowedRaw !== undefined) {
@@ -101,6 +179,7 @@ export const crudRulesRouter = router({
           sourcePort,
           targetIp: input.targetIp.trim(),
           targetPort: input.targetPort,
+          ...normalizeFailoverInput(input, input.protocol),
           isRunning: false,
           userId: ctx.user.id,
         } as any);
@@ -109,6 +188,7 @@ export const crudRulesRouter = router({
       }
 
       if (!input.hostId) throw new Error("请选择所属主机");
+      if (input.failoverEnabled && input.protocol !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
       const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
       let selectedTunnelForRule: any = null;
       let isTrafficBillingRule = false;
@@ -204,7 +284,18 @@ export const crudRulesRouter = router({
         if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
       }
 
-      const id = await db.createForwardRule({ ...input, sourcePort, gostMode: "direct", gostRelayHost, gostRelayPort, tunnelId, tunnelExitPort, userId: ctx.user.id });
+      const id = await db.createForwardRule({
+        ...input,
+        ...normalizeFailoverInput(input, input.protocol),
+        sourcePort,
+        targetIp: input.targetIp.trim(),
+        gostMode: "direct",
+        gostRelayHost,
+        gostRelayPort,
+        tunnelId,
+        tunnelExitPort,
+        userId: ctx.user.id,
+      });
       if (tunnelId) {
         const tunnel = await db.getTunnelById(tunnelId);
         await db.updateTunnel(tunnelId, { isRunning: false } as any);
@@ -231,6 +322,7 @@ export const crudRulesRouter = router({
         "请输入有效的 IP 地址或域名"
       ).optional(),
       targetPort: z.number().min(1).max(65535).optional(),
+      ...failoverInputShape,
       isEnabled: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -256,9 +348,24 @@ export const crudRulesRouter = router({
           excludeTemplateRuleId: rule.id,
         });
         const nextForwardType = (group as any).groupType === "tunnel" ? "gost" : (input.forwardType ?? rule.forwardType);
+        if ((input.failoverEnabled ?? (rule as any).failoverEnabled) && (input.protocol ?? (rule as any).protocol) !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
         await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: null });
         const data: any = {
           ...input,
+          ...(input.failoverEnabled !== undefined ||
+            input.failoverTargets !== undefined ||
+            input.failoverSeconds !== undefined ||
+            input.recoverSeconds !== undefined ||
+            input.autoFailback !== undefined
+            ? normalizeFailoverInput({
+                failoverEnabled: input.failoverEnabled ?? (rule as any).failoverEnabled,
+                failoverTargets: input.failoverTargets ?? parseFailoverTargets((rule as any).failoverTargets),
+                failoverSeconds: input.failoverSeconds ?? (rule as any).failoverSeconds,
+                recoverSeconds: input.recoverSeconds ?? (rule as any).recoverSeconds,
+                autoFailback: input.autoFailback ?? (rule as any).autoFailback,
+              }, input.protocol ?? (rule as any).protocol)
+            : {}),
+          ...(input.targetIp !== undefined ? { targetIp: input.targetIp.trim() } : {}),
           forwardType: nextForwardType,
           gostMode: "direct",
           gostRelayHost: null,
@@ -272,7 +379,7 @@ export const crudRulesRouter = router({
         };
         delete data.id;
         delete data.hostId;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "failoverEnabled", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -312,6 +419,9 @@ export const crudRulesRouter = router({
         throw new Error("端口转发和隧道转发不能相互切换，请新建规则");
       }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
+      if ((input.failoverEnabled ?? (rule as any).failoverEnabled) && (input.protocol ?? (rule as any).protocol) !== "tcp") {
+        throw new Error("故障转移当前仅支持 TCP 协议");
+      }
       if (!nextTunnelIdForRule) {
         await requireHostUseAccess(ctx, nextHostIdForRule);
       }
@@ -356,6 +466,22 @@ export const crudRulesRouter = router({
 
       const { id, ...data } = input;
       (data as any).hostId = nextHostIdForRule;
+      if (input.targetIp !== undefined) (data as any).targetIp = input.targetIp.trim();
+      if (
+        input.failoverEnabled !== undefined ||
+        input.failoverTargets !== undefined ||
+        input.failoverSeconds !== undefined ||
+        input.recoverSeconds !== undefined ||
+        input.autoFailback !== undefined
+      ) {
+        Object.assign(data as any, normalizeFailoverInput({
+          failoverEnabled: input.failoverEnabled ?? (rule as any).failoverEnabled,
+          failoverTargets: input.failoverTargets ?? parseFailoverTargets((rule as any).failoverTargets),
+          failoverSeconds: input.failoverSeconds ?? (rule as any).failoverSeconds,
+          recoverSeconds: input.recoverSeconds ?? (rule as any).recoverSeconds,
+          autoFailback: input.autoFailback ?? (rule as any).autoFailback,
+        }, input.protocol ?? (rule as any).protocol));
+      }
       if ((data.forwardType ?? rule.forwardType) !== "gost") {
         (data as any).gostMode = "direct";
         (data as any).gostRelayHost = null;
@@ -407,6 +533,11 @@ export const crudRulesRouter = router({
         "tunnelId",
         "tunnelExitPort",
         "hostId",
+        "failoverEnabled",
+        "failoverTargets",
+        "failoverSeconds",
+        "recoverSeconds",
+        "autoFailback",
       ];
       const keyFieldChanged = watchedFields.some((f) => {
         const v = data[f];

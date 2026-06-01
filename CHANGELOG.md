@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.81] - 2026-06-01
+
+### Added
+
+- Added a ForwardX-styled Looking Glass page with Ping, Traceroute, MTR, and TCP port latency tests from the panel server.
+- Added a System Settings switch so admins can decide whether Looking Glass is visible and usable for normal users.
+- Added public-target validation for Looking Glass tests so private, loopback, link-local, multicast, and reserved addresses are rejected before execution.
+- Added rule-level TCP failover with optional backup target rows, failover/recovery timing, and automatic failback.
+- Added Looking Glass host selection so tests can run from the panel server or a selected Agent host.
+
+### Changed
+
+- Bumped panel version to 2.3.81. Agent target version is now 2.2.67 for failover proxying and Agent-side Looking Glass tests.
+- Android APP version remains 2.3.33 because this web-panel feature does not require a native APP build.
+
 ## [2.3.80] - 2026-06-01
 
 ### Fixed

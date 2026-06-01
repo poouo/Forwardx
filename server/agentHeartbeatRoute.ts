@@ -15,10 +15,25 @@ import { isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4 } from "dns/promises";
+import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
 const tunnelRouteLogCache = new Map<string, string>();
+
+function parseFailoverTargets(raw: unknown) {
+  if (!raw || typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((target) => ({ targetIp: String(target?.targetIp || "").trim(), targetPort: Number(target?.targetPort) }))
+      .filter((target) => target.targetIp && target.targetPort >= 1 && target.targetPort <= 65535)
+      .slice(0, 2);
+  } catch {
+    return [];
+  }
+}
 
 async function resolveTargetIp(raw: string): Promise<string> {
   const trimmed = String(raw || "").trim();
@@ -394,6 +409,30 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? buildAccessLimitCmds(rule.sourcePort, accessScopeForRule(rule), userAccessLimits(Number(rule.userId)))
         : buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))
     );
+    const failoverProxyPort = (rule: any) => 41000 + (Number(rule?.id) % 20000);
+    const actionFailover = (rule: any, options?: { listenPort?: number; bindAddress?: string }) => {
+      if (!rule || !rule.failoverEnabled) return undefined;
+      if (rule.protocol !== "tcp") return undefined;
+      const backupTargets = parseFailoverTargets(rule.failoverTargets);
+      if (backupTargets.length === 0) return undefined;
+      return {
+        enabled: true,
+        listenPort: Number(options?.listenPort || rule.sourcePort || 0),
+        bindAddress: options?.bindAddress || "127.0.0.1",
+        protocol: rule.protocol || "tcp",
+        targets: [
+          { targetIp: processTarget(rule), targetPort: Number(rule.targetPort) },
+          ...backupTargets,
+        ],
+        failoverSeconds: Number(rule.failoverSeconds || 60),
+        recoverSeconds: Number(rule.recoverSeconds || 120),
+        autoFailback: rule.autoFailback !== false,
+      };
+    };
+    const failoverTargetAddr = (rule: any) => {
+      const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
+      return failover ? `127.0.0.1:${failover.listenPort}` : `${processTarget(rule)}:${rule.targetPort}`;
+    };
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
       if (mode === "tcp" || mode === "mtcp") return "tcp";
@@ -528,7 +567,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             service.forwarder = {
               nodes: [{
                 name: `target-${r.id}`,
-                addr: `${processTarget(r)}:${r.targetPort}`,
+                addr: failoverTargetAddr(r),
                 connector: { type: proto },
                 dialer: { type: proto },
               }],
@@ -537,7 +576,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             service.forwarder = {
               nodes: [{
                 name: `target-${r.id}`,
-                addr: `${processTarget(r)}:${r.targetPort}`,
+                addr: failoverTargetAddr(r),
                 connector: { type: proto },
                 dialer: { type: proto },
               }],
@@ -674,7 +713,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
         const targetAddr = hasProtocolPolicy(tunnel)
           ? `127.0.0.1:${guardListenPort(rule)}`
-          : `${processTarget(rule)}:${rule.targetPort}`;
+          : failoverTargetAddr(rule);
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -762,9 +801,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (tunnel && !isForwardXTunnel(tunnel)) return 0;
       return Number(rule.sourcePort) || 0;
     };
-    const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }[] = [];
+    const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
     const guardRules: any[] = [];
-    const addRunningRule = (rule: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string }) => {
+    const addRunningRule = (rule: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
       if (!rule.ruleId || !rule.sourcePort) return;
       const exists = runningRules.some((item) =>
         Number(item.ruleId) === Number(rule.ruleId) && Number(item.sourcePort) === Number(rule.sourcePort)
@@ -1094,6 +1133,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           forwardType: rule.forwardType,
+          failover: (rule as any).tunnelId
+            ? actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" })
+            : actionFailover(rule, { listenPort: Number(rule.sourcePort), bindAddress: "0.0.0.0" }),
         });
       }
 
@@ -1103,7 +1145,23 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && (tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) || []).length >= 3;
       if (rule.isEnabled && (!rule.isRunning || isForwardXMultiHopRule)) {
         const cmds: string[] = [];
-        if (rule.forwardType === "iptables") {
+        if (rule.failoverEnabled && rule.protocol === "tcp" && !(rule as any).tunnelId) {
+          cmds.push(...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
+          cmds.push(...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
+          cmds.push(...buildRuleAccessLimitCmds(rule));
+          actions.push({
+            ruleId: rule.id,
+            op: "apply",
+            forwardType: rule.forwardType,
+            sourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            protocol: rule.protocol,
+            networkInterface: hostInterface,
+            commands: cmds,
+            failover: actionFailover(rule, { listenPort: Number(rule.sourcePort), bindAddress: "0.0.0.0" }),
+          });
+        } else if (rule.forwardType === "iptables") {
           const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
           // 必须先启用内核转发，否则 DNAT 后数据包不会被路由到目标主机
           cmds.push(`sysctl -w net.ipv4.ip_forward=1 >/dev/null`);
@@ -1193,6 +1251,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildRuleAccessLimitCmds(rule),
             ],
+            failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
           });
         } else if (rule.forwardType === "socat") {
           // socat 转发：用户态进程，通过 systemd 管理
@@ -1261,6 +1320,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               unit: unitTcp,
               unitExtra: unitUdp,
               postCommands: socatPostCmds,
+              failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
             });
           } else {
             const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
@@ -1297,6 +1357,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               svcName,
               unit,
               postCommands: socatPostCmds,
+              failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
             });
           }
         } else if (rule.forwardType === "gost") {
@@ -1310,6 +1371,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const tunnelKey = nextHop ? hopKey(tunnelSecretSeed(tunnel), Number(nextHop.seq)) : tunnelSecretSeed(tunnel);
             const rateLimits = userRateLimits(Number(rule.userId));
             const accessLimits = userAccessLimits(Number(rule.userId));
+            const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -1333,8 +1395,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 protocol: rule.protocol,
                 exitHost: tunnelExitHost,
                 exitPort: tunnelExitPort,
-                targetIp: rule.targetIp,
-                targetPort: rule.targetPort,
+                targetIp: failover ? "127.0.0.1" : rule.targetIp,
+                targetPort: failover ? failoverProxyPort(rule) : rule.targetPort,
                 key: tunnelKey,
                 fxpVersion: tunnelFxpVersion(tunnel),
                 ...rateLimits,
@@ -1342,6 +1404,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 accessScope: accessScopeForRule(rule),
                 ...tunnelProtocolPolicy(tunnel),
               },
+              failover,
             });
             continue;
           }
@@ -1361,6 +1424,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildRuleAccessLimitCmds(rule),
             ],
+            failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
           });
         }
       } else if (!rule.isEnabled && rule.isRunning) {
@@ -1551,6 +1615,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: rule.targetPort,
         protocol: rule.protocol,
         forwardType: "gost-tunnel-exit",
+        failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
       });
     }
 
@@ -1637,13 +1702,30 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...action,
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
+    const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
+    for (const action of normalizedActions) {
+      if (!action?.failover || action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
+      const key = `${Number(action.ruleId)}:${Number(action.sourcePort)}`;
+      if (runningRuleKeys.has(key)) continue;
+      addRunningRule({
+        ruleId: Number(action.ruleId),
+        sourcePort: Number(action.sourcePort),
+        targetIp: String(action.targetIp || ""),
+        targetPort: Number(action.targetPort || 0),
+        protocol: action.protocol || "tcp",
+        forwardType: action.forwardType || "unknown",
+        failover: action.failover,
+      });
+      runningRuleKeys.add(key);
+    }
     const orderedActions = normalizedActions.slice().sort((a: any, b: any) => {
       if (a.op === b.op) return 0;
       return a.op === "remove" ? -1 : 1;
     });
 
     const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) ? 2 : 30 });
+    const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, lookingGlassTests, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

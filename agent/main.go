@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -27,14 +28,18 @@ import (
 	"time"
 )
 
-var Version = "2.2.66"
+var Version = "2.2.67"
+
 const selfUpgradeLockTimeout = 10 * time.Minute
+
 var upgradeStarted int32
 var upgradeStartedAt int64
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
 var protocolGuardMu sync.Mutex
 var protocolGuards = map[string]*protocolGuardServer{}
+var failoverMu sync.Mutex
+var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
 var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
@@ -67,14 +72,15 @@ type envelope struct {
 }
 
 type heartbeatResp struct {
-	Actions      []action      `json:"actions"`
-	SelfTests    []selfTest    `json:"selfTests"`
-	RunningRules []runningRule `json:"runningRules"`
-	TunnelProbes []tunnelProbe `json:"tunnelProbes"`
-	GuardRules   []guardRule   `json:"guardRules"`
-	AgentUpgrade *agentUpgrade `json:"agentUpgrade"`
-	LogUpload    bool          `json:"agentLogUploadEnabled"`
-	NextInterval int           `json:"nextInterval"`
+	Actions           []action           `json:"actions"`
+	SelfTests         []selfTest         `json:"selfTests"`
+	RunningRules      []runningRule      `json:"runningRules"`
+	TunnelProbes      []tunnelProbe      `json:"tunnelProbes"`
+	GuardRules        []guardRule        `json:"guardRules"`
+	LookingGlassTests []lookingGlassTask `json:"lookingGlassTests"`
+	AgentUpgrade      *agentUpgrade      `json:"agentUpgrade"`
+	LogUpload         bool               `json:"agentLogUploadEnabled"`
+	NextInterval      int                `json:"nextInterval"`
 }
 
 type selfTestResp struct {
@@ -82,32 +88,50 @@ type selfTestResp struct {
 }
 
 type action struct {
-	TunnelID         int      `json:"tunnelId"`
-	StatusType       string   `json:"statusType"`
-	RuleID           int      `json:"ruleId"`
-	Op               string   `json:"op"`
-	ForwardType      string   `json:"forwardType"`
-	SourcePort       int      `json:"sourcePort"`
-	TargetIP         string   `json:"targetIp"`
-	TargetPort       int      `json:"targetPort"`
-	Protocol         string   `json:"protocol"`
-	PreCommands      []string `json:"preCommands"`
-	ServiceName      string   `json:"svcName"`
-	ServiceNameExtra string   `json:"svcNameExtra"`
-	Unit             string   `json:"unit"`
-	UnitExtra        string   `json:"unitExtra"`
-	Commands         []string `json:"commands"`
-	PostCommands     []string `json:"postCommands"`
-	Fxp              *fxpSpec `json:"fxp,omitempty"`
+	TunnelID         int           `json:"tunnelId"`
+	StatusType       string        `json:"statusType"`
+	RuleID           int           `json:"ruleId"`
+	Op               string        `json:"op"`
+	ForwardType      string        `json:"forwardType"`
+	SourcePort       int           `json:"sourcePort"`
+	TargetIP         string        `json:"targetIp"`
+	TargetPort       int           `json:"targetPort"`
+	Protocol         string        `json:"protocol"`
+	PreCommands      []string      `json:"preCommands"`
+	ServiceName      string        `json:"svcName"`
+	ServiceNameExtra string        `json:"svcNameExtra"`
+	Unit             string        `json:"unit"`
+	UnitExtra        string        `json:"unitExtra"`
+	Commands         []string      `json:"commands"`
+	PostCommands     []string      `json:"postCommands"`
+	Fxp              *fxpSpec      `json:"fxp,omitempty"`
+	Failover         *failoverSpec `json:"failover,omitempty"`
 }
 
 type runningRule struct {
-	RuleID      int    `json:"ruleId"`
-	SourcePort  int    `json:"sourcePort"`
-	TargetIP    string `json:"targetIp"`
-	TargetPort  int    `json:"targetPort"`
-	Protocol    string `json:"protocol"`
-	ForwardType string `json:"forwardType"`
+	RuleID      int           `json:"ruleId"`
+	SourcePort  int           `json:"sourcePort"`
+	TargetIP    string        `json:"targetIp"`
+	TargetPort  int           `json:"targetPort"`
+	Protocol    string        `json:"protocol"`
+	ForwardType string        `json:"forwardType"`
+	Failover    *failoverSpec `json:"failover,omitempty"`
+}
+
+type failoverTarget struct {
+	TargetIP   string `json:"targetIp"`
+	TargetPort int    `json:"targetPort"`
+}
+
+type failoverSpec struct {
+	Enabled         bool             `json:"enabled"`
+	ListenPort      int              `json:"listenPort"`
+	BindAddress     string           `json:"bindAddress"`
+	Protocol        string           `json:"protocol"`
+	Targets         []failoverTarget `json:"targets"`
+	FailoverSeconds int              `json:"failoverSeconds"`
+	RecoverSeconds  int              `json:"recoverSeconds"`
+	AutoFailback    bool             `json:"autoFailback"`
 }
 
 type tunnelProbe struct {
@@ -296,6 +320,9 @@ func heartbeat(cfg Config) (int, error) {
 	for _, t := range resp.SelfTests {
 		go handleSelfTest(cfg, t)
 	}
+	for _, task := range resp.LookingGlassTests {
+		go handleLookingGlassTask(cfg, task)
+	}
 	syncRunningRuleState(resp.RunningRules)
 	for _, r := range resp.RunningRules {
 		writeRunningRuleState(r)
@@ -364,6 +391,110 @@ func handleSelfTest(cfg Config, t selfTest) {
 	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
 		logf("selftest report failed test=%d target=%s: %v", t.TestID, target, err)
 	}
+}
+
+func handleLookingGlassTask(cfg Config, task lookingGlassTask) {
+	result := runLookingGlassTask(task)
+	if err := post(cfg, "/api/agent/looking-glass-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
+		logf("looking glass result report failed task=%s method=%s target=%s: %v", task.TaskID, task.Method, task.ResolvedAddress, err)
+	}
+}
+
+func runLookingGlassTask(task lookingGlassTask) lookingGlassResult {
+	started := time.Now()
+	result := lookingGlassResult{
+		TaskID:            task.TaskID,
+		Method:            task.Method,
+		Target:            task.Target,
+		ResolvedAddress:   task.ResolvedAddress,
+		ResolvedAddresses: task.ResolvedAddresses,
+		StartedAt:         started.Format(time.RFC3339Nano),
+	}
+	if task.Method == "tcp" {
+		port := task.Port
+		if port <= 0 {
+			port = 443
+		}
+		result.Port = port
+		latency, ok := tcpLatency(task.ResolvedAddress, port, 10*time.Second)
+		result.DurationMs = int(time.Since(started).Milliseconds())
+		if ok {
+			code := 0
+			result.ExitCode = &code
+			result.Output = fmt.Sprintf("TCP %s 连接成功\n耗时: %d ms", net.JoinHostPort(task.ResolvedAddress, strconv.Itoa(port)), latency)
+		} else {
+			code := 1
+			result.ExitCode = &code
+			result.Output = fmt.Sprintf("TCP %s 连接失败或超时\n耗时: %d ms", net.JoinHostPort(task.ResolvedAddress, strconv.Itoa(port)), result.DurationMs)
+		}
+		result.FinishedAt = time.Now().Format(time.RFC3339Nano)
+		return result
+	}
+
+	command, args, err := lookingGlassCommand(task.Method, task.ResolvedAddress)
+	if err != nil {
+		code := 1
+		result.ExitCode = &code
+		result.Error = err.Error()
+		result.Output = err.Error()
+		result.DurationMs = int(time.Since(started).Milliseconds())
+		result.FinishedAt = time.Now().Format(time.RFC3339Nano)
+		return result
+	}
+	output, exitCode, timedOut := runLookingGlassCommand(command, args, 30*time.Second)
+	result.Output = output
+	if strings.TrimSpace(result.Output) == "" {
+		result.Output = "命令没有返回输出"
+	}
+	result.ExitCode = exitCode
+	result.TimedOut = timedOut
+	result.DurationMs = int(time.Since(started).Milliseconds())
+	result.FinishedAt = time.Now().Format(time.RFC3339Nano)
+	return result
+}
+
+func lookingGlassCommand(method string, host string) (string, []string, error) {
+	ipv6 := strings.HasSuffix(method, "6")
+	switch method {
+	case "ping", "ping6":
+		return "ping", []string{mapBool(ipv6, "-6", "-4"), "-c", "4", "-W", "3", host}, nil
+	case "traceroute", "traceroute6":
+		return "traceroute", []string{mapBool(ipv6, "-6", "-4"), "-n", "-m", "20", "-w", "2", host}, nil
+	case "mtr", "mtr6":
+		return "mtr", []string{mapBool(ipv6, "-6", "-4"), "--report", "--report-cycles", "10", "--no-dns", host}, nil
+	default:
+		return "", nil, fmt.Errorf("不支持的 Looking Glass 方法: %s", method)
+	}
+}
+
+func runLookingGlassCommand(name string, args []string, timeout time.Duration) (string, *int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	output := string(out)
+	if len(output) > 32000 {
+		output = output[:32000] + "\n... 输出已截断"
+	}
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	code := 0
+	if err != nil {
+		code = 1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		}
+		if strings.TrimSpace(output) == "" {
+			output = err.Error()
+		}
+	}
+	return strings.TrimSpace(output), &code, timedOut
+}
+
+func mapBool(ok bool, yes string, no string) string {
+	if ok {
+		return yes
+	}
+	return no
 }
 
 func agentEventStream(cfg Config) {
@@ -454,9 +585,15 @@ func handleAction(cfg Config, a action) {
 			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, fxpOK)
 			ok = fxpOK && ok
 		}
+		if a.Failover != nil && a.Failover.Enabled {
+			failoverOK := startFailoverProxy(a.RuleID, a.SourcePort, *a.Failover, actionMessage)
+			logf("action failover rule=%d listen=%d targets=%d ok=%v", a.RuleID, a.Failover.ListenPort, len(a.Failover.Targets), failoverOK)
+			ok = failoverOK && ok
+		}
 		runPostCommands(a.PostCommands, actionMessage)
 		writeState(a)
 	} else {
+		stopFailoverProxy(a.RuleID, a.SourcePort)
 		if a.Fxp != nil {
 			stopFXP(*a.Fxp)
 		}
@@ -572,6 +709,9 @@ func cleanupStaleRuntimeBeforeApply(a action) {
 	)
 	if localForwardType == "forwardx" && localRuleID > 0 {
 		stopFXP(fxpSpec{Role: "entry", RuleID: localRuleID, ListenPort: a.SourcePort, Protocol: "both"})
+	}
+	if localRuleID > 0 {
+		stopFailoverProxy(localRuleID, a.SourcePort)
 	}
 	if localForwardType == "nftables" && localRuleID > 0 {
 		_ = runShell(nftRuleCleanupCmd(localRuleID))
@@ -694,11 +834,27 @@ func resetTrafficStateIfRuleChanged(port string, nextRuleID int) {
 
 func syncRunningRuleState(rules []runningRule) {
 	wanted := map[string]bool{}
+	wantedFailover := map[string]bool{}
 	for _, r := range rules {
 		if r.RuleID <= 0 || r.SourcePort <= 0 {
 			continue
 		}
 		wanted[strconv.Itoa(r.SourcePort)] = true
+		if r.Failover != nil && r.Failover.Enabled {
+			wantedFailover[failoverID(r.RuleID, r.SourcePort)] = true
+			startFailoverProxy(r.RuleID, r.SourcePort, *r.Failover, nil)
+		}
+	}
+	failoverMu.Lock()
+	staleFailovers := make([]*failoverProxy, 0)
+	for id, proxy := range failoverProxies {
+		if !wantedFailover[id] {
+			staleFailovers = append(staleFailovers, proxy)
+		}
+	}
+	failoverMu.Unlock()
+	for _, proxy := range staleFailovers {
+		stopFailoverProxy(proxy.ruleID, proxy.sourcePort)
 	}
 	files, _ := os.ReadDir("/var/lib/forwardx-agent")
 	for _, f := range files {
@@ -723,6 +879,9 @@ func reconcileRemovePort(port string) {
 	logf("reconcile remove stale local rule port=%s rule=%d forwardType=%s", port, ruleID, forwardType)
 	if forwardType == "forwardx" && ruleID > 0 {
 		stopFXP(fxpSpec{Role: "entry", RuleID: ruleID, ListenPort: atoi(port), Protocol: "both"})
+	}
+	if ruleID > 0 {
+		stopFailoverProxy(ruleID, atoi(port))
 	}
 	if forwardType == "nftables" && ruleID > 0 {
 		_ = runShell(nftRuleCleanupCmd(ruleID))
@@ -1349,6 +1508,300 @@ type protocolGuardServer struct {
 	rule guardRule
 	ln   net.Listener
 	done chan struct{}
+}
+
+type lookingGlassTask struct {
+	TaskID            string   `json:"taskId"`
+	Method            string   `json:"method"`
+	Target            string   `json:"target"`
+	ResolvedAddress   string   `json:"resolvedAddress"`
+	ResolvedAddresses []string `json:"resolvedAddresses"`
+	Family            int      `json:"family"`
+	Port              int      `json:"port"`
+	CreatedAt         string   `json:"createdAt"`
+}
+
+type lookingGlassResult struct {
+	TaskID            string   `json:"taskId"`
+	Method            string   `json:"method"`
+	Target            string   `json:"target"`
+	Port              int      `json:"port,omitempty"`
+	ResolvedAddress   string   `json:"resolvedAddress"`
+	ResolvedAddresses []string `json:"resolvedAddresses"`
+	Output            string   `json:"output"`
+	ExitCode          *int     `json:"exitCode"`
+	TimedOut          bool     `json:"timedOut"`
+	DurationMs        int      `json:"durationMs"`
+	StartedAt         string   `json:"startedAt"`
+	FinishedAt        string   `json:"finishedAt"`
+	Error             string   `json:"error,omitempty"`
+}
+
+type failoverProxy struct {
+	ruleID         int
+	sourcePort     int
+	spec           failoverSpec
+	signature      string
+	activeIndex    int
+	failureSince   time.Time
+	recoveredSince time.Time
+	ln             net.Listener
+	done           chan struct{}
+	mu             sync.RWMutex
+}
+
+func failoverID(ruleID int, sourcePort int) string {
+	return strconv.Itoa(ruleID) + ":" + strconv.Itoa(sourcePort)
+}
+
+func failoverSignature(spec failoverSpec) string {
+	parts := []string{
+		strconv.Itoa(spec.ListenPort),
+		spec.BindAddress,
+		spec.Protocol,
+		strconv.Itoa(spec.FailoverSeconds),
+		strconv.Itoa(spec.RecoverSeconds),
+		strconv.FormatBool(spec.AutoFailback),
+	}
+	for _, target := range spec.Targets {
+		parts = append(parts, target.TargetIP, strconv.Itoa(target.TargetPort))
+	}
+	return strings.Join(parts, "|")
+}
+
+func normalizeFailoverSpec(spec failoverSpec) failoverSpec {
+	if spec.BindAddress == "" {
+		spec.BindAddress = "127.0.0.1"
+	}
+	if spec.FailoverSeconds <= 0 {
+		spec.FailoverSeconds = 60
+	}
+	if spec.RecoverSeconds <= 0 {
+		spec.RecoverSeconds = 120
+	}
+	cleaned := make([]failoverTarget, 0, len(spec.Targets))
+	for _, target := range spec.Targets {
+		target.TargetIP = strings.TrimSpace(target.TargetIP)
+		if target.TargetIP == "" || target.TargetPort <= 0 || target.TargetPort > 65535 {
+			continue
+		}
+		cleaned = append(cleaned, target)
+		if len(cleaned) >= 3 {
+			break
+		}
+	}
+	spec.Targets = cleaned
+	return spec
+}
+
+func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMessage *actionMessage) bool {
+	spec = normalizeFailoverSpec(spec)
+	if !spec.Enabled || spec.ListenPort <= 0 || len(spec.Targets) < 2 {
+		return true
+	}
+	id := failoverID(ruleID, sourcePort)
+	signature := failoverSignature(spec)
+	failoverMu.Lock()
+	existing := failoverProxies[id]
+	if existing != nil && existing.signature == signature {
+		failoverMu.Unlock()
+		return true
+	}
+	failoverMu.Unlock()
+	stopFailoverProxy(ruleID, sourcePort)
+
+	addr := net.JoinHostPort(spec.BindAddress, strconv.Itoa(spec.ListenPort))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		if actionMessage != nil {
+			actionMessage.set("failover proxy listen failed rule=%d addr=%s: %v", ruleID, addr, err)
+		} else {
+			logf("failover proxy listen failed rule=%d addr=%s: %v", ruleID, addr, err)
+		}
+		return false
+	}
+	p := &failoverProxy{
+		ruleID:     ruleID,
+		sourcePort: sourcePort,
+		spec:       spec,
+		signature:  signature,
+		ln:         ln,
+		done:       make(chan struct{}),
+	}
+	failoverMu.Lock()
+	failoverProxies[id] = p
+	failoverMu.Unlock()
+	go p.healthLoop()
+	go p.acceptLoop()
+	logf("failover proxy started rule=%d source=%d listen=%s targets=%d", ruleID, sourcePort, addr, len(spec.Targets))
+	return true
+}
+
+func stopFailoverProxy(ruleID int, sourcePort int) {
+	if ruleID <= 0 || sourcePort <= 0 {
+		return
+	}
+	id := failoverID(ruleID, sourcePort)
+	failoverMu.Lock()
+	p := failoverProxies[id]
+	if p != nil {
+		delete(failoverProxies, id)
+	}
+	failoverMu.Unlock()
+	if p == nil {
+		return
+	}
+	close(p.done)
+	_ = p.ln.Close()
+}
+
+func (p *failoverProxy) currentTarget() failoverTarget {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	idx := p.activeIndex
+	if idx < 0 || idx >= len(p.spec.Targets) {
+		idx = 0
+	}
+	return p.spec.Targets[idx]
+}
+
+func (p *failoverProxy) setActive(index int, reason string) {
+	if index < 0 || index >= len(p.spec.Targets) {
+		return
+	}
+	p.mu.Lock()
+	if p.activeIndex == index {
+		p.mu.Unlock()
+		return
+	}
+	old := p.activeIndex
+	p.activeIndex = index
+	p.failureSince = time.Time{}
+	p.recoveredSince = time.Time{}
+	next := p.spec.Targets[index]
+	p.mu.Unlock()
+	logf("failover switch rule=%d source=%d %d->%d target=%s:%d reason=%s", p.ruleID, p.sourcePort, old, index, next.TargetIP, next.TargetPort, reason)
+}
+
+func (p *failoverProxy) healthLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.checkHealth()
+		}
+	}
+}
+
+func (p *failoverProxy) checkHealth() {
+	now := time.Now()
+	p.mu.RLock()
+	activeIndex := p.activeIndex
+	active := p.spec.Targets[activeIndex]
+	primary := p.spec.Targets[0]
+	failureSince := p.failureSince
+	recoveredSince := p.recoveredSince
+	p.mu.RUnlock()
+
+	_, activeOK := tcpLatency(active.TargetIP, active.TargetPort, 2*time.Second)
+	if !activeOK {
+		if failureSince.IsZero() {
+			p.mu.Lock()
+			if p.failureSince.IsZero() {
+				p.failureSince = now
+			}
+			p.mu.Unlock()
+			return
+		}
+		if now.Sub(failureSince) >= time.Duration(p.spec.FailoverSeconds)*time.Second {
+			for i, target := range p.spec.Targets {
+				if i == activeIndex {
+					continue
+				}
+				if _, ok := tcpLatency(target.TargetIP, target.TargetPort, 2*time.Second); ok {
+					p.setActive(i, "active target unreachable")
+					return
+				}
+			}
+		}
+		return
+	}
+
+	p.mu.Lock()
+	p.failureSince = time.Time{}
+	p.mu.Unlock()
+	if activeIndex == 0 || !p.spec.AutoFailback {
+		return
+	}
+	_, primaryOK := tcpLatency(primary.TargetIP, primary.TargetPort, 2*time.Second)
+	if !primaryOK {
+		p.mu.Lock()
+		p.recoveredSince = time.Time{}
+		p.mu.Unlock()
+		return
+	}
+	if recoveredSince.IsZero() {
+		p.mu.Lock()
+		if p.recoveredSince.IsZero() {
+			p.recoveredSince = now
+		}
+		p.mu.Unlock()
+		return
+	}
+	if now.Sub(recoveredSince) >= time.Duration(p.spec.RecoverSeconds)*time.Second {
+		p.setActive(0, "primary recovered")
+	}
+}
+
+func (p *failoverProxy) acceptLoop() {
+	for {
+		client, err := p.ln.Accept()
+		if err != nil {
+			select {
+			case <-p.done:
+				return
+			default:
+				logf("failover accept failed rule=%d: %v", p.ruleID, err)
+				continue
+			}
+		}
+		go p.handleConn(client)
+	}
+}
+
+func (p *failoverProxy) handleConn(client net.Conn) {
+	defer client.Close()
+	target := p.currentTarget()
+	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+	if err != nil {
+		p.checkHealth()
+		target = p.currentTarget()
+		upstream, err = net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+		if err != nil {
+			logf("failover dial failed rule=%d target=%s:%d: %v", p.ruleID, target.TargetIP, target.TargetPort, err)
+			return
+		}
+	}
+	defer upstream.Close()
+	copyDone := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		if c, ok := upstream.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		copyDone <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		if c, ok := client.(*net.TCPConn); ok {
+			_ = c.CloseWrite()
+		}
+		copyDone <- struct{}{}
+	}()
+	<-copyDone
 }
 
 func guardID(rule guardRule) string {

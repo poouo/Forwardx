@@ -8,6 +8,7 @@ import { billingRouter } from "./routers/billing";
 import { dashboardRouter } from "./routers/dashboard";
 import { forwardGroupsRouter } from "./routers/forwardGroups";
 import { hostsRouter } from "./routers/hosts";
+import { lookingGlassRouter } from "./routers/lookingGlass";
 import { plansRouter } from "./routers/plans";
 import { rulesRouter } from "./routers/rules";
 import { setupRouter } from "./routers/setup";
@@ -26,6 +27,7 @@ export const appRouter = router({
   dashboard: dashboardRouter,
   users: usersRouter,
   hosts: hostsRouter,
+  lookingGlass: lookingGlassRouter,
   rules: rulesRouter,
   forwardGroups: forwardGroupsRouter,
   tunnels: tunnelsRouter,

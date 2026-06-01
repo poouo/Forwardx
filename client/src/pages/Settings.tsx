@@ -1537,6 +1537,7 @@ type SystemSettingsSaveKey =
   | "panelUrl"
   | "registration"
   | "twoFactor"
+  | "lookingGlass"
   | "homepage"
   | "ddns"
   | "forwardProtocols"
@@ -1565,6 +1566,7 @@ function SystemInfoSection() {
   const [webPortCountdown, setWebPortCountdown] = useState(5);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
   const [homepageEnabled, setHomepageEnabled] = useState(true);
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
@@ -1609,6 +1611,7 @@ function SystemInfoSection() {
       setWebPortInput(String(settings.webPort || 3000));
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
+      setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
       setHomepageEnabled(settings.homepageEnabled ?? true);
       setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
       setHomepageHtml(settings.homepageHtml || "");
@@ -1741,6 +1744,12 @@ function SystemInfoSection() {
 
   const handleSaveTwoFactor = () => {
     saveSystemSettings("twoFactor", { twoFactorEnabled });
+  };
+
+  const handleSaveLookingGlass = () => {
+    saveSystemSettings("lookingGlass", { lookingGlassUserEnabled }, {
+      onSuccess: () => utils.system.publicInfo.invalidate(),
+    });
   };
 
   const handleSaveHomepage = () => {
@@ -2132,6 +2141,34 @@ function SystemInfoSection() {
             <div className="flex justify-end">
               <Button onClick={handleSaveTwoFactor} disabled={isSavingSetting("twoFactor")}>
                 保存双重验证设置
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe className="h-4 w-4 text-primary" />
+              Looking Glass
+            </CardTitle>
+            <CardDescription>
+              控制普通用户是否可以看到并使用网络探测工具。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">普通用户可见</p>
+                <p className="text-xs text-muted-foreground">
+                  关闭后侧边栏入口和接口都会对普通用户禁用，管理员始终可用。
+                </p>
+              </div>
+              <Switch checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={handleSaveLookingGlass} disabled={isSavingSetting("lookingGlass")}>
+                保存 Looking Glass 设置
               </Button>
             </div>
           </CardContent>

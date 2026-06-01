@@ -361,6 +361,7 @@ export const systemRouter = router({
       siteLogoDataUrl: all.siteLogoDataUrl || "",
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
+      lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
     }));
   }),
 
@@ -384,6 +385,7 @@ export const systemRouter = router({
       },
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
+      lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
       homepageEnabled: all.homepageEnabled !== "false",
       homepageCustomEnabled: all.homepageCustomEnabled === "true",
       homepageHtml: all.homepageHtml ?? "",
@@ -463,6 +465,7 @@ export const systemRouter = router({
         siteLogoDataUrl: brandLogoSchema.optional(),
         registrationEnabled: z.boolean().optional(),
         twoFactorEnabled: z.boolean().optional(),
+        lookingGlassUserEnabled: z.boolean().optional(),
         homepageEnabled: z.boolean().optional(),
         homepageCustomEnabled: z.boolean().optional(),
         homepageHtml: z.string().max(60000).optional(),
@@ -535,6 +538,10 @@ export const systemRouter = router({
       if (input.twoFactorEnabled !== undefined) {
         await db.setSetting("twoFactorEnabled", input.twoFactorEnabled ? "true" : "false");
         console.info(`[Settings] 2FA ${input.twoFactorEnabled ? "enabled" : "disabled"}`);
+      }
+      if (input.lookingGlassUserEnabled !== undefined) {
+        await db.setSetting("lookingGlassUserEnabled", input.lookingGlassUserEnabled ? "true" : "false");
+        console.info(`[Settings] Looking Glass for users ${input.lookingGlassUserEnabled ? "enabled" : "disabled"}`);
       }
       if (input.homepageEnabled !== undefined) {
         await db.setSetting("homepageEnabled", input.homepageEnabled ? "true" : "false");

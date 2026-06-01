@@ -58,6 +58,7 @@ import {
   RefreshCw,
   ExternalLink,
   Image,
+  Globe2,
   type LucideIcon,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -90,6 +91,7 @@ const mainMenuItems: SidebarNavItem[] = [
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
+  { icon: Globe2, label: "Looking Glass", path: "/looking-glass" },
   { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
 const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile" };
@@ -670,9 +672,13 @@ function DashboardLayoutContent({
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
 
+  const hiddenNormalUserMainPaths = ["/hosts", "/tunnels", "/forward-groups"];
+  if (publicInfo?.lookingGlassUserEnabled !== true) {
+    hiddenNormalUserMainPaths.push("/looking-glass");
+  }
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
-    : mainMenuItems.filter((item) => !["/hosts", "/tunnels", "/forward-groups"].includes(item.path));
+    : mainMenuItems.filter((item) => !hiddenNormalUserMainPaths.includes(item.path));
   const userStoreMenuItems = !isAdmin
     ? [
         { icon: Package, label: "我的订阅", path: "/subscriptions" },
