@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.95] - 2026-06-02
+
+### Fixed
+
+- Fixed FXP multi-hop tunnel stability by preventing tunnel refresh actions from carrying unrelated GOST reload/cleanup commands.
+- Hardened Agent FXP process adoption so already-running matching FXP runtimes are preserved after Agent state loss or restart instead of being killed and recreated.
+- Bumped panel version to 2.3.95 and Agent/FXP runtime target version to 2.2.79.
+
 ## [2.3.94] - 2026-06-01
 
 ### Fixed

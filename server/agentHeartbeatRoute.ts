@@ -961,7 +961,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: await buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -982,7 +982,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: host.ip,
           targetPort: tunnel.listenPort,
           protocol: "tcp",
-          commands: await buildTunnelReloadCmds(),
+          commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
           fxp: fxpTunnel ? {
             role: "exit",
             tunnelId: tunnel.id,
@@ -1034,7 +1034,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetIp: host.ip,
               targetPort: Number(listenPort),
               protocol: "tcp",
-              commands: await buildTunnelReloadCmds(),
+              commands: [],
             } as any);
             continue;
           }
@@ -1066,7 +1066,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetIp: host.ip,
             targetPort: Number(listenPort),
             protocol: "tcp",
-            commands: await buildTunnelReloadCmds(),
+            commands: [],
             fxp: fxpSpec,
           } as any);
         } else {
@@ -1377,8 +1377,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               protocol: rule.protocol,
               networkInterface: hostInterface,
               commands: rule.isRunning ? [] : [
-                ...buildGostReloadCmds(),
-                ...await buildTunnelReloadCmds(),
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ],
