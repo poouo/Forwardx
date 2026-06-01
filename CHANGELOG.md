@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.88] - 2026-06-01
+
+### Fixed
+
+- Removed a stale iperf3 port state update that caused `setIperf3Port is not defined` when starting the iperf3 server from the network-test page.
+- Bumped panel version to 2.3.88. Agent target version remains 2.2.73.
+- Android APP version remains 2.3.34 and the APK release pointer is updated to 2.3.88 for the network-test UI fix.
+
 ## [2.3.87] - 2026-06-01
 
 ### Changed

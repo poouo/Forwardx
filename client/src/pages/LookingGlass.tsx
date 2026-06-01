@@ -446,11 +446,6 @@ export default function LookingGlass() {
     return () => window.clearInterval(timer);
   }, [runState]);
 
-  useEffect(() => {
-    if (!isIperf3Method || !currentIperf3?.port) return;
-    setIperf3Port(String(currentIperf3.port));
-  }, [currentIperf3?.port, isIperf3Method]);
-
   const copyText = async (text: string) => {
     const copied = await copyTextToClipboard(text);
     if (copied) toast.success("已复制");
