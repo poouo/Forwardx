@@ -129,7 +129,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.77"
+	fxpRuntimeVersion   = "2.2.78"
 )
 
 var (
@@ -161,16 +161,16 @@ func newConnGate(maxConnections, maxIPs int) *connGate {
 	}
 }
 
-func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool) {
+func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
 	ip := remoteIP(remoteAddr)
 	if g.maxConnections > 0 && g.active.Load() >= g.maxConnections {
-		return func() {}, false
+		return func() {}, false, "maxConnections"
 	}
 	g.mu.Lock()
 	if g.maxIPs > 0 && ip != "" {
 		if _, ok := g.ips[ip]; !ok && len(g.ips) >= g.maxIPs {
 			g.mu.Unlock()
-			return func() {}, false
+			return func() {}, false, "maxIPs"
 		}
 		g.ips[ip]++
 	}
@@ -191,7 +191,13 @@ func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool) {
 			}
 			g.mu.Unlock()
 		})
-	}, true
+	}, true, ""
+}
+
+func (g *connGate) stats() (int64, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active.Load(), len(g.ips)
 }
 
 func main() {
@@ -208,7 +214,23 @@ func main() {
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("invalid config: %v", err)
 	}
-	log.Printf("forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s", fxpRuntimeVersion, cfg.Role, cfg.TunnelID, cfg.RuleID, cfg.ListenPort, cfg.Protocol)
+	log.Printf(
+		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d limits=maxConnections:%d,maxIPs:%d",
+		fxpRuntimeVersion,
+		cfg.Role,
+		cfg.TunnelID,
+		cfg.RuleID,
+		cfg.ListenPort,
+		cfg.Protocol,
+		cfg.ExitHost,
+		cfg.ExitPort,
+		cfg.RelayExitHost,
+		cfg.RelayExitPort,
+		cfg.TargetIP,
+		cfg.TargetPort,
+		cfg.MaxConnections,
+		cfg.MaxIPs,
+	)
 	ctx := shutdownContext()
 	switch strings.ToLower(cfg.Role) {
 	case "entry":
@@ -401,8 +423,10 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate) error {
 			return err
 		}
 		enableTCPKeepAlive(client)
-		release, ok := gate.acquire(client.RemoteAddr())
+		release, ok, reason := gate.acquire(client.RemoteAddr())
 		if !ok {
+			active, ips := gate.stats()
+			log.Printf("entry tcp rejected by connection gate tunnel=%d rule=%d client=%s reason=%s active=%d maxConnections=%d distinctIPs=%d maxIPs=%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), reason, active, cfg.MaxConnections, ips, cfg.MaxIPs)
 			_ = client.Close()
 			continue
 		}
@@ -447,6 +471,7 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 	if err := sec.writeFrame(hello); err != nil {
 		return err
 	}
+	log.Printf("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), cfg.ExitHost, cfg.ExitPort, cfg.TargetIP, cfg.TargetPort)
 	if len(first) > 0 {
 		if err := sec.writeFrame(first); err != nil {
 			return err
@@ -571,6 +596,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		return fmt.Errorf("dial target: %w", err)
 	}
 	defer target.Close()
+	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	return proxyPlainSecure(target, sec, 0, 0, nil)
 }
 
@@ -666,6 +692,7 @@ func handleRelaySession(upConn net.Conn, cfg config) error {
 	if err := downSec.writeFrame(helloBytes); err != nil {
 		return err
 	}
+	log.Printf("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), cfg.RelayExitHost, cfg.RelayExitPort, hello.TargetIP, hello.TargetPort)
 	// Bidirectional relay: upstream ↔ downstream
 	return relayBidir(upSec, downSec)
 }
