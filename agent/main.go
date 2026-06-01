@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,7 +30,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.78"
+var Version = "2.2.79"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1082,10 +1084,17 @@ func fxpMatchesRunning(spec *fxpSpec) bool {
 	normalized.Protocol = normalizeRuntimeProtocol(normalized.Protocol)
 	id := fxpServerID(normalized)
 	signature := fxpServerSignature(normalized)
+	configPath := fxpConfigPath(normalized)
 	fxpMu.Lock()
 	existing := fxpServers[id]
-	matches := existing != nil && existing.signature == signature && existing.cmd != nil && existing.cmd.Process != nil
+	matches := existing != nil && existing.signature == signature && fxpProcessActive(existing)
+	if existing != nil && !matches {
+		delete(fxpServers, id)
+	}
 	fxpMu.Unlock()
+	if !matches {
+		matches = adoptExistingFXP(normalized, signature, configPath)
+	}
 	if matches {
 		logf("fxp %s already running with matching runtime tunnel=%d rule=%d listen=:%d protocol=%s", normalized.Role, normalized.TunnelID, normalized.RuleID, normalized.ListenPort, normalized.Protocol)
 	}
@@ -1743,6 +1752,89 @@ func fxpServerSignature(spec fxpSpec) string {
 	}, "|")
 }
 
+func fxpConfigPath(spec fxpSpec) string {
+	role := strings.ToLower(strings.TrimSpace(spec.Role))
+	return fmt.Sprintf("/run/forwardx-agent/fxp-%s-%d-%d-%d.json", role, spec.TunnelID, spec.RuleID, spec.ListenPort)
+}
+
+func fxpProcessActive(process *fxpProcess) bool {
+	if process == nil {
+		return false
+	}
+	if process.cmd != nil && process.cmd.Process != nil {
+		return true
+	}
+	if process.configPath != "" {
+		return fxpRuntimeProcessExists(process.configPath)
+	}
+	return false
+}
+
+func fxpRuntimePIDs(configPath string) []int {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return nil
+	}
+	patterns := []string{
+		`[f]orwardx-fxp.*` + regexp.QuoteMeta(configPath),
+		`[f]orwardx-fxp.*` + regexp.QuoteMeta(filepath.Base(configPath)),
+	}
+	seen := map[int]bool{}
+	pids := []int{}
+	for _, pattern := range patterns {
+		out, err := exec.Command("pgrep", "-f", pattern).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Fields(string(out)) {
+			pid, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil || pid <= 0 || pid == os.Getpid() || seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+func fxpRuntimeProcessExists(configPath string) bool {
+	return len(fxpRuntimePIDs(configPath)) > 0
+}
+
+func killFXPByConfigPath(configPath string) {
+	for _, pid := range fxpRuntimePIDs(configPath) {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
+}
+
+func adoptExistingFXP(spec fxpSpec, signature string, configPath string) bool {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+	var existing fxpSpec
+	if err := json.Unmarshal(raw, &existing); err != nil {
+		return false
+	}
+	existing.Role = strings.ToLower(strings.TrimSpace(existing.Role))
+	existing.Protocol = normalizeRuntimeProtocol(existing.Protocol)
+	if fxpServerSignature(existing) != signature {
+		return false
+	}
+	if !fxpRuntimeProcessExists(configPath) {
+		return false
+	}
+	id := fxpServerID(spec)
+	fxpMu.Lock()
+	fxpServers[id] = &fxpProcess{signature: signature, configPath: configPath}
+	fxpMu.Unlock()
+	logf("fxp %s adopted existing runtime tunnel=%d rule=%d listen=:%d protocol=%s config=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol, configPath)
+	return true
+}
+
 func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	if spec.Key == "" || spec.ListenPort <= 0 {
 		actionMessage.set("fxp invalid config role=%s tunnel=%d rule=%d port=%d", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
@@ -1767,14 +1859,21 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)
+	configPath := fxpConfigPath(spec)
 	fxpMu.Lock()
 	existing := fxpServers[id]
-	if existing != nil && existing.signature == signature && existing.cmd != nil && existing.cmd.Process != nil {
+	if existing != nil && existing.signature == signature && fxpProcessActive(existing) {
 		fxpMu.Unlock()
 		logf("fxp %s already running tunnel=%d rule=%d listen=:%d protocol=%s", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort, spec.Protocol)
 		return true
 	}
+	if existing != nil {
+		delete(fxpServers, id)
+	}
 	fxpMu.Unlock()
+	if adoptExistingFXP(spec, signature, configPath) {
+		return true
+	}
 	stopFXP(spec)
 	stopFXPByListenPort(spec.ListenPort)
 	for _, cmd := range fxpPortCleanupCmds(strconv.Itoa(spec.ListenPort)) {
@@ -1790,7 +1889,6 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		actionMessage.set("fxp create runtime dir failed: %v", err)
 		return false
 	}
-	configPath := fmt.Sprintf("/run/forwardx-agent/fxp-%s-%d-%d-%d.json", spec.Role, spec.TunnelID, spec.RuleID, spec.ListenPort)
 	if spec.Role == "entry" {
 		spec.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
 		spec.Token = cfg.Token
@@ -1853,6 +1951,8 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 }
 
 func stopFXP(spec fxpSpec) {
+	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
+	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
 	id := fxpServerID(spec)
 	fxpMu.Lock()
 	s := fxpServers[id]
@@ -1861,12 +1961,17 @@ func stopFXP(spec fxpSpec) {
 	}
 	fxpMu.Unlock()
 	if s == nil {
+		configPath := fxpConfigPath(spec)
+		killFXPByConfigPath(configPath)
+		_ = os.Remove(configPath)
 		return
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Signal(os.Interrupt)
 		time.Sleep(500 * time.Millisecond)
 		_ = s.cmd.Process.Kill()
+	} else if s.configPath != "" {
+		killFXPByConfigPath(s.configPath)
 	}
 	if s.configPath != "" {
 		_ = os.Remove(s.configPath)
