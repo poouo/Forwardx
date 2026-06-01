@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.94] - 2026-06-01
+
+### Fixed
+
+- Added FXP runtime diagnostics for custom encrypted tunnels, including startup route details and entry-side connection gate rejections.
+- Bumped panel version to 2.3.94 and Agent target version to 2.2.78.
+
 ## [2.3.93] - 2026-06-01
 
 ### Fixed
