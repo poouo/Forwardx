@@ -1119,18 +1119,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       // 收集所有已运行的规则映射（无论是否有 action 下发）
       if (rule.isEnabled && rule.isRunning) {
-        if (rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)) {
-          continue;
-        }
         const trafficPort = ruleTrafficPort(rule);
         if (!trafficPort) continue;
+        const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
+          ? "forwardx"
+          : rule.forwardType;
         addRunningRule({
           ruleId: rule.id,
           sourcePort: trafficPort,
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
           protocol: rule.protocol,
-          forwardType: rule.forwardType,
+          forwardType: runningForwardType,
           failover: (rule as any).tunnelId
             ? actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" })
             : actionFailover(rule, { listenPort: Number(rule.sourcePort), bindAddress: "0.0.0.0" }),

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.97] - 2026-06-02
+
+### Fixed
+
+- Fixed FXP tunnel entry rules being omitted from Agent `runningRules`, which caused the Agent reconciliation loop to remove a healthy `forwardx` listener after it had been running for a short time.
+- Bumped panel version to 2.3.97 and Agent/FXP runtime target version to 2.2.81.
+
 ## [2.3.96] - 2026-06-02
 
 ### Fixed
