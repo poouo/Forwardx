@@ -129,7 +129,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.79"
+	fxpRuntimeVersion   = "2.2.80"
 )
 
 var (
@@ -442,16 +442,22 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate) error {
 func handleEntryTCP(client net.Conn, cfg config) error {
 	defer client.Close()
 	var first []byte
+	initialTimeout := 150 * time.Millisecond
 	if cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
-		_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
-		buf := make([]byte, 4096)
-		n, err := client.Read(buf)
-		_ = client.SetReadDeadline(time.Time{})
-		if err != nil {
-			return err
+		initialTimeout = 5 * time.Second
+	}
+	initial, err := readInitialTCPPayload(client, initialTimeout)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
 		}
-		first = append(first, buf[:n]...)
-		if proto := detectBlockedProtocol(first, protocolPolicy{BlockHTTP: cfg.BlockHTTP, BlockSocks: cfg.BlockSocks, BlockTLS: cfg.BlockTLS}); proto != "" {
+		return err
+	}
+	first = initial
+	if cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
+		if len(first) == 0 {
+			// Keep server-first protocols working when no client payload arrives before the policy sniff timeout.
+		} else if proto := detectBlockedProtocol(first, protocolPolicy{BlockHTTP: cfg.BlockHTTP, BlockSocks: cfg.BlockSocks, BlockTLS: cfg.BlockTLS}); proto != "" {
 			reportProtocolBlock(cfg, proto)
 			return nil
 		}
@@ -482,6 +488,25 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 	stopReporting := startTrafficReporter(cfg, counter)
 	defer stopReporting()
 	return proxyPlainSecure(client, sec, cfg.LimitIn, cfg.LimitOut, counter)
+}
+
+func readInitialTCPPayload(conn net.Conn, timeout time.Duration) ([]byte, error) {
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
+	buf := make([]byte, 4096)
+	n, err := conn.Read(buf)
+	_ = conn.SetReadDeadline(time.Time{})
+	if n > 0 {
+		return append([]byte(nil), buf[:n]...), nil
+	}
+	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return nil, nil
 }
 
 func serveEntryUDP(conn *net.UDPConn, cfg config) error {

@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.96] - 2026-06-02
+
+### Fixed
+
+- Fixed FXP tunnel refresh races by serializing Agent actions, dropping stale actions for the same port, and protecting ports with pending actions from state reconciliation cleanup.
+- Reduced custom encrypted tunnel probe interference by skipping automatic TCPing for FXP entry rules and ignoring TCP probe connections that close before sending payload.
+- Fixed collapsed sidebar spacing so icon-only navigation, theme toggle, and account avatar stay centered and do not overflow into the content area.
+- Bumped panel version to 2.3.96 and Agent/FXP runtime target version to 2.2.80.
+
 ## [2.3.95] - 2026-06-02
 
 ### Fixed

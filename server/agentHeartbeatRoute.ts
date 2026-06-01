@@ -97,6 +97,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const hostTunnels = await db.getTunnelsByHost(host.id);
     const forwardProtocolSettings = await getForwardProtocolSettings();
     const actions: any[] = [];
+    const responseIssuedAt = Date.now();
 
     // 获取主机配置的网卡名称（用于 realm --interface）
     const hostInterface = (host as any).networkInterface || "";
@@ -1011,7 +1012,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const isFXP = isForwardXTunnel(tunnel);
         const tunnelKey = tunnelSecretSeed(tunnel);
         const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
-        const shouldApply = isFXP ? tunnel.isEnabled : tunnel.isEnabled && !multiHopRuntimeReady;
+        const shouldApply = isFXP
+          ? tunnel.isEnabled && (!multiHopRuntimeReady || hostIdx > 0)
+          : tunnel.isEnabled && !multiHopRuntimeReady;
         const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
         if (!shouldApply && !shouldRemove) continue;
@@ -1691,6 +1694,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const normalizedActions = actions.map((action: any) => ({
       ...action,
+      issuedAt: Number(action.issuedAt) || responseIssuedAt,
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
     const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));

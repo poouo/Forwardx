@@ -30,7 +30,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.79"
+var Version = "2.2.80"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -48,6 +48,8 @@ var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
 var agentLogBuffer []agentLogEntry
 var actionQueue = make(chan actionJob, 128)
+var actionEpochMu sync.Mutex
+var latestActionIssuedAt = map[string]int64{}
 var iperf3Mu sync.Mutex
 var iperf3Server *iperf3Process
 
@@ -97,6 +99,7 @@ type action struct {
 	TunnelID         int           `json:"tunnelId"`
 	StatusType       string        `json:"statusType"`
 	RuleID           int           `json:"ruleId"`
+	IssuedAt         int64         `json:"issuedAt,omitempty"`
 	Op               string        `json:"op"`
 	ForwardType      string        `json:"forwardType"`
 	SourcePort       int           `json:"sourcePort"`
@@ -319,7 +322,11 @@ func heartbeat(cfg Config) (int, error) {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
 	agentLogUploadEnabled.Store(resp.LogUpload)
+	pendingActionPorts := map[string]bool{}
 	for _, a := range resp.Actions {
+		if a.SourcePort > 0 {
+			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
+		}
 		enqueueAction(cfg, a)
 	}
 	for _, t := range resp.SelfTests {
@@ -331,7 +338,7 @@ func heartbeat(cfg Config) (int, error) {
 	for _, task := range resp.Iperf3Tasks {
 		go handleIperf3Task(cfg, task)
 	}
-	syncRunningRuleState(resp.RunningRules)
+	syncRunningRuleState(resp.RunningRules, pendingActionPorts)
 	for _, r := range resp.RunningRules {
 		writeRunningRuleState(r)
 		if r.ForwardType != "nftables" {
@@ -349,13 +356,74 @@ func heartbeat(cfg Config) (int, error) {
 }
 
 func enqueueAction(cfg Config, a action) {
+	if isOlderAction(a, true) {
+		return
+	}
 	actionQueue <- actionJob{cfg: cfg, action: a}
 }
 
 func actionWorker() {
 	for job := range actionQueue {
+		if isOlderAction(job.action, false) {
+			continue
+		}
 		handleAction(job.cfg, job.action)
 	}
+}
+
+func actionStaleKeys(a action) []string {
+	keys := []string{}
+	statusType := strings.TrimSpace(a.StatusType)
+	if statusType == "" {
+		if a.RuleID > 0 {
+			statusType = "rule"
+		} else if a.TunnelID > 0 {
+			statusType = "tunnel"
+		}
+	}
+	if statusType == "tunnel" && a.TunnelID > 0 {
+		keys = append(keys, fmt.Sprintf("tunnel:%d:%d", a.TunnelID, a.SourcePort))
+	}
+	if a.RuleID > 0 {
+		keys = append(keys, fmt.Sprintf("rule:%d:%d", a.RuleID, a.SourcePort))
+	}
+	if a.SourcePort > 0 {
+		keys = append(keys, fmt.Sprintf("port:%d", a.SourcePort))
+	}
+	return keys
+}
+
+func isOlderAction(a action, remember bool) bool {
+	if a.IssuedAt <= 0 {
+		return false
+	}
+	keys := actionStaleKeys(a)
+	if len(keys) == 0 {
+		return false
+	}
+	actionEpochMu.Lock()
+	latest := int64(0)
+	for _, key := range keys {
+		if ts := latestActionIssuedAt[key]; ts > latest {
+			latest = ts
+		}
+	}
+	if remember {
+		for _, key := range keys {
+			if a.IssuedAt > latestActionIssuedAt[key] {
+				latestActionIssuedAt[key] = a.IssuedAt
+			}
+		}
+		if a.IssuedAt > latest {
+			latest = a.IssuedAt
+		}
+	}
+	actionEpochMu.Unlock()
+	if a.IssuedAt < latest {
+		logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d latest=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, latest)
+		return true
+	}
+	return false
 }
 
 func selfTestPoller(cfg Config) {
@@ -1220,7 +1288,7 @@ func resetTrafficStateIfRuleChanged(port string, nextRuleID int) {
 	}
 }
 
-func syncRunningRuleState(rules []runningRule) {
+func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 	wanted := map[string]bool{}
 	wantedFailover := map[string]bool{}
 	for _, r := range rules {
@@ -1252,6 +1320,10 @@ func syncRunningRuleState(rules []runningRule) {
 		}
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
+			if protectedPorts[port] {
+				logf("reconcile skip pending action port=%s", port)
+				continue
+			}
 			reconcileRemovePort(port)
 			removeStateByPort(port)
 		}
@@ -1502,6 +1574,9 @@ func collectTCPing(cfg Config, probes []tunnelProbe) {
 		ruleID, _ := strconv.Atoi(strings.TrimSpace(string(ridBytes)))
 		targetIP, targetPort, ok := readTargetInfo(port)
 		if !ok || ruleID <= 0 {
+			continue
+		}
+		if readForwardTypeByPort(port) == "forwardx" {
 			continue
 		}
 		latency, reachable := tcpLatency(targetIP, targetPort, 3*time.Second)
