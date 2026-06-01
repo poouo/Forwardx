@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.3.83] - 2026-06-01
+
+### Added
+
+- Added Agent-hosted network-test download links for 10 MB, 100 MB, and 1000 MB files using temporary signed URLs.
+- Added live network-test progress updates from Agent execution output and showed the current visitor IP on the network-test card.
+
+### Changed
+
+- Renamed the user-facing network-test copy to 网络测试 and moved the sidebar entry below management.
+- Changed network-test execution to use selected Agent hosts only and removed the current panel server as a test source.
+- Reworked the network-test page to use a test-type dropdown and show queued/running progress text before final output arrives.
+- Limited recent network-test history to the latest 4 results.
+- Combined the System Settings network-test visibility switch with the branding row to keep the settings area compact.
+- Bumped panel version to 2.3.83. Agent target version is now 2.2.69 for Agent-hosted download testing and live progress reporting.
+- Android APP version remains 2.3.33 because this web-panel feature does not require a native APP build.
+
+### Fixed
+
+- Added clearer IPv6 validation so IPv6 tests immediately explain when the selected Agent host has no detected IPv6 address.
+
 ## [2.3.81] - 2026-06-01
 
 ### Added

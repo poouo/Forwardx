@@ -6,33 +6,34 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   Clock3,
   Copy,
+  Download,
   ExternalLink,
   Globe2,
   Loader2,
-  Network,
   RadioTower,
   Route,
   ShieldCheck,
   Terminal,
   Wifi,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
 type Method = "ping" | "ping6" | "traceroute" | "traceroute6" | "mtr" | "mtr6" | "tcp";
+type RunState = "idle" | "queued" | "running" | "success" | "warning" | "error";
 
 type LookingGlassResult = {
+  taskId: string;
+  status?: "queued" | "running" | "success" | "error" | "timeout";
   method: Method;
   target: string;
   port?: number;
@@ -79,67 +80,71 @@ function resultOk(result?: LookingGlassResult | null) {
   return !!result && !result.timedOut && result.exitCode === 0;
 }
 
+function buildPendingOutput(method: Method, hostName: string, target: string, port?: string) {
+  const lines = [
+    `[${new Date().toLocaleTimeString("zh-CN", { hour12: false })}] 已创建网络测试任务`,
+    `测试主机: ${hostName || "-"}`,
+    `测试类型: ${methodMeta(method).label}`,
+    `目标地址: ${target || "-"}`,
+  ];
+  if (method === "tcp") lines.push(`目标端口: ${port || "443"}`);
+  lines.push("等待 Agent 拉取任务并执行...");
+  return lines.join("\n");
+}
+
 function ResultOutput({
   result,
-  loading,
+  liveOutput,
+  state,
 }: {
   result: LookingGlassResult | null;
-  loading: boolean;
+  liveOutput: string;
+  state: RunState;
 }) {
-  if (loading) {
-    return (
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardContent className="space-y-3 p-4">
-          <Skeleton className="h-5 w-44" />
-          <Skeleton className="h-48 w-full" />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!result) {
-    return (
-      <Card className="border-dashed border-border/60 bg-card/45 backdrop-blur-md">
-        <CardContent className="flex min-h-[280px] flex-col items-center justify-center gap-3 p-8 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-            <Terminal className="h-6 w-6" />
-          </div>
-          <div>
-            <h2 className="text-base font-semibold">等待测试</h2>
-            <p className="mt-1 max-w-md text-sm text-muted-foreground">
-              选择测试类型并输入公网目标后，从当前 ForwardX 面板服务器发起网络探测。
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
+  const isRunning = state === "queued" || state === "running";
   const ok = resultOk(result);
+  const title = result ? methodMeta(result.method).label : "网络测试结果";
+  const output = result?.output || liveOutput || "选择主机、测试类型和目标后开始执行。";
+  const statusLabel = isRunning ? "执行中" : result ? (ok ? "完成" : result.timedOut ? "超时" : "异常") : "等待";
+
   return (
     <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
       <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
-            {ok ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <AlertTriangle className="h-4 w-4 text-amber-500" />}
-            <span className="truncate">{methodMeta(result.method).label}</span>
-            <Badge variant={ok ? "secondary" : "outline"} className={cn(ok && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}>
-              {ok ? "完成" : result.timedOut ? "超时" : "异常"}
+            {isRunning ? (
+              <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
+            ) : result ? (
+              ok ? <CheckCircle2 className="h-4 w-4 text-emerald-500" /> : <AlertTriangle className="h-4 w-4 text-amber-500" />
+            ) : (
+              <Terminal className="h-4 w-4 text-primary" />
+            )}
+            <span className="truncate">{title}</span>
+            <Badge
+              variant={ok && !isRunning ? "secondary" : "outline"}
+              className={cn(ok && !isRunning && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}
+            >
+              {statusLabel}
             </Badge>
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <Clock3 className="h-3.5 w-3.5" />
-              {result.durationMs} ms
-            </span>
-            <span>{result.sourceHostName || "当前面板服务器"}</span>
-            <span className="font-mono">{result.resolvedAddress}</span>
+            {result && (
+              <>
+                <span className="flex items-center gap-1">
+                  <Clock3 className="h-3.5 w-3.5" />
+                  {result.durationMs} ms
+                </span>
+                <span>{result.sourceHostName || "Agent 主机"}</span>
+                <span className="font-mono">{result.resolvedAddress}</span>
+              </>
+            )}
             <Button
               variant="outline"
               size="sm"
               className="h-8 gap-1.5"
+              disabled={!output.trim()}
               onClick={async () => {
-                const copied = await copyTextToClipboard(result.output);
+                const copied = await copyTextToClipboard(output);
                 if (copied) toast.success("输出已复制");
                 else toast.error("复制失败");
               }}
@@ -151,8 +156,8 @@ function ResultOutput({
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <pre className="max-h-[520px] overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
-          {result.output}
+        <pre className="min-h-[320px] max-h-[560px] overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+          {output}
         </pre>
       </CardContent>
     </Card>
@@ -163,30 +168,122 @@ export default function LookingGlass() {
   const [method, setMethod] = useState<Method>("ping");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("443");
-  const [hostId, setHostId] = useState("panel");
+  const [hostId, setHostId] = useState("");
+  const [activeTaskId, setActiveTaskId] = useState("");
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runTick, setRunTick] = useState(0);
   const [latestResult, setLatestResult] = useState<LookingGlassResult | null>(null);
   const [history, setHistory] = useState<LookingGlassResult[]>([]);
+  const [runState, setRunState] = useState<RunState>("idle");
+  const [liveOutput, setLiveOutput] = useState("");
+  const completedTaskIdsRef = useRef<Set<string>>(new Set());
   const { data: hosts } = trpc.hosts.list.useQuery(undefined, {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
-  const mutation = trpc.lookingGlass.run.useMutation({
+  const availableHosts = useMemo(() => hosts || [], [hosts]);
+  const selectedHost = availableHosts.find((host: any) => String(host.id) === hostId) as any;
+  const downloadLinks = trpc.lookingGlass.downloadLinks.useQuery(
+    { hostId: Number(hostId) },
+    {
+      enabled: Number(hostId) > 0,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  );
+  const clientInfo = trpc.lookingGlass.clientInfo.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const taskStatus = trpc.lookingGlass.status.useQuery(
+    { hostId: Number(hostId), taskId: activeTaskId },
+    {
+      enabled: Number(hostId) > 0 && !!activeTaskId,
+      refetchInterval: (query) => {
+        const status = (query.state.data as any)?.status;
+        return status === "queued" || status === "running" ? 1000 : false;
+      },
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  );
+  const mutation = trpc.lookingGlass.start.useMutation({
+    onMutate: () => {
+      setRunState("queued");
+      setLatestResult(null);
+      setActiveTaskId("");
+    },
     onSuccess: (result) => {
       const next = result as LookingGlassResult;
-      setLatestResult(next);
-      setHistory((items) => [next, ...items].slice(0, 8));
-      if (resultOk(next)) toast.success("Looking Glass 测试完成");
-      else toast.warning(next.timedOut ? "测试超时" : "测试返回异常状态");
+      setActiveTaskId(next.taskId);
+      setLiveOutput(next.output || "任务已创建，等待 Agent 拉取执行...");
+      setRunState(next.status === "running" ? "running" : "queued");
     },
-    onError: (error) => toast.error(error.message || "测试失败"),
+    onError: (error) => {
+      setRunState("error");
+      setLiveOutput((value) => `${value}\n执行失败: ${error.message || "测试失败"}`);
+      toast.error(error.message || "测试失败");
+    },
   });
+
+  useEffect(() => {
+    const status = taskStatus.data as LookingGlassResult | undefined;
+    if (!status) return;
+    setLiveOutput(status.output || "");
+    if (status.status === "queued" || status.status === "running") {
+      setRunState(status.status);
+      return;
+    }
+    setLatestResult(status);
+    const alreadyCompleted = completedTaskIdsRef.current.has(status.taskId);
+    if (!alreadyCompleted) {
+      completedTaskIdsRef.current.add(status.taskId);
+      setHistory((items) => [status, ...items].slice(0, 4));
+    }
+    setRunState(resultOk(status) ? "success" : "warning");
+    if (!alreadyCompleted) {
+      if (status.status === "success") toast.success("网络测试完成");
+      else if (status.status === "timeout") toast.warning("网络测试超时");
+      else toast.warning(status.error || "测试返回异常状态");
+    }
+    setActiveTaskId("");
+  }, [taskStatus.data]);
+
+  useEffect(() => {
+    if (!taskStatus.error || !activeTaskId) return;
+    setRunState("error");
+    setLiveOutput((value) => `${value}\n状态查询失败: ${taskStatus.error.message}`);
+    toast.error(taskStatus.error.message || "状态查询失败");
+    setActiveTaskId("");
+  }, [activeTaskId, taskStatus.error]);
+
+  useEffect(() => {
+    if (hostId || availableHosts.length === 0) return;
+    setHostId(String((availableHosts[0] as any).id));
+  }, [availableHosts, hostId]);
+
+  useEffect(() => {
+    if (runState !== "queued" && runState !== "running") return;
+    const timer = window.setInterval(() => setRunTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [runState]);
 
   const selected = methodMeta(method);
   const Icon = selected.icon;
-  const canSubmit = target.trim().length > 0 && (!method.includes("6") || target.trim().length > 0);
+  const canSubmit = Number(hostId) > 0 && target.trim().length > 0;
   const resolvedAddresses = useMemo(() => latestResult?.resolvedAddresses || [], [latestResult?.resolvedAddresses]);
+  const runningOutput = useMemo(() => {
+    if ((runState !== "queued" && runState !== "running") || !runStartedAt) return liveOutput;
+    const seconds = Math.max(0, Math.floor((Date.now() - runStartedAt) / 1000));
+    return `${liveOutput}\n运行时间: ${seconds}s`;
+  }, [liveOutput, runStartedAt, runState, runTick]);
 
   const runTest = () => {
+    if (!Number(hostId)) {
+      toast.error("请选择测试主机");
+      return;
+    }
     if (!target.trim()) {
       toast.error("请输入目标地址");
       return;
@@ -196,10 +293,15 @@ export default function LookingGlass() {
       toast.error("请输入 1-65535 的端口");
       return;
     }
+    setRunState("queued");
+    setRunStartedAt(Date.now());
+    setLatestResult(null);
+    setActiveTaskId("");
+    setLiveOutput(buildPendingOutput(method, selectedHost?.name || "", target.trim(), port));
     mutation.mutate({
       method,
       target: target.trim(),
-      hostId: hostId === "panel" ? null : Number(hostId),
+      hostId: Number(hostId),
       ...(method === "tcp" ? { port: numericPort } : {}),
     });
   };
@@ -212,16 +314,16 @@ export default function LookingGlass() {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="gap-1.5 border-primary/30 bg-primary/10 text-primary">
                 <Globe2 className="h-3.5 w-3.5" />
-                Looking Glass
+                网络测试
               </Badge>
               <Badge variant="outline" className="gap-1.5 text-muted-foreground">
                 <ShieldCheck className="h-3.5 w-3.5" />
                 公网目标限定
               </Badge>
             </div>
-            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Looking Glass</h1>
+            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">网络测试</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              从面板服务器或已添加的主机发起 Ping、Traceroute、MTR 和 TCP 端口探测。
+              从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，并提供固定大小文件下载测试。
             </p>
           </div>
           <Button variant="outline" className="w-full gap-2 sm:w-auto" asChild>
@@ -233,10 +335,10 @@ export default function LookingGlass() {
         </div>
 
         <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-900 dark:text-sky-200">
-          <Network className="h-4 w-4" />
-          <AlertTitle>功能说明</AlertTitle>
+          <Globe2 className="h-4 w-4" />
+          <AlertTitle>网络测试</AlertTitle>
           <AlertDescription>
-            该页面参考 hybula/lookingglass 的网络诊断思路，已按 ForwardX 的设计语言和 tRPC 后端重新实现。为避免探测内网资源，目标解析到私网、环回、链路本地或保留地址时会被拒绝。
+            固定文件下载测试参考 hybula/lookingglass 的测试文件列表方式实现，ForwardX 会为选中的 Agent 主机生成临时下载链接；网络测试会拒绝内网、环回、链路本地或保留地址。
           </AlertDescription>
         </Alert>
 
@@ -253,11 +355,10 @@ export default function LookingGlass() {
                 <Label>测试主机</Label>
                 <Select value={hostId} onValueChange={setHostId}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="选择 Agent 主机" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="panel">当前面板服务器</SelectItem>
-                    {(hosts || []).map((host: any) => (
+                    {availableHosts.map((host: any) => (
                       <SelectItem key={host.id} value={String(host.id)}>
                         {host.name}
                         {host.isOnline === false ? " / 离线" : ""}
@@ -265,37 +366,47 @@ export default function LookingGlass() {
                     ))}
                   </SelectContent>
                 </Select>
+                {availableHosts.length === 0 && (
+                  <p className="text-xs text-muted-foreground">暂无可用主机，请先添加并连接 Agent。</p>
+                )}
               </div>
 
               <div className="space-y-2">
                 <Label>测试类型</Label>
-                <Tabs value={method} onValueChange={(value) => setMethod(value as Method)}>
-                  <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-3">
-                    {methods.map((item) => (
-                      <TabsTrigger key={item.value} value={item.value} className="min-h-10 px-2 text-xs">
-                        {item.label.replace(" IPv4", "").replace(" IPv6", "6")}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                </Tabs>
+                <Select value={method} onValueChange={(value) => setMethod(value as Method)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {methods.map((item) => {
+                      const ItemIcon = item.icon;
+                      return (
+                        <SelectItem key={item.value} value={item.value}>
+                          <span className="flex items-center gap-2">
+                            <ItemIcon className="h-4 w-4 text-primary" />
+                            {item.label}
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">{selected.description}</p>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="looking-glass-target">目标地址</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="looking-glass-target"
-                    value={target}
-                    onChange={(event) => setTarget(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") runTest();
-                    }}
-                    placeholder="example.com 或 1.1.1.1"
-                    spellCheck={false}
-                    className="font-mono"
-                  />
-                </div>
+                <Input
+                  id="looking-glass-target"
+                  value={target}
+                  onChange={(event) => setTarget(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") runTest();
+                  }}
+                  placeholder="example.com 或 1.1.1.1"
+                  spellCheck={false}
+                  className="font-mono"
+                />
                 <div className="flex flex-wrap gap-2">
                   {examples.map((example) => (
                     <button
@@ -335,10 +446,43 @@ export default function LookingGlass() {
                 </div>
               )}
 
-              <Button className="w-full gap-2" onClick={runTest} disabled={!canSubmit || mutation.isPending}>
-                {mutation.isPending ? <Loader2 className="forwardx-icon-spin h-4 w-4" /> : <Terminal className="h-4 w-4" />}
-                {mutation.isPending ? "测试中..." : "开始测试"}
+              <Button className="w-full gap-2" onClick={runTest} disabled={!canSubmit || mutation.isPending || runState === "queued" || runState === "running"}>
+                {mutation.isPending || runState === "queued" || runState === "running" ? <Loader2 className="forwardx-icon-spin h-4 w-4" /> : <Terminal className="h-4 w-4" />}
+                {mutation.isPending || runState === "queued" || runState === "running" ? "测试中..." : "开始测试"}
               </Button>
+
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs font-medium text-muted-foreground">当前访问 IP</p>
+                <p className="mt-1 break-all font-mono text-sm">{clientInfo.data?.ip || "正在获取..."}</p>
+              </div>
+
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">文件下载测试</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      链接由选中的 Agent 主机提供，默认端口 3091。
+                    </p>
+                  </div>
+                  {downloadLinks.isFetching && <Loader2 className="forwardx-icon-spin h-4 w-4 text-muted-foreground" />}
+                </div>
+                {downloadLinks.error ? (
+                  <p className="mt-3 text-xs text-destructive">{downloadLinks.error.message}</p>
+                ) : downloadLinks.data ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    {downloadLinks.data.files.map((file: any) => (
+                      <Button key={file.value} variant="outline" size="sm" asChild className="gap-2">
+                        <a href={file.url} target="_blank" rel="noopener noreferrer" download={file.filename}>
+                          <Download className="h-4 w-4" />
+                          {file.label}
+                        </a>
+                      </Button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">选择主机后生成下载链接。</p>
+                )}
+              </div>
 
               {latestResult && (
                 <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
@@ -352,7 +496,7 @@ export default function LookingGlass() {
             </CardContent>
           </Card>
 
-          <ResultOutput result={latestResult} loading={mutation.isPending} />
+          <ResultOutput result={latestResult} liveOutput={runningOutput} state={runState} />
         </div>
 
         {history.length > 0 && (
@@ -368,7 +512,10 @@ export default function LookingGlass() {
                   <button
                     key={`${item.startedAt}-${index}`}
                     type="button"
-                    onClick={() => setLatestResult(item)}
+                    onClick={() => {
+                      setLatestResult(item);
+                      setRunState(resultOk(item) ? "success" : "warning");
+                    }}
                     className="rounded-lg border border-border/40 bg-background/45 p-3 text-left transition-colors hover:border-primary/35 hover:bg-primary/5"
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -381,7 +528,7 @@ export default function LookingGlass() {
                       </Badge>
                     </div>
                     <p className="mt-2 truncate font-mono text-xs text-muted-foreground">{item.resolvedAddress}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{item.sourceHostName || "当前面板服务器"} / {formatDateTime(item.startedAt)}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.sourceHostName || "Agent 主机"} / {formatDateTime(item.startedAt)}</p>
                   </button>
                 );
               })}

@@ -11,7 +11,7 @@ import {
 } from "../shared/agentDtos";
 import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { appendAgentLog } from "./agentLogStore";
-import { completeLookingGlassAgentTask, type LookingGlassMethod } from "./lookingGlassAgentTasks";
+import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -81,6 +81,40 @@ agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Re
     res.json({ success: ok });
   } catch (error) {
     console.error("[Agent LookingGlass] Error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const token = authHeader.substring(7);
+    const host = await db.getHostByAgentToken(token);
+    if (!host) {
+      res.status(401).json({ error: "Invalid token" });
+      return;
+    }
+
+    const result = req.body?.result;
+    if (!result?.taskId) {
+      res.status(400).json({ error: "result.taskId is required" });
+      return;
+    }
+    const ok = updateLookingGlassAgentTaskProgress(host.id, {
+      taskId: String(result.taskId),
+      output: String(result.output || ""),
+      durationMs: Number(result.durationMs || 0),
+      startedAt: String(result.startedAt || new Date().toISOString()),
+      error: result.error ? String(result.error) : undefined,
+    });
+    res.json({ success: ok });
+  } catch (error) {
+    console.error("[Agent LookingGlassProgress] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

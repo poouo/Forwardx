@@ -28,9 +28,10 @@ import (
 	"time"
 )
 
-var Version = "2.2.67"
+var Version = "2.2.69"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
+const lookingGlassDownloadPort = 3091
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -232,6 +233,7 @@ func main() {
 	_ = register(cfg)
 	go actionWorker()
 	go selfTestPoller(cfg)
+	go lookingGlassDownloadServer(cfg)
 	go agentEventStream(cfg)
 	for {
 		nextInterval, err := heartbeat(cfg)
@@ -394,13 +396,19 @@ func handleSelfTest(cfg Config, t selfTest) {
 }
 
 func handleLookingGlassTask(cfg Config, task lookingGlassTask) {
-	result := runLookingGlassTask(task)
+	result := runLookingGlassTask(cfg, task)
 	if err := post(cfg, "/api/agent/looking-glass-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
 		logf("looking glass result report failed task=%s method=%s target=%s: %v", task.TaskID, task.Method, task.ResolvedAddress, err)
 	}
 }
 
-func runLookingGlassTask(task lookingGlassTask) lookingGlassResult {
+func reportLookingGlassProgress(cfg Config, result lookingGlassResult) {
+	if err := post(cfg, "/api/agent/looking-glass-progress", map[string]any{"result": result}, &map[string]any{}); err != nil {
+		logf("looking glass progress report failed task=%s method=%s target=%s: %v", result.TaskID, result.Method, result.ResolvedAddress, err)
+	}
+}
+
+func runLookingGlassTask(cfg Config, task lookingGlassTask) lookingGlassResult {
 	started := time.Now()
 	result := lookingGlassResult{
 		TaskID:            task.TaskID,
@@ -410,12 +418,17 @@ func runLookingGlassTask(task lookingGlassTask) lookingGlassResult {
 		ResolvedAddresses: task.ResolvedAddresses,
 		StartedAt:         started.Format(time.RFC3339Nano),
 	}
+	result.Output = fmt.Sprintf("Agent 已开始执行 %s 测试\n目标: %s", task.Method, task.ResolvedAddress)
+	reportLookingGlassProgress(cfg, result)
 	if task.Method == "tcp" {
 		port := task.Port
 		if port <= 0 {
 			port = 443
 		}
 		result.Port = port
+		result.Output = fmt.Sprintf("正在测试 TCP %s ...", net.JoinHostPort(task.ResolvedAddress, strconv.Itoa(port)))
+		result.DurationMs = int(time.Since(started).Milliseconds())
+		reportLookingGlassProgress(cfg, result)
 		latency, ok := tcpLatency(task.ResolvedAddress, port, 10*time.Second)
 		result.DurationMs = int(time.Since(started).Milliseconds())
 		if ok {
@@ -441,7 +454,12 @@ func runLookingGlassTask(task lookingGlassTask) lookingGlassResult {
 		result.FinishedAt = time.Now().Format(time.RFC3339Nano)
 		return result
 	}
-	output, exitCode, timedOut := runLookingGlassCommand(command, args, 30*time.Second)
+	progress := func(output string, durationMs int) {
+		result.Output = output
+		result.DurationMs = durationMs
+		reportLookingGlassProgress(cfg, result)
+	}
+	output, exitCode, timedOut := runLookingGlassCommand(command, args, 30*time.Second, progress)
 	result.Output = output
 	if strings.TrimSpace(result.Output) == "" {
 		result.Output = "命令没有返回输出"
@@ -463,31 +481,190 @@ func lookingGlassCommand(method string, host string) (string, []string, error) {
 	case "mtr", "mtr6":
 		return "mtr", []string{mapBool(ipv6, "-6", "-4"), "--report", "--report-cycles", "10", "--no-dns", host}, nil
 	default:
-		return "", nil, fmt.Errorf("不支持的 Looking Glass 方法: %s", method)
+		return "", nil, fmt.Errorf("不支持的网络测试方法: %s", method)
 	}
 }
 
-func runLookingGlassCommand(name string, args []string, timeout time.Duration) (string, *int, bool) {
+func runLookingGlassCommand(name string, args []string, timeout time.Duration, onProgress func(string, int)) (string, *int, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	started := time.Now()
 	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.CombinedOutput()
-	output := string(out)
-	if len(output) > 32000 {
-		output = output[:32000] + "\n... 输出已截断"
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		code := 1
+		return err.Error(), &code, false
 	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		code := 1
+		return err.Error(), &code, false
+	}
+
+	var mu sync.Mutex
+	var output strings.Builder
+	appendLine := func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if output.Len() >= 32000 {
+			return
+		}
+		if output.Len() > 0 {
+			output.WriteByte('\n')
+		}
+		output.WriteString(line)
+		if output.Len() > 32000 {
+			text := output.String()
+			output.Reset()
+			output.WriteString(text[:32000])
+			output.WriteString("\n... 输出已截断")
+		}
+	}
+	currentOutput := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.TrimSpace(output.String())
+	}
+	report := func(fallback string) {
+		text := currentOutput()
+		if text == "" {
+			text = fallback
+		}
+		onProgress(text, int(time.Since(started).Milliseconds()))
+	}
+
+	if err := cmd.Start(); err != nil {
+		code := 1
+		return err.Error(), &code, false
+	}
+
+	var wg sync.WaitGroup
+	readPipe := func(r io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+		for scanner.Scan() {
+			appendLine(scanner.Text())
+			report("命令正在执行，等待输出...")
+		}
+	}
+	wg.Add(2)
+	go readPipe(stdout)
+	go readPipe(stderr)
+
+	ticker := time.NewTicker(time.Second)
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	var waitErr error
+	running := true
+	for running {
+		select {
+		case <-ticker.C:
+			report(fmt.Sprintf("命令正在执行，已运行 %ds...", int(time.Since(started).Seconds())))
+		case waitErr = <-done:
+			running = false
+		}
+	}
+	ticker.Stop()
+	wg.Wait()
+
+	outputText := currentOutput()
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	code := 0
-	if err != nil {
+	if waitErr != nil {
 		code = 1
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
 		}
-		if strings.TrimSpace(output) == "" {
-			output = err.Error()
+		if strings.TrimSpace(outputText) == "" {
+			outputText = waitErr.Error()
 		}
 	}
-	return strings.TrimSpace(output), &code, timedOut
+	if timedOut && !strings.Contains(outputText, "超时") {
+		if outputText != "" {
+			outputText += "\n"
+		}
+		outputText += "命令执行超时"
+	}
+	report(outputText)
+	return strings.TrimSpace(outputText), &code, timedOut
+}
+
+func lookingGlassDownloadServer(cfg Config) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/forwardx-looking-glass/download", func(w http.ResponseWriter, r *http.Request) {
+		sizeKey := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("size")))
+		sizeBytes, ok := lookingGlassDownloadSize(sizeKey)
+		if !ok {
+			http.Error(w, "unsupported size", http.StatusBadRequest)
+			return
+		}
+		expires, err := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
+		if err != nil || expires < time.Now().Unix() {
+			http.Error(w, "link expired", http.StatusForbidden)
+			return
+		}
+		expected := signLookingGlassDownload(cfg.Token, sizeKey, expires)
+		provided := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sig")))
+		if len(provided) != len(expected) || !hmac.Equal([]byte(provided), []byte(expected)) {
+			http.Error(w, "invalid signature", http.StatusForbidden)
+			return
+		}
+
+		filename := fmt.Sprintf("forwardx-network-test-%s.bin", sizeKey)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		w.Header().Set("Content-Length", strconv.FormatInt(sizeBytes, 10))
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.ServeContent(w, r, filename, time.Now(), io.NewSectionReader(lookingGlassZeroReader{}, 0, sizeBytes))
+	})
+
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", lookingGlassDownloadPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	for {
+		if err := server.ListenAndServe(); err != nil {
+			logf("looking glass download server error: %v", err)
+			time.Sleep(10 * time.Second)
+		}
+	}
+}
+
+func lookingGlassDownloadSize(size string) (int64, bool) {
+	switch size {
+	case "10mb":
+		return 10 * 1024 * 1024, true
+	case "100mb":
+		return 100 * 1024 * 1024, true
+	case "1000mb":
+		return 1000 * 1024 * 1024, true
+	default:
+		return 0, false
+	}
+}
+
+func signLookingGlassDownload(token string, size string, expires int64) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	_, _ = mac.Write([]byte(fmt.Sprintf("%s:%d", size, expires)))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+type lookingGlassZeroReader struct{}
+
+func (lookingGlassZeroReader) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 func mapBool(ok bool, yes string, no string) string {

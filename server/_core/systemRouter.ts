@@ -541,7 +541,7 @@ export const systemRouter = router({
       }
       if (input.lookingGlassUserEnabled !== undefined) {
         await db.setSetting("lookingGlassUserEnabled", input.lookingGlassUserEnabled ? "true" : "false");
-        console.info(`[Settings] Looking Glass for users ${input.lookingGlassUserEnabled ? "enabled" : "disabled"}`);
+        console.info(`[Settings] network test for users ${input.lookingGlassUserEnabled ? "enabled" : "disabled"}`);
       }
       if (input.homepageEnabled !== undefined) {
         await db.setSetting("homepageEnabled", input.homepageEnabled ? "true" : "false");

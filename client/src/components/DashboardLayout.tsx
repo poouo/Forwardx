@@ -91,10 +91,10 @@ const mainMenuItems: SidebarNavItem[] = [
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "隧道管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
-  { icon: Globe2, label: "Looking Glass", path: "/looking-glass" },
   { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
 const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile" };
+const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass" };
 
 const adminMenuItems: SidebarNavItem[] = [
   { icon: CreditCard, label: "支付对接", path: "/payments" },
@@ -673,12 +673,10 @@ function DashboardLayoutContent({
   };
 
   const hiddenNormalUserMainPaths = ["/hosts", "/tunnels", "/forward-groups"];
-  if (publicInfo?.lookingGlassUserEnabled !== true) {
-    hiddenNormalUserMainPaths.push("/looking-glass");
-  }
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
     : mainMenuItems.filter((item) => !hiddenNormalUserMainPaths.includes(item.path));
+  const canShowNetworkTest = isAdmin || publicInfo?.lookingGlassUserEnabled === true;
   const userStoreMenuItems = !isAdmin
     ? [
         { icon: Package, label: "我的订阅", path: "/subscriptions" },
@@ -688,8 +686,8 @@ function DashboardLayoutContent({
     : [];
 
   const allMenuItems = isAdmin
-    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, ...adminMenuItems]
-    : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, profileMenuItem];
+    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, lookingGlassMenuItem, ...adminMenuItems]
+    : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
 
   const activeMenuItem = allMenuItems.find((item) => item.path === location);
   const upgradeJob = upgradeStatus?.job;
@@ -727,7 +725,9 @@ function DashboardLayoutContent({
     displayUpgradeJob?.status === "success" ||
     displayUpgradeJob?.status === "error"
   );
-  const managementMenuItems: SidebarNavItem[] = isAdmin ? [profileMenuItem, ...adminMenuItems] : [profileMenuItem];
+  const managementMenuItems: SidebarNavItem[] = isAdmin
+    ? [profileMenuItem, lookingGlassMenuItem, ...adminMenuItems]
+    : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
   const navigateFromSidebar = (path: string) => {
     setLocation(path);
     if (isMobile) {

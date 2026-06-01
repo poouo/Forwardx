@@ -1,22 +1,45 @@
-import { protectedProcedure, router } from "../_core/trpc";
-import { z } from "zod";
+import crypto from "crypto";
 import dns from "dns";
 import net from "net";
-import os from "os";
-import { spawn } from "child_process";
 import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
-import { enqueueLookingGlassAgentTask, type LookingGlassAgentResult } from "../lookingGlassAgentTasks";
+import { enqueueLookingGlassAgentTask, getLookingGlassAgentTaskStatus, type LookingGlassTaskStatus } from "../lookingGlassAgentTasks";
 import { requireHostAccess } from "./helpers";
 
-const COMMAND_TIMEOUT_MS = 30_000;
-const COMMAND_OUTPUT_LIMIT = 32_000;
-const TCP_TIMEOUT_MS = 10_000;
+const AGENT_DOWNLOAD_PORT = 3091;
+const DOWNLOAD_LINK_TTL_SECONDS = 10 * 60;
 
 const methodSchema = z.enum(["ping", "ping6", "traceroute", "traceroute6", "mtr", "mtr6", "tcp"]);
+const downloadSizeSchema = z.enum(["10mb", "100mb", "1000mb"]);
 
 type LookingGlassMethod = z.infer<typeof methodSchema>;
+type DownloadSize = z.infer<typeof downloadSizeSchema>;
+
+const downloadFiles: Array<{ value: DownloadSize; label: string; bytes: number }> = [
+  { value: "10mb", label: "10 MB", bytes: 10 * 1024 * 1024 },
+  { value: "100mb", label: "100 MB", bytes: 100 * 1024 * 1024 },
+  { value: "1000mb", label: "1000 MB", bytes: 1000 * 1024 * 1024 },
+];
+
+async function assertNetworkTestAllowed(ctx: { user: { role: string } }) {
+  if (ctx.user.role === "admin") return;
+  const userEnabled = (await db.getSetting("lookingGlassUserEnabled")) !== "false";
+  if (!userEnabled) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "管理员已关闭普通用户使用网络测试" });
+  }
+}
+
+function getRequestIp(req: any) {
+  const headerIp =
+    String(req.headers?.["cf-connecting-ip"] || "").trim() ||
+    String(req.headers?.["x-real-ip"] || "").trim() ||
+    String(req.headers?.["x-forwarded-for"] || "").split(",")[0]?.trim();
+  const raw = headerIp || String(req.ip || req.socket?.remoteAddress || "").trim() || "unknown";
+  return raw.replace(/^::ffff:/, "");
+}
 
 function normalizeTarget(target: string) {
   const value = target.trim();
@@ -65,9 +88,17 @@ function isPrivateAddress(address: string) {
 async function resolvePublicTarget(target: string, method: LookingGlassMethod) {
   const family = method.endsWith("6") ? 6 : method === "tcp" ? 0 : 4;
   const literalFamily = net.isIP(target);
-  const resolved = literalFamily
-    ? [{ address: target, family: literalFamily }]
-    : await dns.promises.lookup(target, { all: true, family, verbatim: true });
+  let resolved: Array<{ address: string; family: number }>;
+  try {
+    resolved = literalFamily
+      ? [{ address: target, family: literalFamily }]
+      : await dns.promises.lookup(target, { all: true, family, verbatim: true });
+  } catch (error: any) {
+    if (method.endsWith("6")) {
+      throw new Error(`目标 ${target} 没有可用 IPv6 地址，无法执行 IPv6 网络测试`);
+    }
+    throw new Error(`目标 ${target} 无法解析：${error?.message || "DNS 查询失败"}`);
+  }
 
   if (resolved.length === 0) throw new Error("目标无法解析");
   const invalid = resolved.find((entry) => isPrivateAddress(entry.address));
@@ -82,154 +113,140 @@ async function resolvePublicTarget(target: string, method: LookingGlassMethod) {
   };
 }
 
-function commandFor(method: Exclude<LookingGlassMethod, "tcp">, host: string) {
-  const platform = os.platform();
-  const ipv6 = method.endsWith("6");
-  if (method === "ping" || method === "ping6") {
-    if (platform === "win32") return { command: "ping", args: [ipv6 ? "-6" : "-4", "-n", "4", host] };
-    return { command: "ping", args: [ipv6 ? "-6" : "-4", "-c", "4", "-W", "3", host] };
+function normalizeDownloadAddress(host: any) {
+  const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
+  if (!raw || raw.toLowerCase() === "unknown") {
+    throw new Error("该主机缺少可用于下载测试的公网地址");
   }
-  if (method === "traceroute" || method === "traceroute6") {
-    if (platform === "win32") return { command: "tracert", args: [ipv6 ? "-6" : "-4", "-d", "-h", "20", host] };
-    return { command: "traceroute", args: [ipv6 ? "-6" : "-4", "-n", "-m", "20", "-w", "2", host] };
+
+  let value = raw.replace(/^https?:\/\//i, "");
+  value = value.split(/[/?#]/)[0].trim();
+  if (value.startsWith("[") && value.includes("]")) {
+    value = value.slice(1, value.indexOf("]"));
+  } else if (!net.isIP(value) && value.includes(":")) {
+    value = value.split(":")[0];
   }
-  if (platform === "win32") {
-    throw new Error("当前系统未提供 MTR 命令，请在 Linux 面板环境安装 mtr 后使用");
+  if (!value || value.toLowerCase() === "unknown") {
+    throw new Error("该主机缺少可用于下载测试的公网地址");
   }
-  return { command: "mtr", args: [ipv6 ? "-6" : "-4", "--report", "--report-cycles", "10", "--no-dns", host] };
+  return value;
 }
 
-function runCommand(command: string, args: string[]) {
-  return new Promise<{ output: string; exitCode: number | null; timedOut: boolean }>((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true });
-    let output = "";
-    let settled = false;
-    let timedOut = false;
+function formatUrlHost(host: string) {
+  return net.isIP(host) === 6 ? `[${host}]` : host;
+}
 
-    const append = (chunk: Buffer) => {
-      if (output.length >= COMMAND_OUTPUT_LIMIT) return;
-      output += chunk.toString("utf8");
-      if (output.length > COMMAND_OUTPUT_LIMIT) {
-        output = `${output.slice(0, COMMAND_OUTPUT_LIMIT)}\n... 输出已截断`;
-      }
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, COMMAND_TIMEOUT_MS);
+function signDownloadLink(agentToken: string, size: DownloadSize, expires: number) {
+  return crypto.createHmac("sha256", agentToken).update(`${size}:${expires}`).digest("hex");
+}
 
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`命令不可用或执行失败：${error.message}`));
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ output: output.trim(), exitCode: code, timedOut });
-    });
+function hostHasIpv6(host: any) {
+  const candidates = [host?.ipv6, host?.ip, host?.entryIp, host?.tunnelEntryIp]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return candidates.some((value) => {
+    let normalized = value.replace(/^https?:\/\//i, "").split(/[/?#]/)[0].trim();
+    if (normalized.startsWith("[") && normalized.includes("]")) {
+      normalized = normalized.slice(1, normalized.indexOf("]"));
+    }
+    return net.isIP(normalized) === 6;
   });
 }
 
-function tcpConnect(host: string, port: number, family: number) {
-  return new Promise<{ output: string; latencyMs: number; ok: boolean }>((resolve) => {
-    const startedAt = performance.now();
-    const socket = net.createConnection({ host, port, family: family === 6 ? 6 : family === 4 ? 4 : undefined });
-    let settled = false;
-    const finish = (ok: boolean, message: string) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      const latencyMs = Math.round(performance.now() - startedAt);
-      resolve({ ok, latencyMs, output: `${message}\n耗时: ${latencyMs} ms` });
-    };
-    socket.setTimeout(TCP_TIMEOUT_MS);
-    socket.on("connect", () => finish(true, `TCP ${host}:${port} 连接成功`));
-    socket.on("timeout", () => finish(false, `TCP ${host}:${port} 连接超时`));
-    socket.on("error", (error: any) => finish(false, `TCP ${host}:${port} 连接失败：${error?.message || "unknown error"}`));
-  });
+function decorateStatus(status: LookingGlassTaskStatus, host: any) {
+  return {
+    ...status,
+    sourceHostId: Number(host.id),
+    sourceHostName: String(host.name || `Host #${host.id}`),
+  };
 }
 
 export const lookingGlassRouter = router({
-  run: protectedProcedure
+  clientInfo: protectedProcedure.query(({ ctx }) => {
+    return { ip: getRequestIp(ctx.req) };
+  }),
+
+  start: protectedProcedure
     .input(z.object({
       method: methodSchema,
       target: z.string().min(1).max(253),
       port: z.number().int().min(1).max(65535).optional(),
-      hostId: z.number().int().positive().nullable().optional(),
+      hostId: z.number().int().positive(),
     }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.role !== "admin") {
-        const userEnabled = (await db.getSetting("lookingGlassUserEnabled")) !== "false";
-        if (!userEnabled) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "管理员已关闭普通用户使用 Looking Glass" });
-        }
-      }
+      await assertNetworkTestAllowed(ctx);
 
       const method = input.method;
       const target = normalizeTarget(input.target);
+      const host = await requireHostAccess(ctx, input.hostId);
+      if (method.endsWith("6") && !hostHasIpv6(host)) {
+        throw new Error(`测试主机「${(host as any).name || `Host #${input.hostId}`}」未检测到 IPv6 地址，无法执行 ${methodMetaLabel(method)} 测试`);
+      }
       const resolved = await resolvePublicTarget(target, method);
-      const startedAt = new Date();
-      const hostId = Number(input.hostId || 0);
-
-      if (hostId > 0) {
-        const host = await requireHostAccess(ctx, hostId);
-        const { task, promise } = enqueueLookingGlassAgentTask(hostId, {
-          method,
-          target,
-          resolvedAddress: resolved.address,
-          resolvedAddresses: resolved.addresses,
-          family: resolved.family,
-          ...(method === "tcp" ? { port: input.port || 443 } : {}),
-        });
-        pushAgentRefresh(hostId, "looking-glass");
-        const result = await promise;
-        return {
-          ...result,
-          sourceHostId: hostId,
-          sourceHostName: (host as any).name || `Host #${hostId}`,
-          taskId: task.taskId,
-          startedAt: new Date(result.startedAt),
-          finishedAt: new Date(result.finishedAt),
-        } as LookingGlassAgentResult & { sourceHostId: number; sourceHostName: string };
-      }
-
-      if (method === "tcp") {
-        const port = input.port || 443;
-        const result = await tcpConnect(resolved.address, port, resolved.family);
-        return {
-          method,
-          target,
-          port,
-          resolvedAddress: resolved.address,
-          resolvedAddresses: resolved.addresses,
-          output: result.output,
-          exitCode: result.ok ? 0 : 1,
-          timedOut: false,
-          durationMs: result.latencyMs,
-          startedAt,
-          finishedAt: new Date(),
-        };
-      }
-
-      const { command, args } = commandFor(method, resolved.address);
-      const commandStartedAt = performance.now();
-      const result = await runCommand(command, args);
-      return {
+      const { task, status } = enqueueLookingGlassAgentTask(input.hostId, {
         method,
         target,
         resolvedAddress: resolved.address,
         resolvedAddresses: resolved.addresses,
-        output: result.output || "命令没有返回输出",
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-        durationMs: Math.round(performance.now() - commandStartedAt),
-        startedAt,
-        finishedAt: new Date(),
+        family: resolved.family,
+        ...(method === "tcp" ? { port: input.port || 443 } : {}),
+      });
+      pushAgentRefresh(input.hostId, "looking-glass");
+      return decorateStatus({ ...status, taskId: task.taskId }, host);
+    }),
+
+  status: protectedProcedure
+    .input(z.object({
+      hostId: z.number().int().positive(),
+      taskId: z.string().min(8).max(128),
+    }))
+    .query(async ({ input, ctx }) => {
+      await assertNetworkTestAllowed(ctx);
+      const host = await requireHostAccess(ctx, input.hostId);
+      const status = getLookingGlassAgentTaskStatus(input.hostId, input.taskId);
+      if (!status) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "网络测试任务不存在或已过期" });
+      }
+      return decorateStatus(status, host);
+    }),
+
+  downloadLinks: protectedProcedure
+    .input(z.object({ hostId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      await assertNetworkTestAllowed(ctx);
+      const host = await requireHostAccess(ctx, input.hostId) as any;
+      const agentToken = String(host?.agentToken || "");
+      if (!agentToken) throw new Error("该主机未绑定 Agent，无法生成下载测试链接");
+
+      const address = normalizeDownloadAddress(host);
+      const expires = Math.floor(Date.now() / 1000) + DOWNLOAD_LINK_TTL_SECONDS;
+      const base = `http://${formatUrlHost(address)}:${AGENT_DOWNLOAD_PORT}/forwardx-looking-glass/download`;
+      return {
+        hostId: input.hostId,
+        hostName: String(host?.name || `Host #${input.hostId}`),
+        hostAddress: address,
+        port: AGENT_DOWNLOAD_PORT,
+        expiresAt: new Date(expires * 1000),
+        files: downloadFiles.map((file) => {
+          const sig = signDownloadLink(agentToken, file.value, expires);
+          const params = new URLSearchParams({
+            size: file.value,
+            expires: String(expires),
+            sig,
+          });
+          return {
+            ...file,
+            filename: `forwardx-network-test-${file.value}.bin`,
+            url: `${base}?${params.toString()}`,
+          };
+        }),
       };
     }),
 });
+
+function methodMetaLabel(method: LookingGlassMethod) {
+  if (method === "ping6") return "Ping IPv6";
+  if (method === "traceroute6") return "Traceroute IPv6";
+  if (method === "mtr6") return "MTR IPv6";
+  return method;
+}

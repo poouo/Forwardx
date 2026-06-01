@@ -1537,7 +1537,6 @@ type SystemSettingsSaveKey =
   | "panelUrl"
   | "registration"
   | "twoFactor"
-  | "lookingGlass"
   | "homepage"
   | "ddns"
   | "forwardProtocols"
@@ -1712,6 +1711,7 @@ function SystemInfoSection() {
   const handleSaveBranding = () => {
     saveSystemSettings("branding", {
       siteTitle: siteTitleInput.trim(),
+      lookingGlassUserEnabled,
     }, {
       onSuccess: () => utils.system.publicInfo.invalidate(),
     });
@@ -1744,12 +1744,6 @@ function SystemInfoSection() {
 
   const handleSaveTwoFactor = () => {
     saveSystemSettings("twoFactor", { twoFactorEnabled });
-  };
-
-  const handleSaveLookingGlass = () => {
-    saveSystemSettings("lookingGlass", { lookingGlassUserEnabled }, {
-      onSuccess: () => utils.system.publicInfo.invalidate(),
-    });
   };
 
   const handleSaveHomepage = () => {
@@ -1954,15 +1948,15 @@ function SystemInfoSection() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Globe className="h-4 w-4 text-primary" />
-            品牌显示
+            品牌与网络测试
           </CardTitle>
           <CardDescription>
-            配置后台显示的网站标题。
+            配置后台显示的网站标题和网络测试入口。
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="rounded-lg border border-border/40 bg-muted/15 p-4">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div className="grid gap-4 xl:grid-cols-[minmax(220px,0.8fr)_minmax(260px,1fr)_auto] xl:items-center">
               <div className="min-w-0 space-y-2">
                 <Label htmlFor="site-title">网站标题</Label>
                 <Input
@@ -1975,8 +1969,17 @@ function SystemInfoSection() {
                   用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
                 </p>
               </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/55 p-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">普通用户可见网络测试</p>
+                  <p className="text-xs text-muted-foreground">
+                    关闭后侧边栏入口和接口都会对普通用户禁用。
+                  </p>
+                </div>
+                <Switch className="shrink-0" checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
+              </div>
               <Button className="w-full lg:w-auto lg:min-w-40" onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
-                保存网站标题
+                保存设置
               </Button>
             </div>
           </div>
@@ -2141,34 +2144,6 @@ function SystemInfoSection() {
             <div className="flex justify-end">
               <Button onClick={handleSaveTwoFactor} disabled={isSavingSetting("twoFactor")}>
                 保存双重验证设置
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Globe className="h-4 w-4 text-primary" />
-              Looking Glass
-            </CardTitle>
-            <CardDescription>
-              控制普通用户是否可以看到并使用网络探测工具。
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div>
-                <p className="text-sm font-medium">普通用户可见</p>
-                <p className="text-xs text-muted-foreground">
-                  关闭后侧边栏入口和接口都会对普通用户禁用，管理员始终可用。
-                </p>
-              </div>
-              <Switch checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={handleSaveLookingGlass} disabled={isSavingSetting("lookingGlass")}>
-                保存 Looking Glass 设置
               </Button>
             </div>
           </CardContent>
