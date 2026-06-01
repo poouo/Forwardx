@@ -94,10 +94,21 @@ type secureConn struct {
 	dataWriteAEAD cipher.AEAD
 	lenReadAEAD   cipher.AEAD
 	dataReadAEAD  cipher.AEAD
+	lengthAD      []byte
+	payloadAD     []byte
 	writeDir      uint32
 	readDir       uint32
 	writeCounter  uint64
 	readCounter   uint64
+}
+
+type fxpWireContext struct {
+	name          string
+	sessionInfo   []byte
+	lengthAD      []byte
+	payloadAD     []byte
+	masterContext string
+	compat        bool
 }
 
 type replayCache struct {
@@ -118,13 +129,20 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
+	fxpRuntimeVersion   = "2.2.77"
 )
 
 var (
-	fxpSessionInfo = []byte("forwardx-fxp-v2 session")
-	fxpLengthAD    = []byte("forwardx-fxp-v2 length")
-	fxpPayloadAD   = []byte("forwardx-fxp-v2 payload")
-	fxpReplaySeen  = newReplayCache(fxpHandshakeWindow, 100000)
+	fxpSessionInfo       = []byte("forwardx-fxp-v2 session")
+	fxpLengthAD          = []byte("forwardx-fxp-v2 length")
+	fxpPayloadAD         = []byte("forwardx-fxp-v2 payload")
+	fxpCompatSessionInfo = []byte("forwardx-fxp session")
+	fxpCompatLengthAD    = []byte("forwardx-fxp length")
+	fxpCompatPayloadAD   = []byte("forwardx-fxp payload")
+	fxpWireCurrent       = fxpWireContext{name: "current", sessionInfo: fxpSessionInfo, lengthAD: fxpLengthAD, payloadAD: fxpPayloadAD, masterContext: fxpMasterContext}
+	fxpWireCompat2390    = fxpWireContext{name: "2.3.90-compat", sessionInfo: fxpCompatSessionInfo, lengthAD: fxpCompatLengthAD, payloadAD: fxpCompatPayloadAD, masterContext: "forwardx-fxp master", compat: true}
+	fxpWireContexts      = []fxpWireContext{fxpWireCurrent, fxpWireCompat2390}
+	fxpReplaySeen        = newReplayCache(fxpHandshakeWindow, 100000)
 )
 
 type connGate struct {
@@ -190,6 +208,7 @@ func main() {
 	if err := validateConfig(cfg); err != nil {
 		log.Fatalf("invalid config: %v", err)
 	}
+	log.Printf("forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s", fxpRuntimeVersion, cfg.Role, cfg.TunnelID, cfg.RuleID, cfg.ListenPort, cfg.Protocol)
 	ctx := shutdownContext()
 	switch strings.ToLower(cfg.Role) {
 	case "entry":
@@ -278,6 +297,29 @@ func dialTCP(host string, port int, timeout time.Duration) (net.Conn, error) {
 	}
 	enableTCPKeepAlive(conn)
 	return conn, nil
+}
+
+func dialSecureTCP(host string, port int, cfg config) (net.Conn, *secureConn, error) {
+	var lastErr error
+	for _, wire := range fxpWireContexts {
+		conn, err := dialTCP(host, port, 10*time.Second)
+		if err != nil {
+			return nil, nil, err
+		}
+		sec, err := newClientSecureConnWithWire(conn, cfg, wire)
+		if err == nil {
+			if wire.compat {
+				log.Printf("fxp using compatibility wire context=%s tunnel=%d peer=%s:%d", wire.name, cfg.TunnelID, host, port)
+			}
+			return conn, sec, nil
+		}
+		lastErr = err
+		_ = conn.Close()
+	}
+	if lastErr == nil {
+		lastErr = errors.New("fxp secure connect failed")
+	}
+	return nil, nil, lastErr
 }
 
 func enableTCPKeepAlive(conn net.Conn) {
@@ -390,15 +432,11 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 			return nil
 		}
 	}
-	exit, err := dialTCP(cfg.ExitHost, cfg.ExitPort, 10*time.Second)
+	exit, sec, err := dialSecureTCP(cfg.ExitHost, cfg.ExitPort, cfg)
 	if err != nil {
 		return fmt.Errorf("dial exit: %w", err)
 	}
 	defer exit.Close()
-	sec, err := newEntrySecureConn(exit, cfg)
-	if err != nil {
-		return err
-	}
 	hello, _ := json.Marshal(helloFrame{
 		Network:    "tcp",
 		TargetIP:   cfg.TargetIP,
@@ -443,15 +481,11 @@ func serveEntryUDP(conn *net.UDPConn, cfg config) error {
 }
 
 func udpRoundTripToExit(cfg config, payload []byte) ([]byte, error) {
-	exit, err := dialTCP(cfg.ExitHost, cfg.ExitPort, 10*time.Second)
+	exit, sec, err := dialSecureTCP(cfg.ExitHost, cfg.ExitPort, cfg)
 	if err != nil {
 		return nil, err
 	}
 	defer exit.Close()
-	sec, err := newEntrySecureConn(exit, cfg)
-	if err != nil {
-		return nil, err
-	}
 	hello, _ := json.Marshal(helloFrame{
 		Network:    "udp",
 		TargetIP:   cfg.TargetIP,
@@ -619,18 +653,14 @@ func handleRelaySession(upConn net.Conn, cfg config) error {
 		return err
 	}
 	// Connect to downstream (like entry)
-	downConn, err := dialTCP(cfg.RelayExitHost, cfg.RelayExitPort, 10*time.Second)
+	downCfg := cfg
+	downCfg.Key = cfg.RelayKey
+	downConn, downSec, err := dialSecureTCP(cfg.RelayExitHost, cfg.RelayExitPort, downCfg)
 	if err != nil {
 		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
 		return err
 	}
 	defer downConn.Close()
-	downCfg := cfg
-	downCfg.Key = cfg.RelayKey
-	downSec, err := newEntrySecureConn(downConn, downCfg)
-	if err != nil {
-		return err
-	}
 	// Re-send helloFrame to downstream
 	helloBytes, _ := json.Marshal(hello)
 	if err := downSec.writeFrame(helloBytes); err != nil {
@@ -801,6 +831,10 @@ func newExitSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 }
 
 func newClientSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
+	return newClientSecureConnWithWire(conn, cfg, fxpWireCurrent)
+}
+
+func newClientSecureConnWithWire(conn net.Conn, cfg config, wire fxpWireContext) (*secureConn, error) {
 	salt := make([]byte, fxpSaltSize)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
@@ -808,7 +842,7 @@ func newClientSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 	if _, err := writeFull(conn, salt); err != nil {
 		return nil, err
 	}
-	sec, err := newSessionSecureConn(conn, cfg.Key, salt, true)
+	sec, err := newSessionSecureConnWithWire(conn, cfg.Key, salt, true, wire)
 	if err != nil {
 		return nil, err
 	}
@@ -828,6 +862,10 @@ func newClientSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 }
 
 func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
+	return newServerSecureConnWithWires(conn, cfg, fxpWireContexts)
+}
+
+func newServerSecureConnWithWires(conn net.Conn, cfg config, wires []fxpWireContext) (*secureConn, error) {
 	salt := make([]byte, fxpSaltSize)
 	if _, err := io.ReadFull(conn, salt); err != nil {
 		return nil, err
@@ -835,14 +873,40 @@ func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 	if !fxpReplaySeen.Add(replayKey(cfg, salt)) {
 		return nil, errors.New("fxp replay detected")
 	}
-	sec, err := newSessionSecureConn(conn, cfg.Key, salt, false)
-	if err != nil {
+	lenCipher := make([]byte, 4+16)
+	if _, err := io.ReadFull(conn, lenCipher); err != nil {
 		return nil, err
 	}
-	ack, err := sec.readFrame()
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for _, wire := range wires {
+		sec, err := newSessionSecureConnWithWire(conn, cfg.Key, salt, false, wire)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		n, err := sec.decryptFrameLength(0, lenCipher)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		dataCipher := make([]byte, int(n)+sec.dataReadAEAD.Overhead())
+		if _, err := io.ReadFull(conn, dataCipher); err != nil {
+			return nil, err
+		}
+		ack, err := sec.decryptFrameData(0, dataCipher)
+		if err != nil {
+			return nil, err
+		}
+		sec.readCounter = 1
+		return finishServerHandshake(sec, cfg, ack, wire)
 	}
+	if lastErr == nil {
+		lastErr = errors.New("fxp handshake rejected")
+	}
+	return nil, lastErr
+}
+
+func finishServerHandshake(sec *secureConn, cfg config, ack []byte, wire fxpWireContext) (*secureConn, error) {
 	var hs fxpHandshake
 	if err := json.Unmarshal(ack, &hs); err != nil || hs.V != fxpHandshakeVersion || hs.TunnelID != cfg.TunnelID {
 		return nil, errors.New("fxp handshake rejected")
@@ -853,6 +917,9 @@ func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 	if ts := time.Unix(hs.TS, 0); time.Since(ts) > fxpHandshakeWindow || time.Until(ts) > fxpHandshakeWindow {
 		log.Printf("fxp handshake clock skew tunnel=%d skew=%s; accepting because salt replay protection is independent of wall-clock sync", cfg.TunnelID, time.Since(ts))
 	}
+	if wire.compat {
+		log.Printf("fxp accepted compatibility wire context=%s tunnel=%d", wire.name, cfg.TunnelID)
+	}
 	reply, _ := json.Marshal(fxpHandshake{V: fxpHandshakeVersion, TS: time.Now().Unix(), TunnelID: cfg.TunnelID})
 	if err := sec.writeFrame(reply); err != nil {
 		return nil, err
@@ -861,8 +928,12 @@ func newServerSecureConn(conn net.Conn, cfg config) (*secureConn, error) {
 }
 
 func newSessionSecureConn(conn net.Conn, key string, salt []byte, client bool) (*secureConn, error) {
+	return newSessionSecureConnWithWire(conn, key, salt, client, fxpWireCurrent)
+}
+
+func newSessionSecureConnWithWire(conn net.Conn, key string, salt []byte, client bool, wire fxpWireContext) (*secureConn, error) {
 	master := sha256.Sum256([]byte(key))
-	material := blake3Derive(master[:], salt, fxpSessionInfo, 128)
+	material := blake3Derive(master[:], salt, wire.sessionInfo, wire.masterContext, 128)
 	c2sLen, err := newAEAD(material[0:32])
 	if err != nil {
 		return nil, err
@@ -879,7 +950,7 @@ func newSessionSecureConn(conn net.Conn, key string, salt []byte, client bool) (
 	if err != nil {
 		return nil, err
 	}
-	sec := &secureConn{conn: conn}
+	sec := &secureConn{conn: conn, lengthAD: wire.lengthAD, payloadAD: wire.payloadAD}
 	if client {
 		sec.lenWriteAEAD, sec.dataWriteAEAD = c2sLen, c2sData
 		sec.lenReadAEAD, sec.dataReadAEAD = s2cLen, s2cData
@@ -892,12 +963,12 @@ func newSessionSecureConn(conn net.Conn, key string, salt []byte, client bool) (
 	return sec, nil
 }
 
-func blake3Derive(secret, salt, context []byte, length int) []byte {
+func blake3Derive(secret, salt, context []byte, masterContext string, length int) []byte {
 	material := make([]byte, 0, len(secret)+len(salt))
 	material = append(material, secret...)
 	material = append(material, salt...)
 	keyMaterial := make([]byte, 32)
-	blake3.DeriveKey(keyMaterial, fxpMasterContext, context)
+	blake3.DeriveKey(keyMaterial, masterContext, context)
 	deriver := blake3.New(length, keyMaterial)
 	_, _ = deriver.Write(material)
 	out := make([]byte, length)
@@ -924,8 +995,8 @@ func (c *secureConn) writeEncryptedFrame(plain []byte) error {
 	binary.BigEndian.PutUint32(lenPlain[:], uint32(len(plain)))
 	lenNonce := fxpNonce(c.writeDir, counter, 0)
 	dataNonce := fxpNonce(c.writeDir, counter, 1)
-	lenCipher := c.lenWriteAEAD.Seal(nil, lenNonce, lenPlain[:], fxpLengthAD)
-	dataCipher := c.dataWriteAEAD.Seal(nil, dataNonce, plain, fxpPayloadAD)
+	lenCipher := c.lenWriteAEAD.Seal(nil, lenNonce, lenPlain[:], c.lengthAD)
+	dataCipher := c.dataWriteAEAD.Seal(nil, dataNonce, plain, c.payloadAD)
 	if _, err := writeFull(c.conn, lenCipher); err != nil {
 		return err
 	}
@@ -940,24 +1011,36 @@ func (c *secureConn) readEncryptedFrame() ([]byte, error) {
 	if _, err := io.ReadFull(c.conn, lenCipher); err != nil {
 		return nil, err
 	}
-	lenNonce := fxpNonce(c.readDir, counter, 0)
-	lenPlain, err := c.lenReadAEAD.Open(nil, lenNonce, lenCipher, fxpLengthAD)
+	n, err := c.decryptFrameLength(counter, lenCipher)
 	if err != nil {
 		return nil, err
-	}
-	if len(lenPlain) != 4 {
-		return nil, errors.New("invalid frame length")
-	}
-	n := binary.BigEndian.Uint32(lenPlain)
-	if n > fxpMaxFrame {
-		return nil, fmt.Errorf("invalid frame size %d", n)
 	}
 	dataCipher := make([]byte, int(n)+c.dataReadAEAD.Overhead())
 	if _, err := io.ReadFull(c.conn, dataCipher); err != nil {
 		return nil, err
 	}
+	return c.decryptFrameData(counter, dataCipher)
+}
+
+func (c *secureConn) decryptFrameLength(counter uint64, lenCipher []byte) (uint32, error) {
+	lenNonce := fxpNonce(c.readDir, counter, 0)
+	lenPlain, err := c.lenReadAEAD.Open(nil, lenNonce, lenCipher, c.lengthAD)
+	if err != nil {
+		return 0, err
+	}
+	if len(lenPlain) != 4 {
+		return 0, errors.New("invalid frame length")
+	}
+	n := binary.BigEndian.Uint32(lenPlain)
+	if n > fxpMaxFrame {
+		return 0, fmt.Errorf("invalid frame size %d", n)
+	}
+	return n, nil
+}
+
+func (c *secureConn) decryptFrameData(counter uint64, dataCipher []byte) ([]byte, error) {
 	dataNonce := fxpNonce(c.readDir, counter, 1)
-	return c.dataReadAEAD.Open(nil, dataNonce, dataCipher, fxpPayloadAD)
+	return c.dataReadAEAD.Open(nil, dataNonce, dataCipher, c.payloadAD)
 }
 
 func fxpNonce(direction uint32, counter uint64, kind byte) []byte {

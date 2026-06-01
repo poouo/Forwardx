@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.92] - 2026-06-01
+
+### Fixed
+
+- Added FXP wire-context fallback for the custom encrypted tunnel runtime so multi-hop chains continue working while some hops still have the v2.3.90 FXP binary.
+- Added FXP runtime version logging at startup to make stale tunnel binaries visible in Agent logs.
+- Bumped panel version to 2.3.92 and Agent target version to 2.2.77.
+- Android APP version remains 2.3.34 and the APK release pointer is updated to 2.3.92 because this is an Agent/runtime compatibility fix.
+
 ## [2.3.91] - 2026-06-01
 
 ### Fixed

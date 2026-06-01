@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"strconv"
@@ -230,18 +231,88 @@ func TestFxpRejectsReplaySalt(t *testing.T) {
 	}
 }
 
+func TestFxpServerAcceptsCompatibilityWireContext(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	cfg := config{Role: "exit", TunnelID: 88, RuleID: 0, ListenPort: 12345, Key: "compat-key"}
+	errCh := make(chan error, 1)
+	go func() {
+		sec, err := newServerSecureConn(serverConn, cfg)
+		if err == nil {
+			_ = sec.conn.Close()
+		}
+		errCh <- err
+	}()
+	client, err := newClientSecureConnWithWire(clientConn, cfg, fxpWireCompat2390)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.conn.Close()
+	if err := <-errCh; err != nil {
+		t.Fatalf("compat handshake failed: %v", err)
+	}
+}
+
+func TestFxpClientRetriesCompatibilityWireContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	cfg := config{Role: "entry", TunnelID: 89, RuleID: 0, ListenPort: 12345, Key: "compat-retry-key"}
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				done <- err
+				return
+			}
+			sec, err := newServerSecureConnWithWires(conn, cfg, []fxpWireContext{fxpWireCompat2390})
+			if err != nil {
+				_ = conn.Close()
+				continue
+			}
+			_ = sec.conn.Close()
+			done <- nil
+			return
+		}
+		done <- errors.New("compat retry did not reach server")
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	conn, sec, err := dialSecureTCP("127.0.0.1", port, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sec.conn.Close()
+	_ = conn.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFxpWireContextRemainsStable(t *testing.T) {
-	if string(fxpSessionInfo) != "forwardx-fxp-v2 session" {
-		t.Fatalf("unexpected session context %q", string(fxpSessionInfo))
+	if string(fxpWireCurrent.sessionInfo) != "forwardx-fxp-v2 session" {
+		t.Fatalf("unexpected session context %q", string(fxpWireCurrent.sessionInfo))
 	}
-	if string(fxpLengthAD) != "forwardx-fxp-v2 length" {
-		t.Fatalf("unexpected length AD %q", string(fxpLengthAD))
+	if string(fxpWireCurrent.lengthAD) != "forwardx-fxp-v2 length" {
+		t.Fatalf("unexpected length AD %q", string(fxpWireCurrent.lengthAD))
 	}
-	if string(fxpPayloadAD) != "forwardx-fxp-v2 payload" {
-		t.Fatalf("unexpected payload AD %q", string(fxpPayloadAD))
+	if string(fxpWireCurrent.payloadAD) != "forwardx-fxp-v2 payload" {
+		t.Fatalf("unexpected payload AD %q", string(fxpWireCurrent.payloadAD))
 	}
-	if fxpMasterContext != "forwardx-fxp-v2 master" {
-		t.Fatalf("unexpected master context %q", fxpMasterContext)
+	if fxpWireCurrent.masterContext != "forwardx-fxp-v2 master" {
+		t.Fatalf("unexpected master context %q", fxpWireCurrent.masterContext)
+	}
+	if string(fxpWireCompat2390.sessionInfo) != "forwardx-fxp session" {
+		t.Fatalf("unexpected compat session context %q", string(fxpWireCompat2390.sessionInfo))
+	}
+	if fxpWireCompat2390.masterContext != "forwardx-fxp master" {
+		t.Fatalf("unexpected compat master context %q", fxpWireCompat2390.masterContext)
 	}
 }
 
