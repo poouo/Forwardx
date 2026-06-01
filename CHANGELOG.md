@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.85] - 2026-06-01
+
+### Changed
+
+- Changed speed testing from fixed-size download links to an embedded 10-second download plus 10-second upload test inside the network-test page.
+- Added animated real-time speed curves and live metrics for current, average, peak, and transferred upload/download data.
+- Updated the Agent speed-test service to expose direct browser-to-Agent download and upload test endpoints with CORS support.
+- Bumped panel version to 2.3.85. Agent target version is now 2.2.71 for embedded timed speed testing.
+- Android APP version remains 2.3.33 because this web-panel and Agent change does not require a native APP build.
+
 ## [2.3.84] - 2026-06-01
 
 ### Changed

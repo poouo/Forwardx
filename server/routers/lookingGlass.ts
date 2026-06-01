@@ -11,18 +11,12 @@ import { requireHostAccess } from "./helpers";
 
 const AGENT_SPEED_TEST_PORT = 3091;
 const SPEED_TEST_LINK_TTL_SECONDS = 10 * 60;
+const SPEED_TEST_DURATION_SECONDS = 10;
 
 const methodSchema = z.enum(["ping", "ping6", "traceroute", "traceroute6", "mtr", "mtr6", "tcp"]);
-const speedTestSizeSchema = z.enum(["10mb", "100mb", "1000mb"]);
 
 type LookingGlassMethod = z.infer<typeof methodSchema>;
-type SpeedTestSize = z.infer<typeof speedTestSizeSchema>;
-
-const speedTests: Array<{ value: SpeedTestSize; label: string; bytes: number }> = [
-  { value: "10mb", label: "10 MB", bytes: 10 * 1024 * 1024 },
-  { value: "100mb", label: "100 MB", bytes: 100 * 1024 * 1024 },
-  { value: "1000mb", label: "1000 MB", bytes: 1000 * 1024 * 1024 },
-];
+type SpeedTestMode = "download" | "upload";
 
 async function assertNetworkTestAllowed(ctx: { user: { role: string } }) {
   if (ctx.user.role === "admin") return;
@@ -132,12 +126,17 @@ function normalizeSpeedTestAddress(host: any) {
   return value;
 }
 
+function speedTestProtocol(host: any) {
+  const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
+  return /^https:\/\//i.test(raw) ? "https" : "http";
+}
+
 function formatUrlHost(host: string) {
   return net.isIP(host) === 6 ? `[${host}]` : host;
 }
 
-function signSpeedTestLink(agentToken: string, size: SpeedTestSize, expires: number) {
-  return crypto.createHmac("sha256", agentToken).update(`${size}:${expires}`).digest("hex");
+function signSpeedTestRequest(agentToken: string, mode: SpeedTestMode, expires: number) {
+  return crypto.createHmac("sha256", agentToken).update(`${mode}:${expires}`).digest("hex");
 }
 
 function hostHasIpv6(host: any) {
@@ -210,35 +209,36 @@ export const lookingGlassRouter = router({
       return decorateStatus(status, host);
     }),
 
-  speedTestLinks: protectedProcedure
+  speedTestSession: protectedProcedure
     .input(z.object({ hostId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertNetworkTestAllowed(ctx);
       const host = await requireHostAccess(ctx, input.hostId) as any;
       const agentToken = String(host?.agentToken || "");
-      if (!agentToken) throw new Error("该主机未绑定 Agent，无法生成速度测试链接");
+      if (!agentToken) throw new Error("该主机未绑定 Agent，无法启动速度测试");
 
       const address = normalizeSpeedTestAddress(host);
+      const protocol = speedTestProtocol(host);
       const expires = Math.floor(Date.now() / 1000) + SPEED_TEST_LINK_TTL_SECONDS;
-      const base = `http://${formatUrlHost(address)}:${AGENT_SPEED_TEST_PORT}/forwardx-looking-glass/speedtest`;
+      const base = `${protocol}://${formatUrlHost(address)}:${AGENT_SPEED_TEST_PORT}/forwardx-looking-glass`;
+      const buildUrl = (mode: SpeedTestMode) => {
+        const params = new URLSearchParams({
+          mode,
+          expires: String(expires),
+          sig: signSpeedTestRequest(agentToken, mode, expires),
+        });
+        const path = mode === "download" ? "speedtest-download" : "speedtest-upload";
+        return `${base}/${path}?${params.toString()}`;
+      };
       return {
         hostId: input.hostId,
         hostName: String(host?.name || `Host #${input.hostId}`),
         hostAddress: address,
         port: AGENT_SPEED_TEST_PORT,
+        durationSeconds: SPEED_TEST_DURATION_SECONDS,
         expiresAt: new Date(expires * 1000),
-        tests: speedTests.map((test) => {
-          const sig = signSpeedTestLink(agentToken, test.value, expires);
-          const params = new URLSearchParams({
-            size: test.value,
-            expires: String(expires),
-            sig,
-          });
-          return {
-            ...test,
-            url: `${base}?${params.toString()}`,
-          };
-        }),
+        downloadUrl: buildUrl("download"),
+        uploadUrl: buildUrl("upload"),
       };
     }),
 });
