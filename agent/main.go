@@ -28,10 +28,10 @@ import (
 	"time"
 )
 
-var Version = "2.2.69"
+var Version = "2.2.70"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
-const lookingGlassDownloadPort = 3091
+const lookingGlassSpeedTestPort = 3091
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -233,7 +233,7 @@ func main() {
 	_ = register(cfg)
 	go actionWorker()
 	go selfTestPoller(cfg)
-	go lookingGlassDownloadServer(cfg)
+	go lookingGlassSpeedTestServer(cfg)
 	go agentEventStream(cfg)
 	for {
 		nextInterval, err := heartbeat(cfg)
@@ -593,50 +593,98 @@ func runLookingGlassCommand(name string, args []string, timeout time.Duration, o
 	return strings.TrimSpace(outputText), &code, timedOut
 }
 
-func lookingGlassDownloadServer(cfg Config) {
+func lookingGlassSpeedTestServer(cfg Config) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/forwardx-looking-glass/download", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/forwardx-looking-glass/speedtest", func(w http.ResponseWriter, r *http.Request) {
 		sizeKey := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("size")))
-		sizeBytes, ok := lookingGlassDownloadSize(sizeKey)
-		if !ok {
-			http.Error(w, "unsupported size", http.StatusBadRequest)
+		sizeBytes, err := validateLookingGlassSpeedTestRequest(r, cfg.Token, sizeKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		expires, err := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
-		if err != nil || expires < time.Now().Unix() {
-			http.Error(w, "link expired", http.StatusForbidden)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write([]byte(lookingGlassSpeedTestHTML(sizeKey, sizeBytes)))
+	})
+	mux.HandleFunc("/forwardx-looking-glass/speedtest-stream", func(w http.ResponseWriter, r *http.Request) {
+		sizeKey := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("size")))
+		sizeBytes, err := validateLookingGlassSpeedTestRequest(r, cfg.Token, sizeKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		expected := signLookingGlassDownload(cfg.Token, sizeKey, expires)
-		provided := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sig")))
-		if len(provided) != len(expected) || !hmac.Equal([]byte(provided), []byte(expected)) {
-			http.Error(w, "invalid signature", http.StatusForbidden)
-			return
-		}
-
-		filename := fmt.Sprintf("forwardx-network-test-%s.bin", sizeKey)
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 		w.Header().Set("Content-Length", strconv.FormatInt(sizeBytes, 10))
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		http.ServeContent(w, r, filename, time.Now(), io.NewSectionReader(lookingGlassZeroReader{}, 0, sizeBytes))
+		streamLookingGlassSpeedTest(w, r, sizeBytes)
 	})
 
 	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", lookingGlassDownloadPort),
+		Addr:              fmt.Sprintf(":%d", lookingGlassSpeedTestPort),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	for {
 		if err := server.ListenAndServe(); err != nil {
-			logf("looking glass download server error: %v", err)
+			logf("looking glass speed test server error: %v", err)
 			time.Sleep(10 * time.Second)
 		}
 	}
 }
 
-func lookingGlassDownloadSize(size string) (int64, bool) {
+func streamLookingGlassSpeedTest(w http.ResponseWriter, r *http.Request, sizeBytes int64) {
+	flusher, _ := w.(http.Flusher)
+	chunk := make([]byte, 64*1024)
+	remaining := sizeBytes
+	lastFlush := time.Now()
+	for remaining > 0 {
+		select {
+		case <-r.Context().Done():
+			return
+		default:
+		}
+		n := int64(len(chunk))
+		if remaining < n {
+			n = remaining
+		}
+		written, err := w.Write(chunk[:n])
+		if err != nil {
+			return
+		}
+		remaining -= int64(written)
+		if flusher != nil && time.Since(lastFlush) >= 250*time.Millisecond {
+			flusher.Flush()
+			lastFlush = time.Now()
+		}
+		if written == 0 {
+			return
+		}
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+func validateLookingGlassSpeedTestRequest(r *http.Request, token string, sizeKey string) (int64, error) {
+	sizeBytes, ok := lookingGlassSpeedTestSize(sizeKey)
+	if !ok {
+		return 0, errors.New("unsupported size")
+	}
+	expires, err := strconv.ParseInt(r.URL.Query().Get("expires"), 10, 64)
+	if err != nil || expires < time.Now().Unix() {
+		return 0, errors.New("link expired")
+	}
+	expected := signLookingGlassSpeedTest(token, sizeKey, expires)
+	provided := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sig")))
+	if len(provided) != len(expected) || !hmac.Equal([]byte(provided), []byte(expected)) {
+		return 0, errors.New("invalid signature")
+	}
+	return sizeBytes, nil
+}
+
+func lookingGlassSpeedTestSize(size string) (int64, bool) {
 	switch size {
 	case "10mb":
 		return 10 * 1024 * 1024, true
@@ -649,10 +697,254 @@ func lookingGlassDownloadSize(size string) (int64, bool) {
 	}
 }
 
-func signLookingGlassDownload(token string, size string, expires int64) string {
+func signLookingGlassSpeedTest(token string, size string, expires int64) string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte(fmt.Sprintf("%s:%d", size, expires)))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func lookingGlassSpeedTestHTML(sizeKey string, sizeBytes int64) string {
+	return fmt.Sprintf(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ForwardX 速度测试</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --panel: rgba(15, 23, 42, 0.76);
+      --panel-soft: rgba(30, 41, 59, 0.68);
+      --line: rgba(148, 163, 184, 0.26);
+      --text: #e5edf7;
+      --muted: #98a9bd;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.20), transparent 34rem),
+        linear-gradient(135deg, #101828 0%%, #111827 48%%, #0b1120 100%%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .shell { width: min(1080px, calc(100%% - 32px)); margin: 0 auto; padding: 32px 0; }
+    header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; border: 1px solid rgba(56,189,248,.35); background: rgba(56,189,248,.12); color: #bae6fd; border-radius: 999px; padding: 6px 10px; font-size: 12px; }
+    h1 { margin: 12px 0 6px; font-size: clamp(28px, 5vw, 44px); line-height: 1.06; letter-spacing: 0; }
+    p { margin: 0; color: var(--muted); line-height: 1.65; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; }
+    .panel { border: 1px solid var(--line); background: var(--panel); backdrop-filter: blur(16px); border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,.26); }
+    .chart-wrap { padding: 18px; }
+    canvas { display: block; width: 100%%; height: 360px; background: rgba(2, 6, 23, 0.48); border: 1px solid rgba(148,163,184,.18); border-radius: 8px; }
+    .side { display: grid; gap: 12px; }
+    .metric { padding: 16px; border: 1px solid var(--line); background: var(--panel-soft); border-radius: 8px; }
+    .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+    .metric strong { display: block; font-size: 26px; line-height: 1; letter-spacing: 0; }
+    .metric small { color: var(--muted); }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line); }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #0ea5e9, #22c55e);
+      color: white;
+      padding: 10px 16px;
+      min-height: 40px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .56; cursor: not-allowed; }
+    .status { color: var(--muted); font-size: 13px; }
+    .log { margin-top: 16px; padding: 14px; max-height: 180px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: #cbd5e1; }
+    @media (max-width: 760px) {
+      .shell { width: min(100%% - 24px, 1080px); padding: 22px 0; }
+      header { align-items: flex-start; flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      canvas { height: 280px; }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric strong { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">ForwardX 网络测试</div>
+        <h1>速度测试</h1>
+        <p>浏览器将直连当前 Agent 主机拉取 %s 数据流，面板服务器不参与中转。</p>
+      </div>
+      <p class="status" id="status">准备开始</p>
+    </header>
+    <section class="grid">
+      <div class="panel">
+        <div class="chart-wrap">
+          <canvas id="chart" width="960" height="360"></canvas>
+        </div>
+        <div class="toolbar">
+          <button id="start">开始测速</button>
+          <span class="status" id="hint">实时曲线显示最近 60 秒速率</span>
+        </div>
+      </div>
+      <aside class="side">
+        <div class="metric"><span>当前速率</span><strong id="current">0.00</strong><small>Mbps</small></div>
+        <div class="metric"><span>平均速率</span><strong id="average">0.00</strong><small>Mbps</small></div>
+        <div class="metric"><span>峰值速率</span><strong id="peak">0.00</strong><small>Mbps</small></div>
+        <div class="metric"><span>已传输</span><strong id="loaded">0.00</strong><small>MB / %s</small></div>
+      </aside>
+    </section>
+    <pre class="panel log" id="log">等待开始...</pre>
+  </main>
+  <script>
+    const totalBytes = %d;
+    const params = new URLSearchParams(location.search);
+    const streamUrl = "/forwardx-looking-glass/speedtest-stream?" + params.toString();
+    const points = [];
+    const els = {
+      start: document.getElementById("start"),
+      status: document.getElementById("status"),
+      current: document.getElementById("current"),
+      average: document.getElementById("average"),
+      peak: document.getElementById("peak"),
+      loaded: document.getElementById("loaded"),
+      log: document.getElementById("log"),
+      chart: document.getElementById("chart")
+    };
+    const ctx = els.chart.getContext("2d");
+    let running = false;
+
+    function mbps(bytes, seconds) {
+      return seconds > 0 ? (bytes * 8 / seconds / 1000000) : 0;
+    }
+    function mb(bytes) {
+      return bytes / 1024 / 1024;
+    }
+    function writeLog(line) {
+      const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      els.log.textContent += "\n[" + time + "] " + line;
+      els.log.scrollTop = els.log.scrollHeight;
+    }
+    function resizeCanvas() {
+      const rect = els.chart.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      els.chart.width = Math.max(1, Math.floor(rect.width * ratio));
+      els.chart.height = Math.max(1, Math.floor(rect.height * ratio));
+      draw();
+    }
+    function draw() {
+      const width = els.chart.width;
+      const height = els.chart.height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "rgba(2, 6, 23, 0.42)";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 5; i++) {
+        const y = Math.round(height * i / 5);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      const visible = points.slice(-120);
+      const peak = Math.max(10, ...visible.map((p) => p.rate));
+      ctx.fillStyle = "rgba(148, 163, 184, 0.75)";
+      ctx.font = Math.max(11, Math.round(width / 92)) + "px ui-monospace, monospace";
+      ctx.fillText(peak.toFixed(1) + " Mbps", 12, 22);
+      if (visible.length < 2) return;
+      ctx.beginPath();
+      visible.forEach((point, index) => {
+        const x = visible.length === 1 ? width : index * width / (visible.length - 1);
+        const y = height - (point.rate / peak) * (height - 34) - 18;
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = Math.max(2, Math.round(width / 420));
+      ctx.stroke();
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, "rgba(56, 189, 248, 0.26)");
+      gradient.addColorStop(1, "rgba(56, 189, 248, 0)");
+      ctx.lineTo(width, height);
+      ctx.lineTo(0, height);
+      ctx.closePath();
+      ctx.fillStyle = gradient;
+      ctx.fill();
+    }
+    async function start() {
+      if (running) return;
+      running = true;
+      els.start.disabled = true;
+      els.start.textContent = "测速中";
+      els.status.textContent = "正在连接 Agent...";
+      els.log.textContent = "开始测速，浏览器直连 Agent 数据流。";
+      points.length = 0;
+      let loaded = 0;
+      let intervalBytes = 0;
+      let peak = 0;
+      const startedAt = performance.now();
+      let lastTick = performance.now();
+      const timer = window.setInterval(() => {
+        const now = performance.now();
+        const seconds = Math.max(0.001, (now - lastTick) / 1000);
+        const current = mbps(intervalBytes, seconds);
+        peak = Math.max(peak, current);
+        const avg = mbps(loaded, (now - startedAt) / 1000);
+        points.push({ at: now, rate: current });
+        if (points.length > 240) points.shift();
+        els.current.textContent = current.toFixed(2);
+        els.average.textContent = avg.toFixed(2);
+        els.peak.textContent = peak.toFixed(2);
+        els.loaded.textContent = mb(loaded).toFixed(2);
+        els.status.textContent = "测速中 " + Math.min(100, loaded / totalBytes * 100).toFixed(1) + "%%";
+        intervalBytes = 0;
+        lastTick = now;
+        draw();
+      }, 500);
+      try {
+        const res = await fetch(streamUrl, { cache: "no-store" });
+        if (!res.ok || !res.body) throw new Error("测速流打开失败：" + res.status + " " + res.statusText);
+        writeLog("连接成功，开始读取数据流。");
+        const reader = res.body.getReader();
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          loaded += next.value.byteLength;
+          intervalBytes += next.value.byteLength;
+        }
+        const totalSeconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+        const avg = mbps(loaded, totalSeconds);
+        peak = Math.max(peak, avg);
+        points.push({ at: performance.now(), rate: avg });
+        if (points.length > 240) points.shift();
+        els.current.textContent = "0.00";
+        els.average.textContent = avg.toFixed(2);
+        els.peak.textContent = peak.toFixed(2);
+        els.loaded.textContent = mb(loaded).toFixed(2);
+        els.status.textContent = "测速完成";
+        writeLog("完成，总耗时 " + totalSeconds.toFixed(2) + " 秒，平均 " + avg.toFixed(2) + " Mbps。");
+      } catch (error) {
+        els.status.textContent = "测速失败";
+        writeLog(error && error.message ? error.message : "测速失败");
+      } finally {
+        window.clearInterval(timer);
+        running = false;
+        els.start.disabled = false;
+        els.start.textContent = "重新测速";
+        draw();
+      }
+    }
+    window.addEventListener("resize", resizeCanvas);
+    els.start.addEventListener("click", start);
+    resizeCanvas();
+  </script>
+</body>
+</html>`, strings.ToUpper(sizeKey), strings.ToUpper(sizeKey), sizeBytes)
 }
 
 type lookingGlassZeroReader struct{}

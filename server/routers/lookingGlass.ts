@@ -9,16 +9,16 @@ import { pushAgentRefresh } from "../agentEvents";
 import { enqueueLookingGlassAgentTask, getLookingGlassAgentTaskStatus, type LookingGlassTaskStatus } from "../lookingGlassAgentTasks";
 import { requireHostAccess } from "./helpers";
 
-const AGENT_DOWNLOAD_PORT = 3091;
-const DOWNLOAD_LINK_TTL_SECONDS = 10 * 60;
+const AGENT_SPEED_TEST_PORT = 3091;
+const SPEED_TEST_LINK_TTL_SECONDS = 10 * 60;
 
 const methodSchema = z.enum(["ping", "ping6", "traceroute", "traceroute6", "mtr", "mtr6", "tcp"]);
-const downloadSizeSchema = z.enum(["10mb", "100mb", "1000mb"]);
+const speedTestSizeSchema = z.enum(["10mb", "100mb", "1000mb"]);
 
 type LookingGlassMethod = z.infer<typeof methodSchema>;
-type DownloadSize = z.infer<typeof downloadSizeSchema>;
+type SpeedTestSize = z.infer<typeof speedTestSizeSchema>;
 
-const downloadFiles: Array<{ value: DownloadSize; label: string; bytes: number }> = [
+const speedTests: Array<{ value: SpeedTestSize; label: string; bytes: number }> = [
   { value: "10mb", label: "10 MB", bytes: 10 * 1024 * 1024 },
   { value: "100mb", label: "100 MB", bytes: 100 * 1024 * 1024 },
   { value: "1000mb", label: "1000 MB", bytes: 1000 * 1024 * 1024 },
@@ -113,10 +113,10 @@ async function resolvePublicTarget(target: string, method: LookingGlassMethod) {
   };
 }
 
-function normalizeDownloadAddress(host: any) {
+function normalizeSpeedTestAddress(host: any) {
   const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
   if (!raw || raw.toLowerCase() === "unknown") {
-    throw new Error("该主机缺少可用于下载测试的公网地址");
+    throw new Error("该主机缺少可用于速度测试的公网地址");
   }
 
   let value = raw.replace(/^https?:\/\//i, "");
@@ -127,7 +127,7 @@ function normalizeDownloadAddress(host: any) {
     value = value.split(":")[0];
   }
   if (!value || value.toLowerCase() === "unknown") {
-    throw new Error("该主机缺少可用于下载测试的公网地址");
+    throw new Error("该主机缺少可用于速度测试的公网地址");
   }
   return value;
 }
@@ -136,7 +136,7 @@ function formatUrlHost(host: string) {
   return net.isIP(host) === 6 ? `[${host}]` : host;
 }
 
-function signDownloadLink(agentToken: string, size: DownloadSize, expires: number) {
+function signSpeedTestLink(agentToken: string, size: SpeedTestSize, expires: number) {
   return crypto.createHmac("sha256", agentToken).update(`${size}:${expires}`).digest("hex");
 }
 
@@ -210,33 +210,32 @@ export const lookingGlassRouter = router({
       return decorateStatus(status, host);
     }),
 
-  downloadLinks: protectedProcedure
+  speedTestLinks: protectedProcedure
     .input(z.object({ hostId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertNetworkTestAllowed(ctx);
       const host = await requireHostAccess(ctx, input.hostId) as any;
       const agentToken = String(host?.agentToken || "");
-      if (!agentToken) throw new Error("该主机未绑定 Agent，无法生成下载测试链接");
+      if (!agentToken) throw new Error("该主机未绑定 Agent，无法生成速度测试链接");
 
-      const address = normalizeDownloadAddress(host);
-      const expires = Math.floor(Date.now() / 1000) + DOWNLOAD_LINK_TTL_SECONDS;
-      const base = `http://${formatUrlHost(address)}:${AGENT_DOWNLOAD_PORT}/forwardx-looking-glass/download`;
+      const address = normalizeSpeedTestAddress(host);
+      const expires = Math.floor(Date.now() / 1000) + SPEED_TEST_LINK_TTL_SECONDS;
+      const base = `http://${formatUrlHost(address)}:${AGENT_SPEED_TEST_PORT}/forwardx-looking-glass/speedtest`;
       return {
         hostId: input.hostId,
         hostName: String(host?.name || `Host #${input.hostId}`),
         hostAddress: address,
-        port: AGENT_DOWNLOAD_PORT,
+        port: AGENT_SPEED_TEST_PORT,
         expiresAt: new Date(expires * 1000),
-        files: downloadFiles.map((file) => {
-          const sig = signDownloadLink(agentToken, file.value, expires);
+        tests: speedTests.map((test) => {
+          const sig = signSpeedTestLink(agentToken, test.value, expires);
           const params = new URLSearchParams({
-            size: file.value,
+            size: test.value,
             expires: String(expires),
             sig,
           });
           return {
-            ...file,
-            filename: `forwardx-network-test-${file.value}.bin`,
+            ...test,
             url: `${base}?${params.toString()}`,
           };
         }),
