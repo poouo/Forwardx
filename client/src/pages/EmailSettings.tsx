@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import DashboardLayout from "@/components/DashboardLayout";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,16 +10,13 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, BellRing, KeyRound, Loader2, Mail, Send, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
+import { Redirect } from "wouter";
 
 export default function EmailSettings() {
-  return (
-    <DashboardLayout>
-      <EmailSettingsContent />
-    </DashboardLayout>
-  );
+  return <Redirect to="/settings?tab=email" />;
 }
 
-function EmailSettingsContent() {
+export function EmailSettingsContent() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const email = settings?.email;

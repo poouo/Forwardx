@@ -179,6 +179,46 @@ function getRuleDisplayType(rule: any): keyof typeof desktopRuleTypeLabels {
   return "local";
 }
 
+type RuleFilterState = {
+  filterUser: string;
+  filterHost: string;
+  filterTunnel: string;
+  filterType: string;
+  isAdmin: boolean;
+  userId?: number | null;
+};
+
+function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
+  if (filters.isAdmin && filters.filterUser === "self" && Number(rule.userId) !== Number(filters.userId)) {
+    return false;
+  }
+  if (filters.filterUser !== "all" && filters.filterUser !== "self" && Number(rule.userId) !== Number(filters.filterUser)) {
+    return false;
+  }
+  if (filters.filterHost !== "all") {
+    if (String(filters.filterHost).startsWith("group:")) {
+      if (Number(rule.forwardGroupId || 0) !== Number(String(filters.filterHost).slice(6))) return false;
+    } else if (rule.forwardGroupId || rule.hostId !== parseInt(filters.filterHost)) {
+      return false;
+    }
+  }
+  if (filters.filterTunnel !== "all") {
+    if (filters.filterTunnel === "none") {
+      if (rule.tunnelId) return false;
+    } else if (Number(rule.tunnelId || 0) !== Number(filters.filterTunnel)) {
+      return false;
+    }
+  }
+  if (filters.filterType !== "all") {
+    if (filters.filterType === "forward-group") {
+      if (!rule.forwardGroupId) return false;
+    } else if (rule.forwardType !== filters.filterType) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function getTunnelDisplay(tunnel: any | null | undefined) {
   const mode = String(tunnel?.mode || "").toLowerCase();
   if (mode === "forwardx") {
@@ -337,6 +377,7 @@ function RulesContent() {
     return Object.keys(input).length ? input : undefined;
   }, [filterHost, filterTunnel, filterUser, user?.id, user?.role]);
   const effectiveRulesQuery = selectedRulesQuery || undefined;
+  const selectedScopeQueryEnabled = user?.role === "admin" && !!effectiveRulesQuery;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
   const latestPortCheckRef = useRef(0);
@@ -345,15 +386,11 @@ function RulesContent() {
   const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
   const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("skip");
   const { data: selectedScopeRules } = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
-    enabled: user?.role === "admin" && !!effectiveRulesQuery,
+    enabled: selectedScopeQueryEnabled,
     refetchInterval: 15000,
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
-  const visibleRuleIdsForMetrics = useMemo(() => {
-    const sourceRules = selectedScopeRules || rules || [];
-    return Array.from(new Set(sourceRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)));
-  }, [rules, selectedScopeRules]);
 
   const walletBalanceKnown = wallet?.balanceCents !== undefined && wallet?.balanceCents !== null;
   const manuallyPaused = (user as any)?.forwardAccessPauseReason === "manual";
@@ -402,64 +439,6 @@ function RulesContent() {
     },
     onError: (err) => toast.error(err.message || "复制失败"),
   });
-
-  // 近 24h 按规则汇总的流量
-  const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
-    { hours: 24, ruleIds: visibleRuleIdsForMetrics },
-    {
-      enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: 30000,
-      staleTime: 15000,
-      refetchOnWindowFocus: false,
-    }
-  );
-  const trafficByRule = useMemo(() => {
-    const m = new Map<number, {
-      bytesIn: number;
-      bytesOut: number;
-      connections: number;
-      latestLatencyMs: number | null;
-      latestLatencyIsTimeout: boolean;
-      latestLatencyAt: Date | string | null;
-    }>();
-    (trafficSummary || []).forEach((t: any) => {
-      const rid = Number(t.ruleId);
-      const prev = m.get(rid);
-      if (prev) {
-        prev.bytesIn += Number(t.bytesIn) || 0;
-        prev.bytesOut += Number(t.bytesOut) || 0;
-        prev.connections += Number(t.connections) || 0;
-        const prevAt = prev.latestLatencyAt ? new Date(prev.latestLatencyAt).getTime() : 0;
-        const nextAt = t.latestLatencyAt ? new Date(t.latestLatencyAt).getTime() : 0;
-        if (nextAt > prevAt) {
-          prev.latestLatencyMs = t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs);
-          prev.latestLatencyIsTimeout = !!t.latestLatencyIsTimeout;
-          prev.latestLatencyAt = t.latestLatencyAt || null;
-        }
-      } else {
-        m.set(rid, {
-          bytesIn: Number(t.bytesIn) || 0,
-          bytesOut: Number(t.bytesOut) || 0,
-          connections: Number(t.connections) || 0,
-          latestLatencyMs: t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs),
-          latestLatencyIsTimeout: !!t.latestLatencyIsTimeout,
-          latestLatencyAt: t.latestLatencyAt || null,
-        });
-      }
-    });
-    return m;
-  }, [trafficSummary]);
-  const trafficTotals = useMemo(() => {
-    let bytesIn = 0;
-    let bytesOut = 0;
-    let connections = 0;
-    (trafficSummary || []).forEach((t: any) => {
-      bytesIn += Number(t.bytesIn) || 0;
-      bytesOut += Number(t.bytesOut) || 0;
-      connections += Number(t.connections) || 0;
-    });
-    return { bytesIn, bytesOut, connections };
-  }, [trafficSummary]);
 
   const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string } | null>(null);
   const [selfTestRule, setSelfTestRule] = useState<{ id: number; name: string } | null>(null);
@@ -976,38 +955,95 @@ function RulesContent() {
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
-  const filteredRules = useMemo(() => {
-    const sourceRules = selectedScopeRules || rules;
-    if (!sourceRules) return [];
-    return sourceRules.filter((r: any) => {
-      if (user?.role === "admin" && filterUser === "self" && Number(r.userId) !== Number(user.id)) {
-        return false;
-      }
-      if (filterUser !== "all" && filterUser !== "self" && Number(r.userId) !== Number(filterUser)) {
-        return false;
-      }
-      if (filterHost !== "all") {
-        if (String(filterHost).startsWith("group:")) {
-          if (Number(r.forwardGroupId || 0) !== Number(String(filterHost).slice(6))) return false;
-        } else if (r.forwardGroupId || r.hostId !== parseInt(filterHost)) {
-          return false;
+  const ruleFilters = useMemo<RuleFilterState>(() => ({
+    filterUser,
+    filterHost,
+    filterTunnel,
+    filterType,
+    isAdmin: user?.role === "admin",
+    userId: user?.id,
+  }), [filterHost, filterTunnel, filterType, filterUser, user?.id, user?.role]);
+  const baseScopedRules = useMemo(() => rules || [], [rules]);
+  const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
+  const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
+  const [stableFilteredRules, setStableFilteredRules] = useState<any[]>([]);
+  useEffect(() => {
+    if (!scopedRulesReady) return;
+    const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
+    setStableFilteredRules(sourceRules.filter((rule: any) => isForwardRuleVisibleByFilters(rule, ruleFilters)));
+  }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
+  const filteredRules = stableFilteredRules;
+  const visibleRuleIdsForMetrics = useMemo(() => (
+    Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
+  ), [filteredRules]);
+  // 近 24h 按规则汇总的流量
+  const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
+    { hours: 24, ruleIds: visibleRuleIdsForMetrics },
+    {
+      enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
+      refetchInterval: 30000,
+      staleTime: 15000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const [stableTrafficSummaryRows, setStableTrafficSummaryRows] = useState<any[]>([]);
+  useEffect(() => {
+    if (visibleRuleIdsForMetrics.length === 0) {
+      setStableTrafficSummaryRows([]);
+      return;
+    }
+    if (trafficSummary) {
+      setStableTrafficSummaryRows(trafficSummary);
+    }
+  }, [trafficSummary, visibleRuleIdsForMetrics.length]);
+  const trafficSummaryRows = visibleRuleIdsForMetrics.length === 0 ? [] : trafficSummary ?? stableTrafficSummaryRows;
+  const trafficByRule = useMemo(() => {
+    const m = new Map<number, {
+      bytesIn: number;
+      bytesOut: number;
+      connections: number;
+      latestLatencyMs: number | null;
+      latestLatencyIsTimeout: boolean;
+      latestLatencyAt: Date | string | null;
+    }>();
+    trafficSummaryRows.forEach((t: any) => {
+      const rid = Number(t.ruleId);
+      const prev = m.get(rid);
+      if (prev) {
+        prev.bytesIn += Number(t.bytesIn) || 0;
+        prev.bytesOut += Number(t.bytesOut) || 0;
+        prev.connections += Number(t.connections) || 0;
+        const prevAt = prev.latestLatencyAt ? new Date(prev.latestLatencyAt).getTime() : 0;
+        const nextAt = t.latestLatencyAt ? new Date(t.latestLatencyAt).getTime() : 0;
+        if (nextAt > prevAt) {
+          prev.latestLatencyMs = t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs);
+          prev.latestLatencyIsTimeout = !!t.latestLatencyIsTimeout;
+          prev.latestLatencyAt = t.latestLatencyAt || null;
         }
+      } else {
+        m.set(rid, {
+          bytesIn: Number(t.bytesIn) || 0,
+          bytesOut: Number(t.bytesOut) || 0,
+          connections: Number(t.connections) || 0,
+          latestLatencyMs: t.latestLatencyMs === null || t.latestLatencyMs === undefined ? null : Number(t.latestLatencyMs),
+          latestLatencyIsTimeout: !!t.latestLatencyIsTimeout,
+          latestLatencyAt: t.latestLatencyAt || null,
+        });
       }
-      if (filterTunnel !== "all") {
-        if (filterTunnel === "none") {
-          if (r.tunnelId) return false;
-        } else if (Number(r.tunnelId || 0) !== Number(filterTunnel)) {
-          return false;
-        }
-      }
-      if (filterType !== "all") {
-        if (filterType === "forward-group") {
-          if (!r.forwardGroupId) return false;
-        } else if (r.forwardType !== filterType) return false;
-      }
-      return true;
     });
-  }, [rules, selectedScopeRules, filterUser, filterHost, filterTunnel, filterType, user?.id, user?.role]);
+    return m;
+  }, [trafficSummaryRows]);
+  const trafficTotals = useMemo(() => {
+    let bytesIn = 0;
+    let bytesOut = 0;
+    let connections = 0;
+    trafficSummaryRows.forEach((t: any) => {
+      bytesIn += Number(t.bytesIn) || 0;
+      bytesOut += Number(t.bytesOut) || 0;
+      connections += Number(t.connections) || 0;
+    });
+    return { bytesIn, bytesOut, connections };
+  }, [trafficSummaryRows]);
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
   const activeCount = useMemo(

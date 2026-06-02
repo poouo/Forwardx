@@ -46,7 +46,6 @@ import {
   Package,
   ShoppingBag,
   Megaphone,
-  Mail,
   Send,
   Copy,
   Link2Off,
@@ -102,7 +101,6 @@ const adminMenuItems: SidebarNavItem[] = [
   { icon: Coins, label: "流量计费管理", path: "/traffic-billing" },
   { icon: Package, label: "套餐管理", path: "/plans" },
   { icon: Users, label: "用户管理", path: "/users" },
-  { icon: Mail, label: "邮箱设置", path: "/email-settings" },
   { icon: Settings, label: "系统设置", path: "/settings" },
 ];
 
@@ -689,7 +687,8 @@ function DashboardLayoutContent({
     ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, lookingGlassMenuItem, ...adminMenuItems]
     : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
 
-  const activeMenuItem = allMenuItems.find((item) => item.path === location);
+  const currentPath = location.split("?")[0] || "/";
+  const activeMenuItem = allMenuItems.find((item) => item.path === currentPath);
   const upgradeJob = upgradeStatus?.job;
   const displayUpgradeJob = useMemo(() => {
     if (upgradeRefreshScheduled) {
@@ -765,7 +764,7 @@ function DashboardLayoutContent({
     }
   };
   const renderSidebarItems = (items: SidebarNavItem[]) => items.map((item) => {
-    const isActive = location === item.path;
+    const isActive = currentPath === item.path;
     return (
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton

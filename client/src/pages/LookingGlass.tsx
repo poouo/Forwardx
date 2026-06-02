@@ -190,7 +190,7 @@ function ResultOutput({
         </div>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 p-0">
-        <pre className="h-full min-h-0 overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+        <pre className="terminal-scrollbar h-full min-h-0 overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
           {output}
         </pre>
       </CardContent>
@@ -285,7 +285,7 @@ function Iperf3Output({
         </div>
 
         {status?.error && <p className="shrink-0 text-xs text-destructive">{status.error}</p>}
-        <pre className="min-h-0 flex-1 overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+        <pre className="terminal-scrollbar min-h-0 flex-1 overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
           {output}
         </pre>
       </CardContent>

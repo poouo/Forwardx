@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
+import { EmailSettingsContent } from "./EmailSettings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +48,7 @@ import {
   FileCode,
   Download,
   Github,
+  Mail,
   Send,
   Globe,
   ShieldCheck,
@@ -290,16 +292,24 @@ function getMigrationCodeCountdown(code: { expiresAt: number } | null, now: numb
   return Math.max(0, Math.ceil((code.expiresAt - now) / 1000));
 }
 
+const settingsTabs = ["tokens", "install", "system", "telegram", "email", "logs"] as const;
+type SettingsTab = typeof settingsTabs[number];
+
+function isSettingsTab(tab: string | null): tab is SettingsTab {
+  return !!tab && settingsTabs.includes(tab as SettingsTab);
+}
+
+function getSettingsTab(location: string): SettingsTab {
+  const query = location.split("?")[1] || "";
+  const tab = new URLSearchParams(query).get("tab");
+  return isSettingsTab(tab) ? tab : "tokens";
+}
+
 function SettingsContent() {
   const { user } = useAuth();
   const [location, setLocation] = useLocation();
   const utils = trpc.useUtils();
-  const initialTab = (() => {
-    const query = location.split("?")[1] || "";
-    const tab = new URLSearchParams(query).get("tab");
-    return tab === "system" || tab === "telegram" || tab === "logs" || tab === "install" || tab === "tokens" ? tab : "tokens";
-  })();
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => getSettingsTab(location));
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
 
   useEffect(() => {
@@ -309,12 +319,14 @@ function SettingsContent() {
   }, [user, setLocation]);
 
   useEffect(() => {
-    const query = location.split("?")[1] || "";
-    const tab = new URLSearchParams(query).get("tab");
-    if (tab === "system" || tab === "telegram" || tab === "logs" || tab === "install" || tab === "tokens") {
-      setActiveTab(tab);
-    }
+    setActiveTab(getSettingsTab(location));
   }, [location]);
+
+  const handleTabChange = (tab: string) => {
+    if (!isSettingsTab(tab)) return;
+    setActiveTab(tab);
+    setLocation(tab === "tokens" ? "/settings" : `/settings?tab=${tab}`);
+  };
 
   const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(
     undefined,
@@ -461,7 +473,7 @@ function SettingsContent() {
         </Badge>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
         <div className="-mx-1 rounded-xl border border-border/60 bg-card/70 p-2 shadow-sm backdrop-blur-md sm:mx-0 sm:inline-block">
           <div className="overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
           <TabsList className="grid h-auto w-full grid-cols-2 rounded-lg border border-border/50 bg-muted/35 sm:inline-flex sm:w-auto sm:grid-cols-none">
@@ -480,6 +492,10 @@ function SettingsContent() {
           <TabsTrigger value="telegram" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
             <Send className="h-3.5 w-3.5" />
             Telegram
+          </TabsTrigger>
+          <TabsTrigger value="email" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
+            <Mail className="h-3.5 w-3.5" />
+            邮箱设置
           </TabsTrigger>
           <TabsTrigger value="logs" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
             <FileText className="h-3.5 w-3.5" />
@@ -854,6 +870,11 @@ function SettingsContent() {
         {/* Telegram Bot Tab */}
         <TabsContent value="telegram" className="space-y-4">
           <TelegramBotSettingsCard />
+        </TabsContent>
+
+        {/* Email Settings Tab */}
+        <TabsContent value="email" className="space-y-4">
+          <EmailSettingsContent />
         </TabsContent>
 
         {/* Panel Logs Tab */}

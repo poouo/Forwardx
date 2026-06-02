@@ -463,6 +463,32 @@
   scrollbar-gutter: stable both-edges;
 }
 
+.terminal-scrollbar {
+  overflow-y: scroll;
+  scrollbar-width: auto;
+  scrollbar-color: rgb(148 163 184 / 0.72) rgb(15 23 42 / 0.92);
+}
+
+.terminal-scrollbar::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.terminal-scrollbar::-webkit-scrollbar-track {
+  background: rgb(15 23 42 / 0.92);
+}
+
+.terminal-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid rgb(15 23 42 / 0.92);
+  border-radius: 999px;
+  background-color: rgb(148 163 184 / 0.72);
+  background-clip: padding-box;
+}
+
+.terminal-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(203 213 225 / 0.88);
+}
+
 @layer components {
   .glass-panel {
     @apply border text-card-foreground shadow-sm;
