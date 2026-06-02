@@ -56,11 +56,6 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import {
-  LEGACY_PANEL_VERSIONED_AGENT_MAX,
-  LEGACY_PANEL_VERSIONED_AGENT_MIN,
-} from "@shared/versions";
-
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usePageVisible() {
@@ -114,16 +109,8 @@ function pickLatestVersion(...versions: Array<string | null | undefined>) {
     .reduce((latest, version) => (compareVersions(version, latest) > 0 ? version : latest), "");
 }
 
-function isLegacyPanelVersionedAgent(version: string | null | undefined) {
-  const normalized = normalizeVersion(version);
-  return !!normalized
-    && compareVersions(normalized, LEGACY_PANEL_VERSIONED_AGENT_MIN) >= 0
-    && compareVersions(normalized, LEGACY_PANEL_VERSIONED_AGENT_MAX) <= 0;
-}
-
 function isAgentVersionBehind(version: string | null | undefined, target: string | null | undefined) {
   if (!version || !target) return false;
-  if (isLegacyPanelVersionedAgent(version)) return true;
   return compareVersions(version, target) < 0;
 }
 

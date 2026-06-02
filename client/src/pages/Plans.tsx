@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { planResourceParts } from "@/lib/planDisplay";
+import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
@@ -563,7 +564,10 @@ export default function Plans() {
               <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
                 {tunnels.map((tunnel: any) => (
                   <label key={tunnel.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
-                    <span>{tunnel.name} <span className="text-muted-foreground">/{tunnel.mode}</span></span>
+                    <span className="min-w-0">
+                      <span>{tunnel.name}</span>
+                      <span className="ml-1 text-muted-foreground">/ {getTunnelRouteText(tunnel, hosts)} / {tunnel.mode}</span>
+                    </span>
                     <Switch checked={form.tunnelIds.includes(tunnel.id)} onCheckedChange={() => setForm({ ...form, tunnelIds: toggleId(form.tunnelIds, tunnel.id) })} />
                   </label>
                 ))}

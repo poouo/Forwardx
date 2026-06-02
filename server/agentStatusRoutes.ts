@@ -4,9 +4,32 @@ import { appendPanelLog } from "./_core/panelLogger";
 import { pushAgentRefresh } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
 import {
+  getTunnelRuntimeHostStatus,
   getTunnelRuntimeReadyCount,
   recordTunnelRuntimeHostStatus,
 } from "./tunnelRuntimeStatus";
+
+function isForwardXTunnel(tunnel: any) {
+  return String(tunnel?.mode || "").toLowerCase() === "forwardx";
+}
+
+async function updateDirectTunnelRunningStatus(tunnel: any, isRunning: boolean) {
+  const tunnelId = Number(tunnel.id);
+  const exitHostId = Number(tunnel.exitHostId);
+  if (tunnelId > 0 && exitHostId > 0) recordTunnelRuntimeHostStatus(tunnelId, exitHostId, !!isRunning);
+  const nextRunning = !!isRunning;
+  await db.updateTunnelRunningStatus(tunnelId, nextRunning);
+  return nextRunning;
+}
+
+async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
+  const tunnelId = Number(tunnel?.id || 0);
+  const exitHostId = Number(tunnel?.exitHostId || 0);
+  if (!tunnelId || !exitHostId || !isForwardXTunnel(tunnel)) return false;
+  if (getTunnelRuntimeHostStatus(tunnelId, exitHostId) === false) return false;
+  await db.updateTunnelRunningStatus(tunnelId, true);
+  return true;
+}
 
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
@@ -35,12 +58,8 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
 
     const rule = await db.getForwardRuleById(ruleId);
     if (!rule) {
-      if (!isRunning) {
-        appendPanelLog("info", `[Rule] status ignored missing rule=${ruleId} tunnel=${Number(tunnelId || 0) || "-"} host=${host.id} running=false`);
-        res.json({ success: true, ignored: true });
-        return;
-      }
-      res.status(404).json({ error: "rule not found" });
+      appendPanelLog("info", `[ProtocolBlock] ignored missing rule=${ruleId} tunnel=${Number(tunnelId || 0) || "-"} host=${host.id} protocol=${protocol}`);
+      res.json({ success: true, ignored: true });
       return;
     }
     const tunnel = tunnelId ? await db.getTunnelById(tunnelId) : ((rule as any).tunnelId ? await db.getTunnelById((rule as any).tunnelId) : null);
@@ -93,7 +112,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
       const isTunnelHop = Array.isArray(hops)
         && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
-      if (!tunnel || (tunnel.entryHostId !== host.id && tunnel.exitHostId !== host.id && !isTunnelHop)) {
+      if (!tunnel || (Number(tunnel.entryHostId) !== Number(host.id) && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop)) {
         res.status(404).json({ error: "tunnel not found" });
         return;
       }
@@ -111,10 +130,15 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         res.json({ success: true });
         return;
       }
-      await db.updateTunnelRunningStatus(tunnelId, !!isRunning);
+      if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id)) {
+        appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+        res.json({ success: true, ignored: true });
+        return;
+      }
+      const nextRunning = await updateDirectTunnelRunningStatus(tunnel, !!isRunning);
       appendPanelLog(
-        !!isRunning ? "info" : "warn",
-        `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        nextRunning ? "info" : "warn",
+        `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
       );
       res.json({ success: true });
       return;
@@ -129,13 +153,16 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       res.status(404).json({ error: "rule not found" });
       return;
     }
+    let ruleTunnel: any = null;
     let allowed = Number((rule as any).hostId) === Number(host.id);
     if (!allowed && (rule as any).tunnelId) {
-      const tunnel = await db.getTunnelById(Number((rule as any).tunnelId));
-      allowed = !!tunnel && (
-        Number((tunnel as any).entryHostId) === Number(host.id)
-        || Number((tunnel as any).exitHostId) === Number(host.id)
+      ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
+      allowed = !!ruleTunnel && (
+        Number((ruleTunnel as any).entryHostId) === Number(host.id)
+        || Number((ruleTunnel as any).exitHostId) === Number(host.id)
       );
+    } else if ((rule as any).tunnelId) {
+      ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
     }
     if (!allowed) {
       res.status(403).json({ error: "forbidden" });
@@ -143,6 +170,17 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     }
 
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
+    if (
+      !!isRunning
+      && ruleTunnel
+      && isForwardXTunnel(ruleTunnel)
+      && Number((rule as any).tunnelId) > 0
+    ) {
+      const hops = await hopRepo.getTunnelHops(Number(ruleTunnel.id));
+      if (!Array.isArray(hops) || hops.length < 3) {
+        await maybeMarkForwardXTunnelRunningFromRule(ruleTunnel);
+      }
+    }
     appendPanelLog(
       !!isRunning ? "info" : "warn",
       `[Rule] status rule=${ruleId} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,

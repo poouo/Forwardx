@@ -129,7 +129,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.81"
+	fxpRuntimeVersion   = "2.2.82"
 )
 
 var (

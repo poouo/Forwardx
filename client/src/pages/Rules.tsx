@@ -70,6 +70,7 @@ import {
 import { Fragment, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
+import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 
 function formatBytes(n: number): string {
   if (!n || n <= 0) return "0 B";
@@ -673,11 +674,6 @@ function RulesContent() {
     return map;
   }, [tunnels]);
   const selectedTunnelDisplay = useMemo(() => getTunnelDisplay(selectedTunnel), [selectedTunnel]);
-  const tunnelDisplayById = useMemo(() => {
-    const map = new Map<number, ReturnType<typeof getTunnelDisplay>>();
-    (tunnels || []).forEach((t: any) => map.set(Number(t.id), getTunnelDisplay(t)));
-    return map;
-  }, [tunnels]);
   const userById = useMemo(() => {
     const map = new Map<number, any>();
     (users || []).forEach((item: any) => map.set(Number(item.id), item));
@@ -1034,6 +1030,24 @@ function RulesContent() {
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
   };
+  const renderTunnelRoute = (tunnel: any, compact = false) => {
+    const hopIds = getTunnelHopIds(tunnel);
+    return (
+      <div
+        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
+        title={getTunnelRouteText(tunnel, hosts)}
+      >
+        {hopIds.map((hostId, index) => (
+          <Fragment key={`${tunnel?.id || "tunnel"}-${hostId}-${index}`}>
+            {index > 0 && <ArrowRight className="h-3 w-3 shrink-0" />}
+            <span className={compact ? "max-w-[8rem] truncate" : "truncate"}>
+              {tunnelHopHostName(tunnel, hostId, hosts)}
+            </span>
+          </Fragment>
+        ))}
+      </div>
+    );
+  };
 
   const getRuleEntryHost = (rule: any) => {
     const directHost = hosts?.find((h: any) => Number(h.id) === Number(rule.hostId));
@@ -1058,6 +1072,13 @@ function RulesContent() {
   /** 获取主机的入口地址：优先用用户自定义的 entryIp，未填则回退 ip */
   const getForwardGroupName = (groupId: number) => {
     return forwardGroupById.get(Number(groupId))?.name || `转发组 #${groupId}`;
+  };
+  const getForwardGroupMemberLabel = (member: any) => {
+    if (member.memberType === "host") {
+      return member.hostId ? getHostName(member.hostId) : "主机成员";
+    }
+    const tunnel = member.tunnelId ? tunnelById.get(Number(member.tunnelId)) : null;
+    return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : member.tunnelId ? `隧道 #${member.tunnelId}` : "隧道成员";
   };
 
   const getHostEntry = (hostId: number): string => {
@@ -1161,38 +1182,50 @@ function RulesContent() {
     </div>
   );
 
-  const renderRouteBadge = (rule: any) => (
-    <Badge
-      variant="outline"
-      className={`whitespace-nowrap text-[10px] ${
-        rule.forwardGroupId
-          ? "border-emerald-500/30 text-emerald-600"
-          : rule.forwardType === "iptables" || rule.forwardType === "nftables"
-          ? "border-primary/30 text-primary"
-          : rule.forwardType === "socat"
-          ? "border-chart-5/30 text-chart-5"
-          : rule.forwardType === "gost"
-          ? "border-chart-4/30 text-chart-4"
-          : "border-chart-3/30 text-chart-3"
-      }`}
-    >
-      {rule.forwardGroupId ? (
-        <><Layers3 className="h-3 w-3 mr-1" />转发组</>
-      ) : rule.forwardType === "gost" && rule.tunnelId ? (
-        <><Network className="h-3 w-3 mr-1" />{tunnelDisplayById.get(Number(rule.tunnelId))?.badgeLabel || "隧道"}</>
-      ) : rule.forwardType === "iptables" ? (
-        <><Shield className="h-3 w-3 mr-1" />iptables</>
-      ) : rule.forwardType === "nftables" ? (
-        <><Shield className="h-3 w-3 mr-1" />nftables</>
-      ) : rule.forwardType === "socat" ? (
-        <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
-      ) : rule.forwardType === "gost" ? (
-        <><Network className="h-3 w-3 mr-1" />gost</>
-      ) : (
-        <><Zap className="h-3 w-3 mr-1" />realm</>
-      )}
-    </Badge>
-  );
+  const renderRouteBadge = (rule: any) => {
+    const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    const badge = (
+      <Badge
+        variant="outline"
+        className={`w-fit whitespace-nowrap text-[10px] ${
+          rule.forwardGroupId
+            ? "border-emerald-500/30 text-emerald-600"
+            : rule.forwardType === "iptables" || rule.forwardType === "nftables"
+            ? "border-primary/30 text-primary"
+            : rule.forwardType === "socat"
+            ? "border-chart-5/30 text-chart-5"
+            : rule.forwardType === "gost"
+            ? "border-chart-4/30 text-chart-4"
+            : "border-chart-3/30 text-chart-3"
+        }`}
+      >
+        {rule.forwardGroupId ? (
+          <><Layers3 className="h-3 w-3 mr-1" />转发组</>
+        ) : tunnel ? (
+          <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel).badgeLabel}</>
+        ) : rule.forwardType === "iptables" ? (
+          <><Shield className="h-3 w-3 mr-1" />iptables</>
+        ) : rule.forwardType === "nftables" ? (
+          <><Shield className="h-3 w-3 mr-1" />nftables</>
+        ) : rule.forwardType === "socat" ? (
+          <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
+        ) : rule.forwardType === "gost" ? (
+          <><Network className="h-3 w-3 mr-1" />gost</>
+        ) : (
+          <><Zap className="h-3 w-3 mr-1" />realm</>
+        )}
+      </Badge>
+    );
+    if (!tunnel) return badge;
+    return (
+      <div className="flex min-w-0 flex-col gap-1">
+        {badge}
+        <div className="min-w-0 text-muted-foreground">
+          {renderTunnelRoute(tunnel, true)}
+        </div>
+      </div>
+    );
+  };
 
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
@@ -1515,7 +1548,7 @@ function RulesContent() {
               <SelectItem value="none">不使用隧道</SelectItem>
               {(tunnels || []).map((t: any) => (
                 <SelectItem key={t.id} value={String(t.id)}>
-                  {getTunnelDisplay(t).shortLabel}
+                  {t.name} / {getTunnelRouteText(t, hosts)} / {getTunnelDisplay(t).shortLabel}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1581,7 +1614,7 @@ function RulesContent() {
                     <Table className={user?.role === "admin" ? "min-w-[1100px] table-fixed" : "min-w-[980px] table-fixed"}>
                       <TableHeader>
                         <TableRow className="hover:bg-transparent">
-                          <TableHead className="w-[48px] text-center">状态</TableHead>
+                          <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
                           <TableHead className="w-[120px]">规则</TableHead>
                           {user?.role === "admin" && <TableHead className="w-[120px]">用户</TableHead>}
                           <TableHead className="w-[120px]">主机</TableHead>
@@ -1811,7 +1844,7 @@ function RulesContent() {
                         <SelectItem value="none">请选择隧道</SelectItem>
                         {availableTunnels.map((t: any) => (
                           <SelectItem key={t.id} value={String(t.id)}>
-                            {t.name} / {getHostName(t.entryHostId)} → {getHostName(t.exitHostId)} / {String(t.mode).toUpperCase()}
+                            {t.name} / {getTunnelRouteText(t, hosts)} / {String(t.mode).toUpperCase()}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1830,9 +1863,7 @@ function RulesContent() {
                 )}
                 {selectedTunnel && (
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>{getHostName(selectedTunnel.entryHostId)}</span>
-                    <ArrowRight className="h-3 w-3" />
-                    <span>{getHostName(selectedTunnel.exitHostId)}</span>
+                    {renderTunnelRoute(selectedTunnel, true)}
                     <code className="rounded bg-background/60 px-1.5 py-0.5">:{selectedTunnel.listenPort}</code>
                   </div>
                 )}
@@ -1879,9 +1910,7 @@ function RulesContent() {
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {(selectedForwardGroup.members || []).slice(0, 4).map((member: any, index: number) => (
                       <span key={member.id} className="rounded bg-background/60 px-1.5 py-0.5">
-                        {index + 1}. {member.memberType === "host"
-                          ? (member.hostId ? getHostName(member.hostId) : "主机成员")
-                          : (member.tunnelId ? tunnelDisplayById.get(Number(member.tunnelId))?.shortLabel || `隧道 #${member.tunnelId}` : "隧道成员")}
+                        {index + 1}. {getForwardGroupMemberLabel(member)}
                       </span>
                     ))}
                     {(selectedForwardGroup.members || []).length > 4 && <span>+{(selectedForwardGroup.members || []).length - 4}</span>}

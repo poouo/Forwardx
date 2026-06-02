@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -48,7 +49,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -142,13 +143,6 @@ function normalizeHopConnectHosts(
   while (next.length < hostCount) next.push(null);
   if (hostCount > 0) next[0] = null;
   return next;
-}
-
-function tunnelEndpointName(tunnel: any | null | undefined, role: "entry" | "exit", hosts: any[] | undefined) {
-  const hostId = Number(role === "entry" ? tunnel?.entryHostId : tunnel?.exitHostId);
-  const fromList = hosts?.find((host: any) => Number(host.id) === hostId);
-  const fromTunnel = role === "entry" ? tunnel?.entryHost : tunnel?.exitHost;
-  return fromList?.name || fromTunnel?.name || `主机 #${hostId}`;
 }
 
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
@@ -537,13 +531,29 @@ function TunnelsContent() {
     () => editingId ? (tunnels || []).find((tunnel: any) => Number(tunnel.id) === Number(editingId)) || null : null,
     [editingId, tunnels]
   );
-  const selectedExitHost = useMemo(
-    () => hosts?.find((h: any) => h.id === form.exitHostId),
-    [hosts, form.exitHostId]
-  );
-  const getHostName = (id: number, tunnel?: any, role?: "entry" | "exit") => {
-    if (tunnel && role) return tunnelEndpointName(tunnel, role, hosts);
-    return hosts?.find((h: any) => h.id === id)?.name || `主机 #${id}`;
+  const renderTunnelStatusDot = (tunnel: any, supported = true) => {
+    if (!supported) return <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />;
+    if (tunnel.isRunning) return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+    if (tunnel.isEnabled) return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+    return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+  };
+  const renderTunnelRoute = (tunnel: any, compact = false) => {
+    const hopIds = getTunnelHopIds(tunnel);
+    return (
+      <div
+        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
+        title={getTunnelRouteText(tunnel, hosts)}
+      >
+        {hopIds.map((hostId, index) => (
+          <Fragment key={`${tunnel.id || "tunnel"}-${hostId}-${index}`}>
+            {index > 0 && <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />}
+            <span className={compact ? "max-w-[8rem] truncate" : "truncate"}>
+              {tunnelHopHostName(tunnel, hostId, hosts)}
+            </span>
+          </Fragment>
+        ))}
+      </div>
+    );
   };
 
   const resetForm = () => {
@@ -761,15 +771,7 @@ function TunnelsContent() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
-                          {!supported ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />
-                          ) : tunnel.isRunning ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
-                          ) : tunnel.isEnabled ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />
-                          ) : (
-                            <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
-                          )}
+                          {renderTunnelStatusDot(tunnel, supported)}
                         </div>
                         <div className="min-w-0">
                           <p className="truncate font-medium">{tunnel.name}</p>
@@ -792,11 +794,7 @@ function TunnelsContent() {
                     </div>
 
                     <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="min-w-0 truncate">{getHostName(tunnel.entryHostId, tunnel, "entry")}</span>
-                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 truncate">{getHostName(tunnel.exitHostId, tunnel, "exit")}</span>
-                      </div>
+                      {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
                           {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
@@ -867,15 +865,7 @@ function TunnelsContent() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
-                          {!supported ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />
-                          ) : tunnel.isRunning ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
-                          ) : tunnel.isEnabled ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />
-                          ) : (
-                            <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
-                          )}
+                          {renderTunnelStatusDot(tunnel, supported)}
                         </div>
                         <div className="min-w-0">
                           <p className="truncate font-medium">{tunnel.name}</p>
@@ -898,11 +888,7 @@ function TunnelsContent() {
                     </div>
 
                     <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="min-w-0 truncate">{getHostName(tunnel.entryHostId, tunnel, "entry")}</span>
-                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 truncate">{getHostName(tunnel.exitHostId, tunnel, "exit")}</span>
-                      </div>
+                      {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
                           {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
@@ -967,7 +953,7 @@ function TunnelsContent() {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-[60px]">状态</TableHead>
+                    <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
                     <TableHead>隧道名称</TableHead>
                     <TableHead>链路</TableHead>
                     <TableHead className="hidden md:table-cell">模式</TableHead>
@@ -984,15 +970,7 @@ function TunnelsContent() {
                     <TableRow key={tunnel.id} className={!supported ? "opacity-70" : ""} title={!supported ? unsupportedProtocolTitle : undefined}>
                       <TableCell>
                         <div className="flex items-center justify-center">
-                          {!supported ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />
-                          ) : tunnel.isRunning ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
-                          ) : tunnel.isEnabled ? (
-                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />
-                          ) : (
-                            <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
-                          )}
+                          {renderTunnelStatusDot(tunnel, supported)}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -1004,10 +982,8 @@ function TunnelsContent() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2 text-xs">
-                          <span>{getHostName(tunnel.entryHostId, tunnel, "entry")}</span>
-                          <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                          <span>{getHostName(tunnel.exitHostId, tunnel, "exit")}</span>
+                        <div className="flex min-w-0 items-center gap-2 text-xs">
+                          {renderTunnelRoute(tunnel)}
                           <code className="rounded bg-muted/40 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                         </div>
                       </TableCell>

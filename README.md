@@ -147,8 +147,7 @@ Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database
 在面板「系统设置 -> Agent Token」中创建 Token，然后在被管理的 Linux 主机上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
-  PANEL_URL="http://你的面板地址:3000" bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
 升级 Agent：

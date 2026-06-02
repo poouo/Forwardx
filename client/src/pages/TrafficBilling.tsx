@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { Coins, Gauge, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useMemo, useState, type ElementType, type ReactNode } from "react";
@@ -105,6 +106,10 @@ export default function TrafficBilling() {
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
 
   const resources = configForm.resourceType === "host" ? hosts : tunnels;
+  const resourceLabel = (item: any) => {
+    if (configForm.resourceType === "host") return `${item.name} #${item.id}`;
+    return `${item.name} / ${getTunnelRouteText(item, hosts)} / ${String(item.mode || "").toUpperCase()} #${item.id}`;
+  };
   const totalCharged = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.amountCents || 0), 0), [records]);
   const totalGb = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.billedGb || 0), 0), [records]);
 
@@ -355,7 +360,7 @@ export default function TrafficBilling() {
                 <SelectTrigger><SelectValue placeholder="选择资源" /></SelectTrigger>
                 <SelectContent>
                   {resources.map((item: any) => (
-                    <SelectItem key={item.id} value={String(item.id)}>{item.name} #{item.id}</SelectItem>
+                    <SelectItem key={item.id} value={String(item.id)}>{resourceLabel(item)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

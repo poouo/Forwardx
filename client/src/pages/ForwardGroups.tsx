@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -220,7 +221,7 @@ function ForwardGroupsContent() {
     : (tunnels || []).map((t: any) => ({
       id: Number(t.id),
       label: t.name,
-      meta: `${hostById.get(Number(t.entryHostId))?.name || `#${t.entryHostId}`} -> ${hostById.get(Number(t.exitHostId))?.name || `#${t.exitHostId}`}`,
+      meta: getTunnelRouteText(t, hosts),
     }));
 
   const addMember = (id: number) => {
@@ -299,7 +300,8 @@ function ForwardGroupsContent() {
 
   const memberLabel = (member: any) => {
     if (member.memberType === "host") return hostById.get(Number(member.hostId))?.name || `主机 #${member.hostId}`;
-    return tunnelById.get(Number(member.tunnelId))?.name || `隧道 #${member.tunnelId}`;
+    const tunnel = tunnelById.get(Number(member.tunnelId));
+    return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : `隧道 #${member.tunnelId}`;
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;

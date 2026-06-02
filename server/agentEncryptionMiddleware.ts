@@ -15,8 +15,6 @@ export function agentEncryptionMiddleware(req: Request, res: Response, next: Nex
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     token = authHeader.substring(7);
-  } else if ((req.body as any).k && typeof (req.body as any).k === "string") {
-    token = (req.body as any).k;
   }
   if (!token) {
     res.status(401).json({ error: "Encrypted request missing token" });

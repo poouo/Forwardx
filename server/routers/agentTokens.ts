@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import { protectedProcedure, router } from "../_core/trpc";
-import { generateInstallScript } from "../agentInstallScripts";
 import * as db from "../db";
 import { maskToken } from "./helpers";
 
@@ -48,8 +47,8 @@ export const agentTokensRouter = router({
       await db.deleteAgentToken(input.id);
       return { success: true };
     }),
-  getInstallScript: protectedProcedure
-    .input(z.object({ id: z.number().optional(), token: z.string().optional(), panelUrl: z.string().optional() }))
+  getInstallToken: protectedProcedure
+    .input(z.object({ id: z.number().optional(), token: z.string().optional() }))
     .query(async ({ input, ctx }) => {
       if (!input.id && !input.token) throw new Error("缺少 Token 参数");
       const token = input.id
@@ -59,11 +58,6 @@ export const agentTokensRouter = router({
       if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
         throw new Error("无权使用该 Token");
       }
-      const reqAny = ctx.req as any;
-      const fallbackHost = reqAny?.get?.("host") || "localhost:3000";
-      const fallbackProto = reqAny?.protocol || "http";
-      const panelUrl = input.panelUrl || `${fallbackProto}://${fallbackHost}`;
-      const script = generateInstallScript(panelUrl, token.token);
-      return { script, token: token.token };
+      return { token: token.token };
     }),
 });

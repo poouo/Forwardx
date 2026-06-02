@@ -43,6 +43,7 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowDownToLine,
@@ -825,6 +826,7 @@ function UsersContent() {
   };
 
   const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
+  const tunnelRouteText = (tunnel: any) => getTunnelRouteText(tunnel, allHosts);
   const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const selectedAllowedHosts = (allHosts || []).filter((h: any) => allowedHostIds.includes(Number(h.id)));
@@ -2071,7 +2073,7 @@ function UsersContent() {
                   <SelectContent>
                     {availableAllowedTunnels.map((t: any) => (
                       <SelectItem key={t.id} value={String(t.id)}>
-                        {t.name} · {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                        {t.name} · {tunnelRouteText(t)} :{t.listenPort}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2086,7 +2088,7 @@ function UsersContent() {
                             <Badge variant="outline" className="text-[10px] px-1.5 py-0">{String(t.mode || "tls")}</Badge>
                           </div>
                           <p className="text-[10px] text-muted-foreground truncate">
-                            {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                            {tunnelRouteText(t)} :{t.listenPort}
                           </p>
                         </div>
                         <Button
@@ -2168,7 +2170,7 @@ function UsersContent() {
                   <SelectContent>
                     {availableBillingTunnels.map((t: any) => (
                       <SelectItem key={t.id} value={String(t.id)}>
-                        {t.name} · {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                        {t.name} · {tunnelRouteText(t)} :{t.listenPort}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2183,7 +2185,7 @@ function UsersContent() {
                             <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{String(t.mode || "tls")}</Badge>
                           </div>
                           <p className="truncate text-[10px] text-muted-foreground">
-                            {hostNameById(t.entryHostId)} -&gt; {hostNameById(t.exitHostId)} :{t.listenPort}
+                            {tunnelRouteText(t)} :{t.listenPort}
                           </p>
                         </div>
                         <Button

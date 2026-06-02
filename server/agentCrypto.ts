@@ -2,8 +2,8 @@
  * Agent <-> 面板 通讯加密模块（AES-256-CTR + HMAC-SHA256）
  *
  * 选用 CTR + HMAC（Encrypt-then-MAC）的原因：
- *   - openssl 命令行对 AES-GCM 的 tag 输出在 1.1.x 行为不一致，bash 端难以可靠实现
- *   - CTR 与 HMAC 均为 openssl 多年稳定支持的原语，bash 端用一行管道即可完成
+ *   - Agent 和面板两端实现简单稳定
+ *   - HMAC 覆盖 iv/ct/ts，服务端可在解密前验证完整性
  *
  * 协议：
  *   key_enc = SHA-256(token | "forwardx-agent-v1")        // 32 bytes，AES-256-CTR 密钥

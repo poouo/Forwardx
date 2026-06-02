@@ -30,7 +30,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.81"
+var Version = "2.2.82"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -2859,7 +2859,7 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 	if panel == "" {
 		panel = cfg.PanelURL
 	}
-	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --max-time 30 "%s/api/agent/install.sh" | PANEL_URL="%s" bash -s -- upgrade %s`, panel, panel, shellQuote(cfg.Token))
+	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --max-time 30 "%s/api/agent/install.sh" | bash -s -- upgrade %s`, panel, shellQuote(cfg.Token))
 	cmd := fmt.Sprintf(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=forwardx-agent-upgrade --collect /bin/sh -lc %s; else nohup sh -lc %s >/var/log/forwardx-agent/agent-upgrade.log 2>&1 < /dev/null & fi`, shellQuote(upgradeCmd), shellQuote(upgradeCmd))
 	logf("self-upgrade requested target=%s", up.TargetVersion)
 	if !runShell(cmd) {

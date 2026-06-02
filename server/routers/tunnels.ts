@@ -51,55 +51,53 @@ const getHostTunnelAddress = (host: any) =>
   String((host as any)?.tunnelEntryIp || (host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
 async function attachTunnelEndpointHosts(tunnels: any[]) {
-  const hostIds = Array.from(new Set(
-    tunnels
-      .flatMap((tunnel) => [Number(tunnel.entryHostId || 0), Number(tunnel.exitHostId || 0)])
-      .filter(Boolean),
-  ));
   const hostMap = new Map<number, any>();
   const hopHostIdsByTunnel = new Map<number, number[]>();
   const hopConnectHostsByTunnel = new Map<number, Array<string | null>>();
-  await Promise.all(hostIds.map(async (hostId) => {
-    const host = await db.getHostById(hostId);
-    if (host) hostMap.set(hostId, host);
-  }));
+  const hostIds = new Set<number>();
+  for (const tunnel of tunnels) {
+    const entryHostId = Number(tunnel.entryHostId || 0);
+    const exitHostId = Number(tunnel.exitHostId || 0);
+    if (entryHostId > 0) hostIds.add(entryHostId);
+    if (exitHostId > 0) hostIds.add(exitHostId);
+  }
   await Promise.all(tunnels.map(async (tunnel) => {
     const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
     const hopIds = (hops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
-    if (hopIds.length >= 2) hopHostIdsByTunnel.set(Number(tunnel.id), hopIds);
+    if (hopIds.length >= 2) {
+      hopHostIdsByTunnel.set(Number(tunnel.id), hopIds);
+      for (const hostId of hopIds) hostIds.add(hostId);
+    }
     const hopConnectHosts = (hops || []).map((hop: any) => {
       const value = String((hop as any).connectHost || "").trim();
       return value ? value : null;
     });
     if (hopConnectHosts.length >= 2) hopConnectHostsByTunnel.set(Number(tunnel.id), hopConnectHosts);
   }));
+  await Promise.all(Array.from(hostIds).map(async (hostId) => {
+    const host = await db.getHostById(hostId);
+    if (host) hostMap.set(hostId, host);
+  }));
+  const hostSummary = (host: any) => host ? {
+    id: host.id,
+    name: host.name,
+    ip: host.ip,
+    ipv4: (host as any).ipv4,
+    ipv6: (host as any).ipv6,
+    entryIp: (host as any).entryIp,
+    tunnelEntryIp: (host as any).tunnelEntryIp,
+    portRangeStart: (host as any).portRangeStart,
+    portRangeEnd: (host as any).portRangeEnd,
+  } : null;
   return tunnels.map((tunnel) => ({
     ...tunnel,
     hopHostIds: hopHostIdsByTunnel.get(Number(tunnel.id)) || [],
     hopConnectHosts: hopConnectHostsByTunnel.get(Number(tunnel.id)) || [],
-    entryHost: (() => {
-      const host = hostMap.get(Number(tunnel.entryHostId || 0));
-      if (!host) return null;
-      return {
-        id: host.id,
-        name: host.name,
-        ip: host.ip,
-        ipv4: (host as any).ipv4,
-        ipv6: (host as any).ipv6,
-        entryIp: (host as any).entryIp,
-        tunnelEntryIp: (host as any).tunnelEntryIp,
-        portRangeStart: (host as any).portRangeStart,
-        portRangeEnd: (host as any).portRangeEnd,
-      };
-    })(),
-    exitHost: (() => {
-      const host = hostMap.get(Number(tunnel.exitHostId || 0));
-      if (!host) return null;
-      return {
-        id: host.id,
-        name: host.name,
-      };
-    })(),
+    hopHosts: (hopHostIdsByTunnel.get(Number(tunnel.id)) || [])
+      .map((hostId) => hostSummary(hostMap.get(Number(hostId))))
+      .filter(Boolean),
+    entryHost: hostSummary(hostMap.get(Number(tunnel.entryHostId || 0))),
+    exitHost: hostSummary(hostMap.get(Number(tunnel.exitHostId || 0))),
   }));
 }
 
@@ -111,7 +109,7 @@ export const tunnelsRouter = router({
     }),
     listAll: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
-      return db.getTunnels();
+      return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),
     latencySeries: protectedProcedure
       .input(z.object({

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ForwardX Agent GitHub entry script
 # install/upgrade: fetch panel installer and run non-interactively
-# uninstall: local fallback uninstall (no panel dependency)
+# uninstall: local cleanup without panel dependency
 
 ACTION="${1:-}"
 TOKEN="${2:-}"
@@ -72,9 +72,6 @@ run_panel_installer() {
   tmp_script="$(mktemp /tmp/forwardx-install.XXXXXX)"
 
   local url="${PANEL_URL}/api/agent/install.sh"
-  if [ -n "$token" ]; then
-    url="${url}?token=${token}"
-  fi
 
   echo "[INFO] Fetching installer from panel: ${PANEL_URL}"
   if ! curl -fsSL --max-time "$timeout" "$url" -o "$tmp_script"; then
@@ -89,8 +86,7 @@ run_panel_installer() {
 
   chmod 700 "$tmp_script"
 
-  # pass both argv and env for compatibility with different panel script versions
-  if ACTION="$mode" TOKEN="$token" bash "$tmp_script" "$mode" "$token" </dev/null; then
+  if bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0
   fi

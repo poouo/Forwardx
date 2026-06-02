@@ -363,12 +363,8 @@ function SettingsContent() {
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
     || (typeof window !== "undefined" ? window.location.origin : "");
-  const repoUrl = systemSettings?.repoUrl || "https://github.com/poouo/Forwardx";
-  // GitHub 官方 install-agent.sh 的 raw 地址
-  const githubScriptUrl = `${repoUrl.replace(/\/+$/, "").replace("github.com", "raw.githubusercontent.com")}/main/scripts/install-agent.sh`;
-
-  const { data: scriptData } = trpc.agentTokens.getInstallScript.useQuery(
-    { id: scriptTokenId ?? undefined, panelUrl },
+  const { data: installTokenData } = trpc.agentTokens.getInstallToken.useQuery(
+    { id: scriptTokenId ?? undefined },
     { enabled: !!scriptTokenId && showScript }
   );
 
@@ -430,27 +426,20 @@ function SettingsContent() {
     }
   };
 
-  /**
-   * 生成一条「GitHub 优先 + 面板回退」的安装命令。
-   * 该命令在 shell 内联决定从哪里拉取脚本，GitHub 不可达时自动转发面板。
-   */
-  const getAgentScriptCommand = (args: string, withPanel = false) => {
-    const panelEnv = withPanel ? `PANEL_URL="${panelUrl}" ` : "";
-    return `bash -c 'T=$(mktemp /tmp/forwardx-agent.XXXXXX); (curl -fsSL --max-time 10 ${githubScriptUrl} -o "$T" 2>/dev/null || curl -fsSL --max-time 30 "${panelUrl}/api/agent/install.sh" -o "$T") && chmod 700 "$T" && ${panelEnv}bash "$T" ${args} </dev/null; R=$?; rm -f "$T"; exit $R'`;
+  const getAgentScriptCommand = (args: string) => {
+    return `curl -fsSL "${panelUrl}/api/agent/install.sh" | bash -s -- ${args}`;
   };
 
   const getInstallCommand = (token: string) => {
-    return getAgentScriptCommand(`install ${token}`, true);
+    return getAgentScriptCommand(`install ${token}`);
   };
 
-  /** 卸载命令也采用同样的「GitHub 优先 + 面板回退」策略 */
   const getUninstallCommand = () => {
     return getAgentScriptCommand("uninstall");
   };
 
-  /** 升级命令复用已安装 Agent 中的面板地址和 Token，必要时可由 PANEL_URL 覆盖 */
   const getUpgradeCommand = () => {
-    return getAgentScriptCommand("upgrade", true);
+    return getAgentScriptCommand("upgrade");
   };
 
   const tokenHostAddress = (host: any) => {
@@ -572,7 +561,7 @@ function SettingsContent() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            title="查看安装脚本"
+                            title="查看安装命令"
                             onClick={() => {
                               setScriptTokenId(t.id);
                               setShowScript(true);
@@ -678,7 +667,7 @@ function SettingsContent() {
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8"
-                                title="查看安装脚本"
+                                title="查看安装命令"
                                 onClick={() => {
                                   setScriptTokenId(t.id);
                                   setShowScript(true);
@@ -1023,13 +1012,13 @@ function SettingsContent() {
         </DialogContent>
       </Dialog>
 
-      {/* Install Script Dialog */}
+      {/* Install Command Dialog */}
       <Dialog open={showScript} onOpenChange={setShowScript}>
         <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Terminal className="h-5 w-5" />
-              安装脚本
+              安装命令
             </DialogTitle>
             <DialogDescription>
               使用 root 执行命令。
@@ -1040,13 +1029,13 @@ function SettingsContent() {
               <Label className="text-xs text-muted-foreground">安装命令</Label>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {scriptData?.token ? getInstallCommand(scriptData.token) : "加载中..."}
+                  {installTokenData?.token ? getInstallCommand(installTokenData.token) : "加载中..."}
                 </code>
                 <Button
                   variant="ghost"
                   size="icon"
                   className="shrink-0 self-end sm:self-auto"
-                  onClick={() => scriptData?.token && copyToClipboard(getInstallCommand(scriptData.token))}
+                  onClick={() => installTokenData?.token && copyToClipboard(getInstallCommand(installTokenData.token))}
                 >
                   <Copy className="h-4 w-4" />
                 </Button>

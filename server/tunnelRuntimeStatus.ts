@@ -16,6 +16,10 @@ export function isTunnelRuntimeHostReady(tunnelId: number, hostId: number) {
   return tunnelRuntimeStatus.get(Number(tunnelId))?.get(Number(hostId)) === true;
 }
 
+export function getTunnelRuntimeHostStatus(tunnelId: number, hostId: number) {
+  return tunnelRuntimeStatus.get(Number(tunnelId))?.get(Number(hostId));
+}
+
 export function getTunnelRuntimeReadyCount(tunnelId: number, hostIds: number[]) {
   const hosts = tunnelRuntimeStatus.get(Number(tunnelId));
   if (!hosts) return 0;

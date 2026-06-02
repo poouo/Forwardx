@@ -1,9 +1,5 @@
 import crypto from "crypto";
 import { isSelfTestMeta, type SelfTestMeta } from "../shared/agentDtos";
-import {
-  LEGACY_PANEL_VERSIONED_AGENT_MAX,
-  LEGACY_PANEL_VERSIONED_AGENT_MIN,
-} from "../shared/versions";
 
 export function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
@@ -20,22 +16,13 @@ export function compareVersions(a: string | null | undefined, b: string | null |
   return 0;
 }
 
-export function isLegacyPanelVersionedAgent(version: string | null | undefined) {
-  const normalized = normalizeVersion(version);
-  return !!normalized
-    && compareVersions(normalized, LEGACY_PANEL_VERSIONED_AGENT_MIN) >= 0
-    && compareVersions(normalized, LEGACY_PANEL_VERSIONED_AGENT_MAX) <= 0;
-}
-
 export function isAgentVersionAtLeast(version: string | null | undefined, target: string | null | undefined) {
   if (!version || !target) return false;
-  if (isLegacyPanelVersionedAgent(version)) return false;
   return compareVersions(version, target) >= 0;
 }
 
 export function isAgentVersionBehind(version: string | null | undefined, target: string | null | undefined) {
   if (!version || !target) return false;
-  if (isLegacyPanelVersionedAgent(version)) return true;
   return compareVersions(version, target) < 0;
 }
 

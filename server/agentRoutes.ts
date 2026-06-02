@@ -164,9 +164,7 @@ registerAgentReportRoutes(agentRouter);
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
   const panelUrl = await resolvePanelUrl(req);
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  // token 可选：如果 URL 中传了 token，嵌入脚本；否则从命令行参数读取
-  const token = (req.query.token as string) || "";
-  res.send(generateInstallScript(panelUrl, token || undefined));
+  res.send(generateInstallScript(panelUrl));
 });
 
 export { agentRouter };

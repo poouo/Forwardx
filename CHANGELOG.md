@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.98] - 2026-06-02
+
+### Fixed
+
+- Fixed forwarding-rule and tunnel-management status columns wrapping too narrowly on desktop tables.
+- Fixed ForwardX custom tunnels staying in the waiting state when a running tunnel rule had already confirmed the route was usable.
+- Displayed the full multi-hop tunnel chain in tunnel cards, tunnel tables, forwarding-rule tunnel selectors, and related tunnel selection lists.
+- Bumped panel version to 2.3.98 and Agent/FXP runtime target version to 2.2.82.
+
 ## [2.3.97] - 2026-06-02
 
 ### Fixed
