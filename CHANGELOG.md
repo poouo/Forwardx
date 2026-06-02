@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.100] - 2026-06-02
+
+### Added
+
+- Added forwarding-rule card size selection with standard and compact cards for denser rule scanning.
+- Added forwarding-rule page-size selection with 12, 24, 36, and 48 rules per page.
+
+### Changed
+
+- Bumped panel version to 2.3.100. Agent/FXP runtime target version remains 2.2.82.
+- Bumped Android APP version to 2.3.35 so the APK includes the latest forwarding-rule card and pagination controls.
+
 ## [2.3.99] - 2026-06-02
 
 ### Fixed

@@ -151,8 +151,13 @@ const ruleTypeDescriptions = {
 } as const;
 
 type RuleViewMode = "card" | "table";
+type RuleCardSize = "standard" | "compact";
+type RulePageSize = 12 | 24 | 36 | 48;
 
 const RULE_VIEW_MODE_STORAGE_KEY = "forwardx.rules.viewMode";
+const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
+const RULE_PAGE_SIZE_STORAGE_KEY = "forwardx.rules.pageSize";
+const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
 
 function getStoredRuleViewMode(): RuleViewMode {
   if (typeof window === "undefined") return "card";
@@ -168,6 +173,44 @@ function storeRuleViewMode(viewMode: RuleViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(RULE_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredRuleCardSize(): RuleCardSize {
+  if (typeof window === "undefined") return "standard";
+  try {
+    const value = window.localStorage.getItem(RULE_CARD_SIZE_STORAGE_KEY);
+    return value === "compact" ? "compact" : "standard";
+  } catch {
+    return "standard";
+  }
+}
+
+function storeRuleCardSize(cardSize: RuleCardSize) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RULE_CARD_SIZE_STORAGE_KEY, cardSize);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredRulePageSize(fallback: RulePageSize = 12): RulePageSize {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = Number(window.localStorage.getItem(RULE_PAGE_SIZE_STORAGE_KEY)) as RulePageSize;
+    return RULE_PAGE_SIZE_OPTIONS.includes(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeRulePageSize(pageSize: RulePageSize) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RULE_PAGE_SIZE_STORAGE_KEY, String(pageSize));
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
@@ -362,6 +405,10 @@ function RulesContent() {
   const [filterTunnel, setFilterTunnel] = useState<string>("all");
   const [filterType, setFilterType] = useState<string>("all");
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
+  const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
+  const [rulePageSize, setRulePageSize] = useState<RulePageSize>(() =>
+    getStoredRulePageSize(getStoredRuleCardSize() === "compact" ? 24 : 12)
+  );
   const selectedRulesQuery = useMemo(() => {
     if (user?.role !== "admin") return undefined;
     const input: { userId?: number; scope?: "self" | "all"; hostId?: number; tunnelId?: number | null } = {};
@@ -1052,7 +1099,7 @@ function RulesContent() {
   );
   const rulePagination = usePersistentPagination(filteredRules, {
     storageKey: "forwardx.rules.page",
-    pageSize: 12,
+    pageSize: rulePageSize,
     isReady: !isLoading && !!rules,
   });
   const pagedRules = rulePagination.items;
@@ -1393,9 +1440,85 @@ function RulesContent() {
     storeRuleViewMode(nextViewMode);
   };
 
+  const handleRuleCardSizeChange = (nextCardSize: RuleCardSize) => {
+    setRuleCardSize(nextCardSize);
+    storeRuleCardSize(nextCardSize);
+  };
+
+  const handleRulePageSizeChange = (value: string) => {
+    const nextPageSize = Number(value) as RulePageSize;
+    if (!RULE_PAGE_SIZE_OPTIONS.includes(nextPageSize)) return;
+    setRulePageSize(nextPageSize);
+    storeRulePageSize(nextPageSize);
+  };
+
+  const ruleCardGridClass = ruleCardSize === "compact"
+    ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5"
+    : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3";
+
   const renderRuleCard = (rule: any) => {
     const supported = isRuleSupported(rule);
     const protocolKey = getRuleProtocolKey(rule);
+    if (ruleCardSize === "compact") {
+      return (
+        <Card
+          key={rule.id}
+          className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
+          title={!supported ? unsupportedProtocolTitle : undefined}
+        >
+          <CardContent className="space-y-2.5 p-3">
+            <div className="flex min-w-0 items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <div className="mt-1.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                  {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{rule.name}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
+                  </div>
+                </div>
+              </div>
+              {supported ? (
+                <Switch
+                  checked={rule.isEnabled}
+                  onCheckedChange={(checked) => handleToggleRule(rule, checked)}
+                  className="shrink-0 scale-75"
+                />
+              ) : (
+                renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="shrink-0 scale-75" /></span>)
+              )}
+            </div>
+
+            <div className="rounded-md bg-muted/25 p-1.5">
+              {renderTransfer(rule, true)}
+            </div>
+
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+              {renderRouteBadge(rule)}
+              <Badge variant="secondary" className="h-5 whitespace-nowrap px-1.5 text-[10px]">
+                {formatForwardRuleProtocol(rule.protocol)}
+              </Badge>
+              {!supported && (
+                <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[10px] text-destructive">
+                  {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "协议"} 不支持
+                </Badge>
+              )}
+            </div>
+
+            {rule.protocolBlockReason && (
+              <div className="line-clamp-2 text-[11px] leading-4 text-destructive">
+                {rule.protocolBlockReason}
+              </div>
+            )}
+
+            <div className="flex justify-end border-t border-border/40 pt-1.5">
+              {renderRuleActions(rule)}
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
     return (
       <Card
         key={rule.id}
@@ -1613,6 +1736,27 @@ function RulesContent() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={ruleCardSize} onValueChange={(value) => handleRuleCardSizeChange(value as RuleCardSize)}>
+            <SelectTrigger className="h-8 w-full text-xs sm:w-[140px]">
+              <SelectValue placeholder="卡片大小" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="standard">标准卡片</SelectItem>
+              <SelectItem value="compact">精简卡片</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={String(rulePageSize)} onValueChange={handleRulePageSizeChange}>
+            <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]">
+              <SelectValue placeholder="每页数量" />
+            </SelectTrigger>
+            <SelectContent>
+              {RULE_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                <SelectItem key={pageSize} value={String(pageSize)}>
+                  每页 {pageSize} 条
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
@@ -1668,20 +1812,20 @@ function RulesContent() {
                       <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
                       <span className="text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>
                     </div>
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div className={ruleCardGridClass}>
                       {group.rules.map((rule: any) => renderRuleCard(rule))}
                     </div>
                   </section>
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className={ruleCardGridClass}>
                 {pagedRules.map((rule: any) => renderRuleCard(rule))}
               </div>
             )
           ) : (
             <>
-              <div className="grid gap-3 sm:hidden">
+              <div className={ruleCardSize === "compact" ? "grid gap-2 sm:hidden" : "grid gap-3 sm:hidden"}>
                 {pagedRules.map((rule: any) => renderRuleCard(rule))}
               </div>
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
