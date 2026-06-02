@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -169,14 +170,14 @@ export default function Billing() {
   const utils = trpc.useUtils();
   const { data: users = [] } = trpc.users.list.useQuery();
   const { data: plans = [] } = trpc.plans.list.useQuery();
-  const { data: transactions = [] } = trpc.billing.listTransactions.useQuery({ limit: 100 });
+  const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery({ limit: 100 });
   const [ledgerUserId, setLedgerUserId] = useState("all");
-  const { data: ledger = [] } = trpc.billing.ledger.useQuery({
+  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
     limit: 200,
     userId: ledgerUserId === "all" ? undefined : Number(ledgerUserId),
   });
-  const { data: redemptionCodes = [] } = trpc.billing.listRedemptionCodes.useQuery();
-  const { data: discountCodes = [] } = trpc.billing.listDiscountCodes.useQuery();
+  const { data: redemptionCodes = [], isLoading: redemptionCodesLoading } = trpc.billing.listRedemptionCodes.useQuery();
+  const { data: discountCodes = [], isLoading: discountCodesLoading } = trpc.billing.listDiscountCodes.useQuery();
   const { data: featureStatus } = trpc.billing.featureStatus.useQuery();
 
   const [redeemType, setRedeemType] = useState<"plan" | "balance">("plan");
@@ -463,6 +464,10 @@ export default function Billing() {
                 </Select>
               </CardHeader>
               <CardContent>
+                {ledgerLoading ? (
+                  <DataSectionLoading label="正在加载账单流水" />
+                ) : (
+                  <>
                 <div className="grid gap-3 md:hidden">
                   {ledger.map((item: any) => {
                     const Icon = ledgerIcon(item);
@@ -547,6 +552,8 @@ export default function Billing() {
                   </TableBody>
                 </Table>
                 </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -558,6 +565,10 @@ export default function Billing() {
                 <CardDescription>余额变动记录。</CardDescription>
               </CardHeader>
               <CardContent>
+                {transactionsLoading ? (
+                  <DataSectionLoading label="正在加载余额流水" />
+                ) : (
+                  <>
                 <div className="grid gap-3 md:hidden">
                   {transactions.map((tx: any) => (
                     <div key={tx.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -596,6 +607,8 @@ export default function Billing() {
                   </TableBody>
                 </Table>
                 </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -663,6 +676,10 @@ export default function Billing() {
                 </div>
               </CardHeader>
               <CardContent>
+                {redemptionCodesLoading ? (
+                  <DataSectionLoading label="正在加载兑换码" />
+                ) : (
+                  <>
                 <div className="grid gap-3 md:hidden">
                   {filteredRedemptionCodes.map((code: any) => {
                     const content = code.type === "plan" ? `${code.planName || `套餐 #${code.planId}`} / ${code.durationDays || 30} 天` : money(code.amountCents);
@@ -721,6 +738,8 @@ export default function Billing() {
                   </TableBody>
                 </Table>
                 </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -765,6 +784,10 @@ export default function Billing() {
             <Card>
               <CardHeader><CardTitle>折扣码列表</CardTitle></CardHeader>
               <CardContent>
+                {discountCodesLoading ? (
+                  <DataSectionLoading label="正在加载折扣码" />
+                ) : (
+                  <>
                 <div className="grid gap-3 md:hidden">
                   {discountCodes.map((code: any) => {
                     const status = discountStatus(code);
@@ -812,6 +835,8 @@ export default function Billing() {
                   </TableBody>
                 </Table>
                 </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -354,11 +354,7 @@ function ForwardGroupsContent() {
       </div>
 
       {isLoading ? (
-        <Card>
-          <CardContent className="space-y-3 p-6">
-            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
-          </CardContent>
-        </Card>
+        <DataSectionLoading label="正在加载转发组" />
       ) : groups && groups.length > 0 ? (
         <>
         {viewMode === "card" ? (

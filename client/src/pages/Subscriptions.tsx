@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { CalendarClock, CheckCircle2, CreditCard, Gauge, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
@@ -181,9 +182,7 @@ export default function Subscriptions() {
         </div>
 
         {isLoading && (
-          <div className="flex h-40 items-center justify-center rounded-lg border text-sm text-muted-foreground">
-            加载中
-          </div>
+          <DataSectionLoading label="正在加载订阅数据" />
         )}
 
         {!isLoading && subscriptions.length === 0 && (

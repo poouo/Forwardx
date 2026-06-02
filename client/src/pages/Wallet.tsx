@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,10 +56,10 @@ function ledgerIcon(item: any) {
 
 export default function Wallet() {
   const utils = trpc.useUtils();
-  const { data: wallet } = trpc.billing.me.useQuery();
-  const { data: ledger = [] } = trpc.billing.ledger.useQuery({ limit: 150 });
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
+  const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({ limit: 150 });
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
-  const { data: paymentOrders = [] } = trpc.payment.myOrders.useQuery({ limit: 50 });
+  const { data: paymentOrders = [], isLoading: paymentOrdersLoading } = trpc.payment.myOrders.useQuery({ limit: 50 });
   const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery();
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [amount, setAmount] = useState("50");
@@ -148,6 +149,9 @@ export default function Wallet() {
             <CardDescription>按时间查看全部记录。</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
+            {ledgerLoading ? (
+              <DataSectionLoading label="正在加载账单流水" />
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -200,6 +204,7 @@ export default function Wallet() {
                 )}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
 
@@ -211,6 +216,9 @@ export default function Wallet() {
             </CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
+            {walletLoading ? (
+              <DataSectionLoading label="正在加载余额流水" />
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -244,6 +252,7 @@ export default function Wallet() {
                 )}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
 
@@ -255,6 +264,9 @@ export default function Wallet() {
             </CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
+            {paymentOrdersLoading ? (
+              <DataSectionLoading label="正在加载支付流水" />
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -292,6 +304,7 @@ export default function Wallet() {
                 )}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
 

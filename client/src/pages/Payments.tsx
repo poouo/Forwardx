@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -254,7 +255,7 @@ export default function Payments() {
   const utils = trpc.useUtils();
   const { data: config, isLoading } = trpc.payment.getConfig.useQuery();
   const { data: stats } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000 });
-  const { data: orders } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000 });
+  const { data: orders, isLoading: ordersLoading } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000 });
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
   const [amount, setAmount] = useState("10");
@@ -402,6 +403,9 @@ export default function Payments() {
           </AlertDescription>
         </Alert>
 
+        {isLoading ? (
+          <DataSectionLoading label="正在加载支付配置" minHeight="min-h-[260px]" />
+        ) : (
         <Tabs defaultValue="basic">
           <TabsList className="flex h-auto flex-wrap">
             <TabsTrigger value="basic">基础设置</TabsTrigger>
@@ -685,6 +689,7 @@ export default function Payments() {
             </Card>
           </TabsContent>
         </Tabs>
+        )}
 
         <Card>
           <CardHeader>
@@ -692,6 +697,10 @@ export default function Payments() {
             <CardDescription>套餐订单和测试订单。</CardDescription>
           </CardHeader>
           <CardContent>
+            {ordersLoading ? (
+              <DataSectionLoading label="正在加载支付订单" />
+            ) : (
+              <>
             <div className="grid gap-3 md:hidden">
               {(orders || []).map((order) => (
                 <div key={order.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -768,6 +777,8 @@ export default function Payments() {
                 </TableBody>
               </Table>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

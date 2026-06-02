@@ -22,11 +22,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import {
@@ -509,10 +509,8 @@ function SettingsContent() {
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardContent className="p-0">
               {isLoading ? (
-                <div className="p-6 space-y-3">
-                  {[1, 2, 3].map((i) => (
-                    <Skeleton key={i} className="h-14 w-full" />
-                  ))}
+                <div className="p-4">
+                  <DataSectionLoading label="正在加载 Agent Token" />
                 </div>
               ) : tokens && tokens.length > 0 ? (
                 <>
@@ -1089,11 +1087,11 @@ function PanelLogsSection() {
   const [agentLogLevel, setAgentLogLevel] = useState<"all" | "info" | "warn" | "error">("all");
   const [exportLevel, setExportLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
   const [agentHostId, setAgentHostId] = useState("all");
-  const { data: panelLogs, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: panelLogLevel }, {
+  const { data: panelLogs, isLoading: panelLogsLoading, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: panelLogLevel }, {
     refetchInterval: 10000,
   });
   const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: agentLogs, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
+  const { data: agentLogs, isLoading: agentLogsLoading, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
     level: agentLogLevel,
     hostId: agentHostId === "all" ? null : Number(agentHostId),
   }, {
@@ -1196,6 +1194,9 @@ function PanelLogsSection() {
               ))}
             </TabsList>
           </Tabs>
+          {agentLogsLoading ? (
+            <DataSectionLoading label="正在加载 Agent 日志" minHeight="min-h-[160px]" />
+          ) : (
           <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
             {(agentLogs?.logs || []).length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">暂无 Agent 日志</div>
@@ -1212,6 +1213,7 @@ function PanelLogsSection() {
               </div>
             )}
           </div>
+          )}
         </CardContent>
       </Card>
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -1262,6 +1264,9 @@ function PanelLogsSection() {
               ))}
             </TabsList>
           </Tabs>
+          {panelLogsLoading ? (
+            <DataSectionLoading label="正在加载面板日志" minHeight="min-h-[160px]" />
+          ) : (
           <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
             {(panelLogs?.logs || []).length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">暂无日志</div>
@@ -1277,6 +1282,7 @@ function PanelLogsSection() {
               </div>
             )}
           </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -1373,7 +1379,7 @@ function TelegramBotSettingsCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
-          <Skeleton className="h-24 w-full" />
+          <DataSectionLoading label="正在加载 Telegram 配置" minHeight="min-h-[120px]" />
         ) : (
           <>
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
@@ -1924,10 +1930,7 @@ function SystemInfoSection() {
 
   if (isLoading) {
     return (
-      <div className="space-y-3">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-40 w-full" />
-      </div>
+      <DataSectionLoading label="正在加载系统设置" minHeight="min-h-[220px]" />
     );
   }
 

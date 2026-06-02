@@ -31,7 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import {
   Plus,
@@ -63,6 +63,7 @@ import {
   FORWARD_TYPES,
   FORWARD_TYPE_LABELS,
   FORWARD_PROTOCOL_LABELS,
+  formatForwardRuleProtocol,
   normalizeForwardProtocolSettings,
   type ForwardType,
   type ForwardProtocolKey,
@@ -142,6 +143,11 @@ const desktopRuleTypeLabels = {
   local: "端口转发",
   tunnel: "隧道转发",
   group: "转发组",
+} as const;
+const ruleTypeDescriptions = {
+  local: "主机端口直接转发",
+  tunnel: "通过隧道出口转发",
+  group: "使用转发组入口",
 } as const;
 
 type RuleViewMode = "card" | "table";
@@ -1026,6 +1032,7 @@ function RulesContent() {
     });
     return groups.filter((group) => group.rules.length > 0);
   }, [pagedRules]);
+  const shouldGroupRuleCards = filterHost === "all" && filterTunnel === "all" && filterType === "all";
 
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
@@ -1236,6 +1243,21 @@ function RulesContent() {
     </TooltipProvider>
   );
 
+  const renderRuleTrafficValue = (rule: any, direction: "in" | "out") => {
+    const t = trafficByRule.get(rule.id);
+    const value = direction === "in" ? Number(t?.bytesIn || 0) : Number(t?.bytesOut || 0);
+    if (!t || value <= 0) {
+      return <span className="text-xs text-muted-foreground">—</span>;
+    }
+    const Icon = direction === "in" ? ArrowDownToLine : ArrowUpFromLine;
+    const color = direction === "in" ? "text-chart-2" : "text-chart-4";
+    return (
+      <span className={`flex items-center gap-1 text-xs ${color}`}>
+        <Icon className="h-3 w-3" /> {formatBytes(value)}
+      </span>
+    );
+  };
+
   const renderRuleTraffic = (rule: any) => {
     const t = trafficByRule.get(rule.id);
     if (!t || (t.bytesIn === 0 && t.bytesOut === 0)) {
@@ -1243,12 +1265,8 @@ function RulesContent() {
     }
     return (
       <div className="flex flex-col gap-0.5 text-xs">
-        <span className="flex items-center gap-1 text-chart-2">
-          <ArrowDownToLine className="h-3 w-3" /> {formatBytes(t.bytesIn)}
-        </span>
-        <span className="flex items-center gap-1 text-chart-4">
-          <ArrowUpFromLine className="h-3 w-3" /> {formatBytes(t.bytesOut)}
-        </span>
+        {renderRuleTrafficValue(rule, "in")}
+        {renderRuleTrafficValue(rule, "out")}
       </div>
     );
   };
@@ -1388,23 +1406,29 @@ function RulesContent() {
           <div className="rounded-md bg-muted/25 p-2">
             {renderTransfer(rule, true)}
           </div>
-          <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
-            <div>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="min-w-0">
               <div className="mb-1 text-muted-foreground">链路</div>
               {renderRouteBadge(rule)}
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="mb-1 text-muted-foreground">协议</div>
-              <Badge variant="secondary" className="text-[10px] uppercase">{rule.protocol}</Badge>
-            </div>
-            <div className="sm:col-span-2">
-              <div className="mb-1 text-muted-foreground">近 24h 流量</div>
-              {renderRuleTraffic(rule)}
+              <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
             </div>
           </div>
-          <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="text-muted-foreground">延迟</span>
-            {renderLatestLatency(rule)}
+          <div className="grid grid-cols-3 gap-3 text-xs">
+            <div className="min-w-0">
+              <div className="mb-1 text-muted-foreground">近 24h 入向</div>
+              {renderRuleTrafficValue(rule, "in")}
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 text-muted-foreground">近 24h 出向</div>
+              {renderRuleTrafficValue(rule, "out")}
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 text-muted-foreground">延迟</div>
+              {renderLatestLatency(rule)}
+            </div>
           </div>
           <div className="flex justify-end border-t border-border/40 pt-2">
             {renderRuleActions(rule)}
@@ -1588,21 +1612,37 @@ function RulesContent() {
       </div>
 
       {isLoading ? (
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardContent className="p-0">
-            <div className="space-y-3 p-6">
-              {[1, 2, 3, 4].map((i) => (
-                <Skeleton key={i} className="h-14 w-full" />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <DataSectionLoading label="正在加载转发规则" />
       ) : filteredRules.length > 0 ? (
         <>
           {viewMode === "card" ? (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {pagedRules.map((rule: any) => renderRuleCard(rule))}
-            </div>
+            shouldGroupRuleCards ? (
+              <div className="space-y-5">
+                {desktopRuleGroups.map((group) => (
+                  <section key={group.type} className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      {group.type === "group" ? (
+                        <Layers3 className="h-4 w-4 text-emerald-600" />
+                      ) : group.type === "tunnel" ? (
+                        <Network className="h-4 w-4 text-chart-4" />
+                      ) : (
+                        <ArrowRightLeft className="h-4 w-4 text-primary" />
+                      )}
+                      <h2 className="text-sm font-semibold">{group.label}</h2>
+                      <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
+                      <span className="text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {group.rules.map((rule: any) => renderRuleCard(rule))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {pagedRules.map((rule: any) => renderRuleCard(rule))}
+              </div>
+            )
           ) : (
             <>
               <div className="grid gap-3 sm:hidden">
@@ -1682,7 +1722,7 @@ function RulesContent() {
                                   <TableCell>{renderTransfer(rule)}</TableCell>
                                   <TableCell>{renderRouteBadge(rule)}</TableCell>
                                   <TableCell>
-                                    <Badge variant="secondary" className="text-[10px] uppercase">{rule.protocol}</Badge>
+                                    <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
                                   </TableCell>
                                   <TableCell>
                                     <div className="space-y-1">
@@ -2227,7 +2267,7 @@ function RulesContent() {
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{rule.name}</span>
                         <span className="mt-1 block text-xs text-muted-foreground">
-                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {rule.forwardType} / {rule.protocol}
+                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {rule.forwardType} / {formatForwardRuleProtocol(rule.protocol)}
                         </span>
                       </span>
                     </label>

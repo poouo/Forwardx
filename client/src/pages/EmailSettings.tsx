@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, BellRing, KeyRound, Loader2, Mail, Send, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -112,10 +112,7 @@ function EmailSettingsContent() {
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-80 w-full" />
-      </div>
+      <DataSectionLoading label="正在加载邮箱设置" minHeight="min-h-[260px]" />
     );
   }
 

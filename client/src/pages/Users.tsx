@@ -43,6 +43,7 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -995,11 +996,7 @@ function UsersContent() {
         <TabsContent value="accounts" className="space-y-4 data-[state=inactive]:hidden">
 
       {isLoading && (
-        <div className="space-y-3 sm:hidden">
-          {[1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-48 w-full rounded-lg" />
-          ))}
-        </div>
+        <DataSectionLoading className="sm:hidden" label="正在加载用户数据" minHeight="min-h-[220px]" />
       )}
 
       {!isLoading && users && users.length > 0 && (
@@ -1125,10 +1122,8 @@ function UsersContent() {
       <Card className="glass-panel hidden overflow-hidden sm:block">
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-6 space-y-3">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-14 w-full" />
-              ))}
+            <div className="p-4">
+              <DataSectionLoading label="正在加载用户数据" />
             </div>
           ) : users && users.length > 0 ? (
             <div className="overflow-x-auto">
@@ -1335,11 +1330,7 @@ function UsersContent() {
 
         <TabsContent value="subscriptions" className="space-y-4 data-[state=inactive]:hidden">
           {subscriptionsLoading ? (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {[1, 2, 3, 4, 5, 6].map((item) => (
-                <Skeleton key={item} className="h-56 w-full rounded-lg" />
-              ))}
-            </div>
+            <DataSectionLoading label="正在加载订阅数据" minHeight="min-h-[240px]" />
           ) : allSubscriptions.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-border/50 bg-card/60 py-16 text-muted-foreground">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/30">

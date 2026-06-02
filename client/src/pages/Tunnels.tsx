@@ -31,6 +31,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -751,13 +752,7 @@ function TunnelsContent() {
       </div>
 
       {isLoading ? (
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardContent className="p-0">
-            <div className="space-y-3 p-6">
-              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14 w-full" />)}
-            </div>
-          </CardContent>
-        </Card>
+        <DataSectionLoading label="正在加载隧道数据" />
       ) : tunnels && tunnels.length > 0 ? (
         <>
         {viewMode === "card" ? (

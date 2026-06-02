@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,7 +36,7 @@ export default function Announcements() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const utils = trpc.useUtils();
-  const { data: announcements = [] } = trpc.announcements.list.useQuery();
+  const { data: announcements = [], isLoading } = trpc.announcements.list.useQuery();
   const [open, setOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -106,43 +107,47 @@ export default function Announcements() {
           )}
         </div>
 
-        <div className="grid gap-4">
-          {announcements.map((item: any) => {
-            const isPopup = item.type === "popup";
-            return (
-              <Card key={item.id}>
-                <CardHeader>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <CardTitle className="flex flex-wrap items-center gap-2">
-                        <Megaphone className="h-5 w-5" />
-                        {item.title}
-                        <Badge variant={isPopup ? "default" : "outline"}>{isPopup ? "登录弹窗" : "普通公告"}</Badge>
-                      </CardTitle>
-                      {!isPopup && (
-                        <CardDescription className="mt-2">发布时间：{dateText(item.createdAt || item.updatedAt)}</CardDescription>
+        {isLoading ? (
+          <DataSectionLoading label="正在加载公告" />
+        ) : (
+          <div className="grid gap-4">
+            {announcements.map((item: any) => {
+              const isPopup = item.type === "popup";
+              return (
+                <Card key={item.id}>
+                  <CardHeader>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <CardTitle className="flex flex-wrap items-center gap-2">
+                          <Megaphone className="h-5 w-5" />
+                          {item.title}
+                          <Badge variant={isPopup ? "default" : "outline"}>{isPopup ? "登录弹窗" : "普通公告"}</Badge>
+                        </CardTitle>
+                        {!isPopup && (
+                          <CardDescription className="mt-2">发布时间：{dateText(item.createdAt || item.updatedAt)}</CardDescription>
+                        )}
+                      </div>
+                      {isAdmin && (
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="icon" onClick={() => edit(item)}><Pencil className="h-4 w-4" /></Button>
+                          <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteAnnouncement.mutate({ id: item.id })}><Trash2 className="h-4 w-4" /></Button>
+                        </div>
                       )}
                     </div>
-                    {isAdmin && (
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="icon" onClick={() => edit(item)}><Pencil className="h-4 w-4" /></Button>
-                        <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteAnnouncement.mutate({ id: item.id })}><Trash2 className="h-4 w-4" /></Button>
-                      </div>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-sm leading-6 text-foreground/85" dangerouslySetInnerHTML={renderAnnouncementHtml(item.content || "")} />
-                </CardContent>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-sm leading-6 text-foreground/85" dangerouslySetInnerHTML={renderAnnouncementHtml(item.content || "")} />
+                  </CardContent>
+                </Card>
+              );
+            })}
+            {announcements.length === 0 && (
+              <Card>
+                <CardHeader><CardTitle>暂无公告</CardTitle><CardDescription>当前没有可查看的公告。</CardDescription></CardHeader>
               </Card>
-            );
-          })}
-          {announcements.length === 0 && (
-            <Card>
-              <CardHeader><CardTitle>暂无公告</CardTitle><CardDescription>当前没有可查看的公告。</CardDescription></CardHeader>
-            </Card>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="sm:max-w-2xl">

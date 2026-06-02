@@ -1,6 +1,7 @@
 export const FORWARD_TYPES = ["iptables", "nftables", "realm", "socat", "gost"] as const;
 
 export type ForwardType = (typeof FORWARD_TYPES)[number];
+export type ForwardRuleProtocol = "tcp" | "udp" | "both";
 
 export const FORWARD_TYPE_LABELS: Record<ForwardType, string> = {
   iptables: "iptables",
@@ -9,6 +10,20 @@ export const FORWARD_TYPE_LABELS: Record<ForwardType, string> = {
   socat: "socat",
   gost: "gost",
 };
+
+export const FORWARD_RULE_PROTOCOL_LABELS: Record<ForwardRuleProtocol, string> = {
+  tcp: "TCP",
+  udp: "UDP",
+  both: "TCP + UDP",
+};
+
+export function formatForwardRuleProtocol(protocol: string | null | undefined) {
+  const value = String(protocol || "").toLowerCase();
+  if (value === "tcp" || value === "udp" || value === "both") {
+    return FORWARD_RULE_PROTOCOL_LABELS[value as ForwardRuleProtocol];
+  }
+  return value ? value.toUpperCase() : "-";
+}
 
 export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"] as const;
 

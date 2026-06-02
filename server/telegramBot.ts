@@ -5,6 +5,7 @@ import { pushAgentRefresh } from "./agentEvents";
 import { pushTunnelEndpointRefresh } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
+import { formatForwardRuleProtocol } from "../shared/forwardTypes";
 
 type TelegramUser = {
   id: number;
@@ -530,7 +531,7 @@ async function rulesText(user: any) {
     const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
     return [
       `#${rule.id} <b>${escapeHtml(rule.name)}</b>`,
-      `${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(rule.protocol)}`,
+      `${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
       `:${rule.sourcePort} → ${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
     ].join("\n");
   });
@@ -550,7 +551,7 @@ async function rulesView(user: any, page = 0) {
         "",
         ...visible.map((rule: any) => {
           const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
-          return `#${rule.id} <b>${escapeHtml(shortText(rule.name, 24))}</b>\n${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(rule.protocol)} · :${rule.sourcePort}`;
+          return `#${rule.id} <b>${escapeHtml(shortText(rule.name, 24))}</b>\n${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))} · :${rule.sourcePort}`;
         }),
       ].join("\n\n");
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
@@ -579,7 +580,7 @@ async function ruleDetailText(ruleId: number, user: any) {
     "",
     `名称：${escapeHtml(rule.name)}`,
     `状态：${status}`,
-    `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(rule.protocol)}`,
+    `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
     `入口端口：${rule.sourcePort}`,
     `目标：${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
     `主机 ID：${rule.hostId}`,

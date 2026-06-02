@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -100,8 +101,8 @@ export default function TrafficBilling() {
   const utils = trpc.useUtils();
   const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
   const { data: tunnels = [] } = trpc.tunnels.listAll.useQuery();
-  const { data } = trpc.trafficBilling.configs.useQuery();
-  const { data: records = [] } = trpc.trafficBilling.records.useQuery({ limit: 100 });
+  const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
+  const { data: records = [], isLoading: recordsLoading } = trpc.trafficBilling.records.useQuery({ limit: 100 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
 
@@ -184,7 +185,7 @@ export default function TrafficBilling() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
               <span className="text-sm text-muted-foreground">功能开关</span>
-              <Switch checked={!!data?.enabled} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+              <Switch checked={!!data?.enabled} disabled={configsLoading || setEnabledMutation.isPending} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
             </div>
             <Button onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" /> 新增计费项
@@ -222,6 +223,10 @@ export default function TrafficBilling() {
             <CardDescription>按 GB 扣费，可设置是否需要额外授权。</CardDescription>
           </CardHeader>
           <CardContent>
+            {configsLoading ? (
+              <DataSectionLoading label="正在加载计费配置" />
+            ) : (
+              <>
             <div className="grid gap-3 md:hidden">
               {(data?.configs || []).map((config: any) => (
                 <div key={config.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -287,6 +292,8 @@ export default function TrafficBilling() {
               </TableBody>
             </Table>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -295,6 +302,10 @@ export default function TrafficBilling() {
             <CardTitle className="flex items-center gap-2"><Coins className="h-5 w-5" /> 扣费记录</CardTitle>
           </CardHeader>
           <CardContent>
+            {recordsLoading ? (
+              <DataSectionLoading label="正在加载扣费记录" />
+            ) : (
+              <>
             <div className="grid gap-3 md:hidden">
               {records.map((record: any) => (
                 <div key={record.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -333,6 +344,8 @@ export default function TrafficBilling() {
               </TableBody>
             </Table>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

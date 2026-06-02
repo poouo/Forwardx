@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, CreditCard, Lock, Package, RefreshCw, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
@@ -45,7 +46,7 @@ function durationLabel(days?: number | null) {
 
 export default function Store() {
   const utils = trpc.useUtils();
-  const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
+  const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
   const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery();
   const { data: wallet } = trpc.billing.me.useQuery();
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
@@ -127,7 +128,11 @@ export default function Store() {
           <p className="text-sm text-muted-foreground">购买套餐，开通资源。</p>
         </div>
 
-        {!storeStatus?.enabled && (
+        {storeStatusLoading && (
+          <DataSectionLoading label="正在加载商店状态" />
+        )}
+
+        {!storeStatusLoading && !storeStatus?.enabled && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Lock className="h-5 w-5" /> 商店暂未开启</CardTitle>
@@ -136,8 +141,11 @@ export default function Store() {
           </Card>
         )}
 
-        {storeStatus?.enabled && (
+        {!storeStatusLoading && storeStatus?.enabled && (
           <>
+            {isLoading ? (
+              <DataSectionLoading label="正在加载商店套餐" />
+            ) : (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {plans.map((plan: any) => (
                 <Card key={plan.id} className="flex flex-col">
@@ -181,6 +189,7 @@ export default function Store() {
                 </Card>
               )}
             </div>
+            )}
           </>
         )}
 

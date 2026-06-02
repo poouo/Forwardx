@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -182,11 +183,11 @@ export default function Plans() {
   const utils = trpc.useUtils();
   const { data: plans = [], isLoading } = trpc.plans.list.useQuery();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
-  const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
-  const { data: tunnels = [] } = trpc.tunnels.list.useQuery();
-  const { data: forwardGroups = [] } = trpc.forwardGroups.list.useQuery();
+  const { data: hosts = [], isLoading: hostsLoading } = trpc.hosts.listAll.useQuery();
+  const { data: tunnels = [], isLoading: tunnelsLoading } = trpc.tunnels.list.useQuery();
+  const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery();
   const { data: users = [] } = trpc.users.list.useQuery();
-  const { data: subscriptions = [] } = trpc.plans.subscriptions.useQuery({});
+  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
 
   const [form, setForm] = useState<PlanForm>(emptyForm);
   const [editing, setEditing] = useState(false);
@@ -332,6 +333,10 @@ export default function Plans() {
             <CardDescription>订阅后分配连续端口段。</CardDescription>
           </CardHeader>
           <CardContent>
+            {isLoading ? (
+              <DataSectionLoading label="正在加载套餐数据" />
+            ) : (
+              <>
             <div className="grid gap-3 md:hidden">
               {plans.map((plan: any) => (
                 <div key={plan.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -427,6 +432,8 @@ export default function Plans() {
               </TableBody>
             </Table>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -436,6 +443,10 @@ export default function Plans() {
             <CardDescription>订阅记录。</CardDescription>
           </CardHeader>
           <CardContent>
+            {subscriptionsLoading ? (
+              <DataSectionLoading label="正在加载订阅记录" />
+            ) : (
+              <>
             <div className="grid gap-3 md:hidden">
               {subscriptions.slice(0, 20).map((sub: any) => (
                 <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -480,6 +491,8 @@ export default function Plans() {
               </TableBody>
             </Table>
             </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -551,18 +564,24 @@ export default function Plans() {
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-base">转发主机</CardTitle></CardHeader>
               <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {hosts.map((host: any) => (
+                {hostsLoading ? (
+                  <DataSectionLoading label="正在加载主机资源" minHeight="min-h-[120px]" />
+                ) : hosts.length > 0 ? hosts.map((host: any) => (
                   <label key={host.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
                     <span>{host.name || host.ipv4 || host.ipv6}</span>
                     <Switch checked={form.hostIds.includes(host.id)} onCheckedChange={() => setForm({ ...form, hostIds: toggleId(form.hostIds, host.id) })} />
                   </label>
-                ))}
+                )) : (
+                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无主机资源</div>
+                )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-base">隧道转发</CardTitle></CardHeader>
               <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {tunnels.map((tunnel: any) => (
+                {tunnelsLoading ? (
+                  <DataSectionLoading label="正在加载隧道资源" minHeight="min-h-[120px]" />
+                ) : tunnels.length > 0 ? tunnels.map((tunnel: any) => (
                   <label key={tunnel.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
                     <span className="min-w-0">
                       <span>{tunnel.name}</span>
@@ -570,19 +589,23 @@ export default function Plans() {
                     </span>
                     <Switch checked={form.tunnelIds.includes(tunnel.id)} onCheckedChange={() => setForm({ ...form, tunnelIds: toggleId(form.tunnelIds, tunnel.id) })} />
                   </label>
-                ))}
+                )) : (
+                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无隧道资源</div>
+                )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-base">转发组</CardTitle></CardHeader>
               <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {forwardGroups.map((group: any) => (
+                {forwardGroupsLoading ? (
+                  <DataSectionLoading label="正在加载转发组资源" minHeight="min-h-[120px]" />
+                ) : forwardGroups.map((group: any) => (
                   <label key={group.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
                     <span>{group.name} <span className="text-muted-foreground">/{group.groupType === "tunnel" ? "隧道组" : "主机组"}</span></span>
                     <Switch checked={form.forwardGroupIds.includes(group.id)} onCheckedChange={() => setForm({ ...form, forwardGroupIds: toggleId(form.forwardGroupIds, group.id) })} />
                   </label>
                 ))}
-                {forwardGroups.length === 0 && (
+                {!forwardGroupsLoading && forwardGroups.length === 0 && (
                   <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无转发组</div>
                 )}
               </CardContent>

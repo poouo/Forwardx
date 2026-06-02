@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.99] - 2026-06-02
+
+### Fixed
+
+- Added unified in-section loading states across data-backed management pages so lists and settings panels no longer flash misleading empty states while fetching.
+- Fixed forwarding-rule protocol labels so TCP and UDP are shown explicitly instead of using a generic combined label.
+- Grouped unfiltered forwarding rules by port forwarding, tunnel forwarding, and forward groups for easier scanning.
+- Fixed network-test output panels to keep a stable fixed-height layout with scrollable result output instead of stretching the page.
+- Bumped panel version to 2.3.99. Agent/FXP runtime target version remains 2.2.82.
+- Android APP version remains 2.3.34 and the APK release pointer is updated to 2.3.99 because this is a web-panel update.
+
 ## [2.3.98] - 2026-06-02
 
 ### Fixed

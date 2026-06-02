@@ -142,8 +142,8 @@ function ResultOutput({
   const statusLabel = isRunning ? "执行中" : result ? (ok ? "完成" : result.timedOut ? "超时" : "异常") : "等待";
 
   return (
-    <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
-      <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
+    <Card className="flex h-[480px] min-w-0 flex-col overflow-hidden border-border/40 bg-card/60 backdrop-blur-md sm:h-[520px] xl:h-[560px]">
+      <CardHeader className="shrink-0 border-b border-border/40 bg-muted/20 px-4 py-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
             {isRunning ? (
@@ -168,8 +168,8 @@ function ResultOutput({
                   <Clock3 className="h-3.5 w-3.5" />
                   {result.durationMs} ms
                 </span>
-                <span>{result.sourceHostName || "Agent 主机"}</span>
-                <span className="font-mono">{result.resolvedAddress}</span>
+                <span className="max-w-32 truncate">{result.sourceHostName || "Agent 主机"}</span>
+                <span className="max-w-40 truncate font-mono">{result.resolvedAddress}</span>
               </>
             )}
             <Button
@@ -189,8 +189,8 @@ function ResultOutput({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="p-0">
-        <pre className="min-h-[320px] max-h-[560px] overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+      <CardContent className="min-h-0 flex-1 p-0">
+        <pre className="h-full min-h-0 overflow-auto bg-slate-950 px-4 py-4 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
           {output}
         </pre>
       </CardContent>
@@ -214,8 +214,8 @@ function Iperf3Output({
   const commands = status?.commands;
 
   return (
-    <Card className="overflow-hidden border-border/40 bg-card/60 backdrop-blur-md">
-      <CardHeader className="border-b border-border/40 bg-muted/20 px-4 py-3">
+    <Card className="flex h-[560px] min-w-0 flex-col overflow-hidden border-border/40 bg-card/60 backdrop-blur-md sm:h-[600px] xl:h-[640px]">
+      <CardHeader className="shrink-0 border-b border-border/40 bg-muted/20 px-4 py-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
             {loading || isBusy ? (
@@ -247,8 +247,8 @@ function Iperf3Output({
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4 p-4">
-        <div className="grid gap-3 md:grid-cols-3">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4">
+        <div className="grid shrink-0 gap-3 md:grid-cols-3">
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
             <p className="text-xs text-muted-foreground">测试主机</p>
             <p className="mt-1 truncate text-sm font-medium">{status?.hostName || "-"}</p>
@@ -263,7 +263,7 @@ function Iperf3Output({
           </div>
         </div>
 
-        <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+        <div className="shrink-0 rounded-lg border border-border/40 bg-muted/20 p-3">
           <p className="text-sm font-medium">客户端运行指令</p>
           <p className="mt-1 text-xs text-muted-foreground">服务端无人使用 3 分钟后会自动停止；客户端测试产生输出时会刷新空闲计时。</p>
           <div className="mt-3 space-y-2">
@@ -284,8 +284,8 @@ function Iperf3Output({
           </div>
         </div>
 
-        {status?.error && <p className="text-xs text-destructive">{status.error}</p>}
-        <pre className="min-h-[180px] max-h-[360px] overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
+        {status?.error && <p className="shrink-0 text-xs text-destructive">{status.error}</p>}
+        <pre className="min-h-0 flex-1 overflow-auto rounded-lg bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-100 scrollbar-gutter-stable">
           {output}
         </pre>
       </CardContent>
@@ -567,7 +567,7 @@ export default function LookingGlass() {
           </AlertDescription>
         </Alert>
 
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,420px)_1fr]">
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,420px)_1fr]">
           <Card className="border-border/40 bg-card/60 backdrop-blur-md">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
