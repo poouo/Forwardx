@@ -1820,8 +1820,7 @@ function RulesContent() {
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesIn`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesIn`, "rules.traffic.last.bytesIn"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesIn`, "rules.traffic.last.bytesIn"]}
-                ignoredCachedValues={["0 B"]}
-                fallbackValue="--"
+                fallbackValue="0 B"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
@@ -1839,8 +1838,7 @@ function RulesContent() {
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesOut`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesOut`, "rules.traffic.last.bytesOut"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesOut`, "rules.traffic.last.bytesOut"]}
-                ignoredCachedValues={["0 B"]}
-                fallbackValue="--"
+                fallbackValue="0 B"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
@@ -1858,8 +1856,7 @@ function RulesContent() {
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.connections`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.connections`, "rules.traffic.last.connections"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.connections`, "rules.traffic.last.connections"]}
-                ignoredCachedValues={["0"]}
-                fallbackValue="--"
+                fallbackValue="0"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
