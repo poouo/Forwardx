@@ -25,6 +25,7 @@ export const MIGRATION_TABLES = [
   "users",
   "hosts",
   "tunnels",
+  "tunnel_hops",
   "forward_rules",
   "forward_groups",
   "forward_group_members",

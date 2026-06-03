@@ -1,3 +1,5 @@
+import { useAuth } from "@/_core/hooks/useAuth";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +9,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, CreditCard, Gift, Package, ReceiptText, RefreshCw, WalletCards } from "lucide-react";
@@ -57,6 +58,7 @@ function ledgerIcon(item: any) {
 
 export default function Wallet() {
   const utils = trpc.useUtils();
+  const { user } = useAuth();
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
   const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({ limit: 150 });
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
@@ -113,11 +115,14 @@ export default function Wallet() {
           <Card>
             <CardHeader>
               <CardDescription>当前余额</CardDescription>
-              {walletLoading ? (
-                <Skeleton className="h-11 w-40 rounded-md" />
-              ) : (
-                <CardTitle className="text-4xl">{money(wallet?.balanceCents)}</CardTitle>
-              )}
+              <AnimatedStatValue
+                as={CardTitle}
+                value={money(wallet?.balanceCents)}
+                loading={walletLoading}
+                cacheKey={`wallet.balance.${user?.id || "current"}`}
+                fallbackValue={money(0)}
+                className="text-4xl"
+              />
             </CardHeader>
           </Card>
 

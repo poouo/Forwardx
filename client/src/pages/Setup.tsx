@@ -170,7 +170,7 @@ export default function Setup() {
       return;
     }
     if (hasExistingData && hasAdmin && data?.setupDataChoice !== "new-panel") {
-      toast.info("检测到当前数据库已有数据，请先选择使用旧数据或清空后新建");
+      toast.info("检测到当前数据库已有业务数据，请先选择使用旧数据或清空后新建");
       return;
     }
     setStep(3);
@@ -340,9 +340,9 @@ export default function Setup() {
                     <div className="grid gap-4 rounded-lg border border-amber-500/30 bg-amber-50/80 p-4">
                       <Alert className="border-amber-500/30 bg-white/70">
                         <ShieldCheck className="h-4 w-4" />
-                        <AlertTitle>检测到当前数据库已有面板数据</AlertTitle>
+                        <AlertTitle>检测到当前数据库已有面板业务数据</AlertTitle>
                         <AlertDescription>
-                          当前数据库已有面板数据。
+                          当前数据库已有主机、规则、隧道、订单或其他业务数据。
                         </AlertDescription>
                       </Alert>
                       <div className="grid gap-3 sm:grid-cols-4">

@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -323,7 +323,12 @@ function ForwardGroupsContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-emerald-500" />
-            {isLoading || !groups ? <Skeleton className="h-3.5 w-14 rounded" /> : `${activeCount} / ${groups.length} 健康`}
+            <AnimatedStatValue
+              value={`${activeCount} / ${groups?.length ?? 0} 健康`}
+              loading={isLoading || !groups}
+              cacheKey="forwardGroups.header.healthy"
+              fallbackValue="0 / 0 健康"
+            />
           </Badge>
           <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
             {runFailoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}

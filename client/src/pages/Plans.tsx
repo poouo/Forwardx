@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,7 +7,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -306,7 +306,12 @@ export default function Plans() {
             <CardHeader className="pb-2">
               <CardDescription>商店状态</CardDescription>
               <CardTitle className="flex items-center justify-between">
-                {storeStatusLoading ? <Skeleton className="h-8 w-20 rounded-md" /> : storeStatus?.enabled ? "已开启" : "已关闭"}
+                <AnimatedStatValue
+                  value={storeStatus?.enabled ? "已开启" : "已关闭"}
+                  loading={storeStatusLoading}
+                  cacheKey="plans.storeStatus"
+                  fallbackValue="已关闭"
+                />
                 <Switch checked={!!storeStatus?.enabled} disabled={storeStatusLoading || setStoreEnabled.isPending} onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })} />
               </CardTitle>
             </CardHeader>
@@ -315,16 +320,25 @@ export default function Plans() {
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>套餐数量</CardDescription>
-              <CardTitle>{isLoading ? <Skeleton className="h-8 w-16 rounded-md" /> : plans.length}</CardTitle>
+              <CardTitle>
+                <AnimatedStatValue value={plans.length} loading={isLoading} cacheKey="plans.count" fallbackValue={0} />
+              </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              {isLoading ? <Skeleton className="h-5 w-36 rounded-md" /> : `其中 ${activePlans} 个处于启用状态。`}
+              <AnimatedStatValue
+                value={`其中 ${activePlans} 个处于启用状态。`}
+                loading={isLoading}
+                cacheKey="plans.activeCount"
+                fallbackValue="其中 0 个处于启用状态。"
+              />
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>订阅记录</CardDescription>
-              <CardTitle>{subscriptionsLoading ? <Skeleton className="h-8 w-16 rounded-md" /> : subscriptions.length}</CardTitle>
+              <CardTitle>
+                <AnimatedStatValue value={subscriptions.length} loading={subscriptionsLoading} cacheKey="plans.subscriptionsCount" fallbackValue={0} />
+              </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">包含购买和分配记录。</CardContent>
           </Card>

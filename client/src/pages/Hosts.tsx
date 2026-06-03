@@ -1,4 +1,5 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +30,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -58,6 +58,45 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
+const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
+const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
+
+function readJsonCache<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonCache(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Cached UI data is optional; ignore storage failures.
+  }
+}
+
+function readCachedHosts() {
+  const hosts = readJsonCache<any[]>(HOSTS_LIST_CACHE_KEY, []);
+  return Array.isArray(hosts) ? hosts : [];
+}
+
+function writeCachedHosts(hosts: any[]) {
+  writeJsonCache(HOSTS_LIST_CACHE_KEY, hosts);
+}
+
+function readCachedHostMetrics(hostId: number | string) {
+  const metrics = readJsonCache<any[]>(`${HOST_METRICS_CACHE_PREFIX}${hostId}`, []);
+  return Array.isArray(metrics) ? metrics : [];
+}
+
+function writeCachedHostMetrics(hostId: number | string, metrics: any[]) {
+  writeJsonCache(`${HOST_METRICS_CACHE_PREFIX}${hostId}`, metrics.slice(0, 2));
+}
 
 function usePageVisible() {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
@@ -204,8 +243,10 @@ function HostCard({
     { hostId: host.id, limit: 2 },
     { refetchInterval: refreshInterval }
   );
-  const latestMetric = metrics?.[0];
-  const previousMetric = metrics?.[1];
+  const cachedMetrics = useMemo(() => readCachedHostMetrics(host.id), [host.id]);
+  const displayMetrics = metrics === undefined ? cachedMetrics : metrics;
+  const latestMetric = displayMetrics?.[0];
+  const previousMetric = displayMetrics?.[1];
   const totalNetworkIn = latestMetric?.networkIn == null ? null : Number(latestMetric.networkIn);
   const totalNetworkOut = latestMetric?.networkOut == null ? null : Number(latestMetric.networkOut);
   const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
@@ -223,8 +264,13 @@ function HostCard({
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
 
+  useEffect(() => {
+    if (!metrics?.length) return;
+    writeCachedHostMetrics(host.id, metrics);
+  }, [host.id, metrics]);
+
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
+    <Card className="min-h-[420px] border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
       <CardHeader className="pb-2">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <CardTitle className="min-w-0 text-base font-semibold">
@@ -396,6 +442,10 @@ function HostsContent() {
     refetchInterval: hostRefreshInterval,
     refetchOnWindowFocus: true,
   });
+  const [cachedHosts, setCachedHosts] = useState<any[]>(() => readCachedHosts());
+  const displayHosts = hosts || cachedHosts;
+  const hasDisplayHosts = displayHosts.length > 0;
+  const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const latestAgentVersion = useMemo(
     () => systemSettings?.agentVersion || "",
@@ -412,6 +462,12 @@ function HostsContent() {
   const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
   const watchMetricsMutation = trpc.hosts.watchMetrics.useMutation();
+
+  useEffect(() => {
+    if (!hosts) return;
+    setCachedHosts(hosts);
+    writeCachedHosts(hosts);
+  }, [hosts]);
 
   const handleViewModeChange = (mode: HostViewMode) => {
     setViewMode(mode);
@@ -464,10 +520,10 @@ function HostsContent() {
   });
 
   useEffect(() => {
-    if (!hosts) return;
+    if (!displayHosts.length) return;
     const tracked = upgradingHosts.current;
     const currentIds = new Set<number>();
-    for (const host of hosts as any[]) {
+    for (const host of displayHosts as any[]) {
       currentIds.add(host.id);
       if (host.agentUpgradeRequested) {
         tracked.set(host.id, host.agentUpgradeTargetVersion || latestAgentVersion || null);
@@ -481,18 +537,18 @@ function HostsContent() {
     for (const hostId of Array.from(tracked.keys())) {
       if (!currentIds.has(hostId)) tracked.delete(hostId);
     }
-  }, [hosts, latestAgentVersion]);
+  }, [displayHosts, latestAgentVersion]);
 
   useEffect(() => {
-    if (!pageVisible || !hosts?.length) return;
-    const hostIds = hosts.map((host: any) => Number(host.id)).filter(Boolean);
+    if (!pageVisible || !displayHosts.length) return;
+    const hostIds = displayHosts.map((host: any) => Number(host.id)).filter(Boolean);
     if (hostIds.length === 0) return;
     watchMetricsMutation.mutate({ hostIds });
     const timer = window.setInterval(() => {
       watchMetricsMutation.mutate({ hostIds });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [pageVisible, hosts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pageVisible, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetForm = () => {
     setForm(defaultFormData);
@@ -568,23 +624,23 @@ function HostsContent() {
     }
   };
   const isPending = createMutation.isPending || updateMutation.isPending;
-  const onlineCount = useMemo(() => hosts?.filter((h) => h.isOnline).length ?? 0, [hosts]);
+  const onlineCount = useMemo(() => displayHosts.filter((h) => h.isOnline).length, [displayHosts]);
   const updateCount = useMemo(
-    () => hosts?.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length ?? 0,
-    [hosts, latestAgentVersion]
+    () => displayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
+    [displayHosts, latestAgentVersion]
   );
   const bulkUpgradeableHosts = useMemo(
-    () => (hosts || []).filter((h: any) => {
+    () => displayHosts.filter((h: any) => {
       const timedOut = isAgentUpgradeTimedOut(h);
       const pending = !!h.agentUpgradeRequested && !timedOut;
       return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
     }),
-    [hosts, latestAgentVersion]
+    [displayHosts, latestAgentVersion]
   );
-  const hostPagination = usePersistentPagination(hosts || [], {
+  const hostPagination = usePersistentPagination(displayHosts, {
     storageKey: "forwardx.hosts.page",
     pageSize: 12,
-    isReady: !isLoading && !!hosts,
+    isReady: hasDisplayHosts,
   });
   const pagedHosts = hostPagination.items;
   const requestAgentUpgrade = (host: any) => {
@@ -646,7 +702,12 @@ function HostsContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
-            {isLoading || !hosts ? <Skeleton className="h-3.5 w-14 rounded" /> : `${onlineCount} / ${hosts.length} 在线`}
+            <AnimatedStatValue
+              value={`${onlineCount} / ${displayHosts.length} 在线`}
+              loading={isInitialLoadingWithoutCache}
+              cacheKey="hosts.header.online"
+              fallbackValue="0 / 0 在线"
+            />
           </Badge>
           {/* 布局切换按钮 */}
           {updateCount > 0 && (
@@ -703,7 +764,7 @@ function HostsContent() {
       </div>
 
       {/* Content */}
-      {isLoading ? (
+      {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />
       ) : isError ? (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -723,7 +784,7 @@ function HostsContent() {
             </div>
           </CardContent>
         </Card>
-      ) : hosts && hosts.length > 0 ? (
+      ) : hasDisplayHosts ? (
         <>
         {viewMode === "card" ? (
           /* ========== 卡片式布局 ========== */

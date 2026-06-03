@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -244,7 +245,15 @@ export default function Store() {
                 >
                   <span className="flex items-center gap-2 font-medium">
                     <WalletCards className="h-4 w-4" />
-                    余额支付（{walletLoading ? <span className="inline-block h-4 w-16 animate-pulse rounded bg-muted align-middle" /> : money(wallet?.balanceCents)}）
+                    余额支付（
+                    <AnimatedStatValue
+                      value={money(wallet?.balanceCents)}
+                      loading={walletLoading}
+                      cacheKey="store.wallet.balance.inline"
+                      fallbackValue={money(0)}
+                      className="inline-block align-middle"
+                    />
+                    ）
                   </span>
                   {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
                 </button>

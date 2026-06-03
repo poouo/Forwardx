@@ -1,10 +1,10 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
@@ -369,7 +369,15 @@ export default function Subscriptions() {
                 >
                   <span className="flex items-center gap-2 font-medium">
                     <WalletCards className="h-4 w-4" />
-                    余额支付（{walletLoading ? <span className="inline-block h-4 w-16 animate-pulse rounded bg-muted align-middle" /> : money(balance)}）
+                    余额支付（
+                    <AnimatedStatValue
+                      value={money(balance)}
+                      loading={walletLoading}
+                      cacheKey="subscriptions.wallet.balance.inline"
+                      fallbackValue={money(0)}
+                      className="inline-block align-middle"
+                    />
+                    ）
                   </span>
                   {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
                 </button>
@@ -432,11 +440,14 @@ export default function Subscriptions() {
               </div>
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <span className="text-muted-foreground">余额</span>
-                {walletLoading ? (
-                  <Skeleton className="h-5 w-20 rounded-md" />
-                ) : (
-                  <span className={balanceEnough ? "font-medium" : "font-medium text-destructive"}>{money(balance)}</span>
-                )}
+                <AnimatedStatValue
+                  as="span"
+                  value={money(balance)}
+                  loading={walletLoading}
+                  cacheKey="subscriptions.wallet.balance.addon"
+                  fallbackValue={money(0)}
+                  className={balanceEnough ? "font-medium" : "font-medium text-destructive"}
+                />
               </div>
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <span className="text-muted-foreground">有效期</span>

@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { AvatarPicker } from "@/components/AvatarPicker";
@@ -38,7 +39,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
@@ -168,6 +168,8 @@ function UserStatCard({
   icon: Icon,
   tone,
   loading,
+  cacheKey,
+  fallbackValue,
   className,
 }: {
   title: string;
@@ -176,6 +178,8 @@ function UserStatCard({
   icon: ElementType;
   tone: string;
   loading?: boolean;
+  cacheKey: string;
+  fallbackValue?: string | number;
   className?: string;
 }) {
   return (
@@ -185,15 +189,23 @@ function UserStatCard({
         <div className="flex items-start justify-between gap-2 sm:gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            {loading ? (
-              <Skeleton className="h-7 w-20 rounded-md" />
-            ) : (
-              <p className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl">{value}</p>
-            )}
-            {loading && subtitle ? (
-              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
-            ) : (
-              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue={fallbackValue}
+              className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl"
+            />
+            {subtitle && (
+              <AnimatedStatValue
+                as="p"
+                value={subtitle}
+                loading={loading}
+                cacheKey={`${cacheKey}.subtitle`}
+                fallbackValue=""
+                className="break-words text-xs text-muted-foreground/80"
+              />
             )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
@@ -932,11 +944,21 @@ function UsersContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:gap-3">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <ShieldCheck className="h-3 w-3 text-amber-400" />
-            {isLoading || !users ? <Skeleton className="h-3.5 w-12 rounded" /> : `${adminCount} 管理员`}
+            <AnimatedStatValue
+              value={`${adminCount} 管理员`}
+              loading={isLoading || !users}
+              cacheKey="users.header.adminCount"
+              fallbackValue="0 管理员"
+            />
           </Badge>
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <UsersIcon className="h-3 w-3 text-primary" />
-            {isLoading || !users ? <Skeleton className="h-3.5 w-12 rounded" /> : `${users.length} 用户`}
+            <AnimatedStatValue
+              value={`${users?.length ?? 0} 用户`}
+              loading={isLoading || !users}
+              cacheKey="users.header.totalUsers"
+              fallbackValue="0 用户"
+            />
           </Badge>
           <Button size="sm" className="col-span-2 sm:col-span-1" onClick={() => setShowCreateUser(true)}>
             <Plus className="h-4 w-4 mr-1" />
@@ -953,6 +975,8 @@ function UsersContent() {
           icon={UsersIcon}
           tone="bg-gradient-to-br from-blue-500 to-blue-600"
           loading={summaryLoading || isLoading}
+          cacheKey="users.summary.totalUsers"
+          fallbackValue={0}
         />
         <UserStatCard
           title="转发规则"
@@ -961,6 +985,8 @@ function UsersContent() {
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={summaryLoading}
+          cacheKey="users.summary.totalRules"
+          fallbackValue={0}
         />
         <UserStatCard
           title="入站流量"
@@ -969,6 +995,8 @@ function UsersContent() {
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-violet-500 to-violet-600"
           loading={summaryLoading}
+          cacheKey="users.summary.totalTrafficIn"
+          fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
         />
         <UserStatCard
@@ -978,6 +1006,8 @@ function UsersContent() {
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={summaryLoading}
+          cacheKey="users.summary.totalTrafficOut"
+          fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
         />
       </div>
@@ -991,10 +1021,14 @@ function UsersContent() {
           <TabsTrigger value="subscriptions" className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
             <Package className="h-3.5 w-3.5" />
             用户订阅管理
-            {subscriptionsLoading ? (
-              <Skeleton className="ml-0.5 h-4 w-6 rounded-full" />
-            ) : activeSubscriptionCount > 0 && (
-              <span className="ml-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{activeSubscriptionCount}</span>
+            {(subscriptionsLoading || activeSubscriptionCount > 0) && (
+              <AnimatedStatValue
+                value={activeSubscriptionCount}
+                loading={subscriptionsLoading}
+                cacheKey="users.tabs.activeSubscriptionCount"
+                fallbackValue={0}
+                className="ml-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+              />
             )}
           </TabsTrigger>
         </TabsList>

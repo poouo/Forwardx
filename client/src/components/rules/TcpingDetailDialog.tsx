@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,15 @@ type TcpingChartPoint = {
   chartLatency: number;
   isTimeout: boolean;
 };
+
+type TcpingSeriesDatum = {
+  recordedAt: string | Date;
+  latencyMs?: number | null;
+  isTimeout?: boolean | null;
+};
+
+const tcpingSeriesCache = new Map<number, TcpingSeriesDatum[]>();
+const tcpingAnimatedKeys = new Set<number>();
 
 /** 格式化时间标签：显示 MM/DD HH:mm */
 function formatTcpingTime(dateStr: string | Date): string {
@@ -64,17 +73,26 @@ function TcpingDetailDialog({
     { ruleId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false }
   );
+  const cachedData = tcpingSeriesCache.get(ruleId);
+  const seriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
+  const showInitialLoading = isLoading && !seriesData;
+
+  useEffect(() => {
+    if (data) {
+      tcpingSeriesCache.set(ruleId, data as TcpingSeriesDatum[]);
+    }
+  }, [data, ruleId]);
 
   const chartData = useMemo<TcpingChartPoint[]>(() => {
-    if (!data || data.length === 0) return [];
-    return data.map((d: any): TcpingChartPoint => ({
+    if (!seriesData || seriesData.length === 0) return [];
+    return seriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => ({
       label: formatTcpingTime(d.recordedAt),
       fullLabel: formatTcpingTime(d.recordedAt),
       latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
       chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
-  }, [data]);
+  }, [seriesData]);
 
   const yMax = useMemo(() => {
     if (!chartData || chartData.length === 0) return 120;
@@ -103,6 +121,13 @@ function TcpingDetailDialog({
       avg: Math.round(sum / values.length),
     };
   }, [chartData]);
+  const shouldAnimateChart = open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
+
+  useEffect(() => {
+    if (shouldAnimateChart) {
+      tcpingAnimatedKeys.add(ruleId);
+    }
+  }, [shouldAnimateChart, ruleId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -112,7 +137,7 @@ function TcpingDetailDialog({
           <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
         </DialogHeader>
         <div className="h-72 w-full">
-          {isLoading ? (
+          {showInitialLoading ? (
             <Skeleton className="h-full w-full" />
           ) : chartData.length === 0 ? (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
@@ -157,6 +182,8 @@ function TcpingDetailDialog({
                   fill="url(#tcpingGradientRule)"
                   dot={false}
                   activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }}
+                  isAnimationActive={shouldAnimateChart}
+                  animationDuration={shouldAnimateChart ? 500 : 0}
                 />
               </AreaChart>
             </ResponsiveContainer>

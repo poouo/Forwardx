@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,7 +7,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -50,6 +50,8 @@ function BillingStatCard({
   icon: Icon,
   tone,
   loading = false,
+  cacheKey,
+  fallbackValue,
 }: {
   title: string;
   value: string | number;
@@ -57,6 +59,8 @@ function BillingStatCard({
   icon: ElementType;
   tone: string;
   loading?: boolean;
+  cacheKey: string;
+  fallbackValue?: string | number;
 }) {
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
@@ -65,15 +69,23 @@ function BillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            {loading ? (
-              <Skeleton className="h-8 w-24 rounded-md" />
-            ) : (
-              <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            )}
-            {loading && subtitle ? (
-              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
-            ) : (
-              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue={fallbackValue}
+              className="break-words text-2xl font-bold tracking-tight tabular-nums"
+            />
+            {subtitle && (
+              <AnimatedStatValue
+                as="p"
+                value={subtitle}
+                loading={loading}
+                cacheKey={`${cacheKey}.subtitle`}
+                fallbackValue=""
+                className="break-words text-xs text-muted-foreground/80"
+              />
             )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
@@ -107,11 +119,14 @@ function BillingToggleCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            {loading ? (
-              <Skeleton className="h-8 w-24 rounded-md" />
-            ) : (
-              <p className="break-words text-2xl font-bold tracking-tight">{enabled ? "已开启" : "已关闭"}</p>
-            )}
+            <AnimatedStatValue
+              as="p"
+              value={enabled ? "已开启" : "已关闭"}
+              loading={loading}
+              cacheKey={`billing.toggle.${title}`}
+              fallbackValue="已关闭"
+              className="break-words text-2xl font-bold tracking-tight"
+            />
             <p className="break-words text-xs text-muted-foreground/80">入口状态</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -421,6 +436,8 @@ export default function Billing() {
             icon={WalletCards}
             tone="bg-gradient-to-br from-blue-500 to-blue-600"
             loading={usersLoading}
+            cacheKey="billing.totalBalance"
+            fallbackValue={money(0)}
           />
           <BillingStatCard
             title="可用兑换码"
@@ -429,6 +446,8 @@ export default function Billing() {
             icon={Gift}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
             loading={redemptionCodesLoading}
+            cacheKey="billing.activeRedemptionCodes"
+            fallbackValue={0}
           />
           <BillingStatCard
             title="生效折扣码"
@@ -437,6 +456,8 @@ export default function Billing() {
             icon={TicketPercent}
             tone="bg-gradient-to-br from-violet-500 to-violet-600"
             loading={discountCodesLoading}
+            cacheKey="billing.activeDiscountCodes"
+            fallbackValue={0}
           />
           <BillingToggleCard
             title="用户兑换入口"

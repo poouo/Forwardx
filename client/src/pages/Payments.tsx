@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -189,23 +189,30 @@ function PaymentStatCard({
   icon: Icon,
   tone = "text-primary",
   loading = false,
+  cacheKey,
+  fallbackValue,
 }: {
   label: string;
   value: string | number;
   icon: React.ElementType;
   tone?: string;
   loading?: boolean;
+  cacheKey: string;
+  fallbackValue?: string | number;
 }) {
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md">
       <CardContent className="flex min-h-[82px] items-center justify-between gap-4 p-4 sm:p-5">
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted-foreground">{label}</p>
-          {loading ? (
-            <Skeleton className="mt-1.5 h-7 w-24 rounded-md" />
-          ) : (
-            <p className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums">{value}</p>
-          )}
+          <AnimatedStatValue
+            as="p"
+            value={value}
+            loading={loading}
+            cacheKey={cacheKey}
+            fallbackValue={fallbackValue}
+            className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums"
+          />
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${tone}`} />
       </CardContent>
@@ -382,6 +389,8 @@ export default function Payments() {
             icon={ShieldCheck}
             tone={form.enabled ? "text-emerald-600" : "text-muted-foreground"}
             loading={isLoading}
+            cacheKey="payments.enabled"
+            fallbackValue="未启用"
           />
           <PaymentStatCard
             label="已支付金额"
@@ -389,6 +398,8 @@ export default function Payments() {
             icon={WalletCards}
             tone="text-primary"
             loading={statsLoading}
+            cacheKey="payments.paidAmount"
+            fallbackValue={formatMoney(0)}
           />
           <PaymentStatCard
             label="已支付订单"
@@ -396,6 +407,8 @@ export default function Payments() {
             icon={CheckCircle2}
             tone="text-emerald-600"
             loading={statsLoading}
+            cacheKey="payments.paidOrders"
+            fallbackValue={0}
           />
           <PaymentStatCard
             label="待支付订单"
@@ -403,6 +416,8 @@ export default function Payments() {
             icon={RefreshCw}
             tone="text-amber-600"
             loading={statsLoading}
+            cacheKey="payments.pendingOrders"
+            fallbackValue={0}
           />
         </div>
 

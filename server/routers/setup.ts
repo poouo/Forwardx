@@ -128,8 +128,13 @@ async function getExistingDataSummary() {
   const hostCount = counts.hosts || 0;
   const ruleCount = counts.forward_rules || 0;
   const tunnelCount = counts.tunnels || 0;
-  const hasExistingData = userCount > 0 || hostCount > 0 || ruleCount > 0 || tunnelCount > 0;
-  return { hasExistingData, userCount, hostCount, ruleCount, tunnelCount, counts };
+  const businessDataCount = Object.entries(counts).reduce((sum, [table, count]) => {
+    if (table === "system_settings") return sum;
+    if (table === "users") return sum + Math.max(0, count - 1);
+    return sum + count;
+  }, 0);
+  const hasExistingData = businessDataCount > 0;
+  return { hasExistingData, businessDataCount, userCount, hostCount, ruleCount, tunnelCount, counts };
 }
 
 async function clearExistingPanelData() {

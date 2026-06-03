@@ -64,6 +64,10 @@ import {
   UserPlus,
   Server,
   Wifi,
+  Database,
+  Upload,
+  Lock,
+  MoveRight,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useRef, useState, useEffect } from "react";
@@ -122,16 +126,44 @@ function getUpgradeProgress(job: any) {
   return { percent: 0, label: "等待升级", steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
-const manualPanelUpgradeCommands = [
+const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh";
+const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh";
+const panelLocalCommandPrefix = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s --`;
+const panelDockerCommandPrefix = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s --`;
+
+const panelInstallGuideCommands = [
   {
     label: "本地部署",
-    command:
-      "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade",
+    description: "适合直接在 Linux 主机上运行面板，脚本会安装依赖、构建前端、写入 systemd 服务并启动面板。",
+    directory: "/opt/forwardx-panel",
+    service: "forwardx-panel",
+    install: `${panelLocalCommandPrefix} install`,
+    upgrade: `${panelLocalCommandPrefix} upgrade`,
+    uninstall: `${panelLocalCommandPrefix} uninstall`,
+    versionedUpgrade: `curl -fsSL ${panelLocalScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
+    notes: ["默认 Web 端口为 3000，安装时可按提示修改。", "升级会保留 .env、data 目录、数据库配置和已有数据。"],
   },
   {
     label: "Docker 部署",
-    command:
-      "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade",
+    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取代码并通过 Compose 构建启动容器。",
+    directory: "/opt/forwardx-docker",
+    service: "forwardx-panel 容器",
+    install: `${panelDockerCommandPrefix} install`,
+    upgrade: `${panelDockerCommandPrefix} upgrade`,
+    uninstall: `${panelDockerCommandPrefix} uninstall`,
+    versionedUpgrade: `curl -fsSL ${panelDockerScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
+    notes: ["默认映射 Web 端口为 3000，可通过 PORT 环境变量指定。", "升级会保留 .env、部署目录 data 数据和 Docker 数据卷。"],
+  },
+] as const;
+
+const manualPanelUpgradeCommands = [
+  {
+    label: "本地部署",
+    command: panelInstallGuideCommands[0].upgrade,
+  },
+  {
+    label: "Docker 部署",
+    command: panelInstallGuideCommands[1].upgrade,
   },
 ];
 
@@ -294,7 +326,19 @@ function getMigrationCodeCountdown(code: { expiresAt: number } | null, now: numb
   return Math.max(0, Math.ceil((code.expiresAt - now) / 1000));
 }
 
-const settingsTabs = ["tokens", "install", "system", "telegram", "email", "logs"] as const;
+function downloadTextFile(filename: string, content: string, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+const settingsTabs = ["tokens", "install", "system", "telegram", "email", "backup", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
@@ -476,9 +520,9 @@ function SettingsContent() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
-        <div className="flex justify-center">
+        <div className="flex justify-start">
           <div className="max-w-full overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
-            <TabsList className="flex h-auto min-w-max flex-nowrap justify-center sm:min-w-0 sm:flex-wrap">
+            <TabsList className="flex h-auto min-w-max flex-nowrap justify-start sm:min-w-0 sm:flex-wrap">
               <TabsTrigger value="tokens" className={settingsTabTriggerClass}>
                 <Key className="h-3.5 w-3.5" />
                 Token管理
@@ -498,6 +542,10 @@ function SettingsContent() {
               <TabsTrigger value="email" className={settingsTabTriggerClass}>
                 <Mail className="h-3.5 w-3.5" />
                 邮箱设置
+              </TabsTrigger>
+              <TabsTrigger value="backup" className={settingsTabTriggerClass}>
+                <Database className="h-3.5 w-3.5" />
+                备份恢复
               </TabsTrigger>
               <TabsTrigger value="logs" className={settingsTabTriggerClass}>
                 <FileText className="h-3.5 w-3.5" />
@@ -753,7 +801,7 @@ function SettingsContent() {
                 安装说明
               </CardTitle>
               <CardDescription>
-                在主机上执行命令，完成 Agent 安装。
+                面板服务的安装、升级与卸载说明。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -765,22 +813,15 @@ function SettingsContent() {
                     <code className="ml-1 font-mono text-foreground">{panelUrl}</code>
                   </p>
                   <p className="text-muted-foreground">
-                    Agent 需要能访问此地址。
+                    首次部署完成后打开面板地址，按页面提示完成数据库初始化和管理员创建。
                   </p>
                 </div>
               </div>
 
               <div className="space-y-3">
-                <p className="text-sm font-medium">安装步骤</p>
-                <div className="space-y-3">
-                  {[
-                    "创建 Agent Token",
-                    "复制安装命令",
-                    "在主机上用 root 执行",
-                    "等待 Agent 上线",
-                    "升级时执行升级命令",
-                    "卸载时执行卸载命令",
-                  ].map((step, i) => (
+                <p className="text-sm font-medium">部署流程</p>
+                <div className="grid gap-3 sm:grid-cols-4">
+                  {["选择本地部署或 Docker 部署", "在服务器用 root 权限执行安装命令", "打开面板完成初始化配置", "后续使用升级命令更新面板"].map((step, i) => (
                     <div key={i} className="flex gap-3 items-start">
                       <span className="h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
                         {i + 1}
@@ -791,73 +832,93 @@ function SettingsContent() {
                 </div>
               </div>
 
-              <div className="p-4 rounded-lg bg-muted/20 border border-border/30 space-y-3">
-                <div>
-                  <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
-                    <Download className="h-3 w-3" />
-                    安装命令
-                  </p>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
-                      {getInstallCommand("YOUR_TOKEN")}
-                    </code>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 self-end sm:self-auto"
-                      onClick={() => copyToClipboard(getInstallCommand("YOUR_TOKEN"))}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
+              <div className="grid gap-4 lg:grid-cols-2">
+                {panelInstallGuideCommands.map((guide) => (
+                  <div key={guide.label} className="rounded-lg border border-border/30 bg-muted/20 p-4">
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">{guide.label}</p>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{guide.description}</p>
+                      </div>
+                      <Badge variant="outline" className="shrink-0 text-[10px]">
+                        {guide.service}
+                      </Badge>
+                    </div>
+                    <div className="mb-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div className="rounded border border-border/30 bg-background/40 p-2">
+                        <span className="block text-[10px] uppercase text-muted-foreground/70">默认目录</span>
+                        <code className="mt-1 block font-mono text-foreground">{guide.directory}</code>
+                      </div>
+                      <div className="rounded border border-border/30 bg-background/40 p-2">
+                        <span className="block text-[10px] uppercase text-muted-foreground/70">默认端口</span>
+                        <code className="mt-1 block font-mono text-foreground">3000</code>
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {[
+                        { label: "安装命令", icon: Download, command: guide.install },
+                        { label: "升级命令", icon: RefreshCw, command: guide.upgrade },
+                        { label: "卸载命令", icon: Trash2, command: guide.uninstall },
+                      ].map((item) => {
+                        const Icon = item.icon;
+                        return (
+                          <div key={item.label}>
+                            <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                              <Icon className="h-3 w-3" />
+                              {item.label}
+                            </p>
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                              <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
+                                {item.command}
+                              </code>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="shrink-0 self-end sm:self-auto"
+                                onClick={() => copyToClipboard(item.command)}
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div>
+                        <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <Github className="h-3 w-3" />
+                          指定版本升级
+                        </p>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                          <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
+                            {guide.versionedUpgrade}
+                          </code>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="shrink-0 self-end sm:self-auto"
+                            onClick={() => copyToClipboard(guide.versionedUpgrade)}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                    <ul className="mt-4 space-y-1 text-xs text-muted-foreground">
+                      {guide.notes.map((note) => (
+                        <li key={note}>- {note}</li>
+                      ))}
+                    </ul>
                   </div>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
-                    <RefreshCw className="h-3 w-3" />
-                    升级命令
-                  </p>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
-                      {getUpgradeCommand()}
-                    </code>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 self-end sm:self-auto"
-                      onClick={() => copyToClipboard(getUpgradeCommand())}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
-                    <Trash2 className="h-3 w-3" />
-                    卸载命令
-                  </p>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
-                      {getUninstallCommand()}
-                    </code>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 self-end sm:self-auto"
-                      onClick={() => copyToClipboard(getUninstallCommand())}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+                ))}
               </div>
 
               <div className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/20">
                 <p className="text-xs text-amber-400 font-medium mb-1">注意事项</p>
                 <ul className="text-xs text-muted-foreground space-y-1">
-                  <li>- 需要 root 权限</li>
-                  <li>- 自动配置 systemd</li>
-                  <li>- 一个 Token 绑定一台主机</li>
-                  <li>- 卸载会清理服务和规则</li>
+                  <li>- 安装和升级需要 root 权限。</li>
+                  <li>- 本地部署会自动配置 systemd 服务；Docker 部署会使用 Docker Compose 启动容器。</li>
+                  <li>- 升级默认同步 GitHub main 分支最新代码，也可以通过 FORWARDX_TARGET_VERSION 指定 tag 或版本号。</li>
+                  <li>- 卸载命令会询问是否删除部署目录或 Docker 数据卷，删除前请确认已经备份数据。</li>
                 </ul>
               </div>
             </CardContent>
@@ -877,6 +938,11 @@ function SettingsContent() {
         {/* Email Settings Tab */}
         <TabsContent value="email" className="space-y-4">
           <EmailSettingsContent />
+        </TabsContent>
+
+        {/* Backup and Restore Tab */}
+        <TabsContent value="backup" className="space-y-4">
+          <BackupRestoreSection panelUrl={panelUrl} />
         </TabsContent>
 
         {/* Panel Logs Tab */}
@@ -1130,15 +1196,7 @@ function PanelLogsSection() {
   });
   const exportLogsMutation = trpc.system.exportPanelLogs.useMutation({
     onSuccess: (data) => {
-      const blob = new Blob([data.content], { type: data.mimeType || "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = data.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      downloadTextFile(data.filename, data.content, data.mimeType || "text/plain;charset=utf-8");
       toast.success(`已导出 ${data.count} 条日志`);
     },
     onError: (err) => toast.error(err.message || "导出日志失败"),
@@ -1212,9 +1270,11 @@ function PanelLogsSection() {
     { value: "warn", label: "Warn", count: agentSummary.warn || 0 },
     { value: "error", label: "Error", count: agentSummary.error || 0 },
   ] as const;
+  const logViewportClass = "h-80 overflow-y-auto overflow-x-hidden rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed";
+  const logEmptyClass = "flex h-full items-center justify-center text-muted-foreground";
   return (
-    <div className="space-y-4">
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+    <div className="flex flex-col gap-4">
+      <Card className="order-2 border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1260,11 +1320,11 @@ function PanelLogsSection() {
             </TabsList>
           </Tabs>
           {agentLogsLoading ? (
-            <DataSectionLoading label="正在加载 Agent 日志" minHeight="min-h-[160px]" />
+            <DataSectionLoading label="正在加载 Agent 日志" minHeight="h-80" />
           ) : (
-          <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+          <div className={logViewportClass}>
             {agentLogEntries.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground">暂无 Agent 日志</div>
+              <div className={logEmptyClass}>暂无 Agent 日志</div>
             ) : (
               <div className="space-y-1">
                 {agentLogEntries.map((entry: any) => (
@@ -1305,7 +1365,7 @@ function PanelLogsSection() {
           </div>
         </CardContent>
       </Card>
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <Card className="order-1 border-border/40 bg-card/60 backdrop-blur-md">
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1354,11 +1414,11 @@ function PanelLogsSection() {
             </TabsList>
           </Tabs>
           {panelLogsLoading ? (
-            <DataSectionLoading label="正在加载面板日志" minHeight="min-h-[160px]" />
+            <DataSectionLoading label="正在加载面板日志" minHeight="h-80" />
           ) : (
-          <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
+          <div className={logViewportClass}>
             {panelLogEntries.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground">暂无日志</div>
+              <div className={logEmptyClass}>暂无日志</div>
             ) : (
               <div className="space-y-1">
                 {panelLogEntries.map((entry: any) => (
@@ -1398,6 +1458,539 @@ function PanelLogsSection() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
+  const utils = trpc.useUtils();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [migrationCode, setMigrationCode] = useState<{
+    code: string;
+    expiresAt: number;
+    expiresInSeconds: number;
+    pendingRequest?: {
+      id: string;
+      targetPanelUrl: string;
+      status: "pending" | "approved" | "rejected" | "used";
+      createdAt: number;
+      expiresAt: number;
+      approvedAt?: number;
+      rejectedAt?: number;
+    } | null;
+  } | null>(null);
+  const [migrationCodeTick, setMigrationCodeTick] = useState(Date.now());
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupPasswordConfirm, setBackupPasswordConfirm] = useState("");
+  const [importPassword, setImportPassword] = useState("");
+  const [importContent, setImportContent] = useState("");
+  const [importFilename, setImportFilename] = useState("");
+  const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [onlineMigration, setOnlineMigration] = useState({
+    oldPanelUrl: "",
+    migrationCode: "",
+    targetPanelUrl: panelUrl,
+  });
+  const [showOnlineConfirm, setShowOnlineConfirm] = useState(false);
+  const [migrationJobId, setMigrationJobId] = useState<string | null>(null);
+  const [reportedMigrationJobId, setReportedMigrationJobId] = useState<string | null>(null);
+
+  const { data: currentMigrationCode } = trpc.system.getMigrationCode.useQuery(undefined, {
+    refetchInterval: 1000,
+  });
+  const { data: backupSummary, isLoading: backupSummaryLoading } = trpc.system.backupSummary.useQuery(undefined, {
+    refetchInterval: 15000,
+  });
+  const { data: migrationJob } = trpc.system.panelMigrationStatus.useQuery(
+    { jobId: migrationJobId || "" },
+    {
+      enabled: !!migrationJobId,
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        return status === "success" || status === "failed" ? false : 1200;
+      },
+    },
+  );
+
+  useEffect(() => {
+    setMigrationCode(currentMigrationCode || null);
+  }, [currentMigrationCode]);
+
+  useEffect(() => {
+    setOnlineMigration((current) => (
+      current.targetPanelUrl ? current : { ...current, targetPanelUrl: panelUrl }
+    ));
+  }, [panelUrl]);
+
+  useEffect(() => {
+    if (!migrationCode) return;
+    const timer = window.setInterval(() => setMigrationCodeTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [migrationCode?.code]);
+
+  useEffect(() => {
+    if (!migrationJob || reportedMigrationJobId === migrationJob.id) return;
+    if (migrationJob?.status === "success") {
+      toast.success(migrationJob.message || "在线迁移完成");
+      utils.system.backupSummary.invalidate();
+      setReportedMigrationJobId(migrationJob.id);
+    }
+    if (migrationJob?.status === "failed") {
+      toast.error(migrationJob.error || "在线迁移失败");
+      setReportedMigrationJobId(migrationJob.id);
+    }
+  }, [migrationJob, reportedMigrationJobId, utils.system.backupSummary]);
+
+  const createMigrationCodeMutation = trpc.system.createMigrationCode.useMutation({
+    onSuccess: (data) => {
+      setMigrationCode(data);
+      utils.system.getMigrationCode.invalidate();
+      toast.success("迁移码已生成，5 分钟内有效");
+    },
+    onError: (err) => toast.error(err.message || "生成迁移码失败"),
+  });
+
+  const approveMigrationRequestMutation = trpc.system.approveMigrationRequest.useMutation({
+    onSuccess: () => {
+      utils.system.getMigrationCode.invalidate();
+      toast.success("已同意迁移请求，新面板将开始导入数据");
+    },
+    onError: (err) => toast.error(err.message || "同意迁移请求失败"),
+  });
+
+  const rejectMigrationRequestMutation = trpc.system.rejectMigrationRequest.useMutation({
+    onSuccess: () => {
+      utils.system.getMigrationCode.invalidate();
+      toast.success("已拒绝迁移请求");
+    },
+    onError: (err) => toast.error(err.message || "拒绝迁移请求失败"),
+  });
+
+  const exportBackupMutation = trpc.system.exportPanelBackup.useMutation({
+    onSuccess: (data) => {
+      downloadTextFile(data.filename, data.content, data.mimeType || "application/json;charset=utf-8");
+      setBackupPassword("");
+      setBackupPasswordConfirm("");
+      toast.success("加密备份已导出");
+    },
+    onError: (err) => toast.error(err.message || "导出备份失败"),
+  });
+
+  const importBackupMutation = trpc.system.importPanelBackup.useMutation({
+    onSuccess: async (result) => {
+      setShowImportConfirm(false);
+      setImportPassword("");
+      setImportContent("");
+      setImportFilename("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await utils.system.backupSummary.invalidate();
+      toast.success(result.mode === "incremental" ? "增量导入完成，当前面板数据已保留" : "备份恢复完成");
+    },
+    onError: (err) => toast.error(err.message || "导入备份失败"),
+  });
+
+  const startPanelMigrationMutation = trpc.system.startPanelMigration.useMutation({
+    onSuccess: (job) => {
+      setMigrationJobId(job.id);
+      setReportedMigrationJobId(null);
+      setShowOnlineConfirm(false);
+      toast.success("在线迁移任务已开始");
+    },
+    onError: (err) => toast.error(err.message || "启动在线迁移失败"),
+  });
+
+  const copyMigrationCode = async (code: string) => {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(code);
+      copied = true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = code;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+
+    if (copied) toast.success("迁移码已复制");
+    else toast.error("复制失败，请手动选中迁移码复制");
+  };
+
+  const migrationCountdown = getMigrationCodeCountdown(migrationCode, migrationCodeTick);
+  const migrationRequest = migrationCode?.pendingRequest;
+  const backupSummaryReady = !!backupSummary;
+  const hasExistingData = !!backupSummary?.hasExistingData;
+
+  const handleExportBackup = () => {
+    if (backupPassword.length < 8) {
+      toast.error("备份密码至少需要 8 位");
+      return;
+    }
+    if (backupPassword !== backupPasswordConfirm) {
+      toast.error("两次输入的备份密码不一致");
+      return;
+    }
+    exportBackupMutation.mutate({ password: backupPassword });
+  };
+
+  const handleBackupFileChange = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error("备份文件过大");
+      return;
+    }
+    const text = await file.text();
+    setImportContent(text);
+    setImportFilename(file.name);
+  };
+
+  const openImportConfirm = () => {
+    if (!backupSummaryReady) {
+      toast.info("正在读取当前面板数据，请稍后再导入");
+      return;
+    }
+    if (!importContent) {
+      toast.error("请选择备份文件");
+      return;
+    }
+    if (!importPassword) {
+      toast.error("请输入备份密码");
+      return;
+    }
+    setShowImportConfirm(true);
+  };
+
+  const openOnlineConfirm = () => {
+    if (!backupSummaryReady) {
+      toast.info("正在读取当前面板数据，请稍后再迁移");
+      return;
+    }
+    if (!onlineMigration.oldPanelUrl.trim() || !onlineMigration.migrationCode.trim() || !onlineMigration.targetPanelUrl.trim()) {
+      toast.error("请填写旧面板地址、迁移码和新面板访问地址");
+      return;
+    }
+    setShowOnlineConfirm(true);
+  };
+
+  return (
+    <div className="space-y-4">
+      {backupSummaryLoading && !backupSummary ? (
+        <DataSectionLoading label="正在加载备份恢复概览" minHeight="min-h-[104px]" />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {[
+            { label: "当前用户", value: backupSummary?.userCount ?? 0 },
+            { label: "当前主机", value: backupSummary?.hostCount ?? 0 },
+            { label: "当前规则", value: backupSummary?.ruleCount ?? 0 },
+            { label: "当前隧道", value: backupSummary?.tunnelCount ?? 0 },
+            { label: "转发组", value: backupSummary?.forwardGroupCount ?? 0 },
+          ].map((item) => (
+            <Card key={item.label} className="border-border/40 bg-card/60 backdrop-blur-md">
+              <CardContent className="p-4">
+                <p className="text-xs text-muted-foreground">{item.label}</p>
+                <p className="mt-1 text-xl font-semibold">{item.value}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Alert>
+        <ShieldCheck className="h-4 w-4" />
+        <AlertTitle>
+          {!backupSummaryReady
+            ? "正在检查当前面板数据"
+            : hasExistingData
+              ? "当前面板已有业务数据，迁移将按增量方式执行"
+              : "当前面板没有业务数据，可作为完整恢复执行"}
+        </AlertTitle>
+        <AlertDescription>
+          {backupSummaryReady
+            ? "增量迁移会保留新面板现有主机、用户、规则和订单数据，并把旧面板数据追加导入；重复的用户账号、主机 Token、订单号、兑换码会复用现有记录。"
+            : "加载完成后会根据当前面板是否已有业务数据，自动判断完整恢复或增量迁移。"}
+        </AlertDescription>
+      </Alert>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Key className="h-4 w-4 text-primary" />
+              旧面板迁移码
+            </CardTitle>
+            <CardDescription>
+              在旧面板生成迁移码，并审批新面板发起的在线迁移请求。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {migrationCode ? (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <p className="text-xs text-muted-foreground">迁移码</p>
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <code className="break-all font-mono text-lg font-semibold tracking-widest">{migrationCode.code}</code>
+                  <Button variant="outline" size="sm" onClick={() => copyMigrationCode(migrationCode.code)}>
+                    <Copy className="mr-2 h-3.5 w-3.5" />
+                    复制
+                  </Button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>有效至 {new Date(migrationCode.expiresAt).toLocaleTimeString()}</span>
+                  <Badge variant={migrationCountdown > 0 ? "outline" : "secondary"}>
+                    剩余 {formatCountdown(migrationCountdown)}
+                  </Badge>
+                </div>
+                {migrationRequest?.status === "pending" && (
+                  <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <p className="text-sm font-medium text-amber-700 dark:text-amber-300">收到新面板迁移请求</p>
+                    <p className="mt-1 break-all text-xs text-muted-foreground">
+                      目标面板：{migrationRequest.targetPanelUrl}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => approveMigrationRequestMutation.mutate({ requestId: migrationRequest.id })}
+                        disabled={approveMigrationRequestMutation.isPending || rejectMigrationRequestMutation.isPending}
+                      >
+                        同意迁移
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => rejectMigrationRequestMutation.mutate({ requestId: migrationRequest.id })}
+                        disabled={approveMigrationRequestMutation.isPending || rejectMigrationRequestMutation.isPending}
+                      >
+                        拒绝
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {migrationRequest?.status === "approved" && (
+                  <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+                    已同意迁移请求，正在等待新面板拉取数据。
+                  </div>
+                )}
+                {migrationRequest?.status === "rejected" && (
+                  <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                    已拒绝本次迁移请求。
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Alert>
+                <ShieldCheck className="h-4 w-4" />
+                <AlertTitle>一次性迁移码</AlertTitle>
+                <AlertDescription>迁移码 5 分钟有效，使用后失效。</AlertDescription>
+              </Alert>
+            )}
+            <Button onClick={() => createMigrationCodeMutation.mutate()} disabled={createMigrationCodeMutation.isPending}>
+              生成迁移码
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <MoveRight className="h-4 w-4 text-primary" />
+              在线迁移接收
+            </CardTitle>
+            <CardDescription>
+              在新面板填写旧面板地址和迁移码，在线拉取旧面板数据。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>旧面板地址</Label>
+                <Input
+                  value={onlineMigration.oldPanelUrl}
+                  onChange={(e) => setOnlineMigration({ ...onlineMigration, oldPanelUrl: e.target.value })}
+                  placeholder="https://old.example.com"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>旧面板迁移码</Label>
+                <Input
+                  value={onlineMigration.migrationCode}
+                  onChange={(e) => setOnlineMigration({ ...onlineMigration, migrationCode: e.target.value.toUpperCase() })}
+                  placeholder="迁移码"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>新面板访问地址</Label>
+              <Input
+                value={onlineMigration.targetPanelUrl}
+                onChange={(e) => setOnlineMigration({ ...onlineMigration, targetPanelUrl: e.target.value })}
+                placeholder={panelUrl}
+              />
+            </div>
+            {migrationJob && (
+              <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">{migrationJob.step}</span>
+                  <span>{migrationJob.progress}%</span>
+                </div>
+                <Progress value={migrationJob.progress} className="mt-3" />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {migrationJob.error || migrationJob.message || "在线迁移过程中请保持新旧面板可访问。"}
+                </p>
+              </div>
+            )}
+            <Button className="gap-2" onClick={openOnlineConfirm} disabled={startPanelMigrationMutation.isPending}>
+              <MoveRight className="h-4 w-4" />
+              开始在线迁移
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Download className="h-4 w-4 text-primary" />
+              加密数据导出
+            </CardTitle>
+            <CardDescription>
+              导出一份离线备份文件，文件内容会使用你设置的备份密码加密。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>备份密码</Label>
+                <Input type="password" value={backupPassword} onChange={(e) => setBackupPassword(e.target.value)} placeholder="至少 8 位" />
+              </div>
+              <div className="space-y-2">
+                <Label>确认备份密码</Label>
+                <Input type="password" value={backupPasswordConfirm} onChange={(e) => setBackupPasswordConfirm(e.target.value)} />
+              </div>
+            </div>
+            <Alert>
+              <Lock className="h-4 w-4" />
+              <AlertTitle>请妥善保存备份密码</AlertTitle>
+              <AlertDescription>备份文件不保存明文数据，忘记密码将无法解密恢复。</AlertDescription>
+            </Alert>
+            <Button className="gap-2" onClick={handleExportBackup} disabled={exportBackupMutation.isPending}>
+              <Download className="h-4 w-4" />
+              导出加密备份
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Upload className="h-4 w-4 text-primary" />
+              离线导入恢复
+            </CardTitle>
+            <CardDescription>
+              旧面板离线时，可通过加密备份文件恢复并接管旧主机。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-2">
+              <Label>备份文件</Label>
+              <Input
+                ref={fileInputRef}
+                type="file"
+                accept=".fwxbak,application/json"
+                onChange={(e) => handleBackupFileChange(e.target.files?.[0])}
+              />
+              {importFilename && <p className="text-xs text-muted-foreground">已选择：{importFilename}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label>备份密码</Label>
+              <Input type="password" value={importPassword} onChange={(e) => setImportPassword(e.target.value)} />
+            </div>
+            <Button className="gap-2" onClick={openImportConfirm} disabled={importBackupMutation.isPending}>
+              <Upload className="h-4 w-4" />
+              导入并恢复
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Dialog open={showImportConfirm} onOpenChange={setShowImportConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              确认导入备份
+            </DialogTitle>
+            <DialogDescription>
+              导入后会接管备份内已有主机，旧面板的主机、规则、隧道和转发组会迁移到当前面板。
+            </DialogDescription>
+          </DialogHeader>
+          <Alert>
+            <ShieldCheck className="h-4 w-4" />
+            <AlertTitle>{hasExistingData ? "将执行增量导入" : "将执行完整恢复"}</AlertTitle>
+            <AlertDescription>
+              {hasExistingData
+                ? "当前面板已有数据会被保留，备份内数据会增量追加；重复数据会尽量复用现有记录。"
+                : "当前面板没有业务数据，导入后会保留当前管理员账户，并以备份数据作为当前面板数据。"}
+            </AlertDescription>
+          </Alert>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImportConfirm(false)} disabled={importBackupMutation.isPending}>
+              取消
+            </Button>
+            <Button
+              onClick={() => importBackupMutation.mutate({
+                content: importContent,
+                password: importPassword,
+                targetPanelUrl: panelUrl || undefined,
+                confirmed: true,
+              })}
+              disabled={importBackupMutation.isPending}
+            >
+              确认导入
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showOnlineConfirm} onOpenChange={setShowOnlineConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              确认在线迁移
+            </DialogTitle>
+            <DialogDescription>
+              新面板将连接旧面板拉取数据，并在旧面板审批后执行迁移。
+            </DialogDescription>
+          </DialogHeader>
+          <Alert>
+            <ShieldCheck className="h-4 w-4" />
+            <AlertTitle>{hasExistingData ? "将执行增量迁移" : "将执行完整迁移"}</AlertTitle>
+            <AlertDescription>
+              在线迁移完成后旧面板会通知 Agent 切换到当前面板，旧面板随后会进入迁移失效状态。
+            </AlertDescription>
+          </Alert>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowOnlineConfirm(false)} disabled={startPanelMigrationMutation.isPending}>
+              取消
+            </Button>
+            <Button
+              onClick={() => startPanelMigrationMutation.mutate({
+                oldPanelUrl: onlineMigration.oldPanelUrl.trim(),
+                migrationCode: onlineMigration.migrationCode.trim(),
+                targetPanelUrl: onlineMigration.targetPanelUrl.trim(),
+                confirmed: true,
+              })}
+              disabled={startPanelMigrationMutation.isPending}
+            >
+              确认迁移
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1648,7 +2241,6 @@ type SystemSettingsSaveKey =
   | "homepage"
   | "ddns"
   | "forwardProtocols"
-  | "tunnelRuntime"
   | "agentLogs";
 
 function isValidWebPort(value: string | number) {
@@ -1663,9 +2255,6 @@ function SystemInfoSection() {
     undefined,
     { refetchInterval: 5000 }
   );
-  const { data: currentMigrationCode } = trpc.system.getMigrationCode.useQuery(undefined, {
-    refetchInterval: 1000,
-  });
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [webPortInput, setWebPortInput] = useState("");
@@ -1678,7 +2267,6 @@ function SystemInfoSection() {
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
-  const [tunnelRuntimeDefault, setTunnelRuntimeDefault] = useState<"forwardx" | "gost">("forwardx");
   const [agentLogUploadEnabled, setAgentLogUploadEnabled] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
@@ -1689,21 +2277,6 @@ function SystemInfoSection() {
   const [ddnsWebhookHeaders, setDdnsWebhookHeaders] = useState("");
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [savingSetting, setSavingSetting] = useState<SystemSettingsSaveKey | null>(null);
-  const [migrationCode, setMigrationCode] = useState<{
-    code: string;
-    expiresAt: number;
-    expiresInSeconds: number;
-    pendingRequest?: {
-      id: string;
-      targetPanelUrl: string;
-      status: "pending" | "approved" | "rejected" | "used";
-      createdAt: number;
-      expiresAt: number;
-      approvedAt?: number;
-      rejectedAt?: number;
-    } | null;
-  } | null>(null);
-  const [migrationCodeTick, setMigrationCodeTick] = useState(Date.now());
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
   const [showDockerUpgradeScript, setShowDockerUpgradeScript] = useState(false);
@@ -1723,7 +2296,6 @@ function SystemInfoSection() {
       setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
       setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
-      setTunnelRuntimeDefault(settings.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx");
       setAgentLogUploadEnabled(!!settings.agentLogUploadEnabled);
       setDdnsEnabled(!!settings.ddns?.enabled);
       setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
@@ -1748,16 +2320,6 @@ function SystemInfoSection() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [showWebPortConfirm]);
-
-  useEffect(() => {
-    setMigrationCode(currentMigrationCode || null);
-  }, [currentMigrationCode]);
-
-  useEffect(() => {
-    if (!migrationCode) return;
-    const timer = window.setInterval(() => setMigrationCodeTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [migrationCode?.code]);
 
   useEffect(() => {
     const status = upgradeStatus?.job?.status;
@@ -1896,10 +2458,6 @@ function SystemInfoSection() {
     );
   };
 
-  const handleSaveTunnelRuntimeDefault = () => {
-    saveSystemSettings("tunnelRuntime", { tunnelRuntimeDefault });
-  };
-
   const handleSaveAgentLogs = () => {
     saveSystemSettings("agentLogs", { agentLogUploadEnabled });
   };
@@ -1916,55 +2474,6 @@ function SystemInfoSection() {
   const handleUseHomepageTemplate = () => {
     if (homepageHtml.trim() && !window.confirm("当前编辑内容会被示例模板覆盖，确定继续吗？")) return;
     setHomepageHtml(defaultHomepageHtml);
-  };
-
-  const createMigrationCodeMutation = trpc.system.createMigrationCode.useMutation({
-    onSuccess: (data) => {
-      setMigrationCode(data);
-      utils.system.getMigrationCode.invalidate();
-      toast.success("迁移码已生成，5 分钟内有效");
-    },
-    onError: (err) => toast.error(err.message || "生成迁移码失败"),
-  });
-
-  const approveMigrationRequestMutation = trpc.system.approveMigrationRequest.useMutation({
-    onSuccess: () => {
-      utils.system.getMigrationCode.invalidate();
-      toast.success("已同意迁移请求，新面板将开始导入数据");
-    },
-    onError: (err) => toast.error(err.message || "同意迁移请求失败"),
-  });
-
-  const rejectMigrationRequestMutation = trpc.system.rejectMigrationRequest.useMutation({
-    onSuccess: () => {
-      utils.system.getMigrationCode.invalidate();
-      toast.success("已拒绝迁移请求");
-    },
-    onError: (err) => toast.error(err.message || "拒绝迁移请求失败"),
-  });
-
-  const copyMigrationCode = async (code: string) => {
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(code);
-      copied = true;
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = code;
-      textarea.setAttribute("readonly", "true");
-      textarea.style.position = "fixed";
-      textarea.style.left = "-9999px";
-      document.body.appendChild(textarea);
-      textarea.select();
-      copied = document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
-
-    if (copied) {
-      toast.success("迁移码已复制");
-    } else {
-      toast.error("复制失败，请手动选中迁移码复制");
-    }
   };
 
   const copyTextToClipboard = async (text: string) => {
@@ -2024,11 +2533,35 @@ function SystemInfoSection() {
     settings?.upgrade?.manualUpgradeCommand ||
     manualPanelUpgradeCommands[1].command;
   const androidApkDownloadUrl = settings?.androidApkDownloadUrl || "";
+  const contactLinks = [
+    {
+      label: "GitHub 仓库",
+      url: settings?.repoUrl || "#",
+      icon: Github,
+      iconClassName: "",
+    },
+    {
+      label: "Telegram 双向消息机器人",
+      url: settings?.telegramBotUrl || "#",
+      icon: Send,
+      iconClassName: "text-sky-500",
+    },
+    {
+      label: "Telegram 群组",
+      url: "https://t.me/ForwardX_panel",
+      icon: UserPlus,
+      iconClassName: "text-blue-500",
+    },
+    ...(androidApkDownloadUrl ? [{
+      label: "Android APK 下载",
+      url: androidApkDownloadUrl,
+      icon: Download,
+      iconClassName: "text-emerald-600",
+    }] : []),
+  ];
   const isUpgradeRunning = upgradeStatus?.job.status === "running";
   const upgradeProgress = getUpgradeProgress(upgradeStatus?.job);
   const upgradeErrorLogs = (upgradeStatus?.job?.logs || []).slice(-80).join("\n");
-  const migrationCountdown = getMigrationCodeCountdown(migrationCode, migrationCodeTick);
-  const migrationRequest = migrationCode?.pendingRequest;
   const directProtocolEnabledCount = directForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
   const tunnelProtocolEnabledCount = tunnelForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
   const totalProtocolEnabledCount = directProtocolEnabledCount + tunnelProtocolEnabledCount;
@@ -2406,33 +2939,6 @@ function SystemInfoSection() {
           </div>
           <div className="mt-4 grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 lg:grid-cols-[minmax(0,1fr)_160px]">
             <div>
-              <p className="text-sm font-medium">新建隧道默认实现</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                仅影响“添加隧道”时默认选中项；已创建隧道不受影响。
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Select value={tunnelRuntimeDefault} onValueChange={(v) => setTunnelRuntimeDefault(v as "forwardx" | "gost")}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="forwardx">ForwardX</SelectItem>
-                  <SelectItem value="gost">GOST</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm"
-                className="w-full"
-                onClick={handleSaveTunnelRuntimeDefault}
-                disabled={isSavingSetting("tunnelRuntime")}
-              >
-                保存默认实现
-              </Button>
-            </div>
-          </div>
-          <div className="mt-4 grid gap-3 rounded-lg border border-border/40 bg-muted/20 p-3 lg:grid-cols-[minmax(0,1fr)_160px]">
-            <div>
               <p className="text-sm font-medium">Agent 日志上报</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 开启后 Agent 会上报关键运行日志，关闭后只保留机器本地日志。
@@ -2591,82 +3097,6 @@ function SystemInfoSection() {
                 保存首页设置
               </Button>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Key className="h-4 w-4 text-primary" />
-              旧面板迁移码
-            </CardTitle>
-            <CardDescription>
-              生成迁移码，在新面板导入旧数据。
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {migrationCode ? (
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                <p className="text-xs text-muted-foreground">迁移码</p>
-                <div className="mt-1 flex items-center justify-between gap-3">
-                  <code className="break-all font-mono text-lg font-semibold tracking-widest">{migrationCode.code}</code>
-                  <Button variant="outline" size="sm" onClick={() => copyMigrationCode(migrationCode.code)}>
-                    <Copy className="mr-2 h-3.5 w-3.5" />
-                    复制
-                  </Button>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>有效至 {new Date(migrationCode.expiresAt).toLocaleTimeString()}</span>
-                  <Badge variant={migrationCountdown > 0 ? "outline" : "secondary"}>
-                    剩余 {formatCountdown(migrationCountdown)}
-                  </Badge>
-                </div>
-                {migrationRequest?.status === "pending" && (
-                  <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-                    <p className="text-sm font-medium text-amber-700 dark:text-amber-300">收到新面板迁移请求</p>
-                    <p className="mt-1 break-all text-xs text-muted-foreground">
-                      目标面板：{migrationRequest.targetPanelUrl}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => approveMigrationRequestMutation.mutate({ requestId: migrationRequest.id })}
-                        disabled={approveMigrationRequestMutation.isPending || rejectMigrationRequestMutation.isPending}
-                      >
-                        同意迁移
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => rejectMigrationRequestMutation.mutate({ requestId: migrationRequest.id })}
-                        disabled={approveMigrationRequestMutation.isPending || rejectMigrationRequestMutation.isPending}
-                      >
-                        拒绝
-                      </Button>
-                    </div>
-                  </div>
-                )}
-                {migrationRequest?.status === "approved" && (
-                  <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                    已同意迁移请求，正在等待新面板拉取数据。
-                  </div>
-                )}
-                {migrationRequest?.status === "rejected" && (
-                  <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                    已拒绝本次迁移请求。
-                  </div>
-                )}
-              </div>
-            ) : (
-              <Alert>
-                <ShieldCheck className="h-4 w-4" />
-                <AlertTitle>一次性迁移码</AlertTitle>
-                <AlertDescription>迁移码 5 分钟有效，使用后失效。</AlertDescription>
-              </Alert>
-            )}
-            <Button onClick={() => createMigrationCodeMutation.mutate()} disabled={createMigrationCodeMutation.isPending}>
-              生成迁移码
-            </Button>
           </CardContent>
         </Card>
 
@@ -2957,63 +3387,31 @@ function SystemInfoSection() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {/* GitHub 开源地址 */}
-          <a
-            href={settings?.repoUrl || "#"}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
-                <Github className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-medium">GitHub 仓库</p>
-                <p className="text-xs text-muted-foreground truncate font-mono">{settings?.repoUrl}</p>
-              </div>
-            </div>
-            <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
-          </a>
-
-          {/* Telegram 双向消息机器人 */}
-          <a
-            href={settings?.telegramBotUrl || "#"}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
-                <Send className="h-4 w-4 text-sky-500" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Telegram 双向消息机器人</p>
-                <p className="text-xs text-muted-foreground truncate font-mono">{settings?.telegramBotUrl}</p>
-              </div>
-            </div>
-            <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
-          </a>
-
-          {androidApkDownloadUrl && (
-            <a
-              href={androidApkDownloadUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-between rounded-lg border border-border/40 p-3 hover:bg-accent/40 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="h-9 w-9 rounded-lg bg-muted/50 flex items-center justify-center shrink-0">
-                  <Download className="h-4 w-4 text-emerald-600" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">Android APK 下载</p>
-                  <p className="text-xs text-muted-foreground truncate font-mono">{androidApkDownloadUrl}</p>
-                </div>
-              </div>
-              <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
-            </a>
-          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            {contactLinks.map((item) => {
+              const Icon = item.icon;
+              return (
+                <a
+                  key={item.label}
+                  href={item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex min-w-0 items-center justify-between rounded-lg border border-border/40 p-3 transition-colors hover:bg-accent/40"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted/50">
+                      <Icon className={`h-4 w-4 ${item.iconClassName}`} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{item.label}</p>
+                      <p className="truncate font-mono text-xs text-muted-foreground">{item.url}</p>
+                    </div>
+                  </div>
+                  <ExternalLink className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+              );
+            })}
+          </div>
 
           <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">
             <span>当前版本</span>

@@ -9,6 +9,16 @@ import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getPanelLogPage } from "./panelLogger";
 import { clearAgentLogs, getAgentLogPage } from "../agentLogStore";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
+import {
+  decryptMigrationSnapshotBackup,
+  encryptMigrationSnapshot,
+  exportMigrationSnapshot,
+  getMigrationJob,
+  getPanelDataSummary,
+  importMigrationSnapshot,
+  summarizeMigrationSnapshot,
+  startPanelMigration as beginPanelMigration,
+} from "../migration";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
 import { pushAgentRefresh } from "../agentEvents";
@@ -690,6 +700,64 @@ export const systemRouter = router({
       if (!request) throw new Error("迁移请求不存在、已过期或状态已变化");
       return { success: true, request };
     }),
+
+  backupSummary: adminProcedure.query(async () => {
+    return getPanelDataSummary();
+  }),
+
+  exportPanelBackup: adminProcedure
+    .input(z.object({
+      password: z.string().min(8, "备份密码至少需要 8 位").max(256),
+    }))
+    .mutation(async ({ input }) => {
+      const settings = await db.getAllSettings();
+      const snapshot = await exportMigrationSnapshot(settings.panelPublicUrl || undefined);
+      const backup = encryptMigrationSnapshot(snapshot, input.password);
+      const timestamp = new Date(snapshot.exportedAt).toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      console.info(`[Backup] Exported encrypted panel backup users=${snapshot.tables.users?.length || 0} hosts=${snapshot.tables.hosts?.length || 0}`);
+      return {
+        filename: `forwardx-panel-backup-v${APP_VERSION}-${timestamp}.fwxbak`,
+        mimeType: "application/json;charset=utf-8",
+        content: JSON.stringify(backup, null, 2),
+        summary: summarizeMigrationSnapshot(snapshot),
+      };
+    }),
+
+  importPanelBackup: adminProcedure
+    .input(z.object({
+      content: z.string().min(1, "请选择备份文件").max(50 * 1024 * 1024, "备份文件过大"),
+      password: z.string().min(1, "请输入备份密码").max(256),
+      targetPanelUrl: z.string().trim().max(256).optional(),
+      confirmed: z.literal(true),
+    }))
+    .mutation(async ({ input }) => {
+      const snapshot = decryptMigrationSnapshotBackup(input.content, input.password);
+      const result = await importMigrationSnapshot(snapshot, {
+        targetPanelUrl: input.targetPanelUrl || undefined,
+      });
+      console.info(`[Backup] Imported encrypted panel backup mode=${result.mode} hosts=${result.hostCount}`);
+      return result;
+    }),
+
+  startPanelMigration: adminProcedure
+    .input(z.object({
+      oldPanelUrl: z.string().trim().min(1, "请输入旧面板地址").max(256),
+      migrationCode: z.string().trim().min(1, "请输入旧面板迁移码").max(64),
+      targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址").max(256),
+      confirmed: z.literal(true),
+    }))
+    .mutation(({ input }) => {
+      const job = beginPanelMigration({
+        oldPanelUrl: input.oldPanelUrl,
+        migrationCode: input.migrationCode,
+        targetPanelUrl: input.targetPanelUrl,
+      });
+      return job;
+    }),
+
+  panelMigrationStatus: adminProcedure
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(({ input }) => getMigrationJob(input.jobId)),
 
   sendTestEmail: adminProcedure
     .input(z.object({ to: z.string().email("请输入有效邮箱地址") }))

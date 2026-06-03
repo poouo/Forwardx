@@ -1,5 +1,14 @@
 import { APP_VERSION } from "./_core/systemRouter";
 
+function getPreviousReleaseVersion(version: string) {
+  const normalized = String(version || "").trim().replace(/^v/i, "");
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return "";
+  const patch = Number(match[3]);
+  if (!Number.isSafeInteger(patch) || patch <= 0) return "";
+  return `${match[1]}.${match[2]}.${patch - 1}`;
+}
+
 /**
  * 生成 Go Agent 一键安装脚本（自包含，不依赖 Shell Agent）。
  *
@@ -11,6 +20,10 @@ import { APP_VERSION } from "./_core/systemRouter";
  * @param defaultPanelUrl 面板地址（当用户未通过 PANEL_URL 环境变量指定时使用）
  */
 export function generateInstallScript(defaultPanelUrl: string): string {
+  const fallbackReleaseVersion = getPreviousReleaseVersion(APP_VERSION);
+  const fallbackReleaseLine = fallbackReleaseVersion
+    ? `FALLBACK_RELEASE_VERSION="\${FALLBACK_RELEASE_VERSION:-${fallbackReleaseVersion}}"`
+    : 'FALLBACK_RELEASE_VERSION="${FALLBACK_RELEASE_VERSION:-}"';
   const lines = [
     '#!/bin/bash',
     '# ForwardX Agent (Go) 一键安装/管理脚本',
@@ -25,6 +38,7 @@ export function generateInstallScript(defaultPanelUrl: string): string {
     // 优先使用环境变量 PANEL_URL，其次使用脚本嵌入的默认值
     `PANEL_URL="\${PANEL_URL:-${defaultPanelUrl}}"`,
     `RELEASE_VERSION="${APP_VERSION}"`,
+    fallbackReleaseLine,
     '',
     'GO_AGENT_BIN="/usr/local/bin/forwardx-agent"',
     'FXP_BIN="/usr/local/bin/forwardx-fxp"',
@@ -84,6 +98,32 @@ export function generateInstallScript(defaultPanelUrl: string): string {
     '  fi',
     '  rm -f "${DST}.tmp"',
     '  echo "[警告] $LABEL 下载失败"',
+    '  return 1',
+    '}',
+    '',
+    'download_release_binary() {',
+    '  local ASSET="$1" DST="$2" LABEL="$3" ALLOW_FALLBACK="${4:-0}"',
+    '  local VERSION URL',
+    '  for VERSION in "$RELEASE_VERSION" "$FALLBACK_RELEASE_VERSION"; do',
+    '    if [ -z "$VERSION" ]; then',
+    '      continue',
+    '    fi',
+    '    if [ "$VERSION" != "$RELEASE_VERSION" ] && [ "$ALLOW_FALLBACK" != "1" ]; then',
+    '      continue',
+    '    fi',
+    '    URL="https://github.com/poouo/Forwardx/releases/download/v${VERSION}/${ASSET}"',
+    '    if download_binary "$URL" "$DST" "$LABEL"; then',
+    '      DOWNLOADED_RELEASE_VERSION="$VERSION"',
+    '      if [ "$VERSION" != "$RELEASE_VERSION" ]; then',
+    '        echo "[提示] 当前版本 v${RELEASE_VERSION} 的 $LABEL 尚未就绪，已临时使用上一版本 v${VERSION}"',
+    '        echo "[提示] 进入面板后可在主机管理中一键升级到最新 Agent"',
+    '      fi',
+    '      return 0',
+    '    fi',
+    '    if [ "$VERSION" = "$RELEASE_VERSION" ] && [ "$ALLOW_FALLBACK" = "1" ] && [ -n "$FALLBACK_RELEASE_VERSION" ]; then',
+    '      echo "[提示] 尝试使用上一版本 v${FALLBACK_RELEASE_VERSION} 完成安装..."',
+    '    fi',
+    '  done',
     '  return 1',
     '}',
     '',
@@ -288,14 +328,15 @@ export function generateInstallScript(defaultPanelUrl: string): string {
     '  fi',
     '',
     '  echo "[步骤 3/6] 安装 Go Agent（Release v${RELEASE_VERSION}）..."',
-    '  AGENT_URL="https://github.com/poouo/Forwardx/releases/download/v${RELEASE_VERSION}/forwardx-agent-linux-${GO_ARCH}"',
-    '  if ! download_binary "$AGENT_URL" "$GO_AGENT_BIN" "Go Agent"; then',
-    '    echo "[错误] Go Agent 二进制下载失败，请检查网络或 Release 版本"',
+    '  DOWNLOADED_RELEASE_VERSION=""',
+    '  if ! download_release_binary "forwardx-agent-linux-${GO_ARCH}" "$GO_AGENT_BIN" "Go Agent" "1"; then',
+    '    echo "[错误] Go Agent 二进制下载失败，请检查网络或 Release 资产是否已构建完成"',
     '    return 1',
     '  fi',
     '',
     '  echo "[步骤 4/6] 安装 ForwardX Tunnel Runtime..."',
-    '  FXP_URL="https://github.com/poouo/Forwardx/releases/download/v${RELEASE_VERSION}/forwardx-fxp-linux-${GO_ARCH}"',
+    '  FXP_RELEASE_VERSION="${DOWNLOADED_RELEASE_VERSION:-$RELEASE_VERSION}"',
+    '  FXP_URL="https://github.com/poouo/Forwardx/releases/download/v${FXP_RELEASE_VERSION}/forwardx-fxp-linux-${GO_ARCH}"',
     '  download_binary "$FXP_URL" "$FXP_BIN" "ForwardX FXP" || \\',
     '    echo "[警告] FXP 安装失败，加密隧道功能将不可用（iptables/realm/socat/gost 转发不受影响）"',
     '',

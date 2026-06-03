@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { appendPanelLog } from "./_core/panelLogger";
@@ -19,6 +19,24 @@ const agentApiRouter = Router();
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 
+function migratedAgentPayload(panelUrl: string) {
+  return {
+    success: false,
+    error: "Panel migrated",
+    panelUrl,
+    agentUpgrade: { targetVersion: "9999.0.0", panelUrl },
+  };
+}
+
+async function rejectAgentWhenPanelMigrated(_req: Request, res: Response, next: NextFunction) {
+  const migratedTo = await db.getSetting("migratedToPanelUrl");
+  if (migratedTo) {
+    res.status(410).json(migratedAgentPayload(migratedTo));
+    return;
+  }
+  next();
+}
+
 async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: string) {
   const now = Date.now();
   const last = lastRuntimeRecoveryByHost.get(hostId) || 0;
@@ -35,6 +53,18 @@ async function openAgentEventStream(input: {
   agentVersion?: string | null;
 }) {
   const { req, res, token } = input;
+  const migratedTo = await db.getSetting("migratedToPanelUrl");
+  if (migratedTo) {
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "close");
+    res.flushHeaders?.();
+    res.write(`event: message\n`);
+    res.write(`data: ${JSON.stringify(encryptPayload({ type: "agent-upgrade", data: migratedAgentPayload(migratedTo).agentUpgrade }, token))}\n\n`);
+    res.end();
+    return;
+  }
   const host = await db.getHostByAgentToken(token);
   if (!host) {
     const migratedTo = await db.getSetting("migratedToPanelUrl");
@@ -97,6 +127,8 @@ agentRouter.post("/api/sync", agentEncryptionMiddleware, (req: Request, res: Res
   req.url = tunneledPath;
   agentApiRouter.handle(req, res, next);
 });
+
+agentApiRouter.use(rejectAgentWhenPanelMigrated);
 
 agentRouter.get("/api/stream", async (req: Request, res: Response) => {
   try {

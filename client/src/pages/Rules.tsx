@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -1103,6 +1103,15 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [trafficSummaryRows]);
+  const trafficTotalsCacheScope = useMemo(
+    () => [
+      user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
+      filterHost,
+      filterTunnel,
+      filterType,
+    ].join("."),
+    [filterHost, filterTunnel, filterType, filterUser, user?.id, user?.role],
+  );
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady;
@@ -1631,7 +1640,12 @@ function RulesContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
-            {rulesHeaderLoading ? <Skeleton className="h-3.5 w-14 rounded" /> : `${activeCount} / ${filteredRules.length || rules?.length || 0} 活跃`}
+            <AnimatedStatValue
+              value={`${activeCount} / ${filteredRules.length || rules?.length || 0} 活跃`}
+              loading={rulesHeaderLoading}
+              cacheKey="rules.header.active"
+              fallbackValue="0 / 0 活跃"
+            />
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
@@ -1795,11 +1809,14 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 入向</p>
-              {trafficTotalsLoading ? (
-                <Skeleton className="mt-1 h-5 w-16 rounded-md sm:h-7 sm:w-24" />
-              ) : (
-                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesIn)}</p>
-              )}
+              <AnimatedStatValue
+                as="p"
+                value={formatBytes(trafficTotals.bytesIn)}
+                loading={trafficTotalsLoading}
+                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesIn`}
+                fallbackValue="0 B"
+                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
+              />
             </div>
             <ArrowDownToLine className="hidden h-4 w-4 shrink-0 text-chart-2 sm:block sm:h-6 sm:w-6" />
           </CardContent>
@@ -1808,11 +1825,14 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 出向</p>
-              {trafficTotalsLoading ? (
-                <Skeleton className="mt-1 h-5 w-16 rounded-md sm:h-7 sm:w-24" />
-              ) : (
-                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesOut)}</p>
-              )}
+              <AnimatedStatValue
+                as="p"
+                value={formatBytes(trafficTotals.bytesOut)}
+                loading={trafficTotalsLoading}
+                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesOut`}
+                fallbackValue="0 B"
+                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
+              />
             </div>
             <ArrowUpFromLine className="hidden h-4 w-4 shrink-0 text-chart-4 sm:block sm:h-6 sm:w-6" />
           </CardContent>
@@ -1821,11 +1841,14 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 连接</p>
-              {trafficTotalsLoading ? (
-                <Skeleton className="mt-1 h-5 w-14 rounded-md sm:h-7 sm:w-20" />
-              ) : (
-                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{trafficTotals.connections.toLocaleString()}</p>
-              )}
+              <AnimatedStatValue
+                as="p"
+                value={trafficTotals.connections.toLocaleString()}
+                loading={trafficTotalsLoading}
+                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.connections`}
+                fallbackValue="0"
+                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
+              />
             </div>
             <Activity className="hidden h-4 w-4 shrink-0 text-chart-3 sm:block sm:h-6 sm:w-6" />
           </CardContent>

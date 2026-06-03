@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
 import MobileAppSettings from "@/components/MobileAppSettings";
 import { Badge } from "@/components/ui/badge";
@@ -104,6 +105,8 @@ function StatCard({
   icon: React.ElementType;
   tone: string;
   loading?: boolean;
+  cacheKey: string;
+  fallbackValue?: string | number;
   className?: string;
 }) {
   return (
@@ -113,15 +116,23 @@ function StatCard({
         <div className="flex items-start justify-between gap-2 sm:gap-4">
           <div className="min-w-0 flex-1 space-y-1.5">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            {loading ? (
-              <Skeleton className="h-7 w-14 max-w-full rounded-md sm:h-8 sm:w-20" />
-            ) : (
-              <p className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl">{value}</p>
-            )}
-            {loading && subtitle ? (
-              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
-            ) : (
-              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue={fallbackValue}
+              className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl"
+            />
+            {subtitle && (
+              <AnimatedStatValue
+                as="p"
+                value={subtitle}
+                loading={loading}
+                cacheKey={`${cacheKey}.subtitle`}
+                fallbackValue=""
+                className="break-words text-xs text-muted-foreground/80"
+              />
             )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
@@ -385,9 +396,11 @@ function DashboardContent() {
     : 0;
   const trafficPercent = planTrafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / planTrafficLimit) * 100)) : 0;
   const accountStatusLoading = userTrafficLoading || subscriptionsLoading || trafficBillingLoading || (!isAdmin && walletLoading);
+  const accountCacheScope = user?.id ? String(user.id) : "current";
   const planExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
   const expiry = hasActiveSubscription ? getExpiryStatus(planExpiresAt) : { label: "---", tone: "normal" as const };
   const canForward = isAdmin || !!currentUserTraffic?.canAddRules;
+  const canForwardText = canForward ? "转发已启用" : "转发已停用";
   const planExpiryText = hasActiveSubscription ? formatDate(planExpiresAt) : "---";
   const planProgressText = hasActiveSubscription
     ? planTrafficLimit > 0
@@ -402,6 +415,10 @@ function DashboardContent() {
       : "不限流量"
     : "暂无生效套餐";
   const planProgressValue = hasActiveSubscription && planTrafficLimit > 0 ? trafficPercent : 0;
+  const trafficBillingBytesText = trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启";
+  const trafficBillingAmountText = trafficBillingEnabled ? money(trafficBillingAmount) : "-";
+  const trafficBillingAdminSubtitle = trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "流量计费功能未开启";
+  const trafficBillingUserSubtitle = trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "管理员未开启";
 
   const mobileReminderSnapshot = useMemo(
     () => ({
@@ -449,6 +466,8 @@ function DashboardContent() {
             icon={Server}
             tone="bg-gradient-to-br from-blue-500 to-blue-600"
             loading={isLoading}
+            cacheKey="home.stats.totalHosts"
+            fallbackValue={0}
           />
         )}
         <StatCard
@@ -458,6 +477,8 @@ function DashboardContent() {
           icon={ArrowRightLeft}
           tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
           loading={isLoading}
+          cacheKey="home.stats.totalRules"
+          fallbackValue={0}
         />
         <StatCard
           title="入站流量"
@@ -466,6 +487,8 @@ function DashboardContent() {
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-violet-500 to-violet-600"
           loading={isLoading}
+          cacheKey="home.stats.totalTrafficIn"
+          fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
         />
         <StatCard
@@ -475,6 +498,8 @@ function DashboardContent() {
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={isLoading}
+          cacheKey="home.stats.totalTrafficOut"
+          fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
         />
       </div>
@@ -490,63 +515,89 @@ function DashboardContent() {
                 <Shield className="h-4 w-4" />
                 我的消耗
               </CardTitle>
-              {accountStatusLoading ? (
-                <Skeleton className="h-6 w-28 rounded-full" />
-              ) : (
-                <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">
-                  管理员权限
-                </Badge>
-              )}
+              <Badge variant="outline" className="border-emerald-500/30 text-emerald-600">
+                <AnimatedStatValue
+                  value="管理员权限"
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.adminBadge`}
+                  fallbackValue="管理员权限"
+                />
+              </Badge>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {accountStatusLoading ? (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {[1, 2, 3, 4].map((item) => (
-                  <Skeleton key={item} className="h-20 w-full" />
-                ))}
-              </div>
-            ) : (
-              <>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Activity className="h-3 w-3" />
-                      我的已用流量
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{formatBytes(trafficUsed)}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">按当前登录账号统计</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Coins className="h-3 w-3" />
-                      计费流量
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启"}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">{trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "流量计费功能未开启"}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <WalletCards className="h-3 w-3" />
-                      计费消费
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? money(trafficBillingAmount) : "-"}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">仅统计当前账号</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Shield className="h-3 w-3" />
-                      权限状态
-                    </p>
-                    <p className="mt-1 text-xl font-semibold">管理员</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">不受套餐订阅限制</p>
-                  </div>
-                </div>
-                <p className="text-[11px] text-muted-foreground/70">
-                  首页流量、规则、趋势和计费消耗均按当前管理员账号独立统计，不展示套餐、到期时间等订阅信息。
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Activity className="h-3 w-3" />
+                  我的已用流量
                 </p>
-              </>
-            )}
+                <AnimatedStatValue
+                  as="p"
+                  value={formatBytes(trafficUsed)}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.trafficUsed`}
+                  fallbackValue="0 B"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">按当前登录账号统计</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Coins className="h-3 w-3" />
+                  计费流量
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingBytesText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.billingTraffic`}
+                  fallbackValue="未开启"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingAdminSubtitle}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.billingTrafficSubtitle`}
+                  fallbackValue="流量计费功能未开启"
+                  className="mt-1 text-[11px] text-muted-foreground"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <WalletCards className="h-3 w-3" />
+                  计费消费
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingAmountText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.billingAmount`}
+                  fallbackValue="-"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">仅统计当前账号</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Shield className="h-3 w-3" />
+                  权限状态
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value="管理员"
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.permission`}
+                  fallbackValue="管理员"
+                  className="mt-1 text-xl font-semibold"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">不受套餐订阅限制</p>
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground/70">
+              首页流量、规则、趋势和计费消耗均按当前管理员账号独立统计，不展示套餐、到期时间等订阅信息。
+            </p>
           </CardContent>
         </Card>
       ) : (
@@ -558,83 +609,141 @@ function DashboardContent() {
                 <Shield className="h-4 w-4" />
                 我的账户状态
               </CardTitle>
-              {accountStatusLoading ? (
-                <Skeleton className="h-6 w-36 rounded-full" />
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant={canForward ? "outline" : "destructive"} className={canForward ? "border-emerald-500/30 text-emerald-600" : ""}>
-                    {canForward ? "转发已启用" : "转发已停用"}
-                  </Badge>
-                  <Badge variant={expiry.tone === "danger" ? "destructive" : "outline"} className={expiry.tone === "warning" ? "border-amber-500/40 text-amber-600" : ""}>
-                    {expiry.label}
-                  </Badge>
-                </div>
-              )}
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={canForward ? "outline" : "destructive"} className={canForward ? "border-emerald-500/30 text-emerald-600" : ""}>
+                  <AnimatedStatValue
+                    value={canForwardText}
+                    loading={accountStatusLoading}
+                    cacheKey={`home.account.${accountCacheScope}.canForward`}
+                    fallbackValue="转发已停用"
+                  />
+                </Badge>
+                <Badge variant={expiry.tone === "danger" ? "destructive" : "outline"} className={expiry.tone === "warning" ? "border-amber-500/40 text-amber-600" : ""}>
+                  <AnimatedStatValue
+                    value={expiry.label}
+                    loading={accountStatusLoading}
+                    cacheKey={`home.account.${accountCacheScope}.expiry`}
+                    fallbackValue="---"
+                  />
+                </Badge>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {accountStatusLoading ? (
-              <div className="grid gap-3 sm:grid-cols-3">
-                {[1, 2, 3].map((item) => (
-                  <Skeleton key={item} className="h-20 w-full" />
-                ))}
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
+                <p className="text-xs text-muted-foreground">套餐用量</p>
+                <AnimatedStatValue
+                  as="p"
+                  value={planProgressText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.planProgress`}
+                  fallbackValue="---"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <AnimatedStatValue
+                  as="p"
+                  value={planTrafficBreakdownText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.planBreakdown`}
+                  fallbackValue="暂无生效套餐"
+                  className="mt-1 text-[11px] text-muted-foreground"
+                />
               </div>
-            ) : (
-              <>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3 xl:col-span-2">
-                    <p className="text-xs text-muted-foreground">套餐用量</p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{planProgressText}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">{planTrafficBreakdownText}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="text-xs text-muted-foreground">到期时间</p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{planExpiryText}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <WalletCards className="h-3 w-3" />
-                      账户余额
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{money(wallet?.balanceCents)}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <WalletCards className="h-3 w-3" />
-                      计费流量
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? formatBytes(trafficBillingBytes) : "未开启"}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">{trafficBillingEnabled ? `已计费 ${trafficBillingBilledGb}GB` : "管理员未开启"}</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <WalletCards className="h-3 w-3" />
-                      计费消费
-                    </p>
-                    <p className="mt-1 text-xl font-semibold tabular-nums">{trafficBillingEnabled ? money(trafficBillingAmount) : "-"}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">仅统计流量计费资源</p>
-                  </div>
-                  <div className="rounded-lg border border-border/50 bg-background/35 p-3">
-                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Package className="h-3 w-3" />
-                      当前套餐
-                    </p>
-                    <p className="mt-1 truncate text-xl font-semibold">{activeSubscription?.planName || "---"}</p>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                    <span>套餐流量使用进度</span>
-                    <span className="tabular-nums">{planProgressText}</span>
-                  </div>
-                  <Progress value={planProgressValue} className="h-2" />
-                  <p className="text-[11px] text-muted-foreground/70">
-                    {hasActiveSubscription ? "套餐流量和计费流量分开统计。" : "暂无生效套餐，套餐流量信息暂不展示。"}
-                    {hasActiveSubscription && currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
-                  </p>
-                </div>
-              </>
-            )}
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="text-xs text-muted-foreground">到期时间</p>
+                <AnimatedStatValue
+                  as="p"
+                  value={planExpiryText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.planExpiry`}
+                  fallbackValue="---"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <WalletCards className="h-3 w-3" />
+                  账户余额
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={money(wallet?.balanceCents)}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.wallet`}
+                  fallbackValue={money(0)}
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <WalletCards className="h-3 w-3" />
+                  计费流量
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingBytesText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.userBillingTraffic`}
+                  fallbackValue="未开启"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingUserSubtitle}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.userBillingTrafficSubtitle`}
+                  fallbackValue="管理员未开启"
+                  className="mt-1 text-[11px] text-muted-foreground"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <WalletCards className="h-3 w-3" />
+                  计费消费
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={trafficBillingAmountText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.userBillingAmount`}
+                  fallbackValue="-"
+                  className="mt-1 text-xl font-semibold tabular-nums"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">仅统计流量计费资源</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/35 p-3">
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Package className="h-3 w-3" />
+                  当前套餐
+                </p>
+                <AnimatedStatValue
+                  as="p"
+                  value={activeSubscription?.planName || "---"}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.planName`}
+                  fallbackValue="---"
+                  className="mt-1 truncate text-xl font-semibold"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>套餐流量使用进度</span>
+                <AnimatedStatValue
+                  value={planProgressText}
+                  loading={accountStatusLoading}
+                  cacheKey={`home.account.${accountCacheScope}.planProgress.inline`}
+                  fallbackValue="---"
+                  className="tabular-nums"
+                />
+              </div>
+              <Progress value={planProgressValue} className="h-2" />
+              <p className="text-[11px] text-muted-foreground/70">
+                {hasActiveSubscription ? "套餐流量和计费流量分开统计。" : "暂无生效套餐，套餐流量信息暂不展示。"}
+                {hasActiveSubscription && currentUserTraffic?.trafficAutoReset ? ` 每月 ${currentUserTraffic.trafficResetDay || 1} 日自动重置。` : ""}
+              </p>
+            </div>
           </CardContent>
         </Card>
       )}

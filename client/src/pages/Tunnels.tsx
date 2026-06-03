@@ -1,4 +1,5 @@
 ﻿import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,6 +91,15 @@ type TunnelLatencyPoint = {
   chartLatency: number;
   isTimeout: boolean;
 };
+
+type TunnelLatencySeriesDatum = {
+  recordedAt: string | Date;
+  latencyMs?: number | null;
+  isTimeout?: boolean | null;
+};
+
+const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
+const tunnelLatencyAnimatedKeys = new Set<number>();
 
 const defaultForm: TunnelForm = {
   name: "",
@@ -213,16 +223,26 @@ function TunnelLatencyDialog({
     { tunnelId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false }
   );
+  const cachedData = tunnelLatencySeriesCache.get(tunnelId);
+  const seriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
+  const showInitialLoading = isLoading && !seriesData;
+
+  useEffect(() => {
+    if (data) {
+      tunnelLatencySeriesCache.set(tunnelId, data as TunnelLatencySeriesDatum[]);
+    }
+  }, [data, tunnelId]);
+
   const chartData = useMemo<TunnelLatencyPoint[]>(() => {
-    if (!data || data.length === 0) return [];
-    return data.map((d: any): TunnelLatencyPoint => ({
+    if (!seriesData || seriesData.length === 0) return [];
+    return seriesData.map((d: TunnelLatencySeriesDatum): TunnelLatencyPoint => ({
       label: formatTunnelLatencyTime(d.recordedAt),
       fullLabel: formatTunnelLatencyTime(d.recordedAt),
       latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
       chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
       isTimeout: !!d.isTimeout,
     }));
-  }, [data]);
+  }, [seriesData]);
   const stats = useMemo(() => {
     const total = chartData.length;
     const timeout = chartData.filter((d) => d.isTimeout).length;
@@ -242,6 +262,13 @@ function TunnelLatencyDialog({
   const yTicks = useMemo(() => {
     return getLatencyYAxisTicks(yMax);
   }, [yMax]);
+  const shouldAnimateChart = open && chartData.length > 0 && !tunnelLatencyAnimatedKeys.has(tunnelId);
+
+  useEffect(() => {
+    if (shouldAnimateChart) {
+      tunnelLatencyAnimatedKeys.add(tunnelId);
+    }
+  }, [shouldAnimateChart, tunnelId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -251,7 +278,7 @@ function TunnelLatencyDialog({
           <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
         </DialogHeader>
         <div className="h-72 w-full">
-          {isLoading ? (
+          {showInitialLoading ? (
             <Skeleton className="h-full w-full" />
           ) : chartData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道链路延迟数据</div>
@@ -288,7 +315,7 @@ function TunnelLatencyDialog({
                     );
                   }}
                 />
-                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#tunnelLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} />
+                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#tunnelLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -518,11 +545,7 @@ function TunnelsContent() {
     () => gostTunnelModes.filter((mode) => forwardProtocolSettings[mode] !== false),
     [forwardProtocolSettings]
   );
-  const preferredTunnelRuntime = systemSettings?.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
   const resolveDefaultTunnelMode = () => {
-    if (preferredTunnelRuntime === "gost") {
-      return enabledGostTunnelModes[0] || (forwardProtocolSettings.forwardx !== false ? "forwardx" : "forwardx");
-    }
     return forwardProtocolSettings.forwardx !== false
       ? "forwardx"
       : (enabledGostTunnelModes[0] || "forwardx");
@@ -725,7 +748,12 @@ function TunnelsContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-chart-2" />
-            {isLoading || !tunnels ? <Skeleton className="h-3.5 w-14 rounded" /> : `${activeCount} / ${tunnels.length} 活跃`}
+            <AnimatedStatValue
+              value={`${activeCount} / ${tunnels?.length ?? 0} 活跃`}
+              loading={isLoading || !tunnels}
+              cacheKey="tunnels.header.active"
+              fallbackValue="0 / 0 活跃"
+            />
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button

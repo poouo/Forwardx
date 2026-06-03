@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,8 @@ function TrafficBillingStatCard({
   icon: Icon,
   tone,
   loading = false,
+  cacheKey,
+  fallbackValue,
 }: {
   title: string;
   value: string | number;
@@ -42,6 +45,8 @@ function TrafficBillingStatCard({
   icon: ElementType;
   tone: string;
   loading?: boolean;
+  cacheKey: string;
+  fallbackValue?: string | number;
 }) {
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
@@ -50,15 +55,23 @@ function TrafficBillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            {loading ? (
-              <Skeleton className="h-8 w-24 rounded-md" />
-            ) : (
-              <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            )}
-            {loading && subtitle ? (
-              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
-            ) : (
-              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue={fallbackValue}
+              className="break-words text-2xl font-bold tracking-tight tabular-nums"
+            />
+            {subtitle && (
+              <AnimatedStatValue
+                as="p"
+                value={subtitle}
+                loading={loading}
+                cacheKey={`${cacheKey}.subtitle`}
+                fallbackValue=""
+                className="break-words text-xs text-muted-foreground/80"
+              />
             )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
@@ -217,6 +230,8 @@ export default function TrafficBilling() {
             icon={Coins}
             tone="bg-gradient-to-br from-blue-500 to-blue-600"
             loading={summaryLoading}
+            cacheKey="trafficBilling.totalCharged"
+            fallbackValue={money(0)}
           />
           <TrafficBillingStatCard
             title="已计费流量"
@@ -225,6 +240,8 @@ export default function TrafficBilling() {
             icon={Gauge}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
             loading={summaryLoading}
+            cacheKey="trafficBilling.totalGb"
+            fallbackValue="0 GB"
           />
           <TrafficBillingStatCard
             title="计费资源"
@@ -233,6 +250,8 @@ export default function TrafficBilling() {
             icon={ReceiptText}
             tone="bg-gradient-to-br from-violet-500 to-violet-600"
             loading={configsLoading}
+            cacheKey="trafficBilling.configsCount"
+            fallbackValue={0}
           />
         </div>
 

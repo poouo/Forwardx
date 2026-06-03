@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.102] - 2026-06-03
+
+### Added
+
+- Added encrypted panel backup export/import and moved migration tools into a dedicated backup and restore settings tab.
+- Added cached animated stat rendering across dashboard and management summaries to avoid blank-to-value flashes during data refreshes.
+
+### Fixed
+
+- Fixed latency chart dialogs reusing cached data and suppressing repeat mount animation so reopening tunnel and TCPing charts no longer flashes.
+- Fixed the system settings tab strip alignment and kept the tab layout left-aligned.
+- Fixed Agent installation during GitHub Release asset build windows by falling back to the previous release Agent binary for first install.
+- Fixed panel and Agent log panes to keep stable scrollable viewports while older log pages load.
+- Fixed imported or migrated panel data to preserve existing data incrementally while resetting imported runtime states for takeover.
+
+### Changed
+
+- Bumped panel version to 2.3.102. Agent/FXP runtime target version remains 2.2.83.
+- Bumped Android APP version to 2.3.36 so the APK includes the latest panel UI and installer updates.
+
 ## [2.3.101] - 2026-06-03
 
 ### Changed
