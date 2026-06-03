@@ -1026,10 +1026,12 @@ function RulesContent() {
   const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
   const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
   const [stableFilteredRules, setStableFilteredRules] = useState<any[]>([]);
+  const [filteredRulesPrimed, setFilteredRulesPrimed] = useState(false);
   useEffect(() => {
     if (!scopedRulesReady) return;
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
     setStableFilteredRules(sourceRules.filter((rule: any) => isForwardRuleVisibleByFilters(rule, ruleFilters)));
+    setFilteredRulesPrimed(true);
   }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
   const filteredRules = stableFilteredRules;
   const visibleRuleIdsForMetrics = useMemo(() => (
@@ -1047,6 +1049,7 @@ function RulesContent() {
   );
   const [stableTrafficSummaryRows, setStableTrafficSummaryRows] = useState<any[]>([]);
   useEffect(() => {
+    if (!filteredRulesPrimed) return;
     if (visibleRuleIdsForMetrics.length === 0) {
       setStableTrafficSummaryRows([]);
       return;
@@ -1054,7 +1057,7 @@ function RulesContent() {
     if (trafficSummary) {
       setStableTrafficSummaryRows(trafficSummary);
     }
-  }, [trafficSummary, visibleRuleIdsForMetrics.length]);
+  }, [filteredRulesPrimed, trafficSummary, visibleRuleIdsForMetrics.length]);
   const trafficSummaryRows = visibleRuleIdsForMetrics.length === 0 ? [] : trafficSummary ?? stableTrafficSummaryRows;
   const trafficByRule = useMemo(() => {
     const m = new Map<number, {
@@ -1115,7 +1118,7 @@ function RulesContent() {
   const trafficTotalsLastCacheScope = user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
-  const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady;
+  const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const trafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!trafficSummary && stableTrafficSummaryRows.length === 0)));
   const activeCount = useMemo(
     () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,

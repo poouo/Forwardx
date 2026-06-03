@@ -51,6 +51,10 @@ function writeCachedValue(cacheKey: string | undefined, value: string, mirrorCac
   }
 }
 
+function isIgnoredValue(value: string, ignoredCachedValues: string[]) {
+  return ignoredCachedValues.includes(value);
+}
+
 export default function AnimatedStatValue({
   value,
   loading = false,
@@ -80,8 +84,9 @@ export default function AnimatedStatValue({
   useEffect(() => {
     if (loading) return;
     setCachedState({ key: cacheKey || "", value: nextValue });
+    if (isIgnoredValue(nextValue, ignoredCachedValues)) return;
     writeCachedValue(cacheKey, nextValue, mirrorCacheKeys);
-  }, [cacheKey, loading, mirrorCacheKeySignature, nextValue]);
+  }, [cacheKey, ignoredCachedValueSignature, loading, mirrorCacheKeySignature, nextValue]);
 
   const cachedValue = cachedState.key === (cacheKey || "")
     ? cachedState.value
