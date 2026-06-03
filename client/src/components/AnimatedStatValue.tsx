@@ -98,12 +98,12 @@ export default function AnimatedStatValue({
   useEffect(() => {
     if (previousDisplayRef.current === displayValue) return;
     previousDisplayRef.current = displayValue;
-    if (loading) {
+    if (loading || isIgnoredValue(displayValue, ignoredCachedValues)) {
       setAnimationState((state) => ({ ...state, changed: false }));
       return;
     }
     setAnimationState((state) => ({ key: state.key + 1, changed: true }));
-  }, [displayValue, loading]);
+  }, [displayValue, ignoredCachedValueSignature, loading]);
 
   return (
     <Component
