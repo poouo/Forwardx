@@ -398,7 +398,13 @@ export const tunnelsRouter = router({
         if (!entry) throw new Error("Entry Agent not found");
         if (!exit) throw new Error("Exit Agent not found");
         appendPanelLog("info", `[TunnelTest] start tunnel=${tunnel.id} name=${tunnel.name} entryHost=${tunnel.entryHostId} exitHost=${tunnel.exitHostId} mode=${tunnel.mode} listenPort=${tunnel.listenPort}`);
-        if (!tunnel.isRunning) {
+        let tunnelHops = await hopRepo.getTunnelHops(Number(tunnel.id));
+        const tunnelHopHostIds = Array.isArray(tunnelHops)
+          ? tunnelHops.map((hop: any) => Number(hop.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)
+          : [];
+        if (tunnelHopHostIds.length >= 3) {
+          await refreshTunnelRuntimeHosts(Number(tunnel.id), tunnelHopHostIds, "tunnel-test-refresh");
+        } else if (!tunnel.isRunning) {
           const pushed = pushAgentRefresh(tunnel.exitHostId, "tunnel-test-refresh");
           appendPanelLog(
             pushed ? "info" : "warn",
@@ -410,9 +416,8 @@ export const tunnelsRouter = router({
         const target = getTunnelDialHost(tunnel, exit);
         let targetPort = Number(tunnel.listenPort) || 0;
         if (targetPort <= 0) {
-          const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
-          if (Array.isArray(hops) && hops.length >= 2) {
-            targetPort = Number((hops[hops.length - 1] as any).listenPort) || 0;
+          if (Array.isArray(tunnelHops) && tunnelHops.length >= 2) {
+            targetPort = Number((tunnelHops[tunnelHops.length - 1] as any).listenPort) || 0;
             if (targetPort > 0) {
               await db.updateTunnel(tunnel.id, { listenPort: targetPort } as any);
               appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort repaired from hops: ${targetPort}`);
@@ -427,13 +432,14 @@ export const tunnelsRouter = router({
             if (allocated) {
               targetPort = Number(allocated) || 0;
               await db.updateTunnel(tunnel.id, { listenPort: targetPort, isRunning: false } as any);
-              if (Array.isArray(hops) && hops.length > 0) {
-                const repairedHops = hops.map((hop: any, idx: number) => ({
+              if (Array.isArray(tunnelHops) && tunnelHops.length > 0) {
+                const repairedHops = tunnelHops.map((hop: any, idx: number) => ({
                   hostId: Number(hop.hostId),
-                  listenPort: idx === hops.length - 1 ? targetPort : Number(hop.listenPort) || 0,
+                  listenPort: idx === tunnelHops.length - 1 ? targetPort : Number(hop.listenPort) || 0,
                   connectHost: String(hop.connectHost || "").trim() || null,
                 }));
                 await hopRepo.createTunnelHops(Number(tunnel.id), repairedHops);
+                tunnelHops = await hopRepo.getTunnelHops(Number(tunnel.id));
               }
               appendPanelLog("warn", `[TunnelTest] tunnel=${tunnel.id} listenPort auto-assigned: ${targetPort}`);
               await pushTunnelEndpointRefresh(tunnel as any, "tunnel-test-port-repair");
@@ -447,7 +453,6 @@ export const tunnelsRouter = router({
           appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid test target. exitHost=${exit.id} target=${target || "-"} port=${targetPort || "-"}`);
           return { success: false, latencyMs: null, message };
         }
-        const tunnelHops = await hopRepo.getTunnelHops(Number(tunnel.id));
         if (Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
           const batchId = createTunnelHopBatch(Number(tunnel.id));
           let queued = 0;

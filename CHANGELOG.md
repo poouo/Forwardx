@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.103] - 2026-06-03
+
+### Fixed
+
+- Fixed GOST tunnels being interrupted by an overly broad idle cleanup action that could stop managed tunnel services after a panel-side misclassification.
+- Fixed ForwardX custom multi-hop tunnels and their entry rules being repeatedly re-applied after all hops were already ready.
+- Fixed multi-hop tunnel self-tests to refresh all hop runtimes before testing and to reuse repaired hop port data.
+
+### Changed
+
+- Bumped panel version to 2.3.103. Agent/FXP runtime target version remains 2.2.83.
+- Android APP version remains 2.3.36 and the APK release pointer is updated to 2.3.103 because this is a web-panel/server update.
+
 ## [2.3.102] - 2026-06-03
 
 ### Added

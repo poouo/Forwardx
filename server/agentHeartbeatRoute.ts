@@ -23,8 +23,6 @@ import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValid
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
 const tunnelRouteLogCache = new Map<string, string>();
-const lastGostIdleCleanupByHost = new Map<number, number>();
-const GOST_IDLE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 function parseFailoverTargets(raw: unknown) {
   if (!raw || typeof raw !== "string") return [];
@@ -794,33 +792,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return cmds;
     };
 
-    const ensureGostIdleStopped = async () => {
-      if (gostServiceConfig.length > 0) return;
-      const tunnelReloadCmds = await buildTunnelReloadCmds();
-      const hasTunnelServices = tunnelReloadCmds.some((cmd) => cmd.includes("[gost-config] forwardx-tunnels services=") && !cmd.includes("services=0"));
-      if (hasTunnelServices) return;
-      const last = lastGostIdleCleanupByHost.get(host.id) || 0;
-      if (Date.now() - last < GOST_IDLE_CLEANUP_INTERVAL_MS) return;
-      lastGostIdleCleanupByHost.set(host.id, Date.now());
-      actions.push({
-        statusType: "runtime",
-        ruleId: 0,
-        tunnelId: 0,
-        op: "remove",
-        forwardType: "gost-idle-cleanup",
-        sourcePort: 0,
-        protocol: "tcp",
-        commands: [
-          `systemctl disable ${gostServiceName}.service forwardx-tunnels.service 2>/dev/null || true`,
-          `systemctl stop ${gostServiceName}.service forwardx-tunnels.service 2>/dev/null || true`,
-          `echo "[gost-config] idle cleanup: no active gost services"`,
-        ],
-      });
-    };
-
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
-    await ensureGostIdleStopped();
-
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
       if (tunnel && !isForwardXTunnel(tunnel) && tunnel.exitHostId === host.id && rule.tunnelExitPort) {
@@ -1040,9 +1012,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const isFXP = isForwardXTunnel(tunnel);
         const tunnelKey = tunnelSecretSeed(tunnel);
         const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
-        const shouldApply = isFXP
-          ? tunnel.isEnabled && (!multiHopRuntimeReady || hostIdx > 0)
-          : tunnel.isEnabled && !multiHopRuntimeReady;
+        const shouldApply = tunnel.isEnabled && !multiHopRuntimeReady;
         const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
         if (!shouldApply && !shouldRemove) continue;
@@ -1165,11 +1135,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
       }
 
+      const ruleTunnelHops = ruleTunnel ? tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) : null;
       const isForwardXMultiHopRule = !!ruleTunnel
         && isForwardXTunnel(ruleTunnel)
-        && Array.isArray(tunnelHopsByTunnelId.get(Number(ruleTunnel.id)))
-        && (tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) || []).length >= 3;
-      if (rule.isEnabled && (!rule.isRunning || isForwardXMultiHopRule)) {
+        && Array.isArray(ruleTunnelHops)
+        && ruleTunnelHops.length >= 3
+        && ruleTunnelHops.some((hop: any) => Number(hop.hostId) === Number(host.id));
+      const shouldRefreshForwardXMultiHopRule = isForwardXMultiHopRule
+        && !isTunnelRuntimeHostReady(Number(ruleTunnel.id), Number(host.id));
+      if (rule.isEnabled && (!rule.isRunning || shouldRefreshForwardXMultiHopRule)) {
         const cmds: string[] = [];
         if (rule.failoverEnabled && rule.protocol === "tcp" && !(rule as any).tunnelId) {
           cmds.push(...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
