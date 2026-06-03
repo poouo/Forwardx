@@ -170,7 +170,7 @@ const manualPanelUpgradeCommands = [
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
 const tunnelForwardProtocolKeys = [...TUNNEL_PROTOCOLS] as const;
 const LOG_PAGE_SIZE = 200;
-const settingsTabTriggerClass = "w-[7.25rem] shrink-0 justify-center gap-1.5 text-xs sm:w-[7.5rem] sm:text-sm";
+const settingsTabTriggerClass = "min-w-0 justify-center gap-1.5 px-2 text-xs sm:w-[7.5rem] sm:px-3 sm:text-sm [&>svg]:shrink-0";
 
 const defaultHomepageHtml = `<!doctype html>
 <html lang="zh-CN">
@@ -520,9 +520,9 @@ function SettingsContent() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
-        <div className="flex justify-start">
-          <div className="max-w-full overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
-            <TabsList className="flex h-auto min-w-max flex-nowrap justify-start sm:min-w-0 sm:flex-wrap">
+        <div className="w-full sm:flex sm:justify-start">
+          <div className="w-full sm:w-auto">
+            <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto sm:flex-wrap">
               <TabsTrigger value="tokens" className={settingsTabTriggerClass}>
                 <Key className="h-3.5 w-3.5" />
                 Token管理
