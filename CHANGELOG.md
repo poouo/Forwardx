@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.101] - 2026-06-03
+
+### Changed
+
+- Bumped panel version to 2.3.101 and Agent/FXP runtime target version to 2.2.83 for the latest panel loading, logging, and Agent communication updates.
+- Android APP version remains 2.3.35 and the APK release pointer is updated to 2.3.101 because this is a web-panel and Agent update.
+
 ## [2.3.100] - 2026-06-02
 
 ### Added
