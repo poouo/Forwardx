@@ -19,6 +19,20 @@ const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
 let lastHostUpgradeCleanupAt = 0;
 let hostUpgradeCleanupRunning = false;
 
+function isValidHostOrIp(value: string) {
+  return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
+}
+
+const hostAddressSchema = z.string().trim().min(1).max(253).refine(isValidHostOrIp, "Invalid host or IP");
+const optionalHostAddressSchema = z.string().trim().max(253).nullable().optional().refine(
+  (value) => !value || isValidHostOrIp(value),
+  "Invalid host or IP",
+);
+const networkInterfaceSchema = z.string().trim().max(32).nullable().optional().refine(
+  (value) => !value || /^[a-zA-Z0-9_.:@-]+$/.test(value),
+  "Invalid network interface",
+);
+
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }
@@ -166,11 +180,11 @@ export const hostsRouter = router({
     create: protectedProcedure
       .input(z.object({
         name: z.string().min(1).max(128),
-        ip: z.string().min(1).max(64),
+        ip: hostAddressSchema,
         hostType: z.enum(["master", "slave"]).default("slave"),
-        networkInterface: z.string().max(32).optional(),
-        entryIp: z.string().max(128).nullable().optional(),
-        tunnelEntryIp: z.string().max(128).nullable().optional(),
+        networkInterface: networkInterfaceSchema,
+        entryIp: optionalHostAddressSchema,
+        tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))
@@ -186,6 +200,7 @@ export const hostsRouter = router({
           ...input,
           agentToken,
           networkInterface: input.networkInterface || null,
+          entryIp: input.entryIp || null,
           tunnelEntryIp: input.tunnelEntryIp || null,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
@@ -197,11 +212,11 @@ export const hostsRouter = router({
       .input(z.object({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
-        ip: z.string().min(1).max(64).optional(),
+        ip: hostAddressSchema.optional(),
         hostType: z.enum(["master", "slave"]).optional(),
-        networkInterface: z.string().max(32).nullable().optional(),
-        entryIp: z.string().max(128).nullable().optional(),
-        tunnelEntryIp: z.string().max(128).nullable().optional(),
+        networkInterface: networkInterfaceSchema,
+        entryIp: optionalHostAddressSchema,
+        tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
       }))
@@ -216,6 +231,9 @@ export const hostsRouter = router({
           throw new Error("端口区间起始值不能大于结束值");
         }
         const { id, ...data } = input;
+        if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
+        if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
+        if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         await db.updateHost(id, data as any);
         return { success: true };
       }),

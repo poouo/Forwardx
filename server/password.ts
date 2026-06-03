@@ -9,6 +9,11 @@ export function hashPassword(password: string): string {
 export function verifyPassword(password: string, stored: string): boolean {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
-  const testHash = crypto.scryptSync(password, salt, 64).toString("hex");
-  return hash === testHash;
+  try {
+    const expected = Buffer.from(hash, "hex");
+    const testHash = crypto.scryptSync(password, salt, 64);
+    return expected.length === testHash.length && crypto.timingSafeEqual(expected, testHash);
+  } catch {
+    return false;
+  }
 }

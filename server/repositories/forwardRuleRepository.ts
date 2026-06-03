@@ -1,5 +1,5 @@
 ﻿import { and, desc, eq, sql } from "drizzle-orm";
-import { forwardGroupMembers, forwardRules, InsertForwardRule, trafficStats } from "../../drizzle/schema";
+import { forwardGroupMembers, forwardRules, InsertForwardRule } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Forward Rule Queries ====================
@@ -32,6 +32,7 @@ export async function getForwardRulesForAgent(hostId?: number) {
   if (!db) return [];
   const conds: any[] = [
     eq(forwardRules.isForwardGroupTemplate, false),
+    sql`(${forwardRules.pendingDelete} = 0 OR ${forwardRules.isRunning} = 1)`,
   ];
   if (hostId) {
     conds.push(eq(forwardRules.hostId, hostId));
@@ -118,8 +119,12 @@ export async function updateForwardRule(id: number, data: Partial<InsertForwardR
 export async function deleteForwardRule(id: number) {
   const db = await getDb();
   if (!db) return;
-  await db.delete(trafficStats).where(eq(trafficStats.ruleId, id));
-  await db.delete(forwardRules).where(eq(forwardRules.id, id));
+  await db.update(forwardRules).set({
+    isEnabled: false,
+    isRunning: false,
+    pendingDelete: true,
+    updatedAt: nowDate(),
+  }).where(eq(forwardRules.id, id));
 }
 
 export async function markForwardRulePendingDelete(id: number) {
@@ -150,8 +155,7 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
   if (!db) return;
   const rule = await getForwardRuleById(id);
   if (rule && (rule as any).pendingDelete && !isRunning) {
-    await db.delete(trafficStats).where(eq(trafficStats.ruleId, id));
-    await db.delete(forwardRules).where(eq(forwardRules.id, id));
+    await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
     return;
   }
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));

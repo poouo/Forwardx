@@ -19,13 +19,21 @@ interface CaptchaEntry {
 }
 
 const captchaStore = new Map<string, CaptchaEntry>();
-const loginFailStore = new Map<string, { count: number; lastFailAt: number }>();
+type LoginFailEntry = { count: number; lastFailAt: number };
+const loginFailStore = new Map<string, LoginFailEntry>();
+const loginIpFailStore = new Map<string, LoginFailEntry>();
 const emailCodeStore = new Map<string, { code: string; expiresAt: number; lastSentAt: number; attempts: number }>();
+const emailSendIpStore = new Map<string, LoginFailEntry>();
 const LOGIN_FAIL_THRESHOLD = 1;
 const LOGIN_FAIL_WINDOW_MS = 30 * 60 * 1000;
+const LOGIN_BLOCK_MS = 15 * 60 * 1000;
+const LOGIN_BLOCK_THRESHOLD_PER_ACCOUNT = 8;
+const LOGIN_BLOCK_THRESHOLD_PER_IP = 40;
 const EMAIL_CODE_TTL_MS = 5 * 60 * 1000;
 const EMAIL_CODE_COOLDOWN_MS = 60 * 1000;
 const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const EMAIL_CODE_IP_WINDOW_MS = 30 * 60 * 1000;
+const EMAIL_CODE_IP_MAX_PER_WINDOW = 10;
 const TWO_FACTOR_ISSUER = "ForwardX";
 const DISPLAY_NAME_MAX_LENGTH = 24;
 
@@ -59,31 +67,82 @@ function getLoginFailKey(ip: string, username: string) {
   return `${ip}:${username}`;
 }
 
-function recordLoginFail(ip: string, username: string) {
-  const key = getLoginFailKey(ip, username);
-  const entry = loginFailStore.get(key);
+function getActiveLoginFailEntry(store: Map<string, LoginFailEntry>, key: string) {
+  const entry = store.get(key);
+  if (!entry) return null;
   const now = Date.now();
   if (entry && now - entry.lastFailAt < LOGIN_FAIL_WINDOW_MS) {
+    return entry;
+  }
+  store.delete(key);
+  return null;
+}
+
+function recordFailInStore(store: Map<string, LoginFailEntry>, key: string) {
+  const entry = getActiveLoginFailEntry(store, key);
+  const now = Date.now();
+  if (entry) {
     entry.count += 1;
     entry.lastFailAt = now;
   } else {
-    loginFailStore.set(key, { count: 1, lastFailAt: now });
+    store.set(key, { count: 1, lastFailAt: now });
   }
 }
 
+function recordLoginFail(ip: string, username: string) {
+  recordFailInStore(loginFailStore, getLoginFailKey(ip, username));
+  recordFailInStore(loginIpFailStore, ip);
+}
+
 function needsCaptcha(ip: string, username: string): boolean {
-  const key = getLoginFailKey(ip, username);
-  const entry = loginFailStore.get(key);
+  const entry = getActiveLoginFailEntry(loginFailStore, getLoginFailKey(ip, username));
   if (!entry) return false;
-  if (Date.now() - entry.lastFailAt > LOGIN_FAIL_WINDOW_MS) {
-    loginFailStore.delete(key);
-    return false;
-  }
   return entry.count >= LOGIN_FAIL_THRESHOLD;
+}
+
+function loginRateLimitState(ip: string, username: string) {
+  const now = Date.now();
+  const checks = [
+    { entry: getActiveLoginFailEntry(loginFailStore, getLoginFailKey(ip, username)), threshold: LOGIN_BLOCK_THRESHOLD_PER_ACCOUNT },
+    { entry: getActiveLoginFailEntry(loginIpFailStore, ip), threshold: LOGIN_BLOCK_THRESHOLD_PER_IP },
+  ];
+  for (const check of checks) {
+    const entry = check.entry;
+    if (!entry || entry.count < check.threshold) continue;
+    const retryAt = entry.lastFailAt + LOGIN_BLOCK_MS;
+    if (retryAt > now) {
+      return {
+        limited: true,
+        retryAfterSeconds: Math.max(1, Math.ceil((retryAt - now) / 1000)),
+      };
+    }
+  }
+  return { limited: false, retryAfterSeconds: 0 };
 }
 
 function clearLoginFail(ip: string, username: string) {
   loginFailStore.delete(getLoginFailKey(ip, username));
+}
+
+function recordEmailSend(ip: string) {
+  const now = Date.now();
+  const entry = emailSendIpStore.get(ip);
+  if (entry && now - entry.lastFailAt < EMAIL_CODE_IP_WINDOW_MS) {
+    entry.count += 1;
+    entry.lastFailAt = now;
+  } else {
+    emailSendIpStore.set(ip, { count: 1, lastFailAt: now });
+  }
+}
+
+function isEmailSendRateLimited(ip: string) {
+  const entry = emailSendIpStore.get(ip);
+  if (!entry) return false;
+  if (Date.now() - entry.lastFailAt >= EMAIL_CODE_IP_WINDOW_MS) {
+    emailSendIpStore.delete(ip);
+    return false;
+  }
+  return entry.count >= EMAIL_CODE_IP_MAX_PER_WINDOW;
 }
 
 function normalizeEmail(email: string) {
@@ -199,6 +258,11 @@ export const authRouter = router({
         console.info(`[Auth] Email verification skipped ip=${getRequestIp(ctx)}`);
         return { skipped: true };
       }
+      const ip = getRequestIp(ctx);
+      if (isEmailSendRateLimited(ip)) {
+        console.warn(`[Auth] Email verification rate limited target=${maskIdentifier(input.email)} ip=${ip}`);
+        throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "EMAIL_RATE_LIMITED" });
+      }
       const email = ensureAllowedEmail(input.email, config);
       const existing = emailCodeStore.get(email);
       if (existing?.lastSentAt && Date.now() - existing.lastSentAt < EMAIL_CODE_COOLDOWN_MS) {
@@ -206,8 +270,9 @@ export const authRouter = router({
       }
       const code = generateEmailCode();
       await sendVerificationCode(email, code);
+      recordEmailSend(ip);
       emailCodeStore.set(email, { code, expiresAt: Date.now() + EMAIL_CODE_TTL_MS, lastSentAt: Date.now(), attempts: 0 });
-      console.info(`[Auth] Verification email sent target=${maskIdentifier(email)} ip=${getRequestIp(ctx)}`);
+      console.info(`[Auth] Verification email sent target=${maskIdentifier(email)} ip=${ip}`);
       return { success: true, expiresInSeconds: 300 };
     }),
 
@@ -229,6 +294,14 @@ export const authRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       const ip = ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
+      const limited = loginRateLimitState(ip, input.username);
+      if (limited.limited) {
+        console.warn(`[Auth] Login rate limited username=${maskIdentifier(input.username)} ip=${ip} retryAfter=${limited.retryAfterSeconds}s`);
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: `LOGIN_RATE_LIMITED:${Math.ceil(limited.retryAfterSeconds / 60)}`,
+        });
+      }
 
       if (needsCaptcha(ip, input.username)) {
         if (!input.captchaId || input.captchaAnswer === undefined) {
@@ -236,6 +309,7 @@ export const authRouter = router({
           throw new Error("CAPTCHA_REQUIRED");
         }
         if (!verifyCaptcha(input.captchaId, input.captchaAnswer)) {
+          recordLoginFail(ip, input.username);
           console.warn(`[Auth] Login captcha failed username=${maskIdentifier(input.username)} ip=${ip}`);
           throw new Error("验证码错误，请重新输入");
         }

@@ -9,6 +9,7 @@ import { isAgentVersionAtLeast } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import { decryptPayloadWithCandidates, encryptPayload, isEncryptedEnvelope, rememberEncryptedEnvelope } from "./agentCrypto";
 import { resolveAgentTokenFromAuthorization } from "./agentAuth";
+import { normalizeAgentAddress, normalizeAgentText } from "./agentInputValidation";
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
@@ -75,7 +76,7 @@ async function openAgentEventStream(input: {
     res.status(401).json({ error: "Invalid token" });
     return;
   }
-  const agentVersion = String(input.agentVersion || "");
+  const agentVersion = normalizeAgentText(input.agentVersion, 64);
   if (agentVersion) {
     await db.updateHostHeartbeat(host.id, { agentVersion } as any);
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
@@ -193,16 +194,24 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     }
 
     // 检查是否已有主机使用此 token
+    const safeIpv4 = normalizeAgentAddress(ipv4);
+    const safeIpv6 = normalizeAgentAddress(ipv6);
+    const safeIp = normalizeAgentAddress(ip);
+    const primaryIp = safeIpv4 || safeIp || safeIpv6 || "unknown";
+    const nextOsInfo = normalizeAgentText(osInfo, 256);
+    const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
+    const nextAgentVersion = normalizeAgentText(agentVersion, 64);
+
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
       await db.updateHost(existingHost.id, {
-        ip: ipv4 || ip || existingHost.ip,
-        ipv4: ipv4 || (existingHost as any).ipv4 || null,
-        ipv6: ipv6 || (existingHost as any).ipv6 || null,
-        osInfo: osInfo || existingHost.osInfo,
-        cpuInfo: cpuInfo || existingHost.cpuInfo,
+        ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip,
+        ipv4: safeIpv4 || (existingHost as any).ipv4 || null,
+        ipv6: safeIpv6 || (existingHost as any).ipv6 || null,
+        osInfo: nextOsInfo || existingHost.osInfo,
+        cpuInfo: nextCpuInfo || existingHost.cpuInfo,
         memoryTotal: memoryTotal || existingHost.memoryTotal,
-        agentVersion: agentVersion || (existingHost as any).agentVersion,
+        agentVersion: nextAgentVersion || (existingHost as any).agentVersion,
         isOnline: true,
         lastHeartbeat: new Date(),
       });
@@ -216,15 +225,15 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     // 创建新主机
     const hostId = await db.createHost({
       name: tokenDescription || `Agent-${token.substring(0, 8)}`,
-      ip: ipv4 || ip || "unknown",
-      ipv4: ipv4 || null,
-      ipv6: ipv6 || null,
+      ip: primaryIp,
+      ipv4: safeIpv4 || null,
+      ipv6: safeIpv6 || null,
       hostType: "slave",
       agentToken: token,
-      osInfo: osInfo || null,
-      cpuInfo: cpuInfo || null,
+      osInfo: nextOsInfo || null,
+      cpuInfo: nextCpuInfo || null,
       memoryTotal: memoryTotal || null,
-      agentVersion: agentVersion || null,
+      agentVersion: nextAgentVersion || null,
       isOnline: true,
       lastHeartbeat: new Date(),
       userId: agentToken.userId,

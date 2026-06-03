@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { publicProcedure, router } from "../_core/trpc";
 import { MIGRATION_TABLES, ensureDatabaseSchema } from "../dbSchema";
 import {
@@ -106,6 +107,30 @@ async function setupStatus() {
   }
 }
 
+async function ensureSetupWriteAllowed(ctx: { user?: { role?: string } | null }) {
+  if (ctx.user?.role === "admin") return;
+  const config = readDatabaseConfig();
+  if (!config) return;
+  try {
+    const db = await reconnectDatabase();
+    if (!db) throw new Error("Database is not connected");
+    await ensureDatabaseSchema();
+    if (!await hasAdminUser()) return;
+  } catch {
+    throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
+  }
+  throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
+}
+
+function redactSetupStatusForPublic(status: Awaited<ReturnType<typeof setupStatus>>) {
+  return {
+    ...status,
+    config: null,
+    defaultSqlitePath: "",
+    error: status.setupComplete || status.hasAdmin ? null : status.error,
+  };
+}
+
 function quote(name: string) {
   return getDatabaseKind() === "sqlite" ? `"${name}"` : `\`${name}\``;
 }
@@ -190,29 +215,42 @@ async function saveDatabase(input: DatabaseConfig) {
 }
 
 export const setupRouter = router({
-  status: publicProcedure.query(async () => setupStatus()),
+  status: publicProcedure.query(async ({ ctx }) => {
+    const status = await setupStatus();
+    if (ctx.user?.role === "admin") return status;
+    if (status.setupComplete || status.hasAdmin) return redactSetupStatusForPublic(status);
+    return status;
+  }),
 
   testDatabase: publicProcedure
     .input(databaseConfigInput)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
       await testDatabaseConnection(input as DatabaseConfig);
       return { success: true };
     }),
 
   saveDatabase: publicProcedure
     .input(databaseConfigInput)
-    .mutation(async ({ input }) => saveDatabase(input as DatabaseConfig)),
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
+      return saveDatabase(input as DatabaseConfig);
+    }),
 
   testMysql: publicProcedure
     .input(mysqlConfigInput)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
       await testDatabaseConnection({ type: "mysql", mysql: input });
       return { success: true };
     }),
 
   saveMysql: publicProcedure
     .input(mysqlConfigInput)
-    .mutation(async ({ input }) => saveDatabase({ type: "mysql", mysql: input })),
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
+      return saveDatabase({ type: "mysql", mysql: input });
+    }),
 
   startMigration: publicProcedure
     .input(z.object({
@@ -220,7 +258,8 @@ export const setupRouter = router({
       migrationCode: z.string().trim().min(1, "请输入旧面板迁移码"),
       targetPanelUrl: z.string().trim().min(1, "请输入新面板访问地址"),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
       await reconnectDatabase();
       await ensureDatabaseSchema();
       const job = startPanelMigration(input);
@@ -229,16 +268,21 @@ export const setupRouter = router({
 
   migrationStatus: publicProcedure
     .input(z.object({ jobId: z.string().min(1) }))
-    .query(({ input }) => getMigrationJob(input.jobId)),
+    .query(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
+      return getMigrationJob(input.jobId);
+    }),
 
-  useExistingData: publicProcedure.mutation(async () => {
+  useExistingData: publicProcedure.mutation(async ({ ctx }) => {
+    await ensureSetupWriteAllowed(ctx);
     await reconnectDatabase();
     await ensureDatabaseSchema();
     await setSettings({ setupDataChoice: "use-existing" });
     return setupStatus();
   }),
 
-  resetExistingData: publicProcedure.mutation(async () => {
+  resetExistingData: publicProcedure.mutation(async ({ ctx }) => {
+    await ensureSetupWriteAllowed(ctx);
     await clearExistingPanelData();
     return setupStatus();
   }),
@@ -249,7 +293,8 @@ export const setupRouter = router({
       password: z.string().min(8, "密码至少 8 位").max(128),
       name: z.string().trim().max(64).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
       await reconnectDatabase();
       await ensureDatabaseSchema();
       const id = await createInitialAdmin(input);
@@ -263,7 +308,8 @@ export const setupRouter = router({
       password: z.string().max(128).optional(),
       name: z.string().trim().max(64).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      await ensureSetupWriteAllowed(ctx);
       await reconnectDatabase();
       await ensureDatabaseSchema();
       if (input.password && input.password.length < 8) {

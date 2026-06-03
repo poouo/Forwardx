@@ -62,6 +62,42 @@ async function getRuleWithCreatedAt(ruleId: number): Promise<{ id: number; creat
   return row ? { id: Number(row.id), createdAt: row.createdAt } : null;
 }
 
+type RuleTrafficIdentity = {
+  id: number;
+  hostId: number;
+  sourcePort: number;
+  userId: number;
+};
+
+type TrafficSummaryRow = {
+  ruleId: number;
+  hostId: number;
+  bytesIn: number;
+  bytesOut: number;
+  connections: number;
+};
+
+function ruleTrafficIdentityKey(rule: RuleTrafficIdentity | undefined | null) {
+  if (!rule) return "";
+  return `${Number(rule.userId) || 0}:${Number(rule.hostId) || 0}:${Number(rule.sourcePort) || 0}`;
+}
+
+function mergeTrafficSummaryRows(rows: TrafficSummaryRow[]) {
+  const merged = new Map<string, TrafficSummaryRow>();
+  for (const item of rows) {
+    const key = `${item.ruleId}:${item.hostId}`;
+    const prev = merged.get(key);
+    if (prev) {
+      prev.bytesIn += item.bytesIn;
+      prev.bytesOut += item.bytesOut;
+      prev.connections += item.connections;
+    } else {
+      merged.set(key, { ...item });
+    }
+  }
+  return Array.from(merged.values());
+}
+
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
@@ -116,13 +152,10 @@ export async function getTrafficSummaryByRule(opts: {
       connections: sql<number>`COALESCE(SUM(${trafficStats.connections}), 0)`,
     })
     .from(trafficStats)
-    .innerJoin(forwardRules, and(
-      eq(forwardRules.id, trafficStats.ruleId),
-      sql`${trafficStats.recordedAt} >= ${forwardRules.createdAt}`,
-    ));
+    .innerJoin(forwardRules, eq(forwardRules.id, trafficStats.ruleId));
   const rows = await (conds.length ? baseQuery.where(and(...conds)) : baseQuery).groupBy(trafficStats.ruleId, trafficStats.hostId);
 
-  let result = rows.map((r) => ({
+  let result: TrafficSummaryRow[] = rows.map((r: any) => ({
     ruleId: Number((r as any).ruleId),
     hostId: Number((r as any).hostId),
     bytesIn: Number((r as any).bytesIn) || 0,
@@ -170,7 +203,7 @@ export async function getTrafficSummaryByRule(opts: {
     result = result.filter((r) => ok.has(r.ruleId));
   }
 
-  let visibleRequestedRows: Array<{ id: number; hostId: number }> = [];
+  let visibleRequestedRows: RuleTrafficIdentity[] = [];
   if (requestedRuleIds.length > 0) {
     const requestedConds: any[] = [
       sql`${forwardRules.id} IN (${sql.join(requestedRuleIds.map(id => sql`${id}`), sql`, `)})`,
@@ -182,14 +215,56 @@ export async function getTrafficSummaryByRule(opts: {
       .select({
         id: forwardRules.id,
         hostId: forwardRules.hostId,
+        sourcePort: forwardRules.sourcePort,
+        userId: forwardRules.userId,
       })
       .from(forwardRules)
       .where(and(...requestedConds));
     visibleRequestedRows = (rows as any[]).map((row) => ({
       id: Number(row.id),
       hostId: Number(row.hostId),
+      sourcePort: Number(row.sourcePort),
+      userId: Number(row.userId),
     }));
     const visibleRequestedIds = new Set(visibleRequestedRows.map((row) => row.id));
+    // Deleted/recreated rules get new IDs; fold preserved same-entry traffic into the visible rule.
+    const requestedByIdentity = new Map<string, RuleTrafficIdentity>();
+    for (const row of visibleRequestedRows) {
+      const key = ruleTrafficIdentityKey(row);
+      if (key) requestedByIdentity.set(key, row);
+    }
+    const resultRuleIds = Array.from(new Set(result.map((item) => item.ruleId).filter((id) => id > 0)));
+    const resultRuleRows = resultRuleIds.length > 0
+      ? await db
+        .select({
+          id: forwardRules.id,
+          hostId: forwardRules.hostId,
+          sourcePort: forwardRules.sourcePort,
+          userId: forwardRules.userId,
+        })
+        .from(forwardRules)
+        .where(sql`${forwardRules.id} IN (${sql.join(resultRuleIds.map(id => sql`${id}`), sql`, `)})`)
+      : [];
+    const identityByRuleId = new Map<number, RuleTrafficIdentity>();
+    for (const row of resultRuleRows as any[]) {
+      identityByRuleId.set(Number(row.id), {
+        id: Number(row.id),
+        hostId: Number(row.hostId),
+        sourcePort: Number(row.sourcePort),
+        userId: Number(row.userId),
+      });
+    }
+    result = result.map((item) => {
+      if (visibleRequestedIds.has(item.ruleId)) return item;
+      const currentRule = requestedByIdentity.get(ruleTrafficIdentityKey(identityByRuleId.get(item.ruleId)));
+      if (!currentRule) return item;
+      return {
+        ...item,
+        ruleId: currentRule.id,
+        hostId: currentRule.hostId,
+      };
+    });
+    result = mergeTrafficSummaryRows(result);
     result = result.filter((item) => visibleRequestedIds.has(item.ruleId));
     const existingKeys = new Set(result.map((item) => `${item.ruleId}:${item.hostId}`));
     for (const row of visibleRequestedRows) {

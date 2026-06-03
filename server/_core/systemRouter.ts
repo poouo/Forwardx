@@ -381,8 +381,32 @@ export const systemRouter = router({
   }),
 
   /** 获取系统设置（包含开源地址、版本、面板公开 URL 等元信息） */
-  getSettings: publicProcedure.query(async () => {
+  getSettings: publicProcedure.query(async ({ ctx }) => {
     const all = await db.getAllSettings();
+    const safeSettings = {
+      repoUrl: REPO_URL,
+      telegramBotUrl: TELEGRAM_BOT_URL,
+      version: APP_VERSION,
+      androidAppVersion: ANDROID_APP_VERSION,
+      androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+      agentVersion: AGENT_VERSION,
+      siteTitle: all.siteTitle || "ForwardX",
+      siteLogoDataUrl: all.siteLogoDataUrl || "",
+      panelPublicUrl: all.panelPublicUrl ?? "",
+      registrationEnabled: all.registrationEnabled !== "false",
+      twoFactorEnabled: all.twoFactorEnabled === "true",
+      lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+      homepageEnabled: all.homepageEnabled !== "false",
+      homepageCustomEnabled: all.homepageCustomEnabled === "true",
+      homepageHtml: all.homepageHtml ?? "",
+      forwardProtocols: normalizeForwardProtocolSettings(
+        parseForwardProtocolSettings(all.forwardProtocols),
+      ),
+      tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
+      agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
+      agentEncryption: "aes-256-ctr+hmac-sha256",
+    };
+    if (!ctx.user || ctx.user.role !== "admin") return safeSettings;
     return {
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,

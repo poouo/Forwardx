@@ -18,6 +18,7 @@ import { resolve4 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
+import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
@@ -70,10 +71,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     const { cpuUsage, cpuInfo, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
+    const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
+    const nextAgentVersion = normalizeAgentText(agentVersion, 64);
 
     await db.updateHostHeartbeat(host.id, {
-      agentVersion: agentVersion || (host as any).agentVersion || null,
-      cpuInfo: cpuInfo || (host as any).cpuInfo || null,
+      agentVersion: nextAgentVersion || (host as any).agentVersion || null,
+      cpuInfo: nextCpuInfo || (host as any).cpuInfo || null,
     } as any);
 
     await db.insertHostMetric({
@@ -97,7 +100,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const responseIssuedAt = Date.now();
 
     // 获取主机配置的网卡名称（用于 realm --interface）
-    const hostInterface = (host as any).networkInterface || "";
+    const hostInterface = normalizeNetworkInterface((host as any).networkInterface);
 
     /** 包装一条只追加一次的 iptables 规则：先 -C 检查是否存在，不存在才 -A */
     const ipIfMissing = (rule: string) => `iptables -C ${rule} 2>/dev/null || iptables -A ${rule}`;
