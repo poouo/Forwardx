@@ -137,6 +137,8 @@ const manualPanelUpgradeCommands = [
 
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
 const tunnelForwardProtocolKeys = [...TUNNEL_PROTOCOLS] as const;
+const LOG_PAGE_SIZE = 200;
+const settingsTabTriggerClass = "w-[7.25rem] shrink-0 justify-center gap-1.5 text-xs sm:w-[7.5rem] sm:text-sm";
 
 const defaultHomepageHtml = `<!doctype html>
 <html lang="zh-CN">
@@ -474,34 +476,34 @@ function SettingsContent() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
-        <div className="-mx-1 rounded-xl border border-border/60 bg-card/70 p-2 shadow-sm backdrop-blur-md sm:mx-0 sm:inline-block">
-          <div className="overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
-          <TabsList className="grid h-auto w-full grid-cols-2 rounded-lg border border-border/50 bg-muted/35 sm:inline-flex sm:w-auto sm:grid-cols-none">
-          <TabsTrigger value="tokens" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <Key className="h-3.5 w-3.5" />
-            Token管理
-          </TabsTrigger>
-          <TabsTrigger value="install" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <Terminal className="h-3.5 w-3.5" />
-            安装说明
-          </TabsTrigger>
-          <TabsTrigger value="system" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <Settings2 className="h-3.5 w-3.5" />
-            系统配置
-          </TabsTrigger>
-          <TabsTrigger value="telegram" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <Send className="h-3.5 w-3.5" />
-            Telegram
-          </TabsTrigger>
-          <TabsTrigger value="email" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <Mail className="h-3.5 w-3.5" />
-            邮箱设置
-          </TabsTrigger>
-          <TabsTrigger value="logs" className="min-h-10 min-w-0 justify-center gap-1.5 rounded-md px-3 text-xs sm:min-h-0 sm:text-sm">
-            <FileText className="h-3.5 w-3.5" />
-            面板日志
-          </TabsTrigger>
-          </TabsList>
+        <div className="flex justify-center">
+          <div className="max-w-full overflow-x-auto pb-1 sm:overflow-visible sm:pb-0">
+            <TabsList className="flex h-auto min-w-max flex-nowrap justify-center sm:min-w-0 sm:flex-wrap">
+              <TabsTrigger value="tokens" className={settingsTabTriggerClass}>
+                <Key className="h-3.5 w-3.5" />
+                Token管理
+              </TabsTrigger>
+              <TabsTrigger value="install" className={settingsTabTriggerClass}>
+                <Terminal className="h-3.5 w-3.5" />
+                安装说明
+              </TabsTrigger>
+              <TabsTrigger value="system" className={settingsTabTriggerClass}>
+                <Settings2 className="h-3.5 w-3.5" />
+                系统配置
+              </TabsTrigger>
+              <TabsTrigger value="telegram" className={settingsTabTriggerClass}>
+                <Send className="h-3.5 w-3.5" />
+                Telegram
+              </TabsTrigger>
+              <TabsTrigger value="email" className={settingsTabTriggerClass}>
+                <Mail className="h-3.5 w-3.5" />
+                邮箱设置
+              </TabsTrigger>
+              <TabsTrigger value="logs" className={settingsTabTriggerClass}>
+                <FileText className="h-3.5 w-3.5" />
+                面板日志
+              </TabsTrigger>
+            </TabsList>
           </div>
         </div>
 
@@ -1108,13 +1110,21 @@ function PanelLogsSection() {
   const [agentLogLevel, setAgentLogLevel] = useState<"all" | "info" | "warn" | "error">("all");
   const [exportLevel, setExportLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
   const [agentHostId, setAgentHostId] = useState("all");
-  const { data: panelLogs, isLoading: panelLogsLoading, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({ level: panelLogLevel }, {
+  const [panelLogOffset, setPanelLogOffset] = useState(0);
+  const [agentLogOffset, setAgentLogOffset] = useState(0);
+  const { data: panelLogs, isLoading: panelLogsLoading, isFetching: panelLogsFetching, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({
+    level: panelLogLevel,
+    limit: LOG_PAGE_SIZE,
+    offset: panelLogOffset,
+  }, {
     refetchInterval: 10000,
   });
   const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: agentLogs, isLoading: agentLogsLoading, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
+  const { data: agentLogs, isLoading: agentLogsLoading, isFetching: agentLogsFetching, refetch: refetchAgentLogs } = trpc.system.agentLogs.useQuery({
     level: agentLogLevel,
     hostId: agentHostId === "all" ? null : Number(agentHostId),
+    limit: LOG_PAGE_SIZE,
+    offset: agentLogOffset,
   }, {
     refetchInterval: 10000,
   });
@@ -1136,6 +1146,7 @@ function PanelLogsSection() {
   const clearLogsMutation = trpc.system.clearPanelLogs.useMutation({
     onSuccess: async () => {
       toast.success("日志已清空");
+      setPanelLogOffset(0);
       await refetchPanelLogs();
     },
     onError: (err) => toast.error(err.message || "清空日志失败"),
@@ -1143,6 +1154,7 @@ function PanelLogsSection() {
   const clearAgentLogsMutation = trpc.system.clearAgentLogs.useMutation({
     onSuccess: async () => {
       toast.success("Agent 日志已清空");
+      setAgentLogOffset(0);
       await refetchAgentLogs();
     },
     onError: (err) => toast.error(err.message || "清空 Agent 日志失败"),
@@ -1153,6 +1165,38 @@ function PanelLogsSection() {
     if (level === "info") return "text-sky-600 dark:text-sky-400";
     return "text-muted-foreground";
   };
+  const panelLogEntries = panelLogs?.logs || [];
+  const agentLogEntries = agentLogs?.logs || [];
+  const resetPanelLogs = (level: typeof panelLogLevel) => {
+    setPanelLogLevel(level);
+    setPanelLogOffset(0);
+  };
+  const resetAgentLogs = (level: typeof agentLogLevel) => {
+    setAgentLogLevel(level);
+    setAgentLogOffset(0);
+  };
+  const handleAgentHostChange = (value: string) => {
+    setAgentHostId(value);
+    setAgentLogOffset(0);
+  };
+  const refreshPanelLogs = () => {
+    if (panelLogOffset === 0) {
+      refetchPanelLogs();
+      return;
+    }
+    setPanelLogOffset(0);
+  };
+  const refreshAgentLogs = () => {
+    if (agentLogOffset === 0) {
+      refetchAgentLogs();
+      return;
+    }
+    setAgentLogOffset(0);
+  };
+  const panelLogStart = panelLogEntries.length > 0 ? (panelLogs?.offset || 0) + 1 : 0;
+  const panelLogEnd = (panelLogs?.offset || 0) + panelLogEntries.length;
+  const agentLogStart = agentLogEntries.length > 0 ? (agentLogs?.offset || 0) + 1 : 0;
+  const agentLogEnd = (agentLogs?.offset || 0) + agentLogEntries.length;
   const summary = panelLogs?.summary || {};
   const agentSummary = agentLogs?.summary || {};
   const levelTabs = [
@@ -1181,7 +1225,7 @@ function PanelLogsSection() {
               <CardDescription>开启 Agent 日志上报后显示关键运行日志。</CardDescription>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Select value={agentHostId} onValueChange={setAgentHostId}>
+              <Select value={agentHostId} onValueChange={handleAgentHostChange}>
                 <SelectTrigger className="h-9 w-40">
                   <SelectValue />
                 </SelectTrigger>
@@ -1192,7 +1236,7 @@ function PanelLogsSection() {
                   ))}
                 </SelectContent>
               </Select>
-              <Button variant="outline" size="sm" onClick={() => refetchAgentLogs()}>刷新</Button>
+              <Button variant="outline" size="sm" onClick={refreshAgentLogs} disabled={agentLogsFetching}>刷新</Button>
               <Button
                 variant="destructive"
                 size="sm"
@@ -1205,7 +1249,7 @@ function PanelLogsSection() {
           </div>
         </CardHeader>
         <CardContent>
-          <Tabs value={agentLogLevel} onValueChange={(v) => setAgentLogLevel(v as typeof agentLogLevel)} className="space-y-3">
+          <Tabs value={agentLogLevel} onValueChange={(v) => resetAgentLogs(v as typeof agentLogLevel)} className="space-y-3">
             <TabsList className="grid h-auto w-full grid-cols-2 bg-muted/50 sm:grid-cols-4">
               {agentLevelTabs.map((tab) => (
                 <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 gap-1.5 text-xs">
@@ -1219,11 +1263,11 @@ function PanelLogsSection() {
             <DataSectionLoading label="正在加载 Agent 日志" minHeight="min-h-[160px]" />
           ) : (
           <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
-            {(agentLogs?.logs || []).length === 0 ? (
+            {agentLogEntries.length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">暂无 Agent 日志</div>
             ) : (
               <div className="space-y-1">
-                {(agentLogs?.logs || []).slice().reverse().map((entry: any) => (
+                {agentLogEntries.map((entry: any) => (
                   <div key={entry.id} className="grid gap-2 sm:grid-cols-[150px_120px_56px_1fr]">
                     <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
                     <span className="truncate text-muted-foreground">{entry.hostName || `#${entry.hostId}`}</span>
@@ -1235,6 +1279,30 @@ function PanelLogsSection() {
             )}
           </div>
           )}
+          <div className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              当前显示 {agentLogStart}-{agentLogEnd} / {agentLogs?.total || 0} 条
+              {agentLogsFetching && !agentLogsLoading ? "，正在刷新" : ""}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAgentLogOffset(Math.max(0, agentLogOffset - LOG_PAGE_SIZE))}
+                disabled={agentLogsFetching || agentLogOffset <= 0}
+              >
+                较新
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAgentLogOffset(agentLogs?.nextOffset || 0)}
+                disabled={agentLogsFetching || !agentLogs?.hasMore}
+              >
+                更早
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -1269,13 +1337,13 @@ function PanelLogsSection() {
                   导出日志
                 </Button>
               </div>
-              <Button variant="outline" size="sm" onClick={() => refetchPanelLogs()}>刷新</Button>
+              <Button variant="outline" size="sm" onClick={refreshPanelLogs} disabled={panelLogsFetching}>刷新</Button>
               <Button variant="destructive" size="sm" onClick={() => clearLogsMutation.mutate()} disabled={clearLogsMutation.isPending}>清空日志</Button>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <Tabs value={panelLogLevel} onValueChange={(v) => setPanelLogLevel(v as typeof panelLogLevel)} className="space-y-3">
+          <Tabs value={panelLogLevel} onValueChange={(v) => resetPanelLogs(v as typeof panelLogLevel)} className="space-y-3">
             <TabsList className="grid h-auto w-full grid-cols-2 bg-muted/50 sm:grid-cols-5">
               {levelTabs.map((tab) => (
                 <TabsTrigger key={tab.value} value={tab.value} className="min-w-0 gap-1.5 text-xs">
@@ -1289,11 +1357,11 @@ function PanelLogsSection() {
             <DataSectionLoading label="正在加载面板日志" minHeight="min-h-[160px]" />
           ) : (
           <div className="max-h-80 overflow-auto rounded-lg border border-border/40 bg-muted/20 p-3 font-mono text-xs leading-relaxed">
-            {(panelLogs?.logs || []).length === 0 ? (
+            {panelLogEntries.length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">暂无日志</div>
             ) : (
               <div className="space-y-1">
-                {(panelLogs?.logs || []).slice().reverse().map((entry: any) => (
+                {panelLogEntries.map((entry: any) => (
                   <div key={entry.id} className="grid gap-2 sm:grid-cols-[150px_56px_1fr]">
                     <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
                     <span className={logLevelClass(entry.level)}>{String(entry.level).toUpperCase()}</span>
@@ -1304,6 +1372,30 @@ function PanelLogsSection() {
             )}
           </div>
           )}
+          <div className="mt-3 flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              当前显示 {panelLogStart}-{panelLogEnd} / {panelLogs?.total || 0} 条
+              {panelLogsFetching && !panelLogsLoading ? "，正在刷新" : ""}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPanelLogOffset(Math.max(0, panelLogOffset - LOG_PAGE_SIZE))}
+                disabled={panelLogsFetching || panelLogOffset <= 0}
+              >
+                较新
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPanelLogOffset(panelLogs?.nextOffset || 0)}
+                disabled={panelLogsFetching || !panelLogs?.hasMore}
+              >
+                更早
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

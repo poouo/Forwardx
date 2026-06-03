@@ -2,6 +2,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
 import { appendPanelLog } from "../_core/panelLogger";
+import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 
@@ -58,6 +59,7 @@ export const selfTestRulesRouter = router({
         forwardOk: false,
         message,
       });
+      pushAgentRefresh(hostId, "forward-selftest");
       if (!(rule as any).tunnelId) {
         appendPanelLog("info", `[SelfTest] rule=${rule.id} queued direct test=${id} from host=${hostId} to target=${rule.targetIp}:${rule.targetPort}`);
       }

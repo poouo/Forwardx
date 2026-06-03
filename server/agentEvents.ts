@@ -1,5 +1,6 @@
 import type { Response } from "express";
 import { AGENT_VERSION } from "./_core/systemRouter";
+import { encryptPayload } from "./agentCrypto";
 
 type AgentEventClient = {
   hostId: number;
@@ -29,8 +30,8 @@ function sendAgentEvent(hostId: number, event: string, data: any) {
     console.warn(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
     return false;
   }
-  client.res.write(`event: ${event}\n`);
-  client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+  client.res.write(`event: message\n`);
+  client.res.write(`data: ${JSON.stringify(encryptPayload({ type: event, data }, client.token))}\n\n`);
   console.info(`[AgentEvent] host=${hostId} event=${event} pushed`);
   return true;
 }

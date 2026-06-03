@@ -18,6 +18,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,9 @@ var Version = "2.2.82"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
+const selfTestIdlePollInterval = time.Minute
+const selfTestActivePollInterval = 3 * time.Second
+const selfTestActiveWindow = 2 * time.Minute
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -46,7 +50,7 @@ var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
 var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
-var agentLogBuffer []agentLogEntry
+var agentLogPrunedAt time.Time
 var actionQueue = make(chan actionJob, 128)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
@@ -62,6 +66,11 @@ type agentLogEntry struct {
 	Level     string `json:"level"`
 	Message   string `json:"message"`
 	CreatedAt string `json:"createdAt"`
+}
+
+type agentLogUploadResp struct {
+	Accepted int  `json:"accepted"`
+	Disabled bool `json:"disabled"`
 }
 
 type Config struct {
@@ -155,6 +164,11 @@ type tunnelProbe struct {
 type agentUpgrade struct {
 	TargetVersion string `json:"targetVersion"`
 	PanelURL      string `json:"panelUrl"`
+}
+
+type agentEventMessage struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 type migratedPanelError struct {
@@ -427,13 +441,20 @@ func isOlderAction(a action, remember bool) bool {
 }
 
 func selfTestPoller(cfg Config) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
+	activeUntil := time.Time{}
+	for {
+		interval := selfTestIdlePollInterval
+		if time.Now().Before(activeUntil) {
+			interval = selfTestActivePollInterval
+		}
+		time.Sleep(interval)
 		var resp selfTestResp
 		if err := post(cfg, "/api/agent/selftest-pull", map[string]any{}, &resp); err != nil {
 			logf("selftest pull error: %v", err)
 			continue
+		}
+		if len(resp.SelfTests) > 0 {
+			activeUntil = time.Now().Add(selfTestActiveWindow)
 		}
 		for _, t := range resp.SelfTests {
 			go handleSelfTest(cfg, t)
@@ -878,13 +899,16 @@ func agentEventStream(cfg Config) {
 }
 
 func runAgentEventStream(cfg Config) error {
-	req, err := http.NewRequest("GET", cfg.PanelURL+"/api/agent/events", nil)
+	env, err := encrypt(map[string]any{"agentVersion": Version}, cfg.Token)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	query, _ := json.Marshal(env)
+	req, err := http.NewRequest("GET", cfg.PanelURL+"/api/stream?e="+url.QueryEscape(string(query)), nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("X-Agent-Version", Version)
 
 	client := &http.Client{Timeout: 0}
 	resp, err := client.Do(req)
@@ -897,32 +921,33 @@ func runAgentEventStream(cfg Config) error {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	var eventName string
 	var data strings.Builder
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			if eventName == "agent-upgrade" && data.Len() > 0 {
-				var up agentUpgrade
-				if err := json.Unmarshal([]byte(data.String()), &up); err != nil {
+			if data.Len() > 0 {
+				var msg agentEventMessage
+				if err := decodeEventData(data.String(), cfg.Token, &msg); err != nil {
 					logf("decode agent upgrade event: %v", err)
-				} else {
-					go selfUpgrade(cfg, &up)
-				}
-			} else if eventName == "agent-refresh" {
-				go func() {
-					if _, err := heartbeat(cfg); err != nil {
-						logf("agent refresh heartbeat error: %v", err)
+				} else if msg.Type == "agent-upgrade" {
+					var up agentUpgrade
+					if err := json.Unmarshal(msg.Data, &up); err != nil {
+						logf("decode agent upgrade payload: %v", err)
+					} else {
+						go selfUpgrade(cfg, &up)
 					}
-				}()
+				} else if msg.Type == "agent-refresh" {
+					go func() {
+						if _, err := heartbeat(cfg); err != nil {
+							logf("agent refresh heartbeat error: %v", err)
+						}
+					}()
+				}
 			}
-			eventName = ""
 			data.Reset()
 			continue
 		}
-		if strings.HasPrefix(line, "event:") {
-			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
+		if strings.HasPrefix(line, "data:") {
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
@@ -932,10 +957,29 @@ func runAgentEventStream(cfg Config) error {
 	return scanner.Err()
 }
 
+func decodeEventData(raw string, token string, out any) error {
+	var env envelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return err
+	}
+	plain, err := decrypt(env, token)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(plain, out)
+}
+
 func handleAction(cfg Config, a action) {
 	ok := true
 	actionMessage := &actionMessage{}
 	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
+	if strings.TrimSpace(a.StatusType) == "runtime" {
+		for _, cmd := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
+			ok = runShell(cmd) && ok
+		}
+		logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
+		return
+	}
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
 		preserveRunningFXP := cleanupStaleRuntimeBeforeApply(a)
@@ -2869,18 +2913,19 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 }
 
 func post(cfg Config, path string, payload any, out any) error {
-	env, err := encrypt(payload, cfg.Token)
+	env, err := encrypt(map[string]any{
+		"path":    path,
+		"payload": payload,
+	}, cfg.Token)
 	if err != nil {
 		return err
 	}
 	body, _ := json.Marshal(env)
-	req, err := http.NewRequest("POST", cfg.PanelURL+path, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", cfg.PanelURL+"/api/sync", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	req.Header.Set("X-Agent-Encrypted", "1")
 	client := &http.Client{Timeout: 60 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
@@ -3240,12 +3285,46 @@ func logf(format string, args ...any) {
 	createdAt := time.Now().Format(time.RFC3339)
 	line := createdAt + " " + message + "\n"
 	fmt.Print(line)
-	f, err := os.OpenFile("/var/log/forwardx-agent/agent-go.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	path := "/var/log/forwardx-agent/agent-go.log"
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
 		_, _ = f.WriteString(line)
 	}
+	pruneAgentLocalLog(path)
 	rememberAgentLog(message, createdAt)
+}
+
+func pruneAgentLocalLog(path string) {
+	agentLogMu.Lock()
+	if time.Since(agentLogPrunedAt) < time.Hour {
+		agentLogMu.Unlock()
+		return
+	}
+	agentLogPrunedAt = time.Now()
+	agentLogMu.Unlock()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	lines := strings.Split(string(raw), "\n")
+	retained := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		t, err := time.Parse(time.RFC3339, parts[0])
+		if err != nil || t.After(cutoff) {
+			retained = append(retained, line)
+		}
+	}
+	if len(retained) == 0 {
+		_ = os.WriteFile(path, nil, 0644)
+		return
+	}
+	_ = os.WriteFile(path, []byte(strings.Join(retained, "\n")+"\n"), 0644)
 }
 
 func rememberAgentLog(message, createdAt string) {
@@ -3261,10 +3340,8 @@ func rememberAgentLog(message, createdAt string) {
 	}
 	agentLogMu.Lock()
 	defer agentLogMu.Unlock()
-	agentLogBuffer = append(agentLogBuffer, agentLogEntry{Level: level, Message: message, CreatedAt: createdAt})
-	if len(agentLogBuffer) > 200 {
-		agentLogBuffer = agentLogBuffer[len(agentLogBuffer)-200:]
-	}
+	appendAgentLogQueueLocked(agentLogEntry{Level: level, Message: message, CreatedAt: createdAt})
+	pruneAgentLogQueueLocked()
 }
 
 func isImportantAgentLog(message string) bool {
@@ -3278,26 +3355,122 @@ func isImportantAgentLog(message string) bool {
 	return false
 }
 
+func agentLogQueuePath() string {
+	return "/var/lib/forwardx-agent/agent-log-queue.jsonl"
+}
+
+func appendAgentLogQueueLocked(entry agentLogEntry) {
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(agentLogQueuePath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+func readAgentLogQueueLocked(limit int) []agentLogEntry {
+	raw, err := os.ReadFile(agentLogQueuePath())
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(raw), "\n")
+	logs := []agentLogEntry{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry agentLogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if !isRecentAgentLog(entry.CreatedAt) {
+			continue
+		}
+		logs = append(logs, entry)
+		if limit > 0 && len(logs) >= limit {
+			break
+		}
+	}
+	return logs
+}
+
+func rewriteAgentLogQueueLocked(logs []agentLogEntry) {
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	var builder strings.Builder
+	for _, entry := range logs {
+		if !isRecentAgentLog(entry.CreatedAt) {
+			continue
+		}
+		b, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		builder.Write(b)
+		builder.WriteByte('\n')
+	}
+	_ = os.WriteFile(agentLogQueuePath(), []byte(builder.String()), 0644)
+}
+
+func pruneAgentLogQueueLocked() {
+	rewriteAgentLogQueueLocked(readAgentLogQueueLocked(0))
+}
+
+func removeUploadedAgentLogsLocked(count int) {
+	if count <= 0 {
+		return
+	}
+	logs := readAgentLogQueueLocked(0)
+	if count >= len(logs) {
+		rewriteAgentLogQueueLocked(nil)
+		return
+	}
+	rewriteAgentLogQueueLocked(logs[count:])
+}
+
+func isRecentAgentLog(createdAt string) bool {
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) <= 24*time.Hour
+}
+
 func flushAgentLogs(cfg Config) {
 	if !agentLogUploadEnabled.Load() {
 		return
 	}
 	agentLogMu.Lock()
-	if len(agentLogBuffer) == 0 {
+	logs := readAgentLogQueueLocked(100)
+	if len(logs) == 0 {
 		agentLogMu.Unlock()
 		return
 	}
-	logs := append([]agentLogEntry(nil), agentLogBuffer...)
-	agentLogBuffer = nil
 	agentLogMu.Unlock()
-	if err := post(cfg, "/api/agent/logs", map[string]any{"logs": logs}, &map[string]any{}); err != nil {
-		agentLogMu.Lock()
-		agentLogBuffer = append(logs, agentLogBuffer...)
-		if len(agentLogBuffer) > 200 {
-			agentLogBuffer = agentLogBuffer[len(agentLogBuffer)-200:]
-		}
-		agentLogMu.Unlock()
+	var resp agentLogUploadResp
+	if err := post(cfg, "/api/agent/logs", map[string]any{"logs": logs}, &resp); err != nil {
+		return
 	}
+	if resp.Disabled {
+		agentLogUploadEnabled.Store(false)
+		return
+	}
+	if resp.Accepted <= 0 {
+		return
+	}
+	accepted := resp.Accepted
+	if accepted > len(logs) {
+		accepted = len(logs)
+	}
+	agentLogMu.Lock()
+	removeUploadedAgentLogsLocked(accepted)
+	pruneAgentLogQueueLocked()
+	agentLogMu.Unlock()
 }
 
 func fatal(format string, args ...any) {

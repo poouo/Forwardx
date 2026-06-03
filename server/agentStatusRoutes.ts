@@ -8,6 +8,7 @@ import {
   getTunnelRuntimeReadyCount,
   recordTunnelRuntimeHostStatus,
 } from "./tunnelRuntimeStatus";
+import { getAgentHostFromRequest } from "./agentAuth";
 
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
@@ -34,14 +35,7 @@ async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -87,14 +81,7 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
 
 agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;

@@ -159,6 +159,12 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
 const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 
+function getTunnelModeDisplay(mode: unknown) {
+  const normalized = String(mode || "").toLowerCase() as TunnelForm["mode"];
+  const label = tunnelModeLabels[normalized] || String(mode || "").toUpperCase();
+  return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
+}
+
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
@@ -719,7 +725,7 @@ function TunnelsContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-chart-2" />
-            {activeCount} / {tunnels?.length ?? 0} 活跃
+            {isLoading || !tunnels ? <Skeleton className="h-3.5 w-14 rounded" /> : `${activeCount} / ${tunnels.length} 活跃`}
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
@@ -792,7 +798,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
+                          {getTunnelModeDisplay(tunnel.mode)}
                         </Badge>
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                       </div>
@@ -886,7 +892,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
+                          {getTunnelModeDisplay(tunnel.mode)}
                         </Badge>
                         <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
                       </div>
@@ -985,7 +991,7 @@ function TunnelsContent() {
                       <TableCell className="hidden md:table-cell">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px]">
-                            {tunnelModeLabels[tunnel.mode as TunnelForm["mode"]] || String(tunnel.mode).toUpperCase()}
+                            {getTunnelModeDisplay(tunnel.mode)}
                           </Badge>
                         </div>
                       </TableCell>

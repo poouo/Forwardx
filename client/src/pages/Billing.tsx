@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -48,12 +49,14 @@ function BillingStatCard({
   subtitle,
   icon: Icon,
   tone,
+  loading = false,
 }: {
   title: string;
   value: string | number;
   subtitle?: string;
   icon: ElementType;
   tone: string;
+  loading?: boolean;
 }) {
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
@@ -62,8 +65,16 @@ function BillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
+            {loading ? (
+              <Skeleton className="h-8 w-24 rounded-md" />
+            ) : (
+              <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+            )}
+            {loading && subtitle ? (
+              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
+            ) : (
+              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
             <Icon className="h-5 w-5 text-white" />
@@ -80,12 +91,14 @@ function BillingToggleCard({
   onCheckedChange,
   icon: Icon,
   tone,
+  loading = false,
 }: {
   title: string;
   enabled: boolean;
   onCheckedChange: (checked: boolean) => void;
   icon: ElementType;
   tone: string;
+  loading?: boolean;
 }) {
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
@@ -94,11 +107,15 @@ function BillingToggleCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="break-words text-2xl font-bold tracking-tight">{enabled ? "已开启" : "已关闭"}</p>
+            {loading ? (
+              <Skeleton className="h-8 w-24 rounded-md" />
+            ) : (
+              <p className="break-words text-2xl font-bold tracking-tight">{enabled ? "已开启" : "已关闭"}</p>
+            )}
             <p className="break-words text-xs text-muted-foreground/80">入口状态</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Switch checked={enabled} onCheckedChange={onCheckedChange} />
+            <Switch checked={enabled} onCheckedChange={onCheckedChange} disabled={loading} />
             <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
               <Icon className="h-5 w-5 text-white" />
             </div>
@@ -168,7 +185,7 @@ function MobileInfoRow({
 
 export default function Billing() {
   const utils = trpc.useUtils();
-  const { data: users = [] } = trpc.users.list.useQuery();
+  const { data: users = [], isLoading: usersLoading } = trpc.users.list.useQuery();
   const { data: plans = [] } = trpc.plans.list.useQuery();
   const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery({ limit: 100 });
   const [ledgerUserId, setLedgerUserId] = useState("all");
@@ -178,7 +195,7 @@ export default function Billing() {
   });
   const { data: redemptionCodes = [], isLoading: redemptionCodesLoading } = trpc.billing.listRedemptionCodes.useQuery();
   const { data: discountCodes = [], isLoading: discountCodesLoading } = trpc.billing.listDiscountCodes.useQuery();
-  const { data: featureStatus } = trpc.billing.featureStatus.useQuery();
+  const { data: featureStatus, isLoading: featureStatusLoading } = trpc.billing.featureStatus.useQuery();
 
   const [redeemType, setRedeemType] = useState<"plan" | "balance">("plan");
   const [redeemCode, setRedeemCode] = useState("");
@@ -403,6 +420,7 @@ export default function Billing() {
             subtitle={`${users.length} 个用户`}
             icon={WalletCards}
             tone="bg-gradient-to-br from-blue-500 to-blue-600"
+            loading={usersLoading}
           />
           <BillingStatCard
             title="可用兑换码"
@@ -410,6 +428,7 @@ export default function Billing() {
             subtitle="未使用且已启用"
             icon={Gift}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
+            loading={redemptionCodesLoading}
           />
           <BillingStatCard
             title="生效折扣码"
@@ -417,6 +436,7 @@ export default function Billing() {
             subtitle="当前可抵扣"
             icon={TicketPercent}
             tone="bg-gradient-to-br from-violet-500 to-violet-600"
+            loading={discountCodesLoading}
           />
           <BillingToggleCard
             title="用户兑换入口"
@@ -424,6 +444,7 @@ export default function Billing() {
             onCheckedChange={(redemptionEnabled) => setFeatureStatus.mutate({ redemptionEnabled })}
             icon={Gift}
             tone="bg-gradient-to-br from-amber-500 to-amber-600"
+            loading={featureStatusLoading}
           />
           <BillingToggleCard
             title="购买折扣入口"
@@ -431,6 +452,7 @@ export default function Billing() {
             onCheckedChange={(discountEnabled) => setFeatureStatus.mutate({ discountEnabled })}
             icon={TicketPercent}
             tone="bg-gradient-to-br from-rose-500 to-rose-600"
+            loading={featureStatusLoading}
           />
         </div>
 

@@ -190,7 +190,11 @@ function UserStatCard({
             ) : (
               <p className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl">{value}</p>
             )}
-            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
+            {loading && subtitle ? (
+              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
+            ) : (
+              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
             <Icon className="h-5 w-5 text-white" />
@@ -928,11 +932,11 @@ function UsersContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:gap-3">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <ShieldCheck className="h-3 w-3 text-amber-400" />
-            {adminCount} 管理员
+            {isLoading || !users ? <Skeleton className="h-3.5 w-12 rounded" /> : `${adminCount} 管理员`}
           </Badge>
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <UsersIcon className="h-3 w-3 text-primary" />
-            {users?.length ?? 0} 用户
+            {isLoading || !users ? <Skeleton className="h-3.5 w-12 rounded" /> : `${users.length} 用户`}
           </Badge>
           <Button size="sm" className="col-span-2 sm:col-span-1" onClick={() => setShowCreateUser(true)}>
             <Plus className="h-4 w-4 mr-1" />
@@ -987,7 +991,9 @@ function UsersContent() {
           <TabsTrigger value="subscriptions" className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
             <Package className="h-3.5 w-3.5" />
             用户订阅管理
-            {activeSubscriptionCount > 0 && (
+            {subscriptionsLoading ? (
+              <Skeleton className="ml-0.5 h-4 w-6 rounded-full" />
+            ) : activeSubscriptionCount > 0 && (
               <span className="ml-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{activeSubscriptionCount}</span>
             )}
           </TabsTrigger>

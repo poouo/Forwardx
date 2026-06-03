@@ -13,6 +13,7 @@ import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { appendAgentLog } from "./agentLogStore";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
+import { getAgentHostFromRequest } from "./agentAuth";
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -46,14 +47,7 @@ function trafficAccountingHostId(rule: any, tunnel: any | null) {
 export function registerAgentReportRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -88,14 +82,7 @@ agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Re
 
 agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -122,14 +109,7 @@ agentRouter.post("/api/agent/looking-glass-progress", async (req: Request, res: 
 
 agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -160,14 +140,7 @@ agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response)
 
 agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -270,14 +243,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 // Agent TCPing 上报接口
 agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -371,13 +337,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
 
 agentRouter.post("/api/agent/logs", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;

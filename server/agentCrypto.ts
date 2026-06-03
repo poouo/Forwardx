@@ -15,14 +15,17 @@
  *
  *   防重放：服务器对比 ts，超过 ±5 分钟拒绝
  *   关联消息：HMAC 把 iv/ct/ts 都覆盖，篡改任一字段即失败
- *   标识方式：HTTP 头 X-Agent-Encrypted: 1
  */
 import crypto from "crypto";
 
 const KEY_SALT_ENC = "forwardx-agent-v1";
 const KEY_SALT_MAC = "forwardx-agent-mac";
+const KEY_SALT_AUTH = "forwardx-agent-auth";
+const KEY_SALT_AUTH_ID = "forwardx-agent-auth-id";
 const IV_LEN = 16;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const seenEnvelopeMacs = new Map<string, number>();
+const seenAuthProofs = new Map<string, number>();
 
 function deriveEncKey(token: string): Buffer {
   return crypto.createHash("sha256").update(`${token}|${KEY_SALT_ENC}`).digest();
@@ -30,6 +33,10 @@ function deriveEncKey(token: string): Buffer {
 
 function deriveMacKey(token: string): Buffer {
   return crypto.createHash("sha256").update(`${token}|${KEY_SALT_MAC}`).digest();
+}
+
+function deriveAuthKey(token: string): Buffer {
+  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH}`).digest();
 }
 
 export interface EncryptedEnvelope {
@@ -49,6 +56,94 @@ export function isEncryptedEnvelope(body: any): body is EncryptedEnvelope {
     typeof body.mac === "string" &&
     typeof body.ts === "number"
   );
+}
+
+export function agentTokenFingerprint(token: string): string {
+  return crypto.createHash("sha256").update(`${token}|${KEY_SALT_AUTH_ID}`).digest("hex").slice(0, 32);
+}
+
+function cleanupReplayCache(cache: Map<string, number>) {
+  const now = Date.now();
+  for (const [key, expiresAt] of cache) {
+    if (expiresAt <= now) cache.delete(key);
+  }
+}
+
+function rememberOnce(cache: Map<string, number>, key: string, errorMessage: string) {
+  cleanupReplayCache(cache);
+  if (cache.has(key)) throw new Error(errorMessage);
+  cache.set(key, Date.now() + REPLAY_WINDOW_MS);
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  try {
+    const left = Buffer.from(a, "hex");
+    const right = Buffer.from(b, "hex");
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+function authInput(method: string, path: string, bodyText: string, ts: number, nonce: string): string {
+  const bodyHash = crypto.createHash("sha256").update(bodyText || "", "utf8").digest("hex");
+  return ["v1", method.toUpperCase(), path, String(ts), nonce, bodyHash].join("\n");
+}
+
+export function signAgentAuthProof(input: {
+  token: string;
+  method: string;
+  path: string;
+  bodyText?: string;
+  ts: number;
+  nonce: string;
+}): string {
+  return crypto
+    .createHmac("sha256", deriveAuthKey(input.token))
+    .update(authInput(input.method, input.path, input.bodyText || "", input.ts, input.nonce))
+    .digest("hex");
+}
+
+export function parseAgentAuthProof(raw: string | undefined | null) {
+  const value = String(raw || "").trim();
+  const match = /^v1\.([a-f0-9]{32})\.(\d{10,})\.([a-f0-9]{16,64})\.([a-f0-9]{64})$/i.exec(value);
+  if (!match) return null;
+  return {
+    fingerprint: match[1].toLowerCase(),
+    ts: Number(match[2]),
+    nonce: match[3].toLowerCase(),
+    sig: match[4].toLowerCase(),
+  };
+}
+
+export function rememberEncryptedEnvelope(envelope: EncryptedEnvelope) {
+  rememberOnce(seenEnvelopeMacs, envelope.mac, "Encrypted request replay detected");
+}
+
+export function verifyAgentAuthProof(input: {
+  raw: string;
+  candidateTokens: string[];
+  method: string;
+  path: string;
+  bodyText?: string;
+}): string | null {
+  const proof = parseAgentAuthProof(input.raw);
+  if (!proof || !Number.isFinite(proof.ts)) return null;
+  if (Math.abs(Date.now() - proof.ts) > REPLAY_WINDOW_MS) return null;
+
+  const token = input.candidateTokens.find((item) => agentTokenFingerprint(item) === proof.fingerprint);
+  if (!token) return null;
+  const expected = signAgentAuthProof({
+    token,
+    method: input.method,
+    path: input.path,
+    bodyText: input.bodyText || "",
+    ts: proof.ts,
+    nonce: proof.nonce,
+  });
+  if (!timingSafeEqualHex(expected, proof.sig)) return null;
+  rememberOnce(seenAuthProofs, `${proof.fingerprint}:${proof.ts}:${proof.nonce}:${proof.sig}`, "Agent auth replay detected");
+  return token;
 }
 
 function macInput(iv: Buffer, ct: Buffer, ts: number): Buffer {
@@ -78,7 +173,7 @@ export function encryptPayload(payload: any, token: string): EncryptedEnvelope {
 }
 
 /** 解密信封；解密失败抛错 */
-export function decryptPayload(envelope: EncryptedEnvelope, token: string): any {
+export function decryptPayload(envelope: EncryptedEnvelope, token: string, options: { rememberReplay?: boolean } = {}): any {
   const keyEnc = deriveEncKey(token);
   const keyMac = deriveMacKey(token);
   const iv = Buffer.from(envelope.iv, "hex");
@@ -94,8 +189,26 @@ export function decryptPayload(envelope: EncryptedEnvelope, token: string): any 
   if (macExpected.length !== macReceived.length || !crypto.timingSafeEqual(macExpected, macReceived)) {
     throw new Error("MAC verification failed");
   }
+  if (options.rememberReplay !== false) {
+    rememberOnce(seenEnvelopeMacs, envelope.mac, "Encrypted request replay detected");
+  }
 
   const decipher = crypto.createDecipheriv("aes-256-ctr", keyEnc, iv);
   const plaintext = Buffer.concat([decipher.update(ct), decipher.final()]);
   return JSON.parse(plaintext.toString("utf8"));
+}
+
+export function decryptPayloadWithCandidates(envelope: EncryptedEnvelope, tokens: string[]) {
+  let lastError: Error | null = null;
+  for (const token of tokens) {
+    try {
+      return {
+        token,
+        payload: decryptPayload(envelope, token, { rememberReplay: false }),
+      };
+    } catch (error: any) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  throw lastError || new Error("No token candidates available");
 }

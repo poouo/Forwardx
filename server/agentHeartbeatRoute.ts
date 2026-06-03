@@ -17,10 +17,13 @@ import { isIP } from "net";
 import { resolve4 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
+import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 
 // DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
 const resolvedIpCache = new Map<number, string>();
 const tunnelRouteLogCache = new Map<string, string>();
+const lastGostIdleCleanupByHost = new Map<number, number>();
+const GOST_IDLE_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
 function parseFailoverTargets(raw: unknown) {
   if (!raw || typeof raw !== "string") return [];
@@ -50,14 +53,8 @@ async function resolveTargetIp(raw: string): Promise<string> {
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const token = getResolvedAgentToken(req);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       const migratedTo = await db.getSetting("migratedToPanelUrl");
       if (migratedTo) {
@@ -684,6 +681,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `systemctl restart ${gostServiceName}.service || { systemctl status ${gostServiceName}.service --no-pager -l; journalctl -u ${gostServiceName}.service -n 80 --no-pager; exit 1; }`,
         );
       } else {
+        cmds.push(`systemctl disable ${gostServiceName}.service 2>/dev/null || true`);
         cmds.push(`systemctl stop ${gostServiceName}.service 2>/dev/null || true`);
       }
       return cmds;
@@ -786,13 +784,40 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           `systemctl restart forwardx-tunnels.service || { systemctl status forwardx-tunnels.service --no-pager -l; journalctl -u forwardx-tunnels.service -n 80 --no-pager; exit 1; }`,
         );
       } else {
+        cmds.push(`systemctl disable forwardx-tunnels.service 2>/dev/null || true`);
         cmds.push(`systemctl stop forwardx-tunnels.service 2>/dev/null || true`);
       }
       cmds.push(...countingCmds);
       return cmds;
     };
 
+    const ensureGostIdleStopped = async () => {
+      if (gostServiceConfig.length > 0) return;
+      const tunnelReloadCmds = await buildTunnelReloadCmds();
+      const hasTunnelServices = tunnelReloadCmds.some((cmd) => cmd.includes("[gost-config] forwardx-tunnels services=") && !cmd.includes("services=0"));
+      if (hasTunnelServices) return;
+      const last = lastGostIdleCleanupByHost.get(host.id) || 0;
+      if (Date.now() - last < GOST_IDLE_CLEANUP_INTERVAL_MS) return;
+      lastGostIdleCleanupByHost.set(host.id, Date.now());
+      actions.push({
+        statusType: "runtime",
+        ruleId: 0,
+        tunnelId: 0,
+        op: "remove",
+        forwardType: "gost-idle-cleanup",
+        sourcePort: 0,
+        protocol: "tcp",
+        commands: [
+          `systemctl disable ${gostServiceName}.service forwardx-tunnels.service 2>/dev/null || true`,
+          `systemctl stop ${gostServiceName}.service forwardx-tunnels.service 2>/dev/null || true`,
+          `echo "[gost-config] idle cleanup: no active gost services"`,
+        ],
+      });
+    };
+
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
+    await ensureGostIdleStopped();
+
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
       if (tunnel && !isForwardXTunnel(tunnel) && tunnel.exitHostId === host.id && rule.tunnelExitPort) {
@@ -1664,6 +1689,48 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           sourcePort: 0,
           targetIp: meta.targetIp,
           targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "tunnel-hop") {
+        selfTests.push({
+          testId: t.id,
+          kind: "tunnel-hop",
+          tunnelId: meta.tunnelId,
+          ruleId: 0,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "forward-via-tunnel") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-via-tunnel",
+          tunnelId: meta.tunnelId,
+          ruleId: t.ruleId,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: 0,
+          targetIp: meta.targetIp,
+          targetPort: meta.targetPort,
+        });
+        continue;
+      }
+      if (meta?.kind === "forward-via-tunnel-entry") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-via-tunnel-entry",
+          tunnelId: meta.tunnelId,
+          ruleId: t.ruleId,
+          forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: meta.entrySourcePort || 0,
+          targetIp: meta.entryIp,
+          targetPort: meta.entrySourcePort,
         });
         continue;
       }

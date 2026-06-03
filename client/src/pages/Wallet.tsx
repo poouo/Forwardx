@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, CreditCard, Gift, Package, ReceiptText, RefreshCw, WalletCards } from "lucide-react";
@@ -112,7 +113,11 @@ export default function Wallet() {
           <Card>
             <CardHeader>
               <CardDescription>当前余额</CardDescription>
-              <CardTitle className="text-4xl">{money(wallet?.balanceCents)}</CardTitle>
+              {walletLoading ? (
+                <Skeleton className="h-11 w-40 rounded-md" />
+              ) : (
+                <CardTitle className="text-4xl">{money(wallet?.balanceCents)}</CardTitle>
+              )}
             </CardHeader>
           </Card>
 

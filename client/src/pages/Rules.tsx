@@ -21,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -58,6 +59,7 @@ import {
   Layers3,
   LayoutGrid,
   List,
+  Rows3,
 } from "lucide-react";
 import {
   FORWARD_TYPES,
@@ -152,6 +154,7 @@ const ruleTypeDescriptions = {
 
 type RuleViewMode = "card" | "table";
 type RuleCardSize = "standard" | "compact";
+type RuleDisplayMode = RuleCardSize | "table";
 type RulePageSize = 12 | 24 | 36 | 48;
 
 const RULE_VIEW_MODE_STORAGE_KEY = "forwardx.rules.viewMode";
@@ -178,13 +181,21 @@ function storeRuleViewMode(viewMode: RuleViewMode) {
   }
 }
 
+function getDefaultRuleCardSize(): RuleCardSize {
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches) {
+    return "compact";
+  }
+  return "standard";
+}
+
 function getStoredRuleCardSize(): RuleCardSize {
-  if (typeof window === "undefined") return "standard";
+  const fallback = getDefaultRuleCardSize();
+  if (typeof window === "undefined") return fallback;
   try {
     const value = window.localStorage.getItem(RULE_CARD_SIZE_STORAGE_KEY);
-    return value === "compact" ? "compact" : "standard";
+    return value === "compact" || value === "standard" ? value : fallback;
   } catch {
-    return "standard";
+    return fallback;
   }
 }
 
@@ -384,12 +395,12 @@ function RulesContent() {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
-  const { data: wallet } = trpc.billing.me.useQuery(undefined, {
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, {
     enabled: user?.role !== "admin" && secondaryQueriesReady,
     staleTime: 30000,
     refetchOnWindowFocus: false,
   });
-  const { data: trafficBilling } = trpc.trafficBilling.status.useQuery(undefined, {
+  const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery(undefined, {
     enabled: user?.role !== "admin" && secondaryQueriesReady,
     staleTime: 30000,
     refetchOnWindowFocus: false,
@@ -444,6 +455,7 @@ function RulesContent() {
   const hasTrafficBillingBalance = !manuallyPaused && !!trafficBilling?.enabled && !!trafficBilling?.hasUsableResources && walletBalanceKnown && Number(wallet?.balanceCents || 0) > 0;
   // 权限检查：管理员、有 canAddRules 权限，或本地已确认流量计费余额可用
   const canAdd = user?.role === "admin" || user?.canAddRules === true || hasTrafficBillingBalance;
+  const rulePermissionLoading = user?.role !== "admin" && user?.canAddRules !== true && (!secondaryQueriesReady || walletLoading || trafficBillingLoading);
 
   const createMutation = trpc.rules.create.useMutation({
     onSuccess: (data) => {
@@ -1093,6 +1105,8 @@ function RulesContent() {
   }, [trafficSummaryRows]);
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
+  const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady;
+  const trafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!trafficSummary && stableTrafficSummaryRows.length === 0)));
   const activeCount = useMemo(
     () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,
     [filteredRules, isRuleSupported]
@@ -1440,10 +1454,18 @@ function RulesContent() {
     storeRuleViewMode(nextViewMode);
   };
 
-  const handleRuleCardSizeChange = (nextCardSize: RuleCardSize) => {
-    setRuleCardSize(nextCardSize);
-    storeRuleCardSize(nextCardSize);
+  const handleDisplayModeChange = (nextMode: RuleDisplayMode) => {
+    if (nextMode === "table") {
+      handleViewModeChange("table");
+      return;
+    }
+    setViewMode("card");
+    storeRuleViewMode("card");
+    setRuleCardSize(nextMode);
+    storeRuleCardSize(nextMode);
   };
+
+  const displayMode: RuleDisplayMode = viewMode === "table" ? "table" : ruleCardSize;
 
   const handleRulePageSizeChange = (value: string) => {
     const nextPageSize = Number(value) as RulePageSize;
@@ -1609,22 +1631,33 @@ function RulesContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
-            {activeCount} / {filteredRules.length || rules?.length || 0} 活跃
+            {rulesHeaderLoading ? <Skeleton className="h-3.5 w-14 rounded" /> : `${activeCount} / ${filteredRules.length || rules?.length || 0} 活跃`}
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
-              variant={viewMode === "card" ? "secondary" : "ghost"}
+              variant={displayMode === "compact" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("card")}
+              onClick={() => handleDisplayModeChange("compact")}
+              title="精简卡片"
+            >
+              <Rows3 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={displayMode === "standard" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              onClick={() => handleDisplayModeChange("standard")}
+              title="标准卡片"
             >
               <LayoutGrid className="h-4 w-4" />
             </Button>
             <Button
-              variant={viewMode === "table" ? "secondary" : "ghost"}
+              variant={displayMode === "table" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("table")}
+              onClick={() => handleDisplayModeChange("table")}
+              title="列表"
             >
               <List className="h-4 w-4" />
             </Button>
@@ -1633,13 +1666,18 @@ function RulesContent() {
             variant="outline"
             onClick={openCopyDialog}
             className="gap-2"
-            disabled={!canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
-            title={!canAdd ? "需要管理员授权后才能复制规则" : undefined}
+            disabled={rulePermissionLoading || !canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
+            title={!canAdd && !rulePermissionLoading ? "需要管理员授权后才能复制规则" : undefined}
           >
             <ClipboardCopy className="h-4 w-4" />
             复制规则
           </Button>
-          {canAdd ? (
+          {rulePermissionLoading ? (
+            <Button disabled className="col-span-2 gap-2 sm:col-span-1">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              权限加载中
+            </Button>
+          ) : canAdd ? (
             <Button
               onClick={openCreate}
               className="col-span-2 gap-2 sm:col-span-1"
@@ -1658,7 +1696,7 @@ function RulesContent() {
         </div>
       </div>
 
-      {!canAdd && (
+      {!canAdd && !rulePermissionLoading && (
         <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm text-amber-700 dark:text-amber-400">
           <AlertCircle className="h-4 w-4 flex-shrink-0" />
           <span>您暂无添加转发规则的权限，请联系管理员开通</span>
@@ -1736,15 +1774,6 @@ function RulesContent() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={ruleCardSize} onValueChange={(value) => handleRuleCardSizeChange(value as RuleCardSize)}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[140px]">
-              <SelectValue placeholder="卡片大小" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="standard">标准卡片</SelectItem>
-              <SelectItem value="compact">精简卡片</SelectItem>
-            </SelectContent>
-          </Select>
           <Select value={String(rulePageSize)} onValueChange={handleRulePageSizeChange}>
             <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]">
               <SelectValue placeholder="每页数量" />
@@ -1766,7 +1795,11 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 入向</p>
-              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesIn)}</p>
+              {trafficTotalsLoading ? (
+                <Skeleton className="mt-1 h-5 w-16 rounded-md sm:h-7 sm:w-24" />
+              ) : (
+                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesIn)}</p>
+              )}
             </div>
             <ArrowDownToLine className="hidden h-4 w-4 shrink-0 text-chart-2 sm:block sm:h-6 sm:w-6" />
           </CardContent>
@@ -1775,7 +1808,11 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 出向</p>
-              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesOut)}</p>
+              {trafficTotalsLoading ? (
+                <Skeleton className="mt-1 h-5 w-16 rounded-md sm:h-7 sm:w-24" />
+              ) : (
+                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{formatBytes(trafficTotals.bytesOut)}</p>
+              )}
             </div>
             <ArrowUpFromLine className="hidden h-4 w-4 shrink-0 text-chart-4 sm:block sm:h-6 sm:w-6" />
           </CardContent>
@@ -1784,7 +1821,11 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
               <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 连接</p>
-              <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{trafficTotals.connections.toLocaleString()}</p>
+              {trafficTotalsLoading ? (
+                <Skeleton className="mt-1 h-5 w-14 rounded-md sm:h-7 sm:w-20" />
+              ) : (
+                <p className="mt-0.5 truncate text-xs font-semibold sm:mt-1 sm:text-xl">{trafficTotals.connections.toLocaleString()}</p>
+              )}
             </div>
             <Activity className="hidden h-4 w-4 shrink-0 text-chart-3 sm:block sm:h-6 sm:w-6" />
           </CardContent>
