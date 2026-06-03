@@ -97,6 +97,8 @@ function StatCard({
   icon: Icon,
   tone,
   loading,
+  cacheKey,
+  fallbackValue,
   className,
 }: {
   title: string;
