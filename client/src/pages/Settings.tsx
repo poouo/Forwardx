@@ -801,7 +801,7 @@ function SettingsContent() {
                 安装说明
               </CardTitle>
               <CardDescription>
-                面板服务的安装、升级与卸载说明。
+                面板服务与 Agent 主机的部署说明。
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -819,7 +819,7 @@ function SettingsContent() {
               </div>
 
               <div className="space-y-3">
-                <p className="text-sm font-medium">部署流程</p>
+                <p className="text-sm font-medium">面板部署流程</p>
                 <div className="grid gap-3 sm:grid-cols-4">
                   {["选择本地部署或 Docker 部署", "在服务器用 root 权限执行安装命令", "打开面板完成初始化配置", "后续使用升级命令更新面板"].map((step, i) => (
                     <div key={i} className="flex gap-3 items-start">
@@ -830,6 +830,35 @@ function SettingsContent() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-border/30 bg-muted/20 p-4">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm font-medium">Agent 部署流程</p>
+                  <Badge variant="outline" className="w-fit text-[10px]">
+                    脚本从 Token管理 获取
+                  </Badge>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-4">
+                  {[
+                    "在 Token管理 中创建 Agent Token",
+                    "点击对应 Token 的安装命令按钮并复制命令",
+                    "在被控 Linux 主机用 root 权限执行安装命令",
+                    "回到主机管理确认 Agent 在线后创建转发",
+                  ].map((step, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                        {i + 1}
+                      </span>
+                      <span className="text-sm text-muted-foreground">{step}</span>
+                    </div>
+                  ))}
+                </div>
+                <ul className="space-y-1 text-xs text-muted-foreground">
+                  <li>- Agent 安装命令与具体 Token 绑定，安装说明页不展示通用安装脚本。</li>
+                  <li>- 安装、升级、卸载命令都可在 Token管理 中通过对应 Token 的安装命令弹窗获取。</li>
+                  <li>- 一个 Token 建议只用于一台被控主机；Token 泄露后请删除并重新创建。</li>
+                </ul>
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
