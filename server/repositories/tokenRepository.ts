@@ -17,6 +17,17 @@ export async function getAgentTokenByToken(token: string) {
   return r[0];
 }
 
+export async function getAgentAuthTokenCandidates() {
+  const db = await getDb();
+  if (!db) return [];
+  const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
+  const hostRows = await db.select({ token: hosts.agentToken }).from(hosts);
+  return Array.from(new Set([
+    ...tokenRows.map((row) => row.token),
+    ...hostRows.map((row) => row.token),
+  ].map((token) => String(token || "").trim()).filter(Boolean)));
+}
+
 export async function getAgentTokenById(id: number) {
   const db = await getDb();
   if (!db) return undefined;

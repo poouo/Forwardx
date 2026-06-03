@@ -1,18 +1,20 @@
+import { appendJsonLog, clearJsonLogFile, getLogFilePath, pruneJsonLogFile, readRecentJsonLogPageAsync } from "../logFileStore";
+
 export type PanelLogLevel = "log" | "info" | "warn" | "error";
 export type PanelLogFilterLevel = PanelLogLevel | "all";
 
 export type PanelLogEntry = {
-  id: number;
+  id: string | number;
   level: PanelLogLevel;
   message: string;
   createdAt: string;
 };
 
-const MAX_LOGS = 5000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 let nextLogId = 1;
-let logs: PanelLogEntry[] = [];
 let installed = false;
+let lastPruneAt = 0;
+const PANEL_LOG_FILE = getLogFilePath("panel.jsonl");
+const LOG_PRUNE_INTERVAL_MS = 60 * 1000;
 
 function stringifyArg(arg: unknown) {
   if (arg instanceof Error) return arg.stack || arg.message;
@@ -24,26 +26,27 @@ function stringifyArg(arg: unknown) {
   }
 }
 
-function trimLogs() {
-  const cutoff = Date.now() - DAY_MS;
-  logs = logs.filter((entry) => new Date(entry.createdAt).getTime() >= cutoff).slice(-MAX_LOGS);
-}
-
 export function appendPanelLog(level: PanelLogLevel, ...args: unknown[]) {
   const message = args.map(stringifyArg).join(" ").trim();
   if (!message) return;
-  logs.push({
-    id: nextLogId++,
+  appendJsonLog(PANEL_LOG_FILE, {
+    id: `${Date.now()}-${nextLogId++}`,
     level,
     message,
     createdAt: new Date().toISOString(),
   });
-  trimLogs();
+  prunePanelLogsThrottled();
+}
+
+function prunePanelLogsThrottled() {
+  const now = Date.now();
+  if (now - lastPruneAt < LOG_PRUNE_INTERVAL_MS) return;
+  lastPruneAt = now;
+  pruneJsonLogFile(PANEL_LOG_FILE);
 }
 
 export function getPanelLogs() {
-  trimLogs();
-  return logs;
+  return pruneJsonLogFile(PANEL_LOG_FILE) as PanelLogEntry[];
 }
 
 export function getFilteredPanelLogs(level: PanelLogFilterLevel = "all") {
@@ -51,9 +54,26 @@ export function getFilteredPanelLogs(level: PanelLogFilterLevel = "all") {
   return level === "all" ? currentLogs : currentLogs.filter((entry) => entry.level === level);
 }
 
+export async function getPanelLogPage(input: { level?: PanelLogFilterLevel; limit?: number | null; offset?: number | null } = {}) {
+  const page = await readRecentJsonLogPageAsync<PanelLogEntry>(PANEL_LOG_FILE, {
+    level: input.level || "all",
+    limit: input.limit,
+    offset: input.offset,
+  });
+  return {
+    ...page,
+    summary: {
+      all: page.summary.all || 0,
+      log: page.summary.log || 0,
+      info: page.summary.info || 0,
+      warn: page.summary.warn || 0,
+      error: page.summary.error || 0,
+    },
+  };
+}
+
 export function getPanelLogSummary() {
-  trimLogs();
-  return logs.reduce<Record<string, number>>((acc, entry) => {
+  return getPanelLogs().reduce<Record<string, number>>((acc, entry) => {
     acc[entry.level] = (acc[entry.level] || 0) + 1;
     acc.all = (acc.all || 0) + 1;
     return acc;
@@ -61,7 +81,7 @@ export function getPanelLogSummary() {
 }
 
 export function clearPanelLogs() {
-  logs = [];
+  clearJsonLogFile(PANEL_LOG_FILE);
 }
 
 export function formatPanelLogsForExport(level: PanelLogFilterLevel = "all", metadata: Record<string, unknown> = {}) {
@@ -91,6 +111,8 @@ export function formatPanelLogsForExport(level: PanelLogFilterLevel = "all", met
 export function installPanelLogger() {
   if (installed) return;
   installed = true;
+  const retentionTimer = setInterval(() => pruneJsonLogFile(PANEL_LOG_FILE), 60 * 60 * 1000);
+  retentionTimer.unref?.();
   const original = {
     log: console.log.bind(console),
     info: console.info.bind(console),

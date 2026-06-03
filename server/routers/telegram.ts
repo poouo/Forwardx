@@ -40,6 +40,7 @@ async function getTelegramRuntimeSettings() {
     enabled,
     configured: !!token,
     botUsername: settings.telegramBotUsername || "",
+    panelPublicUrl: String(settings.panelPublicUrl || "").trim().replace(/\/+$/, ""),
     polling: ENV.telegramBotPolling,
     tokenSource: envToken ? "env" : dbToken ? "database" : "none",
     tokenMasked: maskToken(token),
@@ -95,6 +96,7 @@ export const telegramRouter = router({
       enabled: settings.enabled,
       configured: settings.configured,
       botUsername: settings.botUsername,
+      panelPublicUrl: settings.panelPublicUrl,
     };
   }),
 

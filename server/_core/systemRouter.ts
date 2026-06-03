@@ -6,8 +6,8 @@ import { spawn } from "child_process";
 import fs from "fs";
 import net from "net";
 import path from "path";
-import { clearPanelLogs, formatPanelLogsForExport, getFilteredPanelLogs, getPanelLogSummary } from "./panelLogger";
-import { clearAgentLogs, getAgentLogSummary, getAgentLogs } from "../agentLogStore";
+import { clearPanelLogs, formatPanelLogsForExport, getPanelLogPage } from "./panelLogger";
+import { clearAgentLogs, getAgentLogPage } from "../agentLogStore";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
@@ -46,6 +46,11 @@ const forwardProtocolSettingsSchema = z.object(
   ) as Record<(typeof FORWARD_TYPES[number] | typeof TUNNEL_PROTOCOLS[number]), z.ZodOptional<z.ZodBoolean>>
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
+const logPageInputSchema = z.object({
+  level: panelLogLevelSchema.default("all"),
+  limit: z.number().int().min(1).max(500).default(200),
+  offset: z.number().int().min(0).default(0),
+});
 const siteTitleSchema = z.string().trim().max(64);
 const brandLogoSchema = z.string().max(90 * 1024);
 
@@ -571,8 +576,10 @@ export const systemRouter = router({
       }
       if (input.agentLogUploadEnabled !== undefined) {
         await db.setSetting("agentLogUploadEnabled", input.agentLogUploadEnabled ? "true" : "false");
-        const hosts = await db.getHosts();
-        for (const host of hosts as any[]) pushAgentRefresh(host.id, "agent-log-upload-setting-updated");
+        if (input.agentLogUploadEnabled) {
+          const hosts = await db.getHosts();
+          for (const host of hosts as any[]) pushAgentRefresh(host.id, "agent-log-upload-enabled");
+        }
         console.info(`[Settings] Agent log upload ${input.agentLogUploadEnabled ? "enabled" : "disabled"}`);
       }
       if (input.email) {
@@ -724,12 +731,15 @@ export const systemRouter = router({
 
   /** 启动后台升级任务。实际命令由 FORWARDX_UPGRADE_COMMAND 提供。 */
   panelLogs: adminProcedure
-    .input(z.object({ level: panelLogLevelSchema.default("all") }).optional())
-    .query(({ input }) => {
-      const level = input?.level || "all";
+    .input(logPageInputSchema.optional())
+    .query(async ({ input }) => {
+      const page = await getPanelLogPage({
+        level: input?.level || "all",
+        limit: input?.limit,
+        offset: input?.offset,
+      });
       return {
-        logs: getFilteredPanelLogs(level),
-        summary: getPanelLogSummary(),
+        ...page,
         checkedAt: new Date().toISOString(),
       };
     }),
@@ -763,10 +773,16 @@ export const systemRouter = router({
     .input(z.object({
       hostId: z.number().nullable().optional(),
       level: panelLogLevelSchema.default("all"),
+      limit: z.number().int().min(1).max(500).default(200),
+      offset: z.number().int().min(0).default(0),
     }).optional())
-    .query(({ input }) => ({
-      logs: getAgentLogs({ hostId: input?.hostId, level: input?.level || "all" }),
-      summary: getAgentLogSummary({ hostId: input?.hostId }),
+    .query(async ({ input }) => ({
+      ...await getAgentLogPage({
+        hostId: input?.hostId,
+        level: input?.level || "all",
+        limit: input?.limit,
+        offset: input?.offset,
+      }),
       checkedAt: new Date().toISOString(),
     })),
 

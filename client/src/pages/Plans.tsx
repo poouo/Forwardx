@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -182,7 +183,7 @@ function payload(form: PlanForm) {
 export default function Plans() {
   const utils = trpc.useUtils();
   const { data: plans = [], isLoading } = trpc.plans.list.useQuery();
-  const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
+  const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
   const { data: hosts = [], isLoading: hostsLoading } = trpc.hosts.listAll.useQuery();
   const { data: tunnels = [], isLoading: tunnelsLoading } = trpc.tunnels.list.useQuery();
   const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery();
@@ -305,8 +306,8 @@ export default function Plans() {
             <CardHeader className="pb-2">
               <CardDescription>商店状态</CardDescription>
               <CardTitle className="flex items-center justify-between">
-                {storeStatus?.enabled ? "已开启" : "已关闭"}
-                <Switch checked={!!storeStatus?.enabled} onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })} />
+                {storeStatusLoading ? <Skeleton className="h-8 w-20 rounded-md" /> : storeStatus?.enabled ? "已开启" : "已关闭"}
+                <Switch checked={!!storeStatus?.enabled} disabled={storeStatusLoading || setStoreEnabled.isPending} onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })} />
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">开启后用户可自助购买。</CardContent>
@@ -314,14 +315,16 @@ export default function Plans() {
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>套餐数量</CardDescription>
-              <CardTitle>{plans.length}</CardTitle>
+              <CardTitle>{isLoading ? <Skeleton className="h-8 w-16 rounded-md" /> : plans.length}</CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">其中 {activePlans} 个处于启用状态。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">
+              {isLoading ? <Skeleton className="h-5 w-36 rounded-md" /> : `其中 ${activePlans} 个处于启用状态。`}
+            </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>订阅记录</CardDescription>
-              <CardTitle>{subscriptions.length}</CardTitle>
+              <CardTitle>{subscriptionsLoading ? <Skeleton className="h-8 w-16 rounded-md" /> : subscriptions.length}</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">包含购买和分配记录。</CardContent>
           </Card>

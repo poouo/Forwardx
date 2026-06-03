@@ -64,7 +64,6 @@ import { App as CapacitorApp } from "@capacitor/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { useLocation } from "wouter";
-import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "./ui/dialog";
@@ -154,14 +153,14 @@ export default function DashboardLayout({
   const { loading, user } = useAuth();
 
   if (loading) {
-    return <DashboardLayoutSkeleton />;
+    return null;
   }
 
   if (!user) {
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
-    return <DashboardLayoutSkeleton />;
+    return null;
   }
 
   return (

@@ -21,11 +21,24 @@ function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-function getTelegramLoginDomainStatus() {
+function getTelegramLoginDomainStatus(panelPublicUrl?: string | null) {
   if (typeof window === "undefined") {
     return { valid: false, message: "正在检测当前访问地址..." };
   }
+  const configuredUrl = String(panelPublicUrl || "").trim();
+  if (!configuredUrl) {
+    return { valid: false, message: "管理员尚未配置面板公开访问域名，暂不能使用 Telegram 快捷登录。" };
+  }
+  let configured: URL;
+  try {
+    configured = new URL(configuredUrl);
+  } catch {
+    return { valid: false, message: "面板公开访问地址配置无效，请联系管理员检查系统设置。" };
+  }
   const { protocol, hostname } = window.location;
+  if (configured.hostname && configured.hostname !== hostname) {
+    return { valid: false, message: "当前访问域名与面板公开访问域名不一致，请使用管理员配置的域名访问。" };
+  }
   const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
   const isIpAddress = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
 
@@ -34,6 +47,9 @@ function getTelegramLoginDomainStatus() {
   }
   if (protocol !== "https:" && !isLocalhost) {
     return { valid: false, message: "请使用 HTTPS 域名访问。" };
+  }
+  if (configured.protocol !== "https:") {
+    return { valid: false, message: "面板公开访问地址需要配置为 HTTPS 域名。" };
   }
   if (isIpAddress) {
     return { valid: false, message: "请使用已配置的域名访问。" };
@@ -355,7 +371,7 @@ export default function Login() {
 
   const telegramBotUsername = telegramLoginStatus?.botUsername?.replace(/^@/, "").trim();
   const showTelegramLogin = mode === "login" && !!telegramLoginStatus?.enabled && !!telegramLoginStatus?.configured;
-  const telegramDomainStatus = getTelegramLoginDomainStatus();
+  const telegramDomainStatus = getTelegramLoginDomainStatus(telegramLoginStatus?.panelPublicUrl);
   const canRenderTelegramWidget = !mobileAuth.isNative && showTelegramLogin && !!telegramBotUsername && telegramDomainStatus.valid;
 
   useEffect(() => {

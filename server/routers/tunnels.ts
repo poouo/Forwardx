@@ -480,6 +480,7 @@ export const tunnelsRouter = router({
               userId: tunnel.userId,
               message: JSON.stringify(payload),
             } as any);
+            pushAgentRefresh(fromHostId, "tunnel-hop-selftest");
             registerTunnelHopTest(batchId, Number(testId));
             queued += 1;
             appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued hop tcping ${hopLabel} target=${nextAddr}:${nextPort}`);
@@ -501,6 +502,7 @@ export const tunnelsRouter = router({
           userId: tunnel.userId,
           message: JSON.stringify(payload),
         } as any);
+        pushAgentRefresh(tunnel.entryHostId, "tunnel-selftest");
         const message = `TUNNEL_LINK_TEST_PENDING ${target}:${targetPort}`;
         await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
         appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued entry-agent TCPing from entryHost=${entry.id} to exit ${target}:${targetPort}`);

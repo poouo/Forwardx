@@ -3,17 +3,12 @@ import * as db from "./db";
 import { parseSelfTestMeta } from "./agentRouteUtils";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { appendPanelLog } from "./_core/panelLogger";
+import { getAgentHostFromRequest } from "./agentAuth";
 
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
@@ -152,13 +147,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
 });
 agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const token = authHeader.substring(7);
-    const host = await db.getHostByAgentToken(token);
+    const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;

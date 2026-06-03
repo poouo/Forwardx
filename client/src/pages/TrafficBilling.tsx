@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -33,12 +34,14 @@ function TrafficBillingStatCard({
   subtitle,
   icon: Icon,
   tone,
+  loading = false,
 }: {
   title: string;
   value: string | number;
   subtitle?: string;
   icon: ElementType;
   tone: string;
+  loading?: boolean;
 }) {
   return (
     <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
@@ -47,8 +50,16 @@ function TrafficBillingStatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
+            {loading ? (
+              <Skeleton className="h-8 w-24 rounded-md" />
+            ) : (
+              <p className="break-words text-2xl font-bold tracking-tight tabular-nums">{value}</p>
+            )}
+            {loading && subtitle ? (
+              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
+            ) : (
+              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
             <Icon className="h-5 w-5 text-white" />
@@ -102,6 +113,7 @@ export default function TrafficBilling() {
   const { data: hosts = [] } = trpc.hosts.listAll.useQuery();
   const { data: tunnels = [] } = trpc.tunnels.listAll.useQuery();
   const { data, isLoading: configsLoading } = trpc.trafficBilling.configs.useQuery();
+  const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
   const { data: records = [], isLoading: recordsLoading } = trpc.trafficBilling.records.useQuery({ limit: 100 });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
@@ -111,8 +123,8 @@ export default function TrafficBilling() {
     if (configForm.resourceType === "host") return `${item.name} #${item.id}`;
     return `${item.name} / ${getTunnelRouteText(item, hosts)} / ${String(item.mode || "").toUpperCase()} #${item.id}`;
   };
-  const totalCharged = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.amountCents || 0), 0), [records]);
-  const totalGb = useMemo(() => records.reduce((sum: number, item: any) => sum + Number(item.billedGb || 0), 0), [records]);
+  const totalCharged = Number(summary?.totalAmountCents || 0);
+  const totalGb = Number(summary?.totalBilledGb || 0);
 
   const setEnabledMutation = trpc.trafficBilling.setEnabled.useMutation({
     onSuccess: () => {
@@ -185,7 +197,11 @@ export default function TrafficBilling() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-3 rounded-lg border border-border/50 bg-card/60 px-3 py-2">
               <span className="text-sm text-muted-foreground">功能开关</span>
-              <Switch checked={!!data?.enabled} disabled={configsLoading || setEnabledMutation.isPending} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+              {configsLoading ? (
+                <Skeleton className="h-6 w-11 rounded-full" />
+              ) : (
+                <Switch checked={!!data?.enabled} disabled={setEnabledMutation.isPending} onCheckedChange={(checked) => setEnabledMutation.mutate({ enabled: checked })} />
+              )}
             </div>
             <Button onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" /> 新增计费项
@@ -200,6 +216,7 @@ export default function TrafficBilling() {
             subtitle="历史扣费合计"
             icon={Coins}
             tone="bg-gradient-to-br from-blue-500 to-blue-600"
+            loading={summaryLoading}
           />
           <TrafficBillingStatCard
             title="已计费流量"
@@ -207,6 +224,7 @@ export default function TrafficBilling() {
             subtitle="扣费记录累计"
             icon={Gauge}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
+            loading={summaryLoading}
           />
           <TrafficBillingStatCard
             title="计费资源"
@@ -214,6 +232,7 @@ export default function TrafficBilling() {
             subtitle="已配置资源"
             icon={ReceiptText}
             tone="bg-gradient-to-br from-violet-500 to-violet-600"
+            loading={configsLoading}
           />
         </div>
 

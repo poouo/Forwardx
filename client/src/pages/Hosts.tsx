@@ -29,6 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -645,7 +646,7 @@ function HostsContent() {
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
-            {onlineCount} / {hosts?.length ?? 0} 在线
+            {isLoading || !hosts ? <Skeleton className="h-3.5 w-14 rounded" /> : `${onlineCount} / ${hosts.length} 在线`}
           </Badge>
           {/* 布局切换按钮 */}
           {updateCount > 0 && (

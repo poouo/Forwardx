@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
@@ -63,7 +64,7 @@ export default function Subscriptions() {
   const utils = trpc.useUtils();
   const [, setLocation] = useLocation();
   const { data: storeStatus } = trpc.plans.storeStatus.useQuery();
-  const { data: wallet } = trpc.billing.me.useQuery();
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
   const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
@@ -161,11 +162,13 @@ export default function Subscriptions() {
   };
 
   const selectedPrice = Number(selected?.addon?.priceCents || 0);
-  const balance = Number(wallet?.balanceCents || 0);
-  const balanceEnough = balance >= selectedPrice;
+  const balanceCents = wallet?.balanceCents == null ? null : Number(wallet.balanceCents);
+  const balanceReady = !walletLoading && balanceCents !== null;
+  const balance = balanceCents ?? 0;
+  const balanceEnough = balanceReady && balance >= selectedPrice;
   const renewingPrice = Number(renewingSub?.priceCents || 0);
   const renewFinalAmountCents = Number(discountPreview?.finalAmountCents ?? renewingPrice);
-  const renewBalanceEnough = balance >= renewFinalAmountCents;
+  const renewBalanceEnough = balanceReady && balance >= renewFinalAmountCents;
 
   return (
     <DashboardLayout>
@@ -359,11 +362,15 @@ export default function Subscriptions() {
                 <button
                   type="button"
                   onClick={() => setPayMode("balance")}
+                  disabled={walletLoading}
                   className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
                     payMode === "balance" ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
                 >
-                  <span className="flex items-center gap-2 font-medium"><WalletCards className="h-4 w-4" /> 余额支付（{money(balance)}）</span>
+                  <span className="flex items-center gap-2 font-medium">
+                    <WalletCards className="h-4 w-4" />
+                    余额支付（{walletLoading ? <span className="inline-block h-4 w-16 animate-pulse rounded bg-muted align-middle" /> : money(balance)}）
+                  </span>
                   {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
                 </button>
                 {paymentMethods.map((method: any) => (
@@ -397,11 +404,11 @@ export default function Subscriptions() {
                   createOrder.isPending ||
                   renewWithBalance.isPending ||
                   (payMode === "gateway" && paymentMethods.length === 0) ||
-                  (payMode === "balance" && !renewBalanceEnough)
+                  (payMode === "balance" && (walletLoading || !renewBalanceEnough))
                 }
               >
                 {(createOrder.isPending || renewWithBalance.isPending) ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {payMode === "balance" ? (renewBalanceEnough ? "余额续费" : "余额不足") : "去支付"}
+                {payMode === "balance" ? (walletLoading ? "余额加载中" : renewBalanceEnough ? "余额续费" : "余额不足") : "去支付"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -425,7 +432,11 @@ export default function Subscriptions() {
               </div>
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <span className="text-muted-foreground">余额</span>
-                <span className={balanceEnough ? "font-medium" : "font-medium text-destructive"}>{money(balance)}</span>
+                {walletLoading ? (
+                  <Skeleton className="h-5 w-20 rounded-md" />
+                ) : (
+                  <span className={balanceEnough ? "font-medium" : "font-medium text-destructive"}>{money(balance)}</span>
+                )}
               </div>
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <span className="text-muted-foreground">有效期</span>
@@ -436,10 +447,10 @@ export default function Subscriptions() {
               <Button variant="outline" onClick={() => setSelected(null)}>取消</Button>
               <Button
                 onClick={() => selected && purchaseAddon.mutate({ addonId: Number(selected.addon.id), subscriptionId: Number(selected.sub.id) })}
-                disabled={!selected || purchaseAddon.isPending || !balanceEnough}
+                disabled={!selected || purchaseAddon.isPending || walletLoading || !balanceEnough}
               >
                 {purchaseAddon.isPending ? <RefreshCw className="forwardx-icon-spin mr-2 h-4 w-4" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {balanceEnough ? "余额购买" : "余额不足"}
+                {walletLoading ? "余额加载中" : balanceEnough ? "余额购买" : "余额不足"}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -4,7 +4,6 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import type { ComponentType } from "react";
 import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
-import AppLoadingScreen from "@/components/AppLoadingScreen";
 import NotFound from "@/pages/NotFound";
 import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
@@ -33,7 +32,7 @@ import TrafficBilling from "./pages/TrafficBilling";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
-  if (loading) return <AppLoadingScreen />;
+  if (loading) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
@@ -47,7 +46,7 @@ function LookingGlassRoute() {
     refetchOnWindowFocus: false,
   });
 
-  if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return <AppLoadingScreen />;
+  if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
   return <LookingGlass />;
@@ -105,7 +104,7 @@ function SetupGate() {
     return <Router />;
   }
 
-  if (setup.isLoading) return <AppLoadingScreen />;
+  if (setup.isLoading) return null;
 
   const ready = !!setup.data?.setupComplete;
   if (!ready && location !== "/setup") return <Redirect to="/setup" />;

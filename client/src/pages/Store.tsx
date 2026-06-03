@@ -48,7 +48,7 @@ export default function Store() {
   const utils = trpc.useUtils();
   const { data: storeStatus, isLoading: storeStatusLoading } = trpc.plans.storeStatus.useQuery();
   const { data: plans = [], isLoading } = trpc.plans.storeList.useQuery();
-  const { data: wallet } = trpc.billing.me.useQuery();
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery();
   const { data: billingFeatures } = trpc.billing.featureStatus.useQuery();
   const { data: paymentMethods = [] } = trpc.payment.availableMethods.useQuery(undefined, {
     enabled: !!storeStatus?.enabled,
@@ -237,11 +237,15 @@ export default function Store() {
                 <button
                   type="button"
                   onClick={() => setPayMode("balance")}
+                  disabled={walletLoading}
                   className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
                     payMode === "balance" ? "border-primary bg-primary/10 text-primary" : "border-border/60 bg-background/60 hover:bg-muted/60"
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-60`}
                 >
-                  <span className="flex items-center gap-2 font-medium"><WalletCards className="h-4 w-4" /> 余额支付（{money(wallet?.balanceCents)}）</span>
+                  <span className="flex items-center gap-2 font-medium">
+                    <WalletCards className="h-4 w-4" />
+                    余额支付（{walletLoading ? <span className="inline-block h-4 w-16 animate-pulse rounded bg-muted align-middle" /> : money(wallet?.balanceCents)}）
+                  </span>
                   {payMode === "balance" && <CheckCircle2 className="h-4 w-4" />}
                 </button>
                 {paymentMethods.map((method: any) => (
@@ -268,9 +272,9 @@ export default function Store() {
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setSelectedPlan(null)}>取消</Button>
-              <Button onClick={confirmBuy} disabled={createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0)}>
+              <Button onClick={confirmBuy} disabled={createOrder.isPending || buyWithBalance.isPending || (payMode === "gateway" && paymentMethods.length === 0) || (payMode === "balance" && walletLoading)}>
                 {(createOrder.isPending || buyWithBalance.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShoppingBag className="mr-2 h-4 w-4" />}
-                {payMode === "balance" ? "余额购买" : "去支付"}
+                {payMode === "balance" ? (walletLoading ? "余额加载中" : "余额购买") : "去支付"}
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -39,7 +39,17 @@ import {
 } from "recharts";
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
-const TRAFFIC_PIE_COLORS = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4", "#84cc16", "#f97316", "#14b8a6", "#ec4899"];
+const TRAFFIC_PIE_COLORS = ["#38bdf8", "#818cf8", "#f472b6", "#34d399", "#facc15", "#fb7185", "#22d3ee", "#a78bfa"];
+const TRAFFIC_PIE_MAX_SEGMENTS = 5;
+const RADIAN = Math.PI / 180;
+
+type TrafficPieDatum = {
+  id: number | string;
+  name: string;
+  value: number;
+  color: string;
+  percent: number;
+};
 
 function formatBytes(bytes: number | string | null | undefined): string {
   const num = Number(bytes);
@@ -108,7 +118,11 @@ function StatCard({
             ) : (
               <p className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl">{value}</p>
             )}
-            {subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>}
+            {loading && subtitle ? (
+              <Skeleton className="h-3 w-24 max-w-full rounded-md" />
+            ) : (
+              subtitle && <p className="break-words text-xs text-muted-foreground/80">{subtitle}</p>
+            )}
           </div>
           <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
             <Icon className="h-5 w-5 text-white" />
@@ -177,9 +191,32 @@ function PieTooltipContent({ active, payload }: any) {
   if (!item) return null;
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
-      <p className="max-w-52 truncate text-xs font-medium">{item.name}</p>
-      <p className="mt-1 text-xs text-muted-foreground tabular-nums">{formatBytes(item.value)}</p>
+      <div className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: item.color }} />
+        <p className="max-w-52 truncate text-xs font-medium">{item.name}</p>
+      </div>
+      <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground tabular-nums">
+        <span>{formatBytes(item.value)}</span>
+        <span>{item.percent}%</span>
+      </div>
     </div>
+  );
+}
+
+function renderPieLabel(props: any) {
+  const { cx, cy, midAngle, outerRadius, name, percent } = props;
+  if (!percent || percent < 4) return null;
+  const radius = outerRadius + 18;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+  const anchor = x > cx ? "start" : "end";
+  const displayName = String(name || "");
+  const label = displayName.length > 8 ? `${displayName.slice(0, 8)}...` : displayName;
+  return (
+    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" className="fill-foreground text-[10px]">
+      <tspan x={x} dy="-0.45em">{label}</tspan>
+      <tspan x={x} dy="1.15em" className="fill-muted-foreground tabular-nums">{percent}%</tspan>
+    </text>
   );
 }
 
@@ -204,7 +241,26 @@ function TrafficPieCard({
   data: Array<{ id: number; name: string; value: number }>;
   loading: boolean;
 }) {
-  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const chartData = useMemo<TrafficPieDatum[]>(() => {
+    const normalized = data
+      .map((item) => ({ ...item, value: Number(item.value) || 0 }))
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value);
+    const visible = normalized.slice(0, TRAFFIC_PIE_MAX_SEGMENTS);
+    const rest = normalized.slice(TRAFFIC_PIE_MAX_SEGMENTS);
+    const merged = rest.length > 0
+      ? [...visible, { id: "other", name: "其他", value: rest.reduce((sum, item) => sum + item.value, 0) }]
+      : visible;
+    const sum = merged.reduce((acc, item) => acc + item.value, 0);
+    return merged.map((item, index) => ({
+      id: item.id,
+      name: item.name,
+      value: item.value,
+      color: TRAFFIC_PIE_COLORS[index % TRAFFIC_PIE_COLORS.length],
+      percent: sum > 0 ? Number(((item.value / sum) * 100).toFixed(1)) : 0,
+    }));
+  }, [data]);
+  const total = chartData.reduce((sum, item) => sum + item.value, 0);
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -220,46 +276,44 @@ function TrafficPieCard({
       <CardContent>
         {loading ? (
           <PieLoading />
-        ) : data.length === 0 || total <= 0 ? (
+        ) : chartData.length === 0 || total <= 0 ? (
           <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">暂无流量数据</div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-[minmax(180px,0.9fr)_minmax(0,1.1fr)] lg:grid-cols-1 xl:grid-cols-[minmax(180px,0.9fr)_minmax(0,1.1fr)]">
-            <div className="h-56 min-w-0">
+          <div className="space-y-3">
+            <div className="h-72 min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={data}
+                    data={chartData}
                     dataKey="value"
                     nameKey="name"
-                    innerRadius="52%"
-                    outerRadius="78%"
-                    paddingAngle={2}
+                    cx="50%"
+                    cy="46%"
+                    innerRadius="46%"
+                    outerRadius="68%"
+                    paddingAngle={3}
                     minAngle={3}
+                    cornerRadius={8}
+                    label={renderPieLabel}
+                    labelLine={{ stroke: "var(--color-muted-foreground)", strokeWidth: 1 }}
                     isAnimationActive
                     animationDuration={700}
                   >
-                    {data.map((item, index) => (
-                      <Cell key={item.id} fill={TRAFFIC_PIE_COLORS[index % TRAFFIC_PIE_COLORS.length]} stroke="var(--color-card)" strokeWidth={2} />
+                    {chartData.map((item) => (
+                      <Cell key={item.id} fill={item.color} stroke="var(--color-card)" strokeWidth={4} />
                     ))}
                   </Pie>
                   <RTooltip content={<PieTooltipContent />} wrapperStyle={{ pointerEvents: "none" }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="min-w-0 space-y-2">
-              {data.map((item, index) => {
-                const percent = total > 0 ? Math.round((item.value / total) * 100) : 0;
-                return (
-                  <div key={item.id} className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/30 px-2.5 py-2">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: TRAFFIC_PIE_COLORS[index % TRAFFIC_PIE_COLORS.length] }} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">{item.name}</p>
-                      <p className="text-[10px] text-muted-foreground tabular-nums">{formatBytes(item.value)}</p>
-                    </div>
-                    <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">{percent}%</span>
-                  </div>
-                );
-              })}
+            <div className="flex flex-wrap justify-center gap-x-3 gap-y-2">
+              {chartData.map((item) => (
+                <div key={item.id} className="flex max-w-full items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <span className="h-2.5 w-3.5 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
+                  <span className="max-w-28 truncate">{item.name}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -272,8 +326,8 @@ function DashboardContent() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: 15000 });
-  const { data: wallet } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
-  const { data: trafficBilling } = trpc.trafficBilling.status.useQuery();
+  const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
+  const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery();
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
   const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
@@ -330,7 +384,7 @@ function DashboardContent() {
       : Math.max(accountTrafficLimit, basePlanTrafficLimit + activeAddonTrafficBytes)
     : 0;
   const trafficPercent = planTrafficLimit > 0 ? Math.min(100, Math.round((trafficUsed / planTrafficLimit) * 100)) : 0;
-  const accountStatusLoading = userTrafficLoading || subscriptionsLoading;
+  const accountStatusLoading = userTrafficLoading || subscriptionsLoading || trafficBillingLoading || (!isAdmin && walletLoading);
   const planExpiresAt = currentUserTraffic ? currentUserTraffic.expiresAt ?? null : activeSubscription?.expiresAt ?? null;
   const expiry = hasActiveSubscription ? getExpiryStatus(planExpiresAt) : { label: "---", tone: "normal" as const };
   const canForward = isAdmin || !!currentUserTraffic?.canAddRules;

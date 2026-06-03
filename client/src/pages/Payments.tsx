@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -187,18 +188,24 @@ function PaymentStatCard({
   value,
   icon: Icon,
   tone = "text-primary",
+  loading = false,
 }: {
   label: string;
   value: string | number;
   icon: React.ElementType;
   tone?: string;
+  loading?: boolean;
 }) {
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md">
       <CardContent className="flex min-h-[82px] items-center justify-between gap-4 p-4 sm:p-5">
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted-foreground">{label}</p>
-          <p className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums">{value}</p>
+          {loading ? (
+            <Skeleton className="mt-1.5 h-7 w-24 rounded-md" />
+          ) : (
+            <p className="mt-1.5 truncate text-2xl font-bold leading-none tracking-tight tabular-nums">{value}</p>
+          )}
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${tone}`} />
       </CardContent>
@@ -254,7 +261,7 @@ function MobileOrderInfoRow({
 export default function Payments() {
   const utils = trpc.useUtils();
   const { data: config, isLoading } = trpc.payment.getConfig.useQuery();
-  const { data: stats } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000 });
+  const { data: stats, isLoading: statsLoading } = trpc.payment.stats.useQuery(undefined, { refetchInterval: 30_000 });
   const { data: orders, isLoading: ordersLoading } = trpc.payment.listOrders.useQuery({ limit: 100 }, { refetchInterval: 30_000 });
   const { data: settings } = trpc.system.getSettings.useQuery();
   const [form, setForm] = useState<PaymentConfigForm>(emptyForm);
@@ -374,24 +381,28 @@ export default function Payments() {
             value={form.enabled ? "已启用" : "未启用"}
             icon={ShieldCheck}
             tone={form.enabled ? "text-emerald-600" : "text-muted-foreground"}
+            loading={isLoading}
           />
           <PaymentStatCard
             label="已支付金额"
             value={formatMoney(stats?.paidAmountCents)}
             icon={WalletCards}
             tone="text-primary"
+            loading={statsLoading}
           />
           <PaymentStatCard
             label="已支付订单"
             value={stats?.paidOrders || 0}
             icon={CheckCircle2}
             tone="text-emerald-600"
+            loading={statsLoading}
           />
           <PaymentStatCard
             label="待支付订单"
             value={stats?.pendingOrders || 0}
             icon={RefreshCw}
             tone="text-amber-600"
+            loading={statsLoading}
           />
         </div>
 
