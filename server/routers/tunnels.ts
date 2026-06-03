@@ -18,7 +18,6 @@ async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], re
   clearTunnelRuntimeStatus(tunnelId);
   const uniqueHostIds = Array.from(new Set(hostIds.map((hostId) => Number(hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
   for (const hostId of uniqueHostIds) {
-    await db.resetAgentRuntimeStateForHost(hostId);
     pushAgentRefresh(hostId, reason);
   }
   appendPanelLog("info", `[Tunnel] refresh runtime tunnel=${tunnelId} reason=${reason} hosts=${uniqueHostIds.join(",") || "-"}`);
@@ -221,11 +220,7 @@ export const tunnelsRouter = router({
           await hopRepo.createTunnelHops(id, hops);
         }
         if (hopHostIds) {
-          clearTunnelRuntimeStatus(id);
-          for (const hostId of hopHostIds) {
-            await db.resetAgentRuntimeStateForHost(hostId);
-            pushAgentRefresh(hostId, "tunnel-created");
-          }
+          await refreshTunnelRuntimeHosts(id, hopHostIds, "tunnel-created");
         } else {
           await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         }
