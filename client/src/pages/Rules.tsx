@@ -1112,6 +1112,7 @@ function RulesContent() {
     ].join("."),
     [filterHost, filterTunnel, filterType, filterUser, user?.id, user?.role],
   );
+  const trafficTotalsLastCacheScope = user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady;
@@ -1814,7 +1815,10 @@ function RulesContent() {
                 value={formatBytes(trafficTotals.bytesIn)}
                 loading={trafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesIn`}
-                fallbackValue="0 B"
+                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesIn`, "rules.traffic.last.bytesIn"]}
+                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesIn`, "rules.traffic.last.bytesIn"]}
+                ignoredCachedValues={["0 B"]}
+                fallbackValue="--"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
@@ -1830,7 +1834,10 @@ function RulesContent() {
                 value={formatBytes(trafficTotals.bytesOut)}
                 loading={trafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.bytesOut`}
-                fallbackValue="0 B"
+                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesOut`, "rules.traffic.last.bytesOut"]}
+                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.bytesOut`, "rules.traffic.last.bytesOut"]}
+                ignoredCachedValues={["0 B"]}
+                fallbackValue="--"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
@@ -1846,7 +1853,10 @@ function RulesContent() {
                 value={trafficTotals.connections.toLocaleString()}
                 loading={trafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.connections`}
-                fallbackValue="0"
+                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.connections`, "rules.traffic.last.connections"]}
+                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.last.connections`, "rules.traffic.last.connections"]}
+                ignoredCachedValues={["0"]}
+                fallbackValue="--"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
             </div>
