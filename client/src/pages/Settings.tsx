@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -1707,26 +1708,31 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
 
   return (
     <div className="space-y-4">
-      {backupSummaryLoading && !backupSummary ? (
-        <DataSectionLoading label="正在加载备份恢复概览" minHeight="min-h-[104px]" />
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          {[
-            { label: "当前用户", value: backupSummary?.userCount ?? 0 },
-            { label: "当前主机", value: backupSummary?.hostCount ?? 0 },
-            { label: "当前规则", value: backupSummary?.ruleCount ?? 0 },
-            { label: "当前隧道", value: backupSummary?.tunnelCount ?? 0 },
-            { label: "转发组", value: backupSummary?.forwardGroupCount ?? 0 },
-          ].map((item) => (
-            <Card key={item.label} className="border-border/40 bg-card/60 backdrop-blur-md">
-              <CardContent className="p-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          { label: "当前用户", value: backupSummary?.userCount },
+          { label: "当前主机", value: backupSummary?.hostCount },
+          { label: "当前规则", value: backupSummary?.ruleCount },
+          { label: "当前隧道", value: backupSummary?.tunnelCount },
+          { label: "转发组", value: backupSummary?.forwardGroupCount },
+        ].map((item) => {
+          const isValueLoading = backupSummaryLoading && !backupSummary;
+          return (
+            <Card key={item.label} disableEnterAnimation className="border-border/40 bg-card/60 backdrop-blur-md">
+              <CardContent className="min-h-[80px] p-4">
                 <p className="text-xs text-muted-foreground">{item.label}</p>
-                <p className="mt-1 text-xl font-semibold">{item.value}</p>
+                <div className="mt-1 flex h-7 items-center">
+                  {isValueLoading ? (
+                    <Skeleton className="h-6 w-12" />
+                  ) : (
+                    <p className="text-xl font-semibold leading-7">{item.value ?? 0}</p>
+                  )}
+                </div>
               </CardContent>
             </Card>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
 
       <Alert>
         <ShieldCheck className="h-4 w-4" />

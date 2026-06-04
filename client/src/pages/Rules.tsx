@@ -1270,34 +1270,66 @@ function RulesContent() {
     return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
 
-  const renderTransfer = (rule: any, compact = false) => (
-    <div className={`flex min-w-0 items-center gap-1.5 font-mono text-xs ${compact ? "flex-wrap" : ""}`}>
-      <button
-        type="button"
-        onClick={() => copyEntryAddress(rule)}
-        className={`group inline-flex min-w-0 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70 ${
-          compact ? "max-w-full" : "max-w-[240px]"
-        }`}
-        title={rule.forwardGroupId ? `复制转发组入口: ${(forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))}:${rule.sourcePort}` : `复制入口地址: ${getRuleEntry(rule)}:${rule.sourcePort}`}
-      >
-        <code className="truncate">
-          {rule.forwardGroupId
-            ? (forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))
-            : (getRuleEntry(rule) || getRuleEntryHostName(rule))}:{rule.sourcePort}
-        </code>
-        <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
-      </button>
-      <ArrowRight className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
-      <code className={`truncate rounded bg-muted/40 px-1.5 py-0.5 ${compact ? "max-w-full" : "max-w-[180px]"}`}>
-        {rule.targetIp}:{rule.targetPort}
-      </code>
-      {rule.failoverEnabled && (
-        <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
-          故障转移 {parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length}
-        </Badge>
-      )}
-    </div>
-  );
+  const renderTransfer = (rule: any, compact = false) => {
+    const entryAddress = `${rule.forwardGroupId
+      ? (forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))
+      : (getRuleEntry(rule) || getRuleEntryHostName(rule))}:${rule.sourcePort}`;
+    const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
+    const entryTitle = rule.forwardGroupId
+      ? `复制转发组入口: ${(forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))}:${rule.sourcePort}`
+      : `复制入口地址: ${getRuleEntry(rule)}:${rule.sourcePort}`;
+    const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
+    const failoverBadge = rule.failoverEnabled ? (
+      <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
+        故障转移 {failoverCount}
+      </Badge>
+    ) : null;
+
+    if (compact) {
+      return (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs">
+          <button
+            type="button"
+            onClick={() => copyEntryAddress(rule)}
+            className="group inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
+            title={entryTitle}
+          >
+            <code className="truncate">{entryAddress}</code>
+            <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+          </button>
+          <ArrowRight className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+          <code className="max-w-full truncate rounded bg-muted/40 px-1.5 py-0.5" title={targetAddress}>
+            {targetAddress}
+          </code>
+          {failoverBadge}
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-w-0 space-y-1 font-mono text-xs">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0 text-[10px] text-muted-foreground">入口</span>
+          <button
+            type="button"
+            onClick={() => copyEntryAddress(rule)}
+            className="group inline-flex min-w-0 flex-1 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
+            title={entryTitle}
+          >
+            <code className="min-w-0 break-all leading-4">{entryAddress}</code>
+            <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+          </button>
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0 text-[10px] text-muted-foreground">出口</span>
+          <code className="min-w-0 flex-1 break-all rounded bg-muted/40 px-1.5 py-0.5 leading-4" title={targetAddress}>
+            {targetAddress}
+          </code>
+          {failoverBadge}
+        </div>
+      </div>
+    );
+  };
 
   const renderRouteBadge = (rule: any) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
