@@ -2,19 +2,32 @@ import { Button } from "@/components/ui/button";
 import { createHomepageDocument } from "@/lib/homepageHtml";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
 import { Link } from "wouter";
 
 export default function HomepagePreview() {
   const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const mode = params.get("mode") || "saved";
+  const previewId = params.get("id") || "";
+  const [draftHtml] = useState(() => {
+    if (mode !== "draft" || typeof window === "undefined") return "";
+    const previewKey = previewId ? `forwardx.homepage.preview.${previewId}` : "";
+    try {
+      const html = (previewKey ? window.localStorage.getItem(previewKey) : "")
+        || window.sessionStorage.getItem("forwardx.homepage.preview")
+        || "";
+      if (previewKey) window.localStorage.removeItem(previewKey);
+      return html;
+    } catch {
+      return window.sessionStorage.getItem("forwardx.homepage.preview") || "";
+    }
+  });
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery(undefined, {
     refetchOnWindowFocus: false,
     retry: false,
   });
 
-  let html = mode === "draft" && typeof window !== "undefined"
-    ? window.sessionStorage.getItem("forwardx.homepage.preview") || ""
-    : settings?.homepageHtml || "";
+  let html = mode === "draft" ? draftHtml : settings?.homepageHtml || "";
   if (!html.trim()) {
     html = "<main style=\"min-height:100vh;display:grid;place-items:center;font-family:system-ui,sans-serif;color:#64748b;\"><div>暂无自定义首页内容</div></main>";
   }

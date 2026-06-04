@@ -2502,8 +2502,17 @@ function SystemInfoSection() {
   };
 
   const handlePreviewHomepage = () => {
-    window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
-    window.open("/homepage-preview?mode=draft", "_blank", "noopener,noreferrer");
+    const previewId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const previewKey = `forwardx.homepage.preview.${previewId}`;
+    try {
+      window.localStorage.setItem(previewKey, homepageHtml);
+      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
+    } catch {
+      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
+    }
+    window.open(`/homepage-preview?mode=draft&id=${encodeURIComponent(previewId)}`, "_blank", "noopener,noreferrer");
   };
 
   const handleUseHomepageTemplate = () => {
