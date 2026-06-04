@@ -1718,7 +1718,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
         ].map((item) => {
           const isValueLoading = backupSummaryLoading && !backupSummary;
           return (
-            <Card key={item.label} disableEnterAnimation className="border-border/40 bg-card/60 backdrop-blur-md">
+            <Card key={item.label} className="border-border/40 bg-card/60 backdrop-blur-md">
               <CardContent className="min-h-[80px] p-4">
                 <p className="text-xs text-muted-foreground">{item.label}</p>
                 <div className="mt-1 flex h-7 items-center">
