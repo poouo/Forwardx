@@ -15,7 +15,6 @@ import {
   CheckCircle2,
   Clock3,
   Copy,
-  ExternalLink,
   Gauge,
   Globe2,
   Loader2,
@@ -551,12 +550,6 @@ export default function LookingGlass() {
               从已添加的 Agent 主机发起 Ping、Traceroute、MTR、TCPing，或临时启动 iperf3 服务端进行直连测试。
             </p>
           </div>
-          <Button variant="outline" className="w-full gap-2 sm:w-auto" asChild>
-            <a href="https://github.com/hybula/lookingglass" target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="h-4 w-4" />
-              hybula/lookingglass
-            </a>
-          </Button>
         </div>
 
         <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-900 dark:text-sky-200">
