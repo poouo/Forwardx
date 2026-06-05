@@ -104,7 +104,56 @@ const adminMenuItems: SidebarNavItem[] = [
 ];
 
 const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
+const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
+
+type PanelUpgradeSession = { targetVersion: string; startedAt: number };
+
+function normalizePanelVersion(version: string | null | undefined) {
+  return String(version || "").trim().replace(/^v/i, "");
+}
+
+function comparePanelVersions(a: string | null | undefined, b: string | null | undefined) {
+  const pa = normalizePanelVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const pb = normalizePanelVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+function clearPanelUpgradeSession() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(PANEL_UPGRADE_SESSION_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readPanelUpgradeSession(): PanelUpgradeSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(PANEL_UPGRADE_SESSION_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    const startedAt = Number(value?.startedAt);
+    if (!value?.targetVersion || !Number.isFinite(startedAt)) {
+      clearPanelUpgradeSession();
+      return null;
+    }
+    if (Date.now() - startedAt > PANEL_UPGRADE_SESSION_TTL_MS) {
+      clearPanelUpgradeSession();
+      return null;
+    }
+    return { targetVersion: String(value.targetVersion), startedAt };
+  } catch {
+    clearPanelUpgradeSession();
+    return null;
+  }
+}
 
 function getLayoutUpgradeProgress(job: any) {
   const status = job?.status || "idle";
@@ -244,18 +293,7 @@ function DashboardLayoutContent({
   const upgradeRefreshIntervalRef = useRef<number | null>(null);
   const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
   const [upgradeRefreshCountdown, setUpgradeRefreshCountdown] = useState<number | null>(null);
-  const [backgroundUpgrade, setBackgroundUpgrade] = useState<{ targetVersion: string; startedAt: number } | null>(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      const raw = window.sessionStorage.getItem(PANEL_UPGRADE_SESSION_KEY);
-      if (!raw) return null;
-      const value = JSON.parse(raw);
-      if (!value?.targetVersion || !value?.startedAt) return null;
-      return value;
-    } catch {
-      return null;
-    }
-  });
+  const [backgroundUpgrade, setBackgroundUpgrade] = useState<PanelUpgradeSession | null>(() => readPanelUpgradeSession());
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
   const [telegramBindTick, setTelegramBindTick] = useState(Date.now());
   const [showTwoFactorDialog, setShowTwoFactorDialog] = useState(false);
@@ -295,11 +333,7 @@ function DashboardLayoutContent({
 
   const scheduleUpgradeRefresh = useCallback(() => {
     if (upgradeRefreshTimerRef.current !== null) return;
-    try {
-      window.sessionStorage.removeItem(PANEL_UPGRADE_SESSION_KEY);
-    } catch {
-      // Ignore storage failures.
-    }
+    clearPanelUpgradeSession();
     setUpgradeRefreshScheduled(true);
     setUpgradeRefreshCountdown(PANEL_UPGRADE_REFRESH_DELAY_SECONDS);
     upgradeRefreshIntervalRef.current = window.setInterval(() => {
@@ -362,12 +396,26 @@ function DashboardLayoutContent({
 
   useEffect(() => {
     if (!backgroundUpgrade?.targetVersion || !upgradeStatus?.currentVersion) return;
-    if (upgradeStatus.job?.status === "running" || upgradeStatus.job?.status === "error") return;
-    const currentVersion = String(upgradeStatus.currentVersion).replace(/^v/i, "");
-    const targetVersion = String(backgroundUpgrade.targetVersion).replace(/^v/i, "");
-    if (currentVersion !== targetVersion) return;
+    if (upgradeStatus.job?.status === "running") return;
+
+    if (Date.now() - backgroundUpgrade.startedAt > PANEL_UPGRADE_SESSION_TTL_MS) {
+      clearPanelUpgradeSession();
+      setBackgroundUpgrade(null);
+      return;
+    }
+
+    if (comparePanelVersions(upgradeStatus.currentVersion, backgroundUpgrade.targetVersion) < 0) return;
+
+    clearPanelUpgradeSession();
+    setBackgroundUpgrade(null);
     scheduleUpgradeRefresh();
-  }, [backgroundUpgrade?.targetVersion, scheduleUpgradeRefresh, upgradeStatus?.currentVersion, upgradeStatus?.job?.status]);
+  }, [
+    backgroundUpgrade?.startedAt,
+    backgroundUpgrade?.targetVersion,
+    scheduleUpgradeRefresh,
+    upgradeStatus?.currentVersion,
+    upgradeStatus?.job?.status,
+  ]);
 
   const dismissAnnouncement = trpc.announcements.dismiss.useMutation({
     onSuccess: () => {
