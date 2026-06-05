@@ -441,42 +441,16 @@ function SettingsContent() {
 
   return (
     <div className="space-y-6">
-      <div className="fx-page-hero p-4 sm:p-5">
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-              <Settings2 className="h-3.5 w-3.5" />
-              控制中心
-            </div>
-            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">系统设置</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-              集中管理面板访问、通知、安全、备份、安装与运行日志。
-            </p>
-          </div>
-          <div className="fx-status-grid w-full lg:max-w-2xl">
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">面板版本</p>
-              <p className="mt-1 font-mono text-lg font-semibold">v{systemSettings?.version || "-"}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">后台升级依据 GitHub 版本</p>
-            </div>
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">Agent 版本</p>
-              <p className="mt-1 font-mono text-lg font-semibold">v{systemSettings?.agentVersion || "-"}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">被控机目标版本</p>
-            </div>
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">面板地址</p>
-              <p className="mt-1 truncate font-mono text-sm font-semibold" title={panelUrl}>{panelUrl || "-"}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">Agent 安装命令会使用该地址</p>
-            </div>
-          </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">系统设置</h1>
         </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
         <div className="w-full sm:flex sm:justify-start">
           <div className="w-full sm:w-auto">
-            <TabsList className="fx-command-card grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/35 p-1 sm:inline-flex sm:w-auto sm:flex-wrap">
+            <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto sm:flex-wrap">
               <TabsTrigger value="system" className={settingsTabTriggerClass}>
                 <Settings2 className="h-3.5 w-3.5" />
                 系统配置

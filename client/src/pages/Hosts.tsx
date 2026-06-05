@@ -628,14 +628,9 @@ function HostsContent() {
   };
   const isPending = createMutation.isPending || updateMutation.isPending;
   const onlineCount = useMemo(() => displayHosts.filter((h) => h.isOnline).length, [displayHosts]);
-  const offlineCount = useMemo(() => Math.max(0, displayHosts.length - onlineCount), [displayHosts.length, onlineCount]);
   const updateCount = useMemo(
     () => displayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
     [displayHosts, latestAgentVersion]
-  );
-  const upgradingCount = useMemo(
-    () => displayHosts.filter((h) => h.agentUpgradeRequested && !isAgentUpgradeTimedOut(h)).length,
-    [displayHosts]
   );
   const bulkUpgradeableHosts = useMemo(
     () => displayHosts.filter((h: any) => {
@@ -774,34 +769,6 @@ function HostsContent() {
               添加主机
             </Button>
           )}
-        </div>
-      </div>
-
-      <div className="fx-command-card p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <p className="text-sm font-medium">Agent 运维概览</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              当前目标版本 {latestAgentVersion ? `v${latestAgentVersion}` : "未获取"}，升级任务会在 Agent 心跳时执行。
-            </p>
-          </div>
-          <div className="fx-status-grid min-w-0 flex-1 lg:max-w-3xl">
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">在线主机</p>
-              <p className="mt-1 text-lg font-semibold tabular-nums">{onlineCount}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">{offlineCount > 0 ? `${offlineCount} 台离线` : "运行正常"}</p>
-            </div>
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">待更新 Agent</p>
-              <p className={`mt-1 text-lg font-semibold tabular-nums ${updateCount > 0 ? "text-amber-600" : ""}`}>{updateCount}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">{updateCount > 0 ? "建议批量升级" : "版本一致"}</p>
-            </div>
-            <div className="fx-status-item p-3">
-              <p className="text-xs text-muted-foreground">升级中</p>
-              <p className="mt-1 text-lg font-semibold tabular-nums">{upgradingCount}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">心跳回报后自动更新</p>
-            </div>
-          </div>
         </div>
       </div>
 

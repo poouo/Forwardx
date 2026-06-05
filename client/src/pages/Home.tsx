@@ -10,13 +10,11 @@ import { mobileAuth } from "@/lib/mobileAuth";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
-  AlertTriangle,
   ArrowDownToLine,
   ArrowRightLeft,
   ArrowUpFromLine,
   BarChart3,
   Coins,
-  Download,
   Info,
   Package,
   Server,
@@ -337,57 +335,6 @@ function TrafficPieCard({
   );
 }
 
-function normalizeVersion(version: string | null | undefined) {
-  return String(version || "").trim().replace(/^v/i, "");
-}
-
-function compareVersions(a: string | null | undefined, b: string | null | undefined) {
-  const pa = normalizeVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const pb = normalizeVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-function ConsoleSignal({
-  label,
-  value,
-  caption,
-  icon: Icon,
-  tone,
-}: {
-  label: string;
-  value: string | number;
-  caption: string;
-  icon: React.ElementType;
-  tone: "good" | "info" | "warn" | "neutral";
-}) {
-  const toneClass = {
-    good: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20",
-    info: "bg-sky-500/10 text-sky-600 border-sky-500/20",
-    warn: "bg-amber-500/10 text-amber-600 border-amber-500/20",
-    neutral: "bg-muted/40 text-muted-foreground border-border/50",
-  }[tone];
-
-  return (
-    <div className="fx-status-item p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="mt-1 truncate text-xl font-semibold tabular-nums">{value}</p>
-          <p className="mt-1 truncate text-[11px] text-muted-foreground">{caption}</p>
-        </div>
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${toneClass}`}>
-          <Icon className="h-4 w-4" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function DashboardContent() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -404,15 +351,6 @@ function DashboardContent() {
     { hours: 168, bucketMinutes: 30 },
     { refetchInterval: 30000 },
   );
-  const { data: adminHosts = [] } = trpc.hosts.list.useQuery(undefined, {
-    enabled: isAdmin,
-    refetchInterval: 30000,
-    refetchOnWindowFocus: false,
-  });
-  const { data: systemSettings } = trpc.system.getSettings.useQuery(undefined, {
-    enabled: isAdmin,
-    refetchOnWindowFocus: false,
-  });
 
   const chartData = useMemo(
     () =>
@@ -495,13 +433,6 @@ function DashboardContent() {
 
   const onlineRate = stats?.totalHosts ? Math.round((stats.onlineHosts / stats.totalHosts) * 100) : 0;
   const activeRate = stats?.totalRules ? Math.round((stats.activeRules / stats.totalRules) * 100) : 0;
-  const latestAgentVersion = systemSettings?.agentVersion || "";
-  const agentUpdateCount = isAdmin
-    ? (adminHosts || []).filter((host: any) => host.agentVersion && latestAgentVersion && compareVersions(host.agentVersion, latestAgentVersion) < 0).length
-    : 0;
-  const offlineHosts = Math.max(0, Number(stats?.totalHosts || 0) - Number(stats?.onlineHosts || 0));
-  const totalTraffic = Number(stats?.totalTrafficIn || 0) + Number(stats?.totalTrafficOut || 0);
-  const commandTone = offlineHosts > 0 || agentUpdateCount > 0 ? "warn" : "good";
   const tunnelRuleTrafficData = useMemo(
     () => (trafficBreakdown?.tunnelRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
     [trafficBreakdown?.tunnelRules],
@@ -527,55 +458,6 @@ function DashboardContent() {
           系统在线
         </Badge>
       </div>
-
-      {isAdmin && (
-        <div className="fx-page-hero p-4 sm:p-5">
-          <div className="relative grid gap-4 lg:grid-cols-[1.05fr_1.95fr] lg:items-center">
-            <div className="min-w-0">
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
-                <Activity className="h-3.5 w-3.5" />
-                ForwardX 控制台
-              </div>
-              <h2 className="text-lg font-semibold tracking-tight sm:text-xl">
-                {commandTone === "good" ? "运行状态稳定" : "有项目需要处理"}
-              </h2>
-              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                聚合主机、Agent、规则和流量状态，优先处理离线主机与待升级 Agent。
-              </p>
-            </div>
-            <div className="fx-status-grid">
-              <ConsoleSignal
-                label="主机健康"
-                value={`${onlineRate}%`}
-                caption={offlineHosts > 0 ? `${offlineHosts} 台离线` : "全部在线或暂无主机"}
-                icon={Server}
-                tone={offlineHosts > 0 ? "warn" : "good"}
-              />
-              <ConsoleSignal
-                label="Agent 更新"
-                value={agentUpdateCount}
-                caption={latestAgentVersion ? `最新 v${latestAgentVersion}` : "等待版本信息"}
-                icon={agentUpdateCount > 0 ? AlertTriangle : Download}
-                tone={agentUpdateCount > 0 ? "warn" : "good"}
-              />
-              <ConsoleSignal
-                label="规则运行"
-                value={`${activeRate}%`}
-                caption={`${stats?.activeRules ?? 0} / ${stats?.totalRules ?? 0} 活跃`}
-                icon={Zap}
-                tone={activeRate >= 80 || !stats?.totalRules ? "good" : "info"}
-              />
-              <ConsoleSignal
-                label="累计流量"
-                value={formatBytes(totalTraffic)}
-                caption="入站与出站合计"
-                icon={BarChart3}
-                tone="neutral"
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className={`grid grid-cols-2 gap-3 sm:gap-4 ${isAdmin ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
         {isAdmin && (
