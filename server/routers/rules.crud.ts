@@ -19,10 +19,13 @@ const strictFailoverTargetSchema = z.object({
   targetIp: targetHostSchema,
   targetPort: z.number().int().min(1).max(65535),
 });
+const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
+const MAX_FAILOVER_TARGETS = 10;
 
 const failoverInputShape = {
   failoverEnabled: z.boolean().optional(),
-  failoverTargets: z.array(failoverTargetSchema).max(2).optional(),
+  failoverStrategy: failoverStrategySchema.optional(),
+  failoverTargets: z.array(failoverTargetSchema).max(MAX_FAILOVER_TARGETS).optional(),
   failoverSeconds: z.number().int().min(10).max(3600).optional(),
   recoverSeconds: z.number().int().min(10).max(3600).optional(),
   autoFailback: z.boolean().optional(),
@@ -30,6 +33,7 @@ const failoverInputShape = {
 
 type FailoverInput = {
   failoverEnabled?: boolean;
+  failoverStrategy?: z.infer<typeof failoverStrategySchema>;
   failoverTargets?: Array<{ targetIp?: string; targetPort?: number }>;
   failoverSeconds?: number;
   recoverSeconds?: number;
@@ -44,7 +48,7 @@ function parseFailoverTargets(raw: unknown) {
     return parsed
       .map((target) => ({ targetIp: String(target?.targetIp || "").trim(), targetPort: Number(target?.targetPort) }))
       .filter((target) => target.targetIp && target.targetPort >= 1 && target.targetPort <= 65535)
-      .slice(0, 2);
+      .slice(0, MAX_FAILOVER_TARGETS);
   } catch {
     return [];
   }
@@ -54,7 +58,7 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
   const enabled = !!input.failoverEnabled;
   const targets: Array<{ targetIp: string; targetPort: number }> = [];
   if (enabled && protocol && protocol !== "tcp") {
-    throw new Error("故障转移当前仅支持 TCP 协议");
+    throw new Error("主备模式当前仅支持 TCP 协议");
   }
   if (enabled) {
     for (const target of input.failoverTargets || []) {
@@ -62,24 +66,46 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
       const targetPort = Number(target.targetPort || 0);
       if (!targetIp && !targetPort) continue;
       if (!targetIp || !targetPort) {
-        throw new Error("备用目标需要同时填写地址和端口，完全空白的行可以保留");
+        throw new Error("备用出站需要同时填写地址和端口，完全空白的行可以保留");
       }
       const parsed = strictFailoverTargetSchema.safeParse({ targetIp, targetPort });
-      if (!parsed.success) throw new Error("备用目标地址或端口格式不正确");
+      if (!parsed.success) throw new Error("备用出站地址或端口格式不正确");
       targets.push(parsed.data);
-      if (targets.length >= 2) break;
+      if (targets.length >= MAX_FAILOVER_TARGETS) break;
     }
   }
   if (enabled && targets.length === 0) {
-    throw new Error("开启故障转移后至少需要配置一个备用地址");
+    throw new Error("开启主备模式后至少需要配置一个备用出站");
   }
   return {
     failoverEnabled: enabled,
+    failoverStrategy: input.failoverStrategy || "fallback",
     failoverTargets: enabled ? JSON.stringify(targets) : null,
     failoverSeconds: input.failoverSeconds ?? 60,
     recoverSeconds: input.recoverSeconds ?? 120,
     autoFailback: input.autoFailback ?? true,
   };
+}
+
+export function requireMainBackupAllowed(options: {
+  enabled?: boolean;
+  protocol?: string | null;
+  forwardType?: string | null;
+  tunnelId?: number | null;
+  isTunnelRoute?: boolean;
+  isAdmin: boolean;
+}) {
+  if (!options.enabled) return;
+  if (options.protocol && options.protocol !== "tcp") {
+    throw new Error("主备模式当前仅支持 TCP 协议");
+  }
+  if (options.forwardType !== "gost") {
+    throw new Error("主备模式仅支持 GOST 端口转发、GOST 隧道和自定义加密隧道");
+  }
+  const isTunnelRoute = !!options.isTunnelRoute || Number(options.tunnelId || 0) > 0;
+  if (!options.isAdmin && !isTunnelRoute) {
+    throw new Error("普通用户的普通端口转发不支持主备模式，请使用隧道转发或联系管理员");
+  }
 }
 
 async function requireForwardAccessReady(userId: number, options?: { allowTrafficBillingRecovery?: boolean }) {
@@ -153,7 +179,13 @@ export const crudRulesRouter = router({
         const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort });
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
         const forwardType = (group as any).groupType === "tunnel" ? "gost" : input.forwardType;
-        if (input.failoverEnabled && input.protocol !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
+        requireMainBackupAllowed({
+          enabled: input.failoverEnabled,
+          protocol: input.protocol,
+          forwardType,
+          isTunnelRoute: (group as any).groupType === "tunnel",
+          isAdmin: ctx.user.role === "admin",
+        });
         if (ctx.user.role !== "admin") {
           const allowedRaw = (ctx.user as any).allowedForwardTypes as string | null | undefined;
           if (allowedRaw !== null && allowedRaw !== undefined) {
@@ -188,8 +220,14 @@ export const crudRulesRouter = router({
       }
 
       if (!input.hostId) throw new Error("请选择所属主机");
-      if (input.failoverEnabled && input.protocol !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
       const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
+      requireMainBackupAllowed({
+        enabled: input.failoverEnabled,
+        protocol: input.protocol,
+        forwardType: input.forwardType,
+        tunnelId,
+        isAdmin: ctx.user.role === "admin",
+      });
       let selectedTunnelForRule: any = null;
       let isTrafficBillingRule = false;
       if (tunnelId) {
@@ -348,17 +386,26 @@ export const crudRulesRouter = router({
           excludeTemplateRuleId: rule.id,
         });
         const nextForwardType = (group as any).groupType === "tunnel" ? "gost" : (input.forwardType ?? rule.forwardType);
-        if ((input.failoverEnabled ?? (rule as any).failoverEnabled) && (input.protocol ?? (rule as any).protocol) !== "tcp") throw new Error("故障转移当前仅支持 TCP 协议");
+        const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
+        requireMainBackupAllowed({
+          enabled: nextMainBackupEnabled,
+          protocol: input.protocol ?? (rule as any).protocol,
+          forwardType: nextForwardType,
+          isTunnelRoute: (group as any).groupType === "tunnel",
+          isAdmin: ctx.user.role === "admin",
+        });
         await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: null });
         const data: any = {
           ...input,
           ...(input.failoverEnabled !== undefined ||
+            input.failoverStrategy !== undefined ||
             input.failoverTargets !== undefined ||
             input.failoverSeconds !== undefined ||
             input.recoverSeconds !== undefined ||
             input.autoFailback !== undefined
             ? normalizeFailoverInput({
                 failoverEnabled: input.failoverEnabled ?? (rule as any).failoverEnabled,
+                failoverStrategy: input.failoverStrategy ?? (rule as any).failoverStrategy ?? "fallback",
                 failoverTargets: input.failoverTargets ?? parseFailoverTargets((rule as any).failoverTargets),
                 failoverSeconds: input.failoverSeconds ?? (rule as any).failoverSeconds,
                 recoverSeconds: input.recoverSeconds ?? (rule as any).recoverSeconds,
@@ -379,7 +426,7 @@ export const crudRulesRouter = router({
         };
         delete data.id;
         delete data.hostId;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "failoverEnabled", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -419,9 +466,14 @@ export const crudRulesRouter = router({
         throw new Error("端口转发和隧道转发不能相互切换，请新建规则");
       }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
-      if ((input.failoverEnabled ?? (rule as any).failoverEnabled) && (input.protocol ?? (rule as any).protocol) !== "tcp") {
-        throw new Error("故障转移当前仅支持 TCP 协议");
-      }
+      const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
+      requireMainBackupAllowed({
+        enabled: nextMainBackupEnabled,
+        protocol: input.protocol ?? (rule as any).protocol,
+        forwardType: nextForwardTypeForRule,
+        tunnelId: nextTunnelIdForRule,
+        isAdmin: ctx.user.role === "admin",
+      });
       if (!nextTunnelIdForRule) {
         await requireHostUseAccess(ctx, nextHostIdForRule);
       }
@@ -469,6 +521,7 @@ export const crudRulesRouter = router({
       if (input.targetIp !== undefined) (data as any).targetIp = input.targetIp.trim();
       if (
         input.failoverEnabled !== undefined ||
+        input.failoverStrategy !== undefined ||
         input.failoverTargets !== undefined ||
         input.failoverSeconds !== undefined ||
         input.recoverSeconds !== undefined ||
@@ -476,6 +529,7 @@ export const crudRulesRouter = router({
       ) {
         Object.assign(data as any, normalizeFailoverInput({
           failoverEnabled: input.failoverEnabled ?? (rule as any).failoverEnabled,
+          failoverStrategy: input.failoverStrategy ?? (rule as any).failoverStrategy ?? "fallback",
           failoverTargets: input.failoverTargets ?? parseFailoverTargets((rule as any).failoverTargets),
           failoverSeconds: input.failoverSeconds ?? (rule as any).failoverSeconds,
           recoverSeconds: input.recoverSeconds ?? (rule as any).recoverSeconds,
@@ -534,6 +588,7 @@ export const crudRulesRouter = router({
         "tunnelExitPort",
         "hostId",
         "failoverEnabled",
+        "failoverStrategy",
         "failoverTargets",
         "failoverSeconds",
         "recoverSeconds",
@@ -618,9 +673,16 @@ export const crudRulesRouter = router({
         }
         if (input.isEnabled) {
           const groupId = Number((rule as any).forwardGroupId || 0);
-          await db.validateForwardGroupRuleConfig(groupId, {
+          const group = await db.validateForwardGroupRuleConfig(groupId, {
             sourcePort: rule.sourcePort,
             excludeTemplateRuleId: rule.id,
+          });
+          requireMainBackupAllowed({
+            enabled: (rule as any).failoverEnabled,
+            protocol: (rule as any).protocol,
+            forwardType: (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
+            isTunnelRoute: (group as any).groupType === "tunnel",
+            isAdmin: ctx.user.role === "admin",
           });
           await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);
         } else {
@@ -636,6 +698,13 @@ export const crudRulesRouter = router({
         if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
       }
       if (input.isEnabled) {
+        requireMainBackupAllowed({
+          enabled: (rule as any).failoverEnabled,
+          protocol: (rule as any).protocol,
+          forwardType: (rule as any).forwardType,
+          tunnelId: (rule as any).tunnelId,
+          isAdmin: ctx.user.role === "admin",
+        });
         if (ctx.user.role !== "admin") {
           const activeTunnelId = Number((rule as any).tunnelId || 0);
           const resourceAccess = activeTunnelId

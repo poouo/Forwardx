@@ -15,7 +15,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,7 +33,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.83"
+var Version = "2.2.84"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -146,6 +148,7 @@ type failoverSpec struct {
 	ListenPort      int              `json:"listenPort"`
 	BindAddress     string           `json:"bindAddress"`
 	Protocol        string           `json:"protocol"`
+	Strategy        string           `json:"strategy"`
 	Targets         []failoverTarget `json:"targets"`
 	FailoverSeconds int              `json:"failoverSeconds"`
 	RecoverSeconds  int              `json:"recoverSeconds"`
@@ -2414,8 +2417,11 @@ type failoverProxy struct {
 	spec           failoverSpec
 	signature      string
 	activeIndex    int
-	failureSince   time.Time
-	recoveredSince time.Time
+	roundRobinNext int
+	targetHealth   []bool
+	failureSince   []time.Time
+	recoveredSince []time.Time
+	rng            *mathrand.Rand
 	ln             net.Listener
 	done           chan struct{}
 	mu             sync.RWMutex
@@ -2430,6 +2436,7 @@ func failoverSignature(spec failoverSpec) string {
 		strconv.Itoa(spec.ListenPort),
 		spec.BindAddress,
 		spec.Protocol,
+		spec.Strategy,
 		strconv.Itoa(spec.FailoverSeconds),
 		strconv.Itoa(spec.RecoverSeconds),
 		strconv.FormatBool(spec.AutoFailback),
@@ -2444,6 +2451,12 @@ func normalizeFailoverSpec(spec failoverSpec) failoverSpec {
 	if spec.BindAddress == "" {
 		spec.BindAddress = "127.0.0.1"
 	}
+	switch strings.TrimSpace(spec.Strategy) {
+	case "round_robin", "random", "ip_hash", "fallback":
+		spec.Strategy = strings.TrimSpace(spec.Strategy)
+	default:
+		spec.Strategy = "fallback"
+	}
 	if spec.FailoverSeconds <= 0 {
 		spec.FailoverSeconds = 60
 	}
@@ -2457,7 +2470,7 @@ func normalizeFailoverSpec(spec failoverSpec) failoverSpec {
 			continue
 		}
 		cleaned = append(cleaned, target)
-		if len(cleaned) >= 3 {
+		if len(cleaned) >= 11 {
 			break
 		}
 	}
@@ -2496,15 +2509,25 @@ func startFailoverProxy(ruleID int, sourcePort int, spec failoverSpec, actionMes
 		sourcePort: sourcePort,
 		spec:       spec,
 		signature:  signature,
-		ln:         ln,
-		done:       make(chan struct{}),
+		targetHealth: func() []bool {
+			health := make([]bool, len(spec.Targets))
+			for i := range health {
+				health[i] = true
+			}
+			return health
+		}(),
+		failureSince:   make([]time.Time, len(spec.Targets)),
+		recoveredSince: make([]time.Time, len(spec.Targets)),
+		rng:            mathrand.New(mathrand.NewSource(time.Now().UnixNano() + int64(ruleID*100000+sourcePort))),
+		ln:             ln,
+		done:           make(chan struct{}),
 	}
 	failoverMu.Lock()
 	failoverProxies[id] = p
 	failoverMu.Unlock()
 	go p.healthLoop()
 	go p.acceptLoop()
-	logf("failover proxy started rule=%d source=%d listen=%s targets=%d", ruleID, sourcePort, addr, len(spec.Targets))
+	logf("failover proxy started rule=%d source=%d listen=%s strategy=%s targets=%d", ruleID, sourcePort, addr, spec.Strategy, len(spec.Targets))
 	return true
 }
 
@@ -2526,32 +2549,149 @@ func stopFailoverProxy(ruleID int, sourcePort int) {
 	_ = p.ln.Close()
 }
 
-func (p *failoverProxy) currentTarget() failoverTarget {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	idx := p.activeIndex
-	if idx < 0 || idx >= len(p.spec.Targets) {
-		idx = 0
+func (p *failoverProxy) ensureHealthStateLocked() {
+	n := len(p.spec.Targets)
+	if len(p.targetHealth) != n {
+		p.targetHealth = make([]bool, n)
+		for i := range p.targetHealth {
+			p.targetHealth[i] = true
+		}
 	}
-	return p.spec.Targets[idx]
+	if len(p.failureSince) != n {
+		p.failureSince = make([]time.Time, n)
+	}
+	if len(p.recoveredSince) != n {
+		p.recoveredSince = make([]time.Time, n)
+	}
+	if p.activeIndex < 0 || p.activeIndex >= n {
+		p.activeIndex = 0
+	}
 }
 
-func (p *failoverProxy) setActive(index int, reason string) {
-	if index < 0 || index >= len(p.spec.Targets) {
-		return
+func failoverRemoteIP(conn net.Conn) string {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
 	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err == nil {
+		return host
+	}
+	return conn.RemoteAddr().String()
+}
+
+func failoverHashIndex(key string, count int) int {
+	if count <= 0 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return int(h.Sum32() % uint32(count))
+}
+
+func (p *failoverProxy) candidateIndicesLocked(exclude map[int]bool, healthyOnly bool) []int {
+	indices := make([]int, 0, len(p.spec.Targets))
+	for i := range p.spec.Targets {
+		if exclude != nil && exclude[i] {
+			continue
+		}
+		if healthyOnly && !p.targetHealth[i] {
+			continue
+		}
+		indices = append(indices, i)
+	}
+	return indices
+}
+
+func (p *failoverProxy) pickTarget(client net.Conn, exclude map[int]bool) (failoverTarget, int) {
 	p.mu.Lock()
-	if p.activeIndex == index {
-		p.mu.Unlock()
+	defer p.mu.Unlock()
+	p.ensureHealthStateLocked()
+	if len(p.spec.Targets) == 0 {
+		return failoverTarget{}, -1
+	}
+	candidates := p.candidateIndicesLocked(exclude, true)
+	if len(candidates) == 0 {
+		candidates = p.candidateIndicesLocked(exclude, false)
+	}
+	if len(candidates) == 0 {
+		return failoverTarget{}, -1
+	}
+	index := candidates[0]
+	switch p.spec.Strategy {
+	case "round_robin":
+		index = candidates[p.roundRobinNext%len(candidates)]
+		p.roundRobinNext = (p.roundRobinNext + 1) % 1000000
+	case "random":
+		if p.rng == nil {
+			p.rng = mathrand.New(mathrand.NewSource(time.Now().UnixNano()))
+		}
+		index = candidates[p.rng.Intn(len(candidates))]
+	case "ip_hash":
+		key := failoverRemoteIP(client)
+		if key == "" {
+			key = strconv.Itoa(p.sourcePort)
+		}
+		index = candidates[failoverHashIndex(key, len(candidates))]
+	default:
+		if !p.targetHealth[p.activeIndex] || (exclude != nil && exclude[p.activeIndex]) {
+			index = candidates[0]
+		} else {
+			index = p.activeIndex
+		}
+	}
+	return p.spec.Targets[index], index
+}
+
+func (p *failoverProxy) setActiveLocked(index int, reason string) {
+	if index < 0 || index >= len(p.spec.Targets) || p.activeIndex == index {
 		return
 	}
 	old := p.activeIndex
 	p.activeIndex = index
-	p.failureSince = time.Time{}
-	p.recoveredSince = time.Time{}
 	next := p.spec.Targets[index]
-	p.mu.Unlock()
 	logf("failover switch rule=%d source=%d %d->%d target=%s:%d reason=%s", p.ruleID, p.sourcePort, old, index, next.TargetIP, next.TargetPort, reason)
+}
+
+func (p *failoverProxy) updateFallbackActiveLocked(reason string) {
+	if len(p.spec.Targets) == 0 || p.spec.Strategy != "fallback" {
+		return
+	}
+	p.ensureHealthStateLocked()
+	if p.targetHealth[p.activeIndex] {
+		if !p.spec.AutoFailback {
+			return
+		}
+		for i := 0; i < p.activeIndex; i++ {
+			if p.targetHealth[i] {
+				p.setActiveLocked(i, reason)
+				return
+			}
+		}
+		return
+	}
+	for i := range p.spec.Targets {
+		if p.targetHealth[i] {
+			p.setActiveLocked(i, reason)
+			return
+		}
+	}
+}
+
+func (p *failoverProxy) markTargetFailure(index int, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ensureHealthStateLocked()
+	if index < 0 || index >= len(p.spec.Targets) {
+		return
+	}
+	if p.targetHealth[index] {
+		target := p.spec.Targets[index]
+		p.targetHealth[index] = false
+		p.failureSince[index] = time.Now()
+		p.recoveredSince[index] = time.Time{}
+		logf("failover target unhealthy rule=%d source=%d index=%d target=%s:%d reason=%s", p.ruleID, p.sourcePort, index, target.TargetIP, target.TargetPort, reason)
+	}
+	p.updateFallbackActiveLocked(reason)
 }
 
 func (p *failoverProxy) healthLoop() {
@@ -2570,61 +2710,52 @@ func (p *failoverProxy) healthLoop() {
 func (p *failoverProxy) checkHealth() {
 	now := time.Now()
 	p.mu.RLock()
-	activeIndex := p.activeIndex
-	active := p.spec.Targets[activeIndex]
-	primary := p.spec.Targets[0]
-	failureSince := p.failureSince
-	recoveredSince := p.recoveredSince
+	targets := append([]failoverTarget(nil), p.spec.Targets...)
+	failoverSeconds := p.spec.FailoverSeconds
+	recoverSeconds := p.spec.RecoverSeconds
 	p.mu.RUnlock()
-
-	_, activeOK := tcpLatency(active.TargetIP, active.TargetPort, 2*time.Second)
-	if !activeOK {
-		if failureSince.IsZero() {
-			p.mu.Lock()
-			if p.failureSince.IsZero() {
-				p.failureSince = now
-			}
-			p.mu.Unlock()
-			return
-		}
-		if now.Sub(failureSince) >= time.Duration(p.spec.FailoverSeconds)*time.Second {
-			for i, target := range p.spec.Targets {
-				if i == activeIndex {
-					continue
-				}
-				if _, ok := tcpLatency(target.TargetIP, target.TargetPort, 2*time.Second); ok {
-					p.setActive(i, "active target unreachable")
-					return
-				}
-			}
-		}
+	if len(targets) == 0 {
 		return
 	}
-
+	results := make([]bool, len(targets))
+	for i, target := range targets {
+		_, results[i] = tcpLatency(target.TargetIP, target.TargetPort, 2*time.Second)
+	}
 	p.mu.Lock()
-	p.failureSince = time.Time{}
-	p.mu.Unlock()
-	if activeIndex == 0 || !p.spec.AutoFailback {
-		return
-	}
-	_, primaryOK := tcpLatency(primary.TargetIP, primary.TargetPort, 2*time.Second)
-	if !primaryOK {
-		p.mu.Lock()
-		p.recoveredSince = time.Time{}
-		p.mu.Unlock()
-		return
-	}
-	if recoveredSince.IsZero() {
-		p.mu.Lock()
-		if p.recoveredSince.IsZero() {
-			p.recoveredSince = now
+	defer p.mu.Unlock()
+	p.ensureHealthStateLocked()
+	for i, ok := range results {
+		if i >= len(p.spec.Targets) {
+			break
 		}
-		p.mu.Unlock()
-		return
+		target := p.spec.Targets[i]
+		if ok {
+			p.failureSince[i] = time.Time{}
+			if !p.targetHealth[i] {
+				if p.recoveredSince[i].IsZero() {
+					p.recoveredSince[i] = now
+				} else if now.Sub(p.recoveredSince[i]) >= time.Duration(recoverSeconds)*time.Second {
+					p.targetHealth[i] = true
+					p.recoveredSince[i] = time.Time{}
+					logf("failover target recovered rule=%d source=%d index=%d target=%s:%d", p.ruleID, p.sourcePort, i, target.TargetIP, target.TargetPort)
+				}
+			} else {
+				p.recoveredSince[i] = time.Time{}
+			}
+			continue
+		}
+		p.recoveredSince[i] = time.Time{}
+		if p.targetHealth[i] {
+			if p.failureSince[i].IsZero() {
+				p.failureSince[i] = now
+			} else if now.Sub(p.failureSince[i]) >= time.Duration(failoverSeconds)*time.Second {
+				p.targetHealth[i] = false
+				p.failureSince[i] = time.Time{}
+				logf("failover target unhealthy rule=%d source=%d index=%d target=%s:%d reason=health check", p.ruleID, p.sourcePort, i, target.TargetIP, target.TargetPort)
+			}
+		}
 	}
-	if now.Sub(recoveredSince) >= time.Duration(p.spec.RecoverSeconds)*time.Second {
-		p.setActive(0, "primary recovered")
-	}
+	p.updateFallbackActiveLocked("health check")
 }
 
 func (p *failoverProxy) acceptLoop() {
@@ -2645,12 +2776,36 @@ func (p *failoverProxy) acceptLoop() {
 
 func (p *failoverProxy) handleConn(client net.Conn) {
 	defer client.Close()
-	target := p.currentTarget()
-	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+	var upstream net.Conn
+	var target failoverTarget
+	var index int
+	var err error
+	attempted := map[int]bool{}
+	for {
+		target, index = p.pickTarget(client, attempted)
+		if index < 0 {
+			logf("failover no target available rule=%d source=%d", p.ruleID, p.sourcePort)
+			return
+		}
+		upstream, err = net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+		if err == nil {
+			break
+		}
+		attempted[index] = true
+		p.markTargetFailure(index, "dial failed")
+		if len(attempted) >= len(p.spec.Targets) {
+			break
+		}
+	}
 	if err != nil {
 		p.checkHealth()
-		target = p.currentTarget()
-		upstream, err = net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+		target, index = p.pickTarget(client, attempted)
+		if index >= 0 {
+			upstream, err = net.DialTimeout("tcp", net.JoinHostPort(target.TargetIP, strconv.Itoa(target.TargetPort)), 10*time.Second)
+		} else {
+			logf("failover dial failed rule=%d no target available after trying %d targets: %v", p.ruleID, len(attempted), err)
+			return
+		}
 		if err != nil {
 			logf("failover dial failed rule=%d target=%s:%d: %v", p.ruleID, target.TargetIP, target.TargetPort, err)
 			return

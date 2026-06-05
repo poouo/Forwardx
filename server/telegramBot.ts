@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { requireMainBackupAllowed } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
 import { pushAgentRefresh } from "./agentEvents";
@@ -882,6 +883,18 @@ async function refreshUserForwardEndpoints(userId: number, reason: string) {
 }
 
 async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
+  let group: any = null;
+  if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
+    group = await db.getForwardGroupById(Number((rule as any).forwardGroupId));
+  }
+  requireMainBackupAllowed({
+    enabled: (rule as any).failoverEnabled,
+    protocol: (rule as any).protocol,
+    forwardType: group?.groupType === "tunnel" ? "gost" : (rule as any).forwardType,
+    tunnelId: (rule as any).tunnelId,
+    isTunnelRoute: group?.groupType === "tunnel",
+    isAdmin: user.role === "admin",
+  });
   if (user.role !== "admin") {
     const check = await db.ensureUserForwardAccessReady(Number(user.id));
     if (!check.allowed) throw new Error(check.message || "你的转发权限已停用，无法启用规则");

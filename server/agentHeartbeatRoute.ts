@@ -32,7 +32,7 @@ function parseFailoverTargets(raw: unknown) {
     return parsed
       .map((target) => ({ targetIp: String(target?.targetIp || "").trim(), targetPort: Number(target?.targetPort) }))
       .filter((target) => target.targetIp && target.targetPort >= 1 && target.targetPort <= 65535)
-      .slice(0, 2);
+      .slice(0, 10);
   } catch {
     return [];
   }
@@ -414,6 +414,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const failoverProxyPort = (rule: any) => 41000 + (Number(rule?.id) % 20000);
     const actionFailover = (rule: any, options?: { listenPort?: number; bindAddress?: string }) => {
       if (!rule || !rule.failoverEnabled) return undefined;
+      if (rule.forwardType !== "gost") return undefined;
+      if (!rule.tunnelId) {
+        const owner = gostUserById.get(Number(rule.userId)) as any;
+        if (owner?.role !== "admin") return undefined;
+      }
       if (rule.protocol !== "tcp") return undefined;
       const backupTargets = parseFailoverTargets(rule.failoverTargets);
       if (backupTargets.length === 0) return undefined;
@@ -422,6 +427,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         listenPort: Number(options?.listenPort || rule.sourcePort || 0),
         bindAddress: options?.bindAddress || "127.0.0.1",
         protocol: rule.protocol || "tcp",
+        strategy: ["round_robin", "random", "ip_hash", "fallback"].includes(String(rule.failoverStrategy || ""))
+          ? String(rule.failoverStrategy)
+          : "fallback",
         targets: [
           { targetIp: processTarget(rule), targetPort: Number(rule.targetPort) },
           ...backupTargets,
@@ -434,6 +442,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const failoverTargetAddr = (rule: any) => {
       const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
       return failover ? `127.0.0.1:${failover.listenPort}` : `${processTarget(rule)}:${rule.targetPort}`;
+    };
+    const failoverTargetEndpoint = (rule: any) => {
+      const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
+      return failover
+        ? { targetIp: "127.0.0.1", targetPort: Number(failover.listenPort) }
+        : { targetIp: processTarget(rule), targetPort: Number(rule.targetPort) };
     };
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
@@ -710,9 +724,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const ruleServices = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
-        const targetAddr = hasProtocolPolicy(tunnel)
-          ? `127.0.0.1:${guardListenPort(rule)}`
-          : failoverTargetAddr(rule);
+        const targetAddr = hasProtocolPolicy(tunnel) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -1130,8 +1142,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           protocol: rule.protocol,
           forwardType: runningForwardType,
           failover: (rule as any).tunnelId
-            ? actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" })
-            : actionFailover(rule, { listenPort: Number(rule.sourcePort), bindAddress: "0.0.0.0" }),
+            ? undefined
+            : actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
         });
       }
 
@@ -1145,23 +1157,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && !isTunnelRuntimeHostReady(Number(ruleTunnel.id), Number(host.id));
       if (rule.isEnabled && (!rule.isRunning || shouldRefreshForwardXMultiHopRule)) {
         const cmds: string[] = [];
-        if (rule.failoverEnabled && rule.protocol === "tcp" && !(rule as any).tunnelId) {
-          cmds.push(...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
-          cmds.push(...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
-          cmds.push(...buildRuleAccessLimitCmds(rule));
-          actions.push({
-            ruleId: rule.id,
-            op: "apply",
-            forwardType: rule.forwardType,
-            sourcePort: rule.sourcePort,
-            targetIp: rule.targetIp,
-            targetPort: rule.targetPort,
-            protocol: rule.protocol,
-            networkInterface: hostInterface,
-            commands: cmds,
-            failover: actionFailover(rule, { listenPort: Number(rule.sourcePort), bindAddress: "0.0.0.0" }),
-          });
-        } else if (rule.forwardType === "iptables") {
+        if (rule.forwardType === "iptables") {
           const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
           // 必须先启用内核转发，否则 DNAT 后数据包不会被路由到目标主机
           cmds.push(`sysctl -w net.ipv4.ip_forward=1 >/dev/null`);
@@ -1371,7 +1367,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const tunnelKey = nextHop ? hopKey(tunnelSecretSeed(tunnel), Number(nextHop.seq)) : tunnelSecretSeed(tunnel);
             const rateLimits = userRateLimits(Number(rule.userId));
             const accessLimits = userAccessLimits(Number(rule.userId));
-            const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
+            const mainBackup = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -1393,15 +1389,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 protocol: rule.protocol,
                 exitHost: tunnelExitHost,
                 exitPort: tunnelExitPort,
-                targetIp: failover ? "127.0.0.1" : rule.targetIp,
-                targetPort: failover ? failoverProxyPort(rule) : rule.targetPort,
+                targetIp: mainBackup ? "127.0.0.1" : rule.targetIp,
+                targetPort: mainBackup ? failoverProxyPort(rule) : rule.targetPort,
                 key: tunnelKey,
                 ...rateLimits,
                 ...accessLimits,
                 accessScope: accessScopeForRule(rule),
                 ...tunnelProtocolPolicy(tunnel),
               },
-              failover,
             });
             continue;
           }
@@ -1421,7 +1416,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildRuleAccessLimitCmds(rule),
             ],
-            failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
+            failover: tunnel ? undefined : actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
           });
         }
       } else if (!rule.isEnabled && rule.isRunning) {
@@ -1589,19 +1584,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of tunnelExitRules) {
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
       if (tunnel && hasProtocolPolicy(tunnel)) {
+        const target = failoverTargetEndpoint(rule);
         guardRules.push({
           ruleId: rule.id,
           tunnelId: tunnel.id,
           listenPort: guardListenPort(rule),
-          targetIp: rule.targetIp,
-          targetPort: rule.targetPort,
+          targetIp: target.targetIp,
+          targetPort: target.targetPort,
           policy: tunnelProtocolPolicy(tunnel),
         });
       }
     }
 
     for (const rule of tunnelExitRules) {
-      if (!rule.isEnabled || !rule.isRunning) continue;
+      if (!rule.isEnabled) continue;
       const trafficPort = Number((rule as any).tunnelExitPort) || 0;
       if (!trafficPort) continue;
       addRunningRule({

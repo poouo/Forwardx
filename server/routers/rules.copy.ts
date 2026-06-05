@@ -5,6 +5,7 @@ import { pushAgentRefresh } from "../agentEvents";
 import { requireHostUseAccess, requireRuleAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { FORWARD_TYPES } from "../../shared/forwardTypes";
+import { requireMainBackupAllowed } from "./rules.crud";
 
 const conflictStrategySchema = z.enum(["skip", "auto", "error"]);
 
@@ -50,6 +51,13 @@ export const copyRulesRouter = router({
         if (allowedForwardTypes && !allowedForwardTypes.has(String(rule.forwardType))) {
           throw new Error(`您没有使用 ${rule.forwardType} 转发方式的权限，请联系管理员`);
         }
+        requireMainBackupAllowed({
+          enabled: !!(rule as any).failoverEnabled,
+          protocol: (rule as any).protocol,
+          forwardType: (rule as any).forwardType,
+          tunnelId: null,
+          isAdmin: ctx.user.role === "admin",
+        });
         await requireRuleProtocolEnabled(rule);
         rules.push(rule);
       }
@@ -139,6 +147,7 @@ export const copyRulesRouter = router({
             targetIp: rule.targetIp,
             targetPort: Number(rule.targetPort),
             failoverEnabled: !!(rule as any).failoverEnabled,
+            failoverStrategy: (rule as any).failoverStrategy || "fallback",
             failoverTargets: (rule as any).failoverTargets || null,
             failoverSeconds: Number((rule as any).failoverSeconds || 60),
             recoverSeconds: Number((rule as any).recoverSeconds || 120),
