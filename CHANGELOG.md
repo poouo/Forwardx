@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.110] - 2026-06-06
+
+### Added
+
+- Added administrator-managed descriptions for subscription plans and usage-based billing resources, with store fallback text when descriptions are empty.
+
+### Fixed
+
+- Fixed the usage-based billing resource tab opening the create dialog when administrators only switched to the tab.
+- Fixed subscription plan resource selection to use dropdown-based adding with removable selected resources instead of listing every resource at once.
+
+### Changed
+
+- Lowered the minimum usage-based traffic price to 0.001/GB.
+- Bumped panel version to 2.3.110. Agent/FXP runtime target version remains 2.2.86.
+- Bumped Android APP version to 2.3.40 and updated the APK release pointer to 2.3.110.
+
 ## [2.3.109] - 2026-06-05
 
 ### Added

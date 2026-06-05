@@ -10,14 +10,39 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { Coins, Gauge, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
-import { useEffect, useState, type ElementType, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
 function money(cents?: number | null) {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
+}
+
+const MILLI_CENTS_PER_CENT = 1000;
+const MILLI_CENTS_PER_YUAN = 100000;
+const MIN_PRICE_PER_GB_MILLI_CENTS = 100;
+
+function pricePerGbMilliCents(config: any) {
+  const milliCents = Math.round(Number(config?.pricePerGbMilliCents || 0));
+  if (milliCents > 0) return milliCents;
+  return Math.round(Number(config?.pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT;
+}
+
+function formatPricePerGb(config: any) {
+  const yuan = pricePerGbMilliCents(config) / MILLI_CENTS_PER_YUAN;
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: yuan > 0 && yuan < 0.01 ? 3 : 2,
+    maximumFractionDigits: 3,
+  }).format(yuan);
+}
+
+function formatPriceInput(milliCents: number) {
+  return (milliCents / MILLI_CENTS_PER_YUAN).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function TrafficBillingStatCard({
@@ -97,6 +122,7 @@ type BillingConfigForm = {
   id?: number;
   resourceType: BillingResourceType;
   resourceId: string;
+  description: string;
   price: string;
   multiplier: string;
   enabled: boolean;
@@ -106,6 +132,7 @@ type BillingConfigForm = {
 const defaultBillingConfigForm = (): BillingConfigForm => ({
   resourceType: "host",
   resourceId: "",
+  description: "",
   price: "",
   multiplier: "1",
   enabled: true,
@@ -114,10 +141,14 @@ const defaultBillingConfigForm = (): BillingConfigForm => ({
 
 export default function TrafficBillingConfigManager({
   showHeader = true,
+  showEmbeddedHeader = true,
+  showSummary = true,
   hideCreateButton = false,
   createRequestKey = 0,
 }: {
   showHeader?: boolean;
+  showEmbeddedHeader?: boolean;
+  showSummary?: boolean;
   hideCreateButton?: boolean;
   createRequestKey?: number;
 }) {
@@ -128,6 +159,7 @@ export default function TrafficBillingConfigManager({
   const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
+  const lastCreateRequestKey = useRef(createRequestKey);
 
   const resources = configForm.resourceType === "host" ? hosts : tunnels;
   const resourceLabel = (item: any) => {
@@ -173,7 +205,8 @@ export default function TrafficBillingConfigManager({
   };
 
   useEffect(() => {
-    if (createRequestKey > 0) openCreate();
+    if (createRequestKey > lastCreateRequestKey.current) openCreate();
+    lastCreateRequestKey.current = createRequestKey;
   }, [createRequestKey]);
 
   const openEdit = (config: any) => {
@@ -181,7 +214,8 @@ export default function TrafficBillingConfigManager({
       id: Number(config.id),
       resourceType: config.resourceType === "tunnel" ? "tunnel" : "host",
       resourceId: String(config.resourceId || ""),
-      price: String((Number(config.pricePerGbCents || 0) / 100).toFixed(2)).replace(/\.00$/, ""),
+      description: String(config.description || ""),
+      price: formatPriceInput(pricePerGbMilliCents(config)),
       multiplier: String((Number(config.multiplier || 100) / 100).toFixed(2)).replace(/\.00$/, ""),
       enabled: config.enabled !== false,
       requiresPermission: !!config.requiresPermission,
@@ -191,10 +225,10 @@ export default function TrafficBillingConfigManager({
 
   const handleSave = () => {
     const id = Number(configForm.resourceId);
-    const pricePerGbCents = Math.round(Number(configForm.price || 0) * 100);
+    const pricePerGbMilliCents = Math.round(Number(configForm.price || 0) * MILLI_CENTS_PER_YUAN);
     const multiplierValue = Math.round(Number(configForm.multiplier || 1) * 100);
     if (!id) return toast.error("请选择资源");
-    if (pricePerGbCents <= 0) return toast.error("请输入有效单价");
+    if (pricePerGbMilliCents < MIN_PRICE_PER_GB_MILLI_CENTS) return toast.error("单价最低 0.001/GB");
     if (multiplierValue < 1 || multiplierValue > 3000) return toast.error("倍率必须在 0.01 - 30 之间");
     saveConfig.mutate({
       id: configForm.id,
@@ -202,7 +236,8 @@ export default function TrafficBillingConfigManager({
       resourceId: id,
       enabled: configForm.enabled,
       requiresPermission: configForm.requiresPermission,
-      pricePerGbCents,
+      description: configForm.description.trim() || undefined,
+      pricePerGbMilliCents,
       multiplier: multiplierValue,
     });
   };
@@ -233,7 +268,7 @@ export default function TrafficBillingConfigManager({
         </div>
       )}
 
-      {!showHeader && (
+      {!showHeader && showEmbeddedHeader && (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold tracking-tight">按量计费资源</h2>
@@ -250,38 +285,40 @@ export default function TrafficBillingConfigManager({
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <TrafficBillingStatCard
-          title="累计扣费"
-          value={money(totalCharged)}
-          subtitle="历史扣费合计"
-          icon={Coins}
-          tone="bg-gradient-to-br from-blue-500 to-blue-600"
-          loading={summaryLoading}
-          cacheKey="trafficBilling.totalCharged"
-          fallbackValue={money(0)}
-        />
-        <TrafficBillingStatCard
-          title="已计费流量"
-          value={`${totalGb} GB`}
-          subtitle="扣费记录累计"
-          icon={Gauge}
-          tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
-          loading={summaryLoading}
-          cacheKey="trafficBilling.totalGb"
-          fallbackValue="0 GB"
-        />
-        <TrafficBillingStatCard
-          title="计费资源"
-          value={data?.configs?.length || 0}
-          subtitle="已配置资源"
-          icon={ReceiptText}
-          tone="bg-gradient-to-br from-violet-500 to-violet-600"
-          loading={configsLoading}
-          cacheKey="trafficBilling.configsCount"
-          fallbackValue={0}
-        />
-      </div>
+      {showSummary && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <TrafficBillingStatCard
+            title="累计扣费"
+            value={money(totalCharged)}
+            subtitle="历史扣费合计"
+            icon={Coins}
+            tone="bg-gradient-to-br from-blue-500 to-blue-600"
+            loading={summaryLoading}
+            cacheKey="trafficBilling.totalCharged"
+            fallbackValue={money(0)}
+          />
+          <TrafficBillingStatCard
+            title="已计费流量"
+            value={`${totalGb} GB`}
+            subtitle="扣费记录累计"
+            icon={Gauge}
+            tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
+            loading={summaryLoading}
+            cacheKey="trafficBilling.totalGb"
+            fallbackValue="0 GB"
+          />
+          <TrafficBillingStatCard
+            title="计费资源"
+            value={data?.configs?.length || 0}
+            subtitle="已配置资源"
+            icon={ReceiptText}
+            tone="bg-gradient-to-br from-violet-500 to-violet-600"
+            loading={configsLoading}
+            cacheKey="trafficBilling.configsCount"
+            fallbackValue={0}
+          />
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -312,7 +349,7 @@ export default function TrafficBillingConfigManager({
                     </div>
                     <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
                       <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
-                      <MobileInfoRow label="单价">{money(config.pricePerGbCents)} / GB</MobileInfoRow>
+                      <MobileInfoRow label="单价">{formatPricePerGb(config)} / GB</MobileInfoRow>
                       <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
                       <MobileInfoRow label="权限">
                         <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
@@ -339,7 +376,7 @@ export default function TrafficBillingConfigManager({
                             <span>{config.resourceName}</span>
                           </div>
                         </TableCell>
-                        <TableCell>{money(config.pricePerGbCents)} / GB</TableCell>
+                        <TableCell>{formatPricePerGb(config)} / GB</TableCell>
                         <TableCell>{(Number(config.multiplier || 100) / 100).toFixed(2)}x</TableCell>
                         <TableCell>
                           <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
@@ -393,11 +430,19 @@ export default function TrafficBillingConfigManager({
             </div>
             <div className="space-y-2">
               <Label>单价 / GB</Label>
-              <Input type="number" min={0} step="0.01" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder="例如 0.5" />
+              <Input type="number" min={0.001} step="0.001" value={configForm.price} onChange={(e) => setConfigForm((current) => ({ ...current, price: e.target.value }))} placeholder="例如 0.001" />
             </div>
             <div className="space-y-2">
               <Label>倍率</Label>
               <Input type="number" min={0.01} max={30} step="0.01" value={configForm.multiplier} onChange={(e) => setConfigForm((current) => ({ ...current, multiplier: e.target.value }))} />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <Label>说明</Label>
+              <Textarea
+                value={configForm.description}
+                onChange={(e) => setConfigForm((current) => ({ ...current, description: e.target.value }))}
+                placeholder="留空时商店展示系统默认说明"
+              />
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-muted/20 p-3 sm:col-span-2">
               <div className="min-w-0">

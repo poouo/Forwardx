@@ -300,3 +300,12 @@ GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
 ## Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=poouo/Forwardx&type=Date)](https://www.star-history.com/#poouo/Forwardx&Date)
+
+## V我50喝咖啡
+
+USDT：
+TRON ：`TGCVssNj5v58JPHxPZLLVQXsphQzLqQ3fK`
+
+Solana ：`8XvFdKNmESquSSJqhYepqqPJkWUqtBXn4jgeDjXyhzHU`
+
+BNB Smart Chain ：`0x44543FE6C5569Efe2b0Dc13454D4008378c92fE3`

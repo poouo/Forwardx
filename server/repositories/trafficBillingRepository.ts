@@ -16,6 +16,7 @@ import { getSetting } from "./settingsRepository";
 import { getUserById } from "./userRepository";
 
 const GB_BYTES = 1024 ** 3;
+const MILLI_CENTS_PER_CENT = 1000;
 
 export type TrafficBillingResourceType = "host" | "tunnel";
 
@@ -25,6 +26,16 @@ function normalizeMultiplier(value: number) {
 
 function normalizePrice(value: number) {
   return Math.max(0, Math.round(Number(value) || 0));
+}
+
+function normalizePriceMilliCents(value: number) {
+  return Math.max(0, Math.round(Number(value) || 0));
+}
+
+function configPriceMilliCents(config: any) {
+  const milliCents = normalizePriceMilliCents(Number(config?.pricePerGbMilliCents || 0));
+  if (milliCents > 0) return milliCents;
+  return normalizePrice(Number(config?.pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT;
 }
 
 export async function isTrafficBillingEnabled() {
@@ -43,6 +54,7 @@ export async function listTrafficBillingConfigs() {
   const tunnelNames = new Map(tunnelRows.map((tunnel: any) => [Number(tunnel.id), tunnel.name]));
   return configs.map((config: any) => ({
     ...config,
+    pricePerGbMilliCents: configPriceMilliCents(config),
     resourceName: config.resourceType === "host"
       ? hostNames.get(Number(config.resourceId)) || `主机 #${config.resourceId}`
       : tunnelNames.get(Number(config.resourceId)) || `隧道 #${config.resourceId}`,
@@ -131,12 +143,17 @@ export async function upsertTrafficBillingConfig(data: InsertTrafficBillingConfi
   const id = Number((data as any).id || 0);
   if (resourceType !== "host" && resourceType !== "tunnel") throw new Error("资源类型无效");
   if (resourceId <= 0) throw new Error("资源无效");
+  const pricePerGbMilliCents = normalizePriceMilliCents(
+    Number((data as any).pricePerGbMilliCents || 0) || normalizePrice(Number((data as any).pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT,
+  );
   const payload = {
     resourceType,
     resourceId,
     enabled: !!(data as any).enabled,
     requiresPermission: !!(data as any).requiresPermission,
-    pricePerGbCents: normalizePrice(Number((data as any).pricePerGbCents || 0)),
+    description: String((data as any).description || "").trim() || null,
+    pricePerGbCents: Math.floor(pricePerGbMilliCents / MILLI_CENTS_PER_CENT),
+    pricePerGbMilliCents,
     multiplier: normalizeMultiplier(Number((data as any).multiplier || 100)),
     updatedAt: nowDate(),
   };
@@ -185,7 +202,8 @@ export async function billTrafficUsage(input: {
   if (input.bytes <= 0) return null;
   if (!(await isTrafficBillingEnabled())) return null;
   const config = await findTrafficBillingConfig(input.resourceType, input.resourceId);
-  if (!config || Number(config.pricePerGbCents || 0) <= 0) return null;
+  const pricePerGbMilliCents = configPriceMilliCents(config);
+  if (!config || pricePerGbMilliCents <= 0) return null;
   const db = await getDb();
   if (!db) return null;
   const usageRows = await db.select().from(trafficBillingUsage).where(and(
@@ -199,10 +217,19 @@ export async function billTrafficUsage(input: {
   const previousBilledGb = Number(usage?.billedGb || 0);
   const totalBilledGb = Math.max(1, Math.ceil(totalBytes / GB_BYTES));
   const newlyBilledGb = Math.max(0, totalBilledGb - previousBilledGb);
+  const previousPendingMilliCents = normalizePriceMilliCents(Number(usage?.pendingMilliCents || 0));
+  const multiplier = normalizeMultiplier(Number(config.multiplier || 100));
+  const accruedMilliCents = newlyBilledGb > 0
+    ? Math.round(newlyBilledGb * pricePerGbMilliCents * multiplier / 100)
+    : 0;
+  const pendingAfterAccrual = previousPendingMilliCents + accruedMilliCents;
+  const amountCents = Math.floor(pendingAfterAccrual / MILLI_CENTS_PER_CENT);
+  const pendingMilliCents = pendingAfterAccrual % MILLI_CENTS_PER_CENT;
   if (usage) {
     await db.update(trafficBillingUsage).set({
       totalBytes,
       billedGb: Math.max(previousBilledGb, totalBilledGb),
+      pendingMilliCents,
       updatedAt: nowDate(),
     } as any).where(eq(trafficBillingUsage.id, usage.id));
   } else {
@@ -212,12 +239,12 @@ export async function billTrafficUsage(input: {
       resourceId: input.resourceId,
       totalBytes,
       billedGb: totalBilledGb,
+      pendingMilliCents,
       updatedAt: nowDate(),
     } as any);
   }
   if (newlyBilledGb <= 0) return null;
-  const multiplier = normalizeMultiplier(Number(config.multiplier || 100));
-  const amountCents = Math.max(1, Math.ceil(newlyBilledGb * Number(config.pricePerGbCents || 0) * multiplier / 100));
+  if (amountCents <= 0) return null;
   const user = await getUserById(input.userId);
   if (!user) return null;
   const balanceAfterCents = Number((user as any).balanceCents || 0) - amountCents;
@@ -237,7 +264,8 @@ export async function billTrafficUsage(input: {
     resourceId: input.resourceId,
     bytes: input.bytes,
     billedGb: newlyBilledGb,
-    pricePerGbCents: Number(config.pricePerGbCents || 0),
+    pricePerGbCents: Math.floor(pricePerGbMilliCents / MILLI_CENTS_PER_CENT),
+    pricePerGbMilliCents,
     multiplier,
     amountCents,
     balanceAfterCents,
@@ -263,6 +291,7 @@ export async function listTrafficBillingRecords(options?: { userId?: number; lim
       bytes: trafficBillingRecords.bytes,
       billedGb: trafficBillingRecords.billedGb,
       pricePerGbCents: trafficBillingRecords.pricePerGbCents,
+      pricePerGbMilliCents: trafficBillingRecords.pricePerGbMilliCents,
       multiplier: trafficBillingRecords.multiplier,
       amountCents: trafficBillingRecords.amountCents,
       balanceAfterCents: trafficBillingRecords.balanceAfterCents,
@@ -284,12 +313,12 @@ export async function getTrafficBillingSummary(userId?: number) {
   const totalsQuery = db
     .select({
       totalAmountCents: sql<number>`COALESCE(SUM(${trafficBillingRecords.amountCents}), 0)`,
-      totalBilledGb: sql<number>`COALESCE(SUM(${trafficBillingRecords.billedGb}), 0)`,
     })
     .from(trafficBillingRecords);
   const usageQuery = db
     .select({
       totalBytes: sql<number>`COALESCE(SUM(${trafficBillingUsage.totalBytes}), 0)`,
+      totalBilledGb: sql<number>`COALESCE(SUM(${trafficBillingUsage.billedGb}), 0)`,
     })
     .from(trafficBillingUsage);
   const [rows, usageRows] = await Promise.all([
@@ -299,7 +328,7 @@ export async function getTrafficBillingSummary(userId?: number) {
   return {
     enabled: await isTrafficBillingEnabled(),
     totalAmountCents: Number(rows[0]?.totalAmountCents || 0),
-    totalBilledGb: Number(rows[0]?.totalBilledGb || 0),
+    totalBilledGb: Number(usageRows[0]?.totalBilledGb || 0),
     totalBytes: Number(usageRows[0]?.totalBytes || 0),
     records,
   };

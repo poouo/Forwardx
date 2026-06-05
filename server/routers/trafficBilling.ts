@@ -52,12 +52,14 @@ export const trafficBillingRouter = router({
       resourceId: z.number().int().positive(),
       enabled: z.boolean().default(true),
       requiresPermission: z.boolean().default(false),
-      pricePerGbCents: z.number().int().min(0).max(100_000_000),
+      description: z.string().trim().max(500).optional(),
+      pricePerGbCents: z.number().int().min(0).max(100_000_000).optional(),
+      pricePerGbMilliCents: z.number().int().min(0).max(100_000_000_000).optional(),
       multiplier: z.number().int().min(1).max(3000),
     }))
     .mutation(async ({ input }) => {
       const config = await db.upsertTrafficBillingConfig(input as any);
-      appendPanelLog("info", `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} price=${input.pricePerGbCents} multiplier=${input.multiplier} requiresPermission=${input.requiresPermission}`);
+      appendPanelLog("info", `[TrafficBilling] config saved ${input.resourceType}=${input.resourceId} priceMilli=${input.pricePerGbMilliCents ?? 0} multiplier=${input.multiplier} requiresPermission=${input.requiresPermission}`);
       return config;
     }),
 
