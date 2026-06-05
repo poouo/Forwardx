@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/dist/agent"
+GO_CACHE_ROOT="${GOCACHE:-}"
+GO_HOME_ROOT="${HOME:-}"
+XDG_CACHE_ROOT="${XDG_CACHE_HOME:-}"
 REQUESTED_TAG="${1:-}"
 AGENT_VERSION="$(sed -nE "s/.*AGENT_VERSION[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$ROOT_DIR/shared/versions.ts" | head -n 1)"
 if [ -z "$AGENT_VERSION" ]; then
@@ -15,6 +18,13 @@ if [ -n "$REQUESTED_TAG" ] && [ "${REQUESTED_TAG#v}" != "$VERSION" ]; then
 fi
 
 mkdir -p "$OUT_DIR"
+if [ -z "$GO_CACHE_ROOT" ]; then GO_CACHE_ROOT="$ROOT_DIR/.cache/go-build"; fi
+if [ -z "$GO_HOME_ROOT" ]; then GO_HOME_ROOT="$ROOT_DIR/.cache/home"; fi
+if [ -z "$XDG_CACHE_ROOT" ]; then XDG_CACHE_ROOT="$ROOT_DIR/.cache"; fi
+mkdir -p "$GO_CACHE_ROOT" "$GO_HOME_ROOT" "$XDG_CACHE_ROOT"
+export GOCACHE="$GO_CACHE_ROOT"
+export HOME="$GO_HOME_ROOT"
+export XDG_CACHE_HOME="$XDG_CACHE_ROOT"
 
 build_one() {
   local goarch="$1"
