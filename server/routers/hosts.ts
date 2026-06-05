@@ -232,7 +232,13 @@ export const hostsRouter = router({
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
+        const entryChanged = ["ip", "ipv4", "ipv6", "entryIp"].some((key) =>
+          (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
+        );
         await db.updateHost(id, data as any);
+        if (entryChanged) {
+          await db.syncForwardChainsForHost(id);
+        }
         return { success: true };
       }),
     delete: protectedProcedure

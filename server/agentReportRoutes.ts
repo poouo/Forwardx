@@ -44,6 +44,19 @@ function trafficAccountingHostId(rule: any, tunnel: any | null) {
   return isForwardXTunnel(tunnel) ? Number(tunnel.entryHostId) : Number(tunnel.exitHostId);
 }
 
+async function shouldAccountForwardRuleTraffic(rule: any) {
+  const groupId = Number(rule?.forwardGroupId || 0);
+  const templateId = Number(rule?.forwardGroupRuleId || 0);
+  const memberId = Number(rule?.forwardGroupMemberId || 0);
+  if (!groupId || !templateId || !memberId) return true;
+  const group = await db.getForwardGroupById(groupId) as any;
+  if (String(group?.groupMode || "failover") !== "chain") return true;
+  const members = [...(group.members || [])]
+    .filter((member: any) => !!member.isEnabled)
+    .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
+  return Number(members[0]?.id || 0) === memberId;
+}
+
 export function registerAgentReportRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Response) => {
   try {
@@ -164,6 +177,9 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         continue;
       }
       if ((rule as any).pendingDelete || !(rule as any).isRunning) {
+        continue;
+      }
+      if (!await shouldAccountForwardRuleTraffic(rule)) {
         continue;
       }
       const tunnelId = Number((rule as any).tunnelId || 0);

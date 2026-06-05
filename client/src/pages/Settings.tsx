@@ -122,9 +122,15 @@ const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/m
 const panelLocalCommandPrefix = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s --`;
 const panelDockerCommandPrefix = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s --`;
 const defaultGithubAcceleratorUrl = "https://git.poouo.com";
+type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
+const ddnsProviders: DdnsProvider[] = ["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"];
 
 function normalizeConfigUrl(value: string) {
   return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isDdnsProvider(value: unknown): value is DdnsProvider {
+  return ddnsProviders.includes(value as DdnsProvider);
 }
 
 const panelInstallGuideCommands = [
@@ -334,7 +340,7 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
   URL.revokeObjectURL(url);
 }
 
-const settingsTabs = ["install", "system", "telegram", "email", "backup", "logs"] as const;
+const settingsTabs = ["system", "telegram", "email", "backup", "install", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
@@ -344,7 +350,7 @@ function isSettingsTab(tab: string | null): tab is SettingsTab {
 function getSettingsTab(location: string): SettingsTab {
   const query = location.split("?")[1] || "";
   const tab = new URLSearchParams(query).get("tab");
-  return isSettingsTab(tab) ? tab : "install";
+  return isSettingsTab(tab) ? tab : "system";
 }
 
 function SettingsContent() {
@@ -365,7 +371,7 @@ function SettingsContent() {
   const handleTabChange = (tab: string) => {
     if (!isSettingsTab(tab)) return;
     setActiveTab(tab);
-    setLocation(tab === "install" ? "/settings" : `/settings?tab=${tab}`);
+    setLocation(tab === "system" ? "/settings" : `/settings?tab=${tab}`);
   };
 
   // 面板地址统一使用「系统配置」Tab 中配置的 panelPublicUrl；未配置时回退 window.location.origin
@@ -445,10 +451,6 @@ function SettingsContent() {
         <div className="w-full sm:flex sm:justify-start">
           <div className="w-full sm:w-auto">
             <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto sm:flex-wrap">
-              <TabsTrigger value="install" className={settingsTabTriggerClass}>
-                <Terminal className="h-3.5 w-3.5" />
-                安装说明
-              </TabsTrigger>
               <TabsTrigger value="system" className={settingsTabTriggerClass}>
                 <Settings2 className="h-3.5 w-3.5" />
                 系统配置
@@ -464,6 +466,10 @@ function SettingsContent() {
               <TabsTrigger value="backup" className={settingsTabTriggerClass}>
                 <Database className="h-3.5 w-3.5" />
                 备份恢复
+              </TabsTrigger>
+              <TabsTrigger value="install" className={settingsTabTriggerClass}>
+                <Terminal className="h-3.5 w-3.5" />
+                安装说明
               </TabsTrigger>
               <TabsTrigger value="logs" className={settingsTabTriggerClass}>
                 <FileText className="h-3.5 w-3.5" />
@@ -1748,6 +1754,12 @@ function isValidWebPort(value: string | number) {
   return Number.isFinite(port) && port >= 1 && port <= 65535;
 }
 
+function normalizeTtl(value: string, fallback: number) {
+  const ttl = Math.floor(Number(value));
+  if (!Number.isFinite(ttl)) return fallback;
+  return Math.min(86400, Math.max(60, ttl));
+}
+
 function SystemInfoSection() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
@@ -1772,9 +1784,28 @@ function SystemInfoSection() {
   const [githubAcceleratorUrlInput, setGithubAcceleratorUrlInput] = useState(defaultGithubAcceleratorUrl);
   const [agentPreferPanelInstall, setAgentPreferPanelInstall] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
-  const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
+  const [ddnsProvider, setDdnsProvider] = useState<DdnsProvider>("disabled");
   const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
   const [ddnsCloudflareApiToken, setDdnsCloudflareApiToken] = useState("");
+  const [ddnsHuaweiCloudAccessKeyId, setDdnsHuaweiCloudAccessKeyId] = useState("");
+  const [ddnsHuaweiCloudSecretKey, setDdnsHuaweiCloudSecretKey] = useState("");
+  const [ddnsHuaweiCloudRegion, setDdnsHuaweiCloudRegion] = useState("cn-north-4");
+  const [ddnsHuaweiCloudEndpoint, setDdnsHuaweiCloudEndpoint] = useState("");
+  const [ddnsHuaweiCloudZoneId, setDdnsHuaweiCloudZoneId] = useState("");
+  const [ddnsHuaweiCloudTtl, setDdnsHuaweiCloudTtl] = useState("300");
+  const [ddnsHuaweiCloudLine, setDdnsHuaweiCloudLine] = useState("default_view");
+  const [ddnsAliyunAccessKeyId, setDdnsAliyunAccessKeyId] = useState("");
+  const [ddnsAliyunAccessKeySecret, setDdnsAliyunAccessKeySecret] = useState("");
+  const [ddnsAliyunDomainName, setDdnsAliyunDomainName] = useState("");
+  const [ddnsAliyunEndpoint, setDdnsAliyunEndpoint] = useState("https://alidns.aliyuncs.com");
+  const [ddnsAliyunTtl, setDdnsAliyunTtl] = useState("600");
+  const [ddnsAliyunLine, setDdnsAliyunLine] = useState("default");
+  const [ddnsTencentCloudSecretId, setDdnsTencentCloudSecretId] = useState("");
+  const [ddnsTencentCloudSecretKey, setDdnsTencentCloudSecretKey] = useState("");
+  const [ddnsTencentCloudDomainName, setDdnsTencentCloudDomainName] = useState("");
+  const [ddnsTencentCloudTtl, setDdnsTencentCloudTtl] = useState("600");
+  const [ddnsTencentCloudRecordLine, setDdnsTencentCloudRecordLine] = useState("默认");
+  const [ddnsTencentCloudRecordLineId, setDdnsTencentCloudRecordLineId] = useState("");
   const [ddnsWebhookUrl, setDdnsWebhookUrl] = useState("");
   const [ddnsWebhookMethod, setDdnsWebhookMethod] = useState<"POST" | "PUT" | "GET">("POST");
   const [ddnsWebhookHeaders, setDdnsWebhookHeaders] = useState("");
@@ -1804,8 +1835,24 @@ function SystemInfoSection() {
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
       setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
       setDdnsEnabled(!!settings.ddns?.enabled);
-      setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
+      setDdnsProvider(isDdnsProvider(settings.ddns?.provider) ? settings.ddns.provider : "disabled");
       setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
+      setDdnsHuaweiCloudAccessKeyId(settings.ddns?.huaweicloudAccessKeyId || "");
+      setDdnsHuaweiCloudRegion(settings.ddns?.huaweicloudRegion || "cn-north-4");
+      setDdnsHuaweiCloudEndpoint(settings.ddns?.huaweicloudEndpoint || "");
+      setDdnsHuaweiCloudZoneId(settings.ddns?.huaweicloudZoneId || "");
+      setDdnsHuaweiCloudTtl(String(settings.ddns?.huaweicloudTtl || 300));
+      setDdnsHuaweiCloudLine(settings.ddns?.huaweicloudLine || "default_view");
+      setDdnsAliyunAccessKeyId(settings.ddns?.aliyunAccessKeyId || "");
+      setDdnsAliyunDomainName(settings.ddns?.aliyunDomainName || "");
+      setDdnsAliyunEndpoint(settings.ddns?.aliyunEndpoint || "https://alidns.aliyuncs.com");
+      setDdnsAliyunTtl(String(settings.ddns?.aliyunTtl || 600));
+      setDdnsAliyunLine(settings.ddns?.aliyunLine || "default");
+      setDdnsTencentCloudSecretId(settings.ddns?.tencentcloudSecretId || "");
+      setDdnsTencentCloudDomainName(settings.ddns?.tencentcloudDomainName || "");
+      setDdnsTencentCloudTtl(String(settings.ddns?.tencentcloudTtl || 600));
+      setDdnsTencentCloudRecordLine(settings.ddns?.tencentcloudRecordLine || "默认");
+      setDdnsTencentCloudRecordLineId(settings.ddns?.tencentcloudRecordLineId || "");
       setDdnsWebhookUrl(settings.ddns?.webhookUrl || "");
       setDdnsWebhookMethod((settings.ddns?.webhookMethod === "PUT" || settings.ddns?.webhookMethod === "GET") ? settings.ddns.webhookMethod : "POST");
       setDdnsWebhookHeaders(settings.ddns?.webhookHeaders || "");
@@ -1927,18 +1974,52 @@ function SystemInfoSection() {
   };
 
   const handleSaveDdns = () => {
+    const huaweicloudEndpoint = normalizeConfigUrl(ddnsHuaweiCloudEndpoint);
+    const aliyunEndpoint = normalizeConfigUrl(ddnsAliyunEndpoint);
+    if (huaweicloudEndpoint && !/^https?:\/\//i.test(huaweicloudEndpoint)) {
+      toast.error("华为云 Endpoint 需要以 http:// 或 https:// 开头");
+      return;
+    }
+    if (aliyunEndpoint && !/^https?:\/\//i.test(aliyunEndpoint)) {
+      toast.error("阿里云 Endpoint 需要以 http:// 或 https:// 开头");
+      return;
+    }
     saveSystemSettings("ddns", {
       ddns: {
         enabled: ddnsEnabled,
         provider: ddnsProvider,
         cloudflareZoneId: ddnsCloudflareZoneId,
         cloudflareApiToken: ddnsCloudflareApiToken.trim() || undefined,
+        huaweicloudAccessKeyId: ddnsHuaweiCloudAccessKeyId,
+        huaweicloudSecretKey: ddnsHuaweiCloudSecretKey.trim() || undefined,
+        huaweicloudRegion: ddnsHuaweiCloudRegion,
+        huaweicloudEndpoint,
+        huaweicloudZoneId: ddnsHuaweiCloudZoneId,
+        huaweicloudTtl: normalizeTtl(ddnsHuaweiCloudTtl, 300),
+        huaweicloudLine: ddnsHuaweiCloudLine,
+        aliyunAccessKeyId: ddnsAliyunAccessKeyId,
+        aliyunAccessKeySecret: ddnsAliyunAccessKeySecret.trim() || undefined,
+        aliyunDomainName: ddnsAliyunDomainName,
+        aliyunEndpoint,
+        aliyunTtl: normalizeTtl(ddnsAliyunTtl, 600),
+        aliyunLine: ddnsAliyunLine,
+        tencentcloudSecretId: ddnsTencentCloudSecretId,
+        tencentcloudSecretKey: ddnsTencentCloudSecretKey.trim() || undefined,
+        tencentcloudDomainName: ddnsTencentCloudDomainName,
+        tencentcloudTtl: normalizeTtl(ddnsTencentCloudTtl, 600),
+        tencentcloudRecordLine: ddnsTencentCloudRecordLine,
+        tencentcloudRecordLineId: ddnsTencentCloudRecordLineId,
         webhookUrl: ddnsWebhookUrl,
         webhookMethod: ddnsWebhookMethod,
         webhookHeaders: ddnsWebhookHeaders,
       },
     }, {
-      onSuccess: () => setDdnsCloudflareApiToken(""),
+      onSuccess: () => {
+        setDdnsCloudflareApiToken("");
+        setDdnsHuaweiCloudSecretKey("");
+        setDdnsAliyunAccessKeySecret("");
+        setDdnsTencentCloudSecretKey("");
+      },
     });
   };
 
@@ -2366,6 +2447,9 @@ function SystemInfoSection() {
                   <SelectContent>
                     <SelectItem value="disabled">不使用</SelectItem>
                     <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                    <SelectItem value="huaweicloud">华为云 DNS</SelectItem>
+                    <SelectItem value="aliyun">阿里云 DNS</SelectItem>
+                    <SelectItem value="tencentcloud">腾讯云 DNSPod</SelectItem>
                     <SelectItem value="webhook">自定义 Webhook</SelectItem>
                   </SelectContent>
                 </Select>
@@ -2389,6 +2473,133 @@ function SystemInfoSection() {
                 />
                 <p className="text-xs text-muted-foreground">留空则保留已保存 Token。</p>
               </div>
+            </div>
+          )}
+
+          {ddnsProvider === "huaweicloud" && (
+            <div className="space-y-3">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Access Key ID</Label>
+                  <Input value={ddnsHuaweiCloudAccessKeyId} onChange={(e) => setDdnsHuaweiCloudAccessKeyId(e.target.value)} placeholder="华为云 AK" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Secret Access Key</Label>
+                  <Input
+                    value={ddnsHuaweiCloudSecretKey}
+                    onChange={(e) => setDdnsHuaweiCloudSecretKey(e.target.value)}
+                    placeholder={settings?.ddns?.huaweicloudSecretKeyMasked || "留空保留已保存密钥"}
+                    type="password"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>公网 Zone ID</Label>
+                  <Input value={ddnsHuaweiCloudZoneId} onChange={(e) => setDdnsHuaweiCloudZoneId(e.target.value)} placeholder="公网域名 Zone ID" />
+                </div>
+                <div className="space-y-2">
+                  <Label>区域</Label>
+                  <Input value={ddnsHuaweiCloudRegion} onChange={(e) => setDdnsHuaweiCloudRegion(e.target.value)} placeholder="cn-north-4" />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-3">
+                <div className="space-y-2">
+                  <Label>默认线路</Label>
+                  <Input value={ddnsHuaweiCloudLine} onChange={(e) => setDdnsHuaweiCloudLine(e.target.value)} placeholder="default_view" />
+                </div>
+                <div className="space-y-2">
+                  <Label>TTL</Label>
+                  <Input value={ddnsHuaweiCloudTtl} onChange={(e) => setDdnsHuaweiCloudTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="300" inputMode="numeric" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Endpoint</Label>
+                  <Input value={ddnsHuaweiCloudEndpoint} onChange={(e) => setDdnsHuaweiCloudEndpoint(e.target.value)} placeholder="留空使用区域默认 Endpoint" />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">基础模式使用默认线路；后端已支持按线路 ID 更新同名记录，后续可用于省份/地域线路分配。</p>
+            </div>
+          )}
+
+          {ddnsProvider === "aliyun" && (
+            <div className="space-y-3">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>AccessKey ID</Label>
+                  <Input value={ddnsAliyunAccessKeyId} onChange={(e) => setDdnsAliyunAccessKeyId(e.target.value)} placeholder="阿里云 AccessKey ID" />
+                </div>
+                <div className="space-y-2">
+                  <Label>AccessKey Secret</Label>
+                  <Input
+                    value={ddnsAliyunAccessKeySecret}
+                    onChange={(e) => setDdnsAliyunAccessKeySecret(e.target.value)}
+                    placeholder={settings?.ddns?.aliyunAccessKeySecretMasked || "留空保留已保存密钥"}
+                    type="password"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>主域名</Label>
+                  <Input value={ddnsAliyunDomainName} onChange={(e) => setDdnsAliyunDomainName(e.target.value)} placeholder="example.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Endpoint</Label>
+                  <Input value={ddnsAliyunEndpoint} onChange={(e) => setDdnsAliyunEndpoint(e.target.value)} placeholder="https://alidns.aliyuncs.com" />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>默认线路</Label>
+                  <Input value={ddnsAliyunLine} onChange={(e) => setDdnsAliyunLine(e.target.value)} placeholder="default" />
+                </div>
+                <div className="space-y-2">
+                  <Label>TTL</Label>
+                  <Input value={ddnsAliyunTtl} onChange={(e) => setDdnsAliyunTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="600" inputMode="numeric" />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">基础模式按主域名拆分 RR；后端更新时可传入线路值用于后续地域/运营商线路。</p>
+            </div>
+          )}
+
+          {ddnsProvider === "tencentcloud" && (
+            <div className="space-y-3">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>SecretId</Label>
+                  <Input value={ddnsTencentCloudSecretId} onChange={(e) => setDdnsTencentCloudSecretId(e.target.value)} placeholder="腾讯云 SecretId" />
+                </div>
+                <div className="space-y-2">
+                  <Label>SecretKey</Label>
+                  <Input
+                    value={ddnsTencentCloudSecretKey}
+                    onChange={(e) => setDdnsTencentCloudSecretKey(e.target.value)}
+                    placeholder={settings?.ddns?.tencentcloudSecretKeyMasked || "留空保留已保存密钥"}
+                    type="password"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>主域名</Label>
+                  <Input value={ddnsTencentCloudDomainName} onChange={(e) => setDdnsTencentCloudDomainName(e.target.value)} placeholder="example.com" />
+                </div>
+                <div className="space-y-2">
+                  <Label>TTL</Label>
+                  <Input value={ddnsTencentCloudTtl} onChange={(e) => setDdnsTencentCloudTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="600" inputMode="numeric" />
+                </div>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>默认线路名称</Label>
+                  <Input value={ddnsTencentCloudRecordLine} onChange={(e) => setDdnsTencentCloudRecordLine(e.target.value)} placeholder="默认" />
+                </div>
+                <div className="space-y-2">
+                  <Label>默认线路 ID</Label>
+                  <Input value={ddnsTencentCloudRecordLineId} onChange={(e) => setDdnsTencentCloudRecordLineId(e.target.value)} placeholder="可留空" />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">基础模式使用默认线路；后端同时支持 RecordLine 和 RecordLineId，便于后续接入省份线路。</p>
             </div>
           )}
 

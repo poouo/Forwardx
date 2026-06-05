@@ -3,6 +3,8 @@ import {
   hostMetrics, InsertHostMetric,
   trafficStats, InsertTrafficStat,
   forwardRules,
+  forwardGroups,
+  forwardGroupMembers,
   hosts,
   tunnels,
   forwardTests, InsertForwardTest,
@@ -47,7 +49,7 @@ async function getRuleIdsByUser(userId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ id: forwardRules.id }).from(forwardRules).where(eq(forwardRules.userId, userId));
-  return rows.map((r) => Number(r.id));
+  return rows.map((r: { id: unknown }) => Number(r.id));
 }
 
 async function getRuleWithCreatedAt(ruleId: number): Promise<{ id: number; createdAt: Date } | null> {
@@ -96,6 +98,24 @@ function mergeTrafficSummaryRows(rows: TrafficSummaryRow[]) {
     }
   }
   return Array.from(merged.values());
+}
+
+async function getForwardGroupModeMap(groupIds: number[]) {
+  const db = await getDb();
+  const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const map = new Map<number, string>();
+  if (!db || ids.length === 0) return map;
+  const rows = await db
+    .select({
+      id: forwardGroups.id,
+      groupMode: forwardGroups.groupMode,
+    })
+    .from(forwardGroups)
+    .where(sql`${forwardGroups.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  for (const row of rows as any[]) {
+    map.set(Number(row.id), String(row.groupMode || "failover"));
+  }
+  return map;
 }
 
 export async function getTotalTraffic(userId?: number) {
@@ -169,12 +189,36 @@ export async function getTrafficSummaryByRule(opts: {
       .select({
         id: forwardRules.id,
         parentId: forwardRules.forwardGroupRuleId,
+        groupId: forwardRules.forwardGroupId,
+        memberId: forwardRules.forwardGroupMemberId,
         hostId: forwardRules.hostId,
       })
       .from(forwardRules)
       .where(sql`${forwardRules.id} IN (${sql.join(groupChildIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.forwardGroupRuleId} IS NOT NULL`);
+    const groupModeById = await getForwardGroupModeMap((childRows as any[]).map((row: any) => Number(row.groupId || 0)));
+    const chainMemberRows = (childRows as any[]).filter((row: any) => groupModeById.get(Number(row.groupId || 0)) === "chain");
+    const chainMemberPriority = new Map<number, number>();
+    if (chainMemberRows.length > 0) {
+      const memberIds = Array.from(new Set(chainMemberRows.map((row: any) => Number(row.memberId || 0)).filter((id: number) => id > 0)));
+      if (memberIds.length > 0) {
+        const memberRows = await db
+          .select({
+            id: forwardGroupMembers.id,
+            priority: forwardGroupMembers.priority,
+          })
+          .from(forwardGroupMembers)
+          .where(sql`${forwardGroupMembers.id} IN (${sql.join(memberIds.map((id) => sql`${id}`), sql`, `)})`);
+        for (const row of memberRows as any[]) {
+          chainMemberPriority.set(Number(row.id), Number(row.priority || 0));
+        }
+      }
+    }
     const parentByChild = new Map<number, { parentId: number; hostId: number }>();
     for (const row of childRows as any[]) {
+      const groupMode = groupModeById.get(Number(row.groupId || 0));
+      if (groupMode === "chain" && Number(chainMemberPriority.get(Number(row.memberId || 0)) || 0) !== 0) {
+        continue;
+      }
       parentByChild.set(Number(row.id), { parentId: Number(row.parentId), hostId: Number(row.hostId) });
     }
     if (parentByChild.size > 0) {
@@ -289,20 +333,32 @@ export async function getTrafficSummaryByRule(opts: {
     ? await db
       .select({
         id: forwardRules.id,
+        groupId: forwardRules.forwardGroupId,
         parentId: forwardRules.forwardGroupRuleId,
+        memberId: forwardRules.forwardGroupMemberId,
       })
       .from(forwardRules)
       .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = 0`)
     : [];
+  const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
+  const parentChainChildren = new Map<number, number[]>();
   const parentByChildRule = new Map<number, number>();
   for (const row of childLatencyRows as any[]) {
     const childId = Number(row.id);
     const parentId = Number(row.parentId);
-    if (childId > 0 && parentId > 0) parentByChildRule.set(childId, parentId);
+    if (childId <= 0 || parentId <= 0) continue;
+    if (latencyGroupModeById.get(Number(row.groupId || 0)) === "chain") {
+      const children = parentChainChildren.get(parentId) || [];
+      children.push(childId);
+      parentChainChildren.set(parentId, children);
+      continue;
+    }
+    parentByChildRule.set(childId, parentId);
   }
   const latencyRuleIds = Array.from(new Set([
     ...ruleIds,
     ...Array.from(parentByChildRule.keys()),
+    ...Array.from(parentChainChildren.values()).flat(),
   ]));
   const latestRows = await db
     .select({
@@ -319,6 +375,39 @@ export async function getTrafficSummaryByRule(opts: {
     const rowRuleId = Number(row.ruleId);
     const ruleId = parentByChildRule.get(rowRuleId) || rowRuleId;
     if (!latestByRule.has(ruleId)) latestByRule.set(ruleId, row);
+  }
+  const latestByRawRule = new Map<number, any>();
+  for (const row of latestRows as any[]) {
+    const rowRuleId = Number(row.ruleId);
+    if (!latestByRawRule.has(rowRuleId)) latestByRawRule.set(rowRuleId, row);
+  }
+  for (const [parentId, childIds] of parentChainChildren.entries()) {
+    let latencySum = 0;
+    let recordedAt: Date | null = null;
+    let isTimeout = childIds.length === 0;
+    let hasLatency = false;
+    for (const childId of childIds) {
+      const latest = latestByRawRule.get(childId);
+      if (!latest) {
+        isTimeout = true;
+        continue;
+      }
+      if (!recordedAt || new Date(latest.recordedAt).getTime() > new Date(recordedAt).getTime()) {
+        recordedAt = latest.recordedAt;
+      }
+      if (latest.isTimeout || latest.latencyMs === null || latest.latencyMs === undefined) {
+        isTimeout = true;
+        continue;
+      }
+      latencySum += Number(latest.latencyMs) || 0;
+      hasLatency = true;
+    }
+    latestByRule.set(parentId, {
+      ruleId: parentId,
+      latencyMs: !isTimeout && hasLatency ? latencySum : null,
+      isTimeout,
+      recordedAt,
+    });
   }
   return result.map((item) => {
     const latest = latestByRule.get(item.ruleId);
@@ -359,12 +448,12 @@ export async function getTrafficSeriesByRule(
     .groupBy(bucketExpr)
     .orderBy(asc(bucketExpr));
 
-  return rows.map((r) => ({
+  return rows.map((r: any) => ({
     bucket: new Date(Number(r.bucket) * 1000),
     bytesIn: Number(r.bytesIn) || 0,
     bytesOut: Number(r.bytesOut) || 0,
     connections: Number(r.connections) || 0,
-  })).filter((r) => r.bucket.getTime() / 1000 >= sinceSec);
+  })).filter((r: { bucket: Date }) => r.bucket.getTime() / 1000 >= sinceSec);
 }
 
 /** 鑾峰彇鍏ㄥ眬娴侀噺璧板娍锛堟寜鏃堕棿鍒嗘《锛岀敤浜庝华琛ㄧ洏锛?*/
@@ -395,7 +484,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
     .groupBy(bucketExpr)
     .orderBy(asc(bucketExpr));
 
-  return rows.map((r) => ({
+  return rows.map((r: any) => ({
     bucket: new Date(Number(r.bucket) * 1000),
     bytesIn: Number(r.bytesIn) || 0,
     bytesOut: Number(r.bytesOut) || 0,
@@ -465,6 +554,56 @@ export async function getTcpingSeriesByRule(
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = opts.limit ?? 2880; // 24h * 120 per hour max
+  const childRows = await db
+    .select({
+      id: forwardRules.id,
+      groupId: forwardRules.forwardGroupId,
+      parentId: forwardRules.forwardGroupRuleId,
+    })
+    .from(forwardRules)
+    .where(and(eq(forwardRules.forwardGroupRuleId, ruleId), eq(forwardRules.pendingDelete, false)))
+    .orderBy(asc(forwardRules.id));
+  if (childRows.length > 0) {
+    const groupModeById = await getForwardGroupModeMap((childRows as any[]).map((row: any) => Number(row.groupId || 0)));
+    const chainChildren = (childRows as any[]).filter((row: any) => groupModeById.get(Number(row.groupId || 0)) === "chain");
+    if (chainChildren.length > 0) {
+      const childIds = chainChildren.map((row: any) => Number(row.id)).filter((id: number) => id > 0);
+      const rawRows = await db
+        .select({
+          ruleId: tcpingStats.ruleId,
+          latencyMs: tcpingStats.latencyMs,
+          isTimeout: tcpingStats.isTimeout,
+          recordedAt: tcpingStats.recordedAt,
+        })
+        .from(tcpingStats)
+        .where(sql`${tcpingStats.ruleId} IN (${sql.join(childIds.map((id) => sql`${id}`), sql`, `)}) AND ${tcpingStats.recordedAt} >= ${since}`)
+        .orderBy(asc(tcpingStats.recordedAt))
+        .limit(Math.max(limit * childIds.length, limit));
+      const bucketMs = 30_000;
+      const byBucket = new Map<number, { latencyMs: number; timeoutCount: number; count: number; recordedAt: Date }>();
+      for (const row of rawRows as any[]) {
+        const at = new Date(row.recordedAt);
+        const key = Math.floor(at.getTime() / bucketMs) * bucketMs;
+        const prev = byBucket.get(key) || { latencyMs: 0, timeoutCount: 0, count: 0, recordedAt: at };
+        if (row.isTimeout || row.latencyMs === null || row.latencyMs === undefined) {
+          prev.timeoutCount += 1;
+        } else {
+          prev.latencyMs += Number(row.latencyMs) || 0;
+        }
+        prev.count += 1;
+        if (at.getTime() > new Date(prev.recordedAt).getTime()) prev.recordedAt = at;
+        byBucket.set(key, prev);
+      }
+      return Array.from(byBucket.entries())
+        .sort((a, b) => a[0] - b[0])
+        .slice(-limit)
+        .map(([, bucket]) => ({
+          latencyMs: bucket.timeoutCount > 0 || bucket.count < childIds.length ? null : bucket.latencyMs,
+          isTimeout: bucket.timeoutCount > 0 || bucket.count < childIds.length,
+          recordedAt: bucket.recordedAt,
+        }));
+    }
+  }
   const rows = await db
     .select({
       latencyMs: tcpingStats.latencyMs,
@@ -509,7 +648,7 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     .groupBy(bucketExpr)
     .orderBy(asc(bucketExpr));
 
-  return rows.map((r) => ({
+  return rows.map((r: any) => ({
     bucket: new Date(Number(r.bucket) * 1000),
     avgLatency: Math.round(Number(r.avgLatency) || 0),
     maxLatency: Number(r.maxLatency) || 0,

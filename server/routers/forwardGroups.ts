@@ -12,6 +12,7 @@ const memberSchema = z.object({
 
 const baseSchema = z.object({
   name: z.string().min(1).max(128),
+  groupMode: z.enum(["failover", "chain"]).default("failover"),
   groupType: z.enum(["host", "tunnel"]),
   domain: z.string().max(255).nullable().optional(),
   recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),
@@ -22,21 +23,25 @@ const baseSchema = z.object({
   members: z.array(memberSchema).min(1),
 });
 
-function normalizeMembers(groupType: "host" | "tunnel", members: z.infer<typeof memberSchema>[]) {
+function normalizeMembers(groupMode: "failover" | "chain", groupType: "host" | "tunnel", members: z.infer<typeof memberSchema>[]) {
+  const effectiveGroupType = groupMode === "chain" ? "host" : groupType;
+  if (groupMode === "chain" && (members.length < 2 || members.length > 5)) {
+    throw new Error("端口转发链需要配置 2-5 台主机");
+  }
   const seen = new Set<string>();
   return members.map((member, index) => {
-    if (member.memberType !== groupType) throw new Error("成员类型必须与转发组类型一致");
-    const id = groupType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0);
-    if (!id) throw new Error(groupType === "host" ? "请选择成员主机" : "请选择成员隧道");
-    const key = `${groupType}:${id}`;
+    if (member.memberType !== effectiveGroupType) throw new Error(groupMode === "chain" ? "端口转发链仅支持主机成员" : "成员类型必须与转发组类型一致");
+    const id = effectiveGroupType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0);
+    if (!id) throw new Error(effectiveGroupType === "host" ? "请选择成员主机" : "请选择成员隧道");
+    const key = `${effectiveGroupType}:${id}`;
     if (seen.has(key)) throw new Error("成员不能重复");
     seen.add(key);
     return {
-      memberType: groupType,
-      hostId: groupType === "host" ? id : null,
-      tunnelId: groupType === "tunnel" ? id : null,
+      memberType: effectiveGroupType,
+      hostId: effectiveGroupType === "host" ? id : null,
+      tunnelId: effectiveGroupType === "tunnel" ? id : null,
       priority: member.priority ?? index,
-      isEnabled: member.isEnabled ?? true,
+      isEnabled: groupMode === "chain" ? true : member.isEnabled ?? true,
     };
   });
 }
@@ -60,13 +65,16 @@ export const forwardGroupsRouter = router({
   create: adminProcedure
     .input(baseSchema)
     .mutation(async ({ input, ctx }) => {
-      const members = normalizeMembers(input.groupType, input.members);
+      const groupMode = input.groupMode === "chain" ? "chain" : "failover";
+      const groupType = groupMode === "chain" ? "host" : input.groupType;
+      const members = normalizeMembers(groupMode, groupType, input.members);
       const id = await db.createForwardGroup({
         name: input.name,
-        groupType: input.groupType,
-        forwardType: input.groupType === "tunnel" ? "gost" : "iptables",
-        domain: input.domain?.trim() || null,
-        recordType: input.recordType,
+        groupMode,
+        groupType,
+        forwardType: groupType === "tunnel" ? "gost" : "iptables",
+        domain: groupMode === "chain" ? null : input.domain?.trim() || null,
+        recordType: groupMode === "chain" ? "A" : input.recordType,
         sourcePort: 1,
         protocol: "both",
         targetIp: "0.0.0.0",
@@ -83,18 +91,21 @@ export const forwardGroupsRouter = router({
   update: adminProcedure
     .input(baseSchema.extend({ id: z.number() }))
     .mutation(async ({ input }) => {
-      const members = normalizeMembers(input.groupType, input.members);
+      const groupMode = input.groupMode === "chain" ? "chain" : "failover";
+      const groupType = groupMode === "chain" ? "host" : input.groupType;
+      const members = normalizeMembers(groupMode, groupType, input.members);
       await db.updateForwardGroup(input.id, {
         name: input.name,
-        groupType: input.groupType,
-        forwardType: input.groupType === "tunnel" ? "gost" : "iptables",
-        domain: input.domain?.trim() || null,
-        recordType: input.recordType,
+        groupMode,
+        groupType,
+        forwardType: groupType === "tunnel" ? "gost" : "iptables",
+        domain: groupMode === "chain" ? null : input.domain?.trim() || null,
+        recordType: groupMode === "chain" ? "A" : input.recordType,
         failoverSeconds: input.failoverSeconds,
         recoverSeconds: input.recoverSeconds,
         autoFailback: input.autoFailback,
         isEnabled: input.isEnabled,
-      } as any);
+      } as any, { skipSync: true });
       await db.replaceForwardGroupMembers(input.id, members);
       return { success: true };
     }),

@@ -1731,6 +1731,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
         continue;
       }
+      if (meta?.kind === "forward-chain") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-chain",
+          groupId: meta.groupId,
+          ruleId: t.ruleId,
+          forwardType: "forward-chain",
+          protocol: "tcp",
+          sourcePort: meta.entrySourcePort || 0,
+          targetIp: meta.entryIp,
+          targetPort: meta.entrySourcePort,
+        });
+        continue;
+      }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
       selfTests.push({

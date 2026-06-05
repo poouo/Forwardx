@@ -138,6 +138,28 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         console.warn(`[SelfTest] tunnel rule entry-port test=${testId} tunnel=${meta.tunnelId} failed entry=${entryTarget} target=${finalTarget}: ${cleanMessage || "unknown"}`);
       }
     }
+    if (meta?.kind === "forward-chain" && typeof meta.groupId === "number") {
+      const entryTarget = `${meta.entryIp || "-"}:${meta.entrySourcePort || "-"}`;
+      const finalTarget = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
+      const messageParts = [
+        `端口转发链检测 ${success ? "成功" : "失败"}`,
+        `入口 ${entryTarget}${success && cleanLatency !== null ? ` ${cleanLatency}ms` : ""}`,
+        `最终目标 ${finalTarget}`,
+      ];
+      if (cleanMessage && !success) messageParts.push(cleanMessage);
+      await db.updateForwardTestResult(testId, {
+        status: success ? "success" : "failed",
+        listenOk: success,
+        targetReachable: success,
+        forwardOk: success,
+        latencyMs: success ? cleanLatency : null,
+        message: messageParts.join("; "),
+      });
+      appendPanelLog(
+        success ? "info" : "warn",
+        `[SelfTest] forward-chain test=${testId} group=${meta.groupId} success=${success} latency=${success && cleanLatency !== null ? `${cleanLatency}ms` : "-"} entry=${entryTarget} target=${finalTarget}${cleanMessage && !success ? ` message=${cleanMessage}` : ""}`,
+      );
+    }
     if (!meta) {
       appendPanelLog(
         success ? "info" : "warn",
@@ -211,6 +233,20 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
           tunnelId: meta.tunnelId,
           ruleId: t.ruleId,
           forwardType: "gost-tunnel",
+          protocol: "tcp",
+          sourcePort: meta.entrySourcePort || 0,
+          targetIp: meta.entryIp,
+          targetPort: meta.entrySourcePort,
+        });
+        continue;
+      }
+      if (meta?.kind === "forward-chain") {
+        selfTests.push({
+          testId: t.id,
+          kind: "forward-chain",
+          groupId: meta.groupId,
+          ruleId: t.ruleId,
+          forwardType: "forward-chain",
           protocol: "tcp",
           sourcePort: meta.entrySourcePort || 0,
           targetIp: meta.entryIp,

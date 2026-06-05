@@ -12,7 +12,7 @@ import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestSta
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
-const MAX_TUNNEL_HOPS = 5;
+const MAX_TUNNEL_HOPS = 10;
 
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
   clearTunnelRuntimeStatus(tunnelId);
@@ -48,6 +48,34 @@ const getTunnelDialHost = (tunnel: any, exit: any) => {
 
 const getHostTunnelAddress = (host: any) =>
   String((host as any)?.tunnelEntryIp || (host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
+
+const getHostPublicAddress = (host: any) =>
+  String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
+
+function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, host: any) {
+  const raw = String(rawConnectHost || "").trim();
+  const publicAddr = getHostPublicAddress(host);
+  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  if (!raw) return publicAddr || null;
+  const normalized = normalizeTunnelConnect(raw);
+  if (privateAddr && normalized === privateAddr) return privateAddr;
+  if (publicAddr && normalized === publicAddr) return publicAddr;
+  if (!privateAddr) return publicAddr || null;
+  throw new Error(`主机 ${host?.name || host?.id || ""} 的连接地址只能使用入口地址或已配置的内网IP`);
+}
+
+async function normalizeHopConnectHostsForHosts(hopHostIds: number[], hopConnectHosts: Array<string | null>) {
+  const next: Array<string | null> = [];
+  for (let i = 0; i < hopHostIds.length; i++) {
+    if (i === 0) {
+      next.push(null);
+      continue;
+    }
+    const hopHost = await db.getHostById(hopHostIds[i]) as any;
+    next.push(normalizeHopConnectForHost(hopConnectHosts[i] ?? null, hopHost));
+  }
+  return next;
+}
 
 async function attachTunnelEndpointHosts(tunnels: any[]) {
   const hostMap = new Map<number, any>();
@@ -214,7 +242,8 @@ export const tunnelsRouter = router({
               if (!port) throw new Error(`涓绘満 ${host?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
-            const normalizedHopConnectHost = rawConnectHost ? normalizeTunnelConnect(rawConnectHost) : null;
+            const hopHost = await db.getHostById(hopHostIds[i]) as any;
+            const normalizedHopConnectHost = i > 0 ? normalizeHopConnectForHost(rawConnectHost, hopHost) : null;
             hops.push({ hostId: hopHostIds[i], listenPort: port, connectHost: normalizedHopConnectHost });
           }
           await hopRepo.createTunnelHops(id, hops);
@@ -260,7 +289,6 @@ export const tunnelsRouter = router({
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts)
           ? ((input as any).hopConnectHosts as Array<string | null>)
           : [];
-        const normalizedRequestedHopConnectHosts = normalizeHopConnectHostsForCompare(hopConnectHosts);
         const hopHostIds = requestedHopHostIds && requestedHopHostIds.length >= 3 ? requestedHopHostIds : null;
         const switchToRegular = requestedHopHostIds !== undefined && requestedHopHostIds.length <= 2;
         if (hopHostIds) {
@@ -268,6 +296,9 @@ export const tunnelsRouter = router({
           if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
         }
+        const normalizedRequestedHopConnectHosts = hopHostIds
+          ? await normalizeHopConnectHostsForHosts(hopHostIds, hopConnectHosts)
+          : normalizeHopConnectHostsForCompare(hopConnectHosts);
         const entryHostId = hopHostIds ? hopHostIds[0] : (input.entryHostId ?? tunnel.entryHostId);
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : (input.exitHostId ?? tunnel.exitHostId);
         if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
@@ -341,8 +372,7 @@ export const tunnelsRouter = router({
                 if (!port) throw new Error(`涓绘満 ${hopHost?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
               }
             }
-            const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
-            const normalizedHopConnectHost = rawConnectHost ? normalizeTunnelConnect(rawConnectHost) : null;
+            const normalizedHopConnectHost = i > 0 ? normalizedRequestedHopConnectHosts[i] : null;
             hops.push({ hostId: hopHostIds[i], listenPort: port, connectHost: normalizedHopConnectHost });
           }
           await hopRepo.createTunnelHops(id, hops);

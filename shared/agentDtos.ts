@@ -48,6 +48,14 @@ export type SelfTestMeta =
       entrySourcePort?: number;
       targetIp?: string;
       targetPort?: number;
+    }
+  | {
+      kind: "forward-chain";
+      groupId: number;
+      entryIp?: string;
+      entrySourcePort?: number;
+      targetIp?: string;
+      targetPort?: number;
     };
 
 export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {
@@ -67,5 +75,7 @@ export function isAgentTunnelTcpingResult(value: unknown): value is AgentTunnelT
 
 export function isSelfTestMeta(value: unknown): value is SelfTestMeta {
   const meta = value as Partial<SelfTestMeta>;
-  return !!meta && typeof meta.kind === "string" && Number.isFinite(Number(meta.tunnelId));
+  if (!meta || typeof meta.kind !== "string") return false;
+  if (meta.kind === "forward-chain") return Number.isFinite(Number((meta as any).groupId));
+  return Number.isFinite(Number((meta as any).tunnelId));
 }

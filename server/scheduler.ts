@@ -99,7 +99,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
 
   for (const test of timedOutTests) {
     const meta = parseSelfTestMeta(test.message);
-    if (!meta || typeof meta.tunnelId !== "number") continue;
+    if (!meta) continue;
 
     if (meta.kind === "tunnel") {
       await settleTunnel(
@@ -138,8 +138,12 @@ async function runSelfTestTimeoutSweep() {
       for (const test of timedOutTests) {
         const meta = parseSelfTestMeta(test.message);
         if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
-        const tunnelPart = meta && typeof meta.tunnelId === "number" ? ` tunnel=${meta.tunnelId}` : "";
-        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${tunnelPart} host=${test.hostId} timeout after 60s test=${test.id}`);
+        const targetPart = meta?.kind === "forward-chain"
+          ? ` group=${meta.groupId}`
+          : meta && "tunnelId" in meta && typeof meta.tunnelId === "number"
+            ? ` tunnel=${meta.tunnelId}`
+            : "";
+        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${targetPart} host=${test.hostId} timeout after 60s test=${test.id}`);
       }
       console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }

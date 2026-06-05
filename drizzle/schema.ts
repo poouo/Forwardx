@@ -215,6 +215,7 @@ export const forwardGroups = table("forward_groups", {
   id: serial("id"),
   name: text("name").notNull(),
   groupType: varchar("groupType", { length: 32 }).notNull().default("host"),
+  groupMode: varchar("groupMode", { length: 32 }).notNull().default("failover"),
   forwardType: varchar("forwardType", { length: 32 }).notNull().default("iptables"),
   domain: text("domain"),
   recordType: varchar("recordType", { length: 16 }).notNull().default("A"),

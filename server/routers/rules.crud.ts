@@ -217,13 +217,17 @@ export const crudRulesRouter = router({
           }
         }
         const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort });
+        const isForwardChain = (group as any).groupMode === "chain";
+        if (isForwardChain && input.failoverEnabled) {
+          throw new Error("端口转发链不支持出站策略");
+        }
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
-        const forwardType = (group as any).groupType === "tunnel" ? "gost" : input.forwardType;
+        const forwardType = !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : input.forwardType;
         requireMainBackupAllowed({
-          enabled: input.failoverEnabled,
+          enabled: isForwardChain ? false : input.failoverEnabled,
           protocol: input.protocol,
           forwardType,
-          isTunnelRoute: (group as any).groupType === "tunnel",
+          isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
           isAdmin: ctx.user.role === "admin",
         });
         if (ctx.user.role !== "admin") {
@@ -251,7 +255,7 @@ export const crudRulesRouter = router({
           sourcePort,
           targetIp: input.targetIp.trim(),
           targetPort: input.targetPort,
-          ...normalizeFailoverInput(input, input.protocol),
+          ...normalizeFailoverInput(isForwardChain ? { failoverEnabled: false, failoverTargets: [] } : input, input.protocol),
           isRunning: false,
           userId: ctx.user.id,
         } as any);
@@ -425,19 +429,27 @@ export const crudRulesRouter = router({
           sourcePort: input.sourcePort ?? rule.sourcePort,
           excludeTemplateRuleId: rule.id,
         });
-        const nextForwardType = (group as any).groupType === "tunnel" ? "gost" : (input.forwardType ?? rule.forwardType);
-        const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
+        const isForwardChain = (group as any).groupMode === "chain";
+        if (isForwardChain && input.failoverEnabled) {
+          throw new Error("端口转发链不支持出站策略");
+        }
+        const nextForwardType = !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (input.forwardType ?? rule.forwardType);
+        const nextMainBackupEnabled = isForwardChain ? false : input.failoverEnabled ?? (rule as any).failoverEnabled;
         requireMainBackupAllowed({
           enabled: nextMainBackupEnabled,
           protocol: input.protocol ?? (rule as any).protocol,
           forwardType: nextForwardType,
-          isTunnelRoute: (group as any).groupType === "tunnel",
+          isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
           isAdmin: ctx.user.role === "admin",
         });
         await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: null });
         const data: any = {
           ...input,
-          ...(input.failoverEnabled !== undefined ||
+          ...(isForwardChain ? normalizeFailoverInput({
+              failoverEnabled: false,
+              failoverTargets: [],
+            }, input.protocol ?? (rule as any).protocol)
+            : input.failoverEnabled !== undefined ||
             input.failoverStrategy !== undefined ||
             input.failoverTargets !== undefined ||
             input.failoverSeconds !== undefined ||
@@ -723,11 +735,12 @@ export const crudRulesRouter = router({
             sourcePort: rule.sourcePort,
             excludeTemplateRuleId: rule.id,
           });
+          const isForwardChain = (group as any).groupMode === "chain";
           requireMainBackupAllowed({
-            enabled: (rule as any).failoverEnabled,
+            enabled: isForwardChain ? false : (rule as any).failoverEnabled,
             protocol: (rule as any).protocol,
-            forwardType: (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
-            isTunnelRoute: (group as any).groupType === "tunnel",
+            forwardType: !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
+            isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
             isAdmin: ctx.user.role === "admin",
           });
           await db.updateForwardRule(input.id, { isEnabled: true, isRunning: false, disabledByUser: false, disabledByTunnel: false, protocolBlockReason: null } as any);

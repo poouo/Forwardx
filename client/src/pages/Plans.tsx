@@ -618,7 +618,7 @@ export default function Plans() {
                   <DataSectionLoading label="正在加载转发组资源" minHeight="min-h-[120px]" />
                 ) : forwardGroups.map((group: any) => (
                   <label key={group.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
-                    <span>{group.name} <span className="text-muted-foreground">/{group.groupType === "tunnel" ? "隧道组" : "主机组"}</span></span>
+                    <span>{group.name} <span className="text-muted-foreground">/{group.groupMode === "chain" ? "端口转发链" : group.groupType === "tunnel" ? "隧道组" : "主机组"}</span></span>
                     <Switch checked={form.forwardGroupIds.includes(group.id)} onCheckedChange={() => setForm({ ...form, forwardGroupIds: toggleId(form.forwardGroupIds, group.id) })} />
                   </label>
                 ))}

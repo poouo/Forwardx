@@ -315,6 +315,15 @@ function getHostEntryAddress(host: any | null | undefined): string {
   return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
 }
 
+function isForwardChainGroup(group: any | null | undefined) {
+  return String(group?.groupMode || "failover") === "chain";
+}
+
+function getForwardGroupKindLabel(group: any | null | undefined) {
+  if (isForwardChainGroup(group)) return "端口转发链";
+  return group?.groupType === "tunnel" ? "隧道组" : "主机组";
+}
+
 function routeModeOptionClass(active: boolean, disabled = false) {
   return [
     "flex min-h-11 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
@@ -549,7 +558,7 @@ function RulesContent() {
       : null;
     const nextForwardType = mode === "tunnel"
       ? "gost"
-      : mode === "group" && nextGroup?.groupType === "tunnel"
+      : mode === "group" && !isForwardChainGroup(nextGroup) && nextGroup?.groupType === "tunnel"
       ? "gost"
       : (usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0]);
     if (!nextForwardType) return;
@@ -563,6 +572,7 @@ function RulesContent() {
       tunnelId: mode === "tunnel" && nextTunnel ? Number(nextTunnel.id) : null,
       forwardGroupId: mode === "group" && nextGroup ? Number(nextGroup.id) : null,
       hostId: mode === "tunnel" && nextTunnel ? nextTunnel.entryHostId : mode === "group" ? null : prev.hostId,
+      failoverEnabled: mode === "group" && isForwardChainGroup(nextGroup) ? false : prev.failoverEnabled,
     }));
   };
 
@@ -618,7 +628,7 @@ function RulesContent() {
         failoverTargetsText: "",
         routeMode: firstForwardType ? "local" : firstTunnel ? "tunnel" : firstGroup ? "group" : "local",
         hostId: firstForwardType ? hosts?.[0]?.id ?? null : firstTunnel ? firstTunnel.entryHostId : null,
-        forwardType: firstTunnel && !firstForwardType ? "gost" : firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
+        forwardType: firstTunnel && !firstForwardType ? "gost" : !isForwardChainGroup(firstGroup) && firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
         tunnelId: firstTunnel && !firstForwardType ? firstTunnel.id : null,
         forwardGroupId: !firstForwardType && !firstTunnel && firstGroup ? Number(firstGroup.id) : null,
       });
@@ -792,11 +802,14 @@ function RulesContent() {
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardGroup = availableForwardGroups.length > 0;
   const canCreateRule = canUseLocalForward || canUseGost || canUseForwardGroup;
-  const mainBackupForwardType = form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel" ? "gost" : form.forwardType;
-  const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel";
-  const canUseMainBackup = mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute);
+  const selectedForwardGroupIsChain = isForwardChainGroup(selectedForwardGroup);
+  const mainBackupForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType;
+  const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
+  const canUseMainBackup = !selectedForwardGroupIsChain && mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute);
   const mainBackupDisabledText = mainBackupForwardType !== "gost"
     ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持出站策略。"
+    : selectedForwardGroupIsChain
+    ? "端口转发链不支持出站策略。"
     : user?.role !== "admin" && !mainBackupIsTunnelRoute
     ? "普通端口转发不支持出站策略，请使用隧道转发。"
     : form.protocol !== "tcp"
@@ -884,7 +897,7 @@ function RulesContent() {
       setForm((prev) => ({ ...prev, forwardGroupId: Number(availableForwardGroups[0].id) }));
       return;
     }
-    if (selectedForwardGroup?.groupType === "tunnel" && form.forwardType !== "gost") {
+    if (!isForwardChainGroup(selectedForwardGroup) && selectedForwardGroup?.groupType === "tunnel" && form.forwardType !== "gost") {
       setForm((prev) => ({ ...prev, forwardType: "gost" }));
     }
   }, [availableForwardGroups, form.forwardType, form.routeMode, selectedForwardGroup]);
@@ -906,11 +919,10 @@ function RulesContent() {
       return;
     }
     try {
-      const result = await utils.rules.randomPort.fetch(
-        form.routeMode === "group"
-          ? { forwardGroupId: form.forwardGroupId, excludeRuleId: editingId || undefined }
-          : { hostId: form.hostId, tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null, excludeRuleId: editingId || undefined }
-      );
+      const randomPortInput = form.routeMode === "group"
+        ? { forwardGroupId: Number(form.forwardGroupId), excludeRuleId: editingId || undefined }
+        : { hostId: Number(form.hostId), tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null, excludeRuleId: editingId || undefined };
+      const result = await utils.rules.randomPort.fetch(randomPortInput);
       setForm({ ...form, sourcePort: result.port });
       setPortStatus("available");
       toast.success(`已分配随机端口: ${result.port}`);
@@ -972,7 +984,7 @@ function RulesContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
-    if (form.routeMode === "group" && selectedForwardGroup?.groupType === "tunnel" && !isProtocolEnabled("gost")) {
+    if (form.routeMode === "group" && !selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel" && !isProtocolEnabled("gost")) {
       toast.error(unsupportedProtocolTitle);
       return;
     }
@@ -1013,9 +1025,9 @@ function RulesContent() {
       }
     }
     const failoverPayload = {
-      failoverEnabled: form.failoverEnabled,
+      failoverEnabled: selectedForwardGroupIsChain ? false : form.failoverEnabled,
       failoverStrategy: form.failoverStrategy,
-      failoverTargets: form.failoverEnabled ? failoverTargets : [],
+      failoverTargets: selectedForwardGroupIsChain ? [] : form.failoverEnabled ? failoverTargets : [],
       failoverSeconds: form.failoverSeconds || 60,
       recoverSeconds: form.recoverSeconds || 120,
       autoFailback: form.autoFailback,
@@ -1033,7 +1045,7 @@ function RulesContent() {
         id: editingId,
         hostId: form.routeMode === "group" ? undefined : form.hostId!,
         name: form.name,
-        forwardType: form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel" ? "gost" : form.forwardType,
+        forwardType: form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType,
         protocol: form.protocol,
         gostMode: "direct",
         gostRelayHost: null,
@@ -1050,7 +1062,7 @@ function RulesContent() {
       createMutation.mutate({
         hostId: form.routeMode === "group" ? undefined : form.hostId!,
         name: form.name,
-        forwardType: form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel" ? "gost" : form.forwardType,
+        forwardType: form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType,
         protocol: form.protocol,
         gostMode: "direct",
         gostRelayHost: null,
@@ -1207,7 +1219,7 @@ function RulesContent() {
         className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
         title={getTunnelRouteText(tunnel, hosts)}
       >
-        {hopIds.map((hostId, index) => (
+        {hopIds.map((hostId: number, index: number) => (
           <Fragment key={`${tunnel?.id || "tunnel"}-${hostId}-${index}`}>
             {index > 0 && <ArrowRight className="h-3 w-3 shrink-0" />}
             <span className={compact ? "max-w-[8rem] truncate" : "truncate"}>
@@ -1264,6 +1276,21 @@ function RulesContent() {
   const copyEntryAddress = async (rule: any) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
+      if (isForwardChainGroup(group)) {
+        const entry = String(group?.members?.[0]?.entryAddress || "").trim();
+        if (!entry) {
+          toast.error("该端口转发链第一台主机未配置入口地址");
+          return;
+        }
+        const text = `${entry}:${rule.sourcePort}`;
+        try {
+          await navigator.clipboard.writeText(text);
+          toast.success(`已复制入口地址: ${text}`);
+        } catch {
+          toast.error("复制失败，请手动复制");
+        }
+        return;
+      }
       const domain = String(group?.domain || "").trim();
       if (!domain) {
         toast.error("该转发组未配置 DDNS 域名");
@@ -1307,6 +1334,15 @@ function RulesContent() {
   const renderStatusDot = (rule: any) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
+      if (isForwardChainGroup(group)) {
+        if (rule.isEnabled && rule.isRunning) {
+          return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
+        }
+        if (rule.isEnabled) {
+          return <span className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" />;
+        }
+        return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
+      }
       if (group?.lastStatus === "healthy") {
         return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
       }
@@ -1324,12 +1360,16 @@ function RulesContent() {
   };
 
   const renderTransfer = (rule: any, compact = false) => {
+    const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    const groupEntry = isForwardChainGroup(group)
+      ? (group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
+      : (group?.domain || getForwardGroupName(rule.forwardGroupId));
     const entryAddress = `${rule.forwardGroupId
-      ? (forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))
+      ? groupEntry
       : (getRuleEntry(rule) || getRuleEntryHostName(rule))}:${rule.sourcePort}`;
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
     const entryTitle = rule.forwardGroupId
-      ? `复制转发组入口: ${(forwardGroupById.get(Number(rule.forwardGroupId))?.domain || getForwardGroupName(rule.forwardGroupId))}:${rule.sourcePort}`
+      ? `复制${isForwardChainGroup(group) ? "转发链" : "转发组"}入口: ${groupEntry}:${rule.sourcePort}`
       : `复制入口地址: ${getRuleEntry(rule)}:${rule.sourcePort}`;
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     const failoverBadge = rule.failoverEnabled ? (
@@ -1386,6 +1426,7 @@ function RulesContent() {
 
   const renderRouteBadge = (rule: any) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const badge = (
       <Badge
         variant="outline"
@@ -1402,7 +1443,7 @@ function RulesContent() {
         }`}
       >
         {rule.forwardGroupId ? (
-          <><Layers3 className="h-3 w-3 mr-1" />转发组</>
+          <><Layers3 className="h-3 w-3 mr-1" />{isForwardChainGroup(group) ? "端口转发链" : "转发组"}</>
         ) : tunnel ? (
           <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel).badgeLabel}</>
         ) : rule.forwardType === "iptables" ? (
@@ -1842,7 +1883,7 @@ function RulesContent() {
                 <>
                   {(forwardGroups || []).map((group: any) => (
                     <SelectItem key={`group-${group.id}`} value={`group:${group.id}`}>
-                      转发组 / {group.name}
+                      {getForwardGroupKindLabel(group)} / {group.name}
                     </SelectItem>
                   ))}
                 </>
@@ -2200,7 +2241,7 @@ function RulesContent() {
               <div className="mt-2 rounded-md bg-background/55 px-3 py-2 text-xs leading-5 text-muted-foreground">
                 {form.routeMode === "local" && "主机直接转发到目标地址。"}
                 {form.routeMode === "tunnel" && "通过隧道出口连接目标地址。"}
-                {form.routeMode === "group" && "使用转发组作为入口。"}
+                {form.routeMode === "group" && (selectedForwardGroupIsChain ? "按端口转发链顺序生成每一跳转发规则。" : "使用转发组作为入口。")}
               </div>
             </div>
 
@@ -2263,9 +2304,10 @@ function RulesContent() {
                         setForm({
                           ...form,
                           forwardGroupId: nextGroupId,
-                          forwardType: group?.groupType === "tunnel" ? "gost" : form.forwardType,
+                          forwardType: !isForwardChainGroup(group) && group?.groupType === "tunnel" ? "gost" : form.forwardType,
                           hostId: null,
                           tunnelId: null,
+                          failoverEnabled: isForwardChainGroup(group) ? false : form.failoverEnabled,
                         });
                       }}
                     >
@@ -2274,7 +2316,7 @@ function RulesContent() {
                         <SelectItem value="none">请选择转发组</SelectItem>
                         {availableForwardGroups.map((group: any) => (
                           <SelectItem key={group.id} value={String(group.id)}>
-                            {group.name} / {group.groupType === "tunnel" ? "隧道组" : "主机组"} / {group.members?.length || 0} 成员
+                            {group.name} / {getForwardGroupKindLabel(group)} / {group.members?.length || 0} 成员
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -2282,7 +2324,7 @@ function RulesContent() {
                   </div>
                   <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
                     <Layers3 className="h-3.5 w-3.5" />
-                    {selectedForwardGroup?.groupType === "tunnel" ? "隧道组" : "主机组"}
+                    {getForwardGroupKindLabel(selectedForwardGroup)}
                   </Badge>
                 </div>
                 {selectedForwardGroup && (
@@ -2330,8 +2372,8 @@ function RulesContent() {
               )}
             </div>
 
-            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host") ? "sm:grid-cols-2" : ""}`}>
-              {(form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host")) && (
+            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" || (form.routeMode === "group" && (selectedForwardGroupIsChain || selectedForwardGroup?.groupType === "host")) ? "sm:grid-cols-2" : ""}`}>
+              {(form.routeMode === "local" || (form.routeMode === "group" && (selectedForwardGroupIsChain || selectedForwardGroup?.groupType === "host"))) && (
                 <div className="space-y-2">
                   <Label>转发工具</Label>
                   <Select
@@ -2450,9 +2492,9 @@ function RulesContent() {
                   value={form.failoverEnabled ? form.failoverStrategy : "disabled"}
                   onValueChange={(value: FailoverMode) => setForm({
                     ...form,
-                    failoverEnabled: value !== "disabled",
+                    failoverEnabled: !selectedForwardGroupIsChain && value !== "disabled",
                     failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
-                    protocol: value !== "disabled" ? "tcp" : form.protocol,
+                    protocol: !selectedForwardGroupIsChain && value !== "disabled" ? "tcp" : form.protocol,
                   })}
                   disabled={!canUseMainBackup}
                 >

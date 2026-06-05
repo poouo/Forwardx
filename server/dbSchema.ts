@@ -123,6 +123,7 @@ const tables: TableDef[] = [
     name: "forward_groups",
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
+      c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }),
       c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
       c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true, default: 1 }),
       c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true, default: "0.0.0.0" }),

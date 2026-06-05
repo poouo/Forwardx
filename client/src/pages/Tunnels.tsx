@@ -156,6 +156,31 @@ function normalizeHopConnectHosts(
   return next;
 }
 
+function hostPublicAddress(host: any) {
+  return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+}
+
+function hostPrivateAddress(host: any) {
+  return String(host?.tunnelEntryIp || "").trim();
+}
+
+function normalizeHopConnectHostsForHosts(
+  raw: Array<string | null>,
+  hopHostIds: number[],
+  hosts: any[] | undefined,
+): Array<string | null> {
+  const base = normalizeHopConnectHosts(raw, hopHostIds.length);
+  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
+  return base.map((value, idx) => {
+    if (idx === 0) return null;
+    const host = hostById.get(Number(hopHostIds[idx] || 0));
+    const publicAddr = hostPublicAddress(host);
+    const privateAddr = hostPrivateAddress(host);
+    const text = String(value || "").trim();
+    return privateAddr && text === privateAddr ? privateAddr : (publicAddr || null);
+  });
+}
+
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   forwardx: "ForwardX",
   tls: "TLS",
@@ -178,7 +203,7 @@ function getTunnelModeDisplay(mode: unknown) {
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
-const MAX_TUNNEL_HOPS = 5;
+const MAX_TUNNEL_HOPS = 10;
 
 function getStoredTunnelViewMode(): TunnelViewMode {
   if (typeof window === "undefined") return "card";
@@ -670,9 +695,7 @@ function TunnelsContent() {
       return;
     }
     const orderedHopHostIds = [...form.hopHostIds];
-    const orderedHopConnectHosts = [...form.hopConnectHosts].slice(0, orderedHopHostIds.length);
-    while (orderedHopConnectHosts.length < orderedHopHostIds.length) orderedHopConnectHosts.push(null);
-    if (orderedHopConnectHosts.length > 0) orderedHopConnectHosts[0] = null;
+    const orderedHopConnectHosts = normalizeHopConnectHostsForHosts(form.hopConnectHosts, orderedHopHostIds, hosts);
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
@@ -1155,7 +1178,7 @@ function TunnelsContent() {
                 maxHops={MAX_TUNNEL_HOPS}
                 onChange={(ids) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = normalizeHopConnectHosts(prev.hopConnectHosts, ids.length);
+                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
                     const nextEntry = ids[0] ?? null;
                     const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
                     if (
@@ -1177,7 +1200,7 @@ function TunnelsContent() {
                 }}
                 onConnectHostsChange={(hopConnectHosts) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = normalizeHopConnectHosts(hopConnectHosts, prev.hopHostIds.length);
+                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
                     if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
                     return { ...prev, hopConnectHosts: normalizedConnectHosts };
                   });

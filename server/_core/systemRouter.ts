@@ -56,6 +56,7 @@ const forwardProtocolSettingsSchema = z.object(
   ) as Record<(typeof FORWARD_TYPES[number] | typeof TUNNEL_PROTOCOLS[number]), z.ZodOptional<z.ZodBoolean>>
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
+const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
 const logPageInputSchema = z.object({
   level: panelLogLevelSchema.default("all"),
   limit: z.number().int().min(1).max(500).default(200),
@@ -483,6 +484,25 @@ export const systemRouter = router({
         provider: all.ddnsProvider || "disabled",
         cloudflareZoneId: all.ddnsCloudflareZoneId ?? "",
         cloudflareTokenMasked: maskSecret(all.ddnsCloudflareApiToken),
+        huaweicloudAccessKeyId: all.ddnsHuaweiCloudAccessKeyId ?? "",
+        huaweicloudSecretKeyMasked: maskSecret(all.ddnsHuaweiCloudSecretKey),
+        huaweicloudRegion: all.ddnsHuaweiCloudRegion ?? "cn-north-4",
+        huaweicloudEndpoint: all.ddnsHuaweiCloudEndpoint ?? "",
+        huaweicloudZoneId: all.ddnsHuaweiCloudZoneId ?? "",
+        huaweicloudTtl: Number(all.ddnsHuaweiCloudTtl || 300),
+        huaweicloudLine: all.ddnsHuaweiCloudLine ?? "default_view",
+        aliyunAccessKeyId: all.ddnsAliyunAccessKeyId ?? "",
+        aliyunAccessKeySecretMasked: maskSecret(all.ddnsAliyunAccessKeySecret),
+        aliyunDomainName: all.ddnsAliyunDomainName ?? "",
+        aliyunEndpoint: all.ddnsAliyunEndpoint ?? "https://alidns.aliyuncs.com",
+        aliyunTtl: Number(all.ddnsAliyunTtl || 600),
+        aliyunLine: all.ddnsAliyunLine ?? "default",
+        tencentcloudSecretId: all.ddnsTencentCloudSecretId ?? "",
+        tencentcloudSecretKeyMasked: maskSecret(all.ddnsTencentCloudSecretKey),
+        tencentcloudDomainName: all.ddnsTencentCloudDomainName ?? "",
+        tencentcloudTtl: Number(all.ddnsTencentCloudTtl || 600),
+        tencentcloudRecordLine: all.ddnsTencentCloudRecordLine ?? "默认",
+        tencentcloudRecordLineId: all.ddnsTencentCloudRecordLineId ?? "",
         webhookUrl: all.ddnsWebhookUrl ?? "",
         webhookMethod: all.ddnsWebhookMethod ?? "POST",
         webhookHeaders: all.ddnsWebhookHeaders ?? "",
@@ -560,10 +580,32 @@ export const systemRouter = router({
         }).optional(),
         ddns: z.object({
           enabled: z.boolean().optional(),
-          provider: z.enum(["disabled", "cloudflare", "webhook"]).optional(),
+          provider: ddnsProviderSchema.optional(),
           cloudflareZoneId: z.string().max(256).optional(),
           cloudflareApiToken: z.string().max(512).optional(),
           clearCloudflareApiToken: z.boolean().optional(),
+          huaweicloudAccessKeyId: z.string().max(256).optional(),
+          huaweicloudSecretKey: z.string().max(512).optional(),
+          clearHuaweiCloudSecretKey: z.boolean().optional(),
+          huaweicloudRegion: z.string().max(64).optional(),
+          huaweicloudEndpoint: z.string().max(512).optional(),
+          huaweicloudZoneId: z.string().max(256).optional(),
+          huaweicloudTtl: z.number().int().min(60).max(86400).optional(),
+          huaweicloudLine: z.string().max(128).optional(),
+          aliyunAccessKeyId: z.string().max(256).optional(),
+          aliyunAccessKeySecret: z.string().max(512).optional(),
+          clearAliyunAccessKeySecret: z.boolean().optional(),
+          aliyunDomainName: z.string().max(255).optional(),
+          aliyunEndpoint: z.string().max(512).optional(),
+          aliyunTtl: z.number().int().min(60).max(86400).optional(),
+          aliyunLine: z.string().max(128).optional(),
+          tencentcloudSecretId: z.string().max(256).optional(),
+          tencentcloudSecretKey: z.string().max(512).optional(),
+          clearTencentCloudSecretKey: z.boolean().optional(),
+          tencentcloudDomainName: z.string().max(255).optional(),
+          tencentcloudTtl: z.number().int().min(60).max(86400).optional(),
+          tencentcloudRecordLine: z.string().max(128).optional(),
+          tencentcloudRecordLineId: z.string().max(128).optional(),
           webhookUrl: z.string().max(1000).optional(),
           webhookMethod: z.enum(["POST", "PUT", "GET"]).optional(),
           webhookHeaders: z.string().max(2000).optional(),
@@ -712,6 +754,34 @@ export const systemRouter = router({
         if (input.ddns.cloudflareApiToken !== undefined && input.ddns.cloudflareApiToken.trim()) {
           next.ddnsCloudflareApiToken = input.ddns.cloudflareApiToken.trim();
         }
+        if (input.ddns.huaweicloudAccessKeyId !== undefined) next.ddnsHuaweiCloudAccessKeyId = input.ddns.huaweicloudAccessKeyId.trim() || null;
+        if (input.ddns.clearHuaweiCloudSecretKey) next.ddnsHuaweiCloudSecretKey = null;
+        if (input.ddns.huaweicloudSecretKey !== undefined && input.ddns.huaweicloudSecretKey.trim()) {
+          next.ddnsHuaweiCloudSecretKey = input.ddns.huaweicloudSecretKey.trim();
+        }
+        if (input.ddns.huaweicloudRegion !== undefined) next.ddnsHuaweiCloudRegion = input.ddns.huaweicloudRegion.trim() || null;
+        if (input.ddns.huaweicloudEndpoint !== undefined) next.ddnsHuaweiCloudEndpoint = normalizeOptionalHttpUrl(input.ddns.huaweicloudEndpoint) || null;
+        if (input.ddns.huaweicloudZoneId !== undefined) next.ddnsHuaweiCloudZoneId = input.ddns.huaweicloudZoneId.trim() || null;
+        if (input.ddns.huaweicloudTtl !== undefined) next.ddnsHuaweiCloudTtl = String(input.ddns.huaweicloudTtl);
+        if (input.ddns.huaweicloudLine !== undefined) next.ddnsHuaweiCloudLine = input.ddns.huaweicloudLine.trim() || null;
+        if (input.ddns.aliyunAccessKeyId !== undefined) next.ddnsAliyunAccessKeyId = input.ddns.aliyunAccessKeyId.trim() || null;
+        if (input.ddns.clearAliyunAccessKeySecret) next.ddnsAliyunAccessKeySecret = null;
+        if (input.ddns.aliyunAccessKeySecret !== undefined && input.ddns.aliyunAccessKeySecret.trim()) {
+          next.ddnsAliyunAccessKeySecret = input.ddns.aliyunAccessKeySecret.trim();
+        }
+        if (input.ddns.aliyunDomainName !== undefined) next.ddnsAliyunDomainName = input.ddns.aliyunDomainName.trim() || null;
+        if (input.ddns.aliyunEndpoint !== undefined) next.ddnsAliyunEndpoint = normalizeOptionalHttpUrl(input.ddns.aliyunEndpoint) || null;
+        if (input.ddns.aliyunTtl !== undefined) next.ddnsAliyunTtl = String(input.ddns.aliyunTtl);
+        if (input.ddns.aliyunLine !== undefined) next.ddnsAliyunLine = input.ddns.aliyunLine.trim() || null;
+        if (input.ddns.tencentcloudSecretId !== undefined) next.ddnsTencentCloudSecretId = input.ddns.tencentcloudSecretId.trim() || null;
+        if (input.ddns.clearTencentCloudSecretKey) next.ddnsTencentCloudSecretKey = null;
+        if (input.ddns.tencentcloudSecretKey !== undefined && input.ddns.tencentcloudSecretKey.trim()) {
+          next.ddnsTencentCloudSecretKey = input.ddns.tencentcloudSecretKey.trim();
+        }
+        if (input.ddns.tencentcloudDomainName !== undefined) next.ddnsTencentCloudDomainName = input.ddns.tencentcloudDomainName.trim() || null;
+        if (input.ddns.tencentcloudTtl !== undefined) next.ddnsTencentCloudTtl = String(input.ddns.tencentcloudTtl);
+        if (input.ddns.tencentcloudRecordLine !== undefined) next.ddnsTencentCloudRecordLine = input.ddns.tencentcloudRecordLine.trim() || null;
+        if (input.ddns.tencentcloudRecordLineId !== undefined) next.ddnsTencentCloudRecordLineId = input.ddns.tencentcloudRecordLineId.trim() || null;
         if (input.ddns.webhookUrl !== undefined) next.ddnsWebhookUrl = input.ddns.webhookUrl.trim() || null;
         if (input.ddns.webhookMethod !== undefined) next.ddnsWebhookMethod = input.ddns.webhookMethod;
         if (input.ddns.webhookHeaders !== undefined) next.ddnsWebhookHeaders = input.ddns.webhookHeaders.trim() || null;

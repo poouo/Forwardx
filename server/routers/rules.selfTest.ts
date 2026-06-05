@@ -33,6 +33,29 @@ export const selfTestRulesRouter = router({
       await requireRuleProtocolEnabled(rule);
       let hostId = rule.hostId;
       let message: string | null = null;
+      if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
+        const group = await db.getForwardGroupById(Number((rule as any).forwardGroupId)) as any;
+        if (String(group?.groupMode || "failover") === "chain") {
+          const members = [...(group.members || [])]
+            .filter((member: any) => !!member.isEnabled)
+            .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
+          if (members.length < 2) throw new Error("端口转发链至少需要两台已启用主机");
+          const first = members[0];
+          hostId = Number(first.hostId || rule.hostId);
+          const entryIp = String(first.entryAddress || "").trim();
+          if (!entryIp) throw new Error("端口转发链第一台主机未配置入口地址");
+          await db.syncForwardGroupRules(Number(group.id));
+          message = JSON.stringify({
+            kind: "forward-chain",
+            groupId: group.id,
+            entryIp,
+            entrySourcePort: rule.sourcePort,
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+          });
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} queued entry-port test from host=${hostId} entry=${entryIp}:${rule.sourcePort} target=${rule.targetIp}:${rule.targetPort}`);
+        }
+      }
       if ((rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         if (!tunnel) throw new Error("隧道不存在");

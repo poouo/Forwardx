@@ -2,6 +2,7 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -37,6 +38,8 @@ interface MultiHopEditorProps {
   onChange?: (hopHostIds: number[]) => void;
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
 }
+
+const missingTunnelEntryIpTip = "请先配置内网IP";
 
 const ROLE_COLORS: Record<HopRole, string> = {
   entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
@@ -94,7 +97,7 @@ export default function MultiHopEditor({
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      return hop.useTunnelEntryIp ? (privateAddr || publicAddr || null) : (publicAddr || null);
+      return hop.useTunnelEntryIp && privateAddr ? privateAddr : (publicAddr || null);
     }),
   );
 
@@ -163,7 +166,7 @@ export default function MultiHopEditor({
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      return hop.useTunnelEntryIp ? (privateAddr || publicAddr || null) : (publicAddr || null);
+      return hop.useTunnelEntryIp && privateAddr ? privateAddr : (publicAddr || null);
     });
     const connectText = JSON.stringify(connectHosts);
     if (connectText !== prevConnectRef.current) {
@@ -207,7 +210,12 @@ export default function MultiHopEditor({
   };
 
   const updateUseTunnelEntryIp = (idx: number, enabled: boolean) => {
-    setHops((prev) => prev.map((hop, i) => (i === idx ? { ...hop, useTunnelEntryIp: enabled } : hop)));
+    setHops((prev) => prev.map((hop, i) => {
+      if (i !== idx) return hop;
+      const host = hostById.get(hop.hostId);
+      const privateAddr = String(host?.tunnelEntryIp || "").trim();
+      return { ...hop, useTunnelEntryIp: !!enabled && !!privateAddr };
+    }));
   };
 
   const onDragStart = (idx: number) => (e: React.DragEvent) => {
@@ -301,6 +309,17 @@ export default function MultiHopEditor({
             const isLast = role === "exit";
             const isDragging = dragSourceIdx === idx;
             const isDropTarget = dragSourceIdx !== null && dragOverIdx === idx;
+            const host = hostById.get(hop.hostId);
+            const hasTunnelEntryIp = !!String(host?.tunnelEntryIp || "").trim();
+            const useTunnelEntryIp = hop.useTunnelEntryIp && hasTunnelEntryIp;
+            const tunnelEntrySwitch = (
+              <Switch
+                checked={useTunnelEntryIp}
+                disabled={!hasTunnelEntryIp}
+                onCheckedChange={(checked) => updateUseTunnelEntryIp(idx, !!checked)}
+                aria-label={`为${hop.hostName}使用内网IP`}
+              />
+            );
             return (
               <div
                 key={hop.hostId}
@@ -327,11 +346,18 @@ export default function MultiHopEditor({
                   {!isFirst ? (
                     <>
                       <span className="whitespace-nowrap text-xs text-muted-foreground">使用内网IP</span>
-                      <Switch
-                        checked={hop.useTunnelEntryIp}
-                        onCheckedChange={(checked) => updateUseTunnelEntryIp(idx, !!checked)}
-                        aria-label={`为${hop.hostName}使用内网IP`}
-                      />
+                      {hasTunnelEntryIp ? (
+                        tunnelEntrySwitch
+                      ) : (
+                        <TooltipProvider delayDuration={120}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-flex cursor-not-allowed">{tunnelEntrySwitch}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{missingTunnelEntryIpTip}</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
                     </>
                   ) : (
                     <span className="hidden text-xs sm:invisible sm:block">占位</span>

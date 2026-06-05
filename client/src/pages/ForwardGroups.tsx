@@ -53,6 +53,7 @@ import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type GroupType = "host" | "tunnel";
+type GroupMode = "failover" | "chain";
 
 type MemberForm = {
   key: string;
@@ -64,6 +65,7 @@ type MemberForm = {
 
 type GroupForm = {
   name: string;
+  groupMode: GroupMode;
   groupType: GroupType;
   domain: string;
   recordType: "A" | "AAAA" | "CNAME";
@@ -76,6 +78,7 @@ type GroupForm = {
 
 const makeDefaultForm = (): GroupForm => ({
   name: "",
+  groupMode: "failover",
   groupType: "host",
   domain: "",
   recordType: "A",
@@ -150,6 +153,7 @@ function ForwardGroupsContent() {
   const openEdit = (group: any) => {
     setForm({
       name: group.name || "",
+      groupMode: group.groupMode === "chain" ? "chain" : "failover",
       groupType: group.groupType === "tunnel" ? "tunnel" : "host",
       domain: group.domain || "",
       recordType: group.recordType || "A",
@@ -217,7 +221,8 @@ function ForwardGroupsContent() {
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
-  const availableMemberOptions = form.groupType === "host"
+  const effectiveGroupType = form.groupMode === "chain" ? "host" : form.groupType;
+  const availableMemberOptions = effectiveGroupType === "host"
     ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "" }))
     : (tunnels || []).map((t: any) => ({
       id: Number(t.id),
@@ -227,7 +232,12 @@ function ForwardGroupsContent() {
 
   const addMember = (id: number) => {
     if (!id) return;
-    const key = memberKey(form.groupType, id);
+    if (form.groupMode === "chain" && form.members.length >= 5) {
+      toast.error("端口转发链最多支持 5 台主机");
+      return;
+    }
+    const effectiveType = effectiveGroupType;
+    const key = memberKey(effectiveType, id);
     if (form.members.some((m) => m.key === key)) {
       toast.error("成员已存在");
       return;
@@ -238,9 +248,9 @@ function ForwardGroupsContent() {
         ...form.members,
         {
           key,
-          memberType: form.groupType,
-          hostId: form.groupType === "host" ? id : null,
-          tunnelId: form.groupType === "tunnel" ? id : null,
+          memberType: effectiveType,
+          hostId: effectiveType === "host" ? id : null,
+          tunnelId: effectiveType === "tunnel" ? id : null,
           isEnabled: true,
         },
       ],
@@ -264,7 +274,11 @@ function ForwardGroupsContent() {
 
   const handleSubmit = () => {
     if (!form.name.trim()) return toast.error("请填写组名称");
-    if (form.members.length === 0) return toast.error("请至少添加一个成员");
+    if (form.groupMode === "chain") {
+      if (form.members.length < 2 || form.members.length > 5) return toast.error("端口转发链需要配置 2-5 台主机");
+    } else if (form.members.length === 0) {
+      return toast.error("请至少添加一个成员");
+    }
     const failoverSeconds = Number(form.failoverSeconds);
     const recoverSeconds = Number(form.recoverSeconds);
     if (!Number.isInteger(failoverSeconds) || failoverSeconds < 10 || failoverSeconds > 3600) {
@@ -276,7 +290,8 @@ function ForwardGroupsContent() {
     const payload = {
       ...form,
       name: form.name.trim(),
-      domain: form.domain.trim() || null,
+      groupType: form.groupMode === "chain" ? "host" : form.groupType,
+      domain: form.groupMode === "chain" ? null : form.domain.trim() || null,
       failoverSeconds,
       recoverSeconds,
       members: form.members.map((member, index) => ({
@@ -292,6 +307,10 @@ function ForwardGroupsContent() {
   };
 
   const groupStatusBadge = (group: any) => {
+    if (group.groupMode === "chain") {
+      if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
+      return <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-600">链路</Badge>;
+    }
     if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
     if (group.lastStatus === "healthy") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-600">健康</Badge>;
     if (group.lastStatus === "down") return <Badge variant="destructive">不可用</Badge>;
@@ -304,6 +323,15 @@ function ForwardGroupsContent() {
     const tunnel = tunnelById.get(Number(member.tunnelId));
     return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : `隧道 #${member.tunnelId}`;
   };
+
+  const groupKindBadge = (group: any) => {
+    if (group.groupMode === "chain") return <Badge variant="outline">端口转发链</Badge>;
+    return <Badge variant="outline">{group.groupType === "tunnel" ? "隧道高可用" : "主机高可用"}</Badge>;
+  };
+
+  const groupMemberTitle = (group: any) => group.groupMode === "chain" ? "链路顺序" : "成员优先级";
+
+  const groupDdnsText = (group: any) => group.groupMode === "chain" ? "不使用" : group.domain || "未配置";
 
   const isPending = createMutation.isPending || updateMutation.isPending;
   const handleViewModeChange = (nextViewMode: ForwardGroupViewMode) => {
@@ -372,7 +400,7 @@ function ForwardGroupsContent() {
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
-                        <Badge variant="outline">{group.groupType === "tunnel" ? "隧道组" : "主机组"}</Badge>
+                        {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.lastMessage || "等待检查"}</p>
                     </div>
@@ -380,7 +408,7 @@ function ForwardGroupsContent() {
                   </div>
 
                   <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
-                    <div className="text-xs text-muted-foreground">成员优先级</div>
+                    <div className="text-xs text-muted-foreground">{groupMemberTitle(group)}</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(group.members || []).length > 0 ? (group.members || []).map((member: any, index: number) => (
                         <span
@@ -407,8 +435,8 @@ function ForwardGroupsContent() {
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">DDNS</p>
-                      <p className="mt-1 truncate">{group.domain || "未配置"}</p>
+                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "入口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">引用规则</p>
@@ -448,7 +476,7 @@ function ForwardGroupsContent() {
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
-                        <Badge variant="outline">{group.groupType === "tunnel" ? "隧道组" : "主机组"}</Badge>
+                        {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.lastMessage || "等待检查"}</p>
                     </div>
@@ -456,7 +484,7 @@ function ForwardGroupsContent() {
                   </div>
 
                   <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
-                    <div className="text-xs text-muted-foreground">成员优先级</div>
+                    <div className="text-xs text-muted-foreground">{groupMemberTitle(group)}</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(group.members || []).length > 0 ? (group.members || []).map((member: any, index: number) => (
                         <span
@@ -483,8 +511,8 @@ function ForwardGroupsContent() {
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">DDNS</p>
-                      <p className="mt-1 truncate">{group.domain || "未配置"}</p>
+                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "入口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">引用规则</p>
@@ -523,8 +551,8 @@ function ForwardGroupsContent() {
                     <TableHead>状态</TableHead>
                     <TableHead>名称</TableHead>
                     <TableHead>类型</TableHead>
-                    <TableHead>成员优先级</TableHead>
-                    <TableHead className="hidden md:table-cell">DDNS</TableHead>
+                    <TableHead>成员/链路</TableHead>
+                    <TableHead className="hidden md:table-cell">入口</TableHead>
                     <TableHead className="hidden md:table-cell">引用规则</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -535,10 +563,10 @@ function ForwardGroupsContent() {
                       <TableCell>{groupStatusBadge(group)}</TableCell>
                       <TableCell>
                         <div className="font-medium">{group.name}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{group.lastMessage || "等待故障转移检查"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{group.lastMessage || (group.groupMode === "chain" ? "等待规则引用" : "等待故障转移检查")}</div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">{group.groupType === "tunnel" ? "隧道组" : "主机组"}</Badge>
+                        {groupKindBadge(group)}
                       </TableCell>
                       <TableCell>
                         <div className="flex max-w-xs flex-wrap gap-1.5">
@@ -563,8 +591,8 @@ function ForwardGroupsContent() {
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <div className="text-sm">{group.domain || "未配置域名"}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{group.lastDdnsValue || "未切换"}</div>
+                        <div className="text-sm">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : group.domain || "未配置域名"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{group.groupMode === "chain" ? "规则使用时监听入口端口" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">{Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="text-right">
@@ -605,7 +633,7 @@ function ForwardGroupsContent() {
               <Layers3 className="h-8 w-8 opacity-40" />
             </div>
             <p className="text-lg font-medium">暂无转发组</p>
-            <p className="mt-1 text-sm text-muted-foreground/60">创建后可在转发规则中作为高可用入口使用</p>
+            <p className="mt-1 text-sm text-muted-foreground/60">创建后可在转发规则中作为高可用入口或端口转发链使用</p>
           </CardContent>
         </Card>
       )}
@@ -621,10 +649,55 @@ function ForwardGroupsContent() {
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑转发组" : "添加转发组"}</DialogTitle>
             <DialogDescription>
-              配置入口成员和故障转移。
+              配置高可用入口或端口转发链路。
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+            <div className="rounded-lg border border-border/60 bg-muted/25 p-1">
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  className={`flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                    form.groupMode === "failover" ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                  }`}
+                  onClick={() => {
+                    if (form.groupMode === "failover") return;
+                    savedMembersRef.current.host = form.members.filter((member) => member.memberType === "host");
+                    setForm({
+                      ...form,
+                      groupMode: "failover",
+                      groupType: "host",
+                      members: savedMembersRef.current.host || [],
+                    });
+                  }}
+                >
+                  <Layers3 className="h-4 w-4 shrink-0" />
+                  <span className="truncate">高可用转发组</span>
+                </button>
+                <button
+                  type="button"
+                  className={`flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                    form.groupMode === "chain" ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                  }`}
+                  onClick={() => {
+                    if (form.groupMode === "chain") return;
+                    savedMembersRef.current[form.groupType] = form.members;
+                    const restored = savedMembersRef.current.host || form.members.filter((member) => member.memberType === "host");
+                    setForm({
+                      ...form,
+                      groupMode: "chain",
+                      groupType: "host",
+                      domain: "",
+                      recordType: "A",
+                      members: restored.slice(0, 5).map((member) => ({ ...member, memberType: "host", tunnelId: null, isEnabled: true })),
+                    });
+                  }}
+                >
+                  <Route className="h-4 w-4 shrink-0" />
+                  <span className="truncate">端口转发链</span>
+                </button>
+              </div>
+            </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>组名称</Label>
@@ -634,6 +707,7 @@ function ForwardGroupsContent() {
                 <Label>组类型</Label>
                 <Select
                   value={form.groupType}
+                  disabled={form.groupMode === "chain"}
                   onValueChange={(v) => {
                     const newType = v as GroupType;
                     // Save current members before switching
@@ -652,6 +726,8 @@ function ForwardGroupsContent() {
               </div>
             </div>
 
+            {form.groupMode === "failover" && (
+            <>
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
               <div className="space-y-2">
                 <Label>DDNS 域名</Label>
@@ -707,15 +783,19 @@ function ForwardGroupsContent() {
                 </div>
               </div>
             </div>
+            </>
+            )}
 
             <div className="space-y-3 rounded-lg border border-border/60 p-3">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <Label>成员优先级</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">越靠上优先级越高。</p>
+                  <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {form.groupMode === "chain" ? "按从入口到出口的顺序拖动排列，保存时只记录流程。" : "越靠上优先级越高。"}
+                  </p>
                 </div>
                 <Select onValueChange={(v) => addMember(Number(v))}>
-                  <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder={form.groupType === "host" ? "添加主机成员" : "添加隧道成员"} /></SelectTrigger>
+                  <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder={form.groupMode === "chain" ? "添加链路主机" : form.groupType === "host" ? "添加主机成员" : "添加隧道成员"} /></SelectTrigger>
                   <SelectContent>
                     {availableMemberOptions.map((item: any) => (
                       <SelectItem key={item.id} value={String(item.id)}>
@@ -744,9 +824,11 @@ function ForwardGroupsContent() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
                     </div>
-                    <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
-                      setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                    }} />
+                    {form.groupMode === "failover" && (
+                      <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
+                        setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
+                      }} />
+                    )}
                     <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>

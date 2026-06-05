@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   Copy,
   Key,
+  Loader2,
   Pencil,
   Plus,
   Server,
@@ -108,7 +109,8 @@ export default function AgentTokenManager({
   const [showCreate, setShowCreate] = useState(false);
   const [showNewToken, setShowNewToken] = useState(false);
   const [showScript, setShowScript] = useState(false);
-  const [scriptTokenId, setScriptTokenId] = useState<number | null>(null);
+  const [scriptToken, setScriptToken] = useState("");
+  const [loadingScriptTokenId, setLoadingScriptTokenId] = useState<number | null>(null);
   const [newToken, setNewToken] = useState("");
   const [description, setDescription] = useState("");
   const [editingToken, setEditingToken] = useState<any>(null);
@@ -143,10 +145,6 @@ export default function AgentTokenManager({
   const githubAcceleratorUrl = normalizeConfigUrl(systemSettings?.githubAccelerator?.url || "");
   const githubAcceleratorActive = !!systemSettings?.githubAccelerator?.enabled && !!githubAcceleratorUrl;
   const agentPreferPanelInstall = !!systemSettings?.agentPreferPanelInstall;
-  const { data: installTokenData } = trpc.agentTokens.getInstallToken.useQuery(
-    { id: scriptTokenId ?? undefined },
-    { enabled: !!scriptTokenId && showScript }
-  );
 
   const createTokenMutation = trpc.agentTokens.create.useMutation({
     onSuccess: (data) => {
@@ -177,6 +175,19 @@ export default function AgentTokenManager({
     },
     onError: (err) => toast.error(err.message || "更新 Token 备注失败"),
   });
+
+  const openScriptDialog = async (tokenId: number) => {
+    try {
+      setLoadingScriptTokenId(tokenId);
+      const data = await utils.agentTokens.getInstallToken.fetch({ id: tokenId });
+      setScriptToken(data.token);
+      setShowScript(true);
+    } catch (err: any) {
+      toast.error(err?.message || "获取安装命令失败");
+    } finally {
+      setLoadingScriptTokenId(null);
+    }
+  };
 
   const copyToClipboard = async (text: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
@@ -329,12 +340,14 @@ export default function AgentTokenManager({
                           size="icon"
                           className="h-8 w-8"
                           title="查看安装命令"
-                          onClick={() => {
-                            setScriptTokenId(tokenItem.id);
-                            setShowScript(true);
-                          }}
+                          disabled={loadingScriptTokenId === tokenItem.id}
+                          onClick={() => openScriptDialog(tokenItem.id)}
                         >
-                          <Terminal className="h-3.5 w-3.5" />
+                          {loadingScriptTokenId === tokenItem.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Terminal className="h-3.5 w-3.5" />
+                          )}
                         </Button>
                         <Button
                           variant="ghost"
@@ -433,12 +446,14 @@ export default function AgentTokenManager({
                               size="icon"
                               className="h-8 w-8"
                               title="查看安装命令"
-                              onClick={() => {
-                                setScriptTokenId(tokenItem.id);
-                                setShowScript(true);
-                              }}
+                              disabled={loadingScriptTokenId === tokenItem.id}
+                              onClick={() => openScriptDialog(tokenItem.id)}
                             >
-                              <Terminal className="h-3.5 w-3.5" />
+                              {loadingScriptTokenId === tokenItem.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Terminal className="h-3.5 w-3.5" />
+                              )}
                             </Button>
                             <Button
                               variant="ghost"
@@ -634,7 +649,10 @@ export default function AgentTokenManager({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showScript} onOpenChange={setShowScript}>
+      <Dialog open={showScript} onOpenChange={(open) => {
+        setShowScript(open);
+        if (!open) setScriptToken("");
+      }}>
         <DialogContent className="w-[calc(100vw-2rem)] max-w-[42rem] sm:w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -648,9 +666,9 @@ export default function AgentTokenManager({
           <div className="space-y-4">
             <CommandRow
               label="安装命令"
-              command={installTokenData?.token ? getInstallCommand(installTokenData.token) : "加载中..."}
-              copyDisabled={!installTokenData?.token}
-              onCopy={() => installTokenData?.token && copyToClipboard(getInstallCommand(installTokenData.token))}
+              command={scriptToken ? getInstallCommand(scriptToken) : ""}
+              copyDisabled={!scriptToken}
+              onCopy={() => scriptToken && copyToClipboard(getInstallCommand(scriptToken))}
             />
             <CommandRow
               label="卸载命令"
@@ -664,7 +682,10 @@ export default function AgentTokenManager({
             />
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowScript(false)}>关闭</Button>
+            <Button onClick={() => {
+              setShowScript(false);
+              setScriptToken("");
+            }}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
