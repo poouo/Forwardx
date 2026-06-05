@@ -58,6 +58,40 @@ function tokenHostAddress(host: any) {
   return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
 }
 
+function CommandRow({
+  label,
+  command,
+  onCopy,
+  copyDisabled,
+}: {
+  label: string;
+  command: string;
+  onCopy: () => void;
+  copyDisabled?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+        <div className="min-w-0 overflow-hidden rounded border bg-muted/30">
+          <code className="block min-h-11 overflow-x-auto whitespace-nowrap px-3 py-3 font-mono text-xs leading-5 scrollbar-gutter-stable">
+            {command}
+          </code>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-10 w-10 shrink-0"
+          disabled={copyDisabled}
+          onClick={onCopy}
+        >
+          <Copy className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentTokenManager({
   createSignal,
   className,
@@ -596,7 +630,7 @@ export default function AgentTokenManager({
       </Dialog>
 
       <Dialog open={showScript} onOpenChange={setShowScript}>
-        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-[42rem] sm:w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Terminal className="h-5 w-5" />
@@ -607,54 +641,22 @@ export default function AgentTokenManager({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">安装命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {installTokenData?.token ? getInstallCommand(installTokenData.token) : "加载中..."}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => installTokenData?.token && copyToClipboard(getInstallCommand(installTokenData.token))}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">卸载命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {getUninstallCommand()}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => copyToClipboard(getUninstallCommand())}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">升级命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {getUpgradeCommand()}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => copyToClipboard(getUpgradeCommand())}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
+            <CommandRow
+              label="安装命令"
+              command={installTokenData?.token ? getInstallCommand(installTokenData.token) : "加载中..."}
+              copyDisabled={!installTokenData?.token}
+              onCopy={() => installTokenData?.token && copyToClipboard(getInstallCommand(installTokenData.token))}
+            />
+            <CommandRow
+              label="卸载命令"
+              command={getUninstallCommand()}
+              onCopy={() => copyToClipboard(getUninstallCommand())}
+            />
+            <CommandRow
+              label="升级命令"
+              command={getUpgradeCommand()}
+              onCopy={() => copyToClipboard(getUpgradeCommand())}
+            />
           </div>
           <DialogFooter>
             <Button onClick={() => setShowScript(false)}>关闭</Button>
