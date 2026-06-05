@@ -444,7 +444,7 @@ export const tunnelsRouter = router({
         if (!target || !targetPort) {
           const message = `TUNNEL_TEST_TARGET_INVALID target=${target || "-"} port=${targetPort || "-"}`;
           await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-          await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+          await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
           appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid test target. exitHost=${exit.id} target=${target || "-"} port=${targetPort || "-"}`);
           return { success: false, latencyMs: null, message };
         }
@@ -461,17 +461,20 @@ export const tunnelsRouter = router({
             if (!fromHostId || !nextAddr || !nextPort) {
               const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;
               await db.updateTunnelTestResult(tunnel.id, { status: "failed", latencyMs: null, message });
-              await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true });
+              await db.insertTunnelLatencyStat({ tunnelId: tunnel.id, latencyMs: null, isTimeout: true }, { message });
               appendPanelLog("error", `[TunnelTest] tunnel=${tunnel.id} invalid hop target hop=${i + 1} fromHost=${fromHostId} target=${nextAddr || "-"} port=${nextPort || "-"}`);
               return { success: false, latencyMs: null, message };
             }
             const hopLabel = `${i + 1}/${tunnelHops.length - 1} ${fromHostId}->${Number(nextHop.hostId)}`;
+            const currentHost = await db.getHostById(fromHostId);
+            const routeLabel = `第 ${i + 1} 跳 ${(currentHost as any)?.name || `主机${fromHostId}`} -> ${(nextHost as any)?.name || `主机${Number(nextHop.hostId)}`}`;
             const payload = {
               kind: "tunnel-hop",
               tunnelId: tunnel.id,
               targetIp: nextAddr,
               targetPort: nextPort,
               hopLabel,
+              routeLabel,
               batchId,
             };
             const testId = await db.createForwardTest({

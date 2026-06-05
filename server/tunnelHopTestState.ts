@@ -3,6 +3,7 @@ type HopResult = {
   latencyMs: number | null;
   message: string | null;
   hopLabel: string;
+  routeLabel?: string | null;
 };
 
 type TunnelHopBatch = {
@@ -75,10 +76,15 @@ export function recordTunnelHopTestResult(
   const totalLatency = allSuccess
     ? hopResults.reduce((sum, v) => sum + (Number(v.latencyMs) || 0), 0)
     : null;
-  const failedHop = hopResults.find((v) => !v.success);
+  const detailLines = hopResults.map((v) => {
+    const route = String(v.routeLabel || v.hopLabel || "未知跳点").trim();
+    const latency = v.success && v.latencyMs !== null ? ` ${v.latencyMs}ms` : "";
+    const suffix = !v.success && v.message ? `：${v.message}` : "";
+    return `${route} ${v.success ? "成功" : "失败"}${latency}${suffix}`;
+  });
   const message = allSuccess
     ? `多级隧道逐跳测试成功，总延迟 ${totalLatency}ms（${hopResults.length} 跳）`
-    : `多级隧道逐跳测试失败：${failedHop?.hopLabel || "未知跳点"} ${failedHop?.message || ""}`.trim();
+    : `多级隧道逐跳测试失败：${detailLines.join("；")}`;
 
   batches.delete(batchId);
 
@@ -89,4 +95,3 @@ export function recordTunnelHopTestResult(
     message,
   };
 }
-

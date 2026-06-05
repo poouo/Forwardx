@@ -418,13 +418,21 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
 }
 
 /** 获取某条规则的 TCPing 延迟序列（按时间升序） */
-export async function insertTunnelLatencyStat(stat: InsertTunnelLatencyStat) {
+export async function insertTunnelLatencyStat(
+  stat: InsertTunnelLatencyStat,
+  options: { message?: string | null } = {},
+) {
   const db = await getDb();
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
+  const status = stat.isTimeout ? "failed" : "success";
+  const message = options.message ?? (stat.isTimeout
+    ? "隧道自动延迟检测失败"
+    : `隧道自动延迟检测成功${typeof stat.latencyMs === "number" ? `，延迟 ${stat.latencyMs}ms` : ""}`);
   await db.update(tunnels).set({
     lastLatencyMs: stat.isTimeout ? null : (stat.latencyMs ?? null),
-    lastTestStatus: stat.isTimeout ? "failed" : "success",
+    lastTestStatus: status,
+    lastTestMessage: message,
     lastTestAt: nowDate(),
     updatedAt: nowDate(),
   }).where(eq(tunnels.id, stat.tunnelId));

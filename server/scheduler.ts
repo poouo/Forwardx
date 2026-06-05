@@ -93,7 +93,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
     settledTunnelIds.add(tunnelId);
     await db.updateTunnelRunningStatus(tunnelId, false);
     await db.updateTunnelTestResult(tunnelId, { status: "failed", latencyMs: null, message });
-    await db.insertTunnelLatencyStat({ tunnelId, latencyMs: null, isTimeout: true });
+    await db.insertTunnelLatencyStat({ tunnelId, latencyMs: null, isTimeout: true }, { message });
     appendPanelLog("warn", `[TunnelTest] tunnel=${tunnelId} timeout after ${ttlSeconds}s ${logSuffix}`);
   };
 
@@ -112,12 +112,14 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
 
     if (meta.kind === "tunnel-hop") {
       const hopLabel = String((meta as any).hopLabel || "hop");
+      const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
       const message = `多级隧道逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
       const aggregate = recordTunnelHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
         message,
         hopLabel,
+        routeLabel,
       });
       if (aggregate) {
         await settleTunnel(aggregate.tunnelId, aggregate.message, `test=${test.id} aggregate=true`);

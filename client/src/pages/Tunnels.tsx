@@ -422,7 +422,8 @@ function TunnelSelfTestDialog({
       return;
     }
     const message = typeof tunnel?.lastTestMessage === "string" ? tunnel.lastTestMessage.trim() : "";
-    if (!isTesting && isFailed && message) {
+    const messageLooksSuccessful = /测试成功|检测成功/.test(message) && !/失败|超时|不可达|异常/.test(message);
+    if (!isTesting && isFailed && message && !messageLooksSuccessful) {
       const key = `${tunnelId}:${status}:${tunnel?.lastTestAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;

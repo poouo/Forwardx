@@ -42,7 +42,10 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         latencyMs: success ? cleanLatency : null,
         message: cleanMessage,
       });
-      await db.insertTunnelLatencyStat({ tunnelId: meta.tunnelId, latencyMs: success ? cleanLatency : null, isTimeout: !success });
+      await db.insertTunnelLatencyStat(
+        { tunnelId: meta.tunnelId, latencyMs: success ? cleanLatency : null, isTimeout: !success },
+        { message: cleanMessage },
+      );
       if (success) {
         console.log(`[TunnelTest] tunnel=${meta.tunnelId} entry-agent tcping success latency=${cleanLatency}ms`);
       } else {
@@ -51,11 +54,13 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     }
     if (meta?.kind === "tunnel-hop" && typeof meta.tunnelId === "number") {
       const hopLabel = String((meta as any).hopLabel || "hop");
+      const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
       const aggregate = recordTunnelHopTestResult(testId, {
         success,
         latencyMs: success ? cleanLatency : null,
         message: cleanMessage,
         hopLabel,
+        routeLabel,
       });
       if (success) {
         console.log(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} success latency=${cleanLatency ?? "-"}ms`);
@@ -73,7 +78,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           tunnelId: aggregate.tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
-        });
+        }, { message: aggregate.message });
         if (aggregate.success) {
           console.log(`[TunnelTest] tunnel=${aggregate.tunnelId} multi-hop total latency=${aggregate.latencyMs}ms`);
         } else {

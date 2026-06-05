@@ -32,6 +32,7 @@ export type SelfTestMeta =
       targetIp?: string;
       targetPort?: number;
       hopLabel?: string;
+      routeLabel?: string;
       batchId?: string;
     }
   | {

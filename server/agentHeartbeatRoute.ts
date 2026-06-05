@@ -300,11 +300,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       cmds.push(`iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`);
       return cmds;
     };
+    const failoverProxyHandlesTargetDns = (rule: any) => (
+      !!rule?.failoverEnabled
+      && rule.forwardType === "gost"
+      && rule.protocol === "tcp"
+      && parseFailoverTargets(rule.failoverTargets).length > 0
+    );
 
     // 对 DNS 变更且正在运行的规则，先生成清理动作，再通过 isRunning=false 触发重新下发
     for (const rule of agentHostRules as any[]) {
       if (!dnsChangedRuleIds.has(rule.id)) continue;
       if (!rule.isEnabled || !rule.isRunning) continue;
+      if (failoverProxyHandlesTargetDns(rule)) {
+        console.log(`[DNS] rule=${rule.id} target changed; failover proxy will resolve ${rule._originalTargetIp || rule.targetIp} without service reload`);
+        continue;
+      }
       const oldIp = dnsPreviousIpByRuleId.get(rule.id) || rule._originalTargetIp || rule.targetIp;
       const ruleResolvedIp = rule.targetIp; // 已经是新解析的 IP
       const cleanupCmds = buildDnsChangeCleanup(rule, oldIp);
@@ -451,6 +461,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return failover
         ? { targetIp: "127.0.0.1", targetPort: Number(failover.listenPort) }
         : { targetIp: processTarget(rule), targetPort: Number(rule.targetPort) };
+    };
+    const failoverForCurrentHost = (rule: any, tunnel?: any | null, options?: { listenPort?: number }) => {
+      if (!rule?.failoverEnabled) return undefined;
+      const listenPort = Number(options?.listenPort || failoverProxyPort(rule));
+      if (!tunnel) return actionFailover(rule, { listenPort, bindAddress: "127.0.0.1" });
+      if (isForwardXTunnel(tunnel) && Number(tunnel.entryHostId) === Number(host.id)) {
+        return actionFailover(rule, { listenPort, bindAddress: "127.0.0.1" });
+      }
+      if (!isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) === Number(host.id)) {
+        return actionFailover(rule, { listenPort, bindAddress: "127.0.0.1" });
+      }
+      return undefined;
     };
     const tunnelProtocolType = (mode: string) => {
       if (mode === "wss" || mode === "mwss") return "ws";
@@ -1144,9 +1166,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           forwardType: runningForwardType,
-          failover: (rule as any).tunnelId
-            ? undefined
-            : actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
+          failover: failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) }),
         });
       }
 
@@ -1370,7 +1390,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const tunnelKey = nextHop ? hopKey(tunnelSecretSeed(tunnel), Number(nextHop.seq)) : tunnelSecretSeed(tunnel);
             const rateLimits = userRateLimits(Number(rule.userId));
             const accessLimits = userAccessLimits(Number(rule.userId));
-            const mainBackup = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
+            const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -1400,6 +1420,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 accessScope: accessScopeForRule(rule),
                 ...tunnelProtocolPolicy(tunnel),
               },
+              failover: mainBackup,
             });
             continue;
           }
@@ -1610,7 +1631,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         targetPort: rule.targetPort,
         protocol: rule.protocol,
         forwardType: "gost-tunnel-exit",
-        failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
+        failover: failoverForCurrentHost(rule, tunnelById.get(Number(rule.tunnelId)) as any, { listenPort: failoverProxyPort(rule) }),
       });
     }
 

@@ -87,6 +87,46 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
   };
 }
 
+function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
+  const changedFields = [
+    "sourcePort",
+    "targetIp",
+    "targetPort",
+    "forwardType",
+    "protocol",
+    "gostMode",
+    "gostRelayHost",
+    "gostRelayPort",
+    "tunnelId",
+    "tunnelExitPort",
+    "hostId",
+    "failoverEnabled",
+    "failoverStrategy",
+    "failoverTargets",
+    "failoverSeconds",
+    "recoverSeconds",
+    "autoFailback",
+  ].filter((field) => input[field] !== undefined && input[field] !== rule?.[field]);
+  if (changedFields.length === 0) return false;
+  if (!rule?.isEnabled || !rule?.isRunning || !rule?.failoverEnabled) return false;
+  if (input.failoverEnabled === false) return false;
+  if (String(input.forwardType ?? rule.forwardType) !== "gost") return false;
+  if (String(input.protocol ?? rule.protocol) !== "tcp") return false;
+  if (Number(nextHostId) !== Number(rule.hostId)) return false;
+  if (Number(nextTunnelId || 0) !== Number(rule.tunnelId || 0)) return false;
+
+  const hotFields = new Set([
+    "targetIp",
+    "targetPort",
+    "failoverStrategy",
+    "failoverTargets",
+    "failoverSeconds",
+    "recoverSeconds",
+    "autoFailback",
+  ]);
+  return changedFields.every((field) => hotFields.has(field));
+}
+
 export function requireMainBackupAllowed(options: {
   enabled?: boolean;
   protocol?: string | null;
@@ -598,9 +638,11 @@ export const crudRulesRouter = router({
         const v = data[f];
         return v !== undefined && v !== (rule as any)[f];
       });
+      const failoverHotUpdate = keyFieldChanged
+        && isFailoverHotUpdate(data as any, rule as any, nextHostIdForRule, nextTunnelIdForRule);
       const oldHostIdForRule = Number(rule.hostId);
       const hostChanged = Number(oldHostIdForRule) !== Number(nextHostIdForRule);
-      if (keyFieldChanged) {
+      if (keyFieldChanged && !failoverHotUpdate) {
         (data as any).isRunning = false;
         const affectedTunnelIds = new Set<number>();
         if ((rule as any).tunnelId) affectedTunnelIds.add((rule as any).tunnelId);
@@ -618,9 +660,13 @@ export const crudRulesRouter = router({
           pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated-new-host");
         } else if (!nextTunnelIdForRule) {
           pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-updated");
+        } else if (failoverHotUpdate) {
+          const tunnel = await db.getTunnelById(nextTunnelIdForRule);
+          if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-failover-hot-update");
+          else pushAgentRefresh(Number(nextHostIdForRule), "forward-rule-failover-hot-update");
         }
       }
-      return { success: true, reset: keyFieldChanged };
+      return { success: true, reset: keyFieldChanged && !failoverHotUpdate, hotUpdated: failoverHotUpdate };
     }),
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
