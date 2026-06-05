@@ -132,20 +132,21 @@ resolve_checkout_target() {
 install_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq curl git ca-certificates build-essential python3 openssl >/dev/null
+    apt-get install -y -qq curl git ca-certificates build-essential python3 openssl golang-go >/dev/null
     if ! command -v node >/dev/null 2>&1; then
       curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
       apt-get install -y -qq nodejs >/dev/null
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm
+    dnf install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm golang
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm
+    yum install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm golang
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache curl git ca-certificates build-base python3 openssl nodejs npm
+    apk add --no-cache curl git ca-certificates build-base python3 openssl nodejs npm go
   fi
 
   command -v node >/dev/null 2>&1 || { echo "[错误] Node.js 安装失败，请先安装 Node.js 22+"; exit 1; }
+  command -v go >/dev/null 2>&1 || { echo "[错误] Go 安装失败，无法构建 Agent 程序"; exit 1; }
   corepack enable >/dev/null 2>&1 || npm install -g pnpm@10
   corepack prepare pnpm@10 --activate >/dev/null 2>&1 || npm install -g pnpm@10
 }
@@ -193,6 +194,7 @@ build_panel() {
   cd "$APP_DIR"
   pnpm install --prod=false
   pnpm build
+  bash scripts/build-agent-release.sh
 }
 
 write_env() {

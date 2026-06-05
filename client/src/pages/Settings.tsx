@@ -15,14 +15,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -39,7 +31,6 @@ import {
   type ForwardProtocolSettings,
 } from "@shared/forwardTypes";
 import {
-  Plus,
   Trash2,
   Key,
   Copy,
@@ -58,7 +49,6 @@ import {
   RefreshCw,
   Rocket,
   AlertTriangle,
-  Pencil,
   FileText,
   Eye,
   Cloud,
@@ -131,6 +121,11 @@ const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/ma
 const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh";
 const panelLocalCommandPrefix = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s --`;
 const panelDockerCommandPrefix = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s --`;
+const defaultGithubAcceleratorUrl = "https://git.poouo.com";
+
+function normalizeConfigUrl(value: string) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
 
 const panelInstallGuideCommands = [
   {
@@ -339,7 +334,7 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
   URL.revokeObjectURL(url);
 }
 
-const settingsTabs = ["tokens", "install", "system", "telegram", "email", "backup", "logs"] as const;
+const settingsTabs = ["install", "system", "telegram", "email", "backup", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
@@ -349,15 +344,13 @@ function isSettingsTab(tab: string | null): tab is SettingsTab {
 function getSettingsTab(location: string): SettingsTab {
   const query = location.split("?")[1] || "";
   const tab = new URLSearchParams(query).get("tab");
-  return isSettingsTab(tab) ? tab : "tokens";
+  return isSettingsTab(tab) ? tab : "install";
 }
 
 function SettingsContent() {
   const { user } = useAuth();
   const [location, setLocation] = useLocation();
-  const utils = trpc.useUtils();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => getSettingsTab(location));
-  const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
 
   useEffect(() => {
     if (user && user.role !== "admin") {
@@ -372,60 +365,13 @@ function SettingsContent() {
   const handleTabChange = (tab: string) => {
     if (!isSettingsTab(tab)) return;
     setActiveTab(tab);
-    setLocation(tab === "tokens" ? "/settings" : `/settings?tab=${tab}`);
+    setLocation(tab === "install" ? "/settings" : `/settings?tab=${tab}`);
   };
 
-  const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(
-    undefined,
-    { enabled: user?.role === "admin" }
-  );
-
-  const createTokenMutation = trpc.agentTokens.create.useMutation({
-    onSuccess: (data) => {
-      utils.agentTokens.list.invalidate();
-      toast.success("Token 已创建");
-      setNewToken(data.token);
-      setShowNewToken(true);
-      setShowCreate(false);
-    },
-    onError: (err) => toast.error(err.message || "创建 Token 失败"),
-  });
-
-  const deleteTokenMutation = trpc.agentTokens.delete.useMutation({
-    onSuccess: () => {
-      utils.agentTokens.list.invalidate();
-      utils.hosts.list.invalidate();
-      toast.success("Token 已删除，关联主机已解除绑定");
-    },
-    onError: (err) => toast.error(err.message || "删除 Token 失败"),
-  });
-
-  const updateTokenMutation = trpc.agentTokens.update.useMutation({
-    onSuccess: () => {
-      utils.agentTokens.list.invalidate();
-      toast.success("Token 备注已更新");
-      setEditingToken(null);
-      setEditDescription("");
-    },
-    onError: (err) => toast.error(err.message || "更新 Token 备注失败"),
-  });
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [showNewToken, setShowNewToken] = useState(false);
-  const [showScript, setShowScript] = useState(false);
-  const [scriptTokenId, setScriptTokenId] = useState<number | null>(null);
-  const [newToken, setNewToken] = useState("");
-  const [description, setDescription] = useState("");
-  const [editingToken, setEditingToken] = useState<any>(null);
-  const [editDescription, setEditDescription] = useState("");
   // 面板地址统一使用「系统配置」Tab 中配置的 panelPublicUrl；未配置时回退 window.location.origin
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
     || (typeof window !== "undefined" ? window.location.origin : "");
-  const { data: installTokenData } = trpc.agentTokens.getInstallToken.useQuery(
-    { id: scriptTokenId ?? undefined },
-    { enabled: !!scriptTokenId && showScript }
-  );
 
   const copyToClipboard = async (text: string) => {
     // 优先使用 Clipboard API（仅在 https 或 localhost 下可用）
@@ -485,27 +431,6 @@ function SettingsContent() {
     }
   };
 
-  const getAgentScriptCommand = (args: string) => {
-    return `curl -fsSL "${panelUrl}/api/agent/install.sh" | bash -s -- ${args}`;
-  };
-
-  const getInstallCommand = (token: string) => {
-    return getAgentScriptCommand(`install ${token}`);
-  };
-
-  const getUninstallCommand = () => {
-    return getAgentScriptCommand("uninstall");
-  };
-
-  const getUpgradeCommand = () => {
-    return getAgentScriptCommand("upgrade");
-  };
-
-  const tokenHostAddress = (host: any) => {
-    if (!host) return "";
-    return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
-  };
-
   if (user?.role !== "admin") return null;
 
   return (
@@ -514,20 +439,12 @@ function SettingsContent() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">系统设置</h1>
         </div>
-        <Badge variant="outline" className="gap-1.5 px-3 py-1.5 text-xs">
-          <Key className="h-3 w-3 text-primary" />
-          {tokens?.length ?? 0} 个 Token
-        </Badge>
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
         <div className="w-full sm:flex sm:justify-start">
           <div className="w-full sm:w-auto">
             <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto sm:flex-wrap">
-              <TabsTrigger value="tokens" className={settingsTabTriggerClass}>
-                <Key className="h-3.5 w-3.5" />
-                Token管理
-              </TabsTrigger>
               <TabsTrigger value="install" className={settingsTabTriggerClass}>
                 <Terminal className="h-3.5 w-3.5" />
                 安装说明
@@ -555,243 +472,6 @@ function SettingsContent() {
             </TabsList>
           </div>
         </div>
-
-        {/* Token Management Tab */}
-        <TabsContent value="tokens" className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-muted-foreground">
-              用于 Agent 注册和认证
-            </p>
-            <Button onClick={() => { setDescription(""); setShowCreate(true); }} className="w-full gap-2 sm:w-auto">
-              <Plus className="h-4 w-4" />
-              创建 Token
-            </Button>
-          </div>
-
-          <Alert className="border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            <ShieldCheck className="h-4 w-4" />
-            <AlertTitle>通讯已加密</AlertTitle>
-          </Alert>
-
-          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardContent className="p-0">
-              {isLoading ? (
-                <div className="p-4">
-                  <DataSectionLoading label="正在加载 Agent Token" />
-                </div>
-              ) : tokens && tokens.length > 0 ? (
-                <>
-                <div className="space-y-3 p-3 sm:hidden">
-                  {tokens.map((t) => (
-                    <div key={t.id} className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs text-muted-foreground">Token</p>
-                          <code className="mt-1 block break-all rounded bg-background/60 px-2 py-1 font-mono text-xs">
-                            {t.token}
-                          </code>
-                          {t.description && (
-                            <p className="mt-2 break-words text-xs text-muted-foreground">{t.description}</p>
-                          )}
-                        </div>
-                        {t.isUsed ? (
-                          <Badge className="shrink-0 bg-chart-2/10 text-chart-2 border-chart-2/20 text-[10px]">
-                            已使用
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary" className="shrink-0 text-[10px]">
-                            未使用
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="mt-3 rounded-md bg-background/45 p-2 text-xs">
-                        <p className="text-muted-foreground">对应主机</p>
-                        {t.host ? (
-                          <div className="mt-1 min-w-0">
-                            <p className="break-words font-medium">{t.host.name}</p>
-                            {tokenHostAddress(t.host) && (
-                              <p className="break-all font-mono text-muted-foreground">{tokenHostAddress(t.host)}</p>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="mt-1 text-muted-foreground">{t.isUsed ? "关联主机不存在" : "-"}</p>
-                        )}
-                      </div>
-                      <div className="mt-3 flex items-center justify-between gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(t.createdAt).toLocaleString()}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="查看安装命令"
-                            onClick={() => {
-                              setScriptTokenId(t.id);
-                              setShowScript(true);
-                            }}
-                          >
-                            <Terminal className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="编辑备注"
-                            onClick={() => {
-                              setEditingToken(t);
-                              setEditDescription(t.description || "");
-                            }}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-destructive hover:text-destructive"
-                            onClick={() => {
-                              setTokenToDelete(t);
-                            }}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="hidden overflow-x-auto sm:block">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="hover:bg-transparent">
-                        <TableHead>Token</TableHead>
-                        <TableHead className="hidden sm:table-cell">描述</TableHead>
-                        <TableHead>状态</TableHead>
-                        <TableHead>对应主机</TableHead>
-                        <TableHead className="hidden md:table-cell">创建时间</TableHead>
-                        <TableHead className="text-right">操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {tokens.map((t) => (
-                        <TableRow key={t.id}>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <code className="text-xs bg-muted/40 px-2 py-1 rounded font-mono">
-                                {t.token}
-                              </code>
-                            </div>
-                          </TableCell>
-                          <TableCell className="hidden sm:table-cell">
-                            <span className="text-sm text-muted-foreground">{t.description || "-"}</span>
-                          </TableCell>
-                          <TableCell>
-                            <div className="space-y-1">
-                              {t.isUsed ? (
-                                <Badge className="bg-chart-2/10 text-chart-2 border-chart-2/20 text-[10px]">
-                                  <CheckCircle2 className="h-3 w-3 mr-1" />
-                                  已使用
-                                </Badge>
-                              ) : (
-                                <Badge variant="secondary" className="text-[10px]">
-                                  未使用
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {t.host ? (
-                              <div className="flex min-w-0 items-center gap-2 text-xs leading-5">
-                                <span className="flex h-9 w-4 shrink-0 items-center justify-center">
-                                  <Server className="h-3.5 w-3.5 text-muted-foreground" />
-                                </span>
-                                <div className="min-w-0">
-                                  <span className="block max-w-[220px] truncate font-medium" title={t.host.name}>
-                                    {t.host.name}
-                                  </span>
-                                  {tokenHostAddress(t.host) && (
-                                    <span className="block max-w-[220px] truncate font-mono text-muted-foreground" title={tokenHostAddress(t.host)}>
-                                      {tokenHostAddress(t.host)}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">{t.isUsed ? "关联主机不存在" : "-"}</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="hidden md:table-cell">
-                            <span className="text-xs text-muted-foreground">
-                              {new Date(t.createdAt).toLocaleString()}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                title="查看安装命令"
-                                onClick={() => {
-                                  setScriptTokenId(t.id);
-                                  setShowScript(true);
-                                }}
-                              >
-                                <Terminal className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                title="编辑备注"
-                                onClick={() => {
-                                  setEditingToken(t);
-                                  setEditDescription(t.description || "");
-                                }}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:text-destructive"
-                                onClick={() => {
-                                  setTokenToDelete(t);
-                                }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-                  <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
-                    <Key className="h-8 w-8 opacity-40" />
-                  </div>
-                  <p className="text-lg font-medium">暂无 Token</p>
-                  <p className="text-sm mt-1 text-muted-foreground/60">
-                    创建 Token 以添加被控机
-                  </p>
-                  <Button
-                    onClick={() => { setDescription(""); setShowCreate(true); }}
-                    variant="outline"
-                    className="mt-4 gap-2"
-                  >
-                    <Plus className="h-4 w-4" />
-                    创建第一个 Token
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* Install Guide Tab */}
         <TabsContent value="install" className="space-y-4">
@@ -837,12 +517,12 @@ function SettingsContent() {
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm font-medium">Agent 部署流程</p>
                   <Badge variant="outline" className="w-fit text-[10px]">
-                    脚本从 Token管理 获取
+                    脚本从主机管理获取
                   </Badge>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-4">
                   {[
-                    "在 Token管理 中创建 Agent Token",
+                    "在主机管理 > Token 管理中添加主机",
                     "点击对应 Token 的安装命令按钮并复制命令",
                     "在被控 Linux 主机用 root 权限执行安装命令",
                     "回到主机管理确认 Agent 在线后创建转发",
@@ -857,7 +537,7 @@ function SettingsContent() {
                 </div>
                 <ul className="space-y-1 text-xs text-muted-foreground">
                   <li>- Agent 安装命令与具体 Token 绑定，安装说明页不展示通用安装脚本。</li>
-                  <li>- 安装、升级、卸载命令都可在 Token管理 中通过对应 Token 的安装命令弹窗获取。</li>
+                  <li>- 安装、升级、卸载命令都可在主机管理的 Token 管理中通过对应 Token 的安装命令弹窗获取。</li>
                   <li>- 一个 Token 建议只用于一台被控主机；Token 泄露后请删除并重新创建。</li>
                 </ul>
               </div>
@@ -981,222 +661,6 @@ function SettingsContent() {
         </TabsContent>
       </Tabs>
 
-      {/* Create Token Dialog */}
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>创建 Agent Token</DialogTitle>
-            <DialogDescription>
-              创建 Agent 注册令牌。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>描述（可选）</Label>
-              <Input
-                placeholder="例如: 香港节点 Agent"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreate(false)}>
-              取消
-            </Button>
-            <Button
-              onClick={() =>
-                createTokenMutation.mutate({ description: description || undefined })
-              }
-              disabled={createTokenMutation.isPending}
-            >
-              创建
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* New Token Display Dialog */}
-      <Dialog open={showNewToken} onOpenChange={setShowNewToken}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-chart-2" />
-              Token 已创建
-            </DialogTitle>
-            <DialogDescription>
-              复制命令到主机执行。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <p className="text-sm font-medium">快速安装命令：</p>
-              <div className="p-3 rounded-lg bg-background/50 border">
-                <code className="text-xs font-mono break-all">
-                  {getInstallCommand(newToken)}
-                </code>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full gap-2"
-                onClick={() => copyToClipboard(getInstallCommand(newToken))}
-              >
-                <Copy className="h-3 w-3" />
-                复制安装命令
-              </Button>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setShowNewToken(false)}>确定</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit Token Description Dialog */}
-      <Dialog open={!!editingToken} onOpenChange={(open) => {
-        if (!open) {
-          setEditingToken(null);
-          setEditDescription("");
-        }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>编辑 Token 备注</DialogTitle>
-            <DialogDescription>
-              备注会作为新主机默认名称。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label>备注</Label>
-            <Input
-              value={editDescription}
-              maxLength={200}
-              placeholder="例如：香港节点 Agent"
-              onChange={(e) => setEditDescription(e.target.value)}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingToken(null)}>
-              取消
-            </Button>
-            <Button
-              disabled={updateTokenMutation.isPending || !editingToken}
-              onClick={() => updateTokenMutation.mutate({
-                id: editingToken.id,
-                description: editDescription.trim() || null,
-              })}
-            >
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Token Confirm Dialog */}
-      <Dialog open={!!tokenToDelete} onOpenChange={(open) => !open && setTokenToDelete(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
-              删除 Agent Token
-            </DialogTitle>
-            <DialogDescription>
-              删除后关联主机会离线。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-lg border border-border/50 bg-muted/30 p-3 text-sm">
-            <div className="font-mono break-all">{tokenToDelete?.token}</div>
-            {tokenToDelete?.description && (
-              <div className="mt-2 text-xs text-muted-foreground">{tokenToDelete.description}</div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setTokenToDelete(null)}>取消</Button>
-            <Button
-              variant="destructive"
-              disabled={deleteTokenMutation.isPending || !tokenToDelete}
-              onClick={() => {
-                if (!tokenToDelete) return;
-                const id = tokenToDelete.id;
-                setTokenToDelete(null);
-                deleteTokenMutation.mutate({ id });
-              }}
-            >
-              确认删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Install Command Dialog */}
-      <Dialog open={showScript} onOpenChange={setShowScript}>
-        <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Terminal className="h-5 w-5" />
-              安装命令
-            </DialogTitle>
-            <DialogDescription>
-              使用 root 执行命令。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">安装命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {installTokenData?.token ? getInstallCommand(installTokenData.token) : "加载中..."}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => installTokenData?.token && copyToClipboard(getInstallCommand(installTokenData.token))}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">卸载命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {getUninstallCommand()}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => copyToClipboard(getUninstallCommand())}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">升级命令</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 break-all rounded border bg-muted/30 p-3 font-mono text-xs">
-                  {getUpgradeCommand()}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 self-end sm:self-auto"
-                  onClick={() => copyToClipboard(getUpgradeCommand())}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setShowScript(false)}>关闭</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -2276,7 +1740,8 @@ type SystemSettingsSaveKey =
   | "homepage"
   | "ddns"
   | "forwardProtocols"
-  | "agentLogs";
+  | "agentLogs"
+  | "agentInstall";
 
 function isValidWebPort(value: string | number) {
   const port = Math.floor(Number(value));
@@ -2303,6 +1768,9 @@ function SystemInfoSection() {
   const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
   const [agentLogUploadEnabled, setAgentLogUploadEnabled] = useState(false);
+  const [githubAcceleratorEnabled, setGithubAcceleratorEnabled] = useState(false);
+  const [githubAcceleratorUrlInput, setGithubAcceleratorUrlInput] = useState(defaultGithubAcceleratorUrl);
+  const [agentPreferPanelInstall, setAgentPreferPanelInstall] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<"disabled" | "cloudflare" | "webhook">("disabled");
   const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
@@ -2332,6 +1800,9 @@ function SystemInfoSection() {
       setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
       setAgentLogUploadEnabled(!!settings.agentLogUploadEnabled);
+      setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
+      setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
+      setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
       setDdnsEnabled(!!settings.ddns?.enabled);
       setDdnsProvider((settings.ddns?.provider === "cloudflare" || settings.ddns?.provider === "webhook") ? settings.ddns.provider : "disabled");
       setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
@@ -2495,6 +1966,21 @@ function SystemInfoSection() {
 
   const handleSaveAgentLogs = () => {
     saveSystemSettings("agentLogs", { agentLogUploadEnabled });
+  };
+
+  const handleSaveAgentInstall = () => {
+    const acceleratorUrl = normalizeConfigUrl(githubAcceleratorUrlInput);
+    if (acceleratorUrl && !/^https?:\/\//i.test(acceleratorUrl)) {
+      toast.error("GitHub 加速地址必须以 http:// 或 https:// 开头");
+      return;
+    }
+    saveSystemSettings("agentInstall", {
+      githubAccelerator: {
+        enabled: githubAcceleratorEnabled,
+        url: acceleratorUrl,
+      },
+      agentPreferPanelInstall,
+    });
   };
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
@@ -3144,24 +2630,24 @@ function SystemInfoSection() {
           </CardContent>
         </Card>
 
-      {/* 版本升级 */}
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Rocket className="h-4 w-4 text-primary" />
-            版本升级
-          </CardTitle>
-          <CardDescription>
-            检查并升级 ForwardX。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">当前版本</p>
-              <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
+        {/* 版本升级 */}
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Rocket className="h-4 w-4 text-primary" />
+              版本升级
+            </CardTitle>
+            <CardDescription>
+              检查并升级 ForwardX。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground">当前版本</p>
+                <p className="mt-1 font-mono text-sm">v{upgradeStatus?.currentVersion || settings?.version}</p>
+              </div>
             </div>
-          </div>
 
           {updateInfo?.error && (
             <Alert variant="destructive">
@@ -3343,9 +2829,58 @@ function SystemInfoSection() {
           )}
         </CardContent>
       </Card>
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Github className="h-4 w-4 text-primary" />
+            GitHub 下载加速
+          </CardTitle>
+          <CardDescription>
+            配置 Agent 安装和升级时访问 GitHub 的方式。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">启用 GitHub 加速地址</p>
+                <p className="text-xs text-muted-foreground">
+                  开启并填写地址后，GitHub 真实地址会拼接在加速地址后面。
+                </p>
+              </div>
+              <Switch className="shrink-0" checked={githubAcceleratorEnabled} onCheckedChange={setGithubAcceleratorEnabled} />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">优先连接面板安装 Agent</p>
+                <p className="text-xs text-muted-foreground">
+                  开启后先从面板拉取安装脚本和 Agent 程序，失败后回退 GitHub。
+                </p>
+              </div>
+              <Switch className="shrink-0" checked={agentPreferPanelInstall} onCheckedChange={setAgentPreferPanelInstall} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>GitHub 加速地址</Label>
+            <Input
+              value={githubAcceleratorUrlInput}
+              onChange={(e) => setGithubAcceleratorUrlInput(e.target.value)}
+              placeholder={defaultGithubAcceleratorUrl}
+              className="font-mono"
+            />
+            <p className="text-xs text-muted-foreground">
+              例如 {defaultGithubAcceleratorUrl}/https://github.com/poouo/Forwardx。未填写或未开启时使用直连 GitHub。
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleSaveAgentInstall} disabled={isSavingSetting("agentInstall")}>
+              保存 Agent 安装配置
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       </div>
 
-      {/* 开源与社区 */}
       <Dialog open={showUpgradeConfirm} onOpenChange={setShowUpgradeConfirm}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

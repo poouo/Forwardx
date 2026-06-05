@@ -8,6 +8,10 @@ set -euo pipefail
 ACTION="${1:-}"
 TOKEN="${2:-}"
 
+GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-https://git.poouo.com}"
+GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-false}"
+FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-false}"
+
 SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
@@ -60,7 +64,7 @@ read_existing_config() {
 run_panel_installer() {
   local mode="$1"
   local token="$2"
-  local timeout="${3:-60}"
+  local timeout="${3:-20}"
   local tmp_script
 
   if [ -z "${PANEL_URL:-}" ]; then
@@ -86,7 +90,10 @@ run_panel_installer() {
 
   chmod 700 "$tmp_script"
 
-  if bash "$tmp_script" "$mode" "$token" </dev/null; then
+  if GITHUB_ACCELERATOR_ENABLED="$GITHUB_ACCELERATOR_ENABLED" \
+    GITHUB_ACCELERATOR_URL="$GITHUB_ACCELERATOR_URL" \
+    FORWARDX_AGENT_PANEL_FIRST="$FORWARDX_AGENT_PANEL_FIRST" \
+    bash "$tmp_script" "$mode" "$token" </dev/null; then
     rm -f "$tmp_script"
     return 0
   fi
@@ -120,7 +127,7 @@ do_install() {
   echo ""
 
   echo "[INFO] Fetching install script from panel..."
-  if ! run_panel_installer "install" "$agent_token" 60; then
+  if ! run_panel_installer "install" "$agent_token" 20; then
     echo ""
     echo "[ERROR] Failed to fetch installer from panel"
     echo "       Please check panel URL and network connectivity"
@@ -154,7 +161,7 @@ do_upgrade() {
   echo ""
 
   echo "[INFO] Fetching latest install script from panel..."
-  if ! run_panel_installer "upgrade" "$agent_token" 60; then
+  if ! run_panel_installer "upgrade" "$agent_token" 20; then
     echo ""
     echo "[ERROR] Upgrade failed: cannot fetch installer from panel"
     exit 1

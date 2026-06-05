@@ -63,6 +63,7 @@ const logPageInputSchema = z.object({
 });
 const siteTitleSchema = z.string().trim().max(64);
 const brandLogoSchema = z.string().max(90 * 1024);
+const githubAcceleratorUrlSchema = z.string().trim().max(256);
 
 type UpdateInfo = {
   currentVersion: string;
@@ -359,6 +360,14 @@ function schedulePanelRestart() {
   }, 800);
 }
 
+function normalizeOptionalHttpUrl(value: string) {
+  const trimmed = value.trim();
+  if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+    throw new Error("URL 必须以 http:// 或 https:// 开头");
+  }
+  return trimmed.replace(/\/+$/, "");
+}
+
 export const systemRouter = router({
   health: publicProcedure.query(() => {
     return { status: "ok", timestamp: new Date().toISOString() };
@@ -404,6 +413,11 @@ export const systemRouter = router({
       ),
       tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
       agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
+      githubAccelerator: {
+        enabled: all.githubAcceleratorEnabled === "true",
+        url: all.githubAcceleratorUrl ?? "",
+      },
+      agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
       agentEncryption: "aes-256-ctr+hmac-sha256",
     };
     if (!ctx.user || ctx.user.role !== "admin") return safeSettings;
@@ -433,6 +447,11 @@ export const systemRouter = router({
       ),
         tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
         agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
+        githubAccelerator: {
+          enabled: all.githubAcceleratorEnabled === "true",
+          url: all.githubAcceleratorUrl ?? "",
+        },
+        agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
       database: {
         type: all.databaseType || (all.mysqlConfigured === "true" ? "mysql" : "sqlite"),
         configured: Boolean(all.databaseConfigured || all.mysqlConfigured),
@@ -511,6 +530,11 @@ export const systemRouter = router({
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
         agentLogUploadEnabled: z.boolean().optional(),
+        githubAccelerator: z.object({
+          enabled: z.boolean().optional(),
+          url: githubAcceleratorUrlSchema.optional(),
+        }).optional(),
+        agentPreferPanelInstall: z.boolean().optional(),
         email: z.object({
           enabled: z.boolean().optional(),
           host: z.string().max(256).optional(),
@@ -615,6 +639,21 @@ export const systemRouter = router({
           for (const host of hosts as any[]) pushAgentRefresh(host.id, "agent-log-upload-enabled");
         }
         console.info(`[Settings] Agent log upload ${input.agentLogUploadEnabled ? "enabled" : "disabled"}`);
+      }
+      if (input.githubAccelerator) {
+        const next: Record<string, string | null> = {};
+        if (input.githubAccelerator.enabled !== undefined) {
+          next.githubAcceleratorEnabled = input.githubAccelerator.enabled ? "true" : "false";
+        }
+        if (input.githubAccelerator.url !== undefined) {
+          next.githubAcceleratorUrl = normalizeOptionalHttpUrl(input.githubAccelerator.url) || null;
+        }
+        await db.setSettings(next);
+        console.info("[Settings] GitHub accelerator settings updated");
+      }
+      if (input.agentPreferPanelInstall !== undefined) {
+        await db.setSetting("agentPreferPanelInstall", input.agentPreferPanelInstall ? "true" : "false");
+        console.info(`[Settings] Agent panel-first install ${input.agentPreferPanelInstall ? "enabled" : "disabled"}`);
       }
       if (input.email) {
         const email = input.email;

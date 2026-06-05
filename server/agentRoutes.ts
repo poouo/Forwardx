@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
+import { AGENT_ASSET_NAME_SET, getBundledAgentAssetPath } from "./agentAssets";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
@@ -258,8 +259,32 @@ agentRouter.use(agentApiRouter);
 
 agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => {
   const panelUrl = await resolvePanelUrl(req);
+  const settings = await db.getAllSettings();
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(generateInstallScript(panelUrl));
+  res.send(generateInstallScript(panelUrl, {
+    githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
+    githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
+    preferPanelInstall: settings.agentPreferPanelInstall === "true",
+  }));
+});
+
+agentRouter.get("/api/agent/assets/:version/:asset", async (req: Request, res: Response) => {
+  const version = String(req.params.version || "").trim().replace(/^v/i, "");
+  const asset = String(req.params.asset || "").trim();
+  if (!/^\d+\.\d+\.\d+$/.test(version) || !AGENT_ASSET_NAME_SET.has(asset)) {
+    res.status(404).send("Not found");
+    return;
+  }
+
+  const filePath = getBundledAgentAssetPath(version, asset);
+  if (!filePath) {
+    res.status(503).send("Bundled agent asset not available");
+    return;
+  }
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Disposition", `attachment; filename="${asset}"`);
+  res.sendFile(filePath);
 });
 
 export { agentRouter };

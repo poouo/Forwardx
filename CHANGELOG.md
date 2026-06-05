@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.105] - 2026-06-05
+
+### Added
+
+- Added Agent installation fallback support for GitHub acceleration and optional panel-first Agent installation.
+
+### Changed
+
+- Moved Agent Token management into Host Management with a Host / Token Management switch and unified the add-host flow around generating an Agent install command.
+- Bumped panel version to 2.3.105. Agent/FXP runtime target version remains 2.2.83.
+- Android APP version remains 2.3.38 and the APK release pointer is updated to 2.3.105 because this is a web-panel/server update.
+
 ## [2.3.103] - 2026-06-03
 
 ### Fixed

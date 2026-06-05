@@ -1,5 +1,6 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AgentTokenManager from "@/components/AgentTokenManager";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -53,9 +54,9 @@ import {
   Loader2,
   RefreshCw,
   Activity,
+  Key,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "wouter";
 import { toast } from "sonner";
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
@@ -199,6 +200,7 @@ const defaultFormData: HostFormData = {
 };
 
 type HostViewMode = "card" | "table";
+type HostManageTab = "hosts" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 
@@ -434,7 +436,6 @@ function HostCard({
 
 function HostsContent() {
   const { user } = useAuth();
-  const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const pageVisible = usePageVisible();
   const hostRefreshInterval = pageVisible ? 2000 : false;
@@ -458,6 +459,8 @@ function HostsContent() {
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
+  const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
+  const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
   const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
@@ -556,8 +559,8 @@ function HostsContent() {
   };
 
   const openCreate = () => {
-    resetForm();
-    setShowDialog(true);
+    setActiveManageTab("tokens");
+    setTokenCreateSignal((value) => value + 1);
   };
 
   const openEdit = (host: any) => {
@@ -716,53 +719,81 @@ function HostsContent() {
               {updateCount} 台发现新版本
             </Badge>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
-            disabled={checkingAgentUpdate}
-            onClick={handleCheckAgentUpdate}
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
-            检查 Agent 更新
-          </Button>
+          {activeManageTab === "hosts" && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
+                disabled={checkingAgentUpdate}
+                onClick={handleCheckAgentUpdate}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${checkingAgentUpdate ? "animate-spin" : ""}`} />
+                检查 Agent 更新
+              </Button>
+              {user?.role === "admin" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
+                  disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
+                  onClick={requestAllAgentUpgrades}
+                >
+                  {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  一键升级 Agent
+                </Button>
+              )}
+              <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+                <Button
+                  variant={viewMode === "card" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-8 w-8 rounded-none"
+                  onClick={() => handleViewModeChange("card")}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === "table" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-8 w-8 rounded-none"
+                  onClick={() => handleViewModeChange("table")}
+                >
+                  <List className="h-4 w-4" />
+                </Button>
+              </div>
+            </>
+          )}
           {user?.role === "admin" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto"
-              disabled={bulkUpgradeableHosts.length === 0 || upgradeAgentsMutation.isPending}
-              onClick={requestAllAgentUpgrades}
-            >
-              {upgradeAgentsMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              一键升级 Agent
+            <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
+              <Plus className="h-4 w-4" />
+              添加主机
             </Button>
           )}
-          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
-            <Button
-              variant={viewMode === "card" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("card")}
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === "table" ? "secondary" : "ghost"}
-              size="icon"
-              className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("table")}
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
-          <Button onClick={() => setLocation("/settings")} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
-            <Plus className="h-4 w-4" />
-            添加主机
-          </Button>
         </div>
       </div>
 
+      <Tabs
+        value={activeManageTab}
+        onValueChange={(value) => {
+          if (value === "tokens" && user?.role !== "admin") return;
+          setActiveManageTab(value as HostManageTab);
+        }}
+        className="space-y-4"
+      >
+        <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-2" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto`}>
+          <TabsTrigger value="hosts" className="gap-1.5 px-4">
+            <Server className="h-3.5 w-3.5" />
+            主机
+          </TabsTrigger>
+          {user?.role === "admin" && (
+            <TabsTrigger value="tokens" className="gap-1.5 px-4">
+              <Key className="h-3.5 w-3.5" />
+              Token 管理
+            </TabsTrigger>
+          )}
+        </TabsList>
+
+        <TabsContent value="hosts" className="space-y-4">
       {/* Content */}
       {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />
@@ -969,12 +1000,19 @@ function HostsContent() {
               </div>
               <p className="text-lg font-medium">暂无主机</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                请联系管理员添加主机
+                {user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
               </p>
             </div>
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+        {user?.role === "admin" && (
+          <TabsContent value="tokens" className="space-y-4">
+            <AgentTokenManager createSignal={tokenCreateSignal} showCreateButton={false} />
+          </TabsContent>
+        )}
+      </Tabs>
 
       {/* Agent Upgrade Dialog */}
       <Dialog open={!!upgradeHost} onOpenChange={(open) => !open && setUpgradeHost(null)}>

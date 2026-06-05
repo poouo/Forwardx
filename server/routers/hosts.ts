@@ -3,16 +3,11 @@ import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
+import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets";
 import { requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
 
-const AGENT_UPGRADE_ASSET_NAMES = [
-  "forwardx-agent-linux-amd64",
-  "forwardx-agent-linux-arm64",
-  "forwardx-fxp-linux-amd64",
-  "forwardx-fxp-linux-arm64",
-];
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
 
@@ -73,6 +68,9 @@ async function releaseAssetExistsViaDownloadUrl(tag: string, assetName: string) 
 
 async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersion = APP_VERSION) {
   const normalizedAgentVersion = normalizeVersion(agentVersion);
+  const missingBundledAssets = getMissingBundledAgentAssets(releaseVersion);
+  if (missingBundledAssets.length === 0) return;
+
   const tag = `v${normalizeVersion(releaseVersion)}`;
   const { owner, repo } = githubRepoParts(REPO_URL);
   const url = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`;
@@ -91,7 +89,7 @@ async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersio
   if (!res.ok) {
     if (GITHUB_API_LIMIT_STATUSES.has(res.status)) {
       const missingByUrl: string[] = [];
-      for (const name of AGENT_UPGRADE_ASSET_NAMES) {
+      for (const name of missingBundledAssets) {
         if (!await releaseAssetExistsViaDownloadUrl(tag, name)) missingByUrl.push(name);
       }
       if (missingByUrl.length === 0) return;
@@ -101,7 +99,7 @@ async function assertAgentReleaseAssetsReady(agentVersion: string, releaseVersio
   }
   const release = await res.json() as { assets?: Array<{ name?: string; state?: string; size?: number }> };
   const assets = new Map((release.assets || []).map((asset) => [asset.name || "", asset]));
-  const missing = AGENT_UPGRADE_ASSET_NAMES.filter((name) => {
+  const missing = missingBundledAssets.filter((name) => {
     const asset = assets.get(name);
     return !asset || asset.state !== "uploaded" || Number(asset.size || 0) <= 0;
   });
