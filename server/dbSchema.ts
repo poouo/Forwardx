@@ -109,6 +109,7 @@ const tables: TableDef[] = [
       c("sourcePort", "int", { notNull: true }), c("targetIp", "text", { notNull: true }),
       c("targetPort", "int", { notNull: true }), c("protocolBlockReason", "text"), c("isEnabled", "bool", { notNull: true, default: true }),
       c("failoverEnabled", "bool", { notNull: true, default: false }), c("failoverTargets", "text"),
+      c("failoverStrategy", "varchar", { length: 32, notNull: true, default: "fallback" }),
       c("failoverSeconds", "int", { notNull: true, default: 60 }), c("recoverSeconds", "int", { notNull: true, default: 120 }),
       c("autoFailback", "bool", { notNull: true, default: true }),
       c("disabledByTunnel", "bool", { notNull: true, default: false }), c("disabledByUser", "bool", { notNull: true, default: false }),

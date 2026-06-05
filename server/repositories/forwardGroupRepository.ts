@@ -462,6 +462,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     targetIp: templateRule.targetIp,
     targetPort: Number(templateRule.targetPort),
     failoverEnabled: !!(templateRule as any).failoverEnabled,
+    failoverStrategy: (templateRule as any).failoverStrategy || "fallback",
     failoverTargets: (templateRule as any).failoverTargets || null,
     failoverSeconds: Number((templateRule as any).failoverSeconds || 60),
     recoverSeconds: Number((templateRule as any).recoverSeconds || 120),

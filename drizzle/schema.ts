@@ -195,6 +195,7 @@ export const forwardRules = table("forward_rules", {
   protocolBlockReason: text("protocolBlockReason"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   failoverEnabled: boolean("failoverEnabled").notNull().default(false),
+  failoverStrategy: varchar("failoverStrategy", { length: 32 }).notNull().default("fallback"),
   failoverTargets: text("failoverTargets"),
   failoverSeconds: int("failoverSeconds").notNull().default(60),
   recoverSeconds: int("recoverSeconds").notNull().default(120),

@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -102,21 +103,34 @@ type RuleFormData = {
   targetIp: string;
   targetPort: number;
   failoverEnabled: boolean;
-  failoverTargets: FailoverTargetForm[];
+  failoverStrategy: FailoverStrategy;
+  failoverTargetsText: string;
   failoverSeconds: number;
   recoverSeconds: number;
   autoFailback: boolean;
 };
 
-type FailoverTargetForm = {
-  targetIp: string;
-  targetPort: number;
-};
+type FailoverStrategy = "fallback" | "round_robin" | "random" | "ip_hash";
+type FailoverMode = "disabled" | FailoverStrategy;
 
-const emptyFailoverTargets = (): FailoverTargetForm[] => ([
-  { targetIp: "", targetPort: 0 },
-  { targetIp: "", targetPort: 0 },
-]);
+const failoverModeOptions: Array<{ value: FailoverMode; label: string }> = [
+  { value: "disabled", label: "不使用" },
+  { value: "fallback", label: "主备模式 - 自上而下" },
+  { value: "round_robin", label: "轮询模式 - 依次轮换" },
+  { value: "random", label: "随机模式 - 随机选择" },
+  { value: "ip_hash", label: "哈希模式 - IP哈希" },
+];
+const failoverStrategyLabels: Record<FailoverStrategy, string> = {
+  fallback: "主备",
+  round_robin: "轮询",
+  random: "随机",
+  ip_hash: "IP哈希",
+};
+const normalizeFailoverStrategy = (value: unknown): FailoverStrategy => {
+  return value === "round_robin" || value === "random" || value === "ip_hash" || value === "fallback"
+    ? value
+    : "fallback";
+};
 
 const defaultForm: RuleFormData = {
   hostId: null,
@@ -133,7 +147,8 @@ const defaultForm: RuleFormData = {
   targetIp: "",
   targetPort: 0,
   failoverEnabled: false,
-  failoverTargets: emptyFailoverTargets(),
+  failoverStrategy: "fallback",
+  failoverTargetsText: "",
   failoverSeconds: 60,
   recoverSeconds: 120,
   autoFailback: true,
@@ -316,42 +331,59 @@ function isValidTargetHost(value: string) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
 }
 
-function parseRuleFailoverTargets(raw: unknown): FailoverTargetForm[] {
-  const fallback = emptyFailoverTargets();
-  if (!raw) return fallback;
+function splitFailoverTargetLine(line: string) {
+  const value = line.trim();
+  if (!value) return null;
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    if (end > 1 && value[end + 1] === ":") {
+      return { targetIp: value.slice(1, end).trim(), targetPort: Number(value.slice(end + 2).trim()) };
+    }
+    return { error: "IPv6 地址请使用 [地址]:端口 格式" };
+  }
+  const index = value.lastIndexOf(":");
+  if (index <= 0 || index === value.length - 1) return { error: "请按 地址:端口 格式填写" };
+  return { targetIp: value.slice(0, index).trim(), targetPort: Number(value.slice(index + 1).trim()) };
+}
+
+function parseRuleFailoverTargets(raw: unknown) {
+  if (!raw) return [];
   try {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!Array.isArray(parsed)) return fallback;
-    const rows = parsed
+    if (!Array.isArray(parsed)) return [];
+    return parsed
       .map((target: any) => ({
         targetIp: String(target?.targetIp || "").trim(),
         targetPort: Number(target?.targetPort || 0),
       }))
       .filter((target) => target.targetIp && isValidPort(target.targetPort))
-      .slice(0, 2);
-    return [...rows, ...fallback].slice(0, 2);
+      .slice(0, 10);
   } catch {
-    return fallback;
+    return [];
   }
 }
 
-function normalizeFailoverTargetsForSubmit(rows: FailoverTargetForm[]) {
-  const targets: FailoverTargetForm[] = [];
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    const targetIp = String(row.targetIp || "").trim();
-    const targetPort = Number(row.targetPort || 0);
-    const hasIp = targetIp.length > 0;
-    const hasPort = targetPort > 0;
-    if (!hasIp && !hasPort) continue;
-    if (!hasIp || !hasPort) {
-      return { error: `备用目标 ${index + 1} 需要同时填写地址和端口` };
-    }
+function formatFailoverTargetsText(raw: unknown) {
+  return parseRuleFailoverTargets(raw)
+    .map((target) => `${target.targetIp.includes(":") ? `[${target.targetIp}]` : target.targetIp}:${target.targetPort}`)
+    .join("\n");
+}
+
+function normalizeFailoverTargetsForSubmit(text: string) {
+  const targets: Array<{ targetIp: string; targetPort: number }> = [];
+  const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 10) return { error: "备用出站最多支持 10 个" };
+  for (let index = 0; index < lines.length; index += 1) {
+    const parsed = splitFailoverTargetLine(lines[index]);
+    if (!parsed) continue;
+    if ("error" in parsed) return { error: `第 ${index + 1} 行：${parsed.error}` };
+    const targetIp = parsed.targetIp;
+    const targetPort = parsed.targetPort;
     if (!isValidTargetHost(targetIp)) {
-      return { error: `备用目标 ${index + 1} 地址格式不正确` };
+      return { error: `第 ${index + 1} 行：地址格式不正确` };
     }
     if (!isValidPort(targetPort)) {
-      return { error: `备用目标 ${index + 1} 端口必须在 1-65535 之间` };
+      return { error: `第 ${index + 1} 行：端口必须在 1-65535 之间` };
     }
     targets.push({ targetIp, targetPort });
   }
@@ -568,7 +600,7 @@ function RulesContent() {
   };
 
   const resetForm = () => {
-    setForm({ ...defaultForm, failoverTargets: emptyFailoverTargets() });
+    setForm({ ...defaultForm, failoverTargetsText: "" });
     setEditingId(null);
     setPortStatus("idle");
   };
@@ -583,7 +615,7 @@ function RulesContent() {
     if (firstForwardType || firstTunnel || firstGroup) {
       setForm({
         ...defaultForm,
-        failoverTargets: emptyFailoverTargets(),
+        failoverTargetsText: "",
         routeMode: firstForwardType ? "local" : firstTunnel ? "tunnel" : firstGroup ? "group" : "local",
         hostId: firstForwardType ? hosts?.[0]?.id ?? null : firstTunnel ? firstTunnel.entryHostId : null,
         forwardType: firstTunnel && !firstForwardType ? "gost" : firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
@@ -626,7 +658,8 @@ function RulesContent() {
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
       failoverEnabled: !!rule.failoverEnabled,
-      failoverTargets: parseRuleFailoverTargets(rule.failoverTargets),
+      failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
+      failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
       failoverSeconds: Number(rule.failoverSeconds || 60),
       recoverSeconds: Number(rule.recoverSeconds || 120),
       autoFailback: rule.autoFailback !== false,
@@ -759,6 +792,16 @@ function RulesContent() {
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardGroup = availableForwardGroups.length > 0;
   const canCreateRule = canUseLocalForward || canUseGost || canUseForwardGroup;
+  const mainBackupForwardType = form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel" ? "gost" : form.forwardType;
+  const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || selectedForwardGroup?.groupType === "tunnel";
+  const canUseMainBackup = mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute);
+  const mainBackupDisabledText = mainBackupForwardType !== "gost"
+    ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持出站策略。"
+    : user?.role !== "admin" && !mainBackupIsTunnelRoute
+    ? "普通端口转发不支持出站策略，请使用隧道转发。"
+    : form.protocol !== "tcp"
+    ? "出站策略仅支持 TCP 协议。"
+    : "";
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
     return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
@@ -845,6 +888,11 @@ function RulesContent() {
       setForm((prev) => ({ ...prev, forwardType: "gost" }));
     }
   }, [availableForwardGroups, form.forwardType, form.routeMode, selectedForwardGroup]);
+
+  useEffect(() => {
+    if (!form.failoverEnabled || canUseMainBackup) return;
+    setForm((prev) => ({ ...prev, failoverEnabled: false }));
+  }, [canUseMainBackup, form.failoverEnabled]);
 
   // 随机分配端口
   const handleRandomPort = async () => {
@@ -936,23 +984,27 @@ function RulesContent() {
       toast.error("目标端口必须在 1-65535 之间");
       return;
     }
-    const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargets);
+    const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargetsText);
     if (failoverSubmit.error) {
       toast.error(failoverSubmit.error);
       return;
     }
     const failoverTargets = failoverSubmit.targets || [];
     if (form.failoverEnabled) {
+      if (!canUseMainBackup) {
+        toast.error(mainBackupDisabledText || "当前规则类型不支持出站策略");
+        return;
+      }
       if (form.protocol !== "tcp") {
-        toast.error("故障转移当前仅支持 TCP 协议");
+        toast.error("出站策略当前仅支持 TCP 协议");
         return;
       }
       if (failoverTargets.length === 0) {
-        toast.error("开启故障转移后至少需要填写一个备用目标");
+        toast.error("启用出站策略后至少需要填写一个备用出站");
         return;
       }
       if (!Number.isInteger(form.failoverSeconds) || form.failoverSeconds < 10 || form.failoverSeconds > 3600) {
-        toast.error("故障转移时间必须在 10-3600 秒之间");
+        toast.error("健康检查切换时间必须在 10-3600 秒之间");
         return;
       }
       if (!Number.isInteger(form.recoverSeconds) || form.recoverSeconds < 10 || form.recoverSeconds > 3600) {
@@ -962,6 +1014,7 @@ function RulesContent() {
     }
     const failoverPayload = {
       failoverEnabled: form.failoverEnabled,
+      failoverStrategy: form.failoverStrategy,
       failoverTargets: form.failoverEnabled ? failoverTargets : [],
       failoverSeconds: form.failoverSeconds || 60,
       recoverSeconds: form.recoverSeconds || 120,
@@ -1281,7 +1334,7 @@ function RulesContent() {
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     const failoverBadge = rule.failoverEnabled ? (
       <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
-        故障转移 {failoverCount}
+        {failoverStrategyLabels[normalizeFailoverStrategy(rule.failoverStrategy)]} {failoverCount}
       </Badge>
     ) : null;
 
@@ -2385,59 +2438,50 @@ function RulesContent() {
             <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <Label className="text-sm">故障转移</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">目标端口不可达时切换到备用目标。</p>
+                  <Label className="text-sm">出站策略</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    默认不使用；启用后主出站和备用出站按所选策略分配连接。
+                  </p>
+                  {!canUseMainBackup && mainBackupDisabledText && (
+                    <p className="mt-1 text-xs text-amber-600">{mainBackupDisabledText}</p>
+                  )}
                 </div>
-                <Switch
-                  checked={form.failoverEnabled}
-                  onCheckedChange={(checked) => setForm({
+                <Select
+                  value={form.failoverEnabled ? form.failoverStrategy : "disabled"}
+                  onValueChange={(value: FailoverMode) => setForm({
                     ...form,
-                    failoverEnabled: checked,
-                    protocol: checked ? "tcp" : form.protocol,
+                    failoverEnabled: value !== "disabled",
+                    failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
+                    protocol: value !== "disabled" ? "tcp" : form.protocol,
                   })}
-                />
+                  disabled={!canUseMainBackup}
+                >
+                  <SelectTrigger className="h-9 w-[220px] max-w-[46vw]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {failoverModeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               {form.failoverEnabled && (
                 <div className="space-y-3">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {form.failoverTargets.map((target, index) => (
-                      <div key={index} className="space-y-2 rounded-md border border-border/50 bg-background/55 p-3">
-                        <Label className="text-xs text-muted-foreground">备用目标 {index + 1}</Label>
-                        <div className="grid grid-cols-[minmax(0,1fr)_88px] gap-2">
-                          <Input
-                            value={target.targetIp}
-                            onChange={(event) => {
-                              const rows = form.failoverTargets.map((item, rowIndex) => (
-                                rowIndex === index ? { ...item, targetIp: event.target.value } : item
-                              ));
-                              setForm({ ...form, failoverTargets: rows });
-                            }}
-                            placeholder="地址，可留空"
-                            className="font-mono text-sm"
-                            spellCheck={false}
-                          />
-                          <Input
-                            type="number"
-                            min={1}
-                            max={65535}
-                            step={1}
-                            value={target.targetPort || ""}
-                            onChange={(event) => {
-                              const rows = form.failoverTargets.map((item, rowIndex) => (
-                                rowIndex === index ? { ...item, targetPort: parseInt(event.target.value) || 0 } : item
-                              ));
-                              setForm({ ...form, failoverTargets: rows });
-                            }}
-                            placeholder="端口"
-                            inputMode="numeric"
-                          />
-                        </div>
-                      </div>
-                    ))}
+                  <div className="space-y-2">
+                    <Label>备用出站（每行一个，最多 10 个）</Label>
+                    <Textarea
+                      value={form.failoverTargetsText}
+                      onChange={(event) => setForm({ ...form, failoverTargetsText: event.target.value })}
+                      placeholder={"10.0.0.1:80\nexample.com:443"}
+                      className="min-h-28 font-mono text-sm"
+                      spellCheck={false}
+                    />
+                    <p className="text-xs text-muted-foreground">支持 IPv4、域名、IPv6；例如 10.0.0.1:80、example.com:443、[2001:db8::1]:80。</p>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div className="space-y-2">
-                      <Label>故障转移时间（秒）</Label>
+                      <Label>健康切换时间（秒）</Label>
                       <Input
                         type="number"
                         min={10}
@@ -2458,16 +2502,18 @@ function RulesContent() {
                         onChange={(event) => setForm({ ...form, recoverSeconds: parseInt(event.target.value) || 0 })}
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
-                      <div>
-                        <Label className="text-sm">恢复后切回</Label>
-                        <p className="mt-1 text-xs text-muted-foreground">主目标稳定后自动回切。</p>
+                    {form.failoverStrategy === "fallback" && (
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                        <div>
+                          <Label className="text-sm">恢复后切回</Label>
+                          <p className="mt-1 text-xs text-muted-foreground">主目标稳定后自动回切。</p>
+                        </div>
+                        <Switch
+                          checked={form.autoFailback}
+                          onCheckedChange={(checked) => setForm({ ...form, autoFailback: checked })}
+                        />
                       </div>
-                      <Switch
-                        checked={form.autoFailback}
-                        onCheckedChange={(checked) => setForm({ ...form, autoFailback: checked })}
-                      />
-                    </div>
+                    )}
                   </div>
                 </div>
               )}
