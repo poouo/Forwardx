@@ -6,6 +6,7 @@ const memberSchema = z.object({
   memberType: z.enum(["host", "tunnel"]),
   hostId: z.number().nullable().optional(),
   tunnelId: z.number().nullable().optional(),
+  connectHost: z.string().max(253).nullable().optional(),
   priority: z.number().int().min(0).optional(),
   isEnabled: z.boolean().optional(),
 });
@@ -40,6 +41,7 @@ function normalizeMembers(groupMode: "failover" | "chain", groupType: "host" | "
       memberType: effectiveGroupType,
       hostId: effectiveGroupType === "host" ? id : null,
       tunnelId: effectiveGroupType === "tunnel" ? id : null,
+      connectHost: groupMode === "chain" ? String(member.connectHost || "").trim() || null : null,
       priority: member.priority ?? index,
       isEnabled: groupMode === "chain" ? true : member.isEnabled ?? true,
     };

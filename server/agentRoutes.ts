@@ -205,6 +205,11 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
 
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
+      const entryChanged = [
+        ["ip", primaryIp !== "unknown" ? primaryIp : existingHost.ip],
+        ["ipv4", safeIpv4 || (existingHost as any).ipv4 || null],
+        ["ipv6", safeIpv6 || (existingHost as any).ipv6 || null],
+      ].some(([key, value]) => String(value || "") !== String((existingHost as any)[key as string] || ""));
       await db.updateHost(existingHost.id, {
         ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip,
         ipv4: safeIpv4 || (existingHost as any).ipv4 || null,
@@ -216,6 +221,9 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         isOnline: true,
         lastHeartbeat: new Date(),
       });
+      if (entryChanged) {
+        await db.syncForwardChainsForHost(existingHost.id, existingHost);
+      }
       await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-registered");
       res.json({ success: true, hostId: existingHost.id, message: "Host updated" });
       return;

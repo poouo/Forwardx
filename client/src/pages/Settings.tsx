@@ -2517,7 +2517,6 @@ function SystemInfoSection() {
                   <Input value={ddnsHuaweiCloudEndpoint} onChange={(e) => setDdnsHuaweiCloudEndpoint(e.target.value)} placeholder="留空使用区域默认 Endpoint" />
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">基础模式使用默认线路；后端已支持按线路 ID 更新同名记录，后续可用于省份/地域线路分配。</p>
             </div>
           )}
 
@@ -2558,7 +2557,6 @@ function SystemInfoSection() {
                   <Input value={ddnsAliyunTtl} onChange={(e) => setDdnsAliyunTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="600" inputMode="numeric" />
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">基础模式按主域名拆分 RR；后端更新时可传入线路值用于后续地域/运营商线路。</p>
             </div>
           )}
 
@@ -2599,7 +2597,6 @@ function SystemInfoSection() {
                   <Input value={ddnsTencentCloudRecordLineId} onChange={(e) => setDdnsTencentCloudRecordLineId(e.target.value)} placeholder="可留空" />
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">基础模式使用默认线路；后端同时支持 RecordLine 和 RecordLineId，便于后续接入省份线路。</p>
             </div>
           )}
 

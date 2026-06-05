@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -31,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import MultiHopEditor from "@/components/MultiHopEditor";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -60,6 +62,7 @@ type MemberForm = {
   memberType: GroupType;
   hostId: number | null;
   tunnelId: number | null;
+  connectHost?: string | null;
   isEnabled: boolean;
 };
 
@@ -116,6 +119,50 @@ function storeForwardGroupViewMode(viewMode: ForwardGroupViewMode) {
   }
 }
 
+function sameNumberArray(a: number[], b: number[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameNullableStringArray(a: Array<string | null>, b: Array<string | null>) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if ((a[i] || null) !== (b[i] || null)) return false;
+  }
+  return true;
+}
+
+function hostPrivateAddress(host: any) {
+  return String(host?.tunnelEntryIp || "").trim();
+}
+
+function normalizeChainConnectHostsForHosts(
+  raw: Array<string | null>,
+  hostIds: number[],
+  hosts: any[] | undefined,
+): Array<string | null> {
+  const base = [...raw].slice(0, hostIds.length);
+  while (base.length < hostIds.length) base.push(null);
+  if (hostIds.length > 0) base[0] = null;
+  const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
+  return base.map((value, index) => {
+    if (index === 0) return null;
+    const host = hostById.get(Number(hostIds[index] || 0));
+    const privateAddr = hostPrivateAddress(host);
+    const text = String(value || "").trim();
+    return privateAddr && text === privateAddr ? privateAddr : null;
+  });
+}
+
+function chainRoleLabel(index: number, total: number) {
+  if (index === 0) return "入口";
+  if (index === total - 1) return "出口";
+  return "中转";
+}
+
 function ForwardGroupsContent() {
   const utils = trpc.useUtils();
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
@@ -127,12 +174,16 @@ function ForwardGroupsContent() {
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
+  const [activeGroupMode, setActiveGroupMode] = useState<GroupMode>("failover");
 
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
-  const activeCount = groups?.filter((g: any) => g.isEnabled && g.lastStatus === "healthy").length ?? 0;
-  const groupPagination = usePersistentPagination(groups || [], {
-    storageKey: "forwardx.forwardGroups.page",
+  const failoverGroups = useMemo(() => (groups || []).filter((group: any) => group.groupMode !== "chain"), [groups]);
+  const chainGroups = useMemo(() => (groups || []).filter((group: any) => group.groupMode === "chain"), [groups]);
+  const visibleGroups = activeGroupMode === "chain" ? chainGroups : failoverGroups;
+  const activeCount = failoverGroups.filter((g: any) => g.isEnabled && g.lastStatus === "healthy").length;
+  const groupPagination = usePersistentPagination(visibleGroups, {
+    storageKey: `forwardx.forwardGroups.${activeGroupMode}.page`,
     pageSize: 12,
     isReady: !isLoading && !!groups,
   });
@@ -146,7 +197,17 @@ function ForwardGroupsContent() {
   };
 
   const openCreate = () => {
-    resetForm();
+    const initial = makeDefaultForm();
+    setForm({
+      ...initial,
+      groupMode: activeGroupMode,
+      groupType: "host",
+      domain: activeGroupMode === "chain" ? "" : initial.domain,
+      recordType: activeGroupMode === "chain" ? "A" : initial.recordType,
+    });
+    setEditingId(null);
+    setDragMemberKey(null);
+    savedMembersRef.current = { host: [], tunnel: [] };
     setShowDialog(true);
   };
 
@@ -166,6 +227,7 @@ function ForwardGroupsContent() {
         memberType: member.memberType,
         hostId: member.hostId ? Number(member.hostId) : null,
         tunnelId: member.tunnelId ? Number(member.tunnelId) : null,
+        connectHost: member.connectHost || null,
         isEnabled: !!member.isEnabled,
       })),
     });
@@ -261,6 +323,63 @@ function ForwardGroupsContent() {
     setForm({ ...form, members: form.members.filter((m) => m.key !== key) });
   };
 
+  const updateChainMemberIds = (ids: number[]) => {
+    setForm((prev) => {
+      const rawConnectHosts = ids.map((id) => {
+        const existing = prev.members.find((member) => member.key === memberKey("host", id));
+        return existing?.connectHost || null;
+      });
+      const normalizedConnectHosts = normalizeChainConnectHostsForHosts(
+        rawConnectHosts,
+        ids,
+        hosts,
+      );
+      const nextMembers = ids.map((id, index) => {
+        const key = memberKey("host", id);
+        const existing = prev.members.find((member) => member.key === key);
+        return {
+          ...(existing || {
+            key,
+            memberType: "host" as GroupType,
+            hostId: id,
+            tunnelId: null,
+            isEnabled: true,
+          }),
+          key,
+          memberType: "host" as GroupType,
+          hostId: id,
+          tunnelId: null,
+          connectHost: normalizedConnectHosts[index] || null,
+          isEnabled: true,
+        };
+      });
+      if (
+        sameNumberArray(prev.members.map((member) => Number(member.hostId || 0)), ids)
+        && sameNullableStringArray(prev.members.map((member) => member.connectHost || null), normalizedConnectHosts)
+      ) {
+        return prev;
+      }
+      return { ...prev, members: nextMembers };
+    });
+  };
+
+  const updateChainConnectHosts = (connectHosts: Array<string | null>) => {
+    setForm((prev) => {
+      const hostIds = prev.members.map((member) => Number(member.hostId || 0)).filter(Boolean);
+      const normalizedConnectHosts = normalizeChainConnectHostsForHosts(connectHosts, hostIds, hosts);
+      if (sameNullableStringArray(prev.members.map((member) => member.connectHost || null), normalizedConnectHosts)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        members: prev.members.map((member, index) => ({
+          ...member,
+          connectHost: normalizedConnectHosts[index] || null,
+        })),
+      };
+    });
+  };
+
   const moveMember = (fromKey: string, toKey: string) => {
     if (fromKey === toKey) return;
     const items = [...form.members];
@@ -298,6 +417,7 @@ function ForwardGroupsContent() {
         memberType: member.memberType,
         hostId: member.hostId,
         tunnelId: member.tunnelId,
+        connectHost: form.groupMode === "chain" ? member.connectHost || null : null,
         isEnabled: member.isEnabled,
         priority: index,
       })),
@@ -352,7 +472,7 @@ function ForwardGroupsContent() {
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-emerald-500" />
             <AnimatedStatValue
-              value={`${activeCount} / ${groups?.length ?? 0} 健康`}
+              value={`${activeCount} / ${failoverGroups.length} 健康`}
               loading={isLoading || !groups}
               cacheKey="forwardGroups.header.healthy"
               fallbackValue="0 / 0 健康"
@@ -387,9 +507,25 @@ function ForwardGroupsContent() {
         </div>
       </div>
 
+      <Tabs
+        value={activeGroupMode}
+        onValueChange={(value) => setActiveGroupMode(value as GroupMode)}
+        className="space-y-4"
+      >
+        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto">
+          <TabsTrigger value="failover" className="gap-1.5 px-4">
+            <Layers3 className="h-4 w-4" />
+            高可用转发组
+          </TabsTrigger>
+          <TabsTrigger value="chain" className="gap-1.5 px-4">
+            <Route className="h-4 w-4" />
+            端口转发链
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value={activeGroupMode} className="space-y-4">
       {isLoading ? (
         <DataSectionLoading label="正在加载转发组" />
-      ) : groups && groups.length > 0 ? (
+      ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -425,7 +561,9 @@ function ForwardGroupsContent() {
                           ) : member.healthStatus === "unhealthy" ? (
                             <XCircle className="h-3 w-3 shrink-0" />
                           ) : null}
-                          <span className="truncate">{index + 1}. {memberLabel(member)}</span>
+                          <span className="truncate">
+                            {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
+                          </span>
                         </span>
                       )) : (
                         <span className="text-xs text-muted-foreground">暂无成员</span>
@@ -501,7 +639,9 @@ function ForwardGroupsContent() {
                           ) : member.healthStatus === "unhealthy" ? (
                             <XCircle className="h-3 w-3 shrink-0" />
                           ) : null}
-                          <span className="truncate">{index + 1}. {memberLabel(member)}</span>
+                          <span className="truncate">
+                            {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
+                          </span>
                         </span>
                       )) : (
                         <span className="text-xs text-muted-foreground">暂无成员</span>
@@ -585,7 +725,7 @@ function ForwardGroupsContent() {
                               ) : member.healthStatus === "unhealthy" ? (
                                 <XCircle className="h-3 w-3" />
                               ) : null}
-                              {index + 1}. {memberLabel(member)}
+                              {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
                             </span>
                           ))}
                         </div>
@@ -633,10 +773,14 @@ function ForwardGroupsContent() {
               <Layers3 className="h-8 w-8 opacity-40" />
             </div>
             <p className="text-lg font-medium">暂无转发组</p>
-            <p className="mt-1 text-sm text-muted-foreground/60">创建后可在转发规则中作为高可用入口或端口转发链使用</p>
+            <p className="mt-1 text-sm text-muted-foreground/60">
+              {activeGroupMode === "chain" ? "创建后可在端口转发规则中作为链路使用" : "创建后可在转发规则中作为高可用入口使用"}
+            </p>
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+      </Tabs>
 
       <Dialog
         open={showDialog}
@@ -787,57 +931,70 @@ function ForwardGroupsContent() {
             )}
 
             <div className="space-y-3 rounded-lg border border-border/60 p-3">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {form.groupMode === "chain" ? "按从入口到出口的顺序拖动排列，保存时只记录流程。" : "越靠上优先级越高。"}
-                  </p>
-                </div>
-                <Select onValueChange={(v) => addMember(Number(v))}>
-                  <SelectTrigger className="w-full sm:w-64"><SelectValue placeholder={form.groupMode === "chain" ? "添加链路主机" : form.groupType === "host" ? "添加主机成员" : "添加隧道成员"} /></SelectTrigger>
-                  <SelectContent>
-                    {availableMemberOptions.map((item: any) => (
-                      <SelectItem key={item.id} value={String(item.id)}>
-                        {item.label} {item.meta ? `/ ${item.meta}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div>
+                <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {form.groupMode === "chain" ? "按入口到出口顺序保存链路流程。" : "越靠上优先级越高。"}
+                </p>
               </div>
-              <div className="space-y-2">
-                {form.members.map((member, index) => (
-                  <div
-                    key={member.key}
-                    draggable
-                    onDragStart={() => setDragMemberKey(member.key)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (dragMemberKey) moveMember(dragMemberKey, member.key);
-                      setDragMemberKey(null);
-                    }}
-                    className="flex items-center gap-3 rounded-md border border-border/60 bg-background/70 px-3 py-2"
-                  >
-                    <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
-                    <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
-                    {member.memberType === "host" ? <Server className="h-4 w-4 text-primary" /> : <Route className="h-4 w-4 text-primary" />}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
-                    </div>
-                    {form.groupMode === "failover" && (
-                      <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
-                        setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                      }} />
-                    )}
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+              {form.groupMode === "chain" ? (
+                <MultiHopEditor
+                  hosts={hosts || []}
+                  initialHopIds={form.members.map((member) => Number(member.hostId || 0)).filter(Boolean)}
+                  initialHopConnectHosts={form.members.map((member) => member.connectHost || null)}
+                  maxHops={5}
+                  onChange={updateChainMemberIds}
+                  onConnectHostsChange={updateChainConnectHosts}
+                />
+              ) : (
+                <>
+                  <div className="flex justify-end">
+                    <Select onValueChange={(v) => addMember(Number(v))}>
+                      <SelectTrigger className="w-full sm:w-64">
+                        <SelectValue placeholder={form.groupType === "host" ? "添加主机成员" : "添加隧道成员"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableMemberOptions.map((item: any) => (
+                          <SelectItem key={item.id} value={String(item.id)}>
+                            {item.label} {item.meta ? `/ ${item.meta}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                ))}
-                {form.members.length === 0 && (
-                  <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">还没有成员</div>
-                )}
-              </div>
+                  <div className="space-y-2">
+                    {form.members.map((member, index) => (
+                      <div
+                        key={member.key}
+                        draggable
+                        onDragStart={() => setDragMemberKey(member.key)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (dragMemberKey) moveMember(dragMemberKey, member.key);
+                          setDragMemberKey(null);
+                        }}
+                        className="flex items-center gap-3 rounded-md border border-border/60 bg-background/70 px-3 py-2"
+                      >
+                        <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
+                        <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
+                        {member.memberType === "host" ? <Server className="h-4 w-4 text-primary" /> : <Route className="h-4 w-4 text-primary" />}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
+                        </div>
+                        <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
+                          setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
+                        }} />
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                    {form.members.length === 0 && (
+                      <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">还没有成员</div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
           <DialogFooter>

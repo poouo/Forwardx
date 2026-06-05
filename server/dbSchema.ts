@@ -140,7 +140,7 @@ const tables: TableDef[] = [
     name: "forward_group_members",
     columns: [
       c("id", "id"), c("groupId", "int", { notNull: true }), c("memberType", "varchar", { length: 32, notNull: true }),
-      c("hostId", "int"), c("tunnelId", "int"), c("priority", "int", { notNull: true, default: 0 }), c("ruleId", "int"),
+      c("hostId", "int"), c("tunnelId", "int"), c("connectHost", "text"), c("priority", "int", { notNull: true, default: 0 }), c("ruleId", "int"),
       c("isEnabled", "bool", { notNull: true, default: true }), c("healthStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
       c("lastLatencyMs", "int"), c("failureSince", "epoch"), c("healthySince", "epoch"), c("lastCheckedAt", "epoch"),
       c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),

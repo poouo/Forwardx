@@ -246,6 +246,7 @@ export const forwardGroupMembers = table("forward_group_members", {
   memberType: varchar("memberType", { length: 32 }).notNull(),
   hostId: int("hostId"),
   tunnelId: int("tunnelId"),
+  connectHost: text("connectHost"),
   priority: int("priority").notNull().default(0),
   ruleId: int("ruleId"),
   isEnabled: boolean("isEnabled").notNull().default(true),
