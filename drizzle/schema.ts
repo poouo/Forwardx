@@ -554,7 +554,9 @@ export const trafficBillingConfigs = table("traffic_billing_configs", {
   resourceId: int("resourceId").notNull(),
   enabled: boolean("enabled").notNull().default(true),
   requiresPermission: boolean("requiresPermission").notNull().default(false),
+  description: text("description"),
   pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
+  pricePerGbMilliCents: bigint("pricePerGbMilliCents", { mode: "number" }).notNull().default(0),
   multiplier: int("multiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 30x = 3000
   createdAt: epoch("createdAt").notNull().default(nowDefault()),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
@@ -571,6 +573,7 @@ export const trafficBillingRecords = table("traffic_billing_records", {
   bytes: bigint("bytes", { mode: "number" }).notNull().default(0),
   billedGb: int("billedGb").notNull().default(0),
   pricePerGbCents: bigint("pricePerGbCents", { mode: "number" }).notNull().default(0),
+  pricePerGbMilliCents: bigint("pricePerGbMilliCents", { mode: "number" }).notNull().default(0),
   multiplier: int("multiplier").notNull().default(100),
   amountCents: bigint("amountCents", { mode: "number" }).notNull().default(0),
   balanceAfterCents: bigint("balanceAfterCents", { mode: "number" }).notNull().default(0),
@@ -586,6 +589,7 @@ export const trafficBillingUsage = table("traffic_billing_usage", {
   resourceId: int("resourceId").notNull(),
   totalBytes: bigint("totalBytes", { mode: "number" }).notNull().default(0),
   billedGb: int("billedGb").notNull().default(0),
+  pendingMilliCents: bigint("pendingMilliCents", { mode: "number" }).notNull().default(0),
   updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
 });
 export type TrafficBillingUsage = typeof trafficBillingUsage.$inferSelect;

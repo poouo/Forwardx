@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -51,7 +52,7 @@ type TrafficAddonForm = {
 
 type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
 type PlanManageTab = "plans" | "billing";
-type CreateMode = "plan" | "billing";
+type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
 
 const emptyForm: PlanForm = {
   name: "",
@@ -124,6 +125,123 @@ function MobileInfoRow({
   );
 }
 
+function hostTitle(host: any) {
+  return host?.name || host?.ip || host?.ipv4 || host?.ipv6 || `主机 #${host?.id || "-"}`;
+}
+
+function hostMeta(host: any) {
+  return Array.from(new Set([host?.ip, host?.ipv4, host?.ipv6].filter(Boolean))).join(" / ");
+}
+
+function tunnelTitle(tunnel: any, hosts: any[]) {
+  return `${tunnel?.name || `隧道 #${tunnel?.id || "-"}`} / ${getTunnelRouteText(tunnel, hosts)} / ${String(tunnel?.mode || "").toUpperCase()}`;
+}
+
+function forwardGroupTypeText(group: any) {
+  if (group?.groupMode === "chain") return "端口转发链";
+  if (group?.groupType === "tunnel") return "隧道组";
+  return "主机组";
+}
+
+function selectedResourceItems(ids: number[], items: any[], fallbackType: string) {
+  return ids
+    .map(Number)
+    .filter(Boolean)
+    .map((id) => items.find((item: any) => Number(item.id) === id) || { id, missing: true, name: `${fallbackType} #${id}` });
+}
+
+function missingResourceHint(item: any) {
+  return item?.missing ? "资源不存在或已删除，可删除清理" : "";
+}
+
+function PlanResourcePicker({
+  title,
+  countText,
+  loading,
+  loadingLabel,
+  selectedItems,
+  availableItems,
+  addPlaceholder,
+  emptyText,
+  allAddedText,
+  onAdd,
+  onRemove,
+  getId,
+  renderOption,
+  renderSelected,
+}: {
+  title: string;
+  countText: string;
+  loading: boolean;
+  loadingLabel: string;
+  selectedItems: any[];
+  availableItems: any[];
+  addPlaceholder: string;
+  emptyText: string;
+  allAddedText: string;
+  onAdd: (id: string) => void;
+  onRemove: (id: number) => void;
+  getId: (item: any) => number;
+  renderOption: (item: any) => ReactNode;
+  renderSelected: (item: any) => ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-base">{title}</CardTitle>
+          <Badge variant="outline">{countText}</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {loading ? (
+          <DataSectionLoading label={loadingLabel} minHeight="min-h-[120px]" />
+        ) : (
+          <>
+            {selectedItems.length > 0 ? (
+              <div className="space-y-2">
+                {selectedItems.map((item) => (
+                  <div key={getId(item)} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                    <div className="min-w-0 flex-1">{renderSelected(item)}</div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-destructive"
+                      title="删除"
+                      onClick={() => onRemove(getId(item))}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
+                {emptyText}
+              </div>
+            )}
+            <Select value="" onValueChange={onAdd} disabled={availableItems.length === 0}>
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder={availableItems.length > 0 ? addPlaceholder : allAddedText} />
+              </SelectTrigger>
+              <SelectContent>
+                {availableItems.length === 0 ? (
+                  <div className="px-2 py-4 text-center text-xs text-muted-foreground">{allAddedText}</div>
+                ) : availableItems.map((item) => (
+                  <SelectItem key={getId(item)} value={String(getId(item))}>
+                    {renderOption(item)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function toForm(plan: any): PlanForm {
   return {
     id: plan.id,
@@ -193,6 +311,8 @@ export default function Plans() {
   const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery();
   const { data: users = [] } = trpc.users.list.useQuery();
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
+  const { data: trafficBillingData, isLoading: trafficBillingLoading } = trpc.trafficBilling.configs.useQuery();
+  const { data: trafficBillingSummary, isLoading: trafficBillingSummaryLoading } = trpc.trafficBilling.status.useQuery();
 
   const [form, setForm] = useState<PlanForm>(emptyForm);
   const [editing, setEditing] = useState(false);
@@ -200,8 +320,6 @@ export default function Plans() {
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
   const [activeTab, setActiveTab] = useState<PlanManageTab>("plans");
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createMode, setCreateMode] = useState<CreateMode>("plan");
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
 
   const createPlan = trpc.plans.create.useMutation({
@@ -254,6 +372,28 @@ export default function Plans() {
     },
   });
 
+  const setTrafficBillingEnabled = trpc.trafficBilling.setEnabled.useMutation({
+    onMutate: async ({ enabled }) => {
+      await utils.trafficBilling.configs.cancel();
+      const previous = utils.trafficBilling.configs.getData();
+      utils.trafficBilling.configs.setData(undefined, { ...(previous || { configs: [] }), enabled });
+      return { previous };
+    },
+    onSuccess: (_result, { enabled }) => {
+      const current = utils.trafficBilling.configs.getData();
+      utils.trafficBilling.configs.setData(undefined, { ...(current || { configs: [] }), enabled });
+      utils.trafficBilling.storeResources.invalidate();
+      toast.success("流量计费开关已更新");
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previous) utils.trafficBilling.configs.setData(undefined, context.previous);
+      toast.error(error.message || "更新失败");
+    },
+    onSettled: () => {
+      utils.trafficBilling.configs.invalidate();
+    },
+  });
+
   const assignPlan = trpc.plans.assign.useMutation({
     onSuccess: (result) => {
       toast.success(`套餐已分配，端口段 ${result.portRangeStart}-${result.portRangeEnd}`);
@@ -268,6 +408,19 @@ export default function Plans() {
 
   const activePlans = useMemo(() => plans.filter((p: any) => p.isActive).length, [plans]);
   const storeEnabled = !!storeStatus?.enabled;
+  const trafficBillingEnabled = !!trafficBillingData?.enabled;
+  const trafficBillingConfigs = trafficBillingData?.configs || [];
+  const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
+  const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
+  const selectedHostIds = useMemo(() => new Set(form.hostIds.map(Number)), [form.hostIds]);
+  const selectedTunnelIds = useMemo(() => new Set(form.tunnelIds.map(Number)), [form.tunnelIds]);
+  const selectedForwardGroupIds = useMemo(() => new Set(form.forwardGroupIds.map(Number)), [form.forwardGroupIds]);
+  const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, "主机"), [form.hostIds, hosts]);
+  const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, "隧道"), [form.tunnelIds, tunnels]);
+  const selectedForwardGroups = useMemo(() => selectedResourceItems(form.forwardGroupIds, forwardGroups, "转发组"), [form.forwardGroupIds, forwardGroups]);
+  const availableHosts = useMemo(() => hosts.filter((host: any) => !selectedHostIds.has(Number(host.id))), [hosts, selectedHostIds]);
+  const availableTunnels = useMemo(() => tunnels.filter((tunnel: any) => !selectedTunnelIds.has(Number(tunnel.id))), [tunnels, selectedTunnelIds]);
+  const availableForwardGroups = useMemo(() => forwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))), [forwardGroups, selectedForwardGroupIds]);
 
   const openPlanCreate = () => {
     setForm(emptyForm);
@@ -275,18 +428,10 @@ export default function Plans() {
   };
 
   const openCreate = () => {
-    setCreateMode(activeTab === "billing" ? "billing" : "plan");
-    setCreateOpen(true);
-  };
-
-  const confirmCreate = () => {
-    setCreateOpen(false);
-    if (createMode === "billing") {
-      setActiveTab("billing");
+    if (activeTab === "billing") {
       setBillingCreateRequestKey((value) => value + 1);
       return;
     }
-    setActiveTab("plans");
     openPlanCreate();
   };
 
@@ -298,7 +443,18 @@ export default function Plans() {
     else createPlan.mutate(data);
   };
 
-  const toggleId = (list: number[], id: number) => list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
+  const addPlanResource = (key: PlanResourceKey, value: string) => {
+    const id = Number(value);
+    if (!id) return;
+    setForm((current) => {
+      const ids = current[key].map(Number);
+      if (ids.includes(id)) return current;
+      return { ...current, [key]: [...ids, id] };
+    });
+  };
+  const removePlanResource = (key: PlanResourceKey, id: number) => {
+    setForm((current) => ({ ...current, [key]: current[key].map(Number).filter((item) => item !== Number(id)) }));
+  };
   const updateTrafficAddon = (index: number, patch: Partial<TrafficAddonForm>) => {
     setForm((current) => ({
       ...current,
@@ -334,12 +490,12 @@ export default function Plans() {
               <Settings2 className="mr-2 h-4 w-4" /> 手动分配
             </Button>
             <Button onClick={openCreate}>
-              <Plus className="mr-2 h-4 w-4" /> 新增
+              <Plus className="mr-2 h-4 w-4" /> {activeTab === "billing" ? "新增计费资源" : "新增套餐"}
             </Button>
           </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>商店状态</CardDescription>
@@ -379,6 +535,67 @@ export default function Plans() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">包含购买和分配记录。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>按量计费</CardDescription>
+              <CardTitle className="flex items-center justify-between gap-3">
+                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
+                {trafficBillingLoading ? (
+                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
+                ) : (
+                  <Switch
+                    instant
+                    checked={trafficBillingEnabled}
+                    disabled={setTrafficBillingEnabled.isPending}
+                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
+                  />
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>累计扣费</CardDescription>
+              <CardTitle>
+                <AnimatedStatValue
+                  value={money(trafficBillingCharged)}
+                  loading={trafficBillingSummaryLoading}
+                  cacheKey="trafficBilling.totalCharged"
+                  fallbackValue={money(0)}
+                />
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">历史扣费合计。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>已计费流量</CardDescription>
+              <CardTitle>
+                <AnimatedStatValue
+                  value={`${trafficBillingGb} GB`}
+                  loading={trafficBillingSummaryLoading}
+                  cacheKey="trafficBilling.totalGb"
+                  fallbackValue="0 GB"
+                />
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">扣费记录累计。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>计费资源</CardDescription>
+              <CardTitle>
+                <AnimatedStatValue
+                  value={trafficBillingConfigs.length}
+                  loading={trafficBillingLoading}
+                  cacheKey="trafficBilling.configsCount"
+                  fallbackValue={0}
+                />
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">已配置资源。</CardContent>
           </Card>
         </div>
 
@@ -566,43 +783,14 @@ export default function Plans() {
           <TabsContent value="billing" className="mt-0">
             <TrafficBillingConfigManager
               showHeader={false}
+              showEmbeddedHeader={false}
+              showSummary={false}
               hideCreateButton
               createRequestKey={billingCreateRequestKey}
             />
           </TabsContent>
         </Tabs>
       </div>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>新增项目</DialogTitle>
-            <DialogDescription>选择要新增订阅套餐还是按量计费资源。</DialogDescription>
-          </DialogHeader>
-          <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)} className="space-y-4">
-            <TabsList className="grid h-auto w-full grid-cols-2">
-              <TabsTrigger value="plan" className="gap-2">
-                <Package className="h-4 w-4" /> 订阅套餐
-              </TabsTrigger>
-              <TabsTrigger value="billing" className="gap-2">
-                <Coins className="h-4 w-4" /> 计费资源
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="plan" className="mt-0 rounded-lg border border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
-              新增可购买或后台分配的订阅套餐，包含端口、流量、规则数量和可用资源。
-            </TabsContent>
-            <TabsContent value="billing" className="mt-0 rounded-lg border border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
-              新增按量计费资源，公开资源会展示在商店中，用户有余额即可直接使用。
-            </TabsContent>
-          </Tabs>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button onClick={confirmCreate}>
-              <Plus className="mr-2 h-4 w-4" /> 继续
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="max-w-3xl sm:max-h-[90svh]">
@@ -668,55 +856,80 @@ export default function Plans() {
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-base">转发主机</CardTitle></CardHeader>
-              <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {hostsLoading ? (
-                  <DataSectionLoading label="正在加载主机资源" minHeight="min-h-[120px]" />
-                ) : hosts.length > 0 ? hosts.map((host: any) => (
-                  <label key={host.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
-                    <span>{host.name || host.ipv4 || host.ipv6}</span>
-                    <Switch checked={form.hostIds.includes(host.id)} onCheckedChange={() => setForm({ ...form, hostIds: toggleId(form.hostIds, host.id) })} />
-                  </label>
-                )) : (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无主机资源</div>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-base">隧道转发</CardTitle></CardHeader>
-              <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {tunnelsLoading ? (
-                  <DataSectionLoading label="正在加载隧道资源" minHeight="min-h-[120px]" />
-                ) : tunnels.length > 0 ? tunnels.map((tunnel: any) => (
-                  <label key={tunnel.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
-                    <span className="min-w-0">
-                      <span>{tunnel.name}</span>
-                      <span className="ml-1 text-muted-foreground">/ {getTunnelRouteText(tunnel, hosts)} / {tunnel.mode}</span>
-                    </span>
-                    <Switch checked={form.tunnelIds.includes(tunnel.id)} onCheckedChange={() => setForm({ ...form, tunnelIds: toggleId(form.tunnelIds, tunnel.id) })} />
-                  </label>
-                )) : (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无隧道资源</div>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-base">转发组</CardTitle></CardHeader>
-              <CardContent className="grid max-h-56 gap-2 overflow-y-auto">
-                {forwardGroupsLoading ? (
-                  <DataSectionLoading label="正在加载转发组资源" minHeight="min-h-[120px]" />
-                ) : forwardGroups.map((group: any) => (
-                  <label key={group.id} className="flex cursor-pointer items-center justify-between rounded-md border p-2 text-sm">
-                    <span>{group.name} <span className="text-muted-foreground">/{group.groupMode === "chain" ? "端口转发链" : group.groupType === "tunnel" ? "隧道组" : "主机组"}</span></span>
-                    <Switch checked={form.forwardGroupIds.includes(group.id)} onCheckedChange={() => setForm({ ...form, forwardGroupIds: toggleId(form.forwardGroupIds, group.id) })} />
-                  </label>
-                ))}
-                {!forwardGroupsLoading && forwardGroups.length === 0 && (
-                  <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">暂无转发组</div>
-                )}
-              </CardContent>
-            </Card>
+            <PlanResourcePicker
+              title="转发主机"
+              countText={`${form.hostIds.length} 台`}
+              loading={hostsLoading}
+              loadingLabel="正在加载主机资源"
+              selectedItems={selectedHosts}
+              availableItems={availableHosts}
+              addPlaceholder="选择要添加的主机"
+              emptyText="暂未添加主机，可从下方选择添加。"
+              allAddedText={hosts.length > 0 ? "主机已全部添加" : "暂无可添加主机"}
+              onAdd={(id) => addPlanResource("hostIds", id)}
+              onRemove={(id) => removePlanResource("hostIds", id)}
+              getId={(host) => Number(host.id)}
+              renderOption={(host) => (
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate">{hostTitle(host)}</span>
+                  {hostMeta(host) && <span className="truncate text-xs text-muted-foreground">{hostMeta(host)}</span>}
+                </span>
+              )}
+              renderSelected={(host) => (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{hostTitle(host)}</p>
+                  {(missingResourceHint(host) || hostMeta(host)) && (
+                    <p className={`truncate text-xs text-muted-foreground ${missingResourceHint(host) ? "" : "font-mono"}`}>
+                      {missingResourceHint(host) || hostMeta(host)}
+                    </p>
+                  )}
+                </div>
+              )}
+            />
+            <PlanResourcePicker
+              title="隧道转发"
+              countText={`${form.tunnelIds.length} 条`}
+              loading={tunnelsLoading}
+              loadingLabel="正在加载隧道资源"
+              selectedItems={selectedTunnels}
+              availableItems={availableTunnels}
+              addPlaceholder="选择要添加的隧道"
+              emptyText="暂未添加隧道，可从下方选择添加。"
+              allAddedText={tunnels.length > 0 ? "隧道已全部添加" : "暂无可添加隧道"}
+              onAdd={(id) => addPlanResource("tunnelIds", id)}
+              onRemove={(id) => removePlanResource("tunnelIds", id)}
+              getId={(tunnel) => Number(tunnel.id)}
+              renderOption={(tunnel) => tunnelTitle(tunnel, hosts)}
+              renderSelected={(tunnel) => (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{tunnel.name || `隧道 #${tunnel.id}`}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {missingResourceHint(tunnel) || `${getTunnelRouteText(tunnel, hosts)} / ${String(tunnel.mode || "").toUpperCase()}`}
+                  </p>
+                </div>
+              )}
+            />
+            <PlanResourcePicker
+              title="转发组"
+              countText={`${form.forwardGroupIds.length} 个`}
+              loading={forwardGroupsLoading}
+              loadingLabel="正在加载转发组资源"
+              selectedItems={selectedForwardGroups}
+              availableItems={availableForwardGroups}
+              addPlaceholder="选择要添加的转发组"
+              emptyText="暂未添加转发组，可从下方选择添加。"
+              allAddedText={forwardGroups.length > 0 ? "转发组已全部添加" : "暂无可添加转发组"}
+              onAdd={(id) => addPlanResource("forwardGroupIds", id)}
+              onRemove={(id) => removePlanResource("forwardGroupIds", id)}
+              getId={(group) => Number(group.id)}
+              renderOption={(group) => `${group.name || `转发组 #${group.id}`} / ${forwardGroupTypeText(group)}`}
+              renderSelected={(group) => (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{group.name || `转发组 #${group.id}`}</p>
+                  <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
+                </div>
+              )}
+            />
           </div>
 
           <div className="space-y-3 rounded-lg border border-border/60 p-4">

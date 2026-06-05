@@ -17,6 +17,25 @@ function money(cents?: number, currency = "CNY") {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((cents || 0) / 100);
 }
 
+const MILLI_CENTS_PER_CENT = 1000;
+const MILLI_CENTS_PER_YUAN = 100000;
+
+function pricePerGbMilliCents(config: any) {
+  const milliCents = Math.round(Number(config?.pricePerGbMilliCents || 0));
+  if (milliCents > 0) return milliCents;
+  return Math.round(Number(config?.pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT;
+}
+
+function moneyFromMilliCents(milliCents?: number, currency = "CNY") {
+  const yuan = Number(milliCents || 0) / MILLI_CENTS_PER_YUAN;
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: yuan > 0 && yuan < 0.01 ? 3 : 2,
+    maximumFractionDigits: 3,
+  }).format(yuan);
+}
+
 function bytes(size?: number | null) {
   const value = Number(size || 0);
   if (!value) return "不限";
@@ -46,8 +65,16 @@ function durationLabel(days?: number | null) {
   return durationOptions.find((item) => item.value === Number(days))?.label || `${days || 30} 天`;
 }
 
-function effectiveBillingPriceCents(config: any) {
-  return Math.ceil(Number(config.pricePerGbCents || 0) * Number(config.multiplier || 100) / 100);
+function planDescription(plan: any) {
+  return String(plan?.description || "").trim();
+}
+
+function billingDescription(config: any) {
+  return String(config?.description || "").trim();
+}
+
+function effectiveBillingPriceMilliCents(config: any) {
+  return Math.round(pricePerGbMilliCents(config) * Number(config.multiplier || 100) / 100);
 }
 
 export default function Store() {
@@ -172,25 +199,31 @@ export default function Store() {
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> {plan.name}</CardTitle>
-                            <CardDescription className="mt-2 line-clamp-2">{plan.description || "订阅后自动开通"}</CardDescription>
+                            <CardDescription className="mt-2">订阅后自动开通</CardDescription>
                           </div>
                           <Badge>{durationLabel(plan.durationDays)}</Badge>
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-3">
                         <div className="text-3xl font-semibold">{money(plan.priceCents, plan.currency)}</div>
-                        <div className="grid gap-2 text-sm text-muted-foreground">
-                          <div>连续端口：{plan.portCount} 个</div>
-                          <div>总流量：{bytes(plan.trafficLimit)}</div>
-                          {Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0 && (
-                            <div>流量周期：购买日起按月重置</div>
-                          )}
-                          <div>限速：{speed(plan.rateLimitMbps)}</div>
-                          <div>规则：最多 {plan.maxRules || "不限"} 条</div>
-                          <div>连接：最多 {plan.maxConnections || "不限"}，单 IP {plan.maxIPs || "不限"}</div>
-                          <div>限制口径：端口转发按主机，隧道转发按隧道</div>
-                          <div>资源：{planResourceText(plan)}</div>
-                        </div>
+                        {planDescription(plan) ? (
+                          <div className="whitespace-pre-line break-words text-sm leading-7 text-muted-foreground">
+                            {planDescription(plan)}
+                          </div>
+                        ) : (
+                          <div className="grid gap-2 text-sm text-muted-foreground">
+                            <div>连续端口：{plan.portCount} 个</div>
+                            <div>总流量：{bytes(plan.trafficLimit)}</div>
+                            {Number(plan.durationDays || 0) > 30 && Number(plan.trafficLimit || 0) > 0 && (
+                              <div>流量周期：购买日起按月重置</div>
+                            )}
+                            <div>限速：{speed(plan.rateLimitMbps)}</div>
+                            <div>规则：最多 {plan.maxRules || "不限"} 条</div>
+                            <div>连接：最多 {plan.maxConnections || "不限"}，单 IP {plan.maxIPs || "不限"}</div>
+                            <div>限制口径：端口转发按主机，隧道转发按隧道</div>
+                            <div>资源：{planResourceText(plan)}</div>
+                          </div>
+                        )}
                       </CardContent>
                       <CardFooter>
                         <Button className="w-full" onClick={() => buy(plan)} disabled={createOrder.isPending}>
@@ -231,16 +264,24 @@ export default function Store() {
                         </div>
                       </CardHeader>
                       <CardContent className="flex-1 space-y-4">
-                        <div className="text-3xl font-semibold">{money(effectiveBillingPriceCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 计费GB</span></div>
-                        <div className="grid gap-2 text-sm text-muted-foreground">
-                          <div>基础单价：{money(config.pricePerGbCents)} / GB</div>
-                          <div>倍率：{(Number(config.multiplier || 100) / 100).toFixed(2)}x</div>
-                          <div>资源编号：#{config.resourceId}</div>
-                          <div>使用方式：创建转发规则时选择该资源，按实际计费流量从余额扣费</div>
-                        </div>
-                        <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
-                          该资源无需购买套餐；账户有余额即可使用。
-                        </div>
+                        <div className="text-3xl font-semibold">{moneyFromMilliCents(effectiveBillingPriceMilliCents(config))}<span className="ml-1 text-sm font-normal text-muted-foreground">/ 计费GB</span></div>
+                        {billingDescription(config) ? (
+                          <div className="whitespace-pre-line break-words text-sm leading-7 text-muted-foreground">
+                            {billingDescription(config)}
+                          </div>
+                        ) : (
+                          <>
+                            <div className="grid gap-2 text-sm text-muted-foreground">
+                              <div>基础单价：{moneyFromMilliCents(pricePerGbMilliCents(config))} / GB</div>
+                              <div>倍率：{(Number(config.multiplier || 100) / 100).toFixed(2)}x</div>
+                              <div>资源编号：#{config.resourceId}</div>
+                              <div>使用方式：创建转发规则时选择该资源，按实际计费流量从余额扣费</div>
+                            </div>
+                            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
+                              该资源无需购买套餐；账户有余额即可使用。
+                            </div>
+                          </>
+                        )}
                       </CardContent>
                     </Card>
                   ))}
