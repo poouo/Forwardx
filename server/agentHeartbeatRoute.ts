@@ -20,7 +20,8 @@ import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 
-// DNS 解析缓存：ruleId → 上次解析到的 IPv4 地址
+// DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
+// 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
 const resolvedIpCache = new Map<number, string>();
 const tunnelRouteLogCache = new Map<string, string>();
 
@@ -254,6 +255,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const agentHostRules = await db.getForwardRulesForAgent(host.id);
     // DNS 预解析：将域名转换为 IP，缓存中比较检测变更
     const dnsChangedRuleIds = new Set<number>();
+    const dnsPreviousIpByRuleId = new Map<number, string>();
     for (const rule of agentHostRules as any[]) {
       if (!rule.targetIp) continue;
       const resolved = await resolveTargetIp(rule.targetIp);
@@ -261,6 +263,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (cachedIp && cachedIp !== resolved) {
         // IP 变更：标记为需要重新下发
         dnsChangedRuleIds.add(rule.id);
+        dnsPreviousIpByRuleId.set(rule.id, cachedIp);
       }
       resolvedIpCache.set(rule.id, resolved);
       // 保存原始值（域名），将 rule.targetIp 替换为解析后的 IP
@@ -302,7 +305,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of agentHostRules as any[]) {
       if (!dnsChangedRuleIds.has(rule.id)) continue;
       if (!rule.isEnabled || !rule.isRunning) continue;
-      const oldIp = resolvedIpCache.get(rule.id) || rule._originalTargetIp || rule.targetIp;
+      const oldIp = dnsPreviousIpByRuleId.get(rule.id) || rule._originalTargetIp || rule.targetIp;
       const ruleResolvedIp = rule.targetIp; // 已经是新解析的 IP
       const cleanupCmds = buildDnsChangeCleanup(rule, oldIp);
       if (cleanupCmds.length > 0) {
