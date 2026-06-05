@@ -74,16 +74,21 @@ function CommandRow({
       <Label className="text-xs text-muted-foreground">{label}</Label>
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
         <div className="min-w-0 overflow-hidden rounded border bg-muted/30">
-          <code className="block min-h-11 overflow-x-auto whitespace-nowrap px-3 py-3 font-mono text-xs leading-5 scrollbar-gutter-stable">
-            {command}
-          </code>
+          <div className="h-12 overflow-x-scroll overflow-y-hidden">
+            <code className="flex h-full w-max min-w-full items-center whitespace-nowrap px-3 pb-3 pt-2 font-mono text-xs leading-5">
+              {command}
+            </code>
+          </div>
         </div>
         <Button
           variant="ghost"
           size="icon"
           className="h-10 w-10 shrink-0"
-          disabled={copyDisabled}
-          onClick={onCopy}
+          aria-disabled={copyDisabled}
+          onClick={() => {
+            if (copyDisabled) return;
+            onCopy();
+          }}
         >
           <Copy className="h-4 w-4" />
         </Button>
