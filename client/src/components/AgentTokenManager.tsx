@@ -42,6 +42,7 @@ type AgentTokenManagerProps = {
   createSignal?: number;
   className?: string;
   showCreateButton?: boolean;
+  onCreateSignalHandled?: () => void;
 };
 
 function shellQuote(value: string) {
@@ -57,7 +58,12 @@ function tokenHostAddress(host: any) {
   return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
 }
 
-export default function AgentTokenManager({ createSignal, className, showCreateButton = true }: AgentTokenManagerProps) {
+export default function AgentTokenManager({
+  createSignal,
+  className,
+  showCreateButton = true,
+  onCreateSignalHandled,
+}: AgentTokenManagerProps) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const [showCreate, setShowCreate] = useState(false);
@@ -77,9 +83,14 @@ export default function AgentTokenManager({ createSignal, className, showCreateB
   };
 
   useEffect(() => {
-    if (createSignal == null || createSignal === lastCreateSignalRef.current) return;
+    if (!createSignal) {
+      lastCreateSignalRef.current = 0;
+      return;
+    }
+    if (createSignal === lastCreateSignalRef.current) return;
     lastCreateSignalRef.current = createSignal;
     openCreateDialog();
+    onCreateSignalHandled?.();
   }, [createSignal]);
 
   const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(

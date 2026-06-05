@@ -2869,7 +2869,7 @@ function SystemInfoSection() {
               className="font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              例如 {defaultGithubAcceleratorUrl}/https://github.com/poouo/Forwardx。未填写或未开启时使用直连 GitHub。
+              未填写或未开启时使用直连 GitHub。
             </p>
           </div>
           <div className="flex justify-end">

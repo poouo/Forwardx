@@ -1009,7 +1009,11 @@ function HostsContent() {
         </TabsContent>
         {user?.role === "admin" && (
           <TabsContent value="tokens" className="space-y-4">
-            <AgentTokenManager createSignal={tokenCreateSignal} showCreateButton={false} />
+            <AgentTokenManager
+              createSignal={tokenCreateSignal}
+              showCreateButton={false}
+              onCreateSignalHandled={() => setTokenCreateSignal(0)}
+            />
           </TabsContent>
         )}
       </Tabs>
