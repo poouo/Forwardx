@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.3.109] - 2026-06-05
+
+### Added
+
+- Added separate store sections for subscription plans and usage-based billing resources.
+- Added public display support for enabled usage-based resources so users can see multiplier pricing before using balance-backed resources.
+
+### Fixed
+
+- Improved local panel upgrade builds by requiring Go 1.22+ for Agent/FXP compilation and keeping newer local Go installs preferred over distro Go.
+- Improved Agent installation and communication resilience with time synchronization handling for clock-skew related encrypted requests.
+
+### Changed
+
+- Merged subscription plan and billing resource creation into a single segmented management dialog.
+- Moved billing resource management into Plan Management and removed duplicate billing deduction records from the billing resource page.
+- Bumped panel version to 2.3.109 and Agent/FXP runtime target version to 2.2.86.
+- Bumped Android APP version to 2.3.39 and updated the APK release pointer to 2.3.109.
+
 ## [2.3.105] - 2026-06-05
 
 ### Added

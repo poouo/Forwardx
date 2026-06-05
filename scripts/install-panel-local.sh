@@ -6,6 +6,9 @@ APP_DIR="${FORWARDX_PANEL_DIR:-/opt/forwardx-panel}"
 SERVICE_NAME="${FORWARDX_SERVICE_NAME:-forwardx-panel}"
 REPO_URL="${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx.git}"
 PORT="${PORT:-3000}"
+MIN_GO_MAJOR=1
+MIN_GO_MINOR=22
+DEFAULT_GO_VERSION="${FORWARDX_GO_VERSION:-1.22.12}"
 
 valid_port() {
   local port="$1"
@@ -129,24 +132,127 @@ resolve_checkout_target() {
   return 1
 }
 
+go_version_number() {
+  local bin="$1"
+  "$bin" version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/[^0-9.].*$//'
+}
+
+go_version_at_least() {
+  local version="$1"
+  local major minor patch
+  IFS=. read -r major minor patch <<EOF
+$version
+EOF
+  major="${major:-0}"
+  minor="${minor:-0}"
+  [[ "$major" =~ ^[0-9]+$ ]] || return 1
+  [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+
+  if [ "$major" -gt "$MIN_GO_MAJOR" ]; then
+    return 0
+  fi
+  [ "$major" -eq "$MIN_GO_MAJOR" ] && [ "$minor" -ge "$MIN_GO_MINOR" ]
+}
+
+link_official_go_commands() {
+  if [ -x /usr/local/go/bin/go ]; then
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  fi
+  if [ -x /usr/local/go/bin/gofmt ]; then
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  fi
+}
+
+select_supported_go() {
+  local bin version dir
+  local candidates=()
+
+  [ -n "${FORWARDX_GO_BIN:-}" ] && candidates+=("$FORWARDX_GO_BIN")
+  candidates+=("/usr/local/go/bin/go")
+  if command -v go >/dev/null 2>&1; then
+    candidates+=("$(command -v go)")
+  fi
+  candidates+=("/usr/bin/go")
+
+  for bin in "${candidates[@]}"; do
+    [ -n "$bin" ] || continue
+    [ -x "$bin" ] || continue
+    version="$(go_version_number "$bin")"
+    if go_version_at_least "$version"; then
+      dir="$(dirname "$bin")"
+      if [ "$bin" = "/usr/local/go/bin/go" ]; then
+        link_official_go_commands
+      fi
+      export PATH="$dir:$PATH"
+      hash -r 2>/dev/null || true
+      echo "[信息] 使用 Go $version ($bin)"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+install_official_go() {
+  local arch goarch tmp url
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) goarch="amd64" ;;
+    aarch64|arm64) goarch="arm64" ;;
+    armv6l|armv7l) goarch="armv6l" ;;
+    *)
+      echo "[错误] 当前架构 $arch 不支持自动安装官方 Go，请手动安装 Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ 后重试"
+      return 1
+      ;;
+  esac
+
+  url="${FORWARDX_GO_DOWNLOAD_URL:-https://go.dev/dl/go${DEFAULT_GO_VERSION}.linux-${goarch}.tar.gz}"
+  tmp="$(mktemp -d)"
+  echo "[信息] 当前 Go 版本不足，安装官方 Go ${DEFAULT_GO_VERSION}..."
+  if ! curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$tmp/go.tgz"; then
+    rm -rf "$tmp"
+    echo "[错误] Go 下载失败：$url"
+    return 1
+  fi
+
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "$tmp/go.tgz"
+  rm -rf "$tmp"
+  export PATH="/usr/local/go/bin:$PATH"
+  hash -r 2>/dev/null || true
+  select_supported_go
+}
+
+ensure_go_version() {
+  export PATH="/usr/local/go/bin:$PATH"
+  hash -r 2>/dev/null || true
+  if select_supported_go; then
+    return 0
+  fi
+  install_official_go || {
+    echo "[错误] Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ 安装失败，无法构建 Agent/FXP"
+    exit 1
+  }
+}
+
 install_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq curl git ca-certificates build-essential python3 openssl golang-go >/dev/null
+    apt-get install -y -qq curl git ca-certificates build-essential python3 openssl tar nftables >/dev/null
     if ! command -v node >/dev/null 2>&1; then
       curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
       apt-get install -y -qq nodejs >/dev/null
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm golang
+    dnf install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl tar nftables nodejs npm
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl nodejs npm golang
+    yum install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl tar nftables nodejs npm
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache curl git ca-certificates build-base python3 openssl nodejs npm go
+    apk add --no-cache curl git ca-certificates build-base python3 openssl tar nftables nodejs npm
   fi
 
   command -v node >/dev/null 2>&1 || { echo "[错误] Node.js 安装失败，请先安装 Node.js 22+"; exit 1; }
-  command -v go >/dev/null 2>&1 || { echo "[错误] Go 安装失败，无法构建 Agent 程序"; exit 1; }
+  ensure_go_version
   corepack enable >/dev/null 2>&1 || npm install -g pnpm@10
   corepack prepare pnpm@10 --activate >/dev/null 2>&1 || npm install -g pnpm@10
 }

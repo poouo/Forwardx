@@ -535,3 +535,34 @@
     }
   }
 }
+
+html.theme-transitioning,
+html.theme-transitioning body,
+html.theme-transitioning #root,
+html.theme-transitioning #root * {
+  transition-property: background, background-color, border-color, color, fill, stroke, box-shadow, outline-color, text-decoration-color;
+  transition-duration: 680ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html.theme-transitioning body {
+  transition-duration: 760ms;
+}
+
+html.theme-transitioning [data-radix-popper-content-wrapper],
+html.theme-transitioning [data-radix-popper-content-wrapper] * {
+  transition-property: background, background-color, border-color, color, fill, stroke, box-shadow, outline-color, text-decoration-color;
+  transition-duration: 680ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-transitioning,
+  html.theme-transitioning body,
+  html.theme-transitioning #root,
+  html.theme-transitioning #root *,
+  html.theme-transitioning [data-radix-popper-content-wrapper],
+  html.theme-transitioning [data-radix-popper-content-wrapper] * {
+    transition: none;
+  }
+}

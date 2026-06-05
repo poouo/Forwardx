@@ -7,6 +7,8 @@ GO_CACHE_ROOT="${GOCACHE:-}"
 GO_HOME_ROOT="${HOME:-}"
 XDG_CACHE_ROOT="${XDG_CACHE_HOME:-}"
 REQUESTED_TAG="${1:-}"
+MIN_GO_MAJOR=1
+MIN_GO_MINOR=22
 AGENT_VERSION="$(sed -nE "s/.*AGENT_VERSION[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$ROOT_DIR/shared/versions.ts" | head -n 1)"
 if [ -z "$AGENT_VERSION" ]; then
   echo "[agent] AGENT_VERSION not found in shared/versions.ts" >&2
@@ -16,6 +18,38 @@ VERSION="${AGENT_VERSION#v}"
 if [ -n "$REQUESTED_TAG" ] && [ "${REQUESTED_TAG#v}" != "$VERSION" ]; then
   echo "[agent] release tag ${REQUESTED_TAG} detected; building Agent version ${VERSION} from shared/versions.ts"
 fi
+
+go_version_number() {
+  go version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/[^0-9.].*$//'
+}
+
+go_version_supported() {
+  local version="$1"
+  local major minor patch
+  IFS=. read -r major minor patch <<EOF
+$version
+EOF
+  major="${major:-0}"
+  minor="${minor:-0}"
+  [[ "$major" =~ ^[0-9]+$ ]] || return 1
+  [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
+  if [ "$major" -gt "$MIN_GO_MAJOR" ]; then
+    return 0
+  fi
+  [ "$major" -eq "$MIN_GO_MAJOR" ] && [ "$minor" -ge "$MIN_GO_MINOR" ]
+}
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "[agent] Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ is required to build Agent/FXP, but go was not found" >&2
+  exit 1
+fi
+GO_VERSION="$(go_version_number)"
+if ! go_version_supported "$GO_VERSION"; then
+  echo "[agent] Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ is required to build Agent/FXP; current version is ${GO_VERSION:-unknown}" >&2
+  echo "[agent] Run scripts/install-panel-local.sh again or install a newer Go under /usr/local/go" >&2
+  exit 1
+fi
+echo "[agent] using Go $GO_VERSION ($(command -v go))"
 
 mkdir -p "$OUT_DIR"
 if [ -z "$GO_CACHE_ROOT" ]; then GO_CACHE_ROOT="$ROOT_DIR/.cache/go-build"; fi

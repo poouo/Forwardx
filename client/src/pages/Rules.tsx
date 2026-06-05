@@ -311,8 +311,47 @@ function getTunnelDisplay(tunnel: any | null | undefined) {
   };
 }
 
+type EntryAddress = {
+  label: string;
+  value: string;
+};
+
+function pushUniqueEntryAddress(rows: EntryAddress[], label: string, value: unknown) {
+  const text = String(value || "").trim();
+  if (!text || rows.some((row) => row.value === text)) return;
+  rows.push({ label, value: text });
+}
+
+function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
+  const customEntry = String(host?.entryIp || "").trim();
+  if (customEntry) return [{ label: "入口", value: customEntry }];
+
+  const rows: EntryAddress[] = [];
+  pushUniqueEntryAddress(rows, "IPv4", host?.ipv4);
+  pushUniqueEntryAddress(rows, "IPv6", host?.ipv6);
+  if (rows.length === 0) pushUniqueEntryAddress(rows, "IP", host?.ip);
+  return rows;
+}
+
 function getHostEntryAddress(host: any | null | undefined): string {
-  return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+  return getHostEntryAddresses(host)[0]?.value || "";
+}
+
+function getHostEntryAddressText(host: any | null | undefined, port?: number | string): string {
+  const entries = getHostEntryAddresses(host);
+  if (entries.length === 0) return "";
+  return entries
+    .map((entry) => port === undefined ? entry.value : formatAddressWithPort(entry.value, port))
+    .join(" / ");
+}
+
+function formatAddressWithPort(address: string, port: number | string): string {
+  const value = String(address || "").trim();
+  if (!value) return "";
+  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
+    return `[${value}]:${port}`;
+  }
+  return `${value}:${port}`;
 }
 
 function isForwardChainGroup(group: any | null | undefined) {
@@ -1272,8 +1311,12 @@ function RulesContent() {
     return getHostEntryAddress(getRuleEntryHost(rule));
   };
 
+  const getRuleEntries = (rule: any): EntryAddress[] => {
+    return getHostEntryAddresses(getRuleEntryHost(rule));
+  };
+
   /** 复制入口 IP:端口 到剪贴板 */
-  const copyEntryAddress = async (rule: any) => {
+  const copyEntryAddress = async (rule: any, entryValue?: string) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
       if (isForwardChainGroup(group)) {
@@ -1282,7 +1325,7 @@ function RulesContent() {
           toast.error("该端口转发链第一台主机未配置入口地址");
           return;
         }
-        const text = `${entry}:${rule.sourcePort}`;
+        const text = formatAddressWithPort(entry, rule.sourcePort);
         try {
           await navigator.clipboard.writeText(text);
           toast.success(`已复制入口地址: ${text}`);
@@ -1296,7 +1339,7 @@ function RulesContent() {
         toast.error("该转发组未配置 DDNS 域名");
         return;
       }
-      const text = `${domain}:${rule.sourcePort}`;
+      const text = formatAddressWithPort(domain, rule.sourcePort);
       try {
         await navigator.clipboard.writeText(text);
         toast.success(`已复制入口地址: ${text}`);
@@ -1305,12 +1348,12 @@ function RulesContent() {
       }
       return;
     }
-    const entry = getRuleEntry(rule);
+    const entry = String(entryValue || getRuleEntry(rule)).trim();
     if (!entry) {
       toast.error("未获取到主机入口地址");
       return;
     }
-    const text = `${entry}:${rule.sourcePort}`;
+    const text = formatAddressWithPort(entry, rule.sourcePort);
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
@@ -1364,13 +1407,20 @@ function RulesContent() {
     const groupEntry = isForwardChainGroup(group)
       ? (group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
       : (group?.domain || getForwardGroupName(rule.forwardGroupId));
-    const entryAddress = `${rule.forwardGroupId
-      ? groupEntry
-      : (getRuleEntry(rule) || getRuleEntryHostName(rule))}:${rule.sourcePort}`;
+    const entryItems = rule.forwardGroupId
+      ? [{ label: isForwardChainGroup(group) ? "转发链" : "转发组", value: groupEntry }]
+      : (getRuleEntries(rule).length > 0
+        ? getRuleEntries(rule)
+        : [{ label: "入口", value: getRuleEntryHostName(rule) }]);
+    const entryAddresses = entryItems.map((entry) => ({
+      ...entry,
+      text: formatAddressWithPort(entry.value, rule.sourcePort),
+    }));
+    const entryAddress = entryAddresses.map((entry) => entry.text).join(" / ");
     const targetAddress = `${rule.targetIp}:${rule.targetPort}`;
     const entryTitle = rule.forwardGroupId
-      ? `复制${isForwardChainGroup(group) ? "转发链" : "转发组"}入口: ${groupEntry}:${rule.sourcePort}`
-      : `复制入口地址: ${getRuleEntry(rule)}:${rule.sourcePort}`;
+      ? `复制${isForwardChainGroup(group) ? "转发链" : "转发组"}入口: ${entryAddress}`
+      : `复制入口地址: ${entryAddress}`;
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
     const failoverBadge = rule.failoverEnabled ? (
       <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
@@ -1381,15 +1431,18 @@ function RulesContent() {
     if (compact) {
       return (
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs">
-          <button
-            type="button"
-            onClick={() => copyEntryAddress(rule)}
-            className="group inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
-            title={entryTitle}
-          >
-            <code className="truncate">{entryAddress}</code>
-            <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
-          </button>
+          {entryAddresses.map((entry) => (
+            <button
+              key={`${entry.label}:${entry.value}`}
+              type="button"
+              onClick={() => copyEntryAddress(rule, entry.value)}
+              className="group inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
+              title={`${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}`}
+            >
+              <code className="truncate">{entry.text}</code>
+              <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+            </button>
+          ))}
           <ArrowRight className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
           <code className="max-w-full truncate rounded bg-muted/40 px-1.5 py-0.5" title={targetAddress}>
             {targetAddress}
@@ -1403,15 +1456,20 @@ function RulesContent() {
       <div className="min-w-0 space-y-1 font-mono text-xs">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="shrink-0 text-[10px] text-muted-foreground">入口</span>
-          <button
-            type="button"
-            onClick={() => copyEntryAddress(rule)}
-            className="group inline-flex min-w-0 flex-1 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
-            title={entryTitle}
-          >
-            <code className="min-w-0 break-all leading-4">{entryAddress}</code>
-            <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
-          </button>
+          <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+            {entryAddresses.map((entry) => (
+              <button
+                key={`${entry.label}:${entry.value}`}
+                type="button"
+                onClick={() => copyEntryAddress(rule, entry.value)}
+                className="group inline-flex max-w-full min-w-0 items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 transition-colors hover:bg-muted/70"
+                title={`${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}`}
+              >
+                <code className="min-w-0 break-all leading-4">{entry.text}</code>
+                <Copy className="h-3 w-3 flex-shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="shrink-0 text-[10px] text-muted-foreground">出口</span>

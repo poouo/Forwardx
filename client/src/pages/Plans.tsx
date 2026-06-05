@@ -9,12 +9,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
 import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
-import { CheckCircle2, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
+import { CheckCircle2, Coins, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -48,6 +50,8 @@ type TrafficAddonForm = {
 };
 
 type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
+type PlanManageTab = "plans" | "billing";
+type CreateMode = "plan" | "billing";
 
 const emptyForm: PlanForm = {
   name: "",
@@ -195,6 +199,10 @@ export default function Plans() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
+  const [activeTab, setActiveTab] = useState<PlanManageTab>("plans");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<CreateMode>("plan");
+  const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
 
   const createPlan = trpc.plans.create.useMutation({
     onSuccess: () => {
@@ -226,11 +234,24 @@ export default function Plans() {
   });
 
   const setStoreEnabled = trpc.plans.setStoreEnabled.useMutation({
-    onSuccess: () => {
-      utils.plans.storeStatus.invalidate();
+    onMutate: async ({ enabled }) => {
+      await utils.plans.storeStatus.cancel();
+      const previous = utils.plans.storeStatus.getData();
+      utils.plans.storeStatus.setData(undefined, { enabled });
+      return { previous };
+    },
+    onSuccess: (_result, { enabled }) => {
+      utils.plans.storeStatus.setData(undefined, { enabled });
+      utils.plans.storeList.invalidate();
       toast.success("商店状态已更新");
     },
-    onError: (error) => toast.error(error.message || "更新失败"),
+    onError: (error, _variables, context) => {
+      if (context?.previous) utils.plans.storeStatus.setData(undefined, context.previous);
+      toast.error(error.message || "更新失败");
+    },
+    onSettled: () => {
+      utils.plans.storeStatus.invalidate();
+    },
   });
 
   const assignPlan = trpc.plans.assign.useMutation({
@@ -246,10 +267,27 @@ export default function Plans() {
   });
 
   const activePlans = useMemo(() => plans.filter((p: any) => p.isActive).length, [plans]);
+  const storeEnabled = !!storeStatus?.enabled;
 
-  const openCreate = () => {
+  const openPlanCreate = () => {
     setForm(emptyForm);
     setEditing(true);
+  };
+
+  const openCreate = () => {
+    setCreateMode(activeTab === "billing" ? "billing" : "plan");
+    setCreateOpen(true);
+  };
+
+  const confirmCreate = () => {
+    setCreateOpen(false);
+    if (createMode === "billing") {
+      setActiveTab("billing");
+      setBillingCreateRequestKey((value) => value + 1);
+      return;
+    }
+    setActiveTab("plans");
+    openPlanCreate();
   };
 
   const save = () => {
@@ -296,7 +334,7 @@ export default function Plans() {
               <Settings2 className="mr-2 h-4 w-4" /> 手动分配
             </Button>
             <Button onClick={openCreate}>
-              <Plus className="mr-2 h-4 w-4" /> 新增套餐
+              <Plus className="mr-2 h-4 w-4" /> 新增
             </Button>
           </div>
         </div>
@@ -306,13 +344,13 @@ export default function Plans() {
             <CardHeader className="pb-2">
               <CardDescription>商店状态</CardDescription>
               <CardTitle className="flex items-center justify-between">
-                <AnimatedStatValue
-                  value={storeStatus?.enabled ? "已开启" : "已关闭"}
-                  loading={storeStatusLoading}
-                  cacheKey="plans.storeStatus"
-                  fallbackValue="已关闭"
+                <span>{storeEnabled ? "已开启" : "已关闭"}</span>
+                <Switch
+                  instant
+                  checked={storeEnabled}
+                  disabled={storeStatusLoading || setStoreEnabled.isPending}
+                  onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })}
                 />
-                <Switch checked={!!storeStatus?.enabled} disabled={storeStatusLoading || setStoreEnabled.isPending} onCheckedChange={(enabled) => setStoreEnabled.mutate({ enabled })} />
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">开启后用户可自助购买。</CardContent>
@@ -344,6 +382,17 @@ export default function Plans() {
           </Card>
         </div>
 
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PlanManageTab)} className="space-y-4">
+          <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto">
+            <TabsTrigger value="plans" className="gap-2">
+              <Package className="h-4 w-4" /> 订阅套餐
+            </TabsTrigger>
+            <TabsTrigger value="billing" className="gap-2">
+              <Coins className="h-4 w-4" /> 按量计费资源
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="plans" className="mt-0 space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 套餐列表</CardTitle>
@@ -512,7 +561,48 @@ export default function Plans() {
             )}
           </CardContent>
         </Card>
+          </TabsContent>
+
+          <TabsContent value="billing" className="mt-0">
+            <TrafficBillingConfigManager
+              showHeader={false}
+              hideCreateButton
+              createRequestKey={billingCreateRequestKey}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>新增项目</DialogTitle>
+            <DialogDescription>选择要新增订阅套餐还是按量计费资源。</DialogDescription>
+          </DialogHeader>
+          <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)} className="space-y-4">
+            <TabsList className="grid h-auto w-full grid-cols-2">
+              <TabsTrigger value="plan" className="gap-2">
+                <Package className="h-4 w-4" /> 订阅套餐
+              </TabsTrigger>
+              <TabsTrigger value="billing" className="gap-2">
+                <Coins className="h-4 w-4" /> 计费资源
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="plan" className="mt-0 rounded-lg border border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
+              新增可购买或后台分配的订阅套餐，包含端口、流量、规则数量和可用资源。
+            </TabsContent>
+            <TabsContent value="billing" className="mt-0 rounded-lg border border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
+              新增按量计费资源，公开资源会展示在商店中，用户有余额即可直接使用。
+            </TabsContent>
+          </Tabs>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
+            <Button onClick={confirmCreate}>
+              <Plus className="mr-2 h-4 w-4" /> 继续
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="max-w-3xl sm:max-h-[90svh]">

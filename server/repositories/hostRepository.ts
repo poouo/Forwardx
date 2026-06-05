@@ -107,11 +107,38 @@ export async function getHostByAgentToken(token: string) {
   return r[0];
 }
 
-/** 获取主机下的转发规则数量 */
-export async function getHostRuleCount(hostId: number): Promise<number> {
+export async function getHostRuleDeleteBlockers(hostId: number) {
   const db = await getDb();
-  if (!db) return 0;
-  const r = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(eq(forwardRules.hostId, hostId));
-  return Number(r[0]?.count) || 0;
+  if (!db) return { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 };
+  const managedRuleSql = sql`${forwardRules.forwardGroupRuleId} IS NOT NULL OR ${forwardRules.id} IN (SELECT ruleId FROM forward_group_members WHERE ruleId IS NOT NULL)`;
+  const [ruleRows, managedRows, pendingRows] = await Promise.all([
+    db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
+      ${forwardRules.hostId} = ${hostId}
+      AND ${forwardRules.pendingDelete} = 0
+      AND ${forwardRules.forwardGroupRuleId} IS NULL
+      AND ${forwardRules.id} NOT IN (SELECT ruleId FROM forward_group_members WHERE ruleId IS NOT NULL)
+    `),
+    db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
+      ${forwardRules.hostId} = ${hostId}
+      AND ${forwardRules.pendingDelete} = 0
+      AND (${managedRuleSql})
+    `),
+    db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
+      ${forwardRules.hostId} = ${hostId}
+      AND ${forwardRules.pendingDelete} = 1
+      AND ${forwardRules.isRunning} = 1
+    `),
+  ]);
+  return {
+    ruleCount: Number(ruleRows[0]?.count) || 0,
+    managedRuleCount: Number(managedRows[0]?.count) || 0,
+    pendingCleanupCount: Number(pendingRows[0]?.count) || 0,
+  };
+}
+
+/** 获取主机下未删除的转发规则数量 */
+export async function getHostRuleCount(hostId: number): Promise<number> {
+  const blockers = await getHostRuleDeleteBlockers(hostId);
+  return blockers.ruleCount + blockers.managedRuleCount + blockers.pendingCleanupCount;
 }
 

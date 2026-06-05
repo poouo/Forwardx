@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 
 type Theme = "dark" | "light" | "system";
 
@@ -20,6 +20,9 @@ const ThemeProviderContext = createContext<ThemeProviderState>({
   setTheme: () => null,
 });
 
+const THEME_TRANSITION_CLASS = "theme-transitioning";
+const THEME_TRANSITION_MS = 760;
+
 function getResolvedTheme(theme: Theme): "dark" | "light" {
   if (theme === "system") {
     return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -40,10 +43,35 @@ export function ThemeProvider({
 
   const resolvedTheme = getResolvedTheme(theme);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = window.document.documentElement;
+    const appliedTheme = root.classList.contains("dark")
+      ? "dark"
+      : root.classList.contains("light")
+        ? "light"
+        : null;
+    const shouldAnimate =
+      appliedTheme !== null &&
+      appliedTheme !== resolvedTheme &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let transitionTimer: number | undefined;
+
+    if (shouldAnimate) {
+      root.classList.add(THEME_TRANSITION_CLASS);
+      transitionTimer = window.setTimeout(() => {
+        root.classList.remove(THEME_TRANSITION_CLASS);
+      }, THEME_TRANSITION_MS);
+    }
+
     root.classList.remove("light", "dark");
     root.classList.add(resolvedTheme);
+
+    return () => {
+      if (transitionTimer !== undefined) {
+        window.clearTimeout(transitionTimer);
+      }
+      root.classList.remove(THEME_TRANSITION_CLASS);
+    };
   }, [resolvedTheme]);
 
   const value = {

@@ -205,15 +205,19 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
 
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
+      const hasIpv4Report = Object.prototype.hasOwnProperty.call(req.body, "ipv4");
+      const hasIpv6Report = Object.prototype.hasOwnProperty.call(req.body, "ipv6");
+      const nextIpv4 = hasIpv4Report ? (safeIpv4 || null) : ((existingHost as any).ipv4 || null);
+      const nextIpv6 = hasIpv6Report ? (safeIpv6 || null) : ((existingHost as any).ipv6 || null);
       const entryChanged = [
         ["ip", primaryIp !== "unknown" ? primaryIp : existingHost.ip],
-        ["ipv4", safeIpv4 || (existingHost as any).ipv4 || null],
-        ["ipv6", safeIpv6 || (existingHost as any).ipv6 || null],
+        ["ipv4", nextIpv4],
+        ["ipv6", nextIpv6],
       ].some(([key, value]) => String(value || "") !== String((existingHost as any)[key as string] || ""));
       await db.updateHost(existingHost.id, {
         ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip,
-        ipv4: safeIpv4 || (existingHost as any).ipv4 || null,
-        ipv6: safeIpv6 || (existingHost as any).ipv6 || null,
+        ipv4: nextIpv4,
+        ipv6: nextIpv6,
         osInfo: nextOsInfo || existingHost.osInfo,
         cpuInfo: nextCpuInfo || existingHost.cpuInfo,
         memoryTotal: memoryTotal || existingHost.memoryTotal,

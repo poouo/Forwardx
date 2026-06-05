@@ -28,6 +28,15 @@ export const trafficBillingRouter = router({
     return { enabled, configs };
   }),
 
+  storeResources: protectedProcedure.query(async () => {
+    const enabled = await db.isTrafficBillingEnabled();
+    if (!enabled) return { enabled, configs: [] };
+    return {
+      enabled,
+      configs: (await db.listTrafficBillingConfigs()).filter((item: any) => item.enabled && !item.requiresPermission),
+    };
+  }),
+
   setEnabled: adminProcedure
     .input(z.object({ enabled: z.boolean() }))
     .mutation(async ({ input }) => {

@@ -33,16 +33,19 @@ import (
 	"time"
 )
 
-var Version = "2.2.85"
+var Version = "2.2.86"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
 const selfTestIdlePollInterval = time.Minute
 const selfTestActivePollInterval = 3 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
+const agentClockSyncCooldown = 10 * time.Minute
 
 var upgradeStarted int32
 var upgradeStartedAt int64
+var clockSyncRunning int32
+var lastClockSyncAttemptAt int64
 var fxpMu sync.Mutex
 var fxpServers = map[string]*fxpProcess{}
 var protocolGuardMu sync.Mutex
@@ -896,6 +899,7 @@ func agentEventStream(cfg Config) {
 	for {
 		if err := runAgentEventStream(cfg); err != nil {
 			logf("agent event stream error: %v", err)
+			syncSystemTimeForCommError(err)
 			time.Sleep(3 * time.Second)
 		}
 	}
@@ -920,7 +924,8 @@ func runAgentEventStream(cfg Config) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("event stream status: %s", resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("event stream status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -3068,6 +3073,18 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 }
 
 func post(cfg Config, path string, payload any, out any) error {
+	err := postOnce(cfg, path, payload, out)
+	if err == nil {
+		return nil
+	}
+	if syncSystemTimeForCommError(err) {
+		logf("retrying agent request after time sync path=%s", path)
+		return postOnce(cfg, path, payload, out)
+	}
+	return err
+}
+
+func postOnce(cfg Config, path string, payload any, out any) error {
 	env, err := encrypt(map[string]any{
 		"path":    path,
 		"payload": payload,
@@ -3121,6 +3138,72 @@ func post(cfg Config, path string, payload any, out any) error {
 		return decryptErr
 	}
 	return json.Unmarshal(decodedBody, out)
+}
+
+func isClockSyncCandidateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "timestamp") || strings.Contains(msg, "replay protection") {
+		return true
+	}
+	if strings.Contains(msg, "400 bad request") || strings.Contains(msg, "401 unauthorized") {
+		return true
+	}
+	if strings.Contains(msg, "event stream status: 400") || strings.Contains(msg, "event stream status: 401") {
+		return true
+	}
+	if strings.Contains(msg, "invalid encrypted request") || strings.Contains(msg, "decryption failed") {
+		return true
+	}
+	return false
+}
+
+func syncSystemTimeForCommError(err error) bool {
+	if !isClockSyncCandidateError(err) {
+		return false
+	}
+	now := time.Now()
+	lastAttempt := atomic.LoadInt64(&lastClockSyncAttemptAt)
+	if lastAttempt > 0 && now.Sub(time.Unix(lastAttempt, 0)) < agentClockSyncCooldown {
+		return false
+	}
+	if !atomic.CompareAndSwapInt32(&clockSyncRunning, 0, 1) {
+		return false
+	}
+	atomic.StoreInt64(&lastClockSyncAttemptAt, now.Unix())
+	defer atomic.StoreInt32(&clockSyncRunning, 0)
+	return syncSystemTime("agent-panel communication failed: " + err.Error())
+}
+
+func syncSystemTime(reason string) bool {
+	logf("time sync requested: %s", reason)
+	commands := []string{
+		`command -v timedatectl >/dev/null 2>&1 && timedatectl set-ntp true`,
+		`command -v systemctl >/dev/null 2>&1 && { systemctl enable --now chronyd >/dev/null 2>&1 || systemctl enable --now chrony >/dev/null 2>&1 || systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || systemctl restart chronyd >/dev/null 2>&1 || systemctl restart chrony >/dev/null 2>&1 || systemctl restart systemd-timesyncd >/dev/null 2>&1; }`,
+		`command -v rc-service >/dev/null 2>&1 && { rc-update add chronyd default >/dev/null 2>&1 || true; rc-service chronyd restart; }`,
+		`command -v chronyc >/dev/null 2>&1 && { chronyc -a "burst 4/4" >/dev/null 2>&1 || true; chronyc -a makestep || chronyc tracking; }`,
+		`command -v ntpd >/dev/null 2>&1 && ntpd -q -p pool.ntp.org`,
+		`command -v busybox >/dev/null 2>&1 && busybox ntpd -q -p pool.ntp.org`,
+	}
+	ok := false
+	for _, cmd := range commands {
+		if runClockSyncCommand(cmd) {
+			ok = true
+		}
+	}
+	logf("time sync finished ok=%v current_utc=%s", ok, time.Now().UTC().Format(time.RFC3339))
+	return ok
+}
+
+func runClockSyncCommand(cmd string) bool {
+	c := exec.Command("sh", "-lc", cmd)
+	out, err := c.CombinedOutput()
+	if len(out) > 0 {
+		logf("time sync: %s", strings.TrimSpace(string(out)))
+	}
+	return err == nil
 }
 
 func encrypt(payload any, token string) (envelope, error) {

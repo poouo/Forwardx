@@ -429,10 +429,10 @@ function ForwardGroupsContent() {
   const groupStatusBadge = (group: any) => {
     if (group.groupMode === "chain") {
       if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
-      return <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-600">链路</Badge>;
+      return <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-500/20 dark:hover:text-sky-100">链路</Badge>;
     }
     if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
-    if (group.lastStatus === "healthy") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-600">健康</Badge>;
+    if (group.lastStatus === "healthy") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">健康</Badge>;
     if (group.lastStatus === "down") return <Badge variant="destructive">不可用</Badge>;
     if (group.lastStatus === "error") return <Badge variant="destructive">DDNS 异常</Badge>;
     return <Badge variant="secondary">等待检测</Badge>;

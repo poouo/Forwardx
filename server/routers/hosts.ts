@@ -247,10 +247,16 @@ export const hostsRouter = router({
         const host = await db.getHostById(input.id);
         if (!host) throw new Error("主机不存在");
         if (ctx.user.role !== "admin" && host.userId !== ctx.user.id) throw new Error("无权操作此主机");
-        // 检查是否存在转发规则
-        const ruleCount = await db.getHostRuleCount(input.id);
-        if (ruleCount > 0) {
-          throw new Error(`该主机下还有 ${ruleCount} 条转发规则，请先删除所有规则后再删除主机`);
+        // 检查是否存在仍会占用此主机的规则。已标记删除且停止运行的历史记录不应阻止删除主机。
+        const blockers = await db.getHostRuleDeleteBlockers(input.id);
+        if (blockers.ruleCount > 0) {
+          throw new Error(`该主机下还有 ${blockers.ruleCount} 条转发规则，请先删除所有规则后再删除主机`);
+        }
+        if (blockers.managedRuleCount > 0) {
+          throw new Error(`该主机仍被 ${blockers.managedRuleCount} 条转发组/转发链规则引用，请先在转发组中移除该主机或删除对应转发组`);
+        }
+        if (blockers.pendingCleanupCount > 0) {
+          throw new Error(`该主机下还有 ${blockers.pendingCleanupCount} 条规则正在等待 Agent 清理，请等待 Agent 上报清理完成后再删除主机`);
         }
         await db.deleteHostPermissions(input.id);
         await db.deleteHost(input.id);
