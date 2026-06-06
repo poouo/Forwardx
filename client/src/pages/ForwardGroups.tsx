@@ -188,7 +188,7 @@ export function ForwardGroupsContent({
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [internalViewMode, setInternalViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
-  const lastCreateRequestKeyRef = useRef(0);
+  const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
 

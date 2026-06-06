@@ -12,12 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -810,6 +804,7 @@ function TunnelsContent() {
     && hosts.length >= 2
     && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0);
   const canCreateChain = !!hosts?.length && hosts.length >= 2;
+  const canCreateActive = activeSection === "chains" ? canCreateChain : canCreateTunnel;
   const openCreateTunnel = () => {
     setActiveSection("tunnels");
     openCreate();
@@ -817,6 +812,10 @@ function TunnelsContent() {
   const openCreateChain = () => {
     setActiveSection("chains");
     setChainCreateRequestKey((value) => value + 1);
+  };
+  const openCreateForActiveSection = () => {
+    if (activeSection === "chains") openCreateChain();
+    else openCreateTunnel();
   };
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
@@ -866,34 +865,15 @@ function TunnelsContent() {
               <List className="h-4 w-4" />
             </Button>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                className="gap-2"
-                disabled={!canCreateTunnel && !canCreateChain}
-                title={!canCreateTunnel && !canCreateChain ? "至少需要 2 台主机" : undefined}
-              >
-                <Plus className="h-4 w-4" />
-                新增
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem
-                disabled={!canCreateTunnel}
-                onClick={openCreateTunnel}
-              >
-                <Network className="mr-2 h-4 w-4" />
-                添加隧道
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!canCreateChain}
-                onClick={openCreateChain}
-              >
-                <Route className="mr-2 h-4 w-4" />
-                添加转发链
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button
+            className="gap-2"
+            disabled={!canCreateActive}
+            title={!canCreateActive ? (activeSection === "chains" ? "至少需要 2 台主机" : "至少需要 2 台主机且启用可用隧道协议") : undefined}
+            onClick={openCreateForActiveSection}
+          >
+            <Plus className="h-4 w-4" />
+            新增
+          </Button>
         </div>
       </div>
 
