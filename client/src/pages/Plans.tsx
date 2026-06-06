@@ -509,6 +509,25 @@ export default function Plans() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
+              <CardDescription>按量计费</CardDescription>
+              <CardTitle className="flex items-center justify-between gap-3">
+                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
+                {trafficBillingLoading ? (
+                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
+                ) : (
+                  <Switch
+                    instant
+                    checked={trafficBillingEnabled}
+                    disabled={setTrafficBillingEnabled.isPending}
+                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
+                  />
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
               <CardDescription>商店状态</CardDescription>
               <CardTitle className="flex items-center justify-between">
                 <span>{storeEnabled ? "已开启" : "已关闭"}</span>
@@ -604,25 +623,6 @@ export default function Plans() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">已配置资源。</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>按量计费</CardDescription>
-              <CardTitle className="flex items-center justify-between gap-3">
-                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
-                {trafficBillingLoading ? (
-                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
-                ) : (
-                  <Switch
-                    instant
-                    checked={trafficBillingEnabled}
-                    disabled={setTrafficBillingEnabled.isPending}
-                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
-                  />
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
           </Card>
         </div>
 
