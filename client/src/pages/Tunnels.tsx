@@ -1,5 +1,6 @@
 ﻿import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -579,6 +580,8 @@ function TunnelsContent() {
   const [chainViewMode, setChainViewMode] = useState<TunnelViewMode>(() => getStoredChainViewMode());
   const [activeSection, setActiveSection] = useState<"tunnels" | "chains">("tunnels");
   const [chainCreateRequestKey, setChainCreateRequestKey] = useState(0);
+  const [pendingCreateType, setPendingCreateType] = useState<LinkCreateType | null>(null);
+  const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -804,19 +807,37 @@ function TunnelsContent() {
     && hosts.length >= 2
     && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0);
   const canCreateChain = !!hosts?.length && hosts.length >= 2;
-  const canCreateActive = activeSection === "chains" ? canCreateChain : canCreateTunnel;
-  const openCreateTunnel = () => {
-    setActiveSection("tunnels");
-    openCreate();
+  const canCreateAny = canCreateTunnel || canCreateChain;
+  const createDisabledTitle = !canCreateAny
+    ? "至少需要 2 台主机且启用可用隧道协议"
+    : !canCreateTunnel
+      ? "隧道链路暂不可创建，可选择端口转发链"
+      : !canCreateChain
+        ? "端口转发链暂不可创建，可选择隧道链路"
+        : undefined;
+  const requestCreateType = (type: LinkCreateType) => {
+    if (type === "tunnel" && !canCreateTunnel) return;
+    if (type === "chain" && !canCreateChain) return;
+    setShowCreateTypeDialog(false);
+    if (type === "chain") setShowDialog(false);
+    setActiveSection(type === "chain" ? "chains" : "tunnels");
+    setPendingCreateType(type);
   };
-  const openCreateChain = () => {
-    setActiveSection("chains");
-    setChainCreateRequestKey((value) => value + 1);
+  const openCreateTypeDialog = () => {
+    if (!canCreateAny) return;
+    setShowCreateTypeDialog(true);
   };
-  const openCreateForActiveSection = () => {
-    if (activeSection === "chains") openCreateChain();
-    else openCreateTunnel();
-  };
+  useEffect(() => {
+    if (!pendingCreateType) return;
+    if (pendingCreateType === "tunnel" && activeSection === "tunnels") {
+      setPendingCreateType(null);
+      openCreate();
+    }
+    if (pendingCreateType === "chain" && activeSection === "chains") {
+      setPendingCreateType(null);
+      setChainCreateRequestKey((value) => value + 1);
+    }
+  }, [activeSection, pendingCreateType]);
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
       <Tooltip>
@@ -867,9 +888,9 @@ function TunnelsContent() {
           </div>
           <Button
             className="gap-2"
-            disabled={!canCreateActive}
-            title={!canCreateActive ? (activeSection === "chains" ? "至少需要 2 台主机" : "至少需要 2 台主机且启用可用隧道协议") : undefined}
-            onClick={openCreateForActiveSection}
+            disabled={!canCreateAny}
+            title={createDisabledTitle}
+            onClick={openCreateTypeDialog}
           >
             <Plus className="h-4 w-4" />
             新增
@@ -1252,11 +1273,26 @@ function TunnelsContent() {
         />
       )}
 
+      <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>新增链路</DialogTitle>
+            <DialogDescription>选择要创建的链路类型。</DialogDescription>
+          </DialogHeader>
+          <LinkCreateTypeSelector
+            value={activeSection === "chains" ? "chain" : "tunnel"}
+            canCreateTunnel={canCreateTunnel}
+            canCreateChain={canCreateChain}
+            onValueChange={requestCreateType}
+          />
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-6">
           <DialogHeader>
-            <DialogTitle>{editingId ? "编辑隧道" : "添加隧道"}</DialogTitle>
-            <DialogDescription>配置入口、出口和监听端口。</DialogDescription>
+            <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
+            <DialogDescription>填写隧道链路配置。</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 sm:pr-2">
             <div className="space-y-2">
