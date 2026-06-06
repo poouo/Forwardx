@@ -2,8 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-forwardx}
 
 services:
   forwardx:
-    build: .
-    image: forwardx:latest
+    image: ${FORWARDX_IMAGE:-ghcr.io/poouo/forwardx:latest}
     container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
     restart: unless-stopped
     ports:

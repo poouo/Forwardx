@@ -133,6 +133,10 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 ```
 
 Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database.json`，SQLite 数据文件保存在 `/data/forwardx.db`。
+默认拉取 `ghcr.io/poouo/forwardx:latest` 预编译镜像，不会在用户服务器上重新构建镜像。
+安装和升级会保留 `.env`、Docker 数据卷和部署目录内的 `data/` 数据；只有执行卸载脚本并输入 `y` 后才会删除部署目录和 Docker 数据卷。
+如果 GitHub 刚发布新版本但 `latest` 镜像仍在构建，升级脚本会提示稍后重试，并且不会停止旧容器。
+后台「检查更新」也会等待 Docker 镜像版本同步完成后才提示可升级，避免看到新版本后立即升级却拉到旧镜像。
 
 ## 首次初始化
 
@@ -236,22 +240,26 @@ ForwardX 支持两类隧道：
 | `MYSQL_SSL` | `false` | MySQL 是否启用 SSL |
 | `JWT_SECRET` | `change-me-to-a-random-string` | 登录签名密钥，生产环境必须修改 |
 | `TELEGRAM_BOT_TOKEN` | 空 | Telegram 机器人 Token |
-| `FORWARDX_TARGET_VERSION` | 空 | 安装或升级到指定版本，例如 `v2.3.12` |
+| `FORWARDX_IMAGE` | `ghcr.io/poouo/forwardx:latest` | Docker 部署使用的预编译镜像 |
+| `FORWARDX_TARGET_VERSION` | 空 | 本地非 Docker 部署可指定安装或升级版本，例如 `v2.3.12`；Docker 部署固定使用 `latest` 镜像 |
 
 ## 手动 Docker Compose
 
 ```bash
 git clone https://github.com/poouo/Forwardx.git
 cd Forwardx
-docker compose -p forwardx up -d --build
+docker compose -p forwardx pull forwardx
+docker compose -p forwardx up -d
 ```
 
-手动升级到指定版本：
+Docker Compose 默认会拉取 GitHub Packages 上的预编译镜像 `ghcr.io/poouo/forwardx:latest`，服务器本地不需要再执行镜像编译。
+手动升级时重新拉取 `latest` 并重启容器即可，数据卷会保留：
 
 ```bash
 git fetch --force --prune origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*"
-git checkout v2.3.12
-docker compose -p forwardx up -d --build --remove-orphans
+git checkout main
+docker compose -p forwardx pull forwardx
+docker compose -p forwardx up -d --remove-orphans
 ```
 
 ## 本地开发

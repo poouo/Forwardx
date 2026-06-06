@@ -30,6 +30,17 @@ const normalizeTunnelConnect = (connectHost?: string | null) => {
   return host;
 };
 
+function normalizeTunnelConnectForEndpoint(connectHost: string | null | undefined, networkType: "public" | "private" | undefined, host: any) {
+  const normalized = normalizeTunnelConnect(connectHost);
+  if (normalized) return normalized;
+  if (networkType === "private") {
+    const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+    if (!privateAddr) throw new Error("出口 Agent 未配置内网IP，无法使用内网 IP 连接");
+    return privateAddr;
+  }
+  return null;
+}
+
 const normalizeHopConnectHostsForCompare = (hops: Array<any>) =>
   hops.map((hop, idx) => {
     if (idx === 0) return null;
@@ -43,11 +54,8 @@ const normalizeHopConnectHostsForCompare = (hops: Array<any>) =>
 const getTunnelDialHost = (tunnel: any, exit: any) => {
   const connectHost = String(tunnel?.connectHost || "").trim();
   if (connectHost) return connectHost;
-  return String((exit as any).tunnelEntryIp || (exit as any).entryIp || (exit as any).ipv4 || (exit as any).ipv6 || exit?.ip || "").trim();
+  return getHostPublicAddress(exit);
 };
-
-const getHostTunnelAddress = (host: any) =>
-  String((host as any)?.tunnelEntryIp || (host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
 const getHostPublicAddress = (host: any) =>
   String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
@@ -212,7 +220,10 @@ export const tunnelsRouter = router({
           }
         }
         const secret = crypto.randomBytes(32).toString("hex");
-        const connectHost = normalizeTunnelConnect(input.connectHost);
+        const exitHostForConnect = await db.getHostById(exitHostId) as any;
+        const connectHost = hopHostIds
+          ? normalizeTunnelConnect(input.connectHost)
+          : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
         const { hopHostIds: _ignoredHopHostIds, hopConnectHosts: _ignoredHopConnectHosts, ...tunnelInput } = input as any;
         const id = await db.createTunnel({
           ...tunnelInput,
@@ -334,7 +345,12 @@ export const tunnelsRouter = router({
         }
         if ((data as any).networkType !== undefined || (data as any).connectHost !== undefined) {
           const nextConnectHost = (data as any).connectHost !== undefined ? (data as any).connectHost : (tunnel as any).connectHost;
-          const normalizedConnectHost = normalizeTunnelConnect(nextConnectHost);
+          const nextNetworkType = (data as any).networkType !== undefined ? (data as any).networkType : (tunnel as any).networkType;
+          const hasExistingMultiHop = existingHopHostIds.length >= 3;
+          const isMultiHopAfterUpdate = !!hopHostIds || (!switchToRegular && hasExistingMultiHop && requestedHopHostIds === undefined);
+          const normalizedConnectHost = isMultiHopAfterUpdate
+            ? normalizeTunnelConnect(nextConnectHost)
+            : normalizeTunnelConnectForEndpoint(nextConnectHost, nextNetworkType, exit);
           (data as any).networkType = normalizedConnectHost ? "private" : "public";
           (data as any).connectHost = normalizedConnectHost;
         }
@@ -486,7 +502,7 @@ export const tunnelsRouter = router({
             const nextHop = tunnelHops[i + 1] as any;
             const fromHostId = Number(currentHop.hostId) || 0;
             const nextHost = await db.getHostById(Number(nextHop.hostId));
-            const nextAddr = String(nextHop.connectHost || "").trim() || getHostTunnelAddress(nextHost);
+            const nextAddr = String(nextHop.connectHost || "").trim() || getHostPublicAddress(nextHost);
             const nextPort = Number(nextHop.listenPort) || 0;
             if (!fromHostId || !nextAddr || !nextPort) {
               const message = `TUNNEL_HOP_TEST_TARGET_INVALID hop=${i + 1} target=${nextAddr || "-"} port=${nextPort || "-"}`;

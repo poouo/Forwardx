@@ -50,6 +50,7 @@ const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
 const MANUAL_DOCKER_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
+const DEFAULT_DOCKER_IMAGE = "ghcr.io/poouo/forwardx:latest";
 const forwardProtocolSettingsSchema = z.object(
   Object.fromEntries(
     [...FORWARD_TYPES, ...TUNNEL_PROTOCOLS].map((key) => [key, z.boolean().optional()])
@@ -74,6 +75,9 @@ type UpdateInfo = {
   source: "release" | "tag" | "main" | null;
   publishedAt: string | null;
   checkedAt: string;
+  deployable?: boolean;
+  artifactVersion?: string | null;
+  pendingReason?: string | null;
   error?: string;
 };
 
@@ -166,6 +170,134 @@ async function fetchTextNoCache(url: string): Promise<string> {
   return res.text();
 }
 
+function dockerImageReference() {
+  return String(process.env.FORWARDX_IMAGE || DEFAULT_DOCKER_IMAGE).trim() || DEFAULT_DOCKER_IMAGE;
+}
+
+function parseDockerImageReference(image: string) {
+  const value = image.replace(/^https?:\/\//i, "").split("@")[0];
+  const slashIndex = value.indexOf("/");
+  const registry = slashIndex > 0 ? value.slice(0, slashIndex) : "ghcr.io";
+  const rest = slashIndex > 0 ? value.slice(slashIndex + 1) : value;
+  const lastSlash = rest.lastIndexOf("/");
+  const lastColon = rest.lastIndexOf(":");
+  const hasTag = lastColon > lastSlash;
+  return {
+    registry,
+    repository: hasTag ? rest.slice(0, lastColon) : rest,
+    tag: hasTag ? rest.slice(lastColon + 1) : "latest",
+  };
+}
+
+function parseBearerChallenge(header: string | null) {
+  if (!header || !/^Bearer\s+/i.test(header)) return null;
+  const params: Record<string, string> = {};
+  for (const match of header.matchAll(/(\w+)="([^"]*)"/g)) {
+    params[match[1]] = match[2];
+  }
+  return params.realm ? params : null;
+}
+
+async function fetchRegistryJson<T>(url: string, accept: string, scope: string): Promise<T> {
+  const headers: Record<string, string> = {
+    "Accept": accept,
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "User-Agent": `ForwardX/${APP_VERSION}`,
+  };
+  let res = await fetch(url, { cache: "no-store", headers });
+  if (res.status === 401) {
+    const challenge = parseBearerChallenge(res.headers.get("www-authenticate"));
+    if (challenge?.realm) {
+      const tokenUrl = new URL(challenge.realm);
+      if (challenge.service) tokenUrl.searchParams.set("service", challenge.service);
+      tokenUrl.searchParams.set("scope", challenge.scope || scope);
+      const tokenRes = await fetch(tokenUrl, {
+        cache: "no-store",
+        headers: { "User-Agent": `ForwardX/${APP_VERSION}` },
+      });
+      if (!tokenRes.ok) throw new Error(`Docker 镜像令牌请求失败：${tokenRes.status} ${tokenRes.statusText}`);
+      const tokenData = await tokenRes.json() as { token?: string; access_token?: string };
+      const token = tokenData.token || tokenData.access_token;
+      if (!token) throw new Error("Docker 镜像令牌为空");
+      res = await fetch(url, {
+        cache: "no-store",
+        headers: { ...headers, Authorization: `Bearer ${token}` },
+      });
+    }
+  }
+  if (!res.ok) throw new Error(`Docker 镜像信息请求失败：${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+async function fetchDockerLatestImageVersion(): Promise<string | null> {
+  const image = parseDockerImageReference(dockerImageReference());
+  const scope = `repository:${image.repository}:pull`;
+  const base = `https://${image.registry}/v2/${image.repository}`;
+  const manifestAccept = [
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+  ].join(", ");
+  const manifest = await fetchRegistryJson<any>(`${base}/manifests/${encodeURIComponent(image.tag)}`, manifestAccept, scope);
+  let imageManifest = manifest;
+  if (Array.isArray(manifest.manifests)) {
+    const selected =
+      manifest.manifests.find((item: any) => item?.platform?.os === "linux" && item?.platform?.architecture === "amd64") ||
+      manifest.manifests.find((item: any) => item?.platform?.os === "linux") ||
+      manifest.manifests[0];
+    const digest = selected?.digest;
+    if (!digest) throw new Error("Docker manifest list 中未找到可用镜像 digest");
+    imageManifest = await fetchRegistryJson<any>(`${base}/manifests/${digest}`, manifestAccept, scope);
+  }
+  const configDigest = imageManifest?.config?.digest;
+  if (!configDigest) throw new Error("Docker 镜像配置 digest 为空");
+  const config = await fetchRegistryJson<any>(
+    `${base}/blobs/${configDigest}`,
+    "application/vnd.oci.image.config.v1+json, application/vnd.docker.container.image.v1+json, application/json",
+    scope,
+  );
+  const labels = config?.config?.Labels || config?.container_config?.Labels || {};
+  const envList: string[] = Array.isArray(config?.config?.Env) ? config.config.Env : [];
+  const envVersion = envList.find((item) => item.startsWith("FORWARDX_IMAGE_VERSION="))?.split("=").slice(1).join("=");
+  const labelVersion =
+    labels["org.opencontainers.image.version"] ||
+    labels["org.forwardx.version"] ||
+    labels["io.forwardx.version"];
+  const version = normalizeVersion(labelVersion || envVersion || "");
+  return version || null;
+}
+
+async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
+  if (!info.latestVersion || !info.hasUpdate || !isDockerRuntime()) {
+    return { ...info, deployable: info.hasUpdate || undefined };
+  }
+  const expected = normalizeVersion(info.latestVersion);
+  try {
+    const imageVersion = await fetchDockerLatestImageVersion();
+    const artifactVersion = imageVersion ? `v${normalizeVersion(imageVersion)}` : null;
+    if (imageVersion && compareVersions(imageVersion, expected) >= 0) {
+      return { ...info, deployable: true, artifactVersion, pendingReason: null };
+    }
+    return {
+      ...info,
+      hasUpdate: false,
+      deployable: false,
+      artifactVersion,
+      pendingReason: `已发现新版本 v${expected}，但 Docker latest 镜像${artifactVersion ? `当前仍是 ${artifactVersion}` : "尚未写入版本信息"}，等待 GitHub Actions 构建完成后再提示升级。`,
+    };
+  } catch (error: any) {
+    return {
+      ...info,
+      hasUpdate: false,
+      deployable: false,
+      artifactVersion: null,
+      pendingReason: `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像是否构建完成：${error?.message || "未知错误"}`,
+    };
+  }
+}
+
 function makeUpdateInfo(
   latestVersion: string | null | undefined,
   source: UpdateInfo["source"],
@@ -227,7 +359,7 @@ async function fetchLatestUpdateInfo(): Promise<UpdateInfo> {
   const latest = candidates
     .filter((item) => !!item.latestVersion)
     .sort((a, b) => compareVersions(b.latestVersion || "0", a.latestVersion || "0"))[0];
-  if (latest) return latest;
+  if (latest) return ensureUpdateDeployable(latest);
 
   return {
     currentVersion: APP_VERSION,
@@ -1012,6 +1144,9 @@ export const systemRouter = router({
         update = lastUpdateInfo;
       }
       lastUpdateInfo = update;
+      if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
+        throw new Error(update.pendingReason || "新版本部署产物尚未构建完成，请稍后重试");
+      }
       const requestedVersion = input?.targetVersion;
       const targetVersion =
         update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)

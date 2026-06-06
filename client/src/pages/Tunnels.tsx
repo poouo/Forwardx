@@ -12,6 +12,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -206,6 +212,7 @@ function getTunnelModeDisplay(mode: unknown) {
 type TunnelViewMode = "card" | "table";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
+const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
 const MAX_TUNNEL_HOPS = 10;
 
 function getStoredTunnelViewMode(): TunnelViewMode {
@@ -222,6 +229,25 @@ function storeTunnelViewMode(viewMode: TunnelViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(TUNNEL_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredChainViewMode(): TunnelViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(CHAIN_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeChainViewMode(viewMode: TunnelViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAIN_VIEW_MODE_STORAGE_KEY, viewMode);
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
@@ -548,6 +574,7 @@ function TunnelsContent() {
   const utils = trpc.useUtils();
   const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 10000 });
   const { data: hosts } = trpc.hosts.list.useQuery();
+  const { data: forwardGroups, isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -555,7 +582,9 @@ function TunnelsContent() {
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
+  const [chainViewMode, setChainViewMode] = useState<TunnelViewMode>(() => getStoredChainViewMode());
   const [activeSection, setActiveSection] = useState<"tunnels" | "chains">("tunnels");
+  const [chainCreateRequestKey, setChainCreateRequestKey] = useState(0);
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -581,6 +610,8 @@ function TunnelsContent() {
       : (enabledGostTunnelModes[0] || "forwardx");
   };
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
+  const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => group.groupMode === "chain"), [forwardGroups]);
+  const activeChainCount = useMemo(() => chainGroups.filter((group: any) => group.isEnabled).length, [chainGroups]);
   const tunnelPagination = usePersistentPagination(tunnels || [], {
     storageKey: "forwardx.tunnels.page",
     pageSize: 12,
@@ -638,16 +669,18 @@ function TunnelsContent() {
 
   const openEdit = (tunnel: any) => {
     if (!isTunnelSupported(tunnel)) return;
+    const hopHostIds = Array.isArray(tunnel.hopHostIds) && tunnel.hopHostIds.length >= 2
+      ? tunnel.hopHostIds
+      : [tunnel.entryHostId, tunnel.exitHostId];
+    const hopConnectHosts = Array.isArray(tunnel.hopConnectHosts) && tunnel.hopConnectHosts.length >= 2
+      ? tunnel.hopConnectHosts
+      : [null, tunnel.connectHost || null];
     setForm({
       name: tunnel.name,
       entryHostId: tunnel.entryHostId,
       exitHostId: tunnel.exitHostId,
-      hopHostIds: Array.isArray(tunnel.hopHostIds) && tunnel.hopHostIds.length >= 2
-        ? tunnel.hopHostIds
-        : [tunnel.entryHostId, tunnel.exitHostId],
-      hopConnectHosts: Array.isArray(tunnel.hopConnectHosts) && tunnel.hopConnectHosts.length >= 2
-        ? tunnel.hopConnectHosts
-        : [null, null],
+      hopHostIds,
+      hopConnectHosts,
       mode: tunnel.mode || "tls",
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
@@ -727,12 +760,21 @@ function TunnelsContent() {
       const privateAddr = String((hopHost as any)?.tunnelEntryIp || "").trim();
       if (privateAddr && value === privateAddr) hasPrivateHop = true;
     }
+    const isMultiHopTunnel = orderedHopHostIds.length >= 3;
+    const exitHost = hosts?.find((h: any) => Number(h.id) === exitHostId);
+    const exitPrivateAddr = hostPrivateAddress(exitHost);
+    const regularConnectHost = String(orderedHopConnectHosts[1] || "").trim();
+    const regularPrivateConnectHost = !isMultiHopTunnel && exitPrivateAddr && regularConnectHost === exitPrivateAddr
+      ? exitPrivateAddr
+      : null;
     const payload: any = {
       name: form.name,
       mode: form.mode,
       listenPort: form.listenPort,
-      networkType: hasPrivateHop ? "private" : "public",
-      connectHost: null,
+      networkType: isMultiHopTunnel
+        ? (hasPrivateHop ? "private" : "public")
+        : (regularPrivateConnectHost ? "private" : "public"),
+      connectHost: isMultiHopTunnel ? null : regularPrivateConnectHost,
       blockHttp: form.blockHttp,
       blockSocks: form.blockSocks,
       blockTls: form.blockTls,
@@ -755,6 +797,27 @@ function TunnelsContent() {
     setViewMode(nextViewMode);
     storeTunnelViewMode(nextViewMode);
   };
+  const handleChainViewModeChange = (nextViewMode: TunnelViewMode) => {
+    setChainViewMode(nextViewMode);
+    storeChainViewMode(nextViewMode);
+  };
+  const activeViewMode = activeSection === "chains" ? chainViewMode : viewMode;
+  const handleActiveViewModeChange = (nextViewMode: TunnelViewMode) => {
+    if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
+    else handleViewModeChange(nextViewMode);
+  };
+  const canCreateTunnel = !!hosts?.length
+    && hosts.length >= 2
+    && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0);
+  const canCreateChain = !!hosts?.length && hosts.length >= 2;
+  const openCreateTunnel = () => {
+    setActiveSection("tunnels");
+    openCreate();
+  };
+  const openCreateChain = () => {
+    setActiveSection("chains");
+    setChainCreateRequestKey((value) => value + 1);
+  };
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
       <Tooltip>
@@ -773,46 +836,65 @@ function TunnelsContent() {
             管理 Agent 之间的转发链路
           </p>
         </div>
-        {activeSection === "tunnels" && (
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className="h-3 w-3 text-chart-2" />
+            <Activity className={`h-3 w-3 ${activeSection === "chains" ? "text-sky-500" : "text-chart-2"}`} />
             <AnimatedStatValue
-              value={`${activeCount} / ${tunnels?.length ?? 0} 活跃`}
-              loading={isLoading || !tunnels}
-              cacheKey="tunnels.header.active"
-              fallbackValue="0 / 0 活跃"
+              value={activeSection === "chains"
+                ? `${activeChainCount} / ${chainGroups.length} 启用`
+                : `${activeCount} / ${tunnels?.length ?? 0} 活跃`}
+              loading={activeSection === "chains" ? (forwardGroupsLoading || !forwardGroups) : (isLoading || !tunnels)}
+              cacheKey={activeSection === "chains" ? "tunnels.header.chainsActive" : "tunnels.header.active"}
+              fallbackValue={activeSection === "chains" ? "0 / 0 启用" : "0 / 0 活跃"}
             />
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
-              variant={viewMode === "card" ? "secondary" : "ghost"}
+              variant={activeViewMode === "card" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("card")}
+              onClick={() => handleActiveViewModeChange("card")}
             >
               <LayoutGrid className="h-4 w-4" />
             </Button>
             <Button
-              variant={viewMode === "table" ? "secondary" : "ghost"}
+              variant={activeViewMode === "table" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
-              onClick={() => handleViewModeChange("table")}
+              onClick={() => handleActiveViewModeChange("table")}
             >
               <List className="h-4 w-4" />
             </Button>
           </div>
-          <Button
-            onClick={openCreate}
-            className="gap-2"
-            disabled={!hosts || hosts.length < 2 || (forwardProtocolSettings.forwardx === false && enabledGostTunnelModes.length === 0)}
-            title={forwardProtocolSettings.forwardx === false && enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-          >
-            <Plus className="h-4 w-4" />
-            添加隧道
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                className="gap-2"
+                disabled={!canCreateTunnel && !canCreateChain}
+                title={!canCreateTunnel && !canCreateChain ? "至少需要 2 台主机" : undefined}
+              >
+                <Plus className="h-4 w-4" />
+                新增
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem
+                disabled={!canCreateTunnel}
+                onClick={openCreateTunnel}
+              >
+                <Network className="mr-2 h-4 w-4" />
+                添加隧道
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canCreateChain}
+                onClick={openCreateChain}
+              >
+                <Route className="mr-2 h-4 w-4" />
+                添加转发链
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-        )}
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as "tunnels" | "chains")} className="space-y-4">
@@ -1162,7 +1244,14 @@ function TunnelsContent() {
         </TabsContent>
 
         <TabsContent value="chains" className="space-y-4">
-          <ForwardGroupsContent mode="chain" embedded />
+          <ForwardGroupsContent
+            mode="chain"
+            embedded
+            viewMode={chainViewMode}
+            onViewModeChange={handleChainViewModeChange}
+            hideHeaderActions
+            createRequestKey={chainCreateRequestKey}
+          />
         </TabsContent>
       </Tabs>
 

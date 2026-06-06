@@ -570,14 +570,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
-    const hostTunnelAddress = (hostLike: any) =>
-      String(hostLike?.tunnelEntryIp || hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
+    const hostPublicAddress = (hostLike: any) =>
+      String(hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
     const tunnelExitHostAddress = async (tunnel: any) => {
       const connectHost = String(tunnel?.connectHost || "").trim();
       if (connectHost) return connectHost;
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
-      return hostTunnelAddress(exit);
+      return hostPublicAddress(exit);
     };
     const tunnelExitEndpointById = new Map<number, { host: string; port: number }>();
     const hostIngressAddressById = new Map<number, string>();
@@ -587,7 +587,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const cached = hostIngressAddressById.get(id);
       if (cached !== undefined) return cached;
       const hopHost = await db.getHostById(id) as any;
-      const addr = hopHost ? hostTunnelAddress(hopHost) : "";
+      const addr = hopHost ? hostPublicAddress(hopHost) : "";
       hostIngressAddressById.set(id, addr);
       return addr;
     };

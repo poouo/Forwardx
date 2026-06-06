@@ -147,14 +147,14 @@ const panelInstallGuideCommands = [
   },
   {
     label: "Docker 部署",
-    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取代码并通过 Compose 构建启动容器。",
+    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取代码和 GitHub Packages 预编译镜像并启动容器。",
     directory: "/opt/forwardx-docker",
     service: "forwardx-panel 容器",
     install: `${panelDockerCommandPrefix} install`,
     upgrade: `${panelDockerCommandPrefix} upgrade`,
     uninstall: `${panelDockerCommandPrefix} uninstall`,
     versionedUpgrade: `curl -fsSL ${panelDockerScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
-    notes: ["默认映射 Web 端口为 3000，可通过 PORT 环境变量指定。", "升级会保留 .env、部署目录 data 数据和 Docker 数据卷。"],
+    notes: ["默认映射 Web 端口为 3000，可通过 PORT 环境变量指定。", "升级会保留 .env、部署目录 data 数据和 Docker 数据卷。", "如果 latest 镜像尚未构建到目标版本，脚本会提示稍后重试并保留旧容器运行。"],
   },
 ] as const;
 
@@ -633,8 +633,8 @@ function SettingsContent() {
                 <ul className="text-xs text-muted-foreground space-y-1">
                   <li>- 安装和升级需要 root 权限。</li>
                   <li>- 本地部署会自动配置 systemd 服务；Docker 部署会使用 Docker Compose 启动容器。</li>
-                  <li>- 升级默认同步 GitHub main 分支最新代码，也可以通过 FORWARDX_TARGET_VERSION 指定 tag 或版本号。</li>
-                  <li>- 卸载命令会询问是否删除部署目录或 Docker 数据卷，删除前请确认已经备份数据。</li>
+                  <li>- 本地部署可通过 FORWARDX_TARGET_VERSION 指定 tag 或版本号；Docker 部署统一拉取 latest 镜像并校验目标版本。</li>
+                  <li>- 卸载命令只有输入 y 后才会删除部署目录或 Docker 数据卷，删除前请确认已经备份数据。</li>
                 </ul>
               </div>
             </CardContent>
@@ -2897,7 +2897,15 @@ function SystemInfoSection() {
             </div>
           )}
 
-          {updateInfo && !updateInfo.error && !updateInfo.hasUpdate && (
+          {updateInfo?.pendingReason && !updateInfo.error && !updateInfo.hasUpdate && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>新版本正在准备中</AlertTitle>
+              <AlertDescription>{updateInfo.pendingReason}</AlertDescription>
+            </Alert>
+          )}
+
+          {updateInfo && !updateInfo.error && !updateInfo.pendingReason && !updateInfo.hasUpdate && (
             <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
               当前已是最新版本，上次检查时间：{new Date(updateInfo.checkedAt).toLocaleString()}
             </div>

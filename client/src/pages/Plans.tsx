@@ -412,6 +412,17 @@ export default function Plans() {
   const trafficBillingConfigs = trafficBillingData?.configs || [];
   const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
   const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
+  const planResourceSummary = useMemo(() => {
+    return plans.reduce(
+      (summary: { hosts: number; tunnels: number; groups: number }, plan: any) => ({
+        hosts: summary.hosts + (plan.hostIds?.length || 0),
+        tunnels: summary.tunnels + (plan.tunnelIds?.length || 0),
+        groups: summary.groups + (plan.forwardGroupIds?.length || 0),
+      }),
+      { hosts: 0, tunnels: 0, groups: 0 },
+    );
+  }, [plans]);
+  const planResourceTotal = planResourceSummary.hosts + planResourceSummary.tunnels + planResourceSummary.groups;
   const selectedHostIds = useMemo(() => new Set(form.hostIds.map(Number)), [form.hostIds]);
   const selectedTunnelIds = useMemo(() => new Set(form.tunnelIds.map(Number)), [form.tunnelIds]);
   const selectedForwardGroupIds = useMemo(() => new Set(form.forwardGroupIds.map(Number)), [form.forwardGroupIds]);
@@ -538,22 +549,19 @@ export default function Plans() {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>按量计费</CardDescription>
-              <CardTitle className="flex items-center justify-between gap-3">
-                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
-                {trafficBillingLoading ? (
-                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
-                ) : (
-                  <Switch
-                    instant
-                    checked={trafficBillingEnabled}
-                    disabled={setTrafficBillingEnabled.isPending}
-                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
-                  />
-                )}
+              <CardDescription>套餐资源</CardDescription>
+              <CardTitle>
+                <AnimatedStatValue
+                  value={planResourceTotal}
+                  loading={isLoading}
+                  cacheKey="plans.resourceTotal"
+                  fallbackValue={0}
+                />
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
+            <CardContent className="text-sm text-muted-foreground">
+              {planResourceSummary.hosts} 台主机 · {planResourceSummary.tunnels} 条隧道 · {planResourceSummary.groups} 个转发组
+            </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
@@ -596,6 +604,25 @@ export default function Plans() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">已配置资源。</CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>按量计费</CardDescription>
+              <CardTitle className="flex items-center justify-between gap-3">
+                <span>{trafficBillingEnabled ? "已开启" : "已关闭"}</span>
+                {trafficBillingLoading ? (
+                  <Skeleton className="h-6 w-11 shrink-0 rounded-full" />
+                ) : (
+                  <Switch
+                    instant
+                    checked={trafficBillingEnabled}
+                    disabled={setTrafficBillingEnabled.isPending}
+                    onCheckedChange={(enabled) => setTrafficBillingEnabled.mutate({ enabled })}
+                  />
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">公开资源可在余额充足时直接使用。</CardContent>
           </Card>
         </div>
 

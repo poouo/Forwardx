@@ -260,13 +260,36 @@ install_deps() {
 sync_source() {
   local target="${FORWARDX_TARGET_VERSION:-}"
   local resolved_target=""
+  local env_backup=""
+  local data_backup=""
+  if [ -f "$APP_DIR/.env" ]; then
+    env_backup="$(mktemp /tmp/forwardx-env.XXXXXX)"
+    cp "$APP_DIR/.env" "$env_backup"
+  fi
+  if [ -d "$APP_DIR/data" ]; then
+    data_backup="$(mktemp -d /tmp/forwardx-data.XXXXXX)"
+    cp -a "$APP_DIR/data/." "$data_backup/"
+  fi
   if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" remote set-url origin "$REPO_URL" || true
     fetch_source_refs
   else
     rm -rf "$APP_DIR"
     git clone "$REPO_URL" "$APP_DIR"
+    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+      cp "$env_backup" "$APP_DIR/.env"
+    fi
+    if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
+      mkdir -p "$APP_DIR/data"
+      cp -a "$data_backup/." "$APP_DIR/data/"
+    fi
     fetch_source_refs
+  fi
+  if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
+    rm -f "$env_backup"
+  fi
+  if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
+    rm -rf "$data_backup"
   fi
 
   if [ -n "$target" ]; then
@@ -347,6 +370,7 @@ EOF
 
 install_panel() {
   require_root
+  resolve_runtime_env
   read_install_port
   install_deps
   sync_source
@@ -372,17 +396,17 @@ upgrade_panel() {
 
 uninstall_panel() {
   require_root
+  if ! confirm_yes "确认卸载 ForwardX 本地面板，并删除服务和程序目录 $APP_DIR ? [y/N] "; then
+    echo "[取消] 未执行卸载"
+    return
+  fi
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   systemctl disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "/etc/systemd/system/$SERVICE_NAME.service"
   systemctl daemon-reload
 
-  if confirm_yes "是否删除面板程序目录 $APP_DIR ? [y/N] "; then
-    rm -rf "$APP_DIR"
-    echo "[完成] 已删除 $APP_DIR"
-  else
-    echo "[完成] 已卸载服务，保留 $APP_DIR"
-  fi
+  rm -rf "$APP_DIR"
+  echo "[完成] 已卸载 ForwardX 本地面板并删除程序目录"
 }
 
 case "$ACTION" in

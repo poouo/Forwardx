@@ -50,7 +50,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type GroupType = "host" | "tunnel";
@@ -99,6 +99,10 @@ type ForwardGroupViewMode = "card" | "table";
 type ForwardGroupsContentProps = {
   mode?: GroupMode;
   embedded?: boolean;
+  viewMode?: ForwardGroupViewMode;
+  onViewModeChange?: (viewMode: ForwardGroupViewMode) => void;
+  hideHeaderActions?: boolean;
+  createRequestKey?: number;
 };
 
 const FORWARD_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -166,7 +170,14 @@ function chainRoleLabel(index: number, total: number) {
   return "中转";
 }
 
-export function ForwardGroupsContent({ mode = "failover", embedded = false }: ForwardGroupsContentProps) {
+export function ForwardGroupsContent({
+  mode = "failover",
+  embedded = false,
+  viewMode: controlledViewMode,
+  onViewModeChange,
+  hideHeaderActions = false,
+  createRequestKey,
+}: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
   const { data: hosts } = trpc.hosts.list.useQuery();
@@ -176,8 +187,10 @@ export function ForwardGroupsContent({ mode = "failover", embedded = false }: Fo
   const [form, setForm] = useState<GroupForm>(makeDefaultForm());
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
+  const [internalViewMode, setInternalViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
+  const lastCreateRequestKeyRef = useRef(0);
   const activeGroupMode = mode;
+  const viewMode = controlledViewMode ?? internalViewMode;
 
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
@@ -214,6 +227,12 @@ export function ForwardGroupsContent({ mode = "failover", embedded = false }: Fo
     savedMembersRef.current = { host: [], tunnel: [] };
     setShowDialog(true);
   };
+
+  useEffect(() => {
+    if (createRequestKey === undefined || createRequestKey === lastCreateRequestKeyRef.current) return;
+    lastCreateRequestKeyRef.current = createRequestKey;
+    if (createRequestKey > 0) openCreate();
+  }, [createRequestKey]);
 
   const openEdit = (group: any) => {
     setForm({
@@ -459,7 +478,11 @@ export function ForwardGroupsContent({ mode = "failover", embedded = false }: Fo
 
   const isPending = createMutation.isPending || updateMutation.isPending;
   const handleViewModeChange = (nextViewMode: ForwardGroupViewMode) => {
-    setViewMode(nextViewMode);
+    if (onViewModeChange) {
+      onViewModeChange(nextViewMode);
+    } else {
+      setInternalViewMode(nextViewMode);
+    }
     storeForwardGroupViewMode(nextViewMode);
   };
   const isChainMode = activeGroupMode === "chain";
@@ -486,7 +509,7 @@ export function ForwardGroupsContent({ mode = "failover", embedded = false }: Fo
             {pageDescription}
           </p>
         </div>
-        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
+        {!hideHeaderActions && <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className={`h-3 w-3 ${isChainMode ? "text-sky-500" : "text-emerald-500"}`} />
             <AnimatedStatValue
@@ -522,7 +545,7 @@ export function ForwardGroupsContent({ mode = "failover", embedded = false }: Fo
             <Plus className="h-4 w-4" />
             {addButtonText}
           </Button>
-        </div>
+        </div>}
       </div>
 
       {isLoading ? (

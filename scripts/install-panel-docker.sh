@@ -7,6 +7,7 @@ REPO_URL="${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx.git}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-forwardx}"
 CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
 PORT="${PORT:-3000}"
+TARGET_IMAGE="${FORWARDX_IMAGE:-ghcr.io/poouo/forwardx:latest}"
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -92,47 +93,13 @@ install_docker() {
   fi
 }
 
-latest_tag() {
-  git -C "$APP_DIR" tag --sort=-v:refname | head -1 || true
-}
-
 fetch_source_refs() {
   git -C "$APP_DIR" fetch --force --prune origin \
     "+refs/heads/*:refs/remotes/origin/*" \
     "+refs/tags/*:refs/tags/*"
 }
 
-git_ref_exists() {
-  git -C "$APP_DIR" rev-parse --verify --quiet "$1^{commit}" >/dev/null
-}
-
-resolve_checkout_target() {
-  local target="$1"
-  local without_v=""
-
-  if [ -z "$target" ]; then
-    return 1
-  fi
-  if git_ref_exists "$target"; then
-    printf '%s\n' "$target"
-    return 0
-  fi
-  without_v="${target#v}"
-  if [ "$target" = "$without_v" ] && git_ref_exists "v$target"; then
-    printf 'v%s\n' "$target"
-    return 0
-  fi
-  if [ "$target" != "$without_v" ] && git_ref_exists "$without_v"; then
-    printf '%s\n' "$without_v"
-    return 0
-  fi
-
-  return 1
-}
-
 sync_source() {
-  local target="${FORWARDX_TARGET_VERSION:-}"
-  local resolved_target=""
   local env_backup=""
   local data_backup=""
   if [ -f "$APP_DIR/.env" ]; then
@@ -165,36 +132,25 @@ sync_source() {
     rm -rf "$data_backup"
   fi
 
-  if [ -n "$target" ]; then
-    if resolved_target="$(resolve_checkout_target "$target")"; then
-      :
-    elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
-      echo "[信息] 未找到目标版本 $target，改为使用 origin/main"
-      resolved_target="origin/main"
-    else
-      echo "[错误] 未找到目标版本 $target"
-      exit 1
-    fi
-  elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
-    # Manual one-click upgrade should always refresh to latest main commit,
-    # even when version number is unchanged.
-    resolved_target="origin/main"
-  else
-    resolved_target="$(latest_tag)"
-    if [ -z "$resolved_target" ]; then
-      resolved_target="origin/main"
-    fi
+  if [ -n "${FORWARDX_TARGET_VERSION:-}" ]; then
+    echo "[信息] Docker 部署统一拉取 latest 镜像，并校验目标版本 ${FORWARDX_TARGET_VERSION}"
   fi
 
-  git -C "$APP_DIR" checkout -f "$resolved_target"
-  if [ "$resolved_target" = "origin/main" ]; then
-    git -C "$APP_DIR" checkout -B main origin/main
-  fi
+  git -C "$APP_DIR" checkout -f origin/main
+  git -C "$APP_DIR" checkout -B main origin/main
 }
 
 write_env() {
   local jwt_secret="${JWT_SECRET:-}"
+  if [ -z "$TARGET_IMAGE" ]; then
+    TARGET_IMAGE="ghcr.io/poouo/forwardx:latest"
+  fi
   if [ -f "$APP_DIR/.env" ]; then
+    if grep -qE '^FORWARDX_IMAGE=' "$APP_DIR/.env"; then
+      sed -i "s|^FORWARDX_IMAGE=.*|FORWARDX_IMAGE=$TARGET_IMAGE|" "$APP_DIR/.env"
+    else
+      printf '\nFORWARDX_IMAGE=%s\n' "$TARGET_IMAGE" >> "$APP_DIR/.env"
+    fi
     return
   fi
   if [ -z "$jwt_secret" ]; then
@@ -205,6 +161,7 @@ PORT=$PORT
 JWT_SECRET=$jwt_secret
 COMPOSE_PROJECT_NAME=$PROJECT_NAME
 FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
+FORWARDX_IMAGE=$TARGET_IMAGE
 EOF
 }
 
@@ -223,10 +180,48 @@ remove_existing_panel_containers() {
   fi
 }
 
+normalize_version() {
+  printf '%s\n' "${1#v}"
+}
+
+image_panel_version() {
+  docker run --rm --entrypoint node "$TARGET_IMAGE" -p "require('./package.json').version"
+}
+
+assert_target_image_ready() {
+  local target="${FORWARDX_TARGET_VERSION:-}"
+  local expected=""
+  local actual=""
+  if [ -z "$target" ]; then
+    return
+  fi
+  expected="$(normalize_version "$target")"
+  actual="$(image_panel_version 2>/dev/null || true)"
+  actual="$(normalize_version "$actual")"
+  if [ -z "$actual" ]; then
+    echo "[错误] 无法读取镜像 $TARGET_IMAGE 内的面板版本，请稍后重试或检查镜像是否可用。"
+    exit 12
+  fi
+  if [ "$actual" != "$expected" ]; then
+    echo "[错误] Docker 镜像尚未同步到目标版本 v$expected，当前拉取到的镜像版本为 v$actual。"
+    echo "[提示] GitHub Actions 可能仍在构建 ghcr.io/poouo/forwardx:latest，请等待几分钟后重新执行升级。旧容器未被停止。"
+    exit 12
+  fi
+}
+
 start_panel() {
   cd "$APP_DIR"
+  if [ -z "$TARGET_IMAGE" ]; then
+    TARGET_IMAGE="$(grep -E '^FORWARDX_IMAGE=' "$APP_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  fi
+  if [ -z "$TARGET_IMAGE" ]; then
+    TARGET_IMAGE="ghcr.io/poouo/forwardx:latest"
+  fi
+  echo "[ForwardX] Pulling Docker image: $TARGET_IMAGE"
+  compose_cmd -p "$PROJECT_NAME" pull forwardx
+  assert_target_image_ready
   remove_existing_panel_containers
-  compose_cmd -p "$PROJECT_NAME" up -d --build --remove-orphans forwardx
+  compose_cmd -p "$PROJECT_NAME" up -d --remove-orphans forwardx
 }
 
 install_panel() {
@@ -245,6 +240,7 @@ upgrade_panel() {
   load_existing_env
   install_docker
   sync_source
+  write_env
   start_panel
   echo "[完成] ForwardX Docker 面板已覆盖旧容器并重启"
   echo "[信息] 已保留 .env 配置、Docker 数据卷和部署目录内的 data 数据"
@@ -252,22 +248,20 @@ upgrade_panel() {
 
 uninstall_panel() {
   require_root
+  load_existing_env
+  if ! confirm_yes "确认卸载 ForwardX Docker 面板，并删除部署目录 $APP_DIR 和 Docker 数据卷 ${PROJECT_NAME}_forwardx-data ? [y/N] "; then
+    echo "[取消] 未执行卸载"
+    return
+  fi
   cd "$APP_DIR" 2>/dev/null || true
   if [ -f "$APP_DIR/docker-compose.yml" ]; then
     compose_cmd -p "$PROJECT_NAME" down --remove-orphans || true
   fi
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
-  if confirm_yes "是否删除部署目录 $APP_DIR ? [y/N] "; then
-    rm -rf "$APP_DIR"
-    echo "[完成] 已删除 $APP_DIR"
-  else
-    echo "[信息] 已保留 $APP_DIR"
-  fi
-
-  if confirm_yes "是否删除 Docker 数据卷 ${PROJECT_NAME}_forwardx-data ? [y/N] "; then
-    docker volume rm "${PROJECT_NAME}_forwardx-data" 2>/dev/null || true
-  fi
+  rm -rf "$APP_DIR"
+  docker volume rm "${PROJECT_NAME}_forwardx-data" 2>/dev/null || true
+  echo "[完成] 已卸载 ForwardX Docker 面板并删除数据"
 }
 
 case "$ACTION" in

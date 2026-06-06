@@ -22,11 +22,15 @@ RUN pnpm install --prod
 # ---------- 3. Runtime image ----------
 FROM node:22-alpine AS runner
 WORKDIR /app
+ARG FORWARDX_VERSION=unknown
 ENV NODE_ENV=production \
     PORT=3000 \
     DATABASE_CONFIG_PATH=/data/database.json \
     SQLITE_PATH=/data/forwardx.db \
-    MYSQL_CONFIG_PATH=/data/mysql.json
+    MYSQL_CONFIG_PATH=/data/mysql.json \
+    FORWARDX_IMAGE_VERSION=$FORWARDX_VERSION
+LABEL org.opencontainers.image.version=$FORWARDX_VERSION \
+      org.forwardx.version=$FORWARDX_VERSION
 
 RUN apk add --no-cache tini git curl docker-cli docker-cli-compose && mkdir -p /data
 VOLUME ["/data"]

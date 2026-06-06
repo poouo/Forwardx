@@ -844,8 +844,17 @@ function RulesContent() {
   const selectedForwardGroupIsChain = isForwardChainGroup(selectedForwardGroup);
   const mainBackupForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType;
   const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
-  const canUseMainBackup = !selectedForwardGroupIsChain && mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute);
-  const mainBackupDisabledText = mainBackupForwardType !== "gost"
+  const canAutoSwitchMainBackupToGost = !selectedForwardGroupIsChain
+    && mainBackupForwardType !== "gost"
+    && usableForwardTypes.includes("gost")
+    && user?.role === "admin"
+    && (form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host"));
+  const canUseMainBackup = !selectedForwardGroupIsChain
+    && (
+      (mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute))
+      || canAutoSwitchMainBackupToGost
+    );
+  const mainBackupDisabledText = mainBackupForwardType !== "gost" && !canAutoSwitchMainBackupToGost
     ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持出站策略。"
     : selectedForwardGroupIsChain
     ? "端口转发链不支持出站策略。"
@@ -2548,12 +2557,16 @@ function RulesContent() {
                 </div>
                 <Select
                   value={form.failoverEnabled ? form.failoverStrategy : "disabled"}
-                  onValueChange={(value: FailoverMode) => setForm({
-                    ...form,
-                    failoverEnabled: !selectedForwardGroupIsChain && value !== "disabled",
-                    failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
-                    protocol: !selectedForwardGroupIsChain && value !== "disabled" ? "tcp" : form.protocol,
-                  })}
+                  onValueChange={(value: FailoverMode) => {
+                    const nextEnabled = !selectedForwardGroupIsChain && value !== "disabled";
+                    setForm({
+                      ...form,
+                      forwardType: nextEnabled && canAutoSwitchMainBackupToGost ? "gost" : form.forwardType,
+                      failoverEnabled: nextEnabled,
+                      failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
+                      protocol: nextEnabled ? "tcp" : form.protocol,
+                    });
+                  }}
                   disabled={!canUseMainBackup}
                 >
                   <SelectTrigger className="h-9 w-[220px] max-w-[46vw]">
