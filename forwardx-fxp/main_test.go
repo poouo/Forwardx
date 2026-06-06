@@ -172,6 +172,116 @@ func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardXRelayChainTCPRoundTrip(t *testing.T) {
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+
+	keys := []string{
+		"entry-to-relay-1-key",
+		"relay-1-to-relay-2-key",
+		"relay-2-to-exit-key",
+	}
+	targetPort := targetLn.Addr().(*net.TCPAddr).Port
+	exitPort := freeTCPPort(t)
+	relay2Port := freeTCPPort(t)
+	relay1Port := freeTCPPort(t)
+	entryPort := freeTCPPort(t)
+	exitDone := make(chan struct{})
+	relay2Done := make(chan struct{})
+	relay1Done := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(relay2Done)
+	defer close(relay1Done)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   5,
+			ListenPort: exitPort,
+			Protocol:   "tcp",
+			Key:        keys[2],
+		})
+	}()
+	waitForTCP(t, exitPort)
+
+	go func() {
+		_ = runRelay(relay2Done, config{
+			Role:          "relay",
+			TunnelID:      5,
+			ListenPort:    relay2Port,
+			Protocol:      "tcp",
+			Key:           keys[1],
+			RelayExitHost: "127.0.0.1",
+			RelayExitPort: exitPort,
+			RelayKey:      keys[2],
+		})
+	}()
+	waitForTCP(t, relay2Port)
+
+	go func() {
+		_ = runRelay(relay1Done, config{
+			Role:          "relay",
+			TunnelID:      5,
+			ListenPort:    relay1Port,
+			Protocol:      "tcp",
+			Key:           keys[0],
+			RelayExitHost: "127.0.0.1",
+			RelayExitPort: relay2Port,
+			RelayKey:      keys[1],
+		})
+	}()
+	waitForTCP(t, relay1Port)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:       "entry",
+			TunnelID:   5,
+			RuleID:     6,
+			ListenPort: entryPort,
+			Protocol:   "tcp",
+			ExitHost:   "127.0.0.1",
+			ExitPort:   relay1Port,
+			TargetIP:   "127.0.0.1",
+			TargetPort: targetPort,
+			Key:        keys[0],
+		})
+	}()
+	waitForTCP(t, entryPort)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("relay-chain-forwardx")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len("relay-chain-forwardx"))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+	if string(buf) != "relay-chain-forwardx" {
+		t.Fatalf("unexpected echo %q", string(buf))
+	}
+}
+
 func TestFxpRejectsReplaySalt(t *testing.T) {
 	c1, s1 := net.Pipe()
 	defer c1.Close()

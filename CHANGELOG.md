@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.111] - 2026-06-06
+
+### Added
+
+- Added ForwardX custom encrypted relay chaining support, including multi-hop FXP relay routing.
+
+### Fixed
+
+- Moved port forwarding chains into tunnel management.
+- Fixed port forwarding chain target resolution so rules use the selected internal connection address.
+- Removed priority wording from internal tunnel address descriptions.
+- Confirmed tunnel outbound strategies are applied through the Agent failover proxy for GOST and ForwardX encrypted tunnels.
+
+### Changed
+
+- Bumped panel version to 2.3.111 and Agent/FXP runtime target version to 2.2.87.
+- Android APP version remains 2.3.40 and the APK release pointer is updated to 2.3.111 because this is a web-panel/server and Agent update.
+
 ## [2.3.110] - 2026-06-06
 
 ### Added

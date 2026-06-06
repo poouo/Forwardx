@@ -22,7 +22,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -97,6 +96,10 @@ function memberKey(memberType: GroupType, id: number) {
 }
 
 type ForwardGroupViewMode = "card" | "table";
+type ForwardGroupsContentProps = {
+  mode?: GroupMode;
+  embedded?: boolean;
+};
 
 const FORWARD_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
 
@@ -163,7 +166,7 @@ function chainRoleLabel(index: number, total: number) {
   return "中转";
 }
 
-function ForwardGroupsContent() {
+export function ForwardGroupsContent({ mode = "failover", embedded = false }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
   const { data: hosts } = trpc.hosts.list.useQuery();
@@ -174,7 +177,7 @@ function ForwardGroupsContent() {
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
-  const [activeGroupMode, setActiveGroupMode] = useState<GroupMode>("failover");
+  const activeGroupMode = mode;
 
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
@@ -182,6 +185,7 @@ function ForwardGroupsContent() {
   const chainGroups = useMemo(() => (groups || []).filter((group: any) => group.groupMode === "chain"), [groups]);
   const visibleGroups = activeGroupMode === "chain" ? chainGroups : failoverGroups;
   const activeCount = failoverGroups.filter((g: any) => g.isEnabled && g.lastStatus === "healthy").length;
+  const chainCount = chainGroups.filter((g: any) => g.isEnabled).length;
   const groupPagination = usePersistentPagination(visibleGroups, {
     storageKey: `forwardx.forwardGroups.${activeGroupMode}.page`,
     pageSize: 12,
@@ -458,30 +462,44 @@ function ForwardGroupsContent() {
     setViewMode(nextViewMode);
     storeForwardGroupViewMode(nextViewMode);
   };
+  const isChainMode = activeGroupMode === "chain";
+  const pageTitle = isChainMode ? "端口转发链" : "转发组";
+  const pageDescription = isChainMode ? "管理按主机顺序串联的端口转发链路。" : "管理可故障转移的入口组。";
+  const addButtonText = isChainMode ? "添加转发链" : "添加转发组";
+  const loadingLabel = isChainMode ? "正在加载端口转发链" : "正在加载转发组";
+  const emptyTitle = isChainMode ? "暂无端口转发链" : "暂无转发组";
+  const emptyDescription = isChainMode ? "创建后可在端口转发规则中作为链路使用" : "创建后可在转发规则中作为高可用入口使用";
+  const paginationItemName = isChainMode ? "条转发链" : "个转发组";
+  const dialogTitle = editingId ? (isChainMode ? "编辑端口转发链" : "编辑转发组") : (isChainMode ? "添加端口转发链" : "添加转发组");
+  const dialogDescription = isChainMode ? "配置端口转发链路。" : "配置高可用入口。";
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">转发组</h1>
+          {embedded ? (
+            <h2 className="text-lg font-semibold tracking-tight sm:text-xl">{pageTitle}</h2>
+          ) : (
+            <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{pageTitle}</h1>
+          )}
           <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-            管理可故障转移的入口组。
+            {pageDescription}
           </p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className="h-3 w-3 text-emerald-500" />
+            <Activity className={`h-3 w-3 ${isChainMode ? "text-sky-500" : "text-emerald-500"}`} />
             <AnimatedStatValue
-              value={`${activeCount} / ${failoverGroups.length} 健康`}
+              value={isChainMode ? `${chainCount} / ${chainGroups.length} 启用` : `${activeCount} / ${failoverGroups.length} 健康`}
               loading={isLoading || !groups}
-              cacheKey="forwardGroups.header.healthy"
-              fallbackValue="0 / 0 健康"
+              cacheKey={isChainMode ? "forwardGroups.header.chainEnabled" : "forwardGroups.header.healthy"}
+              fallbackValue={isChainMode ? "0 / 0 启用" : "0 / 0 健康"}
             />
           </Badge>
-          <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
+          {!isChainMode && <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
             {runFailoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             检查
-          </Button>
+          </Button>}
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}
@@ -502,29 +520,13 @@ function ForwardGroupsContent() {
           </div>
           <Button onClick={openCreate} className="col-span-2 gap-2 sm:col-span-1">
             <Plus className="h-4 w-4" />
-            添加转发组
+            {addButtonText}
           </Button>
         </div>
       </div>
 
-      <Tabs
-        value={activeGroupMode}
-        onValueChange={(value) => setActiveGroupMode(value as GroupMode)}
-        className="space-y-4"
-      >
-        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto">
-          <TabsTrigger value="failover" className="gap-1.5 px-4">
-            <Layers3 className="h-4 w-4" />
-            高可用转发组
-          </TabsTrigger>
-          <TabsTrigger value="chain" className="gap-1.5 px-4">
-            <Route className="h-4 w-4" />
-            端口转发链
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value={activeGroupMode} className="space-y-4">
       {isLoading ? (
-        <DataSectionLoading label="正在加载转发组" />
+        <DataSectionLoading label={loadingLabel} />
       ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
@@ -764,7 +766,7 @@ function ForwardGroupsContent() {
         </Card>
           </>
         )}
-          <PersistentPagination pagination={groupPagination} itemName="个转发组" />
+          <PersistentPagination pagination={groupPagination} itemName={paginationItemName} />
         </>
       ) : (
         <Card className="border-border/40 bg-card/60">
@@ -772,15 +774,13 @@ function ForwardGroupsContent() {
             <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted/30">
               <Layers3 className="h-8 w-8 opacity-40" />
             </div>
-            <p className="text-lg font-medium">暂无转发组</p>
+            <p className="text-lg font-medium">{emptyTitle}</p>
             <p className="mt-1 text-sm text-muted-foreground/60">
-              {activeGroupMode === "chain" ? "创建后可在端口转发规则中作为链路使用" : "创建后可在转发规则中作为高可用入口使用"}
+              {emptyDescription}
             </p>
           </CardContent>
         </Card>
       )}
-        </TabsContent>
-      </Tabs>
 
       <Dialog
         open={showDialog}
@@ -791,62 +791,18 @@ function ForwardGroupsContent() {
       >
         <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
-            <DialogTitle>{editingId ? "编辑转发组" : "添加转发组"}</DialogTitle>
+            <DialogTitle>{dialogTitle}</DialogTitle>
             <DialogDescription>
-              配置高可用入口或端口转发链路。
+              {dialogDescription}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-            <div className="rounded-lg border border-border/60 bg-muted/25 p-1">
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  className={`flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                    form.groupMode === "failover" ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-                  }`}
-                  onClick={() => {
-                    if (form.groupMode === "failover") return;
-                    savedMembersRef.current.host = form.members.filter((member) => member.memberType === "host");
-                    setForm({
-                      ...form,
-                      groupMode: "failover",
-                      groupType: "host",
-                      members: savedMembersRef.current.host || [],
-                    });
-                  }}
-                >
-                  <Layers3 className="h-4 w-4 shrink-0" />
-                  <span className="truncate">高可用转发组</span>
-                </button>
-                <button
-                  type="button"
-                  className={`flex min-h-10 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                    form.groupMode === "chain" ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
-                  }`}
-                  onClick={() => {
-                    if (form.groupMode === "chain") return;
-                    savedMembersRef.current[form.groupType] = form.members;
-                    const restored = savedMembersRef.current.host || form.members.filter((member) => member.memberType === "host");
-                    setForm({
-                      ...form,
-                      groupMode: "chain",
-                      groupType: "host",
-                      domain: "",
-                      recordType: "A",
-                      members: restored.slice(0, 5).map((member) => ({ ...member, memberType: "host", tunnelId: null, isEnabled: true })),
-                    });
-                  }}
-                >
-                  <Route className="h-4 w-4 shrink-0" />
-                  <span className="truncate">端口转发链</span>
-                </button>
-              </div>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className={`grid gap-4 ${isChainMode ? "" : "sm:grid-cols-2"}`}>
               <div className="space-y-2">
-                <Label>组名称</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: Web 高可用入口" />
+                <Label>{isChainMode ? "链名称" : "组名称"}</Label>
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"} />
               </div>
+              {!isChainMode && (
               <div className="space-y-2">
                 <Label>组类型</Label>
                 <Select
@@ -868,6 +824,7 @@ function ForwardGroupsContent() {
                   </SelectContent>
                 </Select>
               </div>
+              )}
             </div>
 
             {form.groupMode === "failover" && (

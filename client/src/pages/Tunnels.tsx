@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
@@ -46,6 +47,7 @@ import {
   Network,
   Pencil,
   Plus,
+  Route,
   ShieldCheck,
   Stethoscope,
   Trash2,
@@ -68,6 +70,7 @@ import {
   YAxis,
 } from "recharts";
 import MultiHopEditor from "@/components/MultiHopEditor";
+import { ForwardGroupsContent } from "@/pages/ForwardGroups";
 
 type TunnelForm = {
   name: string;
@@ -552,6 +555,7 @@ function TunnelsContent() {
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
+  const [activeSection, setActiveSection] = useState<"tunnels" | "chains">("tunnels");
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -769,6 +773,7 @@ function TunnelsContent() {
             管理 Agent 之间的转发链路
           </p>
         </div>
+        {activeSection === "tunnels" && (
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className="h-3 w-3 text-chart-2" />
@@ -807,8 +812,22 @@ function TunnelsContent() {
             添加隧道
           </Button>
         </div>
+        )}
       </div>
 
+      <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as "tunnels" | "chains")} className="space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto">
+          <TabsTrigger value="tunnels" className="gap-1.5 px-4">
+            <Network className="h-4 w-4" />
+            隧道链路
+          </TabsTrigger>
+          <TabsTrigger value="chains" className="gap-1.5 px-4">
+            <Route className="h-4 w-4" />
+            端口转发链
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="tunnels" className="space-y-4">
       {isLoading ? (
         <DataSectionLoading label="正在加载隧道数据" />
       ) : tunnels && tunnels.length > 0 ? (
@@ -1140,6 +1159,12 @@ function TunnelsContent() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+
+        <TabsContent value="chains" className="space-y-4">
+          <ForwardGroupsContent mode="chain" embedded />
+        </TabsContent>
+      </Tabs>
 
       {latencyTunnel && (
         <TunnelLatencyDialog

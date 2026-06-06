@@ -1143,7 +1143,7 @@ function HostsContent() {
               <div className="space-y-2">
                 <Label>
                   内网地址
-                  <span className="ml-1 text-xs text-muted-foreground">(可选，供隧道链路优先使用)</span>
+                  <span className="ml-1 text-xs text-muted-foreground">(可选，供隧道链路使用)</span>
                 </Label>
                 <Input
                   placeholder="例如: 10.0.0.8 或 node-a.internal"

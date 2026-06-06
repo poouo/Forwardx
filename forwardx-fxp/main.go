@@ -129,7 +129,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.82"
+	fxpRuntimeVersion   = "2.2.87"
 )
 
 var (
@@ -275,6 +275,7 @@ func readConfig(path string) (config, error) {
 	cfg.Protocol = normalizeProtocol(cfg.Protocol)
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
+	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
 	return cfg, nil
 }
 
@@ -291,6 +292,11 @@ func validateConfig(cfg config) error {
 		}
 		if cfg.TargetIP == "" || cfg.TargetPort <= 0 || cfg.TargetPort > 65535 {
 			return errors.New("entry requires target host and port")
+		}
+	}
+	if cfg.Role == "relay" {
+		if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayExitPort > 65535 || cfg.RelayKey == "" {
+			return errors.New("relay requires relay exit host, port, and key")
 		}
 	}
 	return nil

@@ -152,7 +152,7 @@ export const hosts = table("hosts", {
   agentToken: text("agentToken"),
   // 用户自定义的入口 IP/域名，为空时回退使用 ip
   entryIp: text("entryIp"),
-  // 隧道链路优先使用的内网/专用入口地址（可选）
+  // 隧道链路使用的内网/专用入口地址（可选）
   tunnelEntryIp: text("tunnelEntryIp"),
   osInfo: text("osInfo"),
   cpuInfo: text("cpuInfo"),
