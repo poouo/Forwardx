@@ -136,6 +136,28 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
   };
 }
 
+export async function releaseHostPendingRuleCleanup(hostId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
+    ${forwardRules.hostId} = ${hostId}
+    AND ${forwardRules.pendingDelete} = 1
+    AND ${forwardRules.isRunning} = 1
+  `);
+  const count = Number(rows[0]?.count) || 0;
+  if (count <= 0) return 0;
+  await db.update(forwardRules).set({
+    isEnabled: false,
+    isRunning: false,
+    updatedAt: nowDate(),
+  }).where(sql`
+    ${forwardRules.hostId} = ${hostId}
+    AND ${forwardRules.pendingDelete} = 1
+    AND ${forwardRules.isRunning} = 1
+  `);
+  return count;
+}
+
 /** 获取主机下未删除的转发规则数量 */
 export async function getHostRuleCount(hostId: number): Promise<number> {
   const blockers = await getHostRuleDeleteBlockers(hostId);

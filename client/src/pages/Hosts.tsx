@@ -1,6 +1,6 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
-import AgentTokenManager from "@/components/AgentTokenManager";
+import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -203,6 +203,7 @@ type HostViewMode = "card" | "table";
 type HostManageTab = "hosts" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
+const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 
 function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
@@ -218,6 +219,25 @@ function storeHostViewMode(viewMode: HostViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(HOST_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredAgentTokenViewMode(): AgentTokenViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(AGENT_TOKEN_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeAgentTokenViewMode(viewMode: AgentTokenViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(AGENT_TOKEN_VIEW_MODE_STORAGE_KEY, viewMode);
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
@@ -459,6 +479,7 @@ function HostsContent() {
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
+  const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -475,6 +496,11 @@ function HostsContent() {
   const handleViewModeChange = (mode: HostViewMode) => {
     setViewMode(mode);
     storeHostViewMode(mode);
+  };
+
+  const handleTokenViewModeChange = (mode: AgentTokenViewMode) => {
+    setTokenViewMode(mode);
+    storeAgentTokenViewMode(mode);
   };
 
   const createMutation = trpc.hosts.create.useMutation({
@@ -763,6 +789,28 @@ function HostsContent() {
               </div>
             </>
           )}
+          {activeManageTab === "tokens" && user?.role === "admin" && (
+            <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+              <Button
+                variant={tokenViewMode === "card" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="卡片视图"
+                onClick={() => handleTokenViewModeChange("card")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={tokenViewMode === "table" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="列表视图"
+                onClick={() => handleTokenViewModeChange("table")}
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
@@ -783,7 +831,7 @@ function HostsContent() {
         <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-2" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto`}>
           <TabsTrigger value="hosts" className="gap-1.5 px-4">
             <Server className="h-3.5 w-3.5" />
-            主机
+            主机管理
           </TabsTrigger>
           {user?.role === "admin" && (
             <TabsTrigger value="tokens" className="gap-1.5 px-4">
@@ -1012,6 +1060,9 @@ function HostsContent() {
             <AgentTokenManager
               createSignal={tokenCreateSignal}
               showCreateButton={false}
+              hideViewModeToggle
+              viewMode={tokenViewMode}
+              onViewModeChange={handleTokenViewModeChange}
               onCreateSignalHandled={() => setTokenCreateSignal(0)}
             />
           </TabsContent>

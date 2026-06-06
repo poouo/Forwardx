@@ -45,10 +45,13 @@ type AgentTokenManagerProps = {
   createSignal?: number;
   className?: string;
   showCreateButton?: boolean;
+  hideViewModeToggle?: boolean;
+  viewMode?: AgentTokenViewMode;
+  onViewModeChange?: (viewMode: AgentTokenViewMode) => void;
   onCreateSignalHandled?: () => void;
 };
 
-type AgentTokenViewMode = "card" | "table";
+export type AgentTokenViewMode = "card" | "table";
 
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 
@@ -275,6 +278,9 @@ export default function AgentTokenManager({
   createSignal,
   className,
   showCreateButton = true,
+  hideViewModeToggle = false,
+  viewMode: controlledViewMode,
+  onViewModeChange,
   onCreateSignalHandled,
 }: AgentTokenManagerProps) {
   const { user } = useAuth();
@@ -289,8 +295,9 @@ export default function AgentTokenManager({
   const [editingToken, setEditingToken] = useState<any>(null);
   const [editDescription, setEditDescription] = useState("");
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
-  const [viewMode, setViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
+  const [internalViewMode, setInternalViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const lastCreateSignalRef = useRef(0);
+  const viewMode = controlledViewMode ?? internalViewMode;
 
   const openCreateDialog = () => {
     setDescription("");
@@ -298,7 +305,8 @@ export default function AgentTokenManager({
   };
 
   const handleViewModeChange = (nextViewMode: AgentTokenViewMode) => {
-    setViewMode(nextViewMode);
+    if (onViewModeChange) onViewModeChange(nextViewMode);
+    else setInternalViewMode(nextViewMode);
     storeAgentTokenViewMode(nextViewMode);
   };
 
@@ -337,10 +345,13 @@ export default function AgentTokenManager({
   });
 
   const deleteTokenMutation = trpc.agentTokens.delete.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       utils.agentTokens.list.invalidate();
       utils.hosts.list.invalidate();
-      toast.success("Token 已删除，关联主机已解除绑定");
+      const released = Number(data?.releasedPendingCleanup || 0);
+      toast.success(released > 0
+        ? `Token 已删除，已按面板状态释放 ${released} 条待清理规则`
+        : "Token 已删除，关联主机已解除绑定");
     },
     onError: (err) => toast.error(err.message || "删除 Token 失败"),
   });
@@ -457,7 +468,7 @@ export default function AgentTokenManager({
           通过 Agent Token 生成安装命令，主机上线后会自动绑定到面板。
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+          {!hideViewModeToggle && <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
               variant={viewMode === "card" ? "secondary" : "ghost"}
               size="icon"
@@ -476,7 +487,7 @@ export default function AgentTokenManager({
             >
               <List className="h-4 w-4" />
             </Button>
-          </div>
+          </div>}
           {showCreateButton && (
             <Button onClick={openCreateDialog} className="w-full gap-2 sm:w-auto">
               <Plus className="h-4 w-4" />

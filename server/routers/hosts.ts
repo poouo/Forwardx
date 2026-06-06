@@ -256,7 +256,7 @@ export const hostsRouter = router({
           throw new Error(`该主机仍被 ${blockers.managedRuleCount} 条转发组/转发链规则引用，请先在转发组中移除该主机或删除对应转发组`);
         }
         if (blockers.pendingCleanupCount > 0) {
-          throw new Error(`该主机下还有 ${blockers.pendingCleanupCount} 条规则正在等待 Agent 清理，请等待 Agent 上报清理完成后再删除主机`);
+          await db.releaseHostPendingRuleCleanup(input.id);
         }
         await db.deleteHostPermissions(input.id);
         await db.deleteHost(input.id);

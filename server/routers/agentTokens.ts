@@ -44,8 +44,25 @@ export const agentTokensRouter = router({
       if (ctx.user.role !== "admin" && token.userId !== ctx.user.id) {
         throw new Error("无权删除该 Token");
       }
+      let releasedPendingCleanup = 0;
+      const hostIds = new Set<number>();
+      if (token.hostId) hostIds.add(Number(token.hostId));
+      if (token.token) {
+        const boundHost = await db.getHostByAgentToken(token.token);
+        if (boundHost?.id) hostIds.add(Number(boundHost.id));
+      }
+      for (const hostId of hostIds) {
+        const blockers = await db.getHostRuleDeleteBlockers(hostId);
+        if (blockers.ruleCount > 0) {
+          throw new Error(`该 Token 关联主机下还有 ${blockers.ruleCount} 条转发规则，请先删除所有规则后再删除 Token`);
+        }
+        if (blockers.managedRuleCount > 0) {
+          throw new Error(`该 Token 关联主机仍被 ${blockers.managedRuleCount} 条转发组/转发链规则引用，请先移除引用后再删除 Token`);
+        }
+        releasedPendingCleanup += await db.releaseHostPendingRuleCleanup(hostId);
+      }
       await db.deleteAgentToken(input.id);
-      return { success: true };
+      return { success: true, releasedPendingCleanup };
     }),
   getInstallToken: protectedProcedure
     .input(z.object({ id: z.number().optional(), token: z.string().optional() }))
