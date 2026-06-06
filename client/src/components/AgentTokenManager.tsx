@@ -28,6 +28,8 @@ import {
   CheckCircle2,
   Copy,
   Key,
+  LayoutGrid,
+  List,
   Loader2,
   Pencil,
   Plus,
@@ -46,6 +48,29 @@ type AgentTokenManagerProps = {
   onCreateSignalHandled?: () => void;
 };
 
+type AgentTokenViewMode = "card" | "table";
+
+const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
+
+function getStoredAgentTokenViewMode(): AgentTokenViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(AGENT_TOKEN_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeAgentTokenViewMode(viewMode: AgentTokenViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(AGENT_TOKEN_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the token manager remains usable.
+  }
+}
+
 function shellQuote(value: string) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -57,6 +82,154 @@ function normalizeConfigUrl(value: string) {
 function tokenHostAddress(host: any) {
   if (!host) return "";
   return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
+}
+
+function TokenStatusBadge({ tokenItem }: { tokenItem: any }) {
+  return tokenItem.isUsed ? (
+    <Badge className="shrink-0 border-chart-2/20 bg-chart-2/10 text-chart-2 text-[10px]">
+      <CheckCircle2 className="mr-1 h-3 w-3" />
+      已使用
+    </Badge>
+  ) : (
+    <Badge variant="secondary" className="shrink-0 text-[10px]">
+      未使用
+    </Badge>
+  );
+}
+
+function TokenHostInfo({ tokenItem, compact = false }: { tokenItem: any; compact?: boolean }) {
+  if (!tokenItem.host) {
+    return <span className="text-xs text-muted-foreground">{tokenItem.isUsed ? "关联主机不存在" : "-"}</span>;
+  }
+  const address = tokenHostAddress(tokenItem.host);
+  return (
+    <div className={`flex min-w-0 items-center gap-2 text-xs leading-5 ${compact ? "" : "max-w-[240px]"}`}>
+      <span className="flex h-9 w-7 shrink-0 items-center justify-center rounded-md bg-muted/40">
+        <Server className="h-3.5 w-3.5 text-muted-foreground" />
+      </span>
+      <div className="min-w-0">
+        <span className="block truncate font-medium" title={tokenItem.host.name}>
+          {tokenItem.host.name}
+        </span>
+        {address && (
+          <span className="block truncate font-mono text-muted-foreground" title={address}>
+            {address}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TokenActionButtons({
+  tokenItem,
+  loadingScriptTokenId,
+  onOpenScript,
+  onEdit,
+  onDelete,
+}: {
+  tokenItem: any;
+  loadingScriptTokenId: number | null;
+  onOpenScript: (id: number) => void;
+  onEdit: (tokenItem: any) => void;
+  onDelete: (tokenItem: any) => void;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8"
+        title="查看安装命令"
+        disabled={loadingScriptTokenId === tokenItem.id}
+        onClick={() => onOpenScript(tokenItem.id)}
+      >
+        {loadingScriptTokenId === tokenItem.id ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Terminal className="h-3.5 w-3.5" />
+        )}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8"
+        title="编辑备注"
+        onClick={() => onEdit(tokenItem)}
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-destructive hover:text-destructive"
+        title="删除 Token"
+        onClick={() => onDelete(tokenItem)}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+function AgentTokenCard({
+  tokenItem,
+  loadingScriptTokenId,
+  onOpenScript,
+  onEdit,
+  onDelete,
+}: {
+  tokenItem: any;
+  loadingScriptTokenId: number | null;
+  onOpenScript: (id: number) => void;
+  onEdit: (tokenItem: any) => void;
+  onDelete: (tokenItem: any) => void;
+}) {
+  return (
+    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <CardContent className="space-y-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <Key className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium">Agent Token</p>
+                <p className="text-xs text-muted-foreground">{new Date(tokenItem.createdAt).toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+          <TokenStatusBadge tokenItem={tokenItem} />
+        </div>
+
+        <code className="block break-all rounded-md border border-border/40 bg-background/60 px-3 py-2 font-mono text-xs">
+          {tokenItem.token}
+        </code>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-md bg-muted/25 p-3">
+            <p className="mb-1 text-xs text-muted-foreground">备注</p>
+            <p className="line-clamp-2 break-words text-sm">{tokenItem.description || "暂无备注"}</p>
+          </div>
+          <div className="rounded-md bg-muted/25 p-3">
+            <p className="mb-2 text-xs text-muted-foreground">对应主机</p>
+            <TokenHostInfo tokenItem={tokenItem} compact />
+          </div>
+        </div>
+
+        <div className="flex justify-end border-t border-border/40 pt-2">
+          <TokenActionButtons
+            tokenItem={tokenItem}
+            loadingScriptTokenId={loadingScriptTokenId}
+            onOpenScript={onOpenScript}
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function CommandRow({
@@ -116,11 +289,17 @@ export default function AgentTokenManager({
   const [editingToken, setEditingToken] = useState<any>(null);
   const [editDescription, setEditDescription] = useState("");
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
+  const [viewMode, setViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const lastCreateSignalRef = useRef(0);
 
   const openCreateDialog = () => {
     setDescription("");
     setShowCreate(true);
+  };
+
+  const handleViewModeChange = (nextViewMode: AgentTokenViewMode) => {
+    setViewMode(nextViewMode);
+    storeAgentTokenViewMode(nextViewMode);
   };
 
   useEffect(() => {
@@ -264,6 +443,10 @@ export default function AgentTokenManager({
   const getInstallCommand = (token: string) => getAgentScriptCommand(`install ${token}`);
   const getUninstallCommand = () => getAgentScriptCommand("uninstall");
   const getUpgradeCommand = () => getAgentScriptCommand("upgrade");
+  const openEditToken = (tokenItem: any) => {
+    setEditingToken(tokenItem);
+    setEditDescription(tokenItem.description || "");
+  };
 
   if (user?.role !== "admin") return null;
 
@@ -273,12 +456,34 @@ export default function AgentTokenManager({
         <p className="text-sm text-muted-foreground">
           通过 Agent Token 生成安装命令，主机上线后会自动绑定到面板。
         </p>
-        {showCreateButton && (
-          <Button onClick={openCreateDialog} className="w-full gap-2 sm:w-auto">
-            <Plus className="h-4 w-4" />
-            添加主机
-          </Button>
-        )}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+            <Button
+              variant={viewMode === "card" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              title="卡片视图"
+              onClick={() => handleViewModeChange("card")}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === "table" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              title="列表视图"
+              onClick={() => handleViewModeChange("table")}
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
+          {showCreateButton && (
+            <Button onClick={openCreateDialog} className="w-full gap-2 sm:w-auto">
+              <Plus className="h-4 w-4" />
+              添加主机
+            </Button>
+          )}
+        </div>
       </div>
 
       <Alert className="border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
@@ -294,84 +499,31 @@ export default function AgentTokenManager({
             </div>
           ) : tokens && tokens.length > 0 ? (
             <>
-              <div className="space-y-3 p-3 sm:hidden">
+              {viewMode === "card" ? (
+                <div className="grid grid-cols-1 gap-4 p-3 md:grid-cols-2 xl:grid-cols-3">
+                  {tokens.map((tokenItem) => (
+                    <AgentTokenCard
+                      key={tokenItem.id}
+                      tokenItem={tokenItem}
+                      loadingScriptTokenId={loadingScriptTokenId}
+                      onOpenScript={openScriptDialog}
+                      onEdit={openEditToken}
+                      onDelete={setTokenToDelete}
+                    />
+                  ))}
+                </div>
+              ) : (
+              <>
+              <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
                 {tokens.map((tokenItem) => (
-                  <div key={tokenItem.id} className="rounded-lg border border-border/40 bg-muted/20 p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground">Token</p>
-                        <code className="mt-1 block break-all rounded bg-background/60 px-2 py-1 font-mono text-xs">
-                          {tokenItem.token}
-                        </code>
-                        {tokenItem.description && (
-                          <p className="mt-2 break-words text-xs text-muted-foreground">{tokenItem.description}</p>
-                        )}
-                      </div>
-                      {tokenItem.isUsed ? (
-                        <Badge className="shrink-0 bg-chart-2/10 text-chart-2 border-chart-2/20 text-[10px]">
-                          已使用
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary" className="shrink-0 text-[10px]">
-                          未使用
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="mt-3 rounded-md bg-background/45 p-2 text-xs">
-                      <p className="text-muted-foreground">对应主机</p>
-                      {tokenItem.host ? (
-                        <div className="mt-1 min-w-0">
-                          <p className="break-words font-medium">{tokenItem.host.name}</p>
-                          {tokenHostAddress(tokenItem.host) && (
-                            <p className="break-all font-mono text-muted-foreground">{tokenHostAddress(tokenItem.host)}</p>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="mt-1 text-muted-foreground">{tokenItem.isUsed ? "关联主机不存在" : "-"}</p>
-                      )}
-                    </div>
-                    <div className="mt-3 flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {new Date(tokenItem.createdAt).toLocaleString()}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          title="查看安装命令"
-                          disabled={loadingScriptTokenId === tokenItem.id}
-                          onClick={() => openScriptDialog(tokenItem.id)}
-                        >
-                          {loadingScriptTokenId === tokenItem.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Terminal className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          title="编辑备注"
-                          onClick={() => {
-                            setEditingToken(tokenItem);
-                            setEditDescription(tokenItem.description || "");
-                          }}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          onClick={() => setTokenToDelete(tokenItem)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
+                  <AgentTokenCard
+                    key={tokenItem.id}
+                    tokenItem={tokenItem}
+                    loadingScriptTokenId={loadingScriptTokenId}
+                    onOpenScript={openScriptDialog}
+                    onEdit={openEditToken}
+                    onDelete={setTokenToDelete}
+                  />
                 ))}
               </div>
               <div className="hidden overflow-x-auto sm:block">
@@ -400,39 +552,10 @@ export default function AgentTokenManager({
                           <span className="text-sm text-muted-foreground">{tokenItem.description || "-"}</span>
                         </TableCell>
                         <TableCell>
-                          <div className="space-y-1">
-                            {tokenItem.isUsed ? (
-                              <Badge className="bg-chart-2/10 text-chart-2 border-chart-2/20 text-[10px]">
-                                <CheckCircle2 className="h-3 w-3 mr-1" />
-                                已使用
-                              </Badge>
-                            ) : (
-                              <Badge variant="secondary" className="text-[10px]">
-                                未使用
-                              </Badge>
-                            )}
-                          </div>
+                          <TokenStatusBadge tokenItem={tokenItem} />
                         </TableCell>
                         <TableCell>
-                          {tokenItem.host ? (
-                            <div className="flex min-w-0 items-center gap-2 text-xs leading-5">
-                              <span className="flex h-9 w-4 shrink-0 items-center justify-center">
-                                <Server className="h-3.5 w-3.5 text-muted-foreground" />
-                              </span>
-                              <div className="min-w-0">
-                                <span className="block max-w-[220px] truncate font-medium" title={tokenItem.host.name}>
-                                  {tokenItem.host.name}
-                                </span>
-                                {tokenHostAddress(tokenItem.host) && (
-                                  <span className="block max-w-[220px] truncate font-mono text-muted-foreground" title={tokenHostAddress(tokenItem.host)}>
-                                    {tokenHostAddress(tokenItem.host)}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">{tokenItem.isUsed ? "关联主机不存在" : "-"}</span>
-                          )}
+                          <TokenHostInfo tokenItem={tokenItem} />
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <span className="text-xs text-muted-foreground">
@@ -440,48 +563,21 @@ export default function AgentTokenManager({
                           </span>
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="查看安装命令"
-                              disabled={loadingScriptTokenId === tokenItem.id}
-                              onClick={() => openScriptDialog(tokenItem.id)}
-                            >
-                              {loadingScriptTokenId === tokenItem.id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Terminal className="h-3.5 w-3.5" />
-                              )}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              title="编辑备注"
-                              onClick={() => {
-                                setEditingToken(tokenItem);
-                                setEditDescription(tokenItem.description || "");
-                              }}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive"
-                              onClick={() => setTokenToDelete(tokenItem)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
+                          <TokenActionButtons
+                            tokenItem={tokenItem}
+                            loadingScriptTokenId={loadingScriptTokenId}
+                            onOpenScript={openScriptDialog}
+                            onEdit={openEditToken}
+                            onDelete={setTokenToDelete}
+                          />
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               </div>
+              </>
+              )}
             </>
           ) : (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
