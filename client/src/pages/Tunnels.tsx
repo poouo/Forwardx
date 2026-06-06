@@ -582,6 +582,7 @@ function TunnelsContent() {
   const [chainCreateRequestKey, setChainCreateRequestKey] = useState(0);
   const [pendingCreateType, setPendingCreateType] = useState<LinkCreateType | null>(null);
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
+  const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -825,8 +826,21 @@ function TunnelsContent() {
   };
   const openCreateTypeDialog = () => {
     if (!canCreateAny) return;
+    const preferredType: LinkCreateType = activeSection === "chains" ? "chain" : "tunnel";
+    const nextType = preferredType === "chain"
+      ? (canCreateChain ? "chain" : "tunnel")
+      : (canCreateTunnel ? "tunnel" : "chain");
+    setSelectedCreateType(nextType);
     setShowCreateTypeDialog(true);
   };
+  const selectedCreateDisabled = selectedCreateType === "tunnel" ? !canCreateTunnel : !canCreateChain;
+  const selectedCreateTitle = selectedCreateType === "tunnel" ? "隧道链路" : "端口转发链";
+  const selectedCreateDescription = selectedCreateType === "tunnel"
+    ? "创建 Agent 之间的隧道转发链路，支持 ForwardX 自定义加密或 GOST 协议。"
+    : "按主机顺序串联端口转发链路，用于多节点端口转发场景。";
+  const selectedCreateRequirement = selectedCreateType === "tunnel"
+    ? "需要至少 2 台主机，并启用至少一种可用隧道协议。"
+    : "需要至少 2 台主机。";
   useEffect(() => {
     if (!pendingCreateType) return;
     if (pendingCreateType === "tunnel" && activeSection === "tunnels") {
@@ -1279,12 +1293,32 @@ function TunnelsContent() {
             <DialogTitle>新增链路</DialogTitle>
             <DialogDescription>选择要创建的链路类型。</DialogDescription>
           </DialogHeader>
-          <LinkCreateTypeSelector
-            value={activeSection === "chains" ? "chain" : "tunnel"}
-            canCreateTunnel={canCreateTunnel}
-            canCreateChain={canCreateChain}
-            onValueChange={requestCreateType}
-          />
+          <div className="space-y-4">
+            <LinkCreateTypeSelector
+              value={selectedCreateType}
+              canCreateTunnel={canCreateTunnel}
+              canCreateChain={canCreateChain}
+              onValueChange={setSelectedCreateType}
+            />
+            <div className="rounded-lg border border-border/50 bg-background/60 p-4">
+              <div className="flex items-start gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  {selectedCreateType === "tunnel" ? <Network className="h-5 w-5" /> : <Route className="h-5 w-5" />}
+                </span>
+                <div className="min-w-0">
+                  <p className="font-medium">{selectedCreateTitle}</p>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">{selectedCreateDescription}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">{selectedCreateRequirement}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>取消</Button>
+            <Button disabled={selectedCreateDisabled} onClick={() => requestCreateType(selectedCreateType)}>
+              继续创建
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
