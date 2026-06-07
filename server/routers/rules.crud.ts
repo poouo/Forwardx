@@ -31,6 +31,12 @@ const failoverInputShape = {
   autoFailback: z.boolean().optional(),
 } as const;
 
+const protocolBlockInputShape = {
+  blockHttp: z.boolean().optional().default(false),
+  blockSocks: z.boolean().optional().default(false),
+  blockTls: z.boolean().optional().default(false),
+} as const;
+
 type FailoverInput = {
   failoverEnabled?: boolean;
   failoverStrategy?: z.infer<typeof failoverStrategySchema>;
@@ -87,6 +93,12 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
   };
 }
 
+function validateProtocolBlockInput(input: { protocol?: string | null; blockHttp?: boolean; blockSocks?: boolean; blockTls?: boolean }) {
+  if ((input.blockHttp || input.blockSocks || input.blockTls) && input.protocol !== "tcp") {
+    throw new Error("协议屏蔽仅支持 TCP 规则，启用后规则会工作在 guard 模式");
+  }
+}
+
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
   const changedFields = [
     "sourcePort",
@@ -106,6 +118,9 @@ function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHost
     "failoverSeconds",
     "recoverSeconds",
     "autoFailback",
+    "blockHttp",
+    "blockSocks",
+    "blockTls",
   ].filter((field) => input[field] !== undefined && input[field] !== rule?.[field]);
   if (changedFields.length === 0) return false;
   if (!rule?.isEnabled || !rule?.isRunning || !rule?.failoverEnabled) return false;
@@ -174,9 +189,11 @@ export const crudRulesRouter = router({
         "请输入有效的 IP 地址或域名"
       ),
       targetPort: z.number().min(1).max(65535),
+      ...protocolBlockInputShape,
       ...failoverInputShape,
     }))
     .mutation(async ({ input, ctx }) => {
+      validateProtocolBlockInput(input);
       // 权限检查：管理员或有 canAddRules 权限的用户
       let currentUser = await db.getUserById(ctx.user.id);
       // 转发方式权限检查：非管理员需在 allowedForwardTypes 列表中
@@ -255,6 +272,9 @@ export const crudRulesRouter = router({
           sourcePort,
           targetIp: input.targetIp.trim(),
           targetPort: input.targetPort,
+          blockHttp: !!input.blockHttp,
+          blockSocks: !!input.blockSocks,
+          blockTls: !!input.blockTls,
           ...normalizeFailoverInput(isForwardChain ? { failoverEnabled: false, failoverTargets: [] } : input, input.protocol),
           isRunning: false,
           userId: ctx.user.id,
@@ -369,6 +389,9 @@ export const crudRulesRouter = router({
       const id = await db.createForwardRule({
         ...input,
         ...normalizeFailoverInput(input, input.protocol),
+        blockHttp: !!input.blockHttp,
+        blockSocks: !!input.blockSocks,
+        blockTls: !!input.blockTls,
         sourcePort,
         targetIp: input.targetIp.trim(),
         gostMode: "direct",
@@ -404,6 +427,9 @@ export const crudRulesRouter = router({
         "请输入有效的 IP 地址或域名"
       ).optional(),
       targetPort: z.number().min(1).max(65535).optional(),
+      blockHttp: z.boolean().optional(),
+      blockSocks: z.boolean().optional(),
+      blockTls: z.boolean().optional(),
       ...failoverInputShape,
       isEnabled: z.boolean().optional(),
     }))
@@ -430,6 +456,12 @@ export const crudRulesRouter = router({
           excludeTemplateRuleId: rule.id,
         });
         const isForwardChain = (group as any).groupMode === "chain";
+        validateProtocolBlockInput({
+          protocol: input.protocol ?? (rule as any).protocol,
+          blockHttp: input.blockHttp ?? (rule as any).blockHttp,
+          blockSocks: input.blockSocks ?? (rule as any).blockSocks,
+          blockTls: input.blockTls ?? (rule as any).blockTls,
+        });
         if (isForwardChain && input.failoverEnabled) {
           throw new Error("端口转发链不支持出站策略");
         }
@@ -478,7 +510,7 @@ export const crudRulesRouter = router({
         };
         delete data.id;
         delete data.hostId;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback", "blockHttp", "blockSocks", "blockTls"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -487,6 +519,12 @@ export const crudRulesRouter = router({
       }
 
       await requireRuleProtocolEnabled(rule);
+      validateProtocolBlockInput({
+        protocol: input.protocol ?? (rule as any).protocol,
+        blockHttp: input.blockHttp ?? (rule as any).blockHttp,
+        blockSocks: input.blockSocks ?? (rule as any).blockSocks,
+        blockTls: input.blockTls ?? (rule as any).blockTls,
+      });
 
       // 如果修改了源端口，检查端口区间和占用
       let selectedTunnelForRule: any = null;
@@ -645,6 +683,9 @@ export const crudRulesRouter = router({
         "failoverSeconds",
         "recoverSeconds",
         "autoFailback",
+        "blockHttp",
+        "blockSocks",
+        "blockTls",
       ];
       const keyFieldChanged = watchedFields.some((f) => {
         const v = data[f];

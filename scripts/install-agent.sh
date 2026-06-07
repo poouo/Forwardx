@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# ForwardX Agent GitHub entry script
-# install/upgrade: fetch panel installer and run non-interactively
-# uninstall: local cleanup without panel dependency
+# ForwardX Agent GitHub 入口脚本
+# install/upgrade: 从面板获取安装脚本并自动执行
+# uninstall: 本地清理，不依赖面板
 
 ACTION="${1:-}"
 TOKEN="${2:-}"
@@ -22,32 +22,32 @@ STATE_DIR="/var/lib/forwardx-agent"
 show_help() {
   cat <<'EOF'
 ======================================
-  ForwardX Agent Manager
+  ForwardX Agent 管理工具
 ======================================
 
-Usage:
-  Install Agent:
+用法:
+  安装 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
       PANEL_URL="http://your-panel:3000" bash -s -- install YOUR_TOKEN
 
-  Uninstall Agent:
+  卸载 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
       bash -s -- uninstall
 
-  Upgrade Agent:
+  升级 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
       PANEL_URL="http://your-panel:3000" bash -s -- upgrade [YOUR_TOKEN]
 
-Args:
-  install   <TOKEN>  Install Agent and register to panel
-  upgrade   [TOKEN]  Upgrade Agent, reuse existing config by default
-  uninstall          Fully uninstall Agent and related services
+参数:
+  install   <TOKEN>  安装 Agent 并注册到面板
+  upgrade   [TOKEN]  升级 Agent，默认复用现有配置
+  uninstall          完全卸载 Agent 及相关服务
 EOF
 }
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
-    echo "[ERROR] Please run as root"
+    echo "[错误] 请使用 root 权限运行"
     exit 1
   fi
 }
@@ -68,7 +68,7 @@ run_panel_installer() {
   local tmp_script
 
   if [ -z "${PANEL_URL:-}" ]; then
-    echo "[ERROR] PANEL_URL is required"
+    echo "[错误] 缺少 PANEL_URL"
     return 1
   fi
 
@@ -77,7 +77,7 @@ run_panel_installer() {
 
   local url="${PANEL_URL}/api/agent/install.sh"
 
-  echo "[INFO] Fetching installer from panel: ${PANEL_URL}"
+  echo "[信息] 正在从面板获取安装脚本: ${PANEL_URL}"
   if ! curl -fsSL --max-time "$timeout" "$url" -o "$tmp_script"; then
     rm -f "$tmp_script"
     return 1
@@ -108,29 +108,29 @@ do_install() {
   local agent_token="$1"
 
   if [ -z "$agent_token" ]; then
-    echo "[ERROR] install requires Agent token"
-    echo "Usage: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
+    echo "[错误] install 需要 Agent Token"
+    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
     exit 1
   fi
 
   if [ -z "${PANEL_URL:-}" ]; then
-    echo "[ERROR] PANEL_URL is required"
-    echo "Usage: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
+    echo "[错误] 缺少 PANEL_URL"
+    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
     exit 1
   fi
 
   echo "======================================"
-  echo "  ForwardX Agent Install (GitHub Entry)"
+  echo "  ForwardX Agent 安装程序（GitHub 入口）"
   echo "======================================"
   echo "Panel URL: ${PANEL_URL}"
   echo "Token: ${agent_token:0:8}***"
   echo ""
 
-  echo "[INFO] Fetching install script from panel..."
+  echo "[信息] 正在从面板获取安装脚本..."
   if ! run_panel_installer "install" "$agent_token" 20; then
     echo ""
-    echo "[ERROR] Failed to fetch installer from panel"
-    echo "       Please check panel URL and network connectivity"
+    echo "[错误] 无法从面板获取安装脚本"
+    echo "       请检查面板地址和网络连接"
     exit 1
   fi
 }
@@ -144,26 +144,26 @@ do_upgrade() {
   local agent_token="${override_token:-${EXISTING_TOKEN:-}}"
 
   if [ -z "${PANEL_URL:-}" ]; then
-    echo "[ERROR] PANEL_URL not found"
-    echo "Usage: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh upgrade [YOUR_TOKEN]"
+    echo "[错误] 未找到 PANEL_URL"
+    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh upgrade [YOUR_TOKEN]"
     exit 1
   fi
 
   echo "======================================"
-  echo "  ForwardX Agent Upgrade"
+  echo "  ForwardX Agent 升级程序"
   echo "======================================"
   echo "Panel URL: ${PANEL_URL}"
   if [ -n "$agent_token" ]; then
     echo "Token: ${agent_token:0:8}***"
   else
-    echo "Token: (use panel script / existing config)"
+    echo "Token: (使用面板脚本或现有配置)"
   fi
   echo ""
 
-  echo "[INFO] Fetching latest install script from panel..."
+  echo "[信息] 正在从面板获取最新安装脚本..."
   if ! run_panel_installer "upgrade" "$agent_token" 20; then
     echo ""
-    echo "[ERROR] Upgrade failed: cannot fetch installer from panel"
+    echo "[错误] 升级失败：无法从面板获取安装脚本"
     exit 1
   fi
 }
@@ -171,7 +171,7 @@ do_upgrade() {
 do_uninstall() {
   require_root
   echo "======================================"
-  echo "  ForwardX Agent Uninstall (Local)"
+  echo "  ForwardX Agent 卸载程序（本地）"
   echo "======================================"
 
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -205,7 +205,7 @@ do_uninstall() {
   rm -f "$GO_AGENT_BIN" "$FXP_BIN"
   rm -rf "$CONFIG_DIR" "$LOG_DIR" "$STATE_DIR"
 
-  echo "[DONE] Agent has been uninstalled"
+  echo "[完成] Agent 已卸载"
 }
 
 case "$ACTION" in
@@ -222,7 +222,7 @@ case "$ACTION" in
     show_help
     if [ -n "$ACTION" ]; then
       echo ""
-      echo "[INFO] Unknown action: $ACTION"
+      echo "[信息] 未知操作: $ACTION"
     fi
     exit 1
     ;;

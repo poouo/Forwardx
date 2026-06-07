@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { renderMixedHtml, describeContentFormat } from "@/lib/htmlContent";
 import { trpc } from "@/lib/trpc";
@@ -20,6 +21,7 @@ const emptyForm = {
   title: "",
   content: "",
   type: "normal" as "normal" | "popup",
+  telegramPush: false,
 };
 
 function dateText(value?: string | Date | null) {
@@ -32,6 +34,12 @@ function renderAnnouncementHtml(content: string) {
   return { __html: renderMixedHtml(content) };
 }
 
+function announcementSuccessMessage(action: string, data: any) {
+  const push = data?.telegramPush;
+  if (!push?.requested) return `公告已${action}`;
+  return `公告已${action}，TG 推送 ${push.sent || 0}/${push.total || 0}${push.failed ? `，失败 ${push.failed}` : ""}`;
+}
+
 export default function Announcements() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -42,8 +50,8 @@ export default function Announcements() {
   const [form, setForm] = useState(emptyForm);
 
   const createAnnouncement = trpc.announcements.create.useMutation({
-    onSuccess: () => {
-      toast.success("公告已创建");
+    onSuccess: (data) => {
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("创建", data) : "公告已创建");
       setOpen(false);
       setForm(emptyForm);
       utils.announcements.list.invalidate();
@@ -53,8 +61,8 @@ export default function Announcements() {
   });
 
   const updateAnnouncement = trpc.announcements.update.useMutation({
-    onSuccess: () => {
-      toast.success("公告已更新");
+    onSuccess: (data) => {
+      toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("更新", data) : "公告已更新");
       setOpen(false);
       setForm(emptyForm);
       utils.announcements.list.invalidate();
@@ -77,6 +85,7 @@ export default function Announcements() {
       title: form.title.trim(),
       content: form.content.trim(),
       type: form.type,
+      telegramPush: form.telegramPush,
     };
     if (form.id) updateAnnouncement.mutate({ ...payload, id: form.id });
     else createAnnouncement.mutate(payload);
@@ -88,6 +97,7 @@ export default function Announcements() {
       title: item.title || "",
       content: item.content || "",
       type: item.type === "popup" ? "popup" : "normal",
+      telegramPush: false,
     });
     setOpen(true);
   };
@@ -159,6 +169,19 @@ export default function Announcements() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2"><Label>标题</Label><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
                 <div className="space-y-2"><Label>类型</Label><Select value={form.type} onValueChange={(type: "normal" | "popup") => setForm({ ...form, type })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="normal">普通公告</SelectItem><SelectItem value="popup">登录弹窗</SelectItem></SelectContent></Select></div>
+              </div>
+              <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <Label>同步 Telegram 推送</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    仅发送给已绑定 Telegram 且在个人资料中开启公告推送的用户。
+                  </p>
+                </div>
+                <Switch
+                  instant
+                  checked={form.telegramPush}
+                  onCheckedChange={(telegramPush) => setForm({ ...form, telegramPush })}
+                />
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">

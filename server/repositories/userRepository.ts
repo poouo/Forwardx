@@ -77,10 +77,29 @@ export async function verifyUserPassword(userId: number, password: string) {
   return verifyPassword(password, user.password);
 }
 
-export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null }) {
+export async function updateUserProfile(userId: number, data: { name?: string; email?: string; displayRemark?: string | null; avatar?: string | null; telegramAnnouncementSubscribed?: boolean }) {
   const db = await getDb();
   if (!db) return;
   await db.update(users).set({ ...data, updatedAt: nowDate() }).where(eq(users.id, userId));
+}
+
+export async function getTelegramAnnouncementSubscribers() {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      telegramId: users.telegramId,
+      telegramUsername: users.telegramUsername,
+    })
+    .from(users)
+    .where(and(
+      eq(users.accountEnabled, true),
+      eq(users.telegramAnnouncementSubscribed, true),
+      sql`${users.telegramId} IS NOT NULL`,
+    ));
 }
 
 export async function enableUserTwoFactor(userId: number, secret: string) {
@@ -436,6 +455,7 @@ export async function getAllUsers() {
       telegramLastName: users.telegramLastName,
       telegramLinkedAt: users.telegramLinkedAt,
       telegramLastSeenAt: users.telegramLastSeenAt,
+      telegramAnnouncementSubscribed: users.telegramAnnouncementSubscribed,
       twoFactorEnabled: users.twoFactorEnabled,
       twoFactorEnabledAt: users.twoFactorEnabledAt,
       createdAt: users.createdAt,

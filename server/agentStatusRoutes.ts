@@ -57,21 +57,31 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
       return;
     }
     const tunnel = tunnelId ? await db.getTunnelById(tunnelId) : ((rule as any).tunnelId ? await db.getTunnelById((rule as any).tunnelId) : null);
-    const allowed = !!tunnel
+    const isTunnelRule = !!tunnel
       && Number((rule as any).tunnelId) === Number((tunnel as any).id)
       && (Number((tunnel as any).entryHostId) === Number(host.id) || Number((tunnel as any).exitHostId) === Number(host.id));
+    const isDirectRule = !tunnel
+      && Number((rule as any).hostId) === Number(host.id)
+      && ((rule as any).blockHttp || (rule as any).blockSocks || (rule as any).blockTls);
+    const allowed = isTunnelRule || isDirectRule;
     if (!allowed) {
       res.status(403).json({ error: "forbidden" });
       return;
     }
 
     const label = protocol.toUpperCase();
-    const reason = `检测到该端口使用 ${label} 协议，管理员已禁止在此隧道使用，请勿使用此协议`;
+    const reason = tunnel
+      ? `检测到该端口使用 ${label} 协议，管理员已禁止在此隧道使用，请勿使用此协议`
+      : `检测到该端口使用 ${label} 协议，管理员已禁止在此规则使用，请勿使用此协议`;
     await db.disableForwardRuleByProtocolBlock(ruleId, reason);
-    await db.updateTunnel((tunnel as any).id, { isRunning: false } as any);
-    pushAgentRefresh(Number((tunnel as any).entryHostId), "protocol-block-entry");
-    pushAgentRefresh(Number((tunnel as any).exitHostId), "protocol-block-exit");
-    appendPanelLog("warn", `[ProtocolBlock] rule=${ruleId} tunnel=${(tunnel as any).id} host=${host.id} port=${sourcePort || (rule as any).sourcePort} protocol=${protocol}`);
+    if (tunnel) {
+      await db.updateTunnel((tunnel as any).id, { isRunning: false } as any);
+      pushAgentRefresh(Number((tunnel as any).entryHostId), "protocol-block-entry");
+      pushAgentRefresh(Number((tunnel as any).exitHostId), "protocol-block-exit");
+    } else {
+      pushAgentRefresh(Number((rule as any).hostId), "protocol-block-rule");
+    }
+    appendPanelLog("warn", `[ProtocolBlock] rule=${ruleId} tunnel=${tunnel ? (tunnel as any).id : "-"} host=${host.id} port=${sourcePort || (rule as any).sourcePort} protocol=${protocol}`);
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent Protocol Block] Error:", error);

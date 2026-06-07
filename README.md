@@ -135,8 +135,7 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database.json`，SQLite 数据文件保存在 `/data/forwardx.db`。
 默认拉取 `ghcr.io/poouo/forwardx:latest` 预编译镜像，不会在用户服务器上重新构建镜像。
 安装和升级会保留 `.env`、Docker 数据卷和部署目录内的 `data/` 数据；只有执行卸载脚本并输入 `y` 后才会删除部署目录和 Docker 数据卷。
-如果 GitHub 刚发布新版本但 `latest` 镜像仍在构建，升级脚本会提示稍后重试，并且不会停止旧容器。
-后台「检查更新」也会等待 Docker 镜像版本同步完成后才提示可升级，避免看到新版本后立即升级却拉到旧镜像。
+
 
 ## 首次初始化
 
