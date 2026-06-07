@@ -40,6 +40,7 @@ interface MultiHopEditorProps {
 }
 
 const missingTunnelEntryIpTip = "请先配置内网IP";
+const DRAG_GHOST_OFFSET = { x: 14, y: 14 };
 
 const ROLE_COLORS: Record<HopRole, string> = {
   entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
@@ -230,8 +231,8 @@ export default function MultiHopEditor({
     setDragSourceIdx(idx);
     setDragOverIdx(idx);
     setGhost({
-      x: e.clientX,
-      y: e.clientY,
+      x: e.clientX + DRAG_GHOST_OFFSET.x,
+      y: e.clientY + DRAG_GHOST_OFFSET.y,
       name: hops[idx]?.hostName || "",
       role: getRole(idx, hops.length),
       index: idx + 1,
@@ -241,7 +242,7 @@ export default function MultiHopEditor({
   const onDragOverContainer = (e: React.DragEvent) => {
     if (dragSourceIdx === null) return;
     e.preventDefault();
-    setGhost((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+    setGhost((prev) => (prev ? { ...prev, x: e.clientX + DRAG_GHOST_OFFSET.x, y: e.clientY + DRAG_GHOST_OFFSET.y } : prev));
   };
 
   const onDragEnterRow = (idx: number) => (e: React.DragEvent) => {
@@ -331,7 +332,7 @@ export default function MultiHopEditor({
                 onDragEnter={onDragEnterRow(idx)}
                 onDragOver={(e) => {
                   e.preventDefault();
-                  setGhost((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
+                  setGhost((prev) => (prev ? { ...prev, x: e.clientX + DRAG_GHOST_OFFSET.x, y: e.clientY + DRAG_GHOST_OFFSET.y } : prev));
                 }}
                 onDrop={onDropRow(idx)}
                 onDragEnd={onDragEnd}
@@ -405,7 +406,7 @@ export default function MultiHopEditor({
 
       {ghost && (
         <div
-          className="pointer-events-none fixed z-[120] -translate-x-1/2 -translate-y-1/2 rounded-md border border-primary/40 bg-card px-3 py-2 text-sm shadow-2xl transition-transform duration-75"
+          className="pointer-events-none fixed z-[120] rounded-md border border-primary/40 bg-card px-3 py-2 text-sm shadow-2xl"
           style={{ left: `${ghost.x}px`, top: `${ghost.y}px` }}
         >
           <div className="flex items-center gap-2">

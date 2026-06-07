@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.115] - 2026-06-08
+
+### Added
+
+- Added 24-hour latency charts and manual link self-tests for port forwarding chains, including per-hop Ping latency and final TCPing checks when a target rule is available.
+- Added structured multi-hop latency output for tunnel and forwarding-chain self-tests, showing each hop and total latency.
+- Added Agent-side Ping probe support for forwarding-chain latency collection.
+
+### Fixed
+
+- Fixed historical tunnel self-test failures triggering failure toasts when the user did not manually start a new test.
+- Fixed multi-hop editor drag previews appearing offset below the cursor.
+
+### Changed
+
+- Bumped panel version to 2.3.115 and Agent/FXP runtime target version to 2.2.88.
+- Android APP version remains 2.3.41 and the APK release pointer is updated to 2.3.115 because this is a web-panel/server and Agent update.
+
 ## [2.3.111] - 2026-06-06
 
 ### Added

@@ -10,6 +10,7 @@ import {
   forwardTests, InsertForwardTest,
   tcpingStats, InsertTcpingStat,
   tunnelLatencyStats, InsertTunnelLatencyStat,
+  forwardGroupLatencyStats, InsertForwardGroupLatencyStat,
 } from "../../drizzle/schema";
 import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw } from "../dbRuntime";
 import { clampPositiveInt } from "./repositoryUtils";
@@ -546,6 +547,33 @@ export async function getTunnelLatencySeries(
     .orderBy(asc(tunnelLatencyStats.recordedAt))
     .limit(limit);
 }
+
+export async function insertForwardGroupLatencyStat(stat: InsertForwardGroupLatencyStat) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(forwardGroupLatencyStats).values(stat);
+}
+
+export async function getForwardGroupLatencySeries(
+  groupId: number,
+  opts: { since?: Date; limit?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const limit = opts.limit ?? 2880;
+  return db
+    .select({
+      latencyMs: forwardGroupLatencyStats.latencyMs,
+      isTimeout: forwardGroupLatencyStats.isTimeout,
+      recordedAt: forwardGroupLatencyStats.recordedAt,
+    })
+    .from(forwardGroupLatencyStats)
+    .where(and(eq(forwardGroupLatencyStats.groupId, groupId), gte(forwardGroupLatencyStats.recordedAt, since)))
+    .orderBy(asc(forwardGroupLatencyStats.recordedAt))
+    .limit(limit);
+}
+
 export async function getTcpingSeriesByRule(
   ruleId: number,
   opts: { since?: Date; limit?: number } = {}
@@ -664,6 +692,7 @@ export async function cleanOldTcpingStats(retainHours: number = 48) {
   if (!db) return;
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
   await db.delete(tcpingStats).where(sql`${tcpingStats.recordedAt} < ${cutoff}`);
+  await db.delete(forwardGroupLatencyStats).where(sql`${forwardGroupLatencyStats.recordedAt} < ${cutoff}`);
 }
 
 export type TimedOutForwardTest = {

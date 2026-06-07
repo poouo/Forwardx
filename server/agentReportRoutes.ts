@@ -2,13 +2,16 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
 import {
+  isAgentForwardGroupLatencyResult,
   isAgentTcpingResult,
   isAgentTrafficStat,
   isAgentTunnelTcpingResult,
+  type AgentForwardGroupLatencyResult,
   type AgentTcpingResult,
   type AgentTrafficStat,
   type AgentTunnelTcpingResult,
 } from "../shared/agentDtos";
+import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
 import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { appendAgentLog } from "./agentLogStore";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
@@ -272,8 +275,12 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       ? req.body.tunnels
       : (Array.isArray(req.body?.tunnelResults) ? req.body.tunnelResults : []);
     const tunnelResults: AgentTunnelTcpingResult[] = rawTunnelResults.filter(isAgentTunnelTcpingResult);
-    if (results.length === 0 && tunnelResults.length === 0) {
-      res.status(400).json({ error: "results or tunnels array is required" });
+    const rawForwardGroupResults = Array.isArray(req.body?.forwardGroups)
+      ? req.body.forwardGroups
+      : (Array.isArray(req.body?.forwardGroupResults) ? req.body.forwardGroupResults : []);
+    const forwardGroupResults: AgentForwardGroupLatencyResult[] = rawForwardGroupResults.filter(isAgentForwardGroupLatencyResult);
+    if (results.length === 0 && tunnelResults.length === 0 && forwardGroupResults.length === 0) {
+      res.status(400).json({ error: "results, tunnels or forwardGroups array is required" });
       return;
     }
 
@@ -305,6 +312,29 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         tunnelId,
         latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
         isTimeout: !!r.isTimeout,
+      });
+    }
+
+    for (const r of forwardGroupResults) {
+      const groupId = Number(r.groupId);
+      if (!groupId) continue;
+      const group = await db.getForwardGroupById(groupId) as any;
+      if (!group || String(group.groupMode || "failover") !== "chain") continue;
+      const hopIndex = Number((r as any).hopIndex);
+      const hopCount = Number((r as any).hopCount);
+      if (!Number.isFinite(hopIndex) || !Number.isFinite(hopCount) || hopCount <= 0) continue;
+      const aggregate = recordForwardGroupAutoHopLatency({
+        groupId,
+        hopIndex,
+        hopCount,
+        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+        isTimeout: !!r.isTimeout,
+      });
+      if (!aggregate) continue;
+      await db.insertForwardGroupLatencyStat({
+        groupId,
+        latencyMs: aggregate.success ? aggregate.latencyMs : null,
+        isTimeout: !aggregate.success,
       });
     }
 

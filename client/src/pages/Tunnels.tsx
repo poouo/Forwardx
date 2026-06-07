@@ -1,6 +1,7 @@
 ﻿import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
+import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -470,12 +471,17 @@ function TunnelSelfTestDialog({
   const isFailed = status === "failed";
   const latencyMs = tunnel?.lastLatencyMs;
   const lastFailureToastKey = useRef("");
+  const manualTestRef = useRef(false);
+  const manualTestBaselineAtRef = useRef("");
+  const parsedMessage = useMemo(() => parseLinkTestMessage(tunnel?.lastTestMessage), [tunnel?.lastTestMessage]);
 
   useEffect(() => {
     if (!open) {
       setOptimisticTesting(false);
       setStartedLastTestAt(null);
       setSawServerTesting(false);
+      manualTestRef.current = false;
+      manualTestBaselineAtRef.current = "";
     }
   }, [open]);
 
@@ -500,19 +506,25 @@ function TunnelSelfTestDialog({
       lastFailureToastKey.current = "";
       return;
     }
-    const message = typeof tunnel?.lastTestMessage === "string" ? tunnel.lastTestMessage.trim() : "";
+    const message = parsedMessage.message.trim();
     const messageLooksSuccessful = /测试成功|检测成功/.test(message) && !/失败|超时|不可达|异常/.test(message);
-    if (!isTesting && isFailed && message && !messageLooksSuccessful) {
+    const baselineAt = manualTestBaselineAtRef.current;
+    const hasFreshResult = !baselineAt || (tunnel?.lastTestAt && String(tunnel.lastTestAt) !== baselineAt);
+    if (!isTesting && isFailed && message && !messageLooksSuccessful && manualTestRef.current && hasFreshResult) {
       const key = `${tunnelId}:${status}:${tunnel?.lastTestAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;
+        manualTestRef.current = false;
         toast.error("隧道链路自测失败", {
           description: message,
           duration: 12000,
         });
       }
     }
-  }, [open, isTesting, isFailed, status, tunnel?.lastTestAt, tunnel?.lastTestMessage, tunnelId]);
+    if (!isTesting && isSuccess) {
+      manualTestRef.current = false;
+    }
+  }, [open, isTesting, isFailed, isSuccess, status, tunnel?.lastTestAt, parsedMessage.message, tunnelId]);
 
   const statusView = (() => {
     if (isTesting) {
@@ -568,9 +580,12 @@ function TunnelSelfTestDialog({
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
             <span className="text-sm text-muted-foreground">链路估算延迟</span>
-            <span className="text-sm font-semibold tabular-nums">
-              {isTesting ? "正在测试中" : isSuccess && latencyMs !== null && latencyMs !== undefined ? `${latencyMs} ms` : "--"}
-            </span>
+            <LinkTestLatencySummary
+              parsed={parsedMessage}
+              fallbackLatencyMs={latencyMs}
+              isSuccess={isSuccess}
+              isTesting={isTesting}
+            />
           </div>
         </div>
 
@@ -578,6 +593,8 @@ function TunnelSelfTestDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             onClick={() => {
+              manualTestRef.current = true;
+              manualTestBaselineAtRef.current = lastTestAt || "";
               setStartedLastTestAt(lastTestAt || "__none__");
               setSawServerTesting(false);
               setOptimisticTesting(true);

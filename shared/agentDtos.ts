@@ -19,6 +19,15 @@ export type AgentTunnelTcpingResult = {
   hopCount?: number;
 };
 
+export type AgentForwardGroupLatencyResult = {
+  groupId: number;
+  latencyMs?: number | null;
+  isTimeout?: boolean;
+  hopIndex?: number;
+  hopCount?: number;
+  method?: "tcp" | "ping" | string;
+};
+
 export type SelfTestMeta =
   | {
       kind: "tunnel";
@@ -56,6 +65,10 @@ export type SelfTestMeta =
       entrySourcePort?: number;
       targetIp?: string;
       targetPort?: number;
+      method?: "tcp" | "ping";
+      hopLabel?: string;
+      routeLabel?: string;
+      batchId?: string;
     };
 
 export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {
@@ -71,6 +84,11 @@ export function isAgentTcpingResult(value: unknown): value is AgentTcpingResult 
 export function isAgentTunnelTcpingResult(value: unknown): value is AgentTunnelTcpingResult {
   const item = value as Partial<AgentTunnelTcpingResult>;
   return !!item && Number.isFinite(Number(item.tunnelId));
+}
+
+export function isAgentForwardGroupLatencyResult(value: unknown): value is AgentForwardGroupLatencyResult {
+  const item = value as Partial<AgentForwardGroupLatencyResult>;
+  return !!item && Number.isFinite(Number(item.groupId));
 }
 
 export function isSelfTestMeta(value: unknown): value is SelfTestMeta {

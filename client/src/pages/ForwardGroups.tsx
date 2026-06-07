@@ -1,6 +1,7 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,6 +37,7 @@ import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
+  AlertCircle,
   CheckCircle2,
   GripVertical,
   Layers3,
@@ -47,11 +49,23 @@ import {
   RefreshCw,
   Route,
   Server,
+  Stethoscope,
+  Timer,
   Trash2,
   XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "failover" | "chain";
@@ -170,6 +184,288 @@ function chainRoleLabel(index: number, total: number) {
   return "中转";
 }
 
+type GroupLatencyPoint = {
+  label: string;
+  fullLabel: string;
+  latency: number;
+  chartLatency: number;
+  isTimeout: boolean;
+};
+
+type GroupLatencySeriesDatum = {
+  recordedAt: string | Date;
+  latencyMs?: number | null;
+  isTimeout?: boolean | null;
+};
+
+const groupLatencySeriesCache = new Map<number, GroupLatencySeriesDatum[]>();
+const groupLatencyAnimatedKeys = new Set<number>();
+
+function formatGroupLatencyTime(value: string | Date) {
+  const d = new Date(value);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hour = String(d.getHours()).padStart(2, "0");
+  const minute = String(d.getMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hour}:${minute}`;
+}
+
+function ForwardGroupLatencyDialog({
+  groupId,
+  groupName,
+  open,
+  onOpenChange,
+}: {
+  groupId: number;
+  groupName: string;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const { data, isLoading } = trpc.forwardGroups.latencySeries.useQuery(
+    { groupId, hours: 24 },
+    { enabled: open, refetchInterval: open ? 30000 : false }
+  );
+  const cachedData = groupLatencySeriesCache.get(groupId);
+  const seriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
+
+  useEffect(() => {
+    if (data) groupLatencySeriesCache.set(groupId, data as GroupLatencySeriesDatum[]);
+  }, [data, groupId]);
+
+  const chartData = useMemo<GroupLatencyPoint[]>(() => {
+    if (!seriesData) return [];
+    return seriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => ({
+      label: formatGroupLatencyTime(d.recordedAt),
+      fullLabel: formatGroupLatencyTime(d.recordedAt),
+      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
+      chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
+      isTimeout: !!d.isTimeout,
+    }));
+  }, [seriesData]);
+
+  const stats = useMemo(() => {
+    const ok = chartData.filter((d) => !d.isTimeout && d.latency > 0).map((d) => d.latency);
+    const timeouts = chartData.filter((d) => d.isTimeout).length;
+    if (ok.length === 0) return { min: null as number | null, max: null as number | null, avg: null as number | null, timeouts, samples: chartData.length };
+    return {
+      min: Math.min(...ok),
+      max: Math.max(...ok),
+      avg: Math.round(ok.reduce((sum, value) => sum + value, 0) / ok.length),
+      timeouts,
+      samples: chartData.length,
+    };
+  }, [chartData]);
+  const yMax = useMemo(() => getLatencyYAxisMax(Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.chartLatency), 0), 120), [chartData]);
+  const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
+  const shouldAnimateChart = open && chartData.length > 0 && !groupLatencyAnimatedKeys.has(groupId);
+  useEffect(() => {
+    if (shouldAnimateChart) groupLatencyAnimatedKeys.add(groupId);
+  }, [groupId, shouldAnimateChart]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
+          <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
+        </DialogHeader>
+        <div className="h-[260px] rounded-lg border border-border/60 bg-muted/20 p-3">
+          {isLoading && !seriesData ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在加载延迟数据
+            </div>
+          ) : chartData.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无延迟数据</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="forwardGroupLatencyGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.38} />
+                    <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.04} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" opacity={0.35} />
+                <XAxis dataKey="label" stroke="var(--color-muted-foreground)" fontSize={11} tickLine={false} axisLine={false} minTickGap={24} />
+                <YAxis stroke="var(--color-muted-foreground)" fontSize={11} tickLine={false} axisLine={false} width={42} domain={[0, yMax]} ticks={yTicks} tickFormatter={(value) => `${value}ms`} />
+                <RTooltip
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const item = payload[0].payload as GroupLatencyPoint;
+                    return (
+                      <div className="rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md">
+                        <p className="font-medium">{item.fullLabel}</p>
+                        <p className={item.isTimeout ? "text-destructive" : "text-foreground"}>
+                          {item.isTimeout ? "超时/不可达" : `${item.latency}ms`}
+                        </p>
+                      </div>
+                    );
+                  }}
+                />
+                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#forwardGroupLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-latency-stats="true">
+          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-xs text-muted-foreground">样本</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.samples}</p>
+          </div>
+          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-xs text-muted-foreground">最低</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.min === null ? "--" : `${stats.min} ms`}</p>
+          </div>
+          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-xs text-muted-foreground">最高</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.max === null ? "--" : `${stats.max} ms`}</p>
+          </div>
+          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <p className="text-xs text-muted-foreground">平均</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.avg === null ? "--" : `${stats.avg} ms`}</p>
+          </div>
+          <div className="latency-stat-card col-span-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 sm:col-span-1">
+            <p className="text-xs text-muted-foreground">超时</p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.timeouts}</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ForwardGroupSelfTestDialog({
+  groupId,
+  groupName,
+  open,
+  onOpenChange,
+}: {
+  groupId: number;
+  groupName: string;
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+}) {
+  const utils = trpc.useUtils();
+  const { data: latest } = trpc.forwardGroups.latestTest.useQuery(
+    { groupId },
+    { enabled: open, refetchInterval: open ? 1500 : false, refetchOnWindowFocus: false }
+  );
+  const [optimisticTesting, setOptimisticTesting] = useState(false);
+  const [baselineUpdatedAt, setBaselineUpdatedAt] = useState("");
+  const manualTestRef = useRef(false);
+  const lastFailureToastKey = useRef("");
+  const testMutation = trpc.forwardGroups.test.useMutation({
+    onSuccess: async () => {
+      await utils.forwardGroups.latestTest.invalidate({ groupId });
+    },
+    onError: (e) => {
+      setOptimisticTesting(false);
+      manualTestRef.current = false;
+      toast.error(e.message || "测试失败");
+    },
+  });
+  const status = latest?.status as string | undefined;
+  const isServerTesting = status === "pending" || status === "running";
+  const isTesting = testMutation.isPending || optimisticTesting || isServerTesting;
+  const isSuccess = status === "success";
+  const isFailed = !!latest && !isTesting && !isSuccess;
+  const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
+  const hasFreshResult = !baselineUpdatedAt || (latest?.updatedAt && String(latest.updatedAt) !== baselineUpdatedAt);
+
+  useEffect(() => {
+    if (!open) {
+      setOptimisticTesting(false);
+      setBaselineUpdatedAt("");
+      manualTestRef.current = false;
+      lastFailureToastKey.current = "";
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (optimisticTesting && hasFreshResult && !isServerTesting && latest) {
+      setOptimisticTesting(false);
+    }
+  }, [hasFreshResult, isServerTesting, latest, optimisticTesting]);
+
+  useEffect(() => {
+    const message = parsedMessage.message.trim();
+    if (!open || isTesting || !isFailed || !message || !manualTestRef.current || !hasFreshResult) return;
+    const key = `${groupId}:${status}:${latest?.updatedAt || ""}:${message}`;
+    if (lastFailureToastKey.current !== key) {
+      lastFailureToastKey.current = key;
+      manualTestRef.current = false;
+      toast.error("转发链链路自测失败", { description: message, duration: 12000 });
+    }
+  }, [groupId, hasFreshResult, isFailed, isTesting, latest?.updatedAt, open, parsedMessage.message, status]);
+
+  useEffect(() => {
+    if (!isTesting && isSuccess) manualTestRef.current = false;
+  }, [isSuccess, isTesting]);
+
+  const statusView = (() => {
+    if (isTesting) return <span className="flex items-center gap-2 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
+    if (!latest) return <span className="text-muted-foreground">尚未运行</span>;
+    if (isSuccess) return <span className="flex items-center gap-2 text-emerald-600"><CheckCircle2 className="h-4 w-4" />正常</span>;
+    if (status === "timeout") return <span className="flex items-center gap-2 text-amber-600"><AlertCircle className="h-4 w-4" />超时</span>;
+    return <span className="flex items-center gap-2 text-destructive"><XCircle className="h-4 w-4" />异常</span>;
+  })();
+  const reachableView = (() => {
+    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
+    if (isSuccess) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
+    if (latest) return <XCircle className="h-4 w-4 text-destructive" />;
+    return <span className="text-muted-foreground">--</span>;
+  })();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>转发链链路自测 - {groupName}</DialogTitle>
+          <DialogDescription>多级链路按每一跳分别测试，并汇总总延迟。</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">状态</span>
+            <span className="text-sm font-medium">{statusView}</span>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">链路可达</span>
+            <span className="text-sm font-medium">{reachableView}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+            <span className="text-sm text-muted-foreground">链路估算延迟</span>
+            <LinkTestLatencySummary
+              parsed={parsedMessage}
+              fallbackLatencyMs={latest?.latencyMs}
+              isSuccess={isSuccess}
+              isTesting={isTesting}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+          <Button
+            onClick={() => {
+              manualTestRef.current = true;
+              setBaselineUpdatedAt(latest?.updatedAt ? String(latest.updatedAt) : "");
+              setOptimisticTesting(true);
+              testMutation.mutate({ groupId });
+            }}
+            disabled={isTesting}
+            className="gap-2"
+          >
+            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+            {isTesting ? "测试中..." : "运行测试"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ForwardGroupsContent({
   mode = "failover",
   embedded = false,
@@ -188,6 +484,8 @@ export function ForwardGroupsContent({
   const savedMembersRef = useRef<Record<string, MemberForm[]>>({ host: [], tunnel: [] });
   const [dragMemberKey, setDragMemberKey] = useState<string | null>(null);
   const [internalViewMode, setInternalViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
+  const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
+  const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
@@ -476,6 +774,29 @@ export function ForwardGroupsContent({
 
   const groupDdnsText = (group: any) => group.groupMode === "chain" ? "不使用" : group.domain || "未配置";
 
+  const chainLatencyActions = (group: any) => group.groupMode === "chain" ? (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8"
+        title="查看延迟"
+        onClick={() => setLatencyGroup({ id: Number(group.id), name: group.name })}
+      >
+        <Timer className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8"
+        title="链路自测"
+        onClick={() => setTestGroup({ id: Number(group.id), name: group.name })}
+      >
+        <Stethoscope className="h-3.5 w-3.5" />
+      </Button>
+    </>
+  ) : null;
+
   const isPending = createMutation.isPending || updateMutation.isPending;
   const handleViewModeChange = (nextViewMode: ForwardGroupViewMode) => {
     if (onViewModeChange) {
@@ -608,6 +929,7 @@ export function ForwardGroupsContent({
                   </div>
 
                   <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                    {chainLatencyActions(group)}
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />
                     </Button>
@@ -686,6 +1008,7 @@ export function ForwardGroupsContent({
                   </div>
 
                   <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                    {chainLatencyActions(group)}
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />
                     </Button>
@@ -762,6 +1085,7 @@ export function ForwardGroupsContent({
                       <TableCell className="hidden md:table-cell">{Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
+                          {chainLatencyActions(group)}
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
                             <RefreshCw className="h-3.5 w-3.5" />
                           </Button>
@@ -983,6 +1307,22 @@ export function ForwardGroupsContent({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {latencyGroup && (
+        <ForwardGroupLatencyDialog
+          groupId={latencyGroup.id}
+          groupName={latencyGroup.name}
+          open={!!latencyGroup}
+          onOpenChange={(open) => !open && setLatencyGroup(null)}
+        />
+      )}
+      {testGroup && (
+        <ForwardGroupSelfTestDialog
+          groupId={testGroup.id}
+          groupName={testGroup.name}
+          open={!!testGroup}
+          onOpenChange={(open) => !open && setTestGroup(null)}
+        />
+      )}
     </div>
   );
 }

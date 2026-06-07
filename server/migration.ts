@@ -301,6 +301,7 @@ const IMPORT_TABLE_ORDER = [
   "user_tunnel_permissions",
   "host_metrics",
   "tunnel_latency_stats",
+  "forward_group_latency_stats",
   "traffic_stats",
   "tcping_stats",
   "forward_tests",
@@ -459,6 +460,10 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
 
     case "tunnel_latency_stats":
       row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
+      return { row };
+
+    case "forward_group_latency_stats":
+      row.groupId = mapRequiredId(maps, "forward_groups", source.groupId);
       return { row };
 
     case "tcping_stats":

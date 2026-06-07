@@ -2,8 +2,27 @@ import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { parseSelfTestMeta } from "./agentRouteUtils";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
+import { recordHopTestResult } from "./hopTestState";
 import { appendPanelLog } from "./_core/panelLogger";
 import { getAgentHostFromRequest } from "./agentAuth";
+
+function structuredLinkTestMessage(input: {
+  kind: string;
+  message: string;
+  details?: any[];
+  totalLatencyMs?: number | null;
+  groupId?: number | null;
+  tunnelId?: number | null;
+}) {
+  return JSON.stringify({
+    kind: input.kind,
+    ...(input.groupId ? { groupId: input.groupId } : {}),
+    ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+    message: input.message,
+    details: input.details || [],
+    totalLatencyMs: input.totalLatencyMs ?? null,
+  });
+}
 
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
@@ -68,17 +87,24 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         console.warn(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} failed: ${cleanMessage || "unknown"}`);
       }
       if (aggregate) {
+        const aggregateMessage = structuredLinkTestMessage({
+          kind: "tunnel-hop-summary",
+          tunnelId: aggregate.tunnelId,
+          message: aggregate.message,
+          details: aggregate.details,
+          totalLatencyMs: aggregate.latencyMs,
+        });
         await db.updateTunnelRunningStatus(aggregate.tunnelId, aggregate.success);
         await db.updateTunnelTestResult(aggregate.tunnelId, {
           status: aggregate.success ? "success" : "failed",
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
-          message: aggregate.message,
+          message: aggregateMessage,
         });
         await db.insertTunnelLatencyStat({
           tunnelId: aggregate.tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
-        }, { message: aggregate.message });
+        }, { message: aggregateMessage });
         if (aggregate.success) {
           console.log(`[TunnelTest] tunnel=${aggregate.tunnelId} multi-hop total latency=${aggregate.latencyMs}ms`);
         } else {
@@ -141,6 +167,49 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     if (meta?.kind === "forward-chain" && typeof meta.groupId === "number") {
       const entryTarget = `${meta.entryIp || "-"}:${meta.entrySourcePort || "-"}`;
       const finalTarget = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
+      const hopLabel = String((meta as any).hopLabel || "");
+      const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
+      if (hopLabel) {
+        const aggregate = recordHopTestResult(testId, {
+          success,
+          latencyMs: success ? cleanLatency : null,
+          message: cleanMessage,
+          hopLabel,
+          routeLabel,
+          method: (meta as any).method === "ping" ? "ping" : "tcp",
+        }, {
+          successPrefix: "端口转发链逐跳测试成功",
+          failurePrefix: "端口转发链逐跳测试失败",
+        });
+        if (aggregate) {
+          const aggregateMessage = structuredLinkTestMessage({
+            kind: "forward-chain-hop-summary",
+            groupId: meta.groupId,
+            message: aggregate.message,
+            details: aggregate.details,
+            totalLatencyMs: aggregate.latencyMs,
+          });
+          await db.updateForwardTestResult(testId, {
+            status: aggregate.success ? "success" : "failed",
+            listenOk: aggregate.success,
+            targetReachable: aggregate.success,
+            forwardOk: aggregate.success,
+            latencyMs: aggregate.success ? aggregate.latencyMs : null,
+            message: aggregateMessage,
+          });
+          await db.insertForwardGroupLatencyStat({
+            groupId: meta.groupId,
+            latencyMs: aggregate.success ? aggregate.latencyMs : null,
+            isTimeout: !aggregate.success,
+          });
+          appendPanelLog(
+            aggregate.success ? "info" : "warn",
+            `[SelfTest] forward-chain group=${meta.groupId} aggregate success=${aggregate.success} latency=${aggregate.success && aggregate.latencyMs !== null ? `${aggregate.latencyMs}ms` : "-"} message=${aggregate.message}`,
+          );
+        }
+        res.json({ success: true });
+        return;
+      }
       const messageParts = [
         `端口转发链检测 ${success ? "成功" : "失败"}`,
         `入口 ${entryTarget}${success && cleanLatency !== null ? ` ${cleanLatency}ms` : ""}`,
@@ -241,13 +310,15 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
         continue;
       }
       if (meta?.kind === "forward-chain") {
+        const method = meta.method === "ping" ? "ping" : "tcp";
         selfTests.push({
           testId: t.id,
           kind: "forward-chain",
           groupId: meta.groupId,
           ruleId: t.ruleId,
           forwardType: "forward-chain",
-          protocol: "tcp",
+          protocol: method,
+          method,
           sourcePort: meta.entrySourcePort || 0,
           targetIp: meta.entryIp,
           targetPort: meta.entrySourcePort,

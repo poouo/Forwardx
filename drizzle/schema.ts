@@ -355,6 +355,16 @@ export const tunnelLatencyStats = table("tunnel_latency_stats", {
 export type TunnelLatencyStat = typeof tunnelLatencyStats.$inferSelect;
 export type InsertTunnelLatencyStat = typeof tunnelLatencyStats.$inferInsert;
 
+export const forwardGroupLatencyStats = table("forward_group_latency_stats", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  latencyMs: int("latencyMs"),
+  isTimeout: boolean("isTimeout").notNull().default(false),
+  recordedAt: epoch("recordedAt").notNull().default(nowDefault()),
+});
+export type ForwardGroupLatencyStat = typeof forwardGroupLatencyStats.$inferSelect;
+export type InsertForwardGroupLatencyStat = typeof forwardGroupLatencyStats.$inferInsert;
+
 export const agentTokens = table("agent_tokens", {
   id: serial("id"),
   token: text("token").notNull().unique(),

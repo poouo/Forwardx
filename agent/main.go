@@ -33,7 +33,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.87"
+var Version = "2.2.88"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -93,16 +93,17 @@ type envelope struct {
 }
 
 type heartbeatResp struct {
-	Actions           []action           `json:"actions"`
-	SelfTests         []selfTest         `json:"selfTests"`
-	RunningRules      []runningRule      `json:"runningRules"`
-	TunnelProbes      []tunnelProbe      `json:"tunnelProbes"`
-	GuardRules        []guardRule        `json:"guardRules"`
-	LookingGlassTests []lookingGlassTask `json:"lookingGlassTests"`
-	Iperf3Tasks       []iperf3Task       `json:"iperf3Tasks"`
-	AgentUpgrade      *agentUpgrade      `json:"agentUpgrade"`
-	LogUpload         bool               `json:"agentLogUploadEnabled"`
-	NextInterval      int                `json:"nextInterval"`
+	Actions            []action            `json:"actions"`
+	SelfTests          []selfTest          `json:"selfTests"`
+	RunningRules       []runningRule       `json:"runningRules"`
+	TunnelProbes       []tunnelProbe       `json:"tunnelProbes"`
+	ForwardGroupProbes []forwardGroupProbe `json:"forwardGroupProbes"`
+	GuardRules         []guardRule         `json:"guardRules"`
+	LookingGlassTests  []lookingGlassTask  `json:"lookingGlassTests"`
+	Iperf3Tasks        []iperf3Task        `json:"iperf3Tasks"`
+	AgentUpgrade       *agentUpgrade       `json:"agentUpgrade"`
+	LogUpload          bool                `json:"agentLogUploadEnabled"`
+	NextInterval       int                 `json:"nextInterval"`
 }
 
 type selfTestResp struct {
@@ -167,6 +168,15 @@ type tunnelProbe struct {
 	HopCount   int    `json:"hopCount"`
 }
 
+type forwardGroupProbe struct {
+	GroupID    int    `json:"groupId"`
+	TargetIP   string `json:"targetIp"`
+	TargetPort int    `json:"targetPort"`
+	Method     string `json:"method"`
+	HopIndex   int    `json:"hopIndex"`
+	HopCount   int    `json:"hopCount"`
+}
+
 type agentUpgrade struct {
 	TargetVersion string `json:"targetVersion"`
 	PanelURL      string `json:"panelUrl"`
@@ -191,6 +201,7 @@ type selfTest struct {
 	ForwardType string `json:"forwardType"`
 	SourcePort  int    `json:"sourcePort"`
 	Protocol    string `json:"protocol"`
+	Method      string `json:"method"`
 	TargetIP    string `json:"targetIp"`
 	TargetPort  int    `json:"targetPort"`
 }
@@ -368,7 +379,7 @@ func heartbeat(cfg Config) (int, error) {
 	syncProtocolGuards(cfg, resp.GuardRules)
 	collectTraffic(cfg)
 	if lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
-		collectTCPing(cfg, resp.TunnelProbes)
+		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes)
 		lastTCPingAt = time.Now()
 	}
 	flushAgentLogs(cfg)
@@ -469,21 +480,38 @@ func selfTestPoller(cfg Config) {
 }
 
 func handleSelfTest(cfg Config, t selfTest) {
-	start := time.Now()
-	target := net.JoinHostPort(t.TargetIP, strconv.Itoa(t.TargetPort))
-	conn, err := net.DialTimeout("tcp", target, 3*time.Second)
-	latency := int(time.Since(start).Milliseconds())
-	reachable := err == nil
-	msg := ""
-	if err == nil {
-		_ = conn.Close()
-		if latency < 1 {
-			latency = 1
+	method := strings.ToLower(strings.TrimSpace(t.Method))
+	if method == "" {
+		method = strings.ToLower(strings.TrimSpace(t.Protocol))
+	}
+	if method == "ping" {
+		latency, reachable, detail := pingLatency(t.TargetIP, 3*time.Second)
+		msg := ""
+		if reachable {
+			msg = fmt.Sprintf("目标 %s Ping可达，延迟 %dms", t.TargetIP, latency)
+		} else {
+			msg = fmt.Sprintf("目标 %s Ping不可达：%s", t.TargetIP, detail)
 		}
+		payload := map[string]any{
+			"testId":          t.TestID,
+			"targetReachable": reachable,
+			"latencyMs":       latency,
+			"message":         msg,
+		}
+		if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
+			logf("selftest report failed test=%d target=%s: %v", t.TestID, t.TargetIP, err)
+		}
+		return
+	}
+
+	latency, reachable := tcpLatency(t.TargetIP, t.TargetPort, 3*time.Second)
+	target := net.JoinHostPort(t.TargetIP, strconv.Itoa(t.TargetPort))
+	msg := ""
+	if reachable {
 		msg = fmt.Sprintf("目标 %s TCP可达，延迟 %dms", target, latency)
 	} else {
 		latency = 0
-		msg = fmt.Sprintf("目标 %s TCP不可达：%v", target, err)
+		msg = fmt.Sprintf("目标 %s TCP不可达或超时", target)
 	}
 	payload := map[string]any{
 		"testId":          t.TestID,
@@ -1610,7 +1638,7 @@ func collectTraffic(cfg Config) {
 	}
 }
 
-func collectTCPing(cfg Config, probes []tunnelProbe) {
+func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe) {
 	files, _ := os.ReadDir("/var/lib/forwardx-agent")
 	results := []map[string]any{}
 	for _, f := range files {
@@ -1662,8 +1690,51 @@ func collectTCPing(cfg Config, probes []tunnelProbe) {
 		}
 		tunnels = append(tunnels, result)
 	}
-	if len(results) > 0 || len(tunnels) > 0 {
-		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels}, &map[string]any{})
+	forwardGroups := []map[string]any{}
+	for _, probe := range groupProbes {
+		if probe.GroupID <= 0 || probe.TargetIP == "" || probe.HopCount <= 0 {
+			continue
+		}
+		method := strings.ToLower(strings.TrimSpace(probe.Method))
+		if method == "ping" {
+			latency, reachable, _ := pingLatency(probe.TargetIP, 3*time.Second)
+			result := map[string]any{
+				"groupId":  probe.GroupID,
+				"method":   "ping",
+				"hopIndex": probe.HopIndex,
+				"hopCount": probe.HopCount,
+			}
+			if reachable {
+				result["latencyMs"] = latency
+				result["isTimeout"] = false
+			} else {
+				result["latencyMs"] = 0
+				result["isTimeout"] = true
+			}
+			forwardGroups = append(forwardGroups, result)
+			continue
+		}
+		if probe.TargetPort <= 0 {
+			continue
+		}
+		latency, reachable := tcpLatency(probe.TargetIP, probe.TargetPort, 3*time.Second)
+		result := map[string]any{
+			"groupId":  probe.GroupID,
+			"method":   "tcp",
+			"hopIndex": probe.HopIndex,
+			"hopCount": probe.HopCount,
+		}
+		if reachable {
+			result["latencyMs"] = latency
+			result["isTimeout"] = false
+		} else {
+			result["latencyMs"] = 0
+			result["isTimeout"] = true
+		}
+		forwardGroups = append(forwardGroups, result)
+	}
+	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 {
+		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups}, &map[string]any{})
 	}
 }
 
@@ -1693,6 +1764,64 @@ func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {
 		latency = 1
 	}
 	return latency, true
+}
+
+func pingLatency(host string, timeout time.Duration) (int, bool, string) {
+	target := strings.TrimSpace(host)
+	if target == "" {
+		return 0, false, "目标为空"
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Second)
+	defer cancel()
+	args := []string{"-c", "1", "-W", strconv.Itoa(int(timeout.Seconds())), target}
+	if runtime.GOOS == "windows" {
+		args = []string{"-n", "1", "-w", strconv.Itoa(int(timeout.Milliseconds())), target}
+	}
+	output, err := exec.CommandContext(ctx, "ping", args...).CombinedOutput()
+	elapsed := int(time.Since(start).Milliseconds())
+	if elapsed < 1 {
+		elapsed = 1
+	}
+	text := string(output)
+	if ctx.Err() == context.DeadlineExceeded {
+		return 0, false, "timeout"
+	}
+	if err != nil {
+		detail := strings.TrimSpace(text)
+		if detail == "" {
+			detail = err.Error()
+		}
+		return 0, false, detail
+	}
+	if parsed := parsePingLatencyMs(text); parsed > 0 {
+		return parsed, true, ""
+	}
+	return elapsed, true, ""
+}
+
+func parsePingLatencyMs(output string) int {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
+		regexp.MustCompile(`Average\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
+		regexp.MustCompile(`avg[/=]\s*([0-9]+(?:\.[0-9]+)?)`),
+	}
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(output)
+		if len(matches) < 2 {
+			continue
+		}
+		value, err := strconv.ParseFloat(matches[1], 64)
+		if err != nil || value <= 0 {
+			continue
+		}
+		latency := int(value + 0.5)
+		if latency < 1 {
+			latency = 1
+		}
+		return latency
+	}
+	return 0
 }
 
 func conntrackConnections(port string) uint64 {

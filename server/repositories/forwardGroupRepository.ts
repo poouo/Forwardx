@@ -184,6 +184,115 @@ export async function getForwardGroupEvents(groupId: number, limit = 50) {
     .limit(limit);
 }
 
+export async function getLatestForwardGroupTest(groupId: number) {
+  const templates = await getForwardGroupTemplateRules(groupId);
+  const templateIds = (templates as any[]).map((rule: any) => Number(rule.id)).filter((id: number) => id > 0);
+  const table = quoteId("forward_tests");
+  const ruleCol = quoteId("ruleId");
+  const updatedCol = quoteId("updatedAt");
+  const createdCol = quoteId("createdAt");
+  const messageCol = quoteId("message");
+  const groupNeedle = `"groupId":${Number(groupId)}`;
+  const ruleFilter = templateIds.length > 0
+    ? `${ruleCol} IN (${templateIds.map(() => "?").join(",")}) OR `
+    : "";
+  const filterSql = `(${ruleFilter}${messageCol} LIKE ?)`;
+  const filterArgs: any[] = [...templateIds, `%${groupNeedle}%`];
+  const pendingRows = await queryRaw<any>(
+    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteId("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+    filterArgs,
+  );
+  if (pendingRows[0]) return pendingRows[0];
+  const rows = await queryRaw<any>(
+    `SELECT * FROM ${table} WHERE ${filterSql} ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    filterArgs,
+  );
+  return rows[0];
+}
+
+export async function getForwardGroupPrimaryTemplateRule(groupId: number) {
+  const templates = await getForwardGroupTemplateRules(groupId);
+  return (templates as any[])[0] || null;
+}
+
+export type ForwardGroupChainProbe = {
+  groupId: number;
+  fromHostId: number;
+  targetIp: string;
+  targetPort: number;
+  method: "tcp" | "ping";
+  hopIndex: number;
+  hopCount: number;
+  hopLabel: string;
+  routeLabel: string;
+};
+
+export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean } = {}) {
+  const group = await getForwardGroupById(groupId) as any;
+  if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
+  const template = await getForwardGroupPrimaryTemplateRule(groupId) as any;
+  const members = sortedMembers(group, true) as any[];
+  if (members.length < 2) return [] as ForwardGroupChainProbe[];
+
+  const hostById = new Map<number, any>();
+  for (const member of members) {
+    const hostId = Number(member.hostId || 0);
+    if (hostId > 0 && !hostById.has(hostId)) hostById.set(hostId, await getHostById(hostId));
+  }
+
+  const probes: ForwardGroupChainProbe[] = [];
+  const sourcePort = Number(template?.sourcePort || 0);
+  const hasFinalTarget = !!options.includeFinalTarget
+    && !!template
+    && String(template.targetIp || "").trim()
+    && Number(template.targetPort || 0) > 0;
+  const hopCount = members.length - 1 + (hasFinalTarget ? 1 : 0);
+  for (let index = 0; index < members.length - 1; index++) {
+    const current = members[index] as any;
+    const next = members[index + 1] as any;
+    const currentHostId = Number(current.hostId || 0);
+    const nextHostId = Number(next.hostId || 0);
+    const currentHost = hostById.get(currentHostId);
+    const nextHost = hostById.get(nextHostId);
+    const targetIp = resolveChainConnectHost(next, nextHost);
+    if (!currentHostId || !targetIp) continue;
+    const currentName = String(currentHost?.name || `主机${currentHostId}`);
+    const nextName = String(nextHost?.name || `主机${nextHostId}`);
+    probes.push({
+      groupId,
+      fromHostId: currentHostId,
+      targetIp,
+      targetPort: sourcePort > 0 ? sourcePort : 0,
+      method: "ping",
+      hopIndex: index,
+      hopCount,
+      hopLabel: `${index + 1}/${hopCount} ${currentHostId}->${nextHostId}`,
+      routeLabel: `${currentName} -> ${nextName}`,
+    });
+  }
+  if (hasFinalTarget) {
+    const lastMember = members[members.length - 1] as any;
+    const lastHostId = Number(lastMember.hostId || 0);
+    const lastHost = hostById.get(lastHostId);
+    const targetIp = String(template.targetIp || "").trim();
+    const targetPort = Number(template.targetPort || 0);
+    if (lastHostId > 0 && targetIp && targetPort > 0) {
+      probes.push({
+        groupId,
+        fromHostId: lastHostId,
+        targetIp,
+        targetPort,
+        method: "tcp",
+        hopIndex: probes.length,
+        hopCount,
+        hopLabel: `${probes.length + 1}/${hopCount} ${lastHostId}->target`,
+        routeLabel: `${String(lastHost?.name || `主机${lastHostId}`)} -> 目标 ${targetIp}:${targetPort}`,
+      });
+    }
+  }
+  return probes;
+}
+
 async function insertForwardGroupEvent(groupId: number, memberId: number | null, type: string, message: string) {
   const level = type.includes("error") ? "error" : type.includes("skip") ? "warn" : "info";
   appendPanelLog(level, `[DDNS] group=${groupId} member=${memberId ?? "-"} type=${type} ${message}`);

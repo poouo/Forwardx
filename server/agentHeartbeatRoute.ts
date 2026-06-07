@@ -1878,6 +1878,26 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (runningRule) addRunningRule(runningRule);
     }
 
+    const forwardGroupProbeMap = new Map<string, any>();
+    const chainGroupsForHost = (await db.getForwardGroups() as any[])
+      .filter((group: any) => group && group.isEnabled && String(group.groupMode || "failover") === "chain");
+    for (const group of chainGroupsForHost as any[]) {
+      const probes = await db.getForwardGroupChainProbes(Number(group.id), { includeFinalTarget: true });
+      for (const probe of probes) {
+        if (Number(probe.fromHostId) !== Number(host.id)) continue;
+        const key = `${probe.groupId}:${probe.hopIndex}:${probe.targetIp}:${probe.targetPort}:${probe.method}`;
+        forwardGroupProbeMap.set(key, {
+          groupId: probe.groupId,
+          targetIp: probe.targetIp,
+          targetPort: probe.targetPort,
+          method: probe.method,
+          hopIndex: probe.hopIndex,
+          hopCount: probe.hopCount,
+        });
+      }
+    }
+    const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
+
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
     for (const t of pendingTests) {
@@ -1940,13 +1960,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         continue;
       }
       if (meta?.kind === "forward-chain") {
+        const method = meta.method === "ping" ? "ping" : "tcp";
         selfTests.push({
           testId: t.id,
           kind: "forward-chain",
           groupId: meta.groupId,
           ruleId: t.ruleId,
           forwardType: "forward-chain",
-          protocol: "tcp",
+          protocol: method,
+          method,
           sourcePort: meta.entrySourcePort || 0,
           targetIp: meta.entryIp,
           targetPort: meta.entrySourcePort,
@@ -2007,7 +2029,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, guardRules, lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

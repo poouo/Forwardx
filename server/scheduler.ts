@@ -5,6 +5,7 @@ import { parseSelfTestMeta } from "./agentRouteUtils";
 import { getEmailConfig, sendMail } from "./email";
 import { sendTelegramMessage } from "./telegramBot";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
+import { recordHopTestResult } from "./hopTestState";
 
 type TimedOutForwardTest = {
   id: number;
@@ -12,6 +13,24 @@ type TimedOutForwardTest = {
   hostId: number;
   message: string | null;
 };
+
+function structuredLinkTestMessage(input: {
+  kind: string;
+  message: string;
+  details?: any[];
+  totalLatencyMs?: number | null;
+  groupId?: number | null;
+  tunnelId?: number | null;
+}) {
+  return JSON.stringify({
+    kind: input.kind,
+    ...(input.groupId ? { groupId: input.groupId } : {}),
+    ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+    message: input.message,
+    details: input.details || [],
+    totalLatencyMs: input.totalLatencyMs ?? null,
+  });
+}
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
@@ -125,6 +144,48 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
         await settleTunnel(aggregate.tunnelId, aggregate.message, `test=${test.id} aggregate=true`);
       } else {
         await settleTunnel(meta.tunnelId, message, `test=${test.id} host=${test.hostId} hop=${hopLabel}`);
+      }
+    }
+
+    if (meta.kind === "forward-chain") {
+      const hopLabel = String((meta as any).hopLabel || "hop");
+      const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
+      const message = `端口转发链逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const aggregate = recordHopTestResult(Number(test.id), {
+        success: false,
+        latencyMs: null,
+        message,
+        hopLabel,
+        routeLabel,
+        method: (meta as any).method === "ping" ? "ping" : "tcp",
+      }, {
+        successPrefix: "端口转发链逐跳测试成功",
+        failurePrefix: "端口转发链逐跳测试失败",
+      });
+      if (aggregate) {
+        const aggregateMessage = structuredLinkTestMessage({
+          kind: "forward-chain-hop-summary",
+          groupId: aggregate.ownerId,
+          message: aggregate.message,
+          details: aggregate.details,
+          totalLatencyMs: aggregate.latencyMs,
+        });
+        await db.updateForwardTestResult(Number(test.id), {
+          status: "failed",
+          listenOk: false,
+          targetReachable: false,
+          forwardOk: false,
+          latencyMs: null,
+          message: aggregateMessage,
+        });
+        await db.insertForwardGroupLatencyStat({
+          groupId: aggregate.ownerId,
+          latencyMs: null,
+          isTimeout: true,
+        });
+        appendPanelLog("warn", `[SelfTest] forward-chain group=${aggregate.ownerId} timeout aggregate=true test=${test.id}`);
+      } else {
+        appendPanelLog("warn", `[SelfTest] forward-chain group=${meta.groupId} timeout test=${test.id} host=${test.hostId} hop=${hopLabel}`);
       }
     }
   }
