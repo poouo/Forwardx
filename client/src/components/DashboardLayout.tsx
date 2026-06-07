@@ -369,6 +369,11 @@ function DashboardLayoutContent({
     if (typeof document !== "undefined") {
       document.title = siteTitle;
     }
+    try {
+      window.localStorage.setItem("forwardx.siteTitle", siteTitle);
+    } catch {
+      // Title caching only prevents refresh flicker; it is safe to skip when storage is unavailable.
+    }
   }, [siteTitle]);
 
   useEffect(() => {

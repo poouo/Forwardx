@@ -8,6 +8,19 @@ import App from "./App";
 import { mobileAuth } from "./lib/mobileAuth";
 import "./index.css";
 
+const cachedSiteTitle = (() => {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem("forwardx.siteTitle")?.trim() || "";
+  } catch {
+    return "";
+  }
+})();
+
+if (cachedSiteTitle) {
+  document.title = cachedSiteTitle;
+}
+
 const queryClient = new QueryClient();
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
