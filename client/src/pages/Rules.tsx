@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DashboardLayout from "@/components/DashboardLayout";
+import { LatencyRating } from "@/components/LatencyRating";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,7 +48,6 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowUpFromLine,
-  Timer,
   Stethoscope,
   CheckCircle2,
   XCircle,
@@ -1614,18 +1614,10 @@ function RulesContent() {
     const t = trafficByRule.get(rule.id);
     if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">未测试</span>;
     if (t.latestLatencyIsTimeout) {
-      return (
-        <span className="flex items-center gap-1 text-xs text-destructive">
-          <Timer className="h-3 w-3" /> 超时
-        </span>
-      );
+      return <LatencyRating isTimeout timeoutText="超时" />;
     }
     if (typeof t.latestLatencyMs === "number" && Number.isFinite(t.latestLatencyMs)) {
-      return (
-        <span className="flex items-center gap-1 text-xs text-chart-3">
-          <Timer className="h-3 w-3" /> {t.latestLatencyMs} ms
-        </span>
-      );
+      return <LatencyRating latencyMs={t.latestLatencyMs} />;
     }
     return <span className="text-xs text-muted-foreground">未测试</span>;
   };
@@ -3027,9 +3019,11 @@ function SelfTestDialog({
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
             <span className="text-sm text-muted-foreground">TCP 延迟</span>
-            <span className="text-sm font-semibold tabular-nums">
-              {isTesting ? "正在测试中" : typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? `${latest.latencyMs} ms` : "--"}
-            </span>
+            {isTesting ? (
+              <span className="text-sm font-semibold tabular-nums">正在测试中</span>
+            ) : (
+              <LatencyRating latencyMs={typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null} emptyText="--" />
+            )}
           </div>
         </div>
         <DialogFooter className="gap-2">

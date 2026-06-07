@@ -1,3 +1,5 @@
+import { LatencyRating } from "@/components/LatencyRating";
+
 export type LinkTestDetail = {
   success: boolean;
   latencyMs: number | null;
@@ -57,37 +59,8 @@ function hasLatencyValue(detail: LinkTestDetail) {
   return typeof detail.latencyMs === "number" && Number.isFinite(detail.latencyMs);
 }
 
-function getLatencyToneClass(latencyMs: number | null | undefined) {
-  if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "text-muted-foreground";
-  if (latencyMs <= 80) return "text-emerald-600 dark:text-emerald-400";
-  if (latencyMs <= 180) return "text-sky-600 dark:text-sky-400";
-  if (latencyMs <= 350) return "text-amber-600 dark:text-amber-400";
-  return "text-destructive";
-}
-
-function getLatencyGradeLabel(latencyMs: number | null | undefined) {
-  if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "";
-  if (latencyMs <= 80) return "优秀";
-  if (latencyMs <= 180) return "良好";
-  if (latencyMs <= 350) return "一般";
-  return "较差";
-}
-
 function renderLatencyValue(latencyMs: number | null | undefined) {
-  const grade = getLatencyGradeLabel(latencyMs);
-  if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) {
-    return <span className="text-muted-foreground">--</span>;
-  }
-  return (
-    <span className={`inline-flex items-center gap-1 tabular-nums ${getLatencyToneClass(latencyMs)}`}>
-      <span>{latencyMs}ms</span>
-      {grade ? (
-        <span className="rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium leading-none">
-          {grade}
-        </span>
-      ) : null}
-    </span>
-  );
+  return <LatencyRating latencyMs={latencyMs} emptyText="--" icon="none" className="text-sm" />;
 }
 
 export function LinkTestLatencySummary({

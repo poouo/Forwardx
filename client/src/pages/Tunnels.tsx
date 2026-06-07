@@ -1,5 +1,6 @@
 ﻿import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { LatencyRating } from "@/components/LatencyRating";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
@@ -948,20 +949,10 @@ function TunnelsContent() {
       ? tunnel.lastLatencyMs
       : null;
     if (latency !== null) {
-      return (
-        <span className={`flex items-center gap-1 ${compact ? "text-xs" : ""} text-emerald-600`}>
-          <CheckCircle2 className="h-3 w-3" />
-          {latency}ms
-        </span>
-      );
+      return <LatencyRating latencyMs={latency} className={compact ? "text-xs" : undefined} />;
     }
     if (tunnel.lastTestStatus === "failed") {
-      return (
-        <span className={`flex items-center gap-1 ${compact ? "text-xs" : ""} text-destructive`}>
-          <XCircle className="h-3 w-3" />
-          不可达
-        </span>
-      );
+      return <LatencyRating isTimeout timeoutText="不可达" className={compact ? "text-xs" : undefined} />;
     }
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };

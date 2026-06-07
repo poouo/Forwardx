@@ -1,5 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import { LatencyRating } from "@/components/LatencyRating";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
@@ -773,44 +774,12 @@ export function ForwardGroupsContent({
 
   const groupDdnsText = (group: any) => group.groupMode === "chain" ? "不使用" : group.domain || "未配置";
 
-  const chainLatencyToneClass = (latencyMs: number | null | undefined) => {
-    if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "text-muted-foreground";
-    if (latencyMs <= 80) return "text-emerald-600 dark:text-emerald-400";
-    if (latencyMs <= 180) return "text-sky-600 dark:text-sky-400";
-    if (latencyMs <= 350) return "text-amber-600 dark:text-amber-400";
-    return "text-destructive";
-  };
-  const chainLatencyGradeLabel = (latencyMs: number | null | undefined) => {
-    if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "";
-    if (latencyMs <= 80) return "优秀";
-    if (latencyMs <= 180) return "良好";
-    if (latencyMs <= 350) return "一般";
-    return "较差";
-  };
   const renderChainLatencySummary = (group: any) => {
     if (group.groupMode !== "chain") return <span className="text-muted-foreground">--</span>;
     const latency = typeof group.latestLatencyMs === "number" && Number.isFinite(group.latestLatencyMs)
       ? Number(group.latestLatencyMs)
       : null;
-    if (group.latestLatencyIsTimeout) {
-      return (
-        <span className="inline-flex items-center gap-1 text-destructive">
-          <XCircle className="h-3 w-3" />
-          超时/不可达
-        </span>
-      );
-    }
-    if (latency === null) return <span className="text-muted-foreground">暂无数据</span>;
-    const grade = chainLatencyGradeLabel(latency);
-    return (
-      <span className={`inline-flex items-center gap-1 ${chainLatencyToneClass(latency)}`}>
-        <Activity className="h-3 w-3" />
-        <span className="tabular-nums">{latency}ms</span>
-        <span className="rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium leading-none">
-          {grade}
-        </span>
-      </span>
-    );
+    return <LatencyRating latencyMs={latency} isTimeout={!!group.latestLatencyIsTimeout} />;
   };
 
   const chainLatencyActions = (group: any) => group.groupMode === "chain" ? (
