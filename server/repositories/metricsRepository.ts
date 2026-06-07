@@ -516,16 +516,16 @@ export async function insertTunnelLatencyStat(
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
   const status = stat.isTimeout ? "failed" : "success";
-  const message = options.message ?? (stat.isTimeout
-    ? "隧道自动延迟检测失败"
-    : `隧道自动延迟检测成功${typeof stat.latencyMs === "number" ? `，延迟 ${stat.latencyMs}ms` : ""}`);
-  await db.update(tunnels).set({
+  const updates: any = {
     lastLatencyMs: stat.isTimeout ? null : (stat.latencyMs ?? null),
-    lastTestStatus: status,
-    lastTestMessage: message,
-    lastTestAt: nowDate(),
     updatedAt: nowDate(),
-  }).where(eq(tunnels.id, stat.tunnelId));
+  };
+  if (options.message !== undefined) {
+    updates.lastTestStatus = status;
+    updates.lastTestMessage = options.message;
+    updates.lastTestAt = nowDate();
+  }
+  await db.update(tunnels).set(updates).where(eq(tunnels.id, stat.tunnelId));
 }
 
 export async function getTunnelLatencySeries(

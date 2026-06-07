@@ -50,7 +50,6 @@ import {
   Route,
   Server,
   Stethoscope,
-  Timer,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -783,7 +782,7 @@ export function ForwardGroupsContent({
         title="查看延迟"
         onClick={() => setLatencyGroup({ id: Number(group.id), name: group.name })}
       >
-        <Timer className="h-3.5 w-3.5" />
+        <Activity className="h-3.5 w-3.5" />
       </Button>
       <Button
         variant="ghost"

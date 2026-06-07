@@ -943,6 +943,28 @@ function TunnelsContent() {
       </Tooltip>
     </TooltipProvider>
   );
+  const renderTunnelLatencyLabel = (tunnel: any, compact = false) => {
+    const latency = typeof tunnel.lastLatencyMs === "number" && Number.isFinite(tunnel.lastLatencyMs)
+      ? tunnel.lastLatencyMs
+      : null;
+    if (latency !== null) {
+      return (
+        <span className={`flex items-center gap-1 ${compact ? "text-xs" : ""} text-emerald-600`}>
+          <CheckCircle2 className="h-3 w-3" />
+          {latency}ms
+        </span>
+      );
+    }
+    if (tunnel.lastTestStatus === "failed") {
+      return (
+        <span className={`flex items-center gap-1 ${compact ? "text-xs" : ""} text-destructive`}>
+          <XCircle className="h-3 w-3" />
+          不可达
+        </span>
+      );
+    }
+    return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
+  };
 
   return (
     <div className="space-y-6">
@@ -1057,19 +1079,7 @@ function TunnelsContent() {
 
                     <div className="flex items-center justify-between gap-3 text-xs">
                       <span className="text-muted-foreground">延迟</span>
-                      {tunnel.lastTestStatus === "success" ? (
-                        <span className="flex items-center gap-1 text-emerald-600">
-                          <CheckCircle2 className="h-3 w-3" />
-                          {tunnel.lastLatencyMs}ms
-                        </span>
-                      ) : tunnel.lastTestStatus === "failed" ? (
-                        <span className="flex items-center gap-1 text-destructive">
-                          <XCircle className="h-3 w-3" />
-                          不可达
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">未测试</span>
-                      )}
+                      {renderTunnelLatencyLabel(tunnel)}
                     </div>
 
                     <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
@@ -1151,19 +1161,7 @@ function TunnelsContent() {
 
                     <div className="flex items-center justify-between gap-3 text-xs">
                       <span className="text-muted-foreground">延迟</span>
-                      {tunnel.lastTestStatus === "success" ? (
-                        <span className="flex items-center gap-1 text-emerald-600">
-                          <CheckCircle2 className="h-3 w-3" />
-                          {tunnel.lastLatencyMs}ms
-                        </span>
-                      ) : tunnel.lastTestStatus === "failed" ? (
-                        <span className="flex items-center gap-1 text-destructive">
-                          <XCircle className="h-3 w-3" />
-                          不可达
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">未测试</span>
-                      )}
+                      {renderTunnelLatencyLabel(tunnel)}
                     </div>
 
                     <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
@@ -1247,19 +1245,7 @@ function TunnelsContent() {
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        {tunnel.lastTestStatus === "success" ? (
-                          <span className="flex items-center gap-1 text-xs text-emerald-600">
-                            <CheckCircle2 className="h-3 w-3" />
-                            {tunnel.lastLatencyMs}ms
-                          </span>
-                        ) : tunnel.lastTestStatus === "failed" ? (
-                          <span className="flex items-center gap-1 text-xs text-destructive">
-                            <XCircle className="h-3 w-3" />
-                            不可达
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">未测试</span>
-                        )}
+                        {renderTunnelLatencyLabel(tunnel, true)}
                       </TableCell>
                       <TableCell>
                         {supported ? (
