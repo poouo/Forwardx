@@ -522,6 +522,7 @@ export const authRouter = router({
       name: z.string().trim().min(1).max(DISPLAY_NAME_MAX_LENGTH).optional(),
       email: z.string().email().max(320).optional(),
       displayRemark: z.string().trim().max(24).nullable().optional(),
+      telegramAnnouncementSubscribed: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       await db.updateUserProfile(ctx.user.id, {

@@ -231,6 +231,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
       ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
     ];
+    const buildIptablesForwardCleanupCmds = (rule: any): string[] => {
+      const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
+      const cmds = [
+        `iptables -t nat -D PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`,
+        `iptables -t nat -D POSTROUTING -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`,
+        `iptables -D FORWARD -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`,
+        `iptables -D FORWARD -p ${proto} -s ${rule.targetIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`,
+      ];
+      if (rule.protocol === "both") {
+        cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
+        cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
+        cmds.push(`iptables -D FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
+        cmds.push(`iptables -D FORWARD -p udp -s ${rule.targetIp} --sport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
+      }
+      return cmds;
+    };
     const killByPatternCmd = (pattern: string) =>
       `for pid in $(pgrep -f '${pattern}' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`;
     const writeUnitCmd = (svcName: string, unit: string) =>
@@ -701,6 +717,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const policy = tunnelProtocolPolicy(tunnel);
       return policy.blockHttp || policy.blockSocks || policy.blockTls;
     };
+    const ruleProtocolPolicy = (rule: any) => ({
+      blockHttp: !!(rule as any)?.blockHttp,
+      blockSocks: !!(rule as any)?.blockSocks,
+      blockTls: !!(rule as any)?.blockTls,
+    });
+    const hasRuleProtocolPolicy = (rule: any) => {
+      const policy = ruleProtocolPolicy(rule);
+      return policy.blockHttp || policy.blockSocks || policy.blockTls;
+    };
+    const shouldUseRuleGuard = (rule: any) => {
+      if (!hasRuleProtocolPolicy(rule)) return false;
+      if (rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0) return false;
+      return rule.protocol === "tcp";
+    };
     const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
@@ -725,6 +755,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostRelayHandler = () => ({ type: "relay", metadata: { nodelay: true } });
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
+        if (shouldUseRuleGuard(r)) return [];
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && isForwardXTunnel(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
@@ -1282,8 +1313,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (rule.isEnabled && rule.isRunning) {
         const trafficPort = ruleTrafficPort(rule);
         if (!trafficPort) continue;
+        if (shouldUseRuleGuard(rule)) {
+          const guardTarget = failoverTargetEndpoint(rule);
+          guardRules.push({
+            ruleId: rule.id,
+            tunnelId: 0,
+            listenPort: Number(rule.sourcePort),
+            targetIp: guardTarget.targetIp,
+            targetPort: guardTarget.targetPort,
+            policy: ruleProtocolPolicy(rule),
+          });
+        }
         const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
           ? "forwardx"
+          : shouldUseRuleGuard(rule)
+          ? "guard"
           : rule.forwardType;
         addRunningRule({
           ruleId: rule.id,
@@ -1306,7 +1350,43 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && !isTunnelRuntimeHostReady(Number(ruleTunnel.id), Number(host.id));
       if (rule.isEnabled && (!rule.isRunning || shouldRefreshForwardXMultiHopRule)) {
         const cmds: string[] = [];
-        if (rule.forwardType === "iptables") {
+        if (shouldUseRuleGuard(rule)) {
+          const guardTarget = failoverTargetEndpoint(rule);
+          const guardFailover = failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) });
+          guardRules.push({
+            ruleId: rule.id,
+            tunnelId: 0,
+            listenPort: Number(rule.sourcePort),
+            targetIp: guardTarget.targetIp,
+            targetPort: guardTarget.targetPort,
+            policy: ruleProtocolPolicy(rule),
+          });
+          actions.push({
+            ruleId: rule.id,
+            op: "apply",
+            forwardType: "guard",
+            sourcePort: rule.sourcePort,
+            targetIp: guardTarget.targetIp,
+            targetPort: guardTarget.targetPort,
+            protocol: "tcp",
+            commands: [
+              ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+              ...buildIptablesForwardCleanupCmds(rule),
+              ...buildNftCleanupCmds(rule),
+              ...buildGostReloadCmds(),
+              ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, "tcp"),
+            ],
+          });
+          addRunningRule({
+            ruleId: rule.id,
+            sourcePort: Number(rule.sourcePort),
+            targetIp: rule.targetIp,
+            targetPort: rule.targetPort,
+            protocol: "tcp",
+            forwardType: "guard",
+            failover: guardFailover,
+          });
+        } else if (rule.forwardType === "iptables") {
           const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
           // 必须先启用内核转发，否则 DNAT 后数据包不会被路由到目标主机
           cmds.push(`sysctl -w net.ipv4.ip_forward=1 >/dev/null`);

@@ -133,6 +133,7 @@ export const telegramRouter = router({
       botUsername: settings.botUsername,
       polling: settings.polling,
       bound: !!user?.telegramId,
+      announcementSubscribed: !!user?.telegramAnnouncementSubscribed,
       pendingBind,
       account: user?.telegramId
         ? {

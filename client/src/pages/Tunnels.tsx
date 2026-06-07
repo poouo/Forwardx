@@ -1499,7 +1499,7 @@ function TunnelsContent() {
                   <div>
                     <Label className="text-sm">协议屏蔽</Label>
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      多级隧道只统计入口或出口，中间节点不重复统计。
+                      检测到 HTTP、SOCKS 或 TLS 首包时将阻断连接，并禁用对应规则。
                     </p>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -1716,7 +1716,7 @@ function TunnelsContent() {
               <div>
                 <Label className="text-sm">协议屏蔽</Label>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  多级隧道只统计入口或出口，中间节点不重复统计。
+                  检测到 HTTP、SOCKS 或 TLS 首包时将阻断连接，并禁用对应规则。
                 </p>
               </div>
               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
