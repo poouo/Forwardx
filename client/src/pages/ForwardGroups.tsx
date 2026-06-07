@@ -773,6 +773,46 @@ export function ForwardGroupsContent({
 
   const groupDdnsText = (group: any) => group.groupMode === "chain" ? "不使用" : group.domain || "未配置";
 
+  const chainLatencyToneClass = (latencyMs: number | null | undefined) => {
+    if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "text-muted-foreground";
+    if (latencyMs <= 80) return "text-emerald-600 dark:text-emerald-400";
+    if (latencyMs <= 180) return "text-sky-600 dark:text-sky-400";
+    if (latencyMs <= 350) return "text-amber-600 dark:text-amber-400";
+    return "text-destructive";
+  };
+  const chainLatencyGradeLabel = (latencyMs: number | null | undefined) => {
+    if (typeof latencyMs !== "number" || !Number.isFinite(latencyMs)) return "";
+    if (latencyMs <= 80) return "优秀";
+    if (latencyMs <= 180) return "良好";
+    if (latencyMs <= 350) return "一般";
+    return "较差";
+  };
+  const renderChainLatencySummary = (group: any) => {
+    if (group.groupMode !== "chain") return <span className="text-muted-foreground">--</span>;
+    const latency = typeof group.latestLatencyMs === "number" && Number.isFinite(group.latestLatencyMs)
+      ? Number(group.latestLatencyMs)
+      : null;
+    if (group.latestLatencyIsTimeout) {
+      return (
+        <span className="inline-flex items-center gap-1 text-destructive">
+          <XCircle className="h-3 w-3" />
+          超时/不可达
+        </span>
+      );
+    }
+    if (latency === null) return <span className="text-muted-foreground">暂无数据</span>;
+    const grade = chainLatencyGradeLabel(latency);
+    return (
+      <span className={`inline-flex items-center gap-1 ${chainLatencyToneClass(latency)}`}>
+        <Activity className="h-3 w-3" />
+        <span className="tabular-nums">{latency}ms</span>
+        <span className="rounded-full border border-current/20 px-1.5 py-0.5 text-[10px] font-medium leading-none">
+          {grade}
+        </span>
+      </span>
+    );
+  };
+
   const chainLatencyActions = (group: any) => group.groupMode === "chain" ? (
     <>
       <Button
@@ -922,8 +962,8 @@ export function ForwardGroupsContent({
                       <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">引用规则</p>
-                      <p className="mt-1">{Number(group.templateRuleCount || 0)}</p>
+                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "链路延迟" : "引用规则"}</p>
+                      <div className="mt-1">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -1001,8 +1041,8 @@ export function ForwardGroupsContent({
                       <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">引用规则</p>
-                      <p className="mt-1">{Number(group.templateRuleCount || 0)}</p>
+                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "链路延迟" : "引用规则"}</p>
+                      <div className="mt-1">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -1040,7 +1080,7 @@ export function ForwardGroupsContent({
                     <TableHead>类型</TableHead>
                     <TableHead>成员/链路</TableHead>
                     <TableHead className="hidden md:table-cell">入口</TableHead>
-                    <TableHead className="hidden md:table-cell">引用规则</TableHead>
+                    <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : "引用规则"}</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1081,7 +1121,7 @@ export function ForwardGroupsContent({
                         <div className="text-sm">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : group.domain || "未配置域名"}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{group.groupMode === "chain" ? "规则使用时监听入口端口" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">{Number(group.templateRuleCount || 0)}</TableCell>
+                      <TableCell className="hidden md:table-cell">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}

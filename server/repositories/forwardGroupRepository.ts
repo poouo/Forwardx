@@ -144,16 +144,40 @@ export async function getForwardGroups(userId?: number) {
     const groupId = Number(rule.forwardGroupId || 0);
     templateCountByGroup.set(groupId, (templateCountByGroup.get(groupId) || 0) + 1);
   }
+  const latencyRows = await queryRaw<any>(
+    `SELECT s.${quoteId("groupId")}, s.${quoteId("latencyMs")}, s.${quoteId("isTimeout")}, s.${quoteId("recordedAt")}
+     FROM ${quoteId("forward_group_latency_stats")} s
+     INNER JOIN (
+       SELECT ${quoteId("groupId")}, MAX(${quoteId("recordedAt")}) AS ${quoteId("recordedAt")}
+       FROM ${quoteId("forward_group_latency_stats")}
+       WHERE ${quoteId("groupId")} IN (${ids.map(() => "?").join(",")})
+       GROUP BY ${quoteId("groupId")}
+     ) latest ON latest.${quoteId("groupId")} = s.${quoteId("groupId")} AND latest.${quoteId("recordedAt")} = s.${quoteId("recordedAt")}`,
+    ids,
+  ).catch(() => []);
+  const latestLatencyByGroup = new Map<number, any>();
+  for (const row of latencyRows as any[]) {
+    latestLatencyByGroup.set(Number(row.groupId), row);
+  }
   const hydratedMembers = await Promise.all((members as any[]).map(async (member: any) => ({
     ...member,
     entryAddress: await memberEntryAddress(member).catch(() => ""),
   })));
-  return groupRows.map((group: any) => ({
-    ...group,
-    groupMode: groupModeOf(group),
-    templateRuleCount: templateCountByGroup.get(Number(group.id)) || 0,
-    members: hydratedMembers.filter((m: any) => Number(m.groupId) === Number(group.id)),
-  }));
+  return groupRows.map((group: any) => {
+    const groupId = Number(group.id);
+    const latestLatency = latestLatencyByGroup.get(groupId);
+    return {
+      ...group,
+      groupMode: groupModeOf(group),
+      templateRuleCount: templateCountByGroup.get(groupId) || 0,
+      latestLatencyMs: latestLatency?.latencyMs !== null && latestLatency?.latencyMs !== undefined
+        ? Number(latestLatency.latencyMs)
+        : null,
+      latestLatencyIsTimeout: Number(latestLatency?.isTimeout || 0) === 1 || latestLatency?.isTimeout === true,
+      latestLatencyAt: latestLatency?.recordedAt ?? null,
+      members: hydratedMembers.filter((m: any) => Number(m.groupId) === groupId),
+    };
+  });
 }
 
 export async function getForwardGroupById(id: number) {
