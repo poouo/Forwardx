@@ -154,18 +154,14 @@ type TunnelGlobePath = {
   coords: Array<{ lat: number; lng: number; alt: number }>;
 };
 
-type TunnelGlobeFlowPoint = {
-  pointKind: "flow";
-  id: string;
+type TunnelGlobeFlowPath = {
   link: TunnelGlobeLink;
-  lat: number;
-  lng: number;
-  alt: number;
-  radius: number;
-  color: string;
+  flowPath: true;
+  id: string;
+  coords: Array<{ lat: number; lng: number; alt: number }>;
 };
 
-type TunnelGlobePoint = TunnelGlobeHostPoint | TunnelGlobeFlowPoint;
+type TunnelGlobeRenderablePath = TunnelGlobePath | TunnelGlobeFlowPath;
 
 type TunnelGlobeCountryFeature = CountryFeatureLike & {
   type: "Feature";
@@ -186,10 +182,11 @@ const TUNNEL_GLOBE_PATH_MIN_ALTITUDE = 0.038;
 const TUNNEL_GLOBE_PATH_MAX_ALTITUDE = 0.082;
 const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_STEP = 0.005;
 const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_MAX = 0.014;
-const TUNNEL_GLOBE_FLOW_FRAME_MS = 140;
-const TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP = 86;
+const TUNNEL_GLOBE_FLOW_FRAME_MS = 180;
+const TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP = 96;
 const TUNNEL_GLOBE_FLOW_STREAM_COUNT = 2;
-const TUNNEL_GLOBE_FLOW_TAIL_COUNT = 3;
+const TUNNEL_GLOBE_FLOW_SEGMENT_POINTS = 5;
+const TUNNEL_GLOBE_FLOW_SEGMENT_SPAN = 0.09;
 
 const defaultForm: TunnelForm = {
   name: "",
@@ -403,8 +400,8 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
   ];
 }
 
-function isTunnelGlobeFlowPoint(point: unknown): point is TunnelGlobeFlowPoint {
-  return !!point && (point as TunnelGlobeFlowPoint).pointKind === "flow";
+function isTunnelGlobeFlowPath(path: unknown): path is TunnelGlobeFlowPath {
+  return !!path && (path as TunnelGlobeFlowPath).flowPath === true;
 }
 
 function interpolateTunnelGlobePath(path: TunnelGlobePath, phase: number) {
@@ -420,31 +417,28 @@ function interpolateTunnelGlobePath(path: TunnelGlobePath, phase: number) {
   return {
     lat: start.lat + (end.lat - start.lat) * localPhase,
     lng: normalizeLongitude(start.lng + lngDelta * localPhase),
-    alt: start.alt + (end.alt - start.alt) * localPhase + 0.012,
+    alt: start.alt + (end.alt - start.alt) * localPhase + 0.006,
   };
 }
 
-function createTunnelGlobeFlowPoints(paths: TunnelGlobePath[], frame: number): TunnelGlobeFlowPoint[] {
+function createTunnelGlobeFlowPaths(paths: TunnelGlobePath[], frame: number): TunnelGlobeFlowPath[] {
   const loopPhase = (frame % TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP) / TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP;
   return paths.flatMap((path) => {
-    const points: TunnelGlobeFlowPoint[] = [];
+    const flowPaths: TunnelGlobeFlowPath[] = [];
     for (let streamIndex = 0; streamIndex < TUNNEL_GLOBE_FLOW_STREAM_COUNT; streamIndex += 1) {
       const streamPhase = loopPhase + path.flowPhase + streamIndex / TUNNEL_GLOBE_FLOW_STREAM_COUNT;
-      for (let tailIndex = 0; tailIndex < TUNNEL_GLOBE_FLOW_TAIL_COUNT; tailIndex += 1) {
-        const coord = interpolateTunnelGlobePath(path, streamPhase - tailIndex * 0.026);
-        points.push({
-          pointKind: "flow",
-          id: `${path.link.id}:${path.segmentIndex}:${path.layerIndex}:${streamIndex}:${tailIndex}`,
-          link: path.link,
-          lat: coord.lat,
-          lng: coord.lng,
-          alt: coord.alt,
-          radius: tailIndex === 0 ? 0.105 : tailIndex === 1 ? 0.074 : 0.05,
-          color: tailIndex === 0 ? path.link.color : tailIndex === 1 ? path.link.color : path.link.trackColor,
-        });
-      }
+      const coords = Array.from({ length: TUNNEL_GLOBE_FLOW_SEGMENT_POINTS }, (_, index) => {
+        const pointPhase = streamPhase - TUNNEL_GLOBE_FLOW_SEGMENT_SPAN + (index / (TUNNEL_GLOBE_FLOW_SEGMENT_POINTS - 1)) * TUNNEL_GLOBE_FLOW_SEGMENT_SPAN;
+        return interpolateTunnelGlobePath(path, pointPhase);
+      });
+      flowPaths.push({
+        flowPath: true,
+        id: `${path.link.id}:${path.segmentIndex}:${path.layerIndex}:${streamIndex}`,
+        link: path.link,
+        coords,
+      });
     }
-    return points;
+    return flowPaths;
   });
 }
 
@@ -741,8 +735,8 @@ function TunnelWorldGlobe({
     });
     return codes;
   }, [globeData.hostPoints]);
-  const flowPoints = useMemo(() => createTunnelGlobeFlowPoints(globeData.paths, flowFrame), [flowFrame, globeData.paths]);
-  const globePoints = useMemo<TunnelGlobePoint[]>(() => [...globeData.hostPoints, ...flowPoints], [flowPoints, globeData.hostPoints]);
+  const flowPaths = useMemo(() => createTunnelGlobeFlowPaths(globeData.paths, flowFrame), [flowFrame, globeData.paths]);
+  const globePaths = useMemo<TunnelGlobeRenderablePath[]>(() => [...globeData.paths, ...flowPaths], [flowPaths, globeData.paths]);
   const latestLinkById = useMemo(() => {
     const tunnelById = new Map<number, any>((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
     const chainById = new Map<number, any>((chainGroups || []).map((group: any) => [Number(group.id), group]));
@@ -902,46 +896,39 @@ function TunnelWorldGlobe({
               polygonStrokeColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(125,211,252,.9)" : "rgba(148,163,184,.22)"}
               polygonCapCurvatureResolution={4}
               polygonsTransitionDuration={0}
-              pointsData={globePoints}
+              pointsData={globeData.hostPoints}
               pointLat="lat"
               pointLng="lng"
-              pointAltitude={(point) => isTunnelGlobeFlowPoint(point) ? point.alt : 0.035}
-              pointRadius={(point) => isTunnelGlobeFlowPoint(point) ? point.radius : 0.28}
+              pointAltitude={0.035}
+              pointRadius={0.28}
               pointResolution={24}
-              pointColor={(point) => isTunnelGlobeFlowPoint(point) ? point.color : "#e0f2fe"}
-              pointsTransitionDuration={TUNNEL_GLOBE_FLOW_FRAME_MS}
-              pointLabel={(point) => isTunnelGlobeFlowPoint(point)
-                ? renderTunnelGlobeLinkTooltip(latestGlobeLink(point.link))
-                : renderTunnelGlobeHostTooltip(point as TunnelGlobeHostPoint)}
+              pointColor={() => "#e0f2fe"}
+              pointLabel={(point) => renderTunnelGlobeHostTooltip(point as TunnelGlobeHostPoint)}
               onPointHover={(point) => {
-                if (isTunnelGlobeFlowPoint(point)) {
-                  setHoveredLink(latestGlobeLink(point.link));
-                  setHoveredPoint(null);
-                  return;
-                }
                 setHoveredPoint(point as TunnelGlobeHostPoint | null);
                 if (!point) setHoveredLink(null);
               }}
-              onPointClick={(point) => {
-                if (isTunnelGlobeFlowPoint(point)) handleLinkEdit(latestGlobeLink(point.link));
-              }}
-              pathsData={globeData.paths}
+              pathsData={globePaths}
               pathPoints="coords"
               pathPointLat="lat"
               pathPointLng="lng"
               pathPointAlt="alt"
               pathResolution={4}
-              pathColor={(path) => (path as TunnelGlobePath).link.trackColor}
+              pathColor={(path) => {
+                const item = path as TunnelGlobeRenderablePath;
+                return isTunnelGlobeFlowPath(item) ? latestGlobeLink(item.link).color : latestGlobeLink(item.link).trackColor;
+              }}
               pathStroke={(path) => {
-                const item = path as TunnelGlobePath;
+                const item = path as TunnelGlobeRenderablePath;
                 const hovered = hoveredLink?.id === item.link.id;
+                if (isTunnelGlobeFlowPath(item)) return hovered ? 2.05 : 1.65;
                 return hovered ? 3.05 : 2.35;
               }}
               pathsTransitionDuration={0}
-              pathLabel={(path) => renderTunnelGlobeLinkTooltip(latestGlobeLink((path as TunnelGlobePath).link))}
-              onPathHover={(path) => setHoveredLink(path ? latestGlobeLink((path as TunnelGlobePath).link) : null)}
+              pathLabel={(path) => renderTunnelGlobeLinkTooltip(latestGlobeLink((path as TunnelGlobeRenderablePath).link))}
+              onPathHover={(path) => setHoveredLink(path ? latestGlobeLink((path as TunnelGlobeRenderablePath).link) : null)}
               onPathClick={(path) => {
-                const link = path ? latestGlobeLink((path as TunnelGlobePath).link) : null;
+                const link = path ? latestGlobeLink((path as TunnelGlobeRenderablePath).link) : null;
                 if (link) handleLinkEdit(link);
               }}
               showPointerCursor={(objectType) => objectType === "path" || objectType === "point"}
