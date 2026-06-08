@@ -335,7 +335,11 @@ function createHostGlobeLeaderPaths(points: HostGlobePoint[]): HostGlobeLeaderPa
     }));
 }
 
-function createHostGlobeLabelElement(point: HostGlobePoint, onEdit: (host: any) => void) {
+function createHostGlobeLabelElement(
+  point: HostGlobePoint,
+  onEdit: (host: any) => void,
+  onHoverChange: (point: HostGlobePoint | null) => void
+) {
   const element = document.createElement("div");
   element.innerHTML = `
     <span style="width:7px;height:7px;flex:0 0 auto;border-radius:999px;background:${point.color};box-shadow:0 0 10px ${point.glowColor};"></span>
@@ -364,9 +368,14 @@ function createHostGlobeLabelElement(point: HostGlobePoint, onEdit: (host: any) 
     "cursor:pointer",
   ].join(";");
   element.title = `${point.host.name || point.label} · ${point.regionText || "地区获取中"}`;
+  element.addEventListener("pointerenter", () => onHoverChange(point));
+  element.addEventListener("pointerleave", () => onHoverChange(null));
+  element.addEventListener("mouseenter", () => onHoverChange(point));
+  element.addEventListener("mouseleave", () => onHoverChange(null));
   element.addEventListener("pointerdown", (event) => event.stopPropagation());
   element.addEventListener("click", (event) => {
     event.stopPropagation();
+    onHoverChange(null);
     onEdit(point.host);
   });
   return element;
@@ -577,16 +586,16 @@ function HostWorldMap({
             pathStroke={1.35}
             pathTransitionDuration={0}
             pointsData={points}
-            pointLat="displayLat"
-            pointLng="displayLng"
+            pointLat="lat"
+            pointLng="lng"
             pointAltitude={(point) => ((point as HostGlobePoint).host.isOnline ? 0.045 : 0.032)}
             pointRadius={0.34}
             pointResolution={28}
             pointColor={(point) => (point as HostGlobePoint).color}
             pointsTransitionDuration={0}
             ringsData={onlinePoints}
-            ringLat="displayLat"
-            ringLng="displayLng"
+            ringLat="lat"
+            ringLng="lng"
             ringAltitude={0.048}
             ringColor={() => ["rgba(74,222,128,.85)", "rgba(125,211,252,.28)", "rgba(74,222,128,0)"]}
             ringMaxRadius={2.5}
@@ -596,7 +605,7 @@ function HostWorldMap({
             htmlLat="displayLat"
             htmlLng="displayLng"
             htmlAltitude={0.12}
-            htmlElement={(point) => createHostGlobeLabelElement(point as HostGlobePoint, onEdit)}
+            htmlElement={(point) => createHostGlobeLabelElement(point as HostGlobePoint, onEdit, setHoveredPoint)}
             htmlTransitionDuration={0}
             pointLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
             onPointHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}

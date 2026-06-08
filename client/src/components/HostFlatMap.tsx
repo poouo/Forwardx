@@ -7,6 +7,9 @@ import { Loader2 } from "lucide-react";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 
 const HOST_MAP_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
+const HOST_MAP_CLUSTER_DISTANCE_DEGREES = 7.2;
+const HOST_MAP_RIGHT_PULL_DEGREES = 8.5;
+const HOST_MAP_MAX_LABELS_PER_COLUMN = 7;
 
 const HOST_MAP_STYLE = {
   version: 8,
@@ -46,6 +49,12 @@ type HostMapPoint = {
   countryCode: string;
   flagUrl: string;
   label: string;
+};
+
+type HostMapCluster = {
+  centerLat: number;
+  centerLng: number;
+  points: HostMapPoint[];
 };
 
 function hostAddressText(host: any) {
@@ -96,35 +105,58 @@ function normalizeLongitude(lng: number) {
   return lng;
 }
 
-function hostMapClusterKey(point: HostMapPoint) {
-  return `${Math.round(point.lat * 3) / 3}:${Math.round(point.lng * 3) / 3}`;
+function longitudeDistanceDegrees(a: number, b: number) {
+  const diff = Math.abs(a - b);
+  return Math.min(diff, 360 - diff);
+}
+
+function hostMapClusterDistance(point: HostMapPoint, cluster: HostMapCluster) {
+  const latDiff = point.lat - cluster.centerLat;
+  const lngScale = Math.max(0.35, Math.cos((((point.lat + cluster.centerLat) / 2) * Math.PI) / 180));
+  const lngDiff = longitudeDistanceDegrees(point.lng, cluster.centerLng) * lngScale;
+  return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
 }
 
 function hostMapPointPulledOut(point: HostMapPoint) {
   return Math.abs(point.lat - point.displayLat) > 0.01 || Math.abs(point.lng - point.displayLng) > 0.01;
 }
 
-function spreadHostMapPoints(points: HostMapPoint[]) {
-  const groups = new Map<string, HostMapPoint[]>();
-  points.forEach((point) => {
-    const key = hostMapClusterKey(point);
-    const group = groups.get(key);
-    if (group) group.push(point);
-    else groups.set(key, [point]);
-  });
+function buildHostMapClusters(points: HostMapPoint[]) {
+  const clusters: HostMapCluster[] = [];
+  points
+    .slice()
+    .sort((a, b) => a.lng - b.lng || a.lat - b.lat)
+    .forEach((point) => {
+      const cluster = clusters.find((item) => hostMapClusterDistance(point, item) <= HOST_MAP_CLUSTER_DISTANCE_DEGREES);
+      if (!cluster) {
+        clusters.push({ centerLat: point.lat, centerLng: point.lng, points: [point] });
+        return;
+      }
+      cluster.points.push(point);
+      cluster.centerLat = cluster.points.reduce((sum, item) => sum + item.lat, 0) / cluster.points.length;
+      cluster.centerLng = cluster.points.reduce((sum, item) => sum + item.lng, 0) / cluster.points.length;
+    });
+  return clusters;
+}
 
-  return points.map((point) => {
-    const group = groups.get(hostMapClusterKey(point)) || [point];
-    if (group.length <= 1) return point;
-    const index = group.findIndex((item) => item.host.id === point.host.id);
-    const angle = ((Math.PI * 2) / group.length) * Math.max(0, index) - Math.PI / 2;
-    const radius = Math.min(5.5, 1.4 + group.length * 0.45);
-    const lngScale = Math.max(0.4, Math.cos((point.lat * Math.PI) / 180));
-    return {
-      ...point,
-      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.66),
-      displayLng: normalizeLongitude(point.lng + (Math.cos(angle) * radius) / lngScale),
-    };
+function spreadHostMapPoints(points: HostMapPoint[]) {
+  return buildHostMapClusters(points).flatMap((cluster) => {
+    if (cluster.points.length <= 1) return cluster.points;
+    const sorted = cluster.points.slice().sort((a, b) => String(a.host.name || "").localeCompare(String(b.host.name || "")) || Number(a.host.id || 0) - Number(b.host.id || 0));
+    const lngScale = Math.max(0.38, Math.cos((cluster.centerLat * Math.PI) / 180));
+    const pullLng = HOST_MAP_RIGHT_PULL_DEGREES + Math.min(7, sorted.length * 0.45);
+    const rowStep = Math.max(1.25, Math.min(2.25, 1.1 + sorted.length * 0.16));
+    return sorted.map((point, index) => {
+      const column = Math.floor(index / HOST_MAP_MAX_LABELS_PER_COLUMN);
+      const row = index % HOST_MAP_MAX_LABELS_PER_COLUMN;
+      const columnSize = Math.min(HOST_MAP_MAX_LABELS_PER_COLUMN, sorted.length - column * HOST_MAP_MAX_LABELS_PER_COLUMN);
+      const rowOffset = row - (columnSize - 1) / 2;
+      return {
+        ...point,
+        displayLat: clampLatitude(cluster.centerLat + rowOffset * rowStep),
+        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 5.2) / lngScale),
+      };
+    });
   });
 }
 
