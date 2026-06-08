@@ -135,11 +135,13 @@ type TunnelGlobeLink = {
   statusText: string;
   latencyText: string;
   color: string;
+  trackColor: string;
   glowColor: string;
 };
 
 type TunnelGlobePath = {
   link: TunnelGlobeLink;
+  visualLayer: "base" | "flow";
   segmentIndex: number;
   layerIndex: number;
   layerCount: number;
@@ -148,6 +150,7 @@ type TunnelGlobePath = {
   endLat: number;
   endLng: number;
   altitude: number;
+  flowPhase: number;
   coords: Array<{ lat: number; lng: number; alt: number }>;
 };
 
@@ -165,6 +168,11 @@ const TUNNEL_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const TUNNEL_GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const TUNNEL_GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const TUNNEL_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
+const TUNNEL_GLOBE_PATH_SURFACE_ALTITUDE = 0.026;
+const TUNNEL_GLOBE_PATH_MIN_ALTITUDE = 0.038;
+const TUNNEL_GLOBE_PATH_MAX_ALTITUDE = 0.082;
+const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_STEP = 0.005;
+const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_MAX = 0.014;
 
 const defaultForm: TunnelForm = {
   name: "",
@@ -366,15 +374,15 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
   const projectedLng = dLng * lngScale;
   const distance = Math.sqrt(dLat * dLat + projectedLng * projectedLng);
   const layerOffset = path.layerIndex - (path.layerCount - 1) / 2;
-  const sideSpacing = path.layerCount > 1 ? Math.min(7, Math.max(1.6, globeDistanceDegrees(path) / 22)) : 0;
+  const sideSpacing = path.layerCount > 1 ? Math.min(4.4, Math.max(0.9, globeDistanceDegrees(path) / 40)) : 0;
   const offset = layerOffset * sideSpacing;
   const offsetLat = distance > 0 ? (projectedLng / distance) * offset : 0;
   const offsetLng = distance > 0 ? (-dLat / (distance * lngScale)) * offset : 0;
 
   return [
-    { lat: path.startLat, lng: path.startLng, alt: 0.045 },
+    { lat: path.startLat, lng: path.startLng, alt: TUNNEL_GLOBE_PATH_SURFACE_ALTITUDE },
     { lat: Math.max(-85, Math.min(85, midLat + offsetLat)), lng: normalizeLongitude(midLng + offsetLng), alt: path.altitude },
-    { lat: path.endLat, lng: path.endLng, alt: 0.045 },
+    { lat: path.endLat, lng: path.endLng, alt: TUNNEL_GLOBE_PATH_SURFACE_ALTITUDE },
   ];
 }
 
@@ -545,6 +553,7 @@ function TunnelWorldGlobe({
         statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
         latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnel.lastTestStatus === "failed"),
         color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
+        trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
         glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
       });
     });
@@ -569,6 +578,7 @@ function TunnelWorldGlobe({
         statusText: enabled ? "已启用" : "已停用",
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
         color: enabled ? "#38bdf8" : "#94a3b8",
+        trackColor: enabled ? "#0e7490" : "#475569",
         glowColor: enabled ? "rgba(56,189,248,.85)" : "rgba(148,163,184,.6)",
       });
     });
@@ -585,13 +595,14 @@ function TunnelWorldGlobe({
       return acc;
     }, new Map<string, number>());
     const usedLayersByKey = new Map<string, number>();
-    const paths = rawSegments.map((segment) => {
+    const routePaths = rawSegments.map((segment) => {
       const { link, start, end, segmentIndex, layerKey } = segment;
       const layerIndex = usedLayersByKey.get(layerKey) || 0;
       usedLayersByKey.set(layerKey, layerIndex + 1);
       const layerCount = totalLayersByKey.get(layerKey) || 1;
       const path: TunnelGlobePath = {
         link,
+        visualLayer: "base",
         segmentIndex,
         layerIndex,
         layerCount,
@@ -599,15 +610,24 @@ function TunnelWorldGlobe({
         startLng: start.lng,
         endLat: end.lat,
         endLng: end.lng,
-        altitude: 0.12,
+        altitude: TUNNEL_GLOBE_PATH_MIN_ALTITUDE,
+        flowPhase: (segmentIndex * 0.22 + layerIndex * 0.11) % 1,
         coords: [],
       };
       const distance = globeDistanceDegrees(path);
-      const baseAltitude = Math.max(0.065, Math.min(0.19, 0.055 + distance / 1100));
-      path.altitude = baseAltitude + Math.min(0.035, Math.abs(layerIndex - (layerCount - 1) / 2) * 0.012);
+      const baseAltitude = Math.max(TUNNEL_GLOBE_PATH_MIN_ALTITUDE, Math.min(TUNNEL_GLOBE_PATH_MAX_ALTITUDE, 0.032 + distance / 2300));
+      path.altitude = baseAltitude + Math.min(TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_MAX, Math.abs(layerIndex - (layerCount - 1) / 2) * TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_STEP);
       path.coords = createTunnelGlobePathCoords(path);
       return path;
     });
+    const paths = [
+      ...routePaths,
+      ...routePaths.map((path): TunnelGlobePath => ({
+        ...path,
+        visualLayer: "flow",
+        coords: path.coords.map((coord) => ({ ...coord, alt: coord.alt + 0.004 })),
+      })),
+    ];
 
     return {
       links,
@@ -743,12 +763,20 @@ function TunnelWorldGlobe({
               pathPointLng="lng"
               pathPointAlt="alt"
               pathResolution={4}
-              pathColor={(path) => (path as TunnelGlobePath).link.color}
-              pathStroke={(path) => hoveredLink?.id === (path as TunnelGlobePath).link.id ? 1.9 : 1.35}
-              pathDashLength={0.36}
-              pathDashGap={0.18}
-              pathDashInitialGap={(path) => (path as TunnelGlobePath).segmentIndex * 0.08 + (path as TunnelGlobePath).layerIndex * 0.14}
-              pathDashAnimateTime={4200}
+              pathColor={(path) => {
+                const item = path as TunnelGlobePath;
+                return item.visualLayer === "flow" ? item.link.color : item.link.trackColor;
+              }}
+              pathStroke={(path) => {
+                const item = path as TunnelGlobePath;
+                const hovered = hoveredLink?.id === item.link.id;
+                if (item.visualLayer === "flow") return hovered ? 1.6 : 1.2;
+                return hovered ? 2.45 : 1.95;
+              }}
+              pathDashLength={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.16 : 1}
+              pathDashGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.84 : 0}
+              pathDashInitialGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? (path as TunnelGlobePath).flowPhase : 0}
+              pathDashAnimateTime={3200}
               pathsTransitionDuration={0}
               pathLabel={(path) => renderTunnelGlobeLinkTooltip((path as TunnelGlobePath).link)}
               onPathHover={(path) => setHoveredLink((path as TunnelGlobePath | null)?.link || null)}
