@@ -68,14 +68,6 @@ const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
-const GLOBE_COUNTRY_FILLS = [
-  "rgba(14,165,233,.34)",
-  "rgba(20,184,166,.31)",
-  "rgba(34,197,94,.25)",
-  "rgba(168,85,247,.26)",
-  "rgba(245,158,11,.23)",
-  "rgba(244,63,94,.22)",
-];
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -266,25 +258,6 @@ type GlobeCountryFeature = {
     coordinates: unknown;
   };
 };
-
-function hashGlobeCountry(country: GlobeCountryFeature) {
-  const source = String(
-    country.properties?.ISO_A2 ||
-    country.properties?.ADM0_A3 ||
-    country.properties?.ADMIN ||
-    country.properties?.NAME ||
-    "country"
-  );
-  let hash = 0;
-  for (let i = 0; i < source.length; i++) {
-    hash = ((hash << 5) - hash + source.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function globeCountryFill(country: GlobeCountryFeature) {
-  return GLOBE_COUNTRY_FILLS[hashGlobeCountry(country) % GLOBE_COUNTRY_FILLS.length];
-}
 
 function clampLatitude(lat: number) {
   return Math.max(-85, Math.min(85, lat));
@@ -550,7 +523,7 @@ function HostWorldMap({
             polygonsData={countries}
             polygonGeoJsonGeometry="geometry"
             polygonAltitude={0.008}
-            polygonCapColor={(country) => globeCountryFill(country as GlobeCountryFeature)}
+            polygonCapColor={() => "rgba(15,23,42,.28)"}
             polygonSideColor={() => "rgba(2,6,23,.55)"}
             polygonStrokeColor={() => "rgba(248,250,252,.88)"}
             polygonCapCurvatureResolution={4}
