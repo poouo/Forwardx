@@ -50,6 +50,7 @@
     "nanoid": "^5.0.9",
     "nodemailer": "^6.9.16",
     "qrcode": "^1.5.4",
+    "react-globe.gl": "^2.38.0",
     "recharts": "^2.13.0",
     "superjson": "^2.2.2",
     "zod": "^3.24.0"
