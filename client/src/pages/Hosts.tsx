@@ -177,6 +177,29 @@ function hostAddressText(host: any) {
   return parts.join("  /  ") || "-";
 }
 
+function hostRegionText(host: any) {
+  const parts = [host.geoCountryName, host.geoRegion]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return parts.join(" / ");
+}
+
+function HostRegionBadge({ host, compact = false }: { host: any; compact?: boolean }) {
+  const emoji = String(host.geoEmoji || "").trim();
+  const regionText = hostRegionText(host);
+  if (!emoji && !regionText) return null;
+  const title = [emoji, regionText].filter(Boolean).join(" ");
+  return (
+    <span
+      className={`inline-flex min-w-0 items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${compact ? "text-[10px]" : "text-xs"}`}
+      title={title}
+    >
+      {emoji && <span className="shrink-0 leading-none">{emoji}</span>}
+      {regionText && <span className="min-w-0 truncate">{regionText}</span>}
+    </span>
+  );
+}
+
 type HostFormData = {
   name: string;
   ip: string;
@@ -354,6 +377,9 @@ function HostCard({
               <span className="mr-1.5 text-muted-foreground">地址</span>
               {hostAddressText(host)}
             </p>
+            <div className="mt-1">
+              <HostRegionBadge host={host} />
+            </div>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <div className="flex items-center gap-1.5">
@@ -464,7 +490,7 @@ function HostsContent() {
     refetchOnWindowFocus: true,
   });
   const [cachedHosts, setCachedHosts] = useState<any[]>(() => readCachedHosts());
-  const displayHosts = hosts || cachedHosts;
+  const displayHosts: any[] = (hosts as any[] | undefined) || cachedHosts;
   const hasDisplayHosts = displayHosts.length > 0;
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
@@ -666,7 +692,7 @@ function HostsContent() {
     }),
     [displayHosts, latestAgentVersion]
   );
-  const hostPagination = usePersistentPagination(displayHosts, {
+  const hostPagination = usePersistentPagination<any>(displayHosts, {
     storageKey: "forwardx.hosts.page",
     pageSize: 12,
     isReady: hasDisplayHosts,
@@ -944,6 +970,7 @@ function HostsContent() {
                                 <span className="min-w-0 max-w-[260px] break-all">{item.value}</span>
                               </div>
                             ))}
+                            <HostRegionBadge host={host} compact />
                           </div>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">

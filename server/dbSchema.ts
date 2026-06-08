@@ -92,6 +92,7 @@ const tables: TableDef[] = [
       c("agentToken", "text"), c("entryIp", "text"), c("tunnelEntryIp", "text"), c("osInfo", "text"), c("cpuInfo", "text"),
       c("memoryTotal", "bigint"), c("agentVersion", "text"), c("agentUpgradeRequested", "bool", { notNull: true, default: false }),
       c("agentUpgradeTargetVersion", "text"), c("agentUpgradeRequestedAt", "epoch"), c("networkInterface", "text"),
+      c("geoCountryCode", "varchar", { length: 8 }), c("geoCountryName", "text"), c("geoRegion", "text"), c("geoEmoji", "varchar", { length: 16 }), c("geoUpdatedAt", "epoch"),
       c("portRangeStart", "int"), c("portRangeEnd", "int"), c("isOnline", "bool", { notNull: true, default: false }),
       c("lastHeartbeat", "epoch"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
       c("updatedAt", "epoch", { notNull: true, default: "now" }),

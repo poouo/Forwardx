@@ -7,6 +7,7 @@ import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets"
 import { requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
+import { scheduleHostGeoRefresh } from "../hostGeo";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -148,7 +149,11 @@ export const hostsRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       if (isAdmin) scheduleStaleHostUpgradeCleanup();
-      if (isAdmin) return getHostsWithUpgradeStateCleanup();
+      if (isAdmin) {
+        const hosts = await getHostsWithUpgradeStateCleanup();
+        scheduleHostGeoRefresh(hosts);
+        return hosts;
+      }
       // 普通用户：返回自己创建的主机 + 普通授权主机 + 已授权的流量计费主机
       const [allowedHostIds, billingResourceIds] = await Promise.all([
         db.getUserAllowedHostIds(ctx.user.id),
@@ -156,11 +161,15 @@ export const hostsRouter = router({
       ]);
       const allHosts = await getHostsWithUpgradeStateCleanup();
       const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
-      return allHosts.filter(h => allowedSet.has(h.id) || h.userId === ctx.user.id);
+      const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === ctx.user.id);
+      scheduleHostGeoRefresh(visibleHosts);
+      return visibleHosts;
     }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
     listAll: adminProcedure.query(async () => {
-      return getHostsWithUpgradeStateCleanup();
+      const hosts = await getHostsWithUpgradeStateCleanup();
+      scheduleHostGeoRefresh(hosts);
+      return hosts;
     }),
     getById: protectedProcedure
       .input(z.object({ id: z.number() }))
@@ -235,6 +244,15 @@ export const hostsRouter = router({
         const entryChanged = ["ip", "ipv4", "ipv6", "entryIp", "tunnelEntryIp"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
+        if (entryChanged) {
+          Object.assign(data as any, {
+            geoCountryCode: null,
+            geoCountryName: null,
+            geoRegion: null,
+            geoEmoji: null,
+            geoUpdatedAt: null,
+          });
+        }
         await db.updateHost(id, data as any);
         if (entryChanged) {
           await db.syncForwardChainsForHost(id, host);

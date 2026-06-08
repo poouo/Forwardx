@@ -163,6 +163,11 @@ export const hosts = table("hosts", {
   agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
   networkInterface: text("networkInterface"),
+  geoCountryCode: varchar("geoCountryCode", { length: 8 }),
+  geoCountryName: text("geoCountryName"),
+  geoRegion: text("geoRegion"),
+  geoEmoji: varchar("geoEmoji", { length: 16 }),
+  geoUpdatedAt: epoch("geoUpdatedAt"),
   // ===== 端口区间限制 =====
   portRangeStart: int("portRangeStart"),  // 允许转发的起始端口，null = 不限制
   portRangeEnd: int("portRangeEnd"),      // 允许转发的结束端口，null = 不限制
