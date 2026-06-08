@@ -1,18 +1,23 @@
-#!/bin/bash
+﻿#!/bin/bash
 set -euo pipefail
 
 ACTION="${1:-install}"
 APP_DIR="${FORWARDX_PANEL_DIR:-/opt/forwardx-panel}"
 SERVICE_NAME="${FORWARDX_SERVICE_NAME:-forwardx-panel}"
-REPO_URL="${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx.git}"
 PORT="${PORT:-3000}"
-MIN_GO_MAJOR=1
-MIN_GO_MINOR=22
-DEFAULT_GO_VERSION="${FORWARDX_GO_VERSION:-1.22.12}"
+REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
+PANEL_BUNDLE_PREFIX="${FORWARDX_PANEL_BUNDLE_PREFIX:-forwardx-panel-v}"
+PNPM_VERSION="${FORWARDX_PNPM_VERSION:-10.28.1}"
 
 valid_port() {
   local port="$1"
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+normalize_version() {
+  local raw="${1:-}"
+  raw="${raw#v}"
+  printf "%s\n" "$raw"
 }
 
 get_env_value() {
@@ -34,12 +39,12 @@ read_install_port() {
 
   if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
     PORT="$default_port"
-    echo "[信息] 非交互环境，使用默认 Web 端口：$PORT"
+    echo "[INFO] Non-interactive environment, use default web port: $PORT"
     return
   fi
 
   while true; do
-    printf "请输入 Web 服务监听端口 [默认 %s]: " "$default_port" > /dev/tty
+    printf "Enter web listen port [default %s]: " "$default_port" > /dev/tty
     IFS= read -r input < /dev/tty || input=""
     input="${input//[[:space:]]/}"
     if [ -z "$input" ]; then
@@ -50,7 +55,7 @@ read_install_port() {
       PORT="$input"
       return
     fi
-    echo "[错误] 端口必须是 1-65535 的数字，请重新输入。" > /dev/tty
+    echo "[ERROR] Port must be a number in 1-65535, please retry." > /dev/tty
   done
 }
 
@@ -72,7 +77,7 @@ resolve_runtime_env() {
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
-    echo "[错误] 请使用 root 权限运行"
+    echo "[ERROR] Please run as root"
     exit 1
   fi
 }
@@ -85,7 +90,7 @@ confirm_yes() {
     printf "%s" "$prompt" > /dev/tty
     IFS= read -r answer < /dev/tty || answer=""
   else
-    echo "[信息] 非交互环境，默认选择 N：$prompt"
+    echo "[INFO] Non-interactive environment, defaulting to N: $prompt"
   fi
 
   case "$answer" in
@@ -94,236 +99,138 @@ confirm_yes() {
   esac
 }
 
-latest_tag() {
-  git -C "$APP_DIR" tag --sort=-v:refname | head -1 || true
-}
+latest_release_version() {
+  local api_url="${FORWARDX_GITHUB_API_URL:-https://api.github.com/repos/${REPO_SLUG}/releases/latest}"
+  local tag=""
+  tag="$(curl -fsSL --retry 3 --connect-timeout 10 "$api_url" \
+    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
+    | head -1 || true)"
 
-fetch_source_refs() {
-  git -C "$APP_DIR" fetch --force --prune origin \
-    "+refs/heads/*:refs/remotes/origin/*" \
-    "+refs/tags/*:refs/tags/*"
-}
-
-git_ref_exists() {
-  git -C "$APP_DIR" rev-parse --verify --quiet "$1^{commit}" >/dev/null
-}
-
-resolve_checkout_target() {
-  local target="$1"
-  local without_v=""
-
-  if [ -z "$target" ]; then
+  if [ -z "$tag" ]; then
+    echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url"
     return 1
   fi
-  if git_ref_exists "$target"; then
-    printf '%s\n' "$target"
-    return 0
-  fi
-  without_v="${target#v}"
-  if [ "$target" = "$without_v" ] && git_ref_exists "v$target"; then
-    printf 'v%s\n' "$target"
-    return 0
-  fi
-  if [ "$target" != "$without_v" ] && git_ref_exists "$without_v"; then
-    printf '%s\n' "$without_v"
-    return 0
-  fi
-
-  return 1
+  printf "%s\n" "$tag"
 }
 
-go_version_number() {
-  local bin="$1"
-  "$bin" version 2>/dev/null | awk '{print $3}' | sed -E 's/^go//; s/[^0-9.].*$//'
+resolve_release_version() {
+  local requested="${FORWARDX_TARGET_VERSION:-}"
+  local normalized=""
+
+  if [ -n "$requested" ]; then
+    normalized="$(normalize_version "$requested")"
+  else
+    normalized="$(latest_release_version)"
+  fi
+
+  if [[ ! "$normalized" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "[ERROR] Invalid release version: ${normalized:-<empty>}"
+    return 1
+  fi
+  printf "%s\n" "$normalized"
 }
 
-go_version_at_least() {
+panel_bundle_url() {
   local version="$1"
-  local major minor patch
-  IFS=. read -r major minor patch <<EOF
-$version
-EOF
-  major="${major:-0}"
-  minor="${minor:-0}"
-  [[ "$major" =~ ^[0-9]+$ ]] || return 1
-  [[ "$minor" =~ ^[0-9]+$ ]] || minor=0
-
-  if [ "$major" -gt "$MIN_GO_MAJOR" ]; then
-    return 0
-  fi
-  [ "$major" -eq "$MIN_GO_MAJOR" ] && [ "$minor" -ge "$MIN_GO_MINOR" ]
+  local filename="${PANEL_BUNDLE_PREFIX}${version}.tar.gz"
+  printf "https://github.com/%s/releases/download/v%s/%s\n" "$REPO_SLUG" "$version" "$filename"
 }
 
-link_official_go_commands() {
-  if [ -x /usr/local/go/bin/go ]; then
-    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+node_major_version() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "0"
+    return
   fi
-  if [ -x /usr/local/go/bin/gofmt ]; then
-    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-  fi
+  node -p "Number(process.versions.node.split('.')[0] || 0)" 2>/dev/null || echo "0"
 }
 
-select_supported_go() {
-  local bin version dir
-  local candidates=()
-
-  [ -n "${FORWARDX_GO_BIN:-}" ] && candidates+=("$FORWARDX_GO_BIN")
-  candidates+=("/usr/local/go/bin/go")
-  if command -v go >/dev/null 2>&1; then
-    candidates+=("$(command -v go)")
-  fi
-  candidates+=("/usr/bin/go")
-
-  for bin in "${candidates[@]}"; do
-    [ -n "$bin" ] || continue
-    [ -x "$bin" ] || continue
-    version="$(go_version_number "$bin")"
-    if go_version_at_least "$version"; then
-      dir="$(dirname "$bin")"
-      if [ "$bin" = "/usr/local/go/bin/go" ]; then
-        link_official_go_commands
-      fi
-      export PATH="$dir:$PATH"
-      hash -r 2>/dev/null || true
-      echo "[信息] 使用 Go $version ($bin)"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-install_official_go() {
-  local arch goarch tmp url
-  arch="$(uname -m)"
-  case "$arch" in
-    x86_64|amd64) goarch="amd64" ;;
-    aarch64|arm64) goarch="arm64" ;;
-    armv6l|armv7l) goarch="armv6l" ;;
-    *)
-      echo "[错误] 当前架构 $arch 不支持自动安装官方 Go，请手动安装 Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ 后重试"
-      return 1
-      ;;
-  esac
-
-  url="${FORWARDX_GO_DOWNLOAD_URL:-https://go.dev/dl/go${DEFAULT_GO_VERSION}.linux-${goarch}.tar.gz}"
-  tmp="$(mktemp -d)"
-  echo "[信息] 当前 Go 版本不足，安装官方 Go ${DEFAULT_GO_VERSION}..."
-  if ! curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$tmp/go.tgz"; then
-    rm -rf "$tmp"
-    echo "[错误] Go 下载失败：$url"
-    return 1
+ensure_node_runtime() {
+  local major="0"
+  major="$(node_major_version)"
+  if [ "$major" -ge 22 ]; then
+    return
   fi
 
-  rm -rf /usr/local/go
-  tar -C /usr/local -xzf "$tmp/go.tgz"
-  rm -rf "$tmp"
-  export PATH="/usr/local/go/bin:$PATH"
-  hash -r 2>/dev/null || true
-  select_supported_go
-}
-
-ensure_go_version() {
-  export PATH="/usr/local/go/bin:$PATH"
-  hash -r 2>/dev/null || true
-  if select_supported_go; then
-    return 0
-  fi
-  install_official_go || {
-    echo "[错误] Go ${MIN_GO_MAJOR}.${MIN_GO_MINOR}+ 安装失败，无法构建 Agent/FXP"
+  echo "[INFO] Installing Node.js 22+ ..."
+  if command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y -qq nodejs >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+    dnf install -y -q nodejs
+  elif command -v yum >/dev/null 2>&1; then
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+    yum install -y -q nodejs
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs npm
+  else
+    echo "[ERROR] Unsupported package manager, please install Node.js 22+ manually"
     exit 1
-  }
+  fi
+
+  major="$(node_major_version)"
+  if [ "$major" -lt 22 ]; then
+    echo "[ERROR] Node.js 22+ is required, current major version is $major"
+    exit 1
+  fi
 }
 
 install_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq curl git ca-certificates build-essential python3 openssl tar nftables >/dev/null
-    if ! command -v node >/dev/null 2>&1; then
-      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-      apt-get install -y -qq nodejs >/dev/null
-    fi
+    apt-get install -y -qq curl ca-certificates tar xz-utils openssl >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl tar nftables nodejs npm
+    dnf install -y -q curl ca-certificates tar xz openssl
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q curl git ca-certificates gcc gcc-c++ make python3 openssl tar nftables nodejs npm
+    yum install -y -q curl ca-certificates tar xz openssl
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache curl git ca-certificates build-base python3 openssl tar nftables nodejs npm
+    apk add --no-cache curl ca-certificates tar xz openssl
   fi
 
-  command -v node >/dev/null 2>&1 || { echo "[错误] Node.js 安装失败，请先安装 Node.js 22+"; exit 1; }
-  ensure_go_version
-  corepack enable >/dev/null 2>&1 || npm install -g pnpm@10
-  corepack prepare pnpm@10 --activate >/dev/null 2>&1 || npm install -g pnpm@10
-}
+  ensure_node_runtime
 
-sync_source() {
-  local target="${FORWARDX_TARGET_VERSION:-}"
-  local resolved_target=""
-  local env_backup=""
-  local data_backup=""
-  if [ -f "$APP_DIR/.env" ]; then
-    env_backup="$(mktemp /tmp/forwardx-env.XXXXXX)"
-    cp "$APP_DIR/.env" "$env_backup"
-  fi
-  if [ -d "$APP_DIR/data" ]; then
-    data_backup="$(mktemp -d /tmp/forwardx-data.XXXXXX)"
-    cp -a "$APP_DIR/data/." "$data_backup/"
-  fi
-  if [ -d "$APP_DIR/.git" ]; then
-    git -C "$APP_DIR" remote set-url origin "$REPO_URL" || true
-    fetch_source_refs
+  if command -v corepack >/dev/null 2>&1; then
+    corepack enable >/dev/null 2>&1 || true
+    corepack prepare "pnpm@${PNPM_VERSION}" --activate >/dev/null 2>&1 || npm install -g "pnpm@${PNPM_VERSION}"
   else
-    rm -rf "$APP_DIR"
-    git clone "$REPO_URL" "$APP_DIR"
-    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
-      cp "$env_backup" "$APP_DIR/.env"
-    fi
-    if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
-      mkdir -p "$APP_DIR/data"
-      cp -a "$data_backup/." "$APP_DIR/data/"
-    fi
-    fetch_source_refs
-  fi
-  if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
-    rm -f "$env_backup"
-  fi
-  if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
-    rm -rf "$data_backup"
-  fi
-
-  if [ -n "$target" ]; then
-    if resolved_target="$(resolve_checkout_target "$target")"; then
-      :
-    elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
-      echo "[信息] 未找到目标版本 $target，改为使用 origin/main"
-      resolved_target="origin/main"
-    else
-      echo "[错误] 未找到目标版本 $target"
-      exit 1
-    fi
-  elif [ "$ACTION" = "upgrade" ] || [ "$ACTION" = "update" ]; then
-    # Manual one-click upgrade should always refresh to latest main commit,
-    # even when version number is unchanged.
-    resolved_target="origin/main"
-  else
-    resolved_target="$(latest_tag)"
-    if [ -z "$resolved_target" ]; then
-      resolved_target="origin/main"
-    fi
-  fi
-
-  git -C "$APP_DIR" checkout -f "$resolved_target"
-  if [ "$resolved_target" = "origin/main" ]; then
-    git -C "$APP_DIR" checkout -B main origin/main
+    npm install -g "pnpm@${PNPM_VERSION}"
   fi
 }
 
-build_panel() {
+download_panel_bundle() {
+  local version="$1"
+  local tmp_dir url archive
+  tmp_dir="$(mktemp -d)"
+  archive="$tmp_dir/panel.tar.gz"
+  url="$(panel_bundle_url "$version")"
+
+  echo "[INFO] Downloading panel bundle: $url"
+  if ! curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$archive"; then
+    rm -rf "$tmp_dir"
+    echo "[ERROR] Failed to download panel bundle from GitHub release"
+    exit 1
+  fi
+
+  mkdir -p "$APP_DIR"
+  rm -rf "$APP_DIR/dist" "$APP_DIR/client" "$APP_DIR/drizzle" "$APP_DIR/scripts"
+  rm -f "$APP_DIR/package.json" "$APP_DIR/pnpm-lock.yaml" "$APP_DIR/pnpm-workspace.yaml"
+
+  if ! tar -xzf "$archive" -C "$APP_DIR"; then
+    rm -rf "$tmp_dir"
+    echo "[ERROR] Failed to extract panel bundle"
+    exit 1
+  fi
+  rm -rf "$tmp_dir"
+}
+
+install_runtime_dependencies() {
   cd "$APP_DIR"
-  pnpm install --prod=false
-  pnpm build
-  bash scripts/build-agent-release.sh
+  rm -rf node_modules
+  if [ -f pnpm-lock.yaml ]; then
+    pnpm install --prod --frozen-lockfile
+  else
+    npm install --omit=dev
+  fi
 }
 
 write_env() {
@@ -369,35 +276,38 @@ EOF
 }
 
 install_panel() {
+  local release_version
   require_root
   resolve_runtime_env
   read_install_port
   install_deps
-  sync_source
-  build_panel
+  release_version="$(resolve_release_version)"
+  download_panel_bundle "$release_version"
+  install_runtime_dependencies
   write_env
   write_service
   systemctl restart "$SERVICE_NAME"
-  echo "[完成] ForwardX 面板已启动：http://服务器IP:$PORT"
-  echo "[信息] 首次打开面板后请配置 MySQL；如果连接旧数据库，将自动复用原有管理员和数据。"
+  echo "[DONE] ForwardX panel started (release v$release_version): http://SERVER_IP:$PORT"
 }
 
 upgrade_panel() {
+  local release_version
   require_root
   resolve_runtime_env
   install_deps
-  sync_source
-  build_panel
+  release_version="$(resolve_release_version)"
+  download_panel_bundle "$release_version"
+  install_runtime_dependencies
   write_env
   write_service
   systemctl restart "$SERVICE_NAME"
-  echo "[完成] ForwardX 面板已升级并重启"
+  echo "[DONE] ForwardX panel upgraded to release v$release_version and restarted"
 }
 
 uninstall_panel() {
   require_root
-  if ! confirm_yes "确认卸载 ForwardX 本地面板，并删除服务和程序目录 $APP_DIR ? [y/N] "; then
-    echo "[取消] 未执行卸载"
+  if ! confirm_yes "Confirm uninstall ForwardX local panel and remove service files? [y/N] "; then
+    echo "[INFO] Uninstall cancelled"
     return
   fi
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -405,8 +315,12 @@ uninstall_panel() {
   rm -f "/etc/systemd/system/$SERVICE_NAME.service"
   systemctl daemon-reload
 
-  rm -rf "$APP_DIR"
-  echo "[完成] 已卸载 ForwardX 本地面板并删除程序目录"
+  if confirm_yes "Remove panel directory $APP_DIR ? [y/N] "; then
+    rm -rf "$APP_DIR"
+    echo "[DONE] Removed $APP_DIR"
+  else
+    echo "[DONE] Service uninstalled, kept $APP_DIR"
+  fi
 }
 
 case "$ACTION" in
@@ -414,7 +328,7 @@ case "$ACTION" in
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
   *)
-    echo "用法: $0 install|upgrade|uninstall"
+    echo "Usage: $0 install|upgrade|uninstall"
     exit 1
     ;;
 esac

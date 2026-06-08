@@ -1,17 +1,17 @@
-#!/bin/bash
+﻿#!/bin/bash
 set -euo pipefail
 
 ACTION="${1:-install}"
 APP_DIR="${FORWARDX_DOCKER_DIR:-/opt/forwardx-docker}"
-REPO_URL="${FORWARDX_REPO_URL:-https://github.com/poouo/Forwardx.git}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-forwardx}"
 CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
 PORT="${PORT:-3000}"
-TARGET_IMAGE="${FORWARDX_IMAGE:-ghcr.io/poouo/forwardx:latest}"
+REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
+IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
-    echo "[错误] 请使用 root 权限运行"
+    echo "[ERROR] Please run as root"
     exit 1
   fi
 }
@@ -24,7 +24,7 @@ confirm_yes() {
     printf "%s" "$prompt" > /dev/tty
     IFS= read -r answer < /dev/tty || answer=""
   else
-    echo "[信息] 非交互环境，默认选择 N：$prompt"
+    echo "[INFO] Non-interactive environment, defaulting to N: $prompt"
   fi
 
   case "$answer" in
@@ -33,41 +33,100 @@ confirm_yes() {
   esac
 }
 
+valid_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+normalize_version() {
+  local raw="${1:-}"
+  raw="${raw#v}"
+  printf "%s\n" "$raw"
+}
+
 compose_cmd() {
   if docker compose version >/dev/null 2>&1; then
     docker compose "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
     docker-compose "$@"
   else
-    echo "[错误] 未找到 Docker Compose，请先安装 Docker Compose 插件"
+    echo "[ERROR] Docker Compose not found, please install Docker Compose plugin first"
     exit 1
   fi
 }
 
+get_env_value() {
+  local key="$1"
+  local file="$APP_DIR/.env"
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  grep -E "^${key}=" "$file" | tail -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
+}
+
 load_existing_env() {
-  local env_file="$APP_DIR/.env"
-  if [ ! -f "$env_file" ]; then
+  local value
+  value="$(get_env_value PORT || true)"
+  if [ -n "$value" ] && valid_port "$value"; then PORT="$value"; fi
+  value="$(get_env_value COMPOSE_PROJECT_NAME || true)"
+  if [ -n "$value" ]; then PROJECT_NAME="$value"; fi
+  value="$(get_env_value FORWARDX_CONTAINER_NAME || true)"
+  if [ -n "$value" ]; then CONTAINER_NAME="$value"; fi
+  value="$(get_env_value FORWARDX_IMAGE || true)"
+  if [ -n "$value" ] && [ -z "${FORWARDX_IMAGE:-}" ]; then FORWARDX_IMAGE="$value"; fi
+}
+
+latest_release_version() {
+  local api_url="${FORWARDX_GITHUB_API_URL:-https://api.github.com/repos/${REPO_SLUG}/releases/latest}"
+  local tag=""
+  tag="$(curl -fsSL --retry 3 --connect-timeout 10 "$api_url" \
+    | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' \
+    | head -1 || true)"
+
+  if [ -z "$tag" ]; then
+    echo "[ERROR] Failed to resolve latest release version from GitHub API: $api_url"
+    return 1
+  fi
+  printf "%s\n" "$tag"
+}
+
+resolve_release_version() {
+  local requested="${FORWARDX_TARGET_VERSION:-}"
+  local normalized=""
+
+  if [ -n "$requested" ]; then
+    normalized="$(normalize_version "$requested")"
+  else
+    normalized="$(latest_release_version)"
+  fi
+
+  if [[ ! "$normalized" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "[ERROR] Invalid release version: ${normalized:-<empty>}"
+    return 1
+  fi
+  printf "%s\n" "$normalized"
+}
+
+resolve_image_ref() {
+  local version=""
+  if [ -n "${FORWARDX_IMAGE:-}" ]; then
+    printf "%s\n" "$FORWARDX_IMAGE"
     return
   fi
-  local value
-  value="$(grep -E '^PORT=' "$env_file" | tail -1 | cut -d= -f2- || true)"
-  if [ -n "$value" ]; then PORT="$value"; fi
-  value="$(grep -E '^COMPOSE_PROJECT_NAME=' "$env_file" | tail -1 | cut -d= -f2- || true)"
-  if [ -n "$value" ]; then PROJECT_NAME="$value"; fi
-  value="$(grep -E '^FORWARDX_CONTAINER_NAME=' "$env_file" | tail -1 | cut -d= -f2- || true)"
-  if [ -n "$value" ]; then CONTAINER_NAME="$value"; fi
+  version="$(resolve_release_version)"
+  printf "%s:v%s\n" "$IMAGE_REPO" "$version"
 }
 
 install_base_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl git openssl >/dev/null
+    apt-get install -y -qq ca-certificates curl openssl >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q git curl ca-certificates openssl
+    dnf install -y -q curl ca-certificates openssl
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q git curl ca-certificates openssl
+    yum install -y -q curl ca-certificates openssl
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache git curl ca-certificates openssl
+    apk add --no-cache curl ca-certificates openssl
   fi
 }
 
@@ -93,75 +152,53 @@ install_docker() {
   fi
 }
 
-fetch_source_refs() {
-  git -C "$APP_DIR" fetch --force --prune origin \
-    "+refs/heads/*:refs/remotes/origin/*" \
-    "+refs/tags/*:refs/tags/*"
-}
+write_compose_file() {
+  mkdir -p "$APP_DIR"
+  cat > "$APP_DIR/docker-compose.yml" <<'EOF'
+name: ${COMPOSE_PROJECT_NAME:-forwardx}
 
-sync_source() {
-  local env_backup=""
-  local data_backup=""
-  if [ -f "$APP_DIR/.env" ]; then
-    env_backup="$(mktemp /tmp/forwardx-env.XXXXXX)"
-    cp "$APP_DIR/.env" "$env_backup"
-  fi
-  if [ -d "$APP_DIR/data" ]; then
-    data_backup="$(mktemp -d /tmp/forwardx-data.XXXXXX)"
-    cp -a "$APP_DIR/data/." "$data_backup/"
-  fi
-  if [ -d "$APP_DIR/.git" ]; then
-    git -C "$APP_DIR" remote set-url origin "$REPO_URL" || true
-    fetch_source_refs
-  else
-    rm -rf "$APP_DIR"
-    git clone "$REPO_URL" "$APP_DIR"
-    if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
-      cp "$env_backup" "$APP_DIR/.env"
-    fi
-    if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
-      mkdir -p "$APP_DIR/data"
-      cp -a "$data_backup/." "$APP_DIR/data/"
-    fi
-    fetch_source_refs
-  fi
-  if [ -n "$env_backup" ] && [ -f "$env_backup" ]; then
-    rm -f "$env_backup"
-  fi
-  if [ -n "$data_backup" ] && [ -d "$data_backup" ]; then
-    rm -rf "$data_backup"
-  fi
+services:
+  forwardx:
+    image: ${FORWARDX_IMAGE}
+    container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_CONFIG_PATH: /data/database.json
+      SQLITE_PATH: /data/forwardx.db
+      MYSQL_CONFIG_PATH: /data/mysql.json
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
+    volumes:
+      - forwardx-data:/data
 
-  if [ -n "${FORWARDX_TARGET_VERSION:-}" ]; then
-    echo "[信息] Docker 部署统一拉取 latest 镜像，并校验目标版本 ${FORWARDX_TARGET_VERSION}"
-  fi
-
-  git -C "$APP_DIR" checkout -f origin/main
-  git -C "$APP_DIR" checkout -B main origin/main
+volumes:
+  forwardx-data:
+    driver: local
+EOF
 }
 
 write_env() {
-  local jwt_secret="${JWT_SECRET:-}"
-  if [ -z "$TARGET_IMAGE" ]; then
-    TARGET_IMAGE="ghcr.io/poouo/forwardx:latest"
+  local image="$1"
+  local existing_jwt jwt_secret
+  if ! valid_port "$PORT"; then
+    PORT="3000"
   fi
-  if [ -f "$APP_DIR/.env" ]; then
-    if grep -qE '^FORWARDX_IMAGE=' "$APP_DIR/.env"; then
-      sed -i "s|^FORWARDX_IMAGE=.*|FORWARDX_IMAGE=$TARGET_IMAGE|" "$APP_DIR/.env"
-    else
-      printf '\nFORWARDX_IMAGE=%s\n' "$TARGET_IMAGE" >> "$APP_DIR/.env"
-    fi
-    return
-  fi
+
+  existing_jwt="$(get_env_value JWT_SECRET || true)"
+  jwt_secret="${JWT_SECRET:-$existing_jwt}"
   if [ -z "$jwt_secret" ]; then
     jwt_secret="$(openssl rand -hex 32 2>/dev/null || date +%s%N | sha256sum | awk '{print $1}')"
   fi
+
   cat > "$APP_DIR/.env" <<EOF
 PORT=$PORT
 JWT_SECRET=$jwt_secret
 COMPOSE_PROJECT_NAME=$PROJECT_NAME
 FORWARDX_CONTAINER_NAME=$CONTAINER_NAME
-FORWARDX_IMAGE=$TARGET_IMAGE
+FORWARDX_IMAGE=$image
 EOF
 }
 
@@ -180,15 +217,13 @@ remove_existing_panel_containers() {
   fi
 }
 
-normalize_version() {
-  printf '%s\n' "${1#v}"
-}
-
 image_panel_version() {
-  docker run --rm --entrypoint node "$TARGET_IMAGE" -p "require('./package.json').version"
+  local image="$1"
+  docker run --rm --entrypoint node "$image" -p "require('./package.json').version"
 }
 
 assert_target_image_ready() {
+  local image="$1"
   local target="${FORWARDX_TARGET_VERSION:-}"
   local expected=""
   local actual=""
@@ -196,72 +231,71 @@ assert_target_image_ready() {
     return
   fi
   expected="$(normalize_version "$target")"
-  actual="$(image_panel_version 2>/dev/null || true)"
+  actual="$(image_panel_version "$image" 2>/dev/null || true)"
   actual="$(normalize_version "$actual")"
   if [ -z "$actual" ]; then
-    echo "[错误] 无法读取镜像 $TARGET_IMAGE 内的面板版本，请稍后重试或检查镜像是否可用。"
+    echo "[ERROR] Unable to read panel version from image $image"
     exit 12
   fi
   if [ "$actual" != "$expected" ]; then
-    echo "[错误] Docker 镜像尚未同步到目标版本 v$expected，当前拉取到的镜像版本为 v$actual。"
-    echo "[提示] GitHub Actions 可能仍在构建 ghcr.io/poouo/forwardx:latest，请等待几分钟后重新执行升级。旧容器未被停止。"
+    echo "[ERROR] Image version mismatch: expected v$expected, got v$actual"
+    echo "[INFO] Release image may still be building/pushing. Please retry later."
     exit 12
   fi
 }
 
 start_panel() {
+  local image="$1"
   cd "$APP_DIR"
-  if [ -z "$TARGET_IMAGE" ]; then
-    TARGET_IMAGE="$(grep -E '^FORWARDX_IMAGE=' "$APP_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
-  fi
-  if [ -z "$TARGET_IMAGE" ]; then
-    TARGET_IMAGE="ghcr.io/poouo/forwardx:latest"
-  fi
-  echo "[ForwardX] Pulling Docker image: $TARGET_IMAGE"
-  compose_cmd -p "$PROJECT_NAME" pull forwardx
-  assert_target_image_ready
+  echo "[INFO] Pulling image: $image"
+  docker pull "$image"
+  assert_target_image_ready "$image"
   remove_existing_panel_containers
-  compose_cmd -p "$PROJECT_NAME" up -d --remove-orphans forwardx
+  compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" up -d --remove-orphans forwardx
 }
 
 install_panel() {
+  local image
   require_root
   install_docker
   load_existing_env
-  sync_source
-  write_env
-  start_panel
-  echo "[完成] ForwardX Docker 面板已启动：http://服务器IP:$PORT"
-  echo "[信息] 首次打开面板后请配置 MySQL；如果连接旧数据库，将自动复用原有管理员和数据。"
+  image="$(resolve_image_ref)"
+  write_compose_file
+  write_env "$image"
+  start_panel "$image"
+  echo "[DONE] ForwardX Docker panel started: http://SERVER_IP:$PORT"
+  echo "[INFO] Image: $image"
 }
 
 upgrade_panel() {
+  local image
   require_root
   load_existing_env
   install_docker
-  sync_source
-  write_env
-  start_panel
-  echo "[完成] ForwardX Docker 面板已覆盖旧容器并重启"
-  echo "[信息] 已保留 .env 配置、Docker 数据卷和部署目录内的 data 数据"
+  image="$(resolve_image_ref)"
+  write_compose_file
+  write_env "$image"
+  start_panel "$image"
+  echo "[DONE] ForwardX Docker panel upgraded and restarted"
+  echo "[INFO] Image: $image"
 }
 
 uninstall_panel() {
   require_root
   load_existing_env
-  if ! confirm_yes "确认卸载 ForwardX Docker 面板，并删除部署目录 $APP_DIR 和 Docker 数据卷 ${PROJECT_NAME}_forwardx-data ? [y/N] "; then
-    echo "[取消] 未执行卸载"
+  if ! confirm_yes "Confirm uninstall ForwardX Docker panel and delete deployment dir + Docker volume? [y/N] "; then
+    echo "[INFO] Uninstall cancelled"
     return
   fi
   cd "$APP_DIR" 2>/dev/null || true
   if [ -f "$APP_DIR/docker-compose.yml" ]; then
-    compose_cmd -p "$PROJECT_NAME" down --remove-orphans || true
+    compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" down --remove-orphans || true
   fi
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
   rm -rf "$APP_DIR"
   docker volume rm "${PROJECT_NAME}_forwardx-data" 2>/dev/null || true
-  echo "[完成] 已卸载 ForwardX Docker 面板并删除数据"
+  echo "[DONE] ForwardX Docker panel uninstalled"
 }
 
 case "$ACTION" in
@@ -269,7 +303,7 @@ case "$ACTION" in
   upgrade|update) upgrade_panel ;;
   uninstall|remove) uninstall_panel ;;
   *)
-    echo "用法: $0 install|upgrade|uninstall"
+    echo "Usage: $0 install|upgrade|uninstall"
     exit 1
     ;;
 esac
