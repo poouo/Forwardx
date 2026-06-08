@@ -64,7 +64,7 @@ const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
 const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
-const GLOBE_EARTH_IMAGE_URL = "/globe/earth-blue-marble.jpg";
+const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 
@@ -237,6 +237,8 @@ type HostGlobePoint = {
   host: any;
   lat: number;
   lng: number;
+  displayLat: number;
+  displayLng: number;
   color: string;
   glowColor: string;
   statusText: string;
@@ -246,6 +248,16 @@ type HostGlobePoint = {
   flagUrl: string;
   label: string;
 };
+
+function clampLatitude(lat: number) {
+  return Math.max(-85, Math.min(85, lat));
+}
+
+function normalizeLongitude(lng: number) {
+  if (lng < -180) return lng + 360;
+  if (lng > 180) return lng - 360;
+  return lng;
+}
 
 function hostCountryCode(host: any) {
   return String(host?.geoCountryCode || "").trim().toUpperCase();
@@ -259,6 +271,65 @@ function hostFlagUrl(host: any) {
 function hostGlobeLabel(host: any) {
   const name = String(host?.name || hostAddressText(host) || "-").trim();
   return name.length > 10 ? `${name.slice(0, 9)}…` : name;
+}
+
+function hostGlobeClusterKey(point: HostGlobePoint) {
+  return `${Math.round(point.lat * 2) / 2}:${Math.round(point.lng * 2) / 2}`;
+}
+
+function spreadHostGlobePoints(points: HostGlobePoint[]) {
+  const groups = new Map<string, HostGlobePoint[]>();
+  points.forEach((point) => {
+    const key = hostGlobeClusterKey(point);
+    const group = groups.get(key);
+    if (group) group.push(point);
+    else groups.set(key, [point]);
+  });
+
+  return points.map((point) => {
+    const group = groups.get(hostGlobeClusterKey(point)) || [point];
+    if (group.length <= 1) return point;
+    const index = group.findIndex((item) => item.host.id === point.host.id);
+    const angle = ((Math.PI * 2) / group.length) * Math.max(0, index) - Math.PI / 2;
+    const radius = Math.min(1.8, 0.52 + group.length * 0.18);
+    const lngScale = Math.max(0.35, Math.cos((point.lat * Math.PI) / 180));
+    return {
+      ...point,
+      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.56),
+      displayLng: normalizeLongitude(point.lng + (Math.cos(angle) * radius) / lngScale),
+    };
+  });
+}
+
+function createHostGlobeLabelElement(point: HostGlobePoint) {
+  const element = document.createElement("div");
+  element.innerHTML = `
+    <span style="width:7px;height:7px;flex:0 0 auto;border-radius:999px;background:${point.color};box-shadow:0 0 10px ${point.glowColor};"></span>
+    <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.label)}</span>
+  `;
+  element.style.cssText = [
+    "display:inline-flex",
+    "align-items:center",
+    "gap:6px",
+    "max-width:150px",
+    "padding:3px 8px",
+    "border:1px solid rgba(255,255,255,.18)",
+    "border-radius:999px",
+    "background:rgba(2,6,23,.58)",
+    "box-shadow:0 8px 22px rgba(0,0,0,.28),0 0 0 1px rgba(15,23,42,.3)",
+    "backdrop-filter:blur(8px)",
+    "color:#f8fafc",
+    "font:600 13px Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+    "line-height:1.15",
+    "letter-spacing:0",
+    "white-space:nowrap",
+    "text-shadow:0 1px 4px rgba(0,0,0,.6)",
+    "transform:translate(-50%,-50%)",
+    "pointer-events:auto",
+    "user-select:none",
+  ].join(";");
+  element.title = `${point.host.name || point.label} · ${point.regionText || "地区获取中"}`;
+  return element;
 }
 
 function escapeTooltipHtml(value: unknown) {
@@ -319,17 +390,20 @@ function HostWorldMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
   const [globeReady, setGlobeReady] = useState(false);
-  const [size, setSize] = useState({ width: 1100, height: 680 });
+  const [size, setSize] = useState({ width: 1400, height: 780 });
   const [hoveredPoint, setHoveredPoint] = useState<HostGlobePoint | null>(null);
 
-  const points = useMemo(() => hosts
-    .map((host) => {
+  const points = useMemo(() => {
+    const rawPoints = hosts.map((host) => {
       const coord = hostGeoCoordinate(host);
       if (!coord) return null;
       const isOnline = !!host.isOnline;
       return {
         host,
-        ...coord,
+        lat: coord.lat,
+        lng: coord.lng,
+        displayLat: coord.lat,
+        displayLng: coord.lng,
         color: isOnline ? "#4ade80" : "#fbbf24",
         glowColor: isOnline ? "rgba(74,222,128,.9)" : "rgba(251,191,36,.82)",
         statusText: isOnline ? "在线" : "离线",
@@ -340,7 +414,9 @@ function HostWorldMap({
         label: hostGlobeLabel(host),
       };
     })
-    .filter(Boolean) as HostGlobePoint[], [hosts]);
+    .filter(Boolean) as HostGlobePoint[];
+    return spreadHostGlobePoints(rawPoints);
+  }, [hosts]);
 
   const missingCount = Math.max(0, hosts.length - points.length);
   const onlinePoints = useMemo(() => points.filter((point) => point.host.isOnline), [points]);
@@ -350,16 +426,21 @@ function HostWorldMap({
     if (!element || typeof ResizeObserver === "undefined") return;
     const updateSize = () => {
       const rect = element.getBoundingClientRect();
-      const width = Math.min(1180, Math.max(720, Math.round(rect.width)));
+      const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+      const width = Math.max(900, Math.round(rect.width));
       setSize({
         width,
-        height: Math.min(740, Math.max(620, Math.round(width * 0.62))),
+        height: Math.max(720, Math.min(980, Math.round(Math.max(viewportHeight - 230, width * 0.52)))),
       });
     };
     updateSize();
     const observer = new ResizeObserver(updateSize);
     observer.observe(element);
-    return () => observer.disconnect();
+    window.addEventListener("resize", updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
   }, []);
 
   useEffect(() => {
@@ -373,9 +454,9 @@ function HostWorldMap({
     controls.enablePan = false;
     controls.rotateSpeed = 0.58;
     controls.zoomSpeed = 0.85;
-    controls.minDistance = 170;
-    controls.maxDistance = 520;
-    globe.pointOfView({ lat: 23, lng: 108, altitude: 2.25 }, 0);
+    controls.minDistance = 105;
+    controls.maxDistance = 500;
+    globe.pointOfView({ lat: 5, lng: 108, altitude: 1.18 }, 0);
   }, [globeReady]);
 
   useEffect(() => {
@@ -388,7 +469,7 @@ function HostWorldMap({
     <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#030712] shadow-sm md:block">
       <div
         ref={containerRef}
-        className="relative mx-auto min-h-[620px] w-full max-w-[1180px] overflow-hidden"
+        className="relative min-h-[720px] w-full overflow-hidden"
         style={{ height: size.height }}
       >
         <Suspense
@@ -408,44 +489,36 @@ function HostWorldMap({
             globeImageUrl={GLOBE_EARTH_IMAGE_URL}
             bumpImageUrl={GLOBE_BUMP_IMAGE_URL}
             showAtmosphere
-            atmosphereColor="#7dd3fc"
-            atmosphereAltitude={0.18}
+            atmosphereColor="#38bdf8"
+            atmosphereAltitude={0.22}
             showGraticules
             globeCurvatureResolution={4}
             pointsData={points}
-            pointLat="lat"
-            pointLng="lng"
+            pointLat="displayLat"
+            pointLng="displayLng"
             pointAltitude={(point) => ((point as HostGlobePoint).host.isOnline ? 0.045 : 0.032)}
             pointRadius={0.34}
             pointResolution={28}
             pointColor={(point) => (point as HostGlobePoint).color}
             pointsTransitionDuration={0}
             ringsData={onlinePoints}
-            ringLat="lat"
-            ringLng="lng"
+            ringLat="displayLat"
+            ringLng="displayLng"
             ringAltitude={0.048}
             ringColor={() => ["rgba(74,222,128,.85)", "rgba(125,211,252,.28)", "rgba(74,222,128,0)"]}
             ringMaxRadius={2.5}
             ringPropagationSpeed={0.72}
             ringRepeatPeriod={2600}
-            labelsData={points}
-            labelLat="lat"
-            labelLng="lng"
-            labelText={(point) => (point as HostGlobePoint).label}
-            labelAltitude={0.085}
-            labelSize={0.82}
-            labelColor={(point) => (hoveredPoint?.host.id === (point as HostGlobePoint).host.id ? "#ffffff" : "rgba(226,232,240,.84)")}
-            labelDotRadius={0}
-            labelIncludeDot={false}
-            labelResolution={3}
-            labelsTransitionDuration={0}
-            labelLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
-            onLabelHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}
-            onLabelClick={(point) => onEdit((point as HostGlobePoint).host)}
+            htmlElementsData={points}
+            htmlLat="displayLat"
+            htmlLng="displayLng"
+            htmlAltitude={0.12}
+            htmlElement={(point) => createHostGlobeLabelElement(point as HostGlobePoint)}
+            htmlTransitionDuration={0}
             pointLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
             onPointHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}
             onPointClick={(point) => onEdit((point as HostGlobePoint).host)}
-            showPointerCursor={(objectType) => objectType === "point" || objectType === "label"}
+            showPointerCursor={(objectType) => objectType === "point"}
             enablePointerInteraction
             onGlobeReady={() => setGlobeReady(true)}
           />
