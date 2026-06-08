@@ -1,3 +1,4 @@
+import dns from "node:dns/promises";
 import * as db from "./db";
 
 const GEO_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -30,9 +31,19 @@ function pickLookupAddress(host: any) {
   for (const candidate of candidates) {
     const value = String(candidate || "").trim();
     if (!value) continue;
-    if (value.includes(":") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return value;
+    return value;
   }
   return "";
+}
+
+function isIpAddress(value: string) {
+  return value.includes(":") || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+}
+
+async function resolveLookupAddress(address: string) {
+  if (isIpAddress(address)) return address;
+  const result = await dns.lookup(address, { family: 0, verbatim: false });
+  return result.address;
 }
 
 async function fetchHostGeo(address: string) {
@@ -74,7 +85,8 @@ async function refreshHostGeo(host: any) {
     if (!address) {
       return;
     }
-    const geo = await fetchHostGeo(address);
+    const lookupAddress = await resolveLookupAddress(address);
+    const geo = await fetchHostGeo(lookupAddress);
     await db.updateHost(hostId, geo as any);
   } catch (error: any) {
     console.warn(`[HostGeo] refresh failed host=${hostId}:`, error?.message || error);
