@@ -424,6 +424,48 @@ function renderTunnelGlobeHostTooltip(point: TunnelGlobeHostPoint) {
   `;
 }
 
+function buildTunnelGlobeDataKey(tunnels: any[], chainGroups: any[], hosts: any[], isTunnelSupported: (tunnel: any) => boolean) {
+  const hostParts = (hosts || [])
+    .map((host: any) => [
+      Number(host?.id || 0),
+      host?.name || "",
+      host?.ip || "",
+      host?.geoLatitudeMicro ?? "",
+      host?.geoLongitudeMicro ?? "",
+      host?.geoCountryCode || "",
+      host?.geoCountryName || "",
+      host?.geoRegion || "",
+    ].join(":"))
+    .sort();
+  const tunnelParts = (tunnels || [])
+    .map((tunnel: any) => [
+      Number(tunnel?.id || 0),
+      tunnel?.name || "",
+      tunnel?.mode || "",
+      Number(!!isTunnelSupported(tunnel)),
+      Number(!!tunnel?.isRunning),
+      Number(!!tunnel?.isEnabled),
+      tunnel?.lastLatencyMs ?? "",
+      tunnel?.lastTestStatus || "",
+      getTunnelHopIds(tunnel).join(">"),
+    ].join(":"))
+    .sort();
+  const chainParts = (chainGroups || [])
+    .map((group: any) => [
+      Number(group?.id || 0),
+      group?.name || "",
+      Number(!!group?.isEnabled),
+      group?.latestLatencyMs ?? "",
+      Number(!!group?.latestLatencyIsTimeout),
+      [...(group?.members || [])]
+        .sort((a: any, b: any) => Number(a?.priority || 0) - Number(b?.priority || 0))
+        .map((member: any) => `${Number(member?.hostId || 0)}:${Number(member?.priority || 0)}`)
+        .join(">"),
+    ].join(":"))
+    .sort();
+  return [hostParts.join("|"), tunnelParts.join("|"), chainParts.join("|")].join("\n");
+}
+
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   forwardx: "ForwardX",
   tls: "TLS",
@@ -518,6 +560,10 @@ function TunnelWorldGlobe({
   const [hoveredLink, setHoveredLink] = useState<TunnelGlobeLink | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<TunnelGlobeHostPoint | null>(null);
   const [countries, setCountries] = useState<TunnelGlobeCountryFeature[]>([]);
+  const globeDataKey = useMemo(
+    () => buildTunnelGlobeDataKey(tunnels, chainGroups, hosts, isTunnelSupported),
+    [chainGroups, hosts, isTunnelSupported, tunnels]
+  );
 
   const globeData = useMemo(() => {
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
@@ -635,7 +681,7 @@ function TunnelWorldGlobe({
       hostPoints: Array.from(hostPointById.values()),
       skipped,
     };
-  }, [chainGroups, hosts, isTunnelSupported, tunnels]);
+  }, [globeDataKey]);
 
   const hostCountryCodes = useMemo(() => {
     const codes = new Set<string>();
@@ -773,10 +819,10 @@ function TunnelWorldGlobe({
                 if (item.visualLayer === "flow") return hovered ? 2 : 1.55;
                 return hovered ? 3.05 : 2.35;
               }}
-              pathDashLength={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.18 : 1}
-              pathDashGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.12 : 0}
+              pathDashLength={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.16 : 1}
+              pathDashGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.07 : 0}
               pathDashInitialGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? (path as TunnelGlobePath).flowPhase : 0}
-              pathDashAnimateTime={3200}
+              pathDashAnimateTime={6800}
               pathsTransitionDuration={0}
               pathLabel={(path) => renderTunnelGlobeLinkTooltip((path as TunnelGlobePath).link)}
               onPathHover={(path) => setHoveredLink((path as TunnelGlobePath | null)?.link || null)}
