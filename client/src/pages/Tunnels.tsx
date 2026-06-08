@@ -374,7 +374,7 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
   const projectedLng = dLng * lngScale;
   const distance = Math.sqrt(dLat * dLat + projectedLng * projectedLng);
   const layerOffset = path.layerIndex - (path.layerCount - 1) / 2;
-  const sideSpacing = path.layerCount > 1 ? Math.min(4.4, Math.max(0.9, globeDistanceDegrees(path) / 40)) : 0;
+  const sideSpacing = path.layerCount > 1 ? Math.min(7.5, Math.max(1.8, globeDistanceDegrees(path) / 24)) : 0;
   const offset = layerOffset * sideSpacing;
   const offsetLat = distance > 0 ? (projectedLng / distance) * offset : 0;
   const offsetLng = distance > 0 ? (-dLat / (distance * lngScale)) * offset : 0;
@@ -770,11 +770,11 @@ function TunnelWorldGlobe({
               pathStroke={(path) => {
                 const item = path as TunnelGlobePath;
                 const hovered = hoveredLink?.id === item.link.id;
-                if (item.visualLayer === "flow") return hovered ? 1.6 : 1.2;
-                return hovered ? 2.45 : 1.95;
+                if (item.visualLayer === "flow") return hovered ? 2 : 1.55;
+                return hovered ? 3.05 : 2.35;
               }}
-              pathDashLength={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.16 : 1}
-              pathDashGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.84 : 0}
+              pathDashLength={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.18 : 1}
+              pathDashGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? 0.12 : 0}
               pathDashInitialGap={(path) => (path as TunnelGlobePath).visualLayer === "flow" ? (path as TunnelGlobePath).flowPhase : 0}
               pathDashAnimateTime={3200}
               pathsTransitionDuration={0}
@@ -1447,7 +1447,7 @@ function TunnelsContent() {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
     setActiveSection("chains");
-    handleChainViewModeChange("card");
+    handleChainViewModeChange("globe");
     setChainEditRequest({ id: groupId, requestKey: Date.now() });
   };
   const canCreateTunnel = !!hosts?.length
@@ -1887,18 +1887,30 @@ function TunnelsContent() {
 
         <TabsContent value="chains" className="space-y-4">
           {chainViewMode === "globe" ? (
-            (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
-              <DataSectionLoading label="正在加载全球链路地图" />
-            ) : (
-              <TunnelWorldGlobe
-                tunnels={tunnels || []}
-                chainGroups={chainGroups}
-                hosts={hosts || []}
-                isTunnelSupported={isTunnelSupported}
-                onEditTunnel={openEdit}
-                onEditChain={handleGlobeChainEdit}
-              />
-            )
+            <>
+              {(isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
+                <DataSectionLoading label="正在加载全球链路地图" />
+              ) : (
+                <TunnelWorldGlobe
+                  tunnels={tunnels || []}
+                  chainGroups={chainGroups}
+                  hosts={hosts || []}
+                  isTunnelSupported={isTunnelSupported}
+                  onEditTunnel={openEdit}
+                  onEditChain={handleGlobeChainEdit}
+                />
+              )}
+              <div className="hidden" aria-hidden>
+                <ForwardGroupsContent
+                  mode="chain"
+                  embedded
+                  viewMode="card"
+                  hideHeaderActions
+                  editRequest={chainEditRequest}
+                  onEditRequestConsumed={() => setChainEditRequest(null)}
+                />
+              </div>
+            </>
           ) : (
             <ForwardGroupsContent
               mode="chain"

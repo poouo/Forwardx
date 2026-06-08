@@ -563,9 +563,9 @@ export function ForwardGroupsContent({
 
   useEffect(() => {
     if (!editRequest || editRequest.requestKey === lastEditRequestKeyRef.current) return;
-    lastEditRequestKeyRef.current = editRequest.requestKey;
     const group = visibleGroups.find((item: any) => Number(item.id) === Number(editRequest.id));
     if (group) {
+      lastEditRequestKeyRef.current = editRequest.requestKey;
       openEdit(group);
       onEditRequestConsumed?.();
     }
