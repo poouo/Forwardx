@@ -50,6 +50,7 @@ import {
   LayoutGrid,
   List,
   Globe,
+  MapPinned,
   Download,
   AlertTriangle,
   Loader2,
@@ -61,6 +62,7 @@ import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
+const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
 const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
@@ -598,7 +600,7 @@ const defaultFormData: HostFormData = {
   portRangeEnd: null,
 };
 
-type HostViewMode = "card" | "table" | "map";
+type HostViewMode = "card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
@@ -608,7 +610,7 @@ function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(HOST_VIEW_MODE_STORAGE_KEY);
-    return value === "table" || value === "map" ? value : "card";
+    return value === "table" || value === "map" || value === "flat-map" ? value : "card";
   } catch {
     return "card";
   }
@@ -1194,10 +1196,19 @@ function HostsContent() {
                   variant={viewMode === "map" ? "secondary" : "ghost"}
                   size="icon"
                   className="hidden h-8 w-8 rounded-none md:inline-flex"
-                  title="地图视图"
+                  title="3D 地球视图"
                   onClick={() => handleViewModeChange("map")}
                 >
                   <Globe className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === "flat-map" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="hidden h-8 w-8 rounded-none md:inline-flex"
+                  title="平面地图视图"
+                  onClick={() => handleViewModeChange("flat-map")}
+                >
+                  <MapPinned className="h-4 w-4" />
                 </Button>
               </div>
             </>
@@ -1281,6 +1292,36 @@ function HostsContent() {
         {viewMode === "map" ? (
           <>
             <HostWorldMap hosts={displayHosts} onEdit={openEdit} />
+            <div className="grid grid-cols-1 gap-4 md:hidden">
+              {pagedHosts.map((host) => (
+                <HostCard
+                  key={host.id}
+                  host={host}
+                  onEdit={openEdit}
+                  onDelete={(id) => deleteMutation.mutate({ id })}
+                  onUpgrade={requestAgentUpgrade}
+                  canUpgrade={user?.role === "admin"}
+                  latestAgentVersion={latestAgentVersion}
+                  refreshInterval={hostRefreshInterval}
+                />
+              ))}
+            </div>
+            <div className="md:hidden">
+              <PersistentPagination pagination={hostPagination} itemName="台主机" />
+            </div>
+          </>
+        ) : viewMode === "flat-map" ? (
+          <>
+            <Suspense
+              fallback={
+                <div className="hidden min-h-[720px] items-center justify-center rounded-md border border-border/40 bg-[#020617] text-sm text-white/70 md:flex">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  正在加载平面地图
+                </div>
+              }
+            >
+              <HostFlatMap hosts={displayHosts} onEdit={openEdit} />
+            </Suspense>
             <div className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
@@ -1472,7 +1513,7 @@ function HostsContent() {
             </Card>
           </>
         )}
-        {viewMode !== "map" && <PersistentPagination pagination={hostPagination} itemName="台主机" />}
+        {viewMode !== "map" && viewMode !== "flat-map" && <PersistentPagination pagination={hostPagination} itemName="台主机" />}
         </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
