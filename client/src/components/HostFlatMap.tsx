@@ -1,9 +1,10 @@
 import DeckGL from "@deck.gl/react";
-import { GeoJsonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, LineLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import MapLibreMap from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 
 const HOST_MAP_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 
@@ -72,7 +73,7 @@ function hostGeoCoordinate(host: any) {
 }
 
 function hostCountryCode(host: any) {
-  return String(host?.geoCountryCode || "").trim().toUpperCase();
+  return normalizeCountryCode(host?.geoCountryCode);
 }
 
 function hostFlagUrl(host: any) {
@@ -99,6 +100,10 @@ function hostMapClusterKey(point: HostMapPoint) {
   return `${Math.round(point.lat * 3) / 3}:${Math.round(point.lng * 3) / 3}`;
 }
 
+function hostMapPointPulledOut(point: HostMapPoint) {
+  return Math.abs(point.lat - point.displayLat) > 0.01 || Math.abs(point.lng - point.displayLng) > 0.01;
+}
+
 function spreadHostMapPoints(points: HostMapPoint[]) {
   const groups = new Map<string, HostMapPoint[]>();
   points.forEach((point) => {
@@ -113,11 +118,11 @@ function spreadHostMapPoints(points: HostMapPoint[]) {
     if (group.length <= 1) return point;
     const index = group.findIndex((item) => item.host.id === point.host.id);
     const angle = ((Math.PI * 2) / group.length) * Math.max(0, index) - Math.PI / 2;
-    const radius = Math.min(2.4, 0.75 + group.length * 0.22);
+    const radius = Math.min(5.5, 1.4 + group.length * 0.45);
     const lngScale = Math.max(0.4, Math.cos((point.lat * Math.PI) / 180));
     return {
       ...point,
-      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.58),
+      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.66),
       displayLng: normalizeLongitude(point.lng + (Math.cos(angle) * radius) / lngScale),
     };
   });
@@ -233,6 +238,15 @@ export default function HostFlatMap({
   const points = useMemo(() => buildHostMapPoints(hosts), [hosts]);
   const missingCount = Math.max(0, hosts.length - points.length);
   const initialViewState = useMemo(() => getInitialMapView(points), [points]);
+  const leaderPoints = useMemo(() => points.filter(hostMapPointPulledOut), [points]);
+  const hostCountryCodes = useMemo(() => {
+    const codes = new Set<string>();
+    hosts.forEach((host) => {
+      const code = hostCountryCode(host);
+      if (code) codes.add(code);
+    });
+    return codes;
+  }, [hosts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,9 +278,21 @@ export default function HostFlatMap({
       filled: true,
       extruded: false,
       lineWidthUnits: "pixels",
-      getLineWidth: 1,
-      getLineColor: [226, 232, 240, 150],
-      getFillColor: [15, 23, 42, 88],
+      getLineWidth: (feature) => countryFeatureHasCode(feature as CountryFeatureLike, hostCountryCodes) ? 2 : 1,
+      getLineColor: (feature) => countryFeatureHasCode(feature as CountryFeatureLike, hostCountryCodes) ? [125, 211, 252, 245] : [148, 163, 184, 60],
+      getFillColor: (feature) => countryFeatureHasCode(feature as CountryFeatureLike, hostCountryCodes) ? [14, 165, 233, 112] : [15, 23, 42, 28],
+    }),
+    new LineLayer<HostMapPoint>({
+      id: "host-flat-map-leaders",
+      data: leaderPoints,
+      pickable: false,
+      widthUnits: "pixels",
+      widthMinPixels: 1,
+      widthMaxPixels: 2,
+      getSourcePosition: (point) => [point.lng, point.lat],
+      getTargetPosition: (point) => [point.displayLng, point.displayLat],
+      getColor: (point) => point.host.isOnline ? [125, 211, 252, 185] : [251, 191, 36, 170],
+      getWidth: 1.4,
     }),
     new ScatterplotLayer<HostMapPoint>({
       id: "host-flat-map-halo",
@@ -312,7 +338,7 @@ export default function HostFlatMap({
       fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       fontWeight: 700,
     }),
-  ], [countries, points]);
+  ], [countries, hostCountryCodes, leaderPoints, points]);
 
   return (
     <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#020617] shadow-sm md:block">

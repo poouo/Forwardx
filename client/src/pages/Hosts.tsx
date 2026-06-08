@@ -34,6 +34,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { trpc } from "@/lib/trpc";
 import {
   Plus,
@@ -252,6 +253,11 @@ type HostGlobePoint = {
   label: string;
 };
 
+type HostGlobeLeaderPath = {
+  point: HostGlobePoint;
+  coords: Array<{ lat: number; lng: number; alt: number }>;
+};
+
 type GlobeCountryFeature = {
   type: "Feature";
   properties?: Record<string, unknown>;
@@ -272,7 +278,7 @@ function normalizeLongitude(lng: number) {
 }
 
 function hostCountryCode(host: any) {
-  return String(host?.geoCountryCode || "").trim().toUpperCase();
+  return normalizeCountryCode(host?.geoCountryCode);
 }
 
 function hostFlagUrl(host: any) {
@@ -289,6 +295,10 @@ function hostGlobeClusterKey(point: HostGlobePoint) {
   return `${Math.round(point.lat * 2) / 2}:${Math.round(point.lng * 2) / 2}`;
 }
 
+function hostGlobePointPulledOut(point: HostGlobePoint) {
+  return Math.abs(point.lat - point.displayLat) > 0.01 || Math.abs(point.lng - point.displayLng) > 0.01;
+}
+
 function spreadHostGlobePoints(points: HostGlobePoint[]) {
   const groups = new Map<string, HostGlobePoint[]>();
   points.forEach((point) => {
@@ -303,17 +313,29 @@ function spreadHostGlobePoints(points: HostGlobePoint[]) {
     if (group.length <= 1) return point;
     const index = group.findIndex((item) => item.host.id === point.host.id);
     const angle = ((Math.PI * 2) / group.length) * Math.max(0, index) - Math.PI / 2;
-    const radius = Math.min(1.8, 0.52 + group.length * 0.18);
+    const radius = Math.min(4.2, 1.3 + group.length * 0.38);
     const lngScale = Math.max(0.35, Math.cos((point.lat * Math.PI) / 180));
     return {
       ...point,
-      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.56),
+      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.62),
       displayLng: normalizeLongitude(point.lng + (Math.cos(angle) * radius) / lngScale),
     };
   });
 }
 
-function createHostGlobeLabelElement(point: HostGlobePoint) {
+function createHostGlobeLeaderPaths(points: HostGlobePoint[]): HostGlobeLeaderPath[] {
+  return points
+    .filter(hostGlobePointPulledOut)
+    .map((point) => ({
+      point,
+      coords: [
+        { lat: point.lat, lng: point.lng, alt: 0.052 },
+        { lat: point.displayLat, lng: point.displayLng, alt: 0.112 },
+      ],
+    }));
+}
+
+function createHostGlobeLabelElement(point: HostGlobePoint, onEdit: (host: any) => void) {
   const element = document.createElement("div");
   element.innerHTML = `
     <span style="width:7px;height:7px;flex:0 0 auto;border-radius:999px;background:${point.color};box-shadow:0 0 10px ${point.glowColor};"></span>
@@ -339,8 +361,14 @@ function createHostGlobeLabelElement(point: HostGlobePoint) {
     "transform:translate(-50%,-50%)",
     "pointer-events:auto",
     "user-select:none",
+    "cursor:pointer",
   ].join(";");
   element.title = `${point.host.name || point.label} · ${point.regionText || "地区获取中"}`;
+  element.addEventListener("pointerdown", (event) => event.stopPropagation());
+  element.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onEdit(point.host);
+  });
   return element;
 }
 
@@ -433,6 +461,15 @@ function HostWorldMap({
 
   const missingCount = Math.max(0, hosts.length - points.length);
   const onlinePoints = useMemo(() => points.filter((point) => point.host.isOnline), [points]);
+  const leaderPaths = useMemo(() => createHostGlobeLeaderPaths(points), [points]);
+  const hostCountryCodes = useMemo(() => {
+    const codes = new Set<string>();
+    hosts.forEach((host) => {
+      const code = hostCountryCode(host);
+      if (code) codes.add(code);
+    });
+    return codes;
+  }, [hosts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -524,12 +561,21 @@ function HostWorldMap({
             globeCurvatureResolution={4}
             polygonsData={countries}
             polygonGeoJsonGeometry="geometry"
-            polygonAltitude={0.008}
-            polygonCapColor={() => "rgba(15,23,42,.28)"}
-            polygonSideColor={() => "rgba(2,6,23,.55)"}
-            polygonStrokeColor={() => "rgba(248,250,252,.88)"}
+            polygonAltitude={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? 0.014 : 0.004}
+            polygonCapColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.42)" : "rgba(15,23,42,.05)"}
+            polygonSideColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.28)" : "rgba(2,6,23,.14)"}
+            polygonStrokeColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(125,211,252,.96)" : "rgba(148,163,184,.22)"}
             polygonCapCurvatureResolution={4}
             polygonsTransitionDuration={0}
+            pathsData={leaderPaths}
+            pathPoints="coords"
+            pathPointLat="lat"
+            pathPointLng="lng"
+            pathPointAlt="alt"
+            pathResolution={2}
+            pathColor={(path: object) => ((path as HostGlobeLeaderPath).point.host.isOnline ? "rgba(125,211,252,.8)" : "rgba(251,191,36,.78)")}
+            pathStroke={1.35}
+            pathTransitionDuration={0}
             pointsData={points}
             pointLat="displayLat"
             pointLng="displayLng"
@@ -550,7 +596,7 @@ function HostWorldMap({
             htmlLat="displayLat"
             htmlLng="displayLng"
             htmlAltitude={0.12}
-            htmlElement={(point) => createHostGlobeLabelElement(point as HostGlobePoint)}
+            htmlElement={(point) => createHostGlobeLabelElement(point as HostGlobePoint, onEdit)}
             htmlTransitionDuration={0}
             pointLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
             onPointHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}
