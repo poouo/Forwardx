@@ -72,9 +72,9 @@ const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const HOST_GLOBE_CLUSTER_DISTANCE_DEGREES = 2.4;
-const HOST_GLOBE_LABEL_PULL_DEGREES = 15.5;
-const HOST_GLOBE_LABEL_ROW_DEGREES = 6.4;
-const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 5;
+const HOST_GLOBE_LABEL_PULL_DEGREES = 8.2;
+const HOST_GLOBE_LABEL_ROW_DEGREES = 3.8;
+const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 6;
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -340,8 +340,8 @@ function spreadHostGlobePoints(points: HostGlobePoint[]) {
     if (cluster.points.length <= 1) return cluster.points;
     const sorted = cluster.points.slice().sort((a, b) => String(a.host.name || "").localeCompare(String(b.host.name || "")) || Number(a.host.id || 0) - Number(b.host.id || 0));
     const lngScale = Math.max(0.36, Math.cos((cluster.centerLat * Math.PI) / 180));
-    const pullLng = HOST_GLOBE_LABEL_PULL_DEGREES + Math.min(10, sorted.length * 0.9);
-    const rowStep = Math.max(HOST_GLOBE_LABEL_ROW_DEGREES, Math.min(10, 5.6 + sorted.length * 0.55));
+    const pullLng = HOST_GLOBE_LABEL_PULL_DEGREES + Math.min(6, sorted.length * 0.55);
+    const rowStep = Math.max(HOST_GLOBE_LABEL_ROW_DEGREES, Math.min(6.2, 3.2 + sorted.length * 0.35));
     return sorted.map((point, index) => {
       const column = Math.floor(index / HOST_GLOBE_MAX_LABELS_PER_COLUMN);
       const row = index % HOST_GLOBE_MAX_LABELS_PER_COLUMN;
@@ -350,7 +350,7 @@ function spreadHostGlobePoints(points: HostGlobePoint[]) {
       return {
         ...point,
         displayLat: clampLatitude(cluster.centerLat + rowOffset * rowStep),
-        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 10.5) / lngScale),
+        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 6.8) / lngScale),
       };
     });
   });

@@ -138,14 +138,17 @@ type TunnelGlobeLink = {
   glowColor: string;
 };
 
-type TunnelGlobeArc = {
+type TunnelGlobePath = {
   link: TunnelGlobeLink;
   segmentIndex: number;
+  layerIndex: number;
+  layerCount: number;
   startLat: number;
   startLng: number;
   endLat: number;
   endLng: number;
   altitude: number;
+  coords: Array<{ lat: number; lng: number; alt: number }>;
 };
 
 type TunnelGlobeCountryFeature = CountryFeatureLike & {
@@ -325,7 +328,20 @@ function formatGlobeLatency(value: unknown, timeout?: unknown) {
   return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
 }
 
-function globeDistanceDegrees(start: Pick<TunnelGlobeArc, "startLat" | "startLng" | "endLat" | "endLng">) {
+function normalizeLongitude(lng: number) {
+  if (lng < -180) return lng + 360;
+  if (lng > 180) return lng - 360;
+  return lng;
+}
+
+function longitudeDeltaDegrees(from: number, to: number) {
+  let delta = to - from;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return delta;
+}
+
+function globeDistanceDegrees(start: Pick<TunnelGlobePath, "startLat" | "startLng" | "endLat" | "endLng">) {
   const toRad = (value: number) => (value * Math.PI) / 180;
   const lat1 = toRad(start.startLat);
   const lat2 = toRad(start.endLat);
@@ -333,6 +349,33 @@ function globeDistanceDegrees(start: Pick<TunnelGlobeArc, "startLat" | "startLng
   const lng2 = toRad(start.endLng);
   const angle = Math.acos(Math.min(1, Math.max(-1, Math.sin(lat1) * Math.sin(lat2) + Math.cos(lat1) * Math.cos(lat2) * Math.cos(lng2 - lng1))));
   return (angle * 180) / Math.PI;
+}
+
+function tunnelGlobeArcLayerKey(start: TunnelGlobeHostPoint, end: TunnelGlobeHostPoint) {
+  const a = `${start.id}:${start.lat.toFixed(3)}:${start.lng.toFixed(3)}`;
+  const b = `${end.id}:${end.lat.toFixed(3)}:${end.lng.toFixed(3)}`;
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "startLng" | "endLat" | "endLng" | "altitude" | "layerIndex" | "layerCount">) {
+  const dLat = path.endLat - path.startLat;
+  const dLng = longitudeDeltaDegrees(path.startLng, path.endLng);
+  const midLat = (path.startLat + path.endLat) / 2;
+  const midLng = normalizeLongitude(path.startLng + dLng / 2);
+  const lngScale = Math.max(0.35, Math.cos((midLat * Math.PI) / 180));
+  const projectedLng = dLng * lngScale;
+  const distance = Math.sqrt(dLat * dLat + projectedLng * projectedLng);
+  const layerOffset = path.layerIndex - (path.layerCount - 1) / 2;
+  const sideSpacing = path.layerCount > 1 ? Math.min(7, Math.max(1.6, globeDistanceDegrees(path) / 22)) : 0;
+  const offset = layerOffset * sideSpacing;
+  const offsetLat = distance > 0 ? (projectedLng / distance) * offset : 0;
+  const offsetLng = distance > 0 ? (-dLat / (distance * lngScale)) * offset : 0;
+
+  return [
+    { lat: path.startLat, lng: path.startLng, alt: 0.045 },
+    { lat: Math.max(-85, Math.min(85, midLat + offsetLat)), lng: normalizeLongitude(midLng + offsetLng), alt: path.altitude },
+    { lat: path.endLat, lng: path.endLng, alt: 0.045 },
+  ];
 }
 
 function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
@@ -530,27 +573,45 @@ function TunnelWorldGlobe({
       });
     });
 
-    const arcs = links.flatMap((link) => link.routeHosts.slice(0, -1).map((start, index) => {
-      const end = link.routeHosts[index + 1];
-      const arc: TunnelGlobeArc = {
+    const rawSegments = links.flatMap((link) => link.routeHosts.slice(0, -1).map((start, index) => ({
+      link,
+      segmentIndex: index,
+      start,
+      end: link.routeHosts[index + 1],
+      layerKey: tunnelGlobeArcLayerKey(start, link.routeHosts[index + 1]),
+    })));
+    const totalLayersByKey = rawSegments.reduce((acc, segment) => {
+      acc.set(segment.layerKey, (acc.get(segment.layerKey) || 0) + 1);
+      return acc;
+    }, new Map<string, number>());
+    const usedLayersByKey = new Map<string, number>();
+    const paths = rawSegments.map((segment) => {
+      const { link, start, end, segmentIndex, layerKey } = segment;
+      const layerIndex = usedLayersByKey.get(layerKey) || 0;
+      usedLayersByKey.set(layerKey, layerIndex + 1);
+      const layerCount = totalLayersByKey.get(layerKey) || 1;
+      const path: TunnelGlobePath = {
         link,
-        segmentIndex: index,
+        segmentIndex,
+        layerIndex,
+        layerCount,
         startLat: start.lat,
         startLng: start.lng,
         endLat: end.lat,
         endLng: end.lng,
-        altitude: 0.2,
+        altitude: 0.12,
+        coords: [],
       };
-      const distance = globeDistanceDegrees(arc);
-      return {
-        ...arc,
-        altitude: Math.max(0.14, Math.min(0.68, 0.12 + distance / 260)),
-      };
-    }));
+      const distance = globeDistanceDegrees(path);
+      const baseAltitude = Math.max(0.065, Math.min(0.19, 0.055 + distance / 1100));
+      path.altitude = baseAltitude + Math.min(0.035, Math.abs(layerIndex - (layerCount - 1) / 2) * 0.012);
+      path.coords = createTunnelGlobePathCoords(path);
+      return path;
+    });
 
     return {
       links,
-      arcs,
+      paths,
       hostPoints: Array.from(hostPointById.values()),
       skipped,
     };
@@ -676,26 +737,26 @@ function TunnelWorldGlobe({
               pointColor={() => "#e0f2fe"}
               pointLabel={(point) => renderTunnelGlobeHostTooltip(point as TunnelGlobeHostPoint)}
               onPointHover={(point) => setHoveredPoint(point as TunnelGlobeHostPoint | null)}
-              arcsData={globeData.arcs}
-              arcStartLat="startLat"
-              arcStartLng="startLng"
-              arcEndLat="endLat"
-              arcEndLng="endLng"
-              arcAltitude={(arc) => (arc as TunnelGlobeArc).altitude}
-              arcColor={(arc) => (arc as TunnelGlobeArc).link.color}
-              arcStroke={(arc) => hoveredLink?.id === (arc as TunnelGlobeArc).link.id ? 1.9 : 1.35}
-              arcDashLength={0.36}
-              arcDashGap={0.18}
-              arcDashInitialGap={(arc) => (arc as TunnelGlobeArc).segmentIndex * 0.08}
-              arcDashAnimateTime={4200}
-              arcsTransitionDuration={0}
-              arcLabel={(arc) => renderTunnelGlobeLinkTooltip((arc as TunnelGlobeArc).link)}
-              onArcHover={(arc) => setHoveredLink((arc as TunnelGlobeArc | null)?.link || null)}
-              onArcClick={(arc) => {
-                const link = (arc as TunnelGlobeArc | null)?.link;
+              pathsData={globeData.paths}
+              pathPoints="coords"
+              pathPointLat="lat"
+              pathPointLng="lng"
+              pathPointAlt="alt"
+              pathResolution={4}
+              pathColor={(path) => (path as TunnelGlobePath).link.color}
+              pathStroke={(path) => hoveredLink?.id === (path as TunnelGlobePath).link.id ? 1.9 : 1.35}
+              pathDashLength={0.36}
+              pathDashGap={0.18}
+              pathDashInitialGap={(path) => (path as TunnelGlobePath).segmentIndex * 0.08 + (path as TunnelGlobePath).layerIndex * 0.14}
+              pathDashAnimateTime={4200}
+              pathsTransitionDuration={0}
+              pathLabel={(path) => renderTunnelGlobeLinkTooltip((path as TunnelGlobePath).link)}
+              onPathHover={(path) => setHoveredLink((path as TunnelGlobePath | null)?.link || null)}
+              onPathClick={(path) => {
+                const link = (path as TunnelGlobePath | null)?.link;
                 if (link) handleLinkEdit(link);
               }}
-              showPointerCursor={(objectType) => objectType === "arc"}
+              showPointerCursor={(objectType) => objectType === "path"}
               enablePointerInteraction
               onGlobeReady={() => setGlobeReady(true)}
             />
