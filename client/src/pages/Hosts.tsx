@@ -185,16 +185,34 @@ function hostRegionText(host: any) {
 }
 
 function HostRegionBadge({ host, compact = false }: { host: any; compact?: boolean }) {
-  const emoji = String(host.geoEmoji || "").trim();
+  const countryCode = String(host.geoCountryCode || "").trim().toLowerCase();
+  const flagUrl = /^[a-z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode}.png` : "";
+  const fallbackCode = countryCode.toUpperCase();
   const regionText = hostRegionText(host);
-  const hasGeo = !!(emoji || regionText);
-  const title = hasGeo ? [emoji, regionText].filter(Boolean).join(" ") : "地区获取中";
+  const hasGeo = !!(flagUrl || regionText);
+  const title = hasGeo ? [fallbackCode, regionText].filter(Boolean).join(" ") : "地区获取中";
   return (
     <span
       className={`inline-flex min-w-0 items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
       title={title}
     >
-      {emoji && <span className="shrink-0 leading-none">{emoji}</span>}
+      {flagUrl && (
+        <>
+          <img
+            src={flagUrl}
+            alt={fallbackCode}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            className={`${compact ? "h-3 w-4" : "h-3.5 w-5"} shrink-0 rounded-[2px] object-cover shadow-sm`}
+            onError={(event) => {
+              event.currentTarget.style.display = "none";
+              const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
+              if (fallback) fallback.style.display = "inline";
+            }}
+          />
+          <span className="hidden shrink-0 font-mono leading-none">{fallbackCode}</span>
+        </>
+      )}
       <span className="min-w-0 truncate">{regionText || "地区获取中"}</span>
     </span>
   );
