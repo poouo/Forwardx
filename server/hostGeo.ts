@@ -20,8 +20,16 @@ function toTime(value: unknown) {
   return Number.isFinite(time) ? time : 0;
 }
 
+function toCoordinateMicro(value: unknown) {
+  if (value == null || value === "") return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return Math.round(num * 1_000_000);
+}
+
 function isRefreshDue(host: any) {
   if (!host?.geoCountryCode && !host?.geoCountryName && !host?.geoEmoji) return true;
+  if (host?.geoLatitudeMicro == null || host?.geoLongitudeMicro == null) return true;
   const updatedAt = toTime(host?.geoUpdatedAt);
   return !updatedAt || Date.now() - updatedAt >= GEO_REFRESH_INTERVAL_MS;
 }
@@ -67,6 +75,8 @@ async function fetchHostGeo(address: string) {
       geoCountryName: String(data.country_name || "").trim() || null,
       geoRegion: String(data.region || "").trim() || null,
       geoEmoji: String(data.emoji || "").trim() || countryCodeToEmoji(countryCode) || null,
+      geoLatitudeMicro: toCoordinateMicro(data.latitude),
+      geoLongitudeMicro: toCoordinateMicro(data.longitude),
       geoUpdatedAt: new Date(),
     };
   } finally {

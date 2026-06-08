@@ -167,6 +167,8 @@ export const hosts = table("hosts", {
   geoCountryName: text("geoCountryName"),
   geoRegion: text("geoRegion"),
   geoEmoji: varchar("geoEmoji", { length: 16 }),
+  geoLatitudeMicro: int("geoLatitudeMicro"),
+  geoLongitudeMicro: int("geoLongitudeMicro"),
   geoUpdatedAt: epoch("geoUpdatedAt"),
   // ===== 端口区间限制 =====
   portRangeStart: int("portRangeStart"),  // 允许转发的起始端口，null = 不限制

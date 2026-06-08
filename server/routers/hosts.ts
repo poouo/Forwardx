@@ -250,6 +250,8 @@ export const hostsRouter = router({
             geoCountryName: null,
             geoRegion: null,
             geoEmoji: null,
+            geoLatitudeMicro: null,
+            geoLongitudeMicro: null,
             geoUpdatedAt: null,
           });
         }

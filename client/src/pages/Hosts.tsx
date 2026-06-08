@@ -49,6 +49,7 @@ import {
   ArrowUpFromLine,
   LayoutGrid,
   List,
+  Globe,
   Download,
   AlertTriangle,
   Loader2,
@@ -61,6 +62,8 @@ import { toast } from "sonner";
 const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
 const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
+const MAP_WIDTH = 1000;
+const MAP_HEIGHT = 520;
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -218,6 +221,227 @@ function HostRegionBadge({ host, compact = false }: { host: any; compact?: boole
   );
 }
 
+const WORLD_LAND_PATHS = [
+  "M88 150 C130 115 205 102 268 125 C310 139 335 178 318 214 C298 256 229 248 211 286 C196 318 235 338 222 365 C204 409 137 377 126 325 C116 278 80 263 66 222 C54 186 63 163 88 150 Z",
+  "M285 292 C328 310 352 355 342 401 C334 444 298 489 270 501 C244 465 230 417 238 368 C244 330 254 306 285 292 Z",
+  "M423 132 C474 108 552 112 598 146 C640 174 633 217 590 236 C544 257 486 238 448 255 C416 270 381 246 390 207 C397 174 399 146 423 132 Z",
+  "M506 248 C546 242 585 269 601 320 C616 369 599 424 555 454 C522 423 490 367 490 315 C490 282 496 259 506 248 Z",
+  "M593 160 C674 118 792 127 893 166 C948 187 969 234 931 269 C882 315 784 285 730 311 C670 339 624 298 641 244 C656 198 620 181 593 160 Z",
+  "M772 363 C828 345 885 358 908 397 C879 428 823 430 772 411 C746 401 747 374 772 363 Z",
+  "M438 74 C487 38 558 47 586 84 C558 118 483 118 438 101 C421 94 420 82 438 74 Z",
+  "M148 486 C274 468 424 463 548 477 C678 492 820 489 938 470 L965 514 L40 514 Z",
+];
+
+const GRATICULE_LONGITUDES = [-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150];
+const GRATICULE_LATITUDES = [-60, -30, 0, 30, 60];
+
+function hostGeoCoordinate(host: any) {
+  if (host?.geoLatitudeMicro == null || host?.geoLongitudeMicro == null) return null;
+  const lat = Number(host.geoLatitudeMicro) / 1_000_000;
+  const lon = Number(host.geoLongitudeMicro) / 1_000_000;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+function projectMapPoint(lat: number, lon: number) {
+  return {
+    x: ((lon + 180) / 360) * MAP_WIDTH,
+    y: ((90 - lat) / 180) * MAP_HEIGHT,
+  };
+}
+
+function HostWorldMap({
+  hosts,
+  onEdit,
+}: {
+  hosts: any[];
+  onEdit: (host: any) => void;
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [hovered, setHovered] = useState<{ host: any; x: number; y: number } | null>(null);
+
+  const points = useMemo(() => hosts
+    .map((host) => {
+      const coord = hostGeoCoordinate(host);
+      if (!coord) return null;
+      return { host, ...coord, ...projectMapPoint(coord.lat, coord.lon) };
+    })
+    .filter(Boolean) as Array<{ host: any; lat: number; lon: number; x: number; y: number }>, [hosts]);
+
+  const missingCount = Math.max(0, hosts.length - points.length);
+
+  const updateHover = (event: any, host: any) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setHovered({
+      host,
+      x: Math.min(rect.width - 260, Math.max(12, event.clientX - rect.left + 14)),
+      y: Math.min(rect.height - 150, Math.max(12, event.clientY - rect.top + 14)),
+    });
+  };
+
+  const handleWheel = (event: any) => {
+    event.preventDefault();
+    const nextFactor = event.deltaY < 0 ? 1.12 : 0.88;
+    setZoom((value) => Math.min(3.2, Math.max(0.85, Number((value * nextFactor).toFixed(3)))));
+  };
+
+  const handleMouseDown = (event: any) => {
+    dragRef.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    setIsDragging(true);
+  };
+
+  const handleMouseMove = (event: any) => {
+    const drag = dragRef.current;
+    if (!drag || !svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const dx = ((event.clientX - drag.x) / Math.max(1, rect.width)) * MAP_WIDTH;
+    const dy = ((event.clientY - drag.y) / Math.max(1, rect.height)) * MAP_HEIGHT;
+    setPan({
+      x: Math.max(-MAP_WIDTH * 0.6, Math.min(MAP_WIDTH * 0.6, drag.panX + dx)),
+      y: Math.max(-MAP_HEIGHT * 0.5, Math.min(MAP_HEIGHT * 0.5, drag.panY + dy)),
+    });
+  };
+
+  const stopDragging = () => {
+    dragRef.current = null;
+    setIsDragging(false);
+  };
+
+  return (
+    <Card className="hidden overflow-hidden border-border/40 bg-card/60 backdrop-blur-md md:block">
+      <CardContent className="p-0">
+        <div className="relative min-h-[520px] overflow-hidden bg-[#071522]">
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
+            className={`h-[520px] w-full select-none ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
+            onWheel={handleWheel}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={stopDragging}
+            onMouseLeave={() => {
+              stopDragging();
+              setHovered(null);
+            }}
+          >
+            <defs>
+              <radialGradient id="hostMapOcean" cx="50%" cy="38%" r="76%">
+                <stop offset="0%" stopColor="#2e6c96" />
+                <stop offset="52%" stopColor="#123e64" />
+                <stop offset="100%" stopColor="#06131f" />
+              </radialGradient>
+              <radialGradient id="hostGlobeHighlight" cx="32%" cy="20%" r="70%">
+                <stop offset="0%" stopColor="#ffffff" stopOpacity="0.28" />
+                <stop offset="38%" stopColor="#ffffff" stopOpacity="0.08" />
+                <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+              </radialGradient>
+              <linearGradient id="hostMapLand" x1="0%" x2="100%" y1="0%" y2="100%">
+                <stop offset="0%" stopColor="#7cc6a4" />
+                <stop offset="55%" stopColor="#4f8f7f" />
+                <stop offset="100%" stopColor="#2f5d65" />
+              </linearGradient>
+              <filter id="hostMapGlow" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <clipPath id="hostGlobeClip">
+                <ellipse cx="500" cy="260" rx="462" ry="238" />
+              </clipPath>
+            </defs>
+
+            <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill="#06131f" />
+            <ellipse cx="500" cy="260" rx="462" ry="238" fill="url(#hostMapOcean)" />
+            <g clipPath="url(#hostGlobeClip)">
+              <rect width={MAP_WIDTH} height={MAP_HEIGHT} fill="url(#hostMapOcean)" />
+              <g transform={`translate(${MAP_WIDTH / 2 + pan.x} ${MAP_HEIGHT / 2 + pan.y}) scale(${zoom}) translate(${-MAP_WIDTH / 2} ${-MAP_HEIGHT / 2})`}>
+                <g opacity="0.24" stroke="#b7d7ea" strokeWidth="1">
+                  {GRATICULE_LONGITUDES.map((lon) => {
+                    const x = projectMapPoint(0, lon).x;
+                    return <path key={`lon-${lon}`} d={`M${x} 22 C${x - 18} 150 ${x - 18} 370 ${x} 498`} fill="none" />;
+                  })}
+                  {GRATICULE_LATITUDES.map((lat) => {
+                    const y = projectMapPoint(lat, 0).y;
+                    return <path key={`lat-${lat}`} d={`M48 ${y} C270 ${y - 24} 730 ${y - 24} 952 ${y}`} fill="none" />;
+                  })}
+                </g>
+                <g opacity="0.92">
+                  {WORLD_LAND_PATHS.map((path, index) => (
+                    <path
+                      key={index}
+                      d={path}
+                      fill="url(#hostMapLand)"
+                      stroke="#bfe7d0"
+                      strokeOpacity="0.34"
+                      strokeWidth="1.2"
+                    />
+                  ))}
+                </g>
+                <g>
+                  {points.map((point) => {
+                    const isOnline = !!point.host.isOnline;
+                    const color = isOnline ? "#58d68d" : "#f5c16c";
+                    return (
+                      <g
+                        key={point.host.id}
+                        transform={`translate(${point.x} ${point.y})`}
+                        className="cursor-pointer"
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onMouseMove={(event) => updateHover(event, point.host)}
+                        onMouseLeave={() => setHovered(null)}
+                        onClick={() => onEdit(point.host)}
+                      >
+                        <circle r="15" fill={color} opacity="0.18" filter="url(#hostMapGlow)" />
+                        <circle r="8" fill={color} opacity="0.32" />
+                        <circle r="4.2" fill={color} stroke="#ffffff" strokeWidth="1.4" />
+                      </g>
+                    );
+                  })}
+                </g>
+              </g>
+            </g>
+            <ellipse cx="500" cy="260" rx="462" ry="238" fill="url(#hostGlobeHighlight)" pointerEvents="none" />
+            <ellipse cx="500" cy="260" rx="462" ry="238" fill="none" stroke="#b7d7ea" strokeOpacity="0.28" strokeWidth="1.5" pointerEvents="none" />
+          </svg>
+
+          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
+            <div className="font-medium">全球主机地图</div>
+            <div className="mt-1 text-white/70">
+              已定位 {points.length} 台 · 待定位 {missingCount} 台
+            </div>
+          </div>
+
+          {hovered && (
+            <div
+              className="pointer-events-none absolute z-10 w-[260px] rounded-md border border-white/12 bg-background/95 p-3 text-xs text-foreground shadow-2xl backdrop-blur-md"
+              style={{ left: hovered.x, top: hovered.y }}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <div className="min-w-0 truncate text-sm font-semibold">{hovered.host.name}</div>
+                <span className={`h-2 w-2 shrink-0 rounded-full ${hovered.host.isOnline ? "bg-chart-2" : "bg-muted-foreground/40"}`} />
+              </div>
+              <div className="mt-2 space-y-1.5 text-muted-foreground">
+                <div className="truncate font-mono">{hostAddressText(hovered.host)}</div>
+                <HostRegionBadge host={hovered.host} compact />
+                <div className="truncate">{hovered.host.osInfo || "系统信息未上报"}</div>
+                <div className="font-mono">{hovered.host.agentVersion ? `Agent v${hovered.host.agentVersion}` : "Agent 未上报"}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 type HostFormData = {
   name: string;
   ip: string;
@@ -240,7 +464,7 @@ const defaultFormData: HostFormData = {
   portRangeEnd: null,
 };
 
-type HostViewMode = "card" | "table";
+type HostViewMode = "card" | "table" | "map";
 type HostManageTab = "hosts" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
@@ -250,7 +474,7 @@ function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(HOST_VIEW_MODE_STORAGE_KEY);
-    return value === "table" ? "table" : "card";
+    return value === "table" || value === "map" ? value : "card";
   } catch {
     return "card";
   }
@@ -818,6 +1042,7 @@ function HostsContent() {
                   variant={viewMode === "card" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
+                  title="卡片视图"
                   onClick={() => handleViewModeChange("card")}
                 >
                   <LayoutGrid className="h-4 w-4" />
@@ -826,9 +1051,19 @@ function HostsContent() {
                   variant={viewMode === "table" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
+                  title="列表视图"
                   onClick={() => handleViewModeChange("table")}
                 >
                   <List className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === "map" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="hidden h-8 w-8 rounded-none md:inline-flex"
+                  title="地图视图"
+                  onClick={() => handleViewModeChange("map")}
+                >
+                  <Globe className="h-4 w-4" />
                 </Button>
               </div>
             </>
@@ -909,7 +1144,28 @@ function HostsContent() {
         </Card>
       ) : hasDisplayHosts ? (
         <>
-        {viewMode === "card" ? (
+        {viewMode === "map" ? (
+          <>
+            <HostWorldMap hosts={displayHosts} onEdit={openEdit} />
+            <div className="grid grid-cols-1 gap-4 md:hidden">
+              {pagedHosts.map((host) => (
+                <HostCard
+                  key={host.id}
+                  host={host}
+                  onEdit={openEdit}
+                  onDelete={(id) => deleteMutation.mutate({ id })}
+                  onUpgrade={requestAgentUpgrade}
+                  canUpgrade={user?.role === "admin"}
+                  latestAgentVersion={latestAgentVersion}
+                  refreshInterval={hostRefreshInterval}
+                />
+              ))}
+            </div>
+            <div className="md:hidden">
+              <PersistentPagination pagination={hostPagination} itemName="台主机" />
+            </div>
+          </>
+        ) : viewMode === "card" ? (
           /* ========== 卡片式布局 ========== */
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {pagedHosts.map((host) => (
@@ -1082,7 +1338,7 @@ function HostsContent() {
             </Card>
           </>
         )}
-        <PersistentPagination pagination={hostPagination} itemName="台主机" />
+        {viewMode !== "map" && <PersistentPagination pagination={hostPagination} itemName="台主机" />}
         </>
       ) : (
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
