@@ -71,6 +71,11 @@ const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
+const HOST_GLOBE_CLUSTER_DISTANCE_DEGREES = 2.4;
+const HOST_GLOBE_LABEL_STEM_DEGREES = 4.2;
+const HOST_GLOBE_LABEL_PULL_DEGREES = 10.5;
+const HOST_GLOBE_LABEL_ROW_DEGREES = 5.2;
+const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 6;
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -241,6 +246,8 @@ type HostGlobePoint = {
   host: any;
   lat: number;
   lng: number;
+  leaderLat: number;
+  leaderLng: number;
   displayLat: number;
   displayLng: number;
   color: string;
@@ -256,6 +263,12 @@ type HostGlobePoint = {
 type HostGlobeLeaderPath = {
   point: HostGlobePoint;
   coords: Array<{ lat: number; lng: number; alt: number }>;
+};
+
+type HostGlobeCluster = {
+  centerLat: number;
+  centerLng: number;
+  points: HostGlobePoint[];
 };
 
 type GlobeCountryFeature = {
@@ -277,6 +290,11 @@ function normalizeLongitude(lng: number) {
   return lng;
 }
 
+function longitudeDistanceDegrees(a: number, b: number) {
+  const diff = Math.abs(a - b);
+  return Math.min(diff, 360 - diff);
+}
+
 function hostCountryCode(host: any) {
   return normalizeCountryCode(host?.geoCountryCode);
 }
@@ -291,35 +309,57 @@ function hostGlobeLabel(host: any) {
   return name.length > 10 ? `${name.slice(0, 9)}…` : name;
 }
 
-function hostGlobeClusterKey(point: HostGlobePoint) {
-  return `${Math.round(point.lat * 2) / 2}:${Math.round(point.lng * 2) / 2}`;
-}
-
 function hostGlobePointPulledOut(point: HostGlobePoint) {
   return Math.abs(point.lat - point.displayLat) > 0.01 || Math.abs(point.lng - point.displayLng) > 0.01;
 }
 
-function spreadHostGlobePoints(points: HostGlobePoint[]) {
-  const groups = new Map<string, HostGlobePoint[]>();
-  points.forEach((point) => {
-    const key = hostGlobeClusterKey(point);
-    const group = groups.get(key);
-    if (group) group.push(point);
-    else groups.set(key, [point]);
-  });
+function hostGlobeClusterDistance(point: HostGlobePoint, cluster: HostGlobeCluster) {
+  const latDiff = point.lat - cluster.centerLat;
+  const lngScale = Math.max(0.35, Math.cos((((point.lat + cluster.centerLat) / 2) * Math.PI) / 180));
+  const lngDiff = longitudeDistanceDegrees(point.lng, cluster.centerLng) * lngScale;
+  return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+}
 
-  return points.map((point) => {
-    const group = groups.get(hostGlobeClusterKey(point)) || [point];
-    if (group.length <= 1) return point;
-    const index = group.findIndex((item) => item.host.id === point.host.id);
-    const angle = ((Math.PI * 2) / group.length) * Math.max(0, index) - Math.PI / 2;
-    const radius = Math.min(4.2, 1.3 + group.length * 0.38);
-    const lngScale = Math.max(0.35, Math.cos((point.lat * Math.PI) / 180));
-    return {
-      ...point,
-      displayLat: clampLatitude(point.lat + Math.sin(angle) * radius * 0.62),
-      displayLng: normalizeLongitude(point.lng + (Math.cos(angle) * radius) / lngScale),
-    };
+function buildHostGlobeClusters(points: HostGlobePoint[]) {
+  const clusters: HostGlobeCluster[] = [];
+  points
+    .slice()
+    .sort((a, b) => a.lng - b.lng || a.lat - b.lat)
+    .forEach((point) => {
+      const cluster = clusters.find((item) => hostGlobeClusterDistance(point, item) <= HOST_GLOBE_CLUSTER_DISTANCE_DEGREES);
+      if (!cluster) {
+        clusters.push({ centerLat: point.lat, centerLng: point.lng, points: [point] });
+        return;
+      }
+      cluster.points.push(point);
+      cluster.centerLat = cluster.points.reduce((sum, item) => sum + item.lat, 0) / cluster.points.length;
+      cluster.centerLng = cluster.points.reduce((sum, item) => sum + item.lng, 0) / cluster.points.length;
+    });
+  return clusters;
+}
+
+function spreadHostGlobePoints(points: HostGlobePoint[]) {
+  return buildHostGlobeClusters(points).flatMap((cluster) => {
+    if (cluster.points.length <= 1) return cluster.points;
+    const sorted = cluster.points.slice().sort((a, b) => String(a.host.name || "").localeCompare(String(b.host.name || "")) || Number(a.host.id || 0) - Number(b.host.id || 0));
+    const lngScale = Math.max(0.36, Math.cos((cluster.centerLat * Math.PI) / 180));
+    const pullLng = HOST_GLOBE_LABEL_STEM_DEGREES + HOST_GLOBE_LABEL_PULL_DEGREES + Math.min(8, sorted.length * 0.6);
+    const rowStep = Math.max(HOST_GLOBE_LABEL_ROW_DEGREES, Math.min(8.2, 4.4 + sorted.length * 0.42));
+    const leaderLat = clampLatitude(cluster.centerLat);
+    const leaderLng = normalizeLongitude(cluster.centerLng + HOST_GLOBE_LABEL_STEM_DEGREES / lngScale);
+    return sorted.map((point, index) => {
+      const column = Math.floor(index / HOST_GLOBE_MAX_LABELS_PER_COLUMN);
+      const row = index % HOST_GLOBE_MAX_LABELS_PER_COLUMN;
+      const columnSize = Math.min(HOST_GLOBE_MAX_LABELS_PER_COLUMN, sorted.length - column * HOST_GLOBE_MAX_LABELS_PER_COLUMN);
+      const rowOffset = row - (columnSize - 1) / 2;
+      return {
+        ...point,
+        leaderLat,
+        leaderLng,
+        displayLat: clampLatitude(cluster.centerLat + rowOffset * rowStep),
+        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 8.2) / lngScale),
+      };
+    });
   });
 }
 
@@ -330,7 +370,8 @@ function createHostGlobeLeaderPaths(points: HostGlobePoint[]): HostGlobeLeaderPa
       point,
       coords: [
         { lat: point.lat, lng: point.lng, alt: 0.052 },
-        { lat: point.displayLat, lng: point.displayLng, alt: 0.112 },
+        { lat: point.leaderLat, lng: point.leaderLng, alt: 0.108 },
+        { lat: point.displayLat, lng: point.displayLng, alt: 0.118 },
       ],
     }));
 }
@@ -452,6 +493,8 @@ function HostWorldMap({
         host,
         lat: coord.lat,
         lng: coord.lng,
+        leaderLat: coord.lat,
+        leaderLng: coord.lng,
         displayLat: coord.lat,
         displayLng: coord.lng,
         color: isOnline ? "#4ade80" : "#fbbf24",

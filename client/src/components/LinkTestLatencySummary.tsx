@@ -93,14 +93,15 @@ export function LinkTestLatencySummary({
 
     return (
       <div className="flex min-w-0 flex-1 flex-col items-end gap-1 text-right text-sm font-semibold">
-        <div className="flex max-w-full flex-wrap justify-end gap-x-3 gap-y-1">
+        <div className="flex max-w-full flex-col items-end gap-1">
           {visibleDetails.map((detail, index) => (
-            <span
+            <div
               key={`${detail.hopLabel || detail.routeLabel || index}`}
-              className={detail.success ? "max-w-full break-words" : "max-w-full break-words text-destructive"}
+              className={detail.success
+                ? "flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 break-words"
+                : "flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 break-words text-destructive"}
             >
-              <span>{formatLinkTestRoute(detail)}</span>
-              {" "}
+              <span className="min-w-0 break-words">{formatLinkTestRoute(detail)}</span>
               {detail.success && hasLatencyValue(detail) ? (
                 renderLatencyValue(detail.latencyMs)
               ) : (
@@ -109,11 +110,11 @@ export function LinkTestLatencySummary({
                   {detail.message ? <span className="font-normal">：{detail.message}</span> : null}
                 </>
               )}
-            </span>
+            </div>
           ))}
         </div>
         {totalLatency !== null ? (
-          <span className="inline-flex items-center gap-1">
+          <span className="inline-flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5">
             <span>总延迟</span>
             {renderLatencyValue(totalLatency)}
           </span>

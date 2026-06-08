@@ -564,7 +564,7 @@ function TunnelSelfTestDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>隧道链路自测 - {tunnelName}</DialogTitle>
           <DialogDescription>检测隧道链路可达性。多级隧道显示逐跳 TCPing 估算值。</DialogDescription>
@@ -579,7 +579,7 @@ function TunnelSelfTestDialog({
             <span className="text-sm text-muted-foreground">链路可达</span>
             <span className="text-sm font-medium">{reachableView}</span>
           </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
             <span className="text-sm text-muted-foreground">链路估算延迟</span>
             <LinkTestLatencySummary
               parsed={parsedMessage}
