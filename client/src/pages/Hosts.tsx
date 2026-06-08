@@ -178,7 +178,7 @@ function hostAddressText(host: any) {
 }
 
 function hostRegionText(host: any) {
-  const parts = [host.geoCountryName, host.geoRegion]
+  const parts = [host.geoCountryName || host.geoCountryCode, host.geoRegion]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.join(" / ");
@@ -187,15 +187,15 @@ function hostRegionText(host: any) {
 function HostRegionBadge({ host, compact = false }: { host: any; compact?: boolean }) {
   const emoji = String(host.geoEmoji || "").trim();
   const regionText = hostRegionText(host);
-  if (!emoji && !regionText) return null;
-  const title = [emoji, regionText].filter(Boolean).join(" ");
+  const hasGeo = !!(emoji || regionText);
+  const title = hasGeo ? [emoji, regionText].filter(Boolean).join(" ") : "地区获取中";
   return (
     <span
-      className={`inline-flex min-w-0 items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${compact ? "text-[10px]" : "text-xs"}`}
+      className={`inline-flex min-w-0 items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
       title={title}
     >
       {emoji && <span className="shrink-0 leading-none">{emoji}</span>}
-      {regionText && <span className="min-w-0 truncate">{regionText}</span>}
+      <span className="min-w-0 truncate">{regionText || "地区获取中"}</span>
     </span>
   );
 }
