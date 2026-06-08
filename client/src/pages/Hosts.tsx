@@ -72,10 +72,9 @@ const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const HOST_GLOBE_CLUSTER_DISTANCE_DEGREES = 2.4;
-const HOST_GLOBE_LABEL_STEM_DEGREES = 4.2;
-const HOST_GLOBE_LABEL_PULL_DEGREES = 10.5;
-const HOST_GLOBE_LABEL_ROW_DEGREES = 5.2;
-const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 6;
+const HOST_GLOBE_LABEL_PULL_DEGREES = 15.5;
+const HOST_GLOBE_LABEL_ROW_DEGREES = 6.4;
+const HOST_GLOBE_MAX_LABELS_PER_COLUMN = 5;
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -246,8 +245,6 @@ type HostGlobePoint = {
   host: any;
   lat: number;
   lng: number;
-  leaderLat: number;
-  leaderLng: number;
   displayLat: number;
   displayLng: number;
   color: string;
@@ -343,10 +340,8 @@ function spreadHostGlobePoints(points: HostGlobePoint[]) {
     if (cluster.points.length <= 1) return cluster.points;
     const sorted = cluster.points.slice().sort((a, b) => String(a.host.name || "").localeCompare(String(b.host.name || "")) || Number(a.host.id || 0) - Number(b.host.id || 0));
     const lngScale = Math.max(0.36, Math.cos((cluster.centerLat * Math.PI) / 180));
-    const pullLng = HOST_GLOBE_LABEL_STEM_DEGREES + HOST_GLOBE_LABEL_PULL_DEGREES + Math.min(8, sorted.length * 0.6);
-    const rowStep = Math.max(HOST_GLOBE_LABEL_ROW_DEGREES, Math.min(8.2, 4.4 + sorted.length * 0.42));
-    const leaderLat = clampLatitude(cluster.centerLat);
-    const leaderLng = normalizeLongitude(cluster.centerLng + HOST_GLOBE_LABEL_STEM_DEGREES / lngScale);
+    const pullLng = HOST_GLOBE_LABEL_PULL_DEGREES + Math.min(10, sorted.length * 0.9);
+    const rowStep = Math.max(HOST_GLOBE_LABEL_ROW_DEGREES, Math.min(10, 5.6 + sorted.length * 0.55));
     return sorted.map((point, index) => {
       const column = Math.floor(index / HOST_GLOBE_MAX_LABELS_PER_COLUMN);
       const row = index % HOST_GLOBE_MAX_LABELS_PER_COLUMN;
@@ -354,10 +349,8 @@ function spreadHostGlobePoints(points: HostGlobePoint[]) {
       const rowOffset = row - (columnSize - 1) / 2;
       return {
         ...point,
-        leaderLat,
-        leaderLng,
         displayLat: clampLatitude(cluster.centerLat + rowOffset * rowStep),
-        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 8.2) / lngScale),
+        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 10.5) / lngScale),
       };
     });
   });
@@ -370,7 +363,6 @@ function createHostGlobeLeaderPaths(points: HostGlobePoint[]): HostGlobeLeaderPa
       point,
       coords: [
         { lat: point.lat, lng: point.lng, alt: 0.052 },
-        { lat: point.leaderLat, lng: point.leaderLng, alt: 0.108 },
         { lat: point.displayLat, lng: point.displayLng, alt: 0.118 },
       ],
     }));
@@ -493,8 +485,6 @@ function HostWorldMap({
         host,
         lat: coord.lat,
         lng: coord.lng,
-        leaderLat: coord.lat,
-        leaderLng: coord.lng,
         displayLat: coord.lat,
         displayLng: coord.lng,
         color: isOnline ? "#4ade80" : "#fbbf24",

@@ -117,6 +117,8 @@ type ForwardGroupsContentProps = {
   onViewModeChange?: (viewMode: ForwardGroupViewMode) => void;
   hideHeaderActions?: boolean;
   createRequestKey?: number;
+  editRequest?: { id: number; requestKey: number } | null;
+  onEditRequestConsumed?: () => void;
 };
 
 const FORWARD_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -473,6 +475,8 @@ export function ForwardGroupsContent({
   onViewModeChange,
   hideHeaderActions = false,
   createRequestKey,
+  editRequest,
+  onEditRequestConsumed,
 }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
@@ -487,6 +491,7 @@ export function ForwardGroupsContent({
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
+  const lastEditRequestKeyRef = useRef(0);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
 
@@ -555,6 +560,16 @@ export function ForwardGroupsContent({
     setEditingId(Number(group.id));
     setShowDialog(true);
   };
+
+  useEffect(() => {
+    if (!editRequest || editRequest.requestKey === lastEditRequestKeyRef.current) return;
+    lastEditRequestKeyRef.current = editRequest.requestKey;
+    const group = visibleGroups.find((item: any) => Number(item.id) === Number(editRequest.id));
+    if (group) {
+      openEdit(group);
+      onEditRequestConsumed?.();
+    }
+  }, [editRequest?.id, editRequest?.requestKey, onEditRequestConsumed, visibleGroups]);
 
   const createMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {

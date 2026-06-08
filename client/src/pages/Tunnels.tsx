@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -44,6 +45,7 @@ import {
   Activity,
   ArrowRight,
   CheckCircle2,
+  Globe,
   LayoutGrid,
   List,
   Loader2,
@@ -56,7 +58,8 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { GlobeMethods } from "react-globe.gl";
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -74,6 +77,8 @@ import {
 } from "recharts";
 import MultiHopEditor from "@/components/MultiHopEditor";
 import { ForwardGroupsContent } from "@/pages/ForwardGroups";
+
+const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 
 type TunnelForm = {
   name: string;
@@ -111,8 +116,52 @@ type TunnelLatencySeriesDatum = {
   isTimeout?: boolean | null;
 };
 
+type TunnelGlobeHostPoint = {
+  host: any;
+  id: number;
+  name: string;
+  lat: number;
+  lng: number;
+  regionText: string;
+};
+
+type TunnelGlobeLink = {
+  id: string;
+  kind: "tunnel" | "chain";
+  item: any;
+  name: string;
+  routeText: string;
+  routeHosts: TunnelGlobeHostPoint[];
+  statusText: string;
+  latencyText: string;
+  color: string;
+  glowColor: string;
+};
+
+type TunnelGlobeArc = {
+  link: TunnelGlobeLink;
+  segmentIndex: number;
+  startLat: number;
+  startLng: number;
+  endLat: number;
+  endLng: number;
+  altitude: number;
+};
+
+type TunnelGlobeCountryFeature = CountryFeatureLike & {
+  type: "Feature";
+  geometry: {
+    type: string;
+    coordinates: unknown;
+  };
+};
+
 const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
 const tunnelLatencyAnimatedKeys = new Set<number>();
+const TUNNEL_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
+const TUNNEL_GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
+const TUNNEL_GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
+const TUNNEL_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 
 const defaultForm: TunnelForm = {
   name: "",
@@ -217,6 +266,113 @@ function normalizeChainConnectHostsForHosts(
   });
 }
 
+function hostGeoCoordinate(host: any) {
+  if (host?.geoLatitudeMicro == null || host?.geoLongitudeMicro == null) return null;
+  const lat = Number(host.geoLatitudeMicro) / 1_000_000;
+  const lng = Number(host.geoLongitudeMicro) / 1_000_000;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
+function hostRegionText(host: any) {
+  return [host?.geoCountryName || host?.geoCountryCode, host?.geoRegion]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function hostCountryCode(host: any) {
+  return normalizeCountryCode(host?.geoCountryCode);
+}
+
+function createTunnelGlobeHostPoint(host: any): TunnelGlobeHostPoint | null {
+  const coord = hostGeoCoordinate(host);
+  if (!coord) return null;
+  const name = String(host?.name || host?.ip || `主机 #${host?.id || "-"}`).trim();
+  return {
+    host,
+    id: Number(host.id),
+    name,
+    lat: coord.lat,
+    lng: coord.lng,
+    regionText: hostRegionText(host),
+  };
+}
+
+function escapeTooltipHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
+}
+
+function formatGlobeLatency(value: unknown, timeout?: unknown) {
+  if (timeout) return "不可达";
+  const latency = Number(value);
+  return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
+}
+
+function globeDistanceDegrees(start: Pick<TunnelGlobeArc, "startLat" | "startLng" | "endLat" | "endLng">) {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const lat1 = toRad(start.startLat);
+  const lat2 = toRad(start.endLat);
+  const lng1 = toRad(start.startLng);
+  const lng2 = toRad(start.endLng);
+  const angle = Math.acos(Math.min(1, Math.max(-1, Math.sin(lat1) * Math.sin(lat2) + Math.cos(lat1) * Math.cos(lat2) * Math.cos(lng2 - lng1))));
+  return (angle * 180) / Math.PI;
+}
+
+function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
+  const routeNodes = link.routeHosts.map((host, index) => `${index + 1}. ${host.name}`).join(" -> ");
+  const rows = [
+    { label: "类型", value: link.kind === "tunnel" ? "隧道链路" : "端口转发链" },
+    { label: "状态", value: link.statusText },
+    { label: "延迟", value: link.latencyText },
+    { label: "链路", value: link.routeText },
+    { label: "节点", value: routeNodes },
+  ];
+  return `
+    <div style="min-width:280px;max-width:360px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
+        <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:700;">${escapeTooltipHtml(link.name)}</div>
+        <div style="display:flex;align-items:center;gap:6px;color:#cbd5e1;font-size:12px;">
+          <span style="width:8px;height:8px;border-radius:999px;background:${link.color};box-shadow:0 0 14px ${link.glowColor};"></span>
+          ${escapeTooltipHtml(link.kind === "tunnel" ? "隧道" : "转发链")}
+        </div>
+      </div>
+      ${rows.map((row) => `
+        <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
+          <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${escapeTooltipHtml(row.value)}</span>
+        </div>
+      `).join("")}
+      <div style="margin-top:10px;color:#93c5fd;font-size:12px;">点击编辑</div>
+    </div>
+  `;
+}
+
+function renderTunnelGlobeHostTooltip(point: TunnelGlobeHostPoint) {
+  return `
+    <div style="min-width:220px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.94);box-shadow:0 18px 44px rgba(0,0,0,.42);color:#f8fafc;padding:10px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      <div style="font-size:13px;font-weight:700;">${escapeTooltipHtml(point.name)}</div>
+      <div style="margin-top:6px;color:#cbd5e1;font-size:12px;">${escapeTooltipHtml(point.regionText || "地区获取中")}</div>
+    </div>
+  `;
+}
+
 const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   forwardx: "ForwardX",
   tls: "TLS",
@@ -236,7 +392,7 @@ function getTunnelModeDisplay(mode: unknown) {
   return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
 }
 
-type TunnelViewMode = "card" | "table";
+type TunnelViewMode = "card" | "table" | "globe";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
 const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -246,7 +402,7 @@ function getStoredTunnelViewMode(): TunnelViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(TUNNEL_VIEW_MODE_STORAGE_KEY);
-    return value === "table" ? "table" : "card";
+    return value === "table" || value === "globe" ? value : "card";
   } catch {
     return "card";
   }
@@ -265,7 +421,7 @@ function getStoredChainViewMode(): TunnelViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(CHAIN_VIEW_MODE_STORAGE_KEY);
-    return value === "table" ? "table" : "card";
+    return value === "table" || value === "globe" ? value : "card";
   } catch {
     return "card";
   }
@@ -287,6 +443,298 @@ function formatTunnelLatencyTime(value: string | Date) {
   const hour = String(d.getHours()).padStart(2, "0");
   const minute = String(d.getMinutes()).padStart(2, "0");
   return `${month}/${day} ${hour}:${minute}`;
+}
+
+function TunnelWorldGlobe({
+  tunnels,
+  chainGroups,
+  hosts,
+  isTunnelSupported,
+  onEditTunnel,
+  onEditChain,
+}: {
+  tunnels: any[];
+  chainGroups: any[];
+  hosts: any[];
+  isTunnelSupported: (tunnel: any) => boolean;
+  onEditTunnel: (tunnel: any) => void;
+  onEditChain: (group: any) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const globeRef = useRef<GlobeMethods | undefined>(undefined);
+  const [globeReady, setGlobeReady] = useState(false);
+  const [size, setSize] = useState({ width: 1400, height: 780 });
+  const [hoveredLink, setHoveredLink] = useState<TunnelGlobeLink | null>(null);
+  const [hoveredPoint, setHoveredPoint] = useState<TunnelGlobeHostPoint | null>(null);
+  const [countries, setCountries] = useState<TunnelGlobeCountryFeature[]>([]);
+
+  const globeData = useMemo(() => {
+    const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
+    const hostPointById = new Map<number, TunnelGlobeHostPoint>();
+    const pointForHostId = (hostId: number) => {
+      if (hostPointById.has(hostId)) return hostPointById.get(hostId) || null;
+      const point = createTunnelGlobeHostPoint(hostById.get(hostId));
+      if (point) hostPointById.set(hostId, point);
+      return point;
+    };
+
+    const links: TunnelGlobeLink[] = [];
+    let skipped = 0;
+
+    (tunnels || []).forEach((tunnel: any) => {
+      const routeHosts = getTunnelHopIds(tunnel)
+        .map((hostId: number) => pointForHostId(Number(hostId)))
+        .filter(Boolean) as TunnelGlobeHostPoint[];
+      if (routeHosts.length < 2) {
+        skipped += 1;
+        return;
+      }
+      const supported = isTunnelSupported(tunnel);
+      const active = supported && !!tunnel.isRunning;
+      const enabled = supported && !!tunnel.isEnabled;
+      links.push({
+        id: `tunnel:${tunnel.id}`,
+        kind: "tunnel",
+        item: tunnel,
+        name: String(tunnel.name || `隧道 #${tunnel.id}`),
+        routeText: routeHosts.map((host) => host.name).join(" -> "),
+        routeHosts,
+        statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
+        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnel.lastTestStatus === "failed"),
+        color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
+        glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
+      });
+    });
+
+    (chainGroups || []).forEach((group: any) => {
+      const members = [...(group.members || [])].sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
+      const routeHosts = members
+        .map((member: any) => pointForHostId(Number(member.hostId || 0)))
+        .filter(Boolean) as TunnelGlobeHostPoint[];
+      if (routeHosts.length < 2) {
+        skipped += 1;
+        return;
+      }
+      const enabled = !!group.isEnabled;
+      links.push({
+        id: `chain:${group.id}`,
+        kind: "chain",
+        item: group,
+        name: String(group.name || `转发链 #${group.id}`),
+        routeText: routeHosts.map((host) => host.name).join(" -> "),
+        routeHosts,
+        statusText: enabled ? "已启用" : "已停用",
+        latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
+        color: enabled ? "#38bdf8" : "#94a3b8",
+        glowColor: enabled ? "rgba(56,189,248,.85)" : "rgba(148,163,184,.6)",
+      });
+    });
+
+    const arcs = links.flatMap((link) => link.routeHosts.slice(0, -1).map((start, index) => {
+      const end = link.routeHosts[index + 1];
+      const arc: TunnelGlobeArc = {
+        link,
+        segmentIndex: index,
+        startLat: start.lat,
+        startLng: start.lng,
+        endLat: end.lat,
+        endLng: end.lng,
+        altitude: 0.2,
+      };
+      const distance = globeDistanceDegrees(arc);
+      return {
+        ...arc,
+        altitude: Math.max(0.14, Math.min(0.68, 0.12 + distance / 260)),
+      };
+    }));
+
+    return {
+      links,
+      arcs,
+      hostPoints: Array.from(hostPointById.values()),
+      skipped,
+    };
+  }, [chainGroups, hosts, isTunnelSupported, tunnels]);
+
+  const hostCountryCodes = useMemo(() => {
+    const codes = new Set<string>();
+    globeData.hostPoints.forEach((point) => {
+      const code = hostCountryCode(point.host);
+      if (code) codes.add(code);
+    });
+    return codes;
+  }, [globeData.hostPoints]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(TUNNEL_GLOBE_COUNTRIES_URL)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.features)) return;
+        setCountries(data.features as TunnelGlobeCountryFeature[]);
+      })
+      .catch(() => {
+        if (!cancelled) setCountries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+      const width = Math.max(900, Math.round(rect.width));
+      setSize({
+        width,
+        height: Math.max(720, Math.min(980, Math.round(Math.max(viewportHeight - 240, width * 0.52)))),
+      });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    window.addEventListener("resize", updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!globeReady || !globeRef.current) return;
+    const globe = globeRef.current;
+    const controls = globe.controls();
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.36;
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = false;
+    controls.rotateSpeed = 0.58;
+    controls.zoomSpeed = 0.85;
+    controls.minDistance = 105;
+    controls.maxDistance = 500;
+    globe.pointOfView({ lat: 18, lng: 108, altitude: 1.24 }, 0);
+  }, [globeReady]);
+
+  useEffect(() => {
+    const controls = globeRef.current?.controls();
+    if (!controls) return;
+    controls.autoRotate = !(hoveredLink || hoveredPoint);
+  }, [hoveredLink, hoveredPoint]);
+
+  const handleLinkEdit = (link: TunnelGlobeLink) => {
+    if (link.kind === "tunnel") onEditTunnel(link.item);
+    else onEditChain(link.item);
+  };
+
+  return (
+    <>
+      <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#030712] shadow-sm md:block">
+        <div
+          ref={containerRef}
+          className="relative min-h-[720px] w-full overflow-hidden"
+          style={{ height: size.height }}
+        >
+          <Suspense
+            fallback={
+              <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                正在加载链路地球
+              </div>
+            }
+          >
+            <ReactGlobe
+              ref={globeRef}
+              width={size.width}
+              height={size.height}
+              backgroundColor="rgba(3,7,18,1)"
+              backgroundImageUrl={TUNNEL_GLOBE_BACKGROUND_IMAGE_URL}
+              globeImageUrl={TUNNEL_GLOBE_EARTH_IMAGE_URL}
+              bumpImageUrl={TUNNEL_GLOBE_BUMP_IMAGE_URL}
+              showAtmosphere
+              atmosphereColor="#38bdf8"
+              atmosphereAltitude={0.22}
+              showGraticules={false}
+              globeCurvatureResolution={4}
+              polygonsData={countries}
+              polygonGeoJsonGeometry="geometry"
+              polygonAltitude={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? 0.014 : 0.004}
+              polygonCapColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.38)" : "rgba(15,23,42,.05)"}
+              polygonSideColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.24)" : "rgba(2,6,23,.14)"}
+              polygonStrokeColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(125,211,252,.9)" : "rgba(148,163,184,.22)"}
+              polygonCapCurvatureResolution={4}
+              polygonsTransitionDuration={0}
+              pointsData={globeData.hostPoints}
+              pointLat="lat"
+              pointLng="lng"
+              pointAltitude={0.035}
+              pointRadius={0.28}
+              pointResolution={24}
+              pointColor={() => "#e0f2fe"}
+              pointLabel={(point) => renderTunnelGlobeHostTooltip(point as TunnelGlobeHostPoint)}
+              onPointHover={(point) => setHoveredPoint(point as TunnelGlobeHostPoint | null)}
+              arcsData={globeData.arcs}
+              arcStartLat="startLat"
+              arcStartLng="startLng"
+              arcEndLat="endLat"
+              arcEndLng="endLng"
+              arcAltitude={(arc) => (arc as TunnelGlobeArc).altitude}
+              arcColor={(arc) => (arc as TunnelGlobeArc).link.color}
+              arcStroke={(arc) => hoveredLink?.id === (arc as TunnelGlobeArc).link.id ? 1.9 : 1.35}
+              arcDashLength={0.36}
+              arcDashGap={0.18}
+              arcDashInitialGap={(arc) => (arc as TunnelGlobeArc).segmentIndex * 0.08}
+              arcDashAnimateTime={4200}
+              arcsTransitionDuration={0}
+              arcLabel={(arc) => renderTunnelGlobeLinkTooltip((arc as TunnelGlobeArc).link)}
+              onArcHover={(arc) => setHoveredLink((arc as TunnelGlobeArc | null)?.link || null)}
+              onArcClick={(arc) => {
+                const link = (arc as TunnelGlobeArc | null)?.link;
+                if (link) handleLinkEdit(link);
+              }}
+              showPointerCursor={(objectType) => objectType === "arc"}
+              enablePointerInteraction
+              onGlobeReady={() => setGlobeReady(true)}
+            />
+          </Suspense>
+          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
+            <div className="font-medium">全球链路地球</div>
+            <div className="mt-1 text-white/70">
+              隧道 {tunnels.length} 条 · 转发链 {chainGroups.length} 条 · 已定位 {globeData.links.length} 条
+            </div>
+            {globeData.skipped > 0 && (
+              <div className="mt-1 text-amber-200/85">待定位 {globeData.skipped} 条</div>
+            )}
+          </div>
+          <div className="pointer-events-none absolute right-4 top-4 flex flex-col gap-2 text-xs text-white">
+            <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
+              <span className="h-2 w-6 rounded-full bg-[#4ade80]" />
+              运行中隧道
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
+              <span className="h-2 w-6 rounded-full bg-[#38bdf8]" />
+              端口转发链
+            </div>
+          </div>
+          {globeData.links.length === 0 && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center">
+              <div className="rounded-md border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 shadow-lg backdrop-blur-md">
+                暂无可定位链路
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <Card className="border-border/40 bg-card/60 md:hidden">
+        <CardContent className="p-6 text-center text-sm text-muted-foreground">
+          3D 地球视图仅在 PC 端显示。
+        </CardContent>
+      </Card>
+    </>
+  );
 }
 
 function TunnelLatencyDialog({
@@ -630,6 +1078,7 @@ function TunnelsContent() {
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
+  const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
@@ -905,6 +1354,13 @@ function TunnelsContent() {
     if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
     else handleViewModeChange(nextViewMode);
   };
+  const handleGlobeChainEdit = (group: any) => {
+    const groupId = Number(group?.id || 0);
+    if (!groupId) return;
+    setActiveSection("chains");
+    handleChainViewModeChange("card");
+    setChainEditRequest({ id: groupId, requestKey: Date.now() });
+  };
   const canCreateTunnel = !!hosts?.length
     && hosts.length >= 2
     && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0);
@@ -995,6 +1451,15 @@ function TunnelsContent() {
             >
               <List className="h-4 w-4" />
             </Button>
+            <Button
+              variant={activeViewMode === "globe" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              title="3D 地球视图"
+              onClick={() => handleActiveViewModeChange("globe")}
+            >
+              <Globe className="h-4 w-4" />
+            </Button>
           </div>
           <Button
             className="gap-2"
@@ -1021,7 +1486,20 @@ function TunnelsContent() {
         </TabsList>
 
         <TabsContent value="tunnels" className="space-y-4">
-      {isLoading ? (
+      {viewMode === "globe" ? (
+        (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
+          <DataSectionLoading label="正在加载全球链路地图" />
+        ) : (
+          <TunnelWorldGlobe
+            tunnels={tunnels || []}
+            chainGroups={chainGroups}
+            hosts={hosts || []}
+            isTunnelSupported={isTunnelSupported}
+            onEditTunnel={openEdit}
+            onEditChain={handleGlobeChainEdit}
+          />
+        )
+      ) : isLoading ? (
         <DataSectionLoading label="正在加载隧道数据" />
       ) : tunnels && tunnels.length > 0 ? (
         <>
@@ -1319,13 +1797,30 @@ function TunnelsContent() {
         </TabsContent>
 
         <TabsContent value="chains" className="space-y-4">
-          <ForwardGroupsContent
-            mode="chain"
-            embedded
-            viewMode={chainViewMode}
-            onViewModeChange={handleChainViewModeChange}
-            hideHeaderActions
-          />
+          {chainViewMode === "globe" ? (
+            (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
+              <DataSectionLoading label="正在加载全球链路地图" />
+            ) : (
+              <TunnelWorldGlobe
+                tunnels={tunnels || []}
+                chainGroups={chainGroups}
+                hosts={hosts || []}
+                isTunnelSupported={isTunnelSupported}
+                onEditTunnel={openEdit}
+                onEditChain={handleGlobeChainEdit}
+              />
+            )
+          ) : (
+            <ForwardGroupsContent
+              mode="chain"
+              embedded
+              viewMode={chainViewMode}
+              onViewModeChange={handleChainViewModeChange}
+              hideHeaderActions
+              editRequest={chainEditRequest}
+              onEditRequestConsumed={() => setChainEditRequest(null)}
+            />
+          )}
         </TabsContent>
       </Tabs>
 

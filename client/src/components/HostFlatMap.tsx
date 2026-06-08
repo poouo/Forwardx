@@ -1,5 +1,5 @@
 import DeckGL from "@deck.gl/react";
-import { GeoJsonLayer, PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, LineLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import MapLibreMap from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useState } from "react";
@@ -8,10 +8,9 @@ import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } 
 
 const HOST_MAP_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const HOST_MAP_CLUSTER_DISTANCE_DEGREES = 7.2;
-const HOST_MAP_STEM_PULL_DEGREES = 6.2;
-const HOST_MAP_RIGHT_PULL_DEGREES = 15.5;
-const HOST_MAP_LABEL_ROW_DEGREES = 8.4;
-const HOST_MAP_MAX_LABELS_PER_COLUMN = 5;
+const HOST_MAP_RIGHT_PULL_DEGREES = 20;
+const HOST_MAP_LABEL_ROW_DEGREES = 9.6;
+const HOST_MAP_MAX_LABELS_PER_COLUMN = 4;
 
 const HOST_MAP_STYLE = {
   version: 8,
@@ -41,8 +40,6 @@ type HostMapPoint = {
   host: any;
   lat: number;
   lng: number;
-  leaderLat: number;
-  leaderLng: number;
   displayLat: number;
   displayLng: number;
   color: [number, number, number, number];
@@ -59,11 +56,6 @@ type HostMapCluster = {
   centerLat: number;
   centerLng: number;
   points: HostMapPoint[];
-};
-
-type HostMapLeaderPath = {
-  point: HostMapPoint;
-  path: Array<[number, number]>;
 };
 
 function hostAddressText(host: any) {
@@ -153,10 +145,8 @@ function spreadHostMapPoints(points: HostMapPoint[]) {
     if (cluster.points.length <= 1) return cluster.points;
     const sorted = cluster.points.slice().sort((a, b) => String(a.host.name || "").localeCompare(String(b.host.name || "")) || Number(a.host.id || 0) - Number(b.host.id || 0));
     const lngScale = Math.max(0.38, Math.cos((cluster.centerLat * Math.PI) / 180));
-    const pullLng = HOST_MAP_STEM_PULL_DEGREES + HOST_MAP_RIGHT_PULL_DEGREES + Math.min(9, sorted.length * 0.75);
-    const rowStep = Math.max(HOST_MAP_LABEL_ROW_DEGREES, Math.min(12.5, 6.8 + sorted.length * 0.8));
-    const leaderLat = clampLatitude(cluster.centerLat);
-    const leaderLng = normalizeLongitude(cluster.centerLng + HOST_MAP_STEM_PULL_DEGREES / lngScale);
+    const pullLng = HOST_MAP_RIGHT_PULL_DEGREES + Math.min(12, sorted.length * 1.05);
+    const rowStep = Math.max(HOST_MAP_LABEL_ROW_DEGREES, Math.min(14, 8.2 + sorted.length * 0.9));
     return sorted.map((point, index) => {
       const column = Math.floor(index / HOST_MAP_MAX_LABELS_PER_COLUMN);
       const row = index % HOST_MAP_MAX_LABELS_PER_COLUMN;
@@ -164,26 +154,11 @@ function spreadHostMapPoints(points: HostMapPoint[]) {
       const rowOffset = row - (columnSize - 1) / 2;
       return {
         ...point,
-        leaderLat,
-        leaderLng,
         displayLat: clampLatitude(cluster.centerLat + rowOffset * rowStep),
-        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 9.5) / lngScale),
+        displayLng: normalizeLongitude(cluster.centerLng + (pullLng + column * 12) / lngScale),
       };
     });
   });
-}
-
-function createHostMapLeaderPaths(points: HostMapPoint[]): HostMapLeaderPath[] {
-  return points
-    .filter(hostMapPointPulledOut)
-    .map((point) => ({
-      point,
-      path: [
-        [point.lng, point.lat],
-        [point.leaderLng, point.leaderLat],
-        [point.displayLng, point.displayLat],
-      ],
-    }));
 }
 
 function escapeTooltipHtml(value: unknown) {
@@ -248,8 +223,6 @@ function buildHostMapPoints(hosts: any[]) {
       host,
       lat: coord.lat,
       lng: coord.lng,
-      leaderLat: coord.lat,
-      leaderLng: coord.lng,
       displayLat: coord.lat,
       displayLng: coord.lng,
       color: isOnline ? [74, 222, 128, 245] : [251, 191, 36, 235],
@@ -298,7 +271,7 @@ export default function HostFlatMap({
   const points = useMemo(() => buildHostMapPoints(hosts), [hosts]);
   const missingCount = Math.max(0, hosts.length - points.length);
   const initialViewState = useMemo(() => getInitialMapView(points), [points]);
-  const leaderPaths = useMemo(() => createHostMapLeaderPaths(points), [points]);
+  const leaderPoints = useMemo(() => points.filter(hostMapPointPulledOut), [points]);
   const hostCountryCodes = useMemo(() => {
     const codes = new Set<string>();
     hosts.forEach((host) => {
@@ -342,15 +315,16 @@ export default function HostFlatMap({
       getLineColor: (feature) => countryFeatureHasCode(feature as CountryFeatureLike, hostCountryCodes) ? [125, 211, 252, 245] : [148, 163, 184, 60],
       getFillColor: (feature) => countryFeatureHasCode(feature as CountryFeatureLike, hostCountryCodes) ? [14, 165, 233, 112] : [15, 23, 42, 28],
     }),
-    new PathLayer<HostMapLeaderPath>({
+    new LineLayer<HostMapPoint>({
       id: "host-flat-map-leaders",
-      data: leaderPaths,
+      data: leaderPoints,
       pickable: false,
       widthUnits: "pixels",
       widthMinPixels: 1,
       widthMaxPixels: 2,
-      getPath: (path) => path.path,
-      getColor: (path) => path.point.host.isOnline ? [125, 211, 252, 185] : [251, 191, 36, 170],
+      getSourcePosition: (point) => [point.lng, point.lat],
+      getTargetPosition: (point) => [point.displayLng, point.displayLat],
+      getColor: (point) => point.host.isOnline ? [125, 211, 252, 185] : [251, 191, 36, 170],
       getWidth: 1.4,
     }),
     new ScatterplotLayer<HostMapPoint>({
@@ -397,7 +371,7 @@ export default function HostFlatMap({
       fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       fontWeight: 700,
     }),
-  ], [countries, hostCountryCodes, leaderPaths, points]);
+  ], [countries, hostCountryCodes, leaderPoints, points]);
 
   return (
     <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#020617] shadow-sm md:block">
