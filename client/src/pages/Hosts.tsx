@@ -299,7 +299,7 @@ function HostWorldMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
   const [globeReady, setGlobeReady] = useState(false);
-  const [size, setSize] = useState({ width: 960, height: 620 });
+  const [size, setSize] = useState({ width: 1100, height: 680 });
   const [hoveredPoint, setHoveredPoint] = useState<HostGlobePoint | null>(null);
 
   const points = useMemo(() => hosts
@@ -327,9 +327,10 @@ function HostWorldMap({
     if (!element || typeof ResizeObserver === "undefined") return;
     const updateSize = () => {
       const rect = element.getBoundingClientRect();
+      const width = Math.min(1180, Math.max(720, Math.round(rect.width)));
       setSize({
-        width: Math.max(480, Math.round(rect.width)),
-        height: Math.max(560, Math.round(rect.height)),
+        width,
+        height: Math.min(740, Math.max(620, Math.round(width * 0.62))),
       });
     };
     updateSize();
@@ -362,7 +363,11 @@ function HostWorldMap({
 
   return (
     <div className="hidden overflow-hidden rounded-md border border-border/40 bg-[#030712] shadow-sm md:block">
-      <div ref={containerRef} className="relative h-[68vh] min-h-[560px] max-h-[720px] overflow-hidden">
+      <div
+        ref={containerRef}
+        className="relative mx-auto min-h-[620px] w-full max-w-[1180px] overflow-hidden"
+        style={{ height: size.height }}
+      >
         <Suspense
           fallback={
             <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
@@ -383,7 +388,7 @@ function HostWorldMap({
             atmosphereColor="#7dd3fc"
             atmosphereAltitude={0.18}
             showGraticules
-            globeCurvatureResolution={96}
+            globeCurvatureResolution={4}
             pointsData={points}
             pointLat="lat"
             pointLng="lng"
