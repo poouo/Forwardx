@@ -67,6 +67,15 @@ const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
 const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
+const GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
+const GLOBE_COUNTRY_FILLS = [
+  "rgba(14,165,233,.34)",
+  "rgba(20,184,166,.31)",
+  "rgba(34,197,94,.25)",
+  "rgba(168,85,247,.26)",
+  "rgba(245,158,11,.23)",
+  "rgba(244,63,94,.22)",
+];
 
 function readJsonCache<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -249,6 +258,34 @@ type HostGlobePoint = {
   label: string;
 };
 
+type GlobeCountryFeature = {
+  type: "Feature";
+  properties?: Record<string, unknown>;
+  geometry: {
+    type: string;
+    coordinates: unknown;
+  };
+};
+
+function hashGlobeCountry(country: GlobeCountryFeature) {
+  const source = String(
+    country.properties?.ISO_A2 ||
+    country.properties?.ADM0_A3 ||
+    country.properties?.ADMIN ||
+    country.properties?.NAME ||
+    "country"
+  );
+  let hash = 0;
+  for (let i = 0; i < source.length; i++) {
+    hash = ((hash << 5) - hash + source.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function globeCountryFill(country: GlobeCountryFeature) {
+  return GLOBE_COUNTRY_FILLS[hashGlobeCountry(country) % GLOBE_COUNTRY_FILLS.length];
+}
+
 function clampLatitude(lat: number) {
   return Math.max(-85, Math.min(85, lat));
 }
@@ -392,6 +429,7 @@ function HostWorldMap({
   const [globeReady, setGlobeReady] = useState(false);
   const [size, setSize] = useState({ width: 1400, height: 780 });
   const [hoveredPoint, setHoveredPoint] = useState<HostGlobePoint | null>(null);
+  const [countries, setCountries] = useState<GlobeCountryFeature[]>([]);
 
   const points = useMemo(() => {
     const rawPoints = hosts.map((host) => {
@@ -420,6 +458,22 @@ function HostWorldMap({
 
   const missingCount = Math.max(0, hosts.length - points.length);
   const onlinePoints = useMemo(() => points.filter((point) => point.host.isOnline), [points]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(GLOBE_COUNTRIES_URL)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.features)) return;
+        setCountries(data.features as GlobeCountryFeature[]);
+      })
+      .catch(() => {
+        if (!cancelled) setCountries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -491,8 +545,16 @@ function HostWorldMap({
             showAtmosphere
             atmosphereColor="#38bdf8"
             atmosphereAltitude={0.22}
-            showGraticules
+            showGraticules={false}
             globeCurvatureResolution={4}
+            polygonsData={countries}
+            polygonGeoJsonGeometry="geometry"
+            polygonAltitude={0.008}
+            polygonCapColor={(country) => globeCountryFill(country as GlobeCountryFeature)}
+            polygonSideColor={() => "rgba(2,6,23,.55)"}
+            polygonStrokeColor={() => "rgba(248,250,252,.88)"}
+            polygonCapCurvatureResolution={4}
+            polygonsTransitionDuration={0}
             pointsData={points}
             pointLat="displayLat"
             pointLng="displayLng"
