@@ -242,7 +242,24 @@ type HostGlobePoint = {
   statusText: string;
   regionText: string;
   addressText: string;
+  countryCode: string;
+  flagUrl: string;
+  label: string;
 };
+
+function hostCountryCode(host: any) {
+  return String(host?.geoCountryCode || "").trim().toUpperCase();
+}
+
+function hostFlagUrl(host: any) {
+  const countryCode = hostCountryCode(host).toLowerCase();
+  return /^[a-z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode}.png` : "";
+}
+
+function hostGlobeLabel(host: any) {
+  const name = String(host?.name || hostAddressText(host) || "-").trim();
+  return name.length > 10 ? `${name.slice(0, 9)}…` : name;
+}
 
 function escapeTooltipHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => {
@@ -270,6 +287,9 @@ function renderHostGlobeTooltip(point: HostGlobePoint) {
     { label: "系统", value: point.host.osInfo || "系统信息未上报" },
     { label: "Agent", value: point.host.agentVersion ? `v${point.host.agentVersion}` : "未上报" },
   ];
+  const regionValue = point.flagUrl
+    ? `<span style="display:inline-flex;min-width:0;align-items:center;gap:7px;"><img src="${escapeTooltipHtml(point.flagUrl)}" alt="${escapeTooltipHtml(point.countryCode)}" referrerpolicy="no-referrer" style="width:20px;height:15px;flex:0 0 auto;border-radius:2px;object-fit:cover;box-shadow:0 0 0 1px rgba(255,255,255,.16);" onerror="this.style.display='none';this.nextElementSibling.style.display='inline';" /><span style="display:none;flex:0 0 auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;font-size:11px;color:#cbd5e1;">${escapeTooltipHtml(point.countryCode)}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${escapeTooltipHtml(point.regionText || "地区获取中")}</span></span>`
+    : escapeTooltipHtml(point.regionText || "地区获取中");
   return `
     <div style="min-width:260px;max-width:320px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(8,13,24,.92);box-shadow:0 18px 44px rgba(0,0,0,.4);backdrop-filter:blur(10px);color:#f8fafc;padding:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
@@ -282,7 +302,7 @@ function renderHostGlobeTooltip(point: HostGlobePoint) {
       ${rows.map((row) => `
         <div style="display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:start;margin-top:6px;font-size:12px;line-height:1.45;">
           <span style="color:#94a3b8;">${escapeTooltipHtml(row.label)}</span>
-          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === "地址" || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${escapeTooltipHtml(row.value)}</span>
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;${row.label === "地址" || row.label === "Agent" ? "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;" : ""}">${row.label === "地区" ? regionValue : escapeTooltipHtml(row.value)}</span>
         </div>
       `).join("")}
     </div>
@@ -315,6 +335,9 @@ function HostWorldMap({
         statusText: isOnline ? "在线" : "离线",
         regionText: hostRegionText(host),
         addressText: hostAddressText(host),
+        countryCode: hostCountryCode(host),
+        flagUrl: hostFlagUrl(host),
+        label: hostGlobeLabel(host),
       };
     })
     .filter(Boolean) as HostGlobePoint[], [hosts]);
@@ -393,10 +416,10 @@ function HostWorldMap({
             pointLat="lat"
             pointLng="lng"
             pointAltitude={(point) => ((point as HostGlobePoint).host.isOnline ? 0.045 : 0.032)}
-            pointRadius={(point) => (hoveredPoint?.host.id === (point as HostGlobePoint).host.id ? 0.52 : 0.34)}
+            pointRadius={0.34}
             pointResolution={28}
-            pointColor={(point) => (hoveredPoint?.host.id === (point as HostGlobePoint).host.id ? "#fde68a" : (point as HostGlobePoint).color)}
-            pointsTransitionDuration={600}
+            pointColor={(point) => (point as HostGlobePoint).color}
+            pointsTransitionDuration={0}
             ringsData={onlinePoints}
             ringLat="lat"
             ringLng="lng"
@@ -405,10 +428,24 @@ function HostWorldMap({
             ringMaxRadius={2.5}
             ringPropagationSpeed={0.72}
             ringRepeatPeriod={2600}
+            labelsData={points}
+            labelLat="lat"
+            labelLng="lng"
+            labelText={(point) => (point as HostGlobePoint).label}
+            labelAltitude={0.085}
+            labelSize={0.82}
+            labelColor={(point) => (hoveredPoint?.host.id === (point as HostGlobePoint).host.id ? "#ffffff" : "rgba(226,232,240,.84)")}
+            labelDotRadius={0}
+            labelIncludeDot={false}
+            labelResolution={3}
+            labelsTransitionDuration={0}
+            labelLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
+            onLabelHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}
+            onLabelClick={(point) => onEdit((point as HostGlobePoint).host)}
             pointLabel={(point) => renderHostGlobeTooltip(point as HostGlobePoint)}
             onPointHover={(point) => setHoveredPoint(point as HostGlobePoint | null)}
             onPointClick={(point) => onEdit((point as HostGlobePoint).host)}
-            showPointerCursor={(objectType) => objectType === "point"}
+            showPointerCursor={(objectType) => objectType === "point" || objectType === "label"}
             enablePointerInteraction
             onGlobeReady={() => setGlobeReady(true)}
           />
