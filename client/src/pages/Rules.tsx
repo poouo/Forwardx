@@ -392,6 +392,17 @@ type RuleTrafficSummary = {
   latestLatencyAt?: Date | string | null;
 };
 
+type RuleTargetGeo = {
+  address: string;
+  resolvedAddress: string;
+  geoCountryCode: string;
+  geoCountryName: string | null;
+  geoRegion: string | null;
+  geoEmoji: string | null;
+  geoLatitudeMicro: number | null;
+  geoLongitudeMicro: number | null;
+};
+
 type RuleGlobePoint = {
   id: string;
   kind: "host" | "target";
@@ -413,6 +424,7 @@ type RuleGlobePath = {
   color: string;
   trackColor: string;
   routeText: string;
+  finalHopText: string;
   targetText: string;
   bytesIn: number;
   bytesOut: number;
@@ -504,8 +516,24 @@ function hostGeoCoordinate(host: any | null | undefined) {
   return { lat, lng };
 }
 
+function microGeoCoordinate(geo: Pick<RuleTargetGeo, "geoLatitudeMicro" | "geoLongitudeMicro"> | null | undefined) {
+  if (geo?.geoLatitudeMicro == null || geo?.geoLongitudeMicro == null) return null;
+  const lat = Number(geo.geoLatitudeMicro) / 1_000_000;
+  const lng = Number(geo.geoLongitudeMicro) / 1_000_000;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
 function hostRegionText(host: any | null | undefined) {
   return [host?.geoCountryName || host?.geoCountryCode, host?.geoRegion]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function targetGeoRegionText(geo: RuleTargetGeo | null | undefined) {
+  return [geo?.geoCountryName || geo?.geoCountryCode, geo?.geoRegion]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" / ");
@@ -615,6 +643,7 @@ function renderRuleGlobePathTooltip(path: RuleGlobePath) {
     { label: "入口", value: `:${path.rule?.sourcePort || "-"}` },
     { label: "目标", value: path.targetText },
     { label: "路径", value: path.routeText },
+    { label: "末跳", value: path.finalHopText },
     { label: "入向", value: formatBytes(path.bytesIn) },
     { label: "出向", value: formatBytes(path.bytesOut) },
     { label: "连接", value: String(path.connections || 0) },
@@ -676,6 +705,8 @@ function buildRuleGlobeData(
   tunnels: any[],
   forwardGroups: any[],
   trafficByRule: Map<number, RuleTrafficSummary>,
+  targetGeoByAddress: Map<string, RuleTargetGeo>,
+  targetGeoLookupReady: boolean,
 ) {
   const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
   const tunnelById = new Map<number, any>((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
@@ -717,6 +748,7 @@ function buildRuleGlobeData(
     targetPoint: RuleGlobePoint;
     targetText: string;
     routeText: string;
+    finalHopText: string;
     bytesIn: number;
     bytesOut: number;
     connections: number;
@@ -735,8 +767,34 @@ function buildRuleGlobeData(
     const color = ruleGlobeColor(rule);
     const targetHostPoint = hostByAddress.get(normalizeAddressKey(rule.targetIp));
     const lastRoutePoint = routePoints[routePoints.length - 1];
-    const shouldOffsetTarget = !targetHostPoint || (targetHostPoint.id === lastRoutePoint.id);
-    const targetCoord = shouldOffsetTarget ? ruleGlobeTargetOffset(lastRoutePoint, rule, targetText) : targetHostPoint;
+    const targetGeo = targetGeoByAddress.get(normalizeAddressKey(rule.targetIp));
+    const targetGeoCoord = microGeoCoordinate(targetGeo);
+    const shouldOffsetTargetHost = !!targetHostPoint && targetHostPoint.id === lastRoutePoint.id;
+    if (!targetHostPoint && !targetGeoCoord && !targetGeoLookupReady) {
+      skipped += 1;
+      return;
+    }
+    const targetCoord = shouldOffsetTargetHost
+      ? ruleGlobeTargetOffset(lastRoutePoint, rule, targetText)
+      : targetHostPoint
+      ? { lat: targetHostPoint.lat, lng: targetHostPoint.lng }
+      : targetGeoCoord
+      ? targetGeoCoord
+      : ruleGlobeTargetOffset(lastRoutePoint, rule, targetText);
+    const targetRegionText = shouldOffsetTargetHost
+      ? lastRoutePoint.regionText
+      : targetHostPoint
+      ? targetHostPoint.regionText
+      : targetGeoCoord
+      ? targetGeoRegionText(targetGeo)
+      : "";
+    const targetNote = shouldOffsetTargetHost
+      ? "目标端口位于出口节点，已偏移显示末跳"
+      : targetHostPoint
+      ? "目标地址匹配已登记主机"
+      : targetGeoCoord
+      ? `目标地址已定位${targetGeo?.resolvedAddress && normalizeAddressKey(targetGeo.resolvedAddress) !== normalizeAddressKey(rule.targetIp) ? `，解析到 ${targetGeo.resolvedAddress}` : ""}`
+      : "目标地址未定位，临时放置在出口附近";
     const targetPoint: RuleGlobePoint = {
       id: `target:${rule.id}`,
       kind: "target",
@@ -744,16 +802,18 @@ function buildRuleGlobeData(
       lat: targetCoord.lat,
       lng: targetCoord.lng,
       color,
-      regionText: targetHostPoint && !shouldOffsetTarget ? targetHostPoint.regionText : lastRoutePoint.regionText,
+      regionText: targetRegionText,
       addressText: targetText,
       targetText,
-      note: targetHostPoint && !shouldOffsetTarget ? "目标地址匹配已登记主机" : "目标地址未定位时放置在出口附近",
+      note: targetNote,
       rule,
     };
     const traffic = trafficByRule.get(Number(rule.id));
     const bytesIn = Number(traffic?.bytesIn || 0);
     const bytesOut = Number(traffic?.bytesOut || 0);
     const routeWithTarget = [...routePoints, targetPoint];
+    const exitPoint = routePoints[routePoints.length - 1];
+    const finalHopText = `${exitPoint.name} -> ${targetText}`;
     rawRoutes.push({
       rule,
       color,
@@ -761,6 +821,7 @@ function buildRuleGlobeData(
       targetPoint,
       targetText,
       routeText: routeWithTarget.map((point) => point.kind === "target" ? targetText : point.name).join(" -> "),
+      finalHopText,
       bytesIn,
       bytesOut,
       connections: Number(traffic?.connections || 0),
@@ -792,6 +853,7 @@ function buildRuleGlobeData(
       rule: route.rule,
       color: route.color,
       routeText: route.routeText,
+      finalHopText: route.finalHopText,
       targetText: route.targetText,
       bytesIn: route.bytesIn,
       bytesOut: route.bytesOut,
@@ -840,6 +902,8 @@ function RuleTrafficGlobe({
   tunnels,
   forwardGroups,
   trafficByRule,
+  targetGeoByAddress,
+  targetGeoLookupReady,
   onEditRule,
 }: {
   rules: any[];
@@ -847,6 +911,8 @@ function RuleTrafficGlobe({
   tunnels: any[];
   forwardGroups: any[];
   trafficByRule: Map<number, RuleTrafficSummary>;
+  targetGeoByAddress: Map<string, RuleTargetGeo>;
+  targetGeoLookupReady: boolean;
   onEditRule: (rule: any) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -856,8 +922,8 @@ function RuleTrafficGlobe({
   const [hoveredPath, setHoveredPath] = useState<RuleGlobePath | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<RuleGlobePoint | null>(null);
   const globeData = useMemo(
-    () => buildRuleGlobeData(rules, hosts, tunnels, forwardGroups, trafficByRule),
-    [forwardGroups, hosts, rules, trafficByRule, tunnels],
+    () => buildRuleGlobeData(rules, hosts, tunnels, forwardGroups, trafficByRule, targetGeoByAddress, targetGeoLookupReady),
+    [forwardGroups, hosts, rules, targetGeoByAddress, targetGeoLookupReady, trafficByRule, tunnels],
   );
 
   useEffect(() => {
@@ -1848,6 +1914,31 @@ function RulesContent() {
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
   ), [filteredRules]);
+  const ruleGlobeTargetAddresses = useMemo(() => (
+    Array.from(new Set(
+      filteredRules
+        .map((rule: any) => String(rule.targetIp || "").trim())
+        .filter(Boolean)
+        .map((address: string) => normalizeAddressKey(address))
+    )).slice(0, 100)
+  ), [filteredRules]);
+  const { data: ruleTargetGeoRows, isFetched: ruleTargetGeoFetched, isError: ruleTargetGeoError } = trpc.rules.targetGeoBatch.useQuery(
+    { targets: ruleGlobeTargetAddresses },
+    {
+      enabled: viewMode === "globe" && ruleGlobeTargetAddresses.length > 0,
+      staleTime: 24 * 60 * 60 * 1000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const targetGeoLookupReady = viewMode !== "globe" || ruleGlobeTargetAddresses.length === 0 || ruleTargetGeoFetched || ruleTargetGeoError;
+  const targetGeoByAddress = useMemo(() => {
+    const map = new Map<string, RuleTargetGeo>();
+    (ruleTargetGeoRows || []).forEach((row: any) => {
+      if (!row?.target || !row.geo) return;
+      map.set(normalizeAddressKey(row.target), row.geo as RuleTargetGeo);
+    });
+    return map;
+  }, [ruleTargetGeoRows]);
   // 近 24h 按规则汇总的流量
   const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, ruleIds: visibleRuleIdsForMetrics },
@@ -2775,6 +2866,8 @@ function RulesContent() {
                 tunnels={tunnels || []}
                 forwardGroups={forwardGroups || []}
                 trafficByRule={trafficByRule}
+                targetGeoByAddress={targetGeoByAddress}
+                targetGeoLookupReady={targetGeoLookupReady}
                 onEditRule={openEdit}
               />
             )

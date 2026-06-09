@@ -1,6 +1,7 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
+import { lookupAddressGeo } from "../hostGeo";
 import { requireRuleAccess } from "./helpers";
 
 export const trafficRulesRouter = router({
@@ -9,6 +10,26 @@ export const trafficRulesRouter = router({
     .query(async ({ input, ctx }) => {
       await requireRuleAccess(ctx, input.ruleId);
       return db.getTrafficStats(input.ruleId, input.limit);
+    }),
+  targetGeoBatch: protectedProcedure
+    .input(z.object({ targets: z.array(z.string().trim().min(1).max(253)).max(100) }))
+    .query(async ({ input, ctx }) => {
+      const uniqueTargets = Array.from(new Set(input.targets.map((target) => target.trim()).filter(Boolean)));
+      const rules = await db.getForwardRules(ctx.user.role === "admin" ? undefined : ctx.user.id);
+      const allowedTargets = new Set(rules.map((rule: any) => String(rule.targetIp || "").trim().toLowerCase()).filter(Boolean));
+      const visibleTargets = uniqueTargets.filter((target) => allowedTargets.has(target.toLowerCase()));
+      const rows: Array<{ target: string; geo: Awaited<ReturnType<typeof lookupAddressGeo>> }> = [];
+
+      for (let index = 0; index < visibleTargets.length; index += 4) {
+        const batch = visibleTargets.slice(index, index + 4);
+        const results = await Promise.all(batch.map(async (target) => ({
+          target,
+          geo: await lookupAddressGeo(target),
+        })));
+        rows.push(...results);
+      }
+
+      return rows;
     }),
   trafficSummary: protectedProcedure
     .input(
