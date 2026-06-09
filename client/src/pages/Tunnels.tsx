@@ -1,5 +1,6 @@
 ﻿import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
@@ -1689,7 +1690,7 @@ function TunnelsContent() {
       ) : tunnels && tunnels.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {pagedTunnels.map((tunnel: any) => {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
@@ -1768,10 +1769,10 @@ function TunnelsContent() {
                 </Card>
               );
             })}
-          </div>
+          </AutoAnimateContainer>
         ) : (
           <>
-          <div className="grid gap-3 sm:hidden">
+          <AutoAnimateContainer className="grid gap-3 sm:hidden">
             {pagedTunnels.map((tunnel: any) => {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
@@ -1850,7 +1851,7 @@ function TunnelsContent() {
                 </Card>
               );
             })}
-          </div>
+          </AutoAnimateContainer>
           <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
@@ -1866,7 +1867,7 @@ function TunnelsContent() {
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <AutoAnimateContainer as={TableBody}>
                   {pagedTunnels.map((tunnel: any) => {
                     const supported = isTunnelSupported(tunnel);
                     const protocolKey = getTunnelProtocolKey(tunnel);
@@ -1957,7 +1958,7 @@ function TunnelsContent() {
                     </TableRow>
                     );
                   })}
-                </TableBody>
+                </AutoAnimateContainer>
               </Table>
             </div>
           </CardContent>

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon, Server, ShieldCheck, Zap } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
@@ -627,18 +628,24 @@ export default function Login() {
                 ))}
               </div>
               <div className="mt-10 space-y-6">
-                {authHighlights.map((item) => {
+                {authHighlights.map((item, index) => {
                   const Icon = item.icon;
                   return (
-                    <div key={item.title} className="flex gap-4">
+                    <motion.div
+                      key={item.title}
+                      className="flex gap-4"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.32, delay: 0.12 + index * 0.06, ease: [0.22, 1, 0.36, 1] }}
+                    >
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-background/45 text-primary shadow-sm ring-1 ring-border/50 backdrop-blur">
                         <Icon className="h-5 w-5" />
                       </div>
                       <div className="min-w-0">
                         <h2 className="text-sm font-semibold text-foreground">{item.title}</h2>
-                        <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.text}</p>
+                          <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.text}</p>
                       </div>
-                    </div>
+                    </motion.div>
                   );
                 })}
               </div>
@@ -665,7 +672,15 @@ export default function Login() {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
-          <div key={mode} className={`auth-mode-panel ${mode === "login" ? "min-h-[470px]" : "min-h-[660px]"}`}>
+          <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={mode}
+            className={`auth-mode-panel ${mode === "login" ? "min-h-[470px]" : "min-h-[660px]"}`}
+            initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          >
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -1048,7 +1063,8 @@ export default function Login() {
               </p>
             </form>
           )}
-          </div>
+          </motion.div>
+          </AnimatePresence>
             </CardContent>
           </Card>
         </main>

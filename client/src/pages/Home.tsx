@@ -23,6 +23,7 @@ import {
   Wifi,
   Zap,
 } from "lucide-react";
+import { motion } from "motion/react";
 import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import PublicHome, { CustomPublicHome } from "./PublicHome";
@@ -100,6 +101,7 @@ function StatCard({
   cacheKey,
   fallbackValue,
   className,
+  index = 0,
 }: {
   title: string;
   value: string | number;
@@ -110,39 +112,48 @@ function StatCard({
   cacheKey: string;
   fallbackValue?: string | number;
   className?: string;
+  index?: number;
 }) {
   return (
-    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`}>
-      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
-      <CardContent className="relative p-3 sm:p-5">
-        <div className="flex items-start justify-between gap-2 sm:gap-4">
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-            <AnimatedStatValue
-              as="p"
-              value={value}
-              loading={loading}
-              cacheKey={cacheKey}
-              fallbackValue={fallbackValue}
-              className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl"
-            />
-            {subtitle && (
+    <motion.div
+      className={className}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      transition={{ duration: 0.28, delay: index * 0.04, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <Card className="group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
+        <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
+        <CardContent className="relative p-3 sm:p-5">
+          <div className="flex items-start justify-between gap-2 sm:gap-4">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
               <AnimatedStatValue
                 as="p"
-                value={subtitle}
+                value={value}
                 loading={loading}
-                cacheKey={`${cacheKey}.subtitle`}
-                fallbackValue=""
-                className="break-words text-xs text-muted-foreground/80"
+                cacheKey={cacheKey}
+                fallbackValue={fallbackValue}
+                className="break-words text-xl font-bold leading-tight tracking-tight tabular-nums sm:text-2xl"
               />
-            )}
+              {subtitle && (
+                <AnimatedStatValue
+                  as="p"
+                  value={subtitle}
+                  loading={loading}
+                  cacheKey={`${cacheKey}.subtitle`}
+                  fallbackValue=""
+                  className="break-words text-xs text-muted-foreground/80"
+                />
+              )}
+            </div>
+            <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
+              <Icon className="h-5 w-5 text-white" />
+            </div>
           </div>
-          <div className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl ${tone} shadow-sm sm:flex`}>
-            <Icon className="h-5 w-5 text-white" />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </motion.div>
   );
 }
 
@@ -470,6 +481,7 @@ function DashboardContent() {
             loading={isLoading}
             cacheKey="home.stats.totalHosts"
             fallbackValue={0}
+            index={0}
           />
         )}
         <StatCard
@@ -481,6 +493,7 @@ function DashboardContent() {
           loading={isLoading}
           cacheKey="home.stats.totalRules"
           fallbackValue={0}
+          index={isAdmin ? 1 : 0}
         />
         <StatCard
           title="入站流量"
@@ -492,6 +505,7 @@ function DashboardContent() {
           cacheKey="home.stats.totalTrafficIn"
           fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
+          index={isAdmin ? 2 : 1}
         />
         <StatCard
           title="出站流量"
@@ -503,6 +517,7 @@ function DashboardContent() {
           cacheKey="home.stats.totalTrafficOut"
           fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
+          index={isAdmin ? 3 : 2}
         />
       </div>
 

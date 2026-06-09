@@ -1,6 +1,7 @@
 ﻿import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -1380,7 +1381,7 @@ function HostsContent() {
         {viewMode === "map" ? (
           <>
             <HostWorldMap hosts={displayHosts} onEdit={openEdit} />
-            <div className="grid grid-cols-1 gap-4 md:hidden">
+            <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
                   key={host.id}
@@ -1393,7 +1394,7 @@ function HostsContent() {
                   refreshInterval={hostRefreshInterval}
                 />
               ))}
-            </div>
+            </AutoAnimateContainer>
             <div className="md:hidden">
               <PersistentPagination pagination={hostPagination} itemName="台主机" />
             </div>
@@ -1410,7 +1411,7 @@ function HostsContent() {
             >
               <HostFlatMap hosts={displayHosts} onEdit={openEdit} />
             </Suspense>
-            <div className="grid grid-cols-1 gap-4 md:hidden">
+            <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
                   key={host.id}
@@ -1423,14 +1424,14 @@ function HostsContent() {
                   refreshInterval={hostRefreshInterval}
                 />
               ))}
-            </div>
+            </AutoAnimateContainer>
             <div className="md:hidden">
               <PersistentPagination pagination={hostPagination} itemName="台主机" />
             </div>
           </>
         ) : viewMode === "card" ? (
           /* ========== 卡片式布局 ========== */
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {pagedHosts.map((host) => (
               <HostCard
                 key={host.id}
@@ -1443,11 +1444,11 @@ function HostsContent() {
                 refreshInterval={hostRefreshInterval}
               />
             ))}
-          </div>
+          </AutoAnimateContainer>
         ) : (
           /* ========== 表格式布局 ========== */
           <>
-            <div className="grid grid-cols-1 gap-4 sm:hidden">
+            <AutoAnimateContainer className="grid grid-cols-1 gap-4 sm:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
                   key={host.id}
@@ -1460,7 +1461,7 @@ function HostsContent() {
                   refreshInterval={hostRefreshInterval}
                 />
               ))}
-            </div>
+            </AutoAnimateContainer>
             <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -1478,7 +1479,7 @@ function HostsContent() {
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <TableBody>
+                  <AutoAnimateContainer as={TableBody}>
                     {pagedHosts.map((host) => {
                       const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
                       const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
@@ -1594,7 +1595,7 @@ function HostsContent() {
                       </TableRow>
                     );
                     })}
-                  </TableBody>
+                  </AutoAnimateContainer>
                 </Table>
                 </div>
               </CardContent>

@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { AvatarPicker } from "@/components/AvatarPicker";
@@ -1040,7 +1041,7 @@ function UsersContent() {
       )}
 
       {!isLoading && users && users.length > 0 && (
-        <div className="space-y-3 sm:hidden">
+        <AutoAnimateContainer className="space-y-3 sm:hidden">
           {pagedUsers.map((u: any) => {
             const limit = Number(u.trafficLimit) || 0;
             const used = Number(u.trafficUsed) || 0;
@@ -1146,7 +1147,7 @@ function UsersContent() {
               </div>
             );
           })}
-        </div>
+        </AutoAnimateContainer>
       )}
 
       {!isLoading && (!users || users.length === 0) && (
@@ -1182,7 +1183,7 @@ function UsersContent() {
                     <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
+                <AutoAnimateContainer as={TableBody}>
                   {pagedUsers.map((u: any) => {
                     const limit = Number(u.trafficLimit) || 0;
                     const used = Number(u.trafficUsed) || 0;
@@ -1347,7 +1348,7 @@ function UsersContent() {
                       </TableRow>
                     );
                   })}
-                </TableBody>
+                </AutoAnimateContainer>
               </Table>
             </div>
           ) : (
@@ -1381,7 +1382,7 @@ function UsersContent() {
             </div>
           ) : (
             <>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <AutoAnimateContainer className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {pagedSubscriptions.map((sub: any) => {
                   const active = isSubscriptionActive(sub);
                   const trafficLimit = Number(sub.trafficLimit || 0);
@@ -1470,7 +1471,7 @@ function UsersContent() {
                     </Card>
                   );
                 })}
-              </div>
+              </AutoAnimateContainer>
               <PersistentPagination pagination={subscriptionPagination} itemName="条订阅" />
             </>
           )}
@@ -2063,7 +2064,7 @@ function UsersContent() {
                   </SelectContent>
                 </Select>
                 {selectedAllowedHosts.length > 0 ? (
-                  <div className="space-y-2">
+                  <AutoAnimateContainer className="space-y-2">
                     {selectedAllowedHosts.map((h: any) => (
                       <div key={h.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex items-center gap-2 min-w-0">
@@ -2082,7 +2083,7 @@ function UsersContent() {
                         </Button>
                       </div>
                     ))}
-                  </div>
+                  </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
                     暂未授权主机，可从上方选择添加。
@@ -2110,7 +2111,7 @@ function UsersContent() {
                   </SelectContent>
                 </Select>
                 {selectedAllowedTunnels.length > 0 ? (
-                  <div className="space-y-2">
+                  <AutoAnimateContainer className="space-y-2">
                     {selectedAllowedTunnels.map((t: any) => (
                       <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="min-w-0">
@@ -2134,7 +2135,7 @@ function UsersContent() {
                         </Button>
                       </div>
                     ))}
-                  </div>
+                  </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
                     暂未授权隧道，可从上方选择添加。
@@ -2162,7 +2163,7 @@ function UsersContent() {
                   </SelectContent>
                 </Select>
                 {selectedBillingHosts.length > 0 ? (
-                  <div className="space-y-2">
+                  <AutoAnimateContainer className="space-y-2">
                     {selectedBillingHosts.map((h: any) => (
                       <div key={h.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex min-w-0 items-center gap-2">
@@ -2181,7 +2182,7 @@ function UsersContent() {
                         </Button>
                       </div>
                     ))}
-                  </div>
+                  </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
                     暂未授权计费主机，可从上方选择添加。
@@ -2207,7 +2208,7 @@ function UsersContent() {
                   </SelectContent>
                 </Select>
                 {selectedBillingTunnels.length > 0 ? (
-                  <div className="space-y-2">
+                  <AutoAnimateContainer className="space-y-2">
                     {selectedBillingTunnels.map((t: any) => (
                       <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="min-w-0">
@@ -2231,7 +2232,7 @@ function UsersContent() {
                         </Button>
                       </div>
                     ))}
-                  </div>
+                  </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
                     暂未授权计费隧道，可从上方选择添加。

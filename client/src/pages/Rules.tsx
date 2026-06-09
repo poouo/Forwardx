@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
@@ -2946,7 +2947,7 @@ function RulesContent() {
             )
           ) : viewMode === "card" ? (
             shouldGroupRuleCards ? (
-              <div className="space-y-5">
+              <AutoAnimateContainer className="space-y-5">
                 {desktopRuleGroups.map((group) => (
                   <section key={group.type} className="space-y-3">
                     <div className="flex items-center gap-2">
@@ -2961,22 +2962,22 @@ function RulesContent() {
                       <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
                       <span className="text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>
                     </div>
-                    <div className={ruleCardGridClass}>
+                    <AutoAnimateContainer className={ruleCardGridClass}>
                       {group.rules.map((rule: any) => renderRuleCard(rule))}
-                    </div>
+                    </AutoAnimateContainer>
                   </section>
                 ))}
-              </div>
+              </AutoAnimateContainer>
             ) : (
-              <div className={ruleCardGridClass}>
+              <AutoAnimateContainer className={ruleCardGridClass}>
                 {pagedRules.map((rule: any) => renderRuleCard(rule))}
-              </div>
+              </AutoAnimateContainer>
             )
           ) : (
             <>
-              <div className={ruleCardSize === "compact" ? "grid gap-2 sm:hidden" : "grid gap-3 sm:hidden"}>
+              <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2 sm:hidden" : "grid gap-3 sm:hidden"}>
                 {pagedRules.map((rule: any) => renderRuleCard(rule))}
-              </div>
+              </AutoAnimateContainer>
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
@@ -2995,7 +2996,7 @@ function RulesContent() {
                           <TableHead className="w-[164px] text-right">操作</TableHead>
                         </TableRow>
                       </TableHeader>
-                      <TableBody>
+                      <AutoAnimateContainer as={TableBody}>
                         {desktopRuleGroups.map((group) => (
                           <Fragment key={group.type}>
                             <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/35">
@@ -3076,7 +3077,7 @@ function RulesContent() {
                             })}
                           </Fragment>
                         ))}
-                      </TableBody>
+                      </AutoAnimateContainer>
                     </Table>
                   </div>
                 </CardContent>
