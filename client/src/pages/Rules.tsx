@@ -576,16 +576,27 @@ function createRuleGlobeSegmentCoords(
   const lngScale = Math.max(0.35, Math.cos((midLat * Math.PI) / 180));
   const projectedLng = dLng * lngScale;
   const distance = Math.sqrt(dLat * dLat + projectedLng * projectedLng);
+  const greatCircleDistance = globeDistanceDegrees(start, end);
   const layerOffset = layerIndex - (layerCount - 1) / 2;
-  const sideSpacing = layerCount > 1 ? Math.min(8, Math.max(1.8, globeDistanceDegrees(start, end) / 24)) : 0;
+  const sideSpacing = layerCount > 1 ? Math.min(8, Math.max(1.8, greatCircleDistance / 24)) : 0;
   const offset = layerOffset * sideSpacing;
   const offsetLat = distance > 0 ? (projectedLng / distance) * offset : 0;
   const offsetLng = distance > 0 ? (-dLat / (distance * lngScale)) * offset : 0;
-  return [
-    { lat: start.lat, lng: start.lng, alt: RULE_GLOBE_PATH_SURFACE_ALTITUDE },
-    { lat: Math.max(-85, Math.min(85, midLat + offsetLat)), lng: normalizeLongitude(midLng + offsetLng), alt: altitude },
-    { lat: end.lat, lng: end.lng, alt: RULE_GLOBE_PATH_SURFACE_ALTITUDE },
-  ];
+  const controlLat = Math.max(-85, Math.min(85, midLat + offsetLat));
+  const controlLng = start.lng + dLng / 2 + offsetLng;
+  const shortHopLift = greatCircleDistance < 18 ? (1 - greatCircleDistance / 18) * 0.026 : 0;
+  const controlAlt = Math.min(0.16, altitude + shortHopLift);
+  const steps = Math.max(12, Math.min(32, Math.ceil(greatCircleDistance / 3.2)));
+  const coords: Array<{ lat: number; lng: number; alt: number }> = [];
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    const inv = 1 - t;
+    const lat = inv * inv * start.lat + 2 * inv * t * controlLat + t * t * end.lat;
+    const lng = inv * inv * start.lng + 2 * inv * t * controlLng + t * t * (start.lng + dLng);
+    const alt = inv * inv * RULE_GLOBE_PATH_SURFACE_ALTITUDE + 2 * inv * t * controlAlt + t * t * RULE_GLOBE_PATH_SURFACE_ALTITUDE;
+    coords.push({ lat: Math.max(-85, Math.min(85, lat)), lng: normalizeLongitude(lng), alt });
+  }
+  return coords;
 }
 
 function createRuleGlobeRouteCoords(routePoints: RuleGlobePoint[], layerIndex: number, layerCount: number, totalBytes: number) {
@@ -996,7 +1007,7 @@ function RuleTrafficGlobe({
               atmosphereColor="#38bdf8"
               atmosphereAltitude={0.22}
               showGraticules={false}
-              globeCurvatureResolution={4}
+              globeCurvatureResolution={6}
               pointsData={globeData.points}
               pointLat="lat"
               pointLng="lng"
@@ -1015,7 +1026,7 @@ function RuleTrafficGlobe({
               pathPointLat="lat"
               pathPointLng="lng"
               pathPointAlt="alt"
-              pathResolution={4}
+              pathResolution={12}
               pathColor={(path: object) => {
                 const item = path as RuleGlobePath;
                 if (item.variant === "track") return item.trackColor;

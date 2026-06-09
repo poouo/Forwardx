@@ -10,7 +10,6 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
-import { Browser } from "@capacitor/browser";
 import { ACCOUNT_DISABLED_ERR_MSG } from "@shared/const";
 
 const REGISTRATION_CLOSED_MESSAGE = "当前注册未开放，请联系管理员";
@@ -308,9 +307,7 @@ export default function Login() {
       if (mobileAuth.isNative) {
         window.location.href = data.telegramUrl;
       } else {
-        await Browser.open({ url: data.telegramUrl }).catch(() => {
-          window.open(data.telegramUrl, "_blank", "noopener,noreferrer");
-        });
+        window.open(data.telegramUrl, "_blank", "noopener,noreferrer");
       }
       toast.success("已打开 Telegram");
     },
@@ -380,7 +377,7 @@ export default function Login() {
   const canRenderTelegramWidget = !mobileAuth.isNative && showTelegramLogin && !!telegramBotUsername && telegramDomainStatus.valid;
 
   useEffect(() => {
-    if (!mobileAuth.isNative || !mobileTelegramLogin) return;
+    if (!mobileTelegramLogin) return;
     let cancelled = false;
     const poll = () => {
       if (cancelled) return;
@@ -560,7 +557,7 @@ export default function Login() {
   };
 
   const handleMobileTelegramLogin = () => {
-    if (!mobileAuth.hasPanelUrl()) {
+    if (mobileAuth.isNative && !mobileAuth.hasPanelUrl()) {
       toast.error("请先点击右上角设置按钮添加服务器地址");
       setShowPanelSettings(true);
       return;
@@ -578,6 +575,7 @@ export default function Login() {
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
   const isTelegramPending = telegramLoginMutation.isPending || telegramWidgetLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
+  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && (!telegramLoginStatus || showTelegramLogin);
 
   return (
     <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
@@ -610,8 +608,8 @@ export default function Login() {
         </button>
       </div>
 
-      <div className="relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1.05fr)_minmax(460px,.95fr)]">
-        <section className="relative hidden lg:flex">
+      <div className="auth-route-enter relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1.05fr)_minmax(460px,.95fr)]">
+        <section className="auth-route-enter-left relative hidden lg:flex">
           <div className="relative flex min-h-screen w-full items-center px-10 py-14 xl:px-16">
             <div className="max-w-xl">
               <div className="flex items-center gap-3">
@@ -648,7 +646,7 @@ export default function Login() {
           </div>
         </section>
 
-        <main className="flex min-h-screen items-center justify-center px-4 py-20 sm:px-6 lg:px-10">
+        <main className="auth-route-enter-panel flex min-h-screen items-center justify-center px-4 py-20 sm:px-6 lg:px-10">
           <Card disableEnterAnimation className="auth-card-surface w-full max-w-[420px] px-5 py-6 sm:px-7">
             <CardHeader className="px-0 pb-7 text-left">
               <div className="mb-5 flex items-center gap-3 lg:hidden">
@@ -667,6 +665,7 @@ export default function Login() {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0">
+          <div key={mode} className={`auth-mode-panel ${mode === "login" ? "min-h-[470px]" : "min-h-[660px]"}`}>
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -766,18 +765,23 @@ export default function Login() {
                 )}
               </Button>
 
-              {showTelegramLogin && (
-                <div className="space-y-3">
+              {showTelegramLoginSlot && (
+                <div className="auth-telegram-slot space-y-3">
                   <div className="relative flex items-center justify-center">
                     <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
                     <span className="relative bg-card px-3 text-xs text-muted-foreground">或</span>
                   </div>
-                  <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                  <div className="min-h-[132px] rounded-lg border border-border/50 bg-muted/20 p-3 transition-colors">
                     <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
                       <Send className="h-4 w-4 text-sky-500" />
                       Telegram 快捷登录
                     </div>
-                    {mobileAuth.isNative ? (
+                    {!telegramLoginStatus ? (
+                      <div className="flex min-h-[72px] items-center justify-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>正在加载 Telegram</span>
+                      </div>
+                    ) : mobileAuth.isNative ? (
                       <div className="space-y-2">
                         <Button
                           type="button"
@@ -820,12 +824,38 @@ export default function Login() {
                         )}
                       </div>
                     ) : canRenderTelegramWidget ? (
-                      <div
-                        ref={telegramWidgetRef}
-                        className={`flex min-h-11 justify-center ${telegramWidgetLoginMutation.isPending ? "pointer-events-none opacity-60" : ""}`}
-                      />
+                      <div className="space-y-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full gap-2"
+                          onClick={handleMobileTelegramLogin}
+                          disabled={isMobileTelegramWaiting}
+                        >
+                          {isMobileTelegramWaiting ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              等待 Telegram 确认
+                            </>
+                          ) : (
+                            <>
+                              <Send className="h-4 w-4" />
+                              打开 Telegram 登录
+                            </>
+                          )}
+                        </Button>
+                        <div className="relative min-h-[72px] overflow-visible">
+                          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          </div>
+                          <div
+                            ref={telegramWidgetRef}
+                            className={`relative z-10 flex min-h-[72px] items-center justify-center overflow-visible ${telegramWidgetLoginMutation.isPending ? "pointer-events-none opacity-60" : ""}`}
+                          />
+                        </div>
+                      </div>
                     ) : !telegramDomainStatus.valid ? (
-                      <p className="text-center text-xs leading-5 text-muted-foreground">
+                      <p className="flex min-h-[72px] items-center justify-center text-center text-xs leading-5 text-muted-foreground">
                         {telegramDomainStatus.message}
                       </p>
                     ) : (
@@ -1018,6 +1048,7 @@ export default function Login() {
               </p>
             </form>
           )}
+          </div>
             </CardContent>
           </Card>
         </main>
