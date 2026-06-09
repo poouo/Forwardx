@@ -78,7 +78,8 @@ import {
 import MultiHopEditor from "@/components/MultiHopEditor";
 import { ForwardGroupsContent } from "@/pages/ForwardGroups";
 
-const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
+const loadReactGlobe = () => import("react-globe.gl");
+const ReactGlobe = lazy(loadReactGlobe) as typeof import("react-globe.gl").default;
 
 type TunnelForm = {
   name: string;
@@ -150,18 +151,8 @@ type TunnelGlobePath = {
   endLat: number;
   endLng: number;
   altitude: number;
-  flowPhase: number;
   coords: Array<{ lat: number; lng: number; alt: number }>;
 };
-
-type TunnelGlobeFlowPath = {
-  link: TunnelGlobeLink;
-  flowPath: true;
-  id: string;
-  coords: Array<{ lat: number; lng: number; alt: number }>;
-};
-
-type TunnelGlobeRenderablePath = TunnelGlobePath | TunnelGlobeFlowPath;
 
 type TunnelGlobeCountryFeature = CountryFeatureLike & {
   type: "Feature";
@@ -174,19 +165,13 @@ type TunnelGlobeCountryFeature = CountryFeatureLike & {
 const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
 const tunnelLatencyAnimatedKeys = new Set<number>();
 const TUNNEL_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
-const TUNNEL_GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
-const TUNNEL_GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
 const TUNNEL_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const TUNNEL_GLOBE_PATH_SURFACE_ALTITUDE = 0.026;
 const TUNNEL_GLOBE_PATH_MIN_ALTITUDE = 0.038;
 const TUNNEL_GLOBE_PATH_MAX_ALTITUDE = 0.082;
 const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_STEP = 0.005;
 const TUNNEL_GLOBE_PATH_LAYER_ALTITUDE_MAX = 0.014;
-const TUNNEL_GLOBE_FLOW_FRAME_MS = 180;
-const TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP = 96;
-const TUNNEL_GLOBE_FLOW_STREAM_COUNT = 2;
-const TUNNEL_GLOBE_FLOW_SEGMENT_POINTS = 5;
-const TUNNEL_GLOBE_FLOW_SEGMENT_SPAN = 0.09;
+let reactGlobePrefetchStarted = false;
 
 const defaultForm: TunnelForm = {
   name: "",
@@ -400,48 +385,6 @@ function createTunnelGlobePathCoords(path: Pick<TunnelGlobePath, "startLat" | "s
   ];
 }
 
-function isTunnelGlobeFlowPath(path: unknown): path is TunnelGlobeFlowPath {
-  return !!path && (path as TunnelGlobeFlowPath).flowPath === true;
-}
-
-function interpolateTunnelGlobePath(path: TunnelGlobePath, phase: number) {
-  const coords = path.coords;
-  if (coords.length <= 1) return coords[0] || { lat: path.startLat, lng: path.startLng, alt: path.altitude };
-  const normalizedPhase = ((phase % 1) + 1) % 1;
-  const segmentPosition = normalizedPhase * (coords.length - 1);
-  const index = Math.min(coords.length - 2, Math.floor(segmentPosition));
-  const localPhase = segmentPosition - index;
-  const start = coords[index];
-  const end = coords[index + 1];
-  const lngDelta = longitudeDeltaDegrees(start.lng, end.lng);
-  return {
-    lat: start.lat + (end.lat - start.lat) * localPhase,
-    lng: normalizeLongitude(start.lng + lngDelta * localPhase),
-    alt: start.alt + (end.alt - start.alt) * localPhase + 0.006,
-  };
-}
-
-function createTunnelGlobeFlowPaths(paths: TunnelGlobePath[], frame: number): TunnelGlobeFlowPath[] {
-  const loopPhase = (frame % TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP) / TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP;
-  return paths.flatMap((path) => {
-    const flowPaths: TunnelGlobeFlowPath[] = [];
-    for (let streamIndex = 0; streamIndex < TUNNEL_GLOBE_FLOW_STREAM_COUNT; streamIndex += 1) {
-      const streamPhase = loopPhase + path.flowPhase + streamIndex / TUNNEL_GLOBE_FLOW_STREAM_COUNT;
-      const coords = Array.from({ length: TUNNEL_GLOBE_FLOW_SEGMENT_POINTS }, (_, index) => {
-        const pointPhase = streamPhase - TUNNEL_GLOBE_FLOW_SEGMENT_SPAN + (index / (TUNNEL_GLOBE_FLOW_SEGMENT_POINTS - 1)) * TUNNEL_GLOBE_FLOW_SEGMENT_SPAN;
-        return interpolateTunnelGlobePath(path, pointPhase);
-      });
-      flowPaths.push({
-        flowPath: true,
-        id: `${path.link.id}:${path.segmentIndex}:${path.layerIndex}:${streamIndex}`,
-        link: path.link,
-        coords,
-      });
-    }
-    return flowPaths;
-  });
-}
-
 function renderTunnelGlobeLinkTooltip(link: TunnelGlobeLink) {
   const routeNodes = link.routeHosts.map((host, index) => `${index + 1}. ${host.name}`).join(" -> ");
   const rows = [
@@ -581,6 +524,21 @@ function storeChainViewMode(viewMode: TunnelViewMode) {
   }
 }
 
+function prefetchReactGlobe() {
+  if (reactGlobePrefetchStarted || typeof window === "undefined") return;
+  reactGlobePrefetchStarted = true;
+  const startPrefetch = () => {
+    loadReactGlobe().catch(() => {
+      reactGlobePrefetchStarted = false;
+    });
+  };
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(startPrefetch, { timeout: 2200 });
+  } else {
+    window.setTimeout(startPrefetch, 700);
+  }
+}
+
 function formatTunnelLatencyTime(value: string | Date) {
   const d = new Date(value);
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -612,7 +570,6 @@ function TunnelWorldGlobe({
   const [hoveredLink, setHoveredLink] = useState<TunnelGlobeLink | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<TunnelGlobeHostPoint | null>(null);
   const [countries, setCountries] = useState<TunnelGlobeCountryFeature[]>([]);
-  const [flowFrame, setFlowFrame] = useState(0);
   const globeDataKey = useMemo(
     () => buildTunnelGlobeDataKey(tunnels, chainGroups, hosts, isTunnelSupported),
     [chainGroups, hosts, isTunnelSupported, tunnels]
@@ -709,7 +666,6 @@ function TunnelWorldGlobe({
         endLat: end.lat,
         endLng: end.lng,
         altitude: TUNNEL_GLOBE_PATH_MIN_ALTITUDE,
-        flowPhase: (segmentIndex * 0.22 + layerIndex * 0.11) % 1,
         coords: [],
       };
       const distance = globeDistanceDegrees(path);
@@ -735,8 +691,6 @@ function TunnelWorldGlobe({
     });
     return codes;
   }, [globeData.hostPoints]);
-  const flowPaths = useMemo(() => createTunnelGlobeFlowPaths(globeData.paths, flowFrame), [flowFrame, globeData.paths]);
-  const globePaths = useMemo<TunnelGlobeRenderablePath[]>(() => [...globeData.paths, ...flowPaths], [flowPaths, globeData.paths]);
   const latestLinkById = useMemo(() => {
     const tunnelById = new Map<number, any>((tunnels || []).map((tunnel: any) => [Number(tunnel.id), tunnel]));
     const chainById = new Map<number, any>((chainGroups || []).map((group: any) => [Number(group.id), group]));
@@ -787,6 +741,7 @@ function TunnelWorldGlobe({
   const latestGlobeLink = (link: TunnelGlobeLink) => latestLinkById.get(link.id) || link;
 
   useEffect(() => {
+    if (!globeReady) return;
     let cancelled = false;
     fetch(TUNNEL_GLOBE_COUNTRIES_URL)
       .then((response) => (response.ok ? response.json() : null))
@@ -800,15 +755,7 @@ function TunnelWorldGlobe({
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    if (globeData.paths.length === 0) return;
-    const timer = window.setInterval(() => {
-      setFlowFrame((current) => (current + 1) % TUNNEL_GLOBE_FLOW_FRAMES_PER_LOOP);
-    }, TUNNEL_GLOBE_FLOW_FRAME_MS);
-    return () => window.clearInterval(timer);
-  }, [globeData.paths.length]);
+  }, [globeReady]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -880,9 +827,7 @@ function TunnelWorldGlobe({
               width={size.width}
               height={size.height}
               backgroundColor="rgba(3,7,18,1)"
-              backgroundImageUrl={TUNNEL_GLOBE_BACKGROUND_IMAGE_URL}
               globeImageUrl={TUNNEL_GLOBE_EARTH_IMAGE_URL}
-              bumpImageUrl={TUNNEL_GLOBE_BUMP_IMAGE_URL}
               showAtmosphere
               atmosphereColor="#38bdf8"
               atmosphereAltitude={0.22}
@@ -908,27 +853,27 @@ function TunnelWorldGlobe({
                 setHoveredPoint(point as TunnelGlobeHostPoint | null);
                 if (!point) setHoveredLink(null);
               }}
-              pathsData={globePaths}
+              pathsData={globeData.paths}
               pathPoints="coords"
               pathPointLat="lat"
               pathPointLng="lng"
               pathPointAlt="alt"
               pathResolution={4}
               pathColor={(path) => {
-                const item = path as TunnelGlobeRenderablePath;
-                return isTunnelGlobeFlowPath(item) ? latestGlobeLink(item.link).color : latestGlobeLink(item.link).trackColor;
+                const item = path as TunnelGlobePath;
+                const link = latestGlobeLink(item.link);
+                return hoveredLink?.id === link.id ? link.color : link.trackColor;
               }}
               pathStroke={(path) => {
-                const item = path as TunnelGlobeRenderablePath;
+                const item = path as TunnelGlobePath;
                 const hovered = hoveredLink?.id === item.link.id;
-                if (isTunnelGlobeFlowPath(item)) return hovered ? 2.05 : 1.65;
-                return hovered ? 3.05 : 2.35;
+                return hovered ? 3.05 : 2.1;
               }}
               pathsTransitionDuration={0}
-              pathLabel={(path) => renderTunnelGlobeLinkTooltip(latestGlobeLink((path as TunnelGlobeRenderablePath).link))}
-              onPathHover={(path) => setHoveredLink(path ? latestGlobeLink((path as TunnelGlobeRenderablePath).link) : null)}
+              pathLabel={(path) => renderTunnelGlobeLinkTooltip(latestGlobeLink((path as TunnelGlobePath).link))}
+              onPathHover={(path) => setHoveredLink(path ? latestGlobeLink((path as TunnelGlobePath).link) : null)}
               onPathClick={(path) => {
-                const link = path ? latestGlobeLink((path as TunnelGlobeRenderablePath).link) : null;
+                const link = path ? latestGlobeLink((path as TunnelGlobePath).link) : null;
                 if (link) handleLinkEdit(link);
               }}
               showPointerCursor={(objectType) => objectType === "path" || objectType === "point"}
@@ -1315,6 +1260,10 @@ function TunnelsContent() {
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
   const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
+
+  useEffect(() => {
+    prefetchReactGlobe();
+  }, []);
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
