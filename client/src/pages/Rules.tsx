@@ -76,6 +76,7 @@ import {
 import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
+import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 
 const loadReactGlobe = () => import("react-globe.gl");
@@ -188,6 +189,7 @@ const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
 const RULE_PAGE_SIZE_STORAGE_KEY = "forwardx.rules.pageSize";
 const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
 const RULE_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
+const RULE_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
 const RULE_GLOBE_PATH_SURFACE_ALTITUDE = 0.028;
 const RULE_GLOBE_PATH_MIN_ALTITUDE = 0.04;
 const RULE_GLOBE_PATH_MAX_ALTITUDE = 0.11;
@@ -412,6 +414,7 @@ type RuleGlobePoint = {
   color: string;
   regionText: string;
   addressText: string;
+  countryCode: string;
   targetText?: string;
   note?: string;
   rule?: any;
@@ -434,6 +437,14 @@ type RuleGlobePath = {
   dashInitialGap: number;
   dashAnimateTime: number;
   coords: Array<{ lat: number; lng: number; alt: number }>;
+};
+
+type RuleGlobeCountryFeature = CountryFeatureLike & {
+  type: "Feature";
+  geometry: {
+    type: string;
+    coordinates: unknown;
+  };
 };
 
 function prefetchReactGlobe() {
@@ -532,11 +543,19 @@ function hostRegionText(host: any | null | undefined) {
     .join(" / ");
 }
 
+function hostCountryCode(host: any | null | undefined) {
+  return normalizeCountryCode(host?.geoCountryCode);
+}
+
 function targetGeoRegionText(geo: RuleTargetGeo | null | undefined) {
   return [geo?.geoCountryName || geo?.geoCountryCode, geo?.geoRegion]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" / ");
+}
+
+function targetGeoCountryCode(geo: RuleTargetGeo | null | undefined) {
+  return normalizeCountryCode(geo?.geoCountryCode);
 }
 
 function normalizeLongitude(lng: number) {
@@ -739,6 +758,7 @@ function buildRuleGlobeData(
       color: "#e0f2fe",
       regionText: hostRegionText(host),
       addressText: hostAddressCandidates(host).join(" / "),
+      countryCode: hostCountryCode(host),
     };
     hostPointById.set(hostId, point);
     hostAddressCandidates(host).forEach((address) => {
@@ -799,6 +819,13 @@ function buildRuleGlobeData(
       : targetGeoCoord
       ? targetGeoRegionText(targetGeo)
       : "";
+    const targetCountryCode = shouldOffsetTargetHost
+      ? lastRoutePoint.countryCode
+      : targetHostPoint
+      ? targetHostPoint.countryCode
+      : targetGeoCoord
+      ? targetGeoCountryCode(targetGeo)
+      : "";
     const targetNote = shouldOffsetTargetHost
       ? "目标端口位于出口节点，已偏移显示末跳"
       : targetHostPoint
@@ -815,6 +842,7 @@ function buildRuleGlobeData(
       color,
       regionText: targetRegionText,
       addressText: targetText,
+      countryCode: targetCountryCode,
       targetText,
       note: targetNote,
       rule,
@@ -932,10 +960,36 @@ function RuleTrafficGlobe({
   const [size, setSize] = useState({ width: 1400, height: 780 });
   const [hoveredPath, setHoveredPath] = useState<RuleGlobePath | null>(null);
   const [hoveredPoint, setHoveredPoint] = useState<RuleGlobePoint | null>(null);
+  const [countries, setCountries] = useState<RuleGlobeCountryFeature[]>([]);
   const globeData = useMemo(
     () => buildRuleGlobeData(rules, hosts, tunnels, forwardGroups, trafficByRule, targetGeoByAddress, targetGeoLookupReady),
     [forwardGroups, hosts, rules, targetGeoByAddress, targetGeoLookupReady, trafficByRule, tunnels],
   );
+  const routeCountryCodes = useMemo(() => {
+    const codes = new Set<string>();
+    globeData.points.forEach((point) => {
+      const code = normalizeCountryCode(point.countryCode);
+      if (code) codes.add(code);
+    });
+    return codes;
+  }, [globeData.points]);
+
+  useEffect(() => {
+    if (!globeReady) return;
+    let cancelled = false;
+    fetch(RULE_GLOBE_COUNTRIES_URL)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.features)) return;
+        setCountries(data.features as RuleGlobeCountryFeature[]);
+      })
+      .catch(() => {
+        if (!cancelled) setCountries([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [globeReady]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -1008,6 +1062,14 @@ function RuleTrafficGlobe({
               atmosphereAltitude={0.22}
               showGraticules={false}
               globeCurvatureResolution={6}
+              polygonsData={countries}
+              polygonGeoJsonGeometry="geometry"
+              polygonAltitude={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? 0.014 : 0.004}
+              polygonCapColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(20,184,166,.34)" : "rgba(15,23,42,.05)"}
+              polygonSideColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(20,184,166,.22)" : "rgba(2,6,23,.14)"}
+              polygonStrokeColor={(country) => countryFeatureHasCode(country as RuleGlobeCountryFeature, routeCountryCodes) ? "rgba(94,234,212,.88)" : "rgba(148,163,184,.22)"}
+              polygonCapCurvatureResolution={4}
+              polygonsTransitionDuration={0}
               pointsData={globeData.points}
               pointLat="lat"
               pointLng="lng"
