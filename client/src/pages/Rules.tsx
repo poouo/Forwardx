@@ -982,7 +982,7 @@ function RuleTrafficGlobe({
             fallback={
               <div className="absolute inset-0 flex items-center justify-center bg-[#030712] text-sm text-white/70">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                正在加载流量地球
+                正在加载流量转发图
               </div>
             }
           >
@@ -1044,7 +1044,7 @@ function RuleTrafficGlobe({
           </Suspense>
 
           <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-white/10 bg-black/35 px-3 py-2 text-xs text-white shadow-lg backdrop-blur-md">
-            <div className="font-medium">转发流量地球</div>
+            <div className="font-medium">流量转发图</div>
             <div className="mt-1 text-white/70">
               规则 {rules.length} 条 · 已定位 {globeData.summaries.length} 条
             </div>
@@ -1086,7 +1086,7 @@ function RuleTrafficGlobe({
       </div>
       <Card className="border-border/40 bg-card/60 md:hidden">
         <CardContent className="p-6 text-center text-sm text-muted-foreground">
-          3D 地球视图仅在 PC 端显示。
+          3D 流量转发图仅在 PC 端显示。
         </CardContent>
       </Card>
     </>
@@ -2662,7 +2662,7 @@ function RulesContent() {
               size="icon"
               className="h-8 w-8 rounded-none"
               onClick={() => handleDisplayModeChange("globe")}
-              title="3D 地球视图"
+              title="3D 流量转发图"
             >
               <Globe className="h-4 w-4" />
             </Button>
