@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useTheme } from "@/contexts/ThemeContext";
 import { createHomepageDocument } from "@/lib/homepageHtml";
 import { trpc } from "@/lib/trpc";
 import { ArrowRight, Gauge, Lock, Network, Server, ShieldCheck, WalletCards, Zap } from "lucide-react";
@@ -29,6 +30,7 @@ export function CustomPublicHome({ html }: { html: string }) {
 }
 
 export default function PublicHome() {
+  const { resolvedTheme } = useTheme();
   const { data: info } = trpc.system.publicInfo.useQuery(undefined, { refetchOnWindowFocus: false });
   const registrationEnabled = info?.registrationEnabled !== false;
 
@@ -39,10 +41,10 @@ export default function PublicHome() {
   };
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(135deg,#f7fbff_0%,#eef7f3_48%,#fff6e8_100%)] text-foreground">
+    <div className="public-home-shell min-h-screen text-foreground">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5">
         <Link href="/" className="flex items-center gap-3">
-          <img src="/logo-light.png" alt="ForwardX" className="h-9 w-9 object-contain" />
+          <img src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"} alt="ForwardX" className="h-9 w-9 object-contain" />
           <span className="text-lg font-semibold tracking-tight">ForwardX</span>
         </Link>
         <div className="flex items-center gap-2">
@@ -58,7 +60,7 @@ export default function PublicHome() {
       <main>
         <section className="mx-auto grid min-h-[calc(100vh-84px)] w-full max-w-6xl items-center gap-8 px-4 pb-12 pt-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="space-y-6">
-            <Badge variant="outline" className="w-fit gap-2 border-emerald-500/30 bg-white/70 px-3 py-1.5 text-emerald-700">
+            <Badge variant="outline" className="w-fit gap-2 border-emerald-500/30 bg-background/55 px-3 py-1.5 text-emerald-700 backdrop-blur dark:text-emerald-300">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               面向 Linux 服务器的转发管理面板
             </Badge>
@@ -82,13 +84,13 @@ export default function PublicHome() {
           </div>
 
           <div className="grid gap-3">
-            <Card className="border-white/70 bg-white/80 shadow-xl shadow-slate-200/70 backdrop-blur-xl">
+            <Card disableEnterAnimation className="border-border/50 bg-card/85 shadow-xl shadow-foreground/5 backdrop-blur-xl">
               <CardContent className="p-5">
                 <div className="grid gap-3 sm:grid-cols-2">
                   {features.map((feature) => {
                     const Icon = feature.icon;
                     return (
-                      <div key={feature.title} className="rounded-lg border border-border/40 bg-background/60 p-4">
+                      <div key={feature.title} className="rounded-lg border border-border/40 bg-background/75 p-4">
                         <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 text-primary">
                           <Icon className="h-4 w-4" />
                         </div>
@@ -102,15 +104,15 @@ export default function PublicHome() {
             </Card>
 
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-lg border border-white/70 bg-white/70 p-3 text-center shadow-sm backdrop-blur">
+              <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <Zap className="mx-auto h-4 w-4 text-amber-500" />
                 <p className="mt-2 text-xs text-muted-foreground">在线升级</p>
               </div>
-              <div className="rounded-lg border border-white/70 bg-white/70 p-3 text-center shadow-sm backdrop-blur">
+              <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <WalletCards className="mx-auto h-4 w-4 text-emerald-600" />
                 <p className="mt-2 text-xs text-muted-foreground">套餐支付</p>
               </div>
-              <div className="rounded-lg border border-white/70 bg-white/70 p-3 text-center shadow-sm backdrop-blur">
+              <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
                 <Lock className="mx-auto h-4 w-4 text-primary" />
                 <p className="mt-2 text-xs text-muted-foreground">加密通讯</p>
               </div>

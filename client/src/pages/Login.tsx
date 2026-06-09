@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon } from "lucide-react";
+import { Eye, EyeOff, Loader2, Sun, Moon, RefreshCw, UserPlus, LogIn, Send, Settings as SettingsIcon, Server, ShieldCheck, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
@@ -86,6 +86,11 @@ type TwoFactorChallengeState = {
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
 const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
 const DISPLAY_NAME_MAX_LENGTH = 24;
+const authHighlights = [
+  { title: "多节点管理", text: "统一管理分散在不同服务器的转发节点", icon: Server },
+  { title: "安全可靠", text: "TLS 加密传输，权限精细控制", icon: ShieldCheck },
+  { title: "高性能转发", text: "负载均衡与故障转移，保障服务可用", icon: Zap },
+];
 
 function getWelcomeName(user: any) {
   return String(user?.name || user?.username || "用户").trim() || "用户";
@@ -575,15 +580,16 @@ export default function Login() {
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
 
   return (
-    <div className="mobile-login-screen flex items-center justify-center min-h-screen bg-background relative px-3 sm:px-4">
-      <div className="absolute right-4 top-4 flex items-center gap-2">
+    <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
+      <div className="auth-grid-overlay pointer-events-none absolute inset-0 opacity-[0.14]" />
+      <div className="absolute right-4 top-4 z-20 flex items-center gap-2">
         {mobileAuth.isNative && (
           <button
             onClick={() => {
               setPanelUrlDraft(mobileAuth.getPanelUrl());
               setShowPanelSettings(true);
             }}
-            className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-9 w-9 items-center justify-center rounded-lg bg-background/80 text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="设置面板地址"
             title="设置面板地址"
           >
@@ -592,7 +598,7 @@ export default function Login() {
         )}
         <button
           onClick={toggleTheme}
-          className="h-9 w-9 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-9 w-9 items-center justify-center rounded-lg bg-background/80 text-foreground shadow-sm ring-1 ring-border/60 transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Toggle theme"
           title={resolvedTheme === "dark" ? "切换到白天模式" : "切换到黑夜模式"}
         >
@@ -604,21 +610,63 @@ export default function Login() {
         </button>
       </div>
 
-      <Card className="w-full max-w-md shadow-xl border-border/50">
-        <CardHeader className="text-center pb-2">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <img
-              src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
-              alt="ForwardX"
-              className="h-12 w-12 object-contain"
-            />
+      <div className="relative z-10 grid min-h-screen lg:grid-cols-[minmax(0,1.05fr)_minmax(460px,.95fr)]">
+        <section className="relative hidden lg:flex">
+          <div className="relative flex min-h-screen w-full items-center px-10 py-14 xl:px-16">
+            <div className="max-w-xl">
+              <div className="flex items-center gap-3">
+                <img src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"} alt="ForwardX" className="h-11 w-11 object-contain" />
+                <span className="text-2xl font-bold tracking-tight text-foreground">ForwardX</span>
+              </div>
+              <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">
+                高性能端口转发管理面板，轻松管理您的网络流量
+              </p>
+              <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
+                {["转发", "隧道", "流量"].map((label) => (
+                  <div key={label} className="rounded-lg border border-border/45 bg-background/35 px-3 py-2 text-center text-sm font-medium text-foreground/85 shadow-sm backdrop-blur">
+                    {label}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-10 space-y-6">
+                {authHighlights.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div key={item.title} className="flex gap-4">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-background/45 text-primary shadow-sm ring-1 ring-border/50 backdrop-blur">
+                        <Icon className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <h2 className="text-sm font-semibold text-foreground">{item.title}</h2>
+                        <p className="mt-1 text-sm leading-6 text-muted-foreground">{item.text}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
-          <CardTitle className="text-xl sm:text-2xl font-bold tracking-tight">ForwardX</CardTitle>
-          <CardDescription className="text-muted-foreground">
-            {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "多主机转发管理" : "注册账号"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="pt-4">
+        </section>
+
+        <main className="flex min-h-screen items-center justify-center px-4 py-20 sm:px-6 lg:px-10">
+          <Card disableEnterAnimation className="auth-card-surface w-full max-w-[420px] px-5 py-6 sm:px-7">
+            <CardHeader className="px-0 pb-7 text-left">
+              <div className="mb-5 flex items-center gap-3 lg:hidden">
+                <img
+                  src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+                  alt="ForwardX"
+                  className="h-10 w-10 object-contain"
+                />
+                <span className="text-lg font-semibold tracking-tight">ForwardX</span>
+              </div>
+              <CardTitle className="text-2xl font-bold tracking-tight">
+                {mode === "login" ? "欢迎回来" : "创建账号"}
+              </CardTitle>
+              <CardDescription className="mt-1 text-sm text-muted-foreground">
+                {isTelegramPending ? "正在通过 Telegram 登录" : mode === "login" ? "请登录您的账户" : "使用邮箱注册 ForwardX 账户"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-0">
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -970,8 +1018,10 @@ export default function Login() {
               </p>
             </form>
           )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </main>
+      </div>
 
       {mobileAuth.isNative && (
         <Dialog open={showPanelSettings} onOpenChange={setShowPanelSettings}>

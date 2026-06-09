@@ -495,6 +495,47 @@
     -webkit-backdrop-filter: blur(24px) saturate(1.45);
   }
 
+  .auth-shell,
+  .public-home-shell {
+    background:
+      linear-gradient(118deg, color-mix(in oklch, var(--chart-1) 14%, transparent) 0%, transparent 36%),
+      linear-gradient(246deg, color-mix(in oklch, var(--chart-2) 11%, transparent) 0%, transparent 42%),
+      linear-gradient(135deg, color-mix(in oklch, var(--background) 96%, white 4%) 0%, var(--background) 54%, color-mix(in oklch, var(--background) 92%, var(--chart-4) 8%) 100%);
+  }
+
+  .dark .auth-shell,
+  .dark .public-home-shell {
+    background:
+      linear-gradient(118deg, color-mix(in oklch, var(--chart-1) 13%, transparent) 0%, transparent 36%),
+      linear-gradient(246deg, color-mix(in oklch, var(--chart-2) 9%, transparent) 0%, transparent 42%),
+      linear-gradient(135deg, color-mix(in oklch, var(--background) 92%, white 3%) 0%, var(--background) 54%, color-mix(in oklch, var(--background) 88%, var(--chart-4) 8%) 100%);
+  }
+
+  .auth-grid-overlay {
+    background-image:
+      linear-gradient(90deg, color-mix(in oklch, var(--foreground) 10%, transparent) 1px, transparent 1px),
+      linear-gradient(0deg, color-mix(in oklch, var(--foreground) 8%, transparent) 1px, transparent 1px);
+    background-size: 96px 96px;
+    mask-image: linear-gradient(90deg, black 0%, rgb(0 0 0 / 0.72) 48%, transparent 100%);
+  }
+
+  .auth-card-surface {
+    background: color-mix(in oklch, var(--card) 76%, transparent);
+    border-color: color-mix(in oklch, var(--border) 58%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklch, white 52%, transparent),
+      0 24px 70px color-mix(in oklch, var(--foreground) 8%, transparent);
+    backdrop-filter: blur(28px) saturate(1.45);
+    -webkit-backdrop-filter: blur(28px) saturate(1.45);
+  }
+
+  .dark .auth-card-surface {
+    background: color-mix(in oklch, var(--card) 80%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklch, white 16%, transparent),
+      0 24px 70px color-mix(in oklch, black 34%, transparent);
+  }
+
   [data-mobile-header="true"] {
     background: color-mix(in oklch, var(--background) 92%, transparent);
     border-color: color-mix(in oklch, var(--border) 68%, transparent);
