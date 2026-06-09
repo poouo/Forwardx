@@ -535,7 +535,7 @@ function prefetchReactGlobe() {
   if ("requestIdleCallback" in window) {
     window.requestIdleCallback(startPrefetch, { timeout: 2200 });
   } else {
-    window.setTimeout(startPrefetch, 700);
+    globalThis.setTimeout(startPrefetch, 700);
   }
 }
 
@@ -859,17 +859,17 @@ function TunnelWorldGlobe({
               pathPointLng="lng"
               pathPointAlt="alt"
               pathResolution={4}
-              pathColor={(path) => {
+              pathColor={(path: object) => {
                 const item = path as TunnelGlobePath;
                 const link = latestGlobeLink(item.link);
                 return hoveredLink?.id === link.id ? link.color : link.trackColor;
               }}
-              pathStroke={(path) => {
+              pathStroke={(path: object) => {
                 const item = path as TunnelGlobePath;
                 const hovered = hoveredLink?.id === item.link.id;
                 return hovered ? 3.05 : 2.1;
               }}
-              pathsTransitionDuration={0}
+              pathTransitionDuration={0}
               pathLabel={(path) => renderTunnelGlobeLinkTooltip(latestGlobeLink((path as TunnelGlobePath).link))}
               onPathHover={(path) => setHoveredLink(path ? latestGlobeLink((path as TunnelGlobePath).link) : null)}
               onPathClick={(path) => {
