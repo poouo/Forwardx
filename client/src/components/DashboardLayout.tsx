@@ -160,10 +160,24 @@ function getLayoutUpgradeProgress(job: any) {
   const steps = [
     { label: "准备升级", done: status !== "idle" && matched([/开始升级/i, /start/i]) },
     {
-      label: "拉取与准备依赖",
+      label: "检查发布资产",
       done: matched([
-        /Cloning into/i,
-        /git (fetch|pull|checkout)/i,
+        /Release assets/i,
+        /not available yet/i,
+        /still building/i,
+        /发布资产/i,
+        /构建完成/i,
+        /Docker image/i,
+        /panel bundle/i,
+      ]),
+    },
+    {
+      label: "下载或拉取资产",
+      done: matched([
+        /Downloading panel bundle/i,
+        /Pulling image/i,
+        /Downloaded newer image/i,
+        /Image is up to date/i,
         /load metadata/i,
         /load build context/i,
         /pnpm install/i,
@@ -172,12 +186,14 @@ function getLayoutUpgradeProgress(job: any) {
         /Lockfile is up to date/i,
       ]),
     },
-    { label: "构建新版本", done: matched([/pnpm build/i, /vite .*building/i, /modules transformed/i, /Server build complete/i, /exporting layers/i]) },
-    { label: "重启服务", done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]) },
+    { label: "安装并重启", done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]) },
   ];
 
   if (status === "success") {
     return { percent: 100, label: "升级完成，正在等待面板恢复", steps: steps.map((step) => ({ ...step, done: true, active: false })) };
+  }
+  if (status === "waiting_assets") {
+    return { percent: 34, label: "等待 GitHub Actions 构建发布资产", steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
   }
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
@@ -772,6 +788,7 @@ function DashboardLayoutContent({
     hasPanelUpdate ||
     displayUpgradeJob?.status === "running" ||
     displayUpgradeJob?.status === "success" ||
+    displayUpgradeJob?.status === "waiting_assets" ||
     displayUpgradeJob?.status === "error"
   );
   const managementMenuItems: SidebarNavItem[] = isAdmin
@@ -795,6 +812,7 @@ function DashboardLayoutContent({
       hasPanelUpdate ||
       displayUpgradeJob?.status === "running" ||
       displayUpgradeJob?.status === "success" ||
+      displayUpgradeJob?.status === "waiting_assets" ||
       displayUpgradeJob?.status === "error"
     ) {
       setShowUpgradeDialog(true);
@@ -977,6 +995,8 @@ function DashboardLayoutContent({
                   ? upgradeProgress.label
                   : displayUpgradeJob?.status === "success"
                     ? upgradeRefreshText
+                    : displayUpgradeJob?.status === "waiting_assets"
+                      ? "发布资产构建中"
                     : displayUpgradeJob?.status === "error"
                       ? "升级失败"
                       : `发现新版本 ${upgradeTargetVersion}`
@@ -987,6 +1007,8 @@ function DashboardLayoutContent({
                   <Loader2 className="forwardx-icon-spin h-4 w-4 shrink-0" />
                 ) : displayUpgradeJob?.status === "success" ? (
                   <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                ) : displayUpgradeJob?.status === "waiting_assets" ? (
+                  <RefreshCw className="h-4 w-4 shrink-0 text-amber-500" />
                 ) : displayUpgradeJob?.status === "error" ? (
                   <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
                 ) : (
@@ -998,6 +1020,8 @@ function DashboardLayoutContent({
                       ? "正在升级"
                       : displayUpgradeJob?.status === "success"
                         ? "升级完成，正在重启"
+                        : displayUpgradeJob?.status === "waiting_assets"
+                          ? "发布资产构建中"
                         : displayUpgradeJob?.status === "error"
                           ? "升级失败"
                           : "发现新版本"}
@@ -1007,11 +1031,13 @@ function DashboardLayoutContent({
                       ? upgradeProgress.label
                       : displayUpgradeJob?.status === "success"
                         ? upgradeRefreshText
+                        : displayUpgradeJob?.status === "waiting_assets"
+                          ? (displayUpgradeJob.error || "请稍后重新检查更新")
                         : displayUpgradeJob?.status === "error"
                           ? (displayUpgradeJob.error || "点击查看详情")
                           : `可升级到 ${upgradeTargetVersion}`}
                   </p>
-                  {displayUpgradeJob?.status === "running" && (
+                  {(displayUpgradeJob?.status === "running" || displayUpgradeJob?.status === "waiting_assets") && (
                     <div className="mt-2 space-y-2">
                       <Progress value={upgradeProgress.percent} className="h-1" />
                       <div className="space-y-1">
@@ -1180,6 +1206,7 @@ function DashboardLayoutContent({
             const progress = upgradeProgress;
             const isRunning = job?.status === "running";
             const isSuccess = job?.status === "success";
+            const isWaitingAssets = job?.status === "waiting_assets";
             const isError = job?.status === "error";
             const targetVersion = upgradeTargetVersion || "-";
             const currentVersion = upgradeStatus?.currentVersion || updateInfo?.currentVersion || "-";
@@ -1202,7 +1229,7 @@ function DashboardLayoutContent({
                   </div>
                 )}
 
-                {(isRunning || isSuccess || isError) && (
+                {(isRunning || isSuccess || isWaitingAssets || isError) && (
                   <div className="space-y-3 rounded-lg border border-border/40 bg-background/60 p-3">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <span className="font-medium">{progress.label}</span>
@@ -1223,6 +1250,18 @@ function DashboardLayoutContent({
                         </div>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {isWaitingAssets && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+                    <div className="flex items-center gap-2 font-medium">
+                      <RefreshCw className="h-4 w-4" />
+                      发布资产构建中
+                    </div>
+                    <p className="mt-2 break-words text-xs leading-5">
+                      {job?.error || "GitHub Actions 正在生成面板安装包或 Docker 镜像，请稍后重新检查更新。"}
+                    </p>
                   </div>
                 )}
 

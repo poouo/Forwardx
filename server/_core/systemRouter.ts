@@ -46,6 +46,7 @@ export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
 const ANDROID_APK_DOWNLOAD_URL =
   `${REPO_URL}/releases/download/v${ANDROID_APK_RELEASE_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
+const UPGRADE_ASSETS_PENDING_EXIT_CODE = 12;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh | sudo bash -s -- upgrade";
 const MANUAL_DOCKER_UPGRADE_COMMAND =
@@ -88,7 +89,7 @@ type DeploymentInfo = {
 };
 
 type UpgradeJob = {
-  status: "idle" | "running" | "success" | "error";
+  status: "idle" | "running" | "success" | "error" | "waiting_assets";
   startedAt: string | null;
   finishedAt: string | null;
   targetVersion: string | null;
@@ -138,6 +139,11 @@ function githubRawMainUrl(repoUrl: string, path: string) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/main/${path.replace(/^\/+/, "")}`;
 }
 
+function panelBundleAssetUrl(version: string) {
+  const normalized = normalizeVersion(version);
+  return `${REPO_URL}/releases/download/v${normalized}/forwardx-panel-v${normalized}.tar.gz`;
+}
+
 function noCacheUrl(url: string) {
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}_=${Date.now()}`;
@@ -170,8 +176,30 @@ async function fetchTextNoCache(url: string): Promise<string> {
   return res.text();
 }
 
+async function fetchPanelBundleAssetStatus(version: string): Promise<{ ready: boolean; status: number; url: string }> {
+  const url = panelBundleAssetUrl(version);
+  const res = await fetch(noCacheUrl(url), {
+    method: "HEAD",
+    redirect: "follow",
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+      "User-Agent": `ForwardX/${APP_VERSION}`,
+    },
+  });
+  return { ready: res.ok, status: res.status, url };
+}
+
 function dockerImageReference() {
   return String(process.env.FORWARDX_IMAGE || DEFAULT_DOCKER_IMAGE).trim() || DEFAULT_DOCKER_IMAGE;
+}
+
+function dockerImageReferenceForVersion(version: string) {
+  const configuredImage = String(process.env.FORWARDX_IMAGE || "").trim();
+  if (configuredImage) return configuredImage;
+  const image = parseDockerImageReference(DEFAULT_DOCKER_IMAGE);
+  return `${image.registry}/${image.repository}:v${normalizeVersion(version)}`;
 }
 
 function parseDockerImageReference(image: string) {
@@ -230,8 +258,8 @@ async function fetchRegistryJson<T>(url: string, accept: string, scope: string):
   return res.json() as Promise<T>;
 }
 
-async function fetchDockerLatestImageVersion(): Promise<string | null> {
-  const image = parseDockerImageReference(dockerImageReference());
+async function fetchDockerImageVersion(imageRef = dockerImageReference()): Promise<string | null> {
+  const image = parseDockerImageReference(imageRef);
   const scope = `repository:${image.repository}:pull`;
   const base = `https://${image.registry}/v2/${image.repository}`;
   const manifestAccept = [
@@ -270,12 +298,46 @@ async function fetchDockerLatestImageVersion(): Promise<string | null> {
 }
 
 async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
-  if (!info.latestVersion || !info.hasUpdate || !isDockerRuntime()) {
+  if (!info.latestVersion || !info.hasUpdate) {
     return { ...info, deployable: info.hasUpdate || undefined };
   }
   const expected = normalizeVersion(info.latestVersion);
+  if (!isDockerRuntime()) {
+    try {
+      const asset = await fetchPanelBundleAssetStatus(expected);
+      if (asset.ready) {
+        return { ...info, deployable: true, artifactVersion: `v${expected}`, pendingReason: null };
+      }
+      if (asset.status === 404) {
+        return {
+          ...info,
+          hasUpdate: false,
+          deployable: false,
+          artifactVersion: null,
+          pendingReason: `已发现新版本 v${expected}，但面板安装包 forwardx-panel-v${expected}.tar.gz 尚未上传到 GitHub Release，正在等待 GitHub Actions 构建完成。请稍后重新检查更新。`,
+        };
+      }
+      return {
+        ...info,
+        hasUpdate: false,
+        deployable: false,
+        artifactVersion: null,
+        pendingReason: `已发现新版本 v${expected}，但暂时无法确认面板安装包是否可下载（HTTP ${asset.status}）。请稍后重试。`,
+      };
+    } catch (error: any) {
+      return {
+        ...info,
+        hasUpdate: false,
+        deployable: false,
+        artifactVersion: null,
+        pendingReason: `已发现新版本 v${expected}，但暂时无法确认面板安装包是否构建完成：${error?.message || "未知错误"}`,
+      };
+    }
+  }
+
   try {
-    const imageVersion = await fetchDockerLatestImageVersion();
+    const imageRef = dockerImageReferenceForVersion(expected);
+    const imageVersion = await fetchDockerImageVersion(imageRef);
     const artifactVersion = imageVersion ? `v${normalizeVersion(imageVersion)}` : null;
     if (imageVersion && compareVersions(imageVersion, expected) >= 0) {
       return { ...info, deployable: true, artifactVersion, pendingReason: null };
@@ -285,7 +347,7 @@ async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
       hasUpdate: false,
       deployable: false,
       artifactVersion,
-      pendingReason: `已发现新版本 v${expected}，但 Docker latest 镜像${artifactVersion ? `当前仍是 ${artifactVersion}` : "尚未写入版本信息"}，等待 GitHub Actions 构建完成后再提示升级。`,
+      pendingReason: `已发现新版本 v${expected}，但 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}，等待 GitHub Actions 构建完成后再提示升级。`,
     };
   } catch (error: any) {
     return {
@@ -293,8 +355,34 @@ async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
       hasUpdate: false,
       deployable: false,
       artifactVersion: null,
-      pendingReason: `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像是否构建完成：${error?.message || "未知错误"}`,
+      pendingReason: `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}`,
     };
+  }
+}
+
+async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<string | null> {
+  const expected = normalizeVersion(targetVersion);
+  if (isDockerRuntime()) {
+    try {
+      const imageRef = dockerImageReferenceForVersion(expected);
+      const imageVersion = await fetchDockerImageVersion(imageRef);
+      if (imageVersion && compareVersions(imageVersion, expected) >= 0) return null;
+      const artifactVersion = imageVersion ? `v${normalizeVersion(imageVersion)}` : null;
+      return `已发现新版本 v${expected}，但 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}，正在等待 GitHub Actions 构建完成。请稍后重试。`;
+    } catch (error: any) {
+      return `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}`;
+    }
+  }
+
+  try {
+    const asset = await fetchPanelBundleAssetStatus(expected);
+    if (asset.ready) return null;
+    if (asset.status === 404) {
+      return `已发现新版本 v${expected}，但面板安装包 forwardx-panel-v${expected}.tar.gz 尚未上传到 GitHub Release，正在等待 GitHub Actions 构建完成。请稍后重试。`;
+    }
+    return `已发现新版本 v${expected}，但暂时无法确认面板安装包是否可下载（HTTP ${asset.status}）。请稍后重试。`;
+  } catch (error: any) {
+    return `已发现新版本 v${expected}，但暂时无法确认面板安装包是否构建完成：${error?.message || "未知错误"}`;
   }
 }
 
@@ -421,6 +509,22 @@ function appendManualUpgradeHint() {
   appendUpgradeLog("[ForwardX] Automatic upgrade failed. Run a one-click script on the server to upgrade manually:");
   appendUpgradeLog(`[ForwardX] Local: ${MANUAL_LOCAL_UPGRADE_COMMAND}`);
   appendUpgradeLog(`[ForwardX] Docker: ${MANUAL_DOCKER_UPGRADE_COMMAND}`);
+}
+
+function setUpgradeWaitingForAssets(targetVersion: string, reason: string) {
+  upgradeJob = {
+    status: "waiting_assets",
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    targetVersion,
+    logs: [
+      `[ForwardX] Current version v${APP_VERSION}`,
+      `[ForwardX] Selected latest upgrade target ${targetVersion}`,
+      "[ForwardX] Release assets are still building on GitHub Actions.",
+      `[ForwardX] ${reason}`,
+    ],
+    error: reason,
+  };
 }
 
 function getDeploymentInfo(): DeploymentInfo {
@@ -1144,9 +1248,6 @@ export const systemRouter = router({
         update = lastUpdateInfo;
       }
       lastUpdateInfo = update;
-      if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
-        throw new Error(update.pendingReason || "新版本部署产物尚未构建完成，请稍后重试");
-      }
       const requestedVersion = input?.targetVersion;
       const targetVersion =
         update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
@@ -1155,6 +1256,16 @@ export const systemRouter = router({
       if (!targetVersion) throw new Error("No upgrade target version found");
       if (compareVersions(targetVersion, APP_VERSION) <= 0) {
         throw new Error("Already on the latest version");
+      }
+      if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
+        const reason = update.pendingReason || "新版本发布资产尚未构建完成，请稍后重试。";
+        setUpgradeWaitingForAssets(targetVersion, reason);
+        return { success: false, targetVersion, pendingReason: reason };
+      }
+      const pendingReason = await getUpgradeAssetsPendingReason(targetVersion);
+      if (pendingReason) {
+        setUpgradeWaitingForAssets(targetVersion, pendingReason);
+        return { success: false, targetVersion, pendingReason };
       }
       console.info(`[Upgrade] Starting panel upgrade current=v${APP_VERSION} target=${targetVersion}`);
 
@@ -1198,6 +1309,12 @@ export const systemRouter = router({
           upgradeJob.status = "success";
           console.info(`[Upgrade] Panel upgrade command completed target=${targetVersion}`);
           appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
+        } else if (code === UPGRADE_ASSETS_PENDING_EXIT_CODE) {
+          const reason = `v${normalizeVersion(targetVersion)} 的发布资产仍在 GitHub Actions 构建或上传中，请稍后重新检查更新。`;
+          upgradeJob.status = "waiting_assets";
+          upgradeJob.error = reason;
+          console.warn(`[Upgrade] Panel upgrade assets pending target=${targetVersion} exitCode=${code}`);
+          appendUpgradeLog(`[ForwardX] ${reason}`);
         } else {
           upgradeJob.status = "error";
           upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;

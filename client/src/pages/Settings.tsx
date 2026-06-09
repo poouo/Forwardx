@@ -75,10 +75,24 @@ function getUpgradeProgress(job: any) {
       done: status !== "idle" && matched([/开始升级/i, /start/i]),
     },
     {
-      label: "拉取与准备依赖",
+      label: "检查发布资产",
       done: matched([
-        /Cloning into/i,
-        /git (fetch|pull|checkout)/i,
+        /Release assets/i,
+        /not available yet/i,
+        /still building/i,
+        /发布资产/i,
+        /构建完成/i,
+        /Docker image/i,
+        /panel bundle/i,
+      ]),
+    },
+    {
+      label: "下载或拉取资产",
+      done: matched([
+        /Downloading panel bundle/i,
+        /Pulling image/i,
+        /Downloaded newer image/i,
+        /Image is up to date/i,
         /load metadata/i,
         /load build context/i,
         /transferring context/i,
@@ -91,17 +105,16 @@ function getUpgradeProgress(job: any) {
       ]),
     },
     {
-      label: "构建新版本",
-      done: matched([/pnpm build/i, /vite .*building/i, /modules transformed/i, /Server build complete/i, /exporting layers/i]),
-    },
-    {
-      label: "重启服务",
+      label: "安装并重启",
       done: matched([/Container .* (Creating|Created|Starting|Started)/i, /docker compose up/i, /systemctl restart/i, /已启动/i, /recreate/i]),
     },
   ];
 
   if (status === "success") {
     return { percent: 100, label: "升级完成", steps: steps.map((step) => ({ ...step, done: true, active: false })) };
+  }
+  if (status === "waiting_assets") {
+    return { percent: 34, label: "等待 GitHub Actions 构建发布资产", steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
   }
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
@@ -136,18 +149,18 @@ function isDdnsProvider(value: unknown): value is DdnsProvider {
 const panelInstallGuideCommands = [
   {
     label: "本地部署",
-    description: "适合直接在 Linux 主机上运行面板，脚本会安装依赖、构建前端、写入 systemd 服务并启动面板。",
+    description: "适合直接在 Linux 主机上运行面板，脚本会下载 GitHub Release 中已构建好的面板程序包，安装运行依赖、写入 systemd 服务并启动面板。",
     directory: "/opt/forwardx-panel",
     service: "forwardx-panel",
     install: `${panelLocalCommandPrefix} install`,
     upgrade: `${panelLocalCommandPrefix} upgrade`,
     uninstall: `${panelLocalCommandPrefix} uninstall`,
     versionedUpgrade: `curl -fsSL ${panelLocalScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
-    notes: ["默认 Web 端口为 3000，安装时可按提示修改。", "升级会保留 .env、data 目录、数据库配置和已有数据。"],
+    notes: ["默认 Web 端口为 3000，安装时可按提示修改。", "升级会保留 .env、data 目录、数据库配置和已有数据。", "如果面板程序包尚未上传到 Release，脚本会提示等待 GitHub Actions 构建完成。"],
   },
   {
     label: "Docker 部署",
-    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取代码和 GitHub Packages 预编译镜像并启动容器。",
+    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取 GitHub Packages 预编译镜像并启动容器。",
     directory: "/opt/forwardx-docker",
     service: "forwardx-panel 容器",
     install: `${panelDockerCommandPrefix} install`,
@@ -1881,6 +1894,9 @@ function SystemInfoSection() {
     if (previous === "running" && status === "success") {
       toast.success(`面板升级成功，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`);
     }
+    if (previous === "running" && status === "waiting_assets") {
+      toast.info(upgradeStatus?.job?.error || "发布资产仍在构建中，请稍后重试");
+    }
     if (previous === "running" && status === "error") {
       toast.error(upgradeStatus?.job?.error || "面板升级失败");
     }
@@ -2108,8 +2124,12 @@ function SystemInfoSection() {
   };
 
   const startUpgradeMutation = trpc.system.startUpgrade.useMutation({
-    onSuccess: async () => {
-      toast.success("升级任务已启动");
+    onSuccess: async (result) => {
+      if (result?.pendingReason) {
+        toast.info(result.pendingReason);
+      } else {
+        toast.success("升级任务已启动");
+      }
       await refetchUpgradeStatus();
     },
     onError: (err) => toast.error(err.message || "启动升级失败"),
@@ -2960,12 +2980,16 @@ function SystemInfoSection() {
                   <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
                     upgradeStatus.job.status === "error"
                       ? "bg-destructive/10 text-destructive"
+                      : upgradeStatus.job.status === "waiting_assets"
+                        ? "bg-amber-500/10 text-amber-500"
                       : upgradeStatus.job.status === "success"
                         ? "bg-emerald-500/10 text-emerald-500"
                         : "bg-primary/10 text-primary"
                   }`}>
                     {upgradeStatus.job.status === "error" ? (
                       <AlertTriangle className="h-5 w-5" />
+                    ) : upgradeStatus.job.status === "waiting_assets" ? (
+                      <RefreshCw className="h-5 w-5" />
                     ) : upgradeStatus.job.status === "success" ? (
                       <CheckCircle2 className="h-5 w-5" />
                     ) : (
@@ -2976,6 +3000,8 @@ function SystemInfoSection() {
                     <p className="text-sm font-semibold">
                       {upgradeStatus.job.status === "success"
                         ? "升级成功"
+                        : upgradeStatus.job.status === "waiting_assets"
+                          ? "发布资产构建中"
                         : upgradeStatus.job.status === "error"
                           ? "升级出现异常"
                           : "正在升级"}
@@ -2983,13 +3009,15 @@ function SystemInfoSection() {
                     <p className="mt-1 text-xs text-muted-foreground">
                       {upgradeStatus.job.status === "success"
                         ? `已完成 ${upgradeStatus.job.targetVersion || ""} 升级，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`
+                        : upgradeStatus.job.status === "waiting_assets"
+                          ? "GitHub Actions 仍在生成面板安装包或镜像，请稍后重新检查更新"
                         : upgradeStatus.job.status === "error"
                           ? "升级未完成，请查看下方异常信息"
                           : upgradeProgress.label}
                     </p>
                   </div>
                 </div>
-                <Badge variant={upgradeStatus.job.status === "error" ? "destructive" : "outline"} className="w-fit">
+                <Badge variant={upgradeStatus.job.status === "error" ? "destructive" : "outline"} className={`w-fit ${upgradeStatus.job.status === "waiting_assets" ? "border-amber-500/30 text-amber-500" : ""}`}>
                   {upgradeStatus.job.targetVersion}
                 </Badge>
               </div>
@@ -3017,6 +3045,21 @@ function SystemInfoSection() {
                   ))}
                 </div>
               </div>
+
+              {upgradeStatus.job.status === "waiting_assets" && (
+                <div className="mt-4 space-y-2">
+                  {upgradeStatus.job.error && (
+                    <Alert>
+                      <RefreshCw className="h-4 w-4" />
+                      <AlertTitle>等待发布资产</AlertTitle>
+                      <AlertDescription>{upgradeStatus.job.error}</AlertDescription>
+                    </Alert>
+                  )}
+                  <pre className="max-h-52 overflow-auto rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs leading-relaxed text-muted-foreground">
+                    {upgradeErrorLogs || "正在等待 GitHub Actions 构建发布资产"}
+                  </pre>
+                </div>
+              )}
 
               {upgradeStatus.job.status === "error" && (
                 <div className="mt-4 space-y-2">

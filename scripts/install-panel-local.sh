@@ -8,6 +8,7 @@ PORT="${PORT:-3000}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 PANEL_BUNDLE_PREFIX="${FORWARDX_PANEL_BUNDLE_PREFIX:-forwardx-panel-v}"
 PNPM_VERSION="${FORWARDX_PNPM_VERSION:-10.28.1}"
+ASSETS_PENDING_EXIT_CODE=12
 
 valid_port() {
   local port="$1"
@@ -199,15 +200,22 @@ install_deps() {
 
 download_panel_bundle() {
   local version="$1"
-  local tmp_dir url archive
+  local tmp_dir url archive http_code
   tmp_dir="$(mktemp -d)"
   archive="$tmp_dir/panel.tar.gz"
   url="$(panel_bundle_url "$version")"
 
   echo "[INFO] Downloading panel bundle: $url"
-  if ! curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$archive"; then
+  http_code="$(curl -fL --retry 3 --connect-timeout 10 --write-out "%{http_code}" --output "$archive" "$url" 2>/dev/null || true)"
+  if [ "$http_code" = "404" ]; then
     rm -rf "$tmp_dir"
-    echo "[ERROR] Failed to download panel bundle from GitHub release"
+    echo "[INFO] Panel bundle for v$version is not available yet."
+    echo "[INFO] GitHub Actions may still be building or uploading release assets. Please retry later."
+    exit "$ASSETS_PENDING_EXIT_CODE"
+  fi
+  if [ "$http_code" != "200" ]; then
+    rm -rf "$tmp_dir"
+    echo "[ERROR] Failed to download panel bundle from GitHub release (HTTP ${http_code:-unknown})"
     exit 1
   fi
 

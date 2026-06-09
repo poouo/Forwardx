@@ -8,6 +8,7 @@ CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
 PORT="${PORT:-3000}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
+ASSETS_PENDING_EXIT_CODE=12
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -234,13 +235,14 @@ assert_target_image_ready() {
   actual="$(image_panel_version "$image" 2>/dev/null || true)"
   actual="$(normalize_version "$actual")"
   if [ -z "$actual" ]; then
-    echo "[ERROR] Unable to read panel version from image $image"
-    exit 12
+    echo "[INFO] Unable to read panel version from image $image"
+    echo "[INFO] GitHub Actions may still be building or uploading release assets. Please retry later."
+    exit "$ASSETS_PENDING_EXIT_CODE"
   fi
   if [ "$actual" != "$expected" ]; then
-    echo "[ERROR] Image version mismatch: expected v$expected, got v$actual"
+    echo "[INFO] Image version mismatch: expected v$expected, got v$actual"
     echo "[INFO] Release image may still be building/pushing. Please retry later."
-    exit 12
+    exit "$ASSETS_PENDING_EXIT_CODE"
   fi
 }
 
@@ -248,7 +250,11 @@ start_panel() {
   local image="$1"
   cd "$APP_DIR"
   echo "[INFO] Pulling image: $image"
-  docker pull "$image"
+  if ! docker pull "$image"; then
+    echo "[INFO] Docker image $image is not available yet."
+    echo "[INFO] GitHub Actions may still be building or uploading release assets. Please retry later."
+    exit "$ASSETS_PENDING_EXIT_CODE"
+  fi
   assert_target_image_ready "$image"
   remove_existing_panel_containers
   compose_cmd --env-file "$APP_DIR/.env" -p "$PROJECT_NAME" up -d --remove-orphans forwardx

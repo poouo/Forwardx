@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-panel-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:

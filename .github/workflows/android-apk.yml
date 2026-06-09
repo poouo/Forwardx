@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: android-apk-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
