@@ -83,6 +83,138 @@ require_root() {
   fi
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\\\\''/g")"
+}
+
+is_systemd_host() {
+  command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+write_openrc_service() {
+  local node_bin="$1"
+  cat > "/etc/init.d/$SERVICE_NAME" <<EOF
+#!/sbin/openrc-run
+name="$SERVICE_NAME"
+description="ForwardX Panel"
+command="/bin/sh"
+command_args="-lc $(shell_quote "cd $APP_DIR && set -a && . $APP_DIR/.env && set +a && exec $node_bin dist/index.js")"
+command_background=true
+pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="$APP_DIR/data/panel.log"
+error_log="$APP_DIR/data/panel.log"
+depend() {
+  need net
+}
+EOF
+  chmod 755 "/etc/init.d/$SERVICE_NAME"
+}
+
+write_sysv_service() {
+  local node_bin="$1"
+  cat > "/etc/init.d/$SERVICE_NAME" <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          $SERVICE_NAME
+# Required-Start:    \$network
+# Required-Stop:     \$network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: ForwardX Panel
+### END INIT INFO
+PIDFILE=/run/$SERVICE_NAME.pid
+LOGFILE=$APP_DIR/data/panel.log
+CMD=$(shell_quote "cd $APP_DIR && set -a && . $APP_DIR/.env && set +a && exec $node_bin dist/index.js")
+start() {
+  mkdir -p /run "$APP_DIR/data"
+  if [ -s "\$PIDFILE" ] && kill -0 "\$(cat "\$PIDFILE")" 2>/dev/null; then return 0; fi
+  nohup sh -lc "\$CMD" >> "\$LOGFILE" 2>&1 &
+  echo \$! > "\$PIDFILE"
+}
+stop() {
+  if [ -s "\$PIDFILE" ]; then kill "\$(cat "\$PIDFILE")" 2>/dev/null || true; rm -f "\$PIDFILE"; fi
+}
+case "\$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) [ -s "\$PIDFILE" ] && kill -0 "\$(cat "\$PIDFILE")" 2>/dev/null ;;
+  *) echo "Usage: \$0 {start|stop|restart|status}"; exit 1 ;;
+esac
+EOF
+  chmod 755 "/etc/init.d/$SERVICE_NAME"
+}
+
+write_service() {
+  local node_bin
+  node_bin="$(command -v node)"
+  mkdir -p "$APP_DIR/data"
+  if is_systemd_host; then
+    cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
+[Unit]
+Description=ForwardX Panel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$APP_DIR/.env
+ExecStart=$node_bin dist/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME"
+  elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
+    write_openrc_service "$node_bin"
+    rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
+  elif [ -d /etc/init.d ]; then
+    write_sysv_service "$node_bin"
+    command -v update-rc.d >/dev/null 2>&1 && update-rc.d "$SERVICE_NAME" defaults >/dev/null 2>&1 || true
+    command -v chkconfig >/dev/null 2>&1 && chkconfig "$SERVICE_NAME" on >/dev/null 2>&1 || true
+  else
+    echo "[ERROR] Unsupported init system, please install systemd/OpenRC/SysV init support"
+    exit 1
+  fi
+}
+
+restart_service() {
+  if is_systemd_host; then
+    systemctl restart "$SERVICE_NAME"
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-service "$SERVICE_NAME" restart
+  elif [ -x "/etc/init.d/$SERVICE_NAME" ]; then
+    "/etc/init.d/$SERVICE_NAME" restart
+  else
+    echo "[ERROR] Service manager not found for $SERVICE_NAME"
+    exit 1
+  fi
+}
+
+remove_service() {
+  if is_systemd_host; then
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service "$SERVICE_NAME" stop 2>/dev/null || true
+  fi
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update del "$SERVICE_NAME" default 2>/dev/null || true
+  fi
+  if [ -x "/etc/init.d/$SERVICE_NAME" ]; then
+    "/etc/init.d/$SERVICE_NAME" stop 2>/dev/null || true
+  fi
+  command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f "$SERVICE_NAME" remove >/dev/null 2>&1 || true
+  command -v chkconfig >/dev/null 2>&1 && chkconfig "$SERVICE_NAME" off >/dev/null 2>&1 || true
+  rm -f "/etc/init.d/$SERVICE_NAME"
+}
+
 confirm_yes() {
   local prompt="$1"
   local answer=""
@@ -162,8 +294,12 @@ ensure_node_runtime() {
   elif command -v yum >/dev/null 2>&1; then
     curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
     yum install -y -q nodejs
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper -n install nodejs22 npm22 || zypper -n install nodejs npm
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache nodejs npm
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm nodejs npm
   else
     echo "[ERROR] Unsupported package manager, please install Node.js 22+ manually"
     exit 1
@@ -184,8 +320,12 @@ install_deps() {
     dnf install -y -q curl ca-certificates tar xz openssl
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q curl ca-certificates tar xz openssl
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper -n install curl ca-certificates tar xz openssl
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache curl ca-certificates tar xz openssl
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm curl ca-certificates tar xz openssl
   fi
 
   ensure_node_runtime
@@ -261,28 +401,6 @@ FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgr
 EOF
 }
 
-write_service() {
-  cat > "/etc/systemd/system/$SERVICE_NAME.service" <<EOF
-[Unit]
-Description=ForwardX Panel
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$APP_DIR/.env
-ExecStart=$(command -v node) dist/index.js
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME"
-}
-
 install_panel() {
   local release_version
   require_root
@@ -294,7 +412,7 @@ install_panel() {
   install_runtime_dependencies
   write_env
   write_service
-  systemctl restart "$SERVICE_NAME"
+  restart_service
   echo "[DONE] ForwardX panel started (release v$release_version): http://SERVER_IP:$PORT"
 }
 
@@ -308,7 +426,7 @@ upgrade_panel() {
   install_runtime_dependencies
   write_env
   write_service
-  systemctl restart "$SERVICE_NAME"
+  restart_service
   echo "[DONE] ForwardX panel upgraded to release v$release_version and restarted"
 }
 
@@ -318,10 +436,7 @@ uninstall_panel() {
     echo "[INFO] Uninstall cancelled"
     return
   fi
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$SERVICE_NAME.service"
-  systemctl daemon-reload
+  remove_service
 
   if confirm_yes "Remove panel directory $APP_DIR ? [y/N] "; then
     rm -rf "$APP_DIR"

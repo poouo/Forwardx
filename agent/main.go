@@ -33,7 +33,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.88"
+var Version = "2.2.89"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -594,6 +594,18 @@ func runIperf3Task(cfg Config, task iperf3Task) iperf3Result {
 		port = selectedPort
 	}
 	if _, err := exec.LookPath("iperf3"); err != nil {
+		message := missingNetworkToolMessage("iperf3")
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "error",
+			Output:    message,
+			Error:     message,
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
+	}
+	if _, err := exec.LookPath("iperf3"); err != nil {
 		message := "Agent 未安装 iperf3，请重新运行安装脚本或手动安装 iperf3"
 		return iperf3Result{
 			TaskID:    task.TaskID,
@@ -679,6 +691,18 @@ func startIperf3Server(cfg Config, task iperf3Task, port int) iperf3Result {
 }
 
 func iperf3StartError(task iperf3Task, port int, err error) iperf3Result {
+	if errors.Is(err, exec.ErrNotFound) {
+		message := missingNetworkToolMessage("iperf3")
+		return iperf3Result{
+			TaskID:    task.TaskID,
+			Op:        task.Op,
+			Port:      port,
+			Status:    "error",
+			Output:    message,
+			Error:     message,
+			UpdatedAt: time.Now().Format(time.RFC3339Nano),
+		}
+	}
 	message := fmt.Sprintf("iperf3 服务端启动失败：%v", err)
 	return iperf3Result{
 		TaskID:    task.TaskID,
@@ -777,6 +801,16 @@ func runLookingGlassTask(cfg Config, task lookingGlassTask) lookingGlassResult {
 		result.FinishedAt = time.Now().Format(time.RFC3339Nano)
 		return result
 	}
+	if _, err := exec.LookPath(command); err != nil {
+		code := 1
+		message := missingNetworkToolMessage(command)
+		result.ExitCode = &code
+		result.Error = message
+		result.Output = message
+		result.DurationMs = int(time.Since(started).Milliseconds())
+		result.FinishedAt = time.Now().Format(time.RFC3339Nano)
+		return result
+	}
 	progress := func(output string, durationMs int) {
 		result.Output = output
 		result.DurationMs = durationMs
@@ -805,6 +839,21 @@ func lookingGlassCommand(method string, host string) (string, []string, error) {
 		return "mtr", []string{mapBool(ipv6, "-6", "-4"), "--report", "--report-cycles", "10", "--no-dns", host}, nil
 	default:
 		return "", nil, fmt.Errorf("不支持的网络测试方法: %s", method)
+	}
+}
+
+func missingNetworkToolMessage(tool string) string {
+	switch tool {
+	case "ping":
+		return "Agent 主机缺少 ping 工具，无法执行 Ping 测试。\n请在该 Agent 主机安装后重试：Debian/Ubuntu: apt install iputils-ping；RHEL/CentOS: yum install iputils；Alpine: apk add iputils。"
+	case "traceroute":
+		return "Agent 主机缺少 traceroute 工具，无法执行 Traceroute 测试。\n请在该 Agent 主机安装后重试：Debian/Ubuntu: apt install traceroute；RHEL/CentOS: yum install traceroute；Alpine: apk add traceroute。"
+	case "mtr":
+		return "Agent 主机缺少 mtr 工具，无法执行 MTR 测试。\n请在该 Agent 主机安装后重试：Debian/Ubuntu: apt install mtr-tiny；RHEL/CentOS: yum install mtr；Alpine: apk add mtr。"
+	case "iperf3":
+		return "Agent 主机缺少 iperf3，无法启动 iperf3 服务端测试。\n请在该 Agent 主机安装后重试：Debian/Ubuntu: apt install iperf3；RHEL/CentOS: yum install iperf3；Alpine: apk add iperf3。"
+	default:
+		return fmt.Sprintf("Agent 主机缺少 %s 工具，无法执行该网络测试。请在该 Agent 主机安装 %s 后重试。", tool, tool)
 	}
 }
 
@@ -858,7 +907,10 @@ func runLookingGlassCommand(name string, args []string, timeout time.Duration, o
 
 	if err := cmd.Start(); err != nil {
 		code := 1
-		return err.Error(), &code, false
+		if errors.Is(err, exec.ErrNotFound) {
+			return missingNetworkToolMessage(name), &code, false
+		}
+		return fmt.Sprintf("网络测试工具 %s 启动失败：%v", name, err), &code, false
 	}
 
 	var wg sync.WaitGroup
@@ -1051,6 +1103,9 @@ func handleAction(cfg Config, a action) {
 		stopFailoverProxy(a.RuleID, a.SourcePort)
 		if a.Fxp != nil {
 			stopFXP(*a.Fxp)
+		}
+		for _, name := range managedServiceNamesForAction(a) {
+			cleanupManagedService(name)
 		}
 		for _, cmd := range a.Commands {
 			ok = runShell(cmd) && ok
@@ -1274,14 +1329,186 @@ func runPostCommands(commands []string, actionMessage *actionMessage) {
 }
 
 func writeUnitAndRestart(name, unit string) bool {
-	path := "/etc/systemd/system/" + name + ".service"
-	if err := os.WriteFile(path, []byte(unit), 0644); err != nil {
-		logf("write unit %s: %v", name, err)
+	name = sanitizeServiceName(name)
+	if name == "" {
+		logf("write service: empty service name")
 		return false
 	}
-	return runShell("systemctl daemon-reload") &&
-		runShell("systemctl enable "+name+".service") &&
-		runShell("systemctl restart "+name+".service")
+	execStart := systemdUnitExecStart(unit)
+	if execStart == "" {
+		logf("write service %s: missing ExecStart", name)
+		return false
+	}
+	if isSystemdHost() {
+		path := "/etc/systemd/system/" + name + ".service"
+		if err := os.WriteFile(path, []byte(unit), 0644); err != nil {
+			logf("write systemd unit %s: %v", name, err)
+			return false
+		}
+		return runShell("systemctl daemon-reload") &&
+			runShell("systemctl enable "+shellQuote(name)+".service") &&
+			runShell("systemctl restart "+shellQuote(name)+".service")
+	}
+	if commandExists("rc-service") && commandExists("rc-update") {
+		path := "/etc/init.d/" + name
+		if err := os.WriteFile(path, []byte(openRCServiceScript(name, execStart)), 0755); err != nil {
+			logf("write openrc service %s: %v", name, err)
+			return false
+		}
+		return runShell("rc-update add "+shellQuote(name)+" default >/dev/null 2>&1 || true") &&
+			runShell("rc-service "+shellQuote(name)+" restart")
+	}
+	if _, err := os.Stat("/etc/init.d"); err == nil {
+		path := "/etc/init.d/" + name
+		if err := os.WriteFile(path, []byte(sysVServiceScript(name, execStart)), 0755); err != nil {
+			logf("write sysv service %s: %v", name, err)
+			return false
+		}
+		return runShell("command -v update-rc.d >/dev/null 2>&1 && update-rc.d "+shellQuote(name)+" defaults >/dev/null 2>&1 || true") &&
+			runShell("command -v chkconfig >/dev/null 2>&1 && chkconfig "+shellQuote(name)+" on >/dev/null 2>&1 || true") &&
+			runShell("/etc/init.d/"+shellQuote(name)+" restart")
+	}
+	logf("write service %s: unsupported init system", name)
+	return false
+}
+
+func managedServiceNamesForAction(a action) []string {
+	port := a.SourcePort
+	if port <= 0 {
+		return nil
+	}
+	if a.ServiceName != "" || a.ServiceNameExtra != "" {
+		names := []string{}
+		if a.ServiceName != "" {
+			names = append(names, a.ServiceName)
+		}
+		if a.ServiceNameExtra != "" {
+			names = append(names, a.ServiceNameExtra)
+		}
+		return names
+	}
+	switch a.ForwardType {
+	case "realm":
+		return []string{"forwardx-realm-" + strconv.Itoa(port)}
+	case "socat":
+		if normalizeRuntimeProtocol(a.Protocol) == "both" {
+			return []string{"forwardx-socat-tcp-" + strconv.Itoa(port), "forwardx-socat-udp-" + strconv.Itoa(port)}
+		}
+		return []string{"forwardx-socat-" + strconv.Itoa(port)}
+	default:
+		return nil
+	}
+}
+
+func cleanupManagedService(name string) {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return
+	}
+	_ = runShell(managedServiceCleanupShell(name))
+}
+
+func sanitizeServiceName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return name
+}
+
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func isSystemdHost() bool {
+	if !commandExists("systemctl") {
+		return false
+	}
+	if st, err := os.Stat("/run/systemd/system"); err == nil && st.IsDir() {
+		return true
+	}
+	return false
+}
+
+func systemdUnitExecStart(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStart=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "ExecStart="))
+		}
+	}
+	return ""
+}
+
+func openRCServiceScript(name, execStart string) string {
+	return strings.Join([]string{
+		"#!/sbin/openrc-run",
+		"name=\"" + name + "\"",
+		"description=\"ForwardX managed service " + name + "\"",
+		"command=\"/bin/sh\"",
+		"command_args=\"-lc " + shellQuote("exec "+execStart) + "\"",
+		"command_background=true",
+		"pidfile=\"/run/${RC_SVCNAME}.pid\"",
+		"output_log=\"/var/log/forwardx-agent/${RC_SVCNAME}.log\"",
+		"error_log=\"/var/log/forwardx-agent/${RC_SVCNAME}.log\"",
+		"depend() {",
+		"  need net",
+		"}",
+		"",
+	}, "\n")
+}
+
+func sysVServiceScript(name, execStart string) string {
+	quotedCmd := shellQuote("exec " + execStart)
+	return strings.Join([]string{
+		"#!/bin/sh",
+		"### BEGIN INIT INFO",
+		"# Provides:          " + name,
+		"# Required-Start:    $network",
+		"# Required-Stop:     $network",
+		"# Default-Start:     2 3 4 5",
+		"# Default-Stop:      0 1 6",
+		"# Short-Description: ForwardX managed service " + name,
+		"### END INIT INFO",
+		"PIDFILE=/run/" + name + ".pid",
+		"LOGFILE=/var/log/forwardx-agent/" + name + ".log",
+		"CMD=" + quotedCmd,
+		"start() {",
+		"  mkdir -p /run /var/log/forwardx-agent",
+		"  if [ -s \"$PIDFILE\" ] && kill -0 \"$(cat \"$PIDFILE\")\" 2>/dev/null; then return 0; fi",
+		"  nohup sh -lc \"$CMD\" >> \"$LOGFILE\" 2>&1 &",
+		"  echo $! > \"$PIDFILE\"",
+		"}",
+		"stop() {",
+		"  if [ -s \"$PIDFILE\" ]; then kill \"$(cat \"$PIDFILE\")\" 2>/dev/null || true; rm -f \"$PIDFILE\"; fi",
+		"}",
+		"case \"$1\" in",
+		"  start) start ;;",
+		"  stop) stop ;;",
+		"  restart) stop; sleep 1; start ;;",
+		"  status) [ -s \"$PIDFILE\" ] && kill -0 \"$(cat \"$PIDFILE\")\" 2>/dev/null ;;",
+		"  *) echo \"Usage: $0 {start|stop|restart|status}\"; exit 1 ;;",
+		"esac",
+		"",
+	}, "\n")
+}
+
+func managedServiceCleanupShell(name string) string {
+	q := shellQuote(name)
+	return "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop " + q + ".service 2>/dev/null || true; systemctl disable " + q + ".service 2>/dev/null || true; rm -f /etc/systemd/system/" + name + ".service; systemctl daemon-reload 2>/dev/null || true; fi; " +
+		"if command -v rc-service >/dev/null 2>&1; then rc-service " + q + " stop 2>/dev/null || true; fi; " +
+		"if command -v rc-update >/dev/null 2>&1; then rc-update del " + q + " default 2>/dev/null || true; fi; " +
+		"if [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " stop 2>/dev/null || true; fi; " +
+		"if command -v update-rc.d >/dev/null 2>&1; then update-rc.d -f " + q + " remove >/dev/null 2>&1 || true; fi; " +
+		"if command -v chkconfig >/dev/null 2>&1; then chkconfig " + q + " off >/dev/null 2>&1 || true; fi; " +
+		"rm -f /etc/init.d/" + name
 }
 
 func writeState(a action) {
@@ -1439,10 +1666,10 @@ func nftRuleCleanupCmd(ruleID int) string {
 
 func managedPortCleanupCmds(port string) []string {
 	cmds := append(managedListenerCleanupCmds(port),
-		"systemctl stop forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
-		"systemctl disable forwardx-socat-"+port+".service forwardx-socat-tcp-"+port+".service forwardx-socat-udp-"+port+".service forwardx-realm-"+port+".service 2>/dev/null || true",
-		"rm -f /etc/systemd/system/forwardx-socat-"+port+".service /etc/systemd/system/forwardx-socat-tcp-"+port+".service /etc/systemd/system/forwardx-socat-udp-"+port+".service /etc/systemd/system/forwardx-realm-"+port+".service",
-		"systemctl daemon-reload",
+		managedServiceCleanupShell("forwardx-socat-"+port),
+		managedServiceCleanupShell("forwardx-socat-tcp-"+port),
+		managedServiceCleanupShell("forwardx-socat-udp-"+port),
+		managedServiceCleanupShell("forwardx-realm-"+port),
 		"iptables -t mangle -D PREROUTING -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
 		"iptables -t mangle -D PREROUTING -p udp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
 		"iptables -t mangle -D INPUT -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",

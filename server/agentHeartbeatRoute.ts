@@ -224,10 +224,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return cmds;
     };
     const buildManagedPortCleanupCmds = (port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] => [
-      `systemctl stop forwardx-socat-${port}.service forwardx-socat-tcp-${port}.service forwardx-socat-udp-${port}.service forwardx-realm-${port}.service 2>/dev/null || true`,
-      `systemctl disable forwardx-socat-${port}.service forwardx-socat-tcp-${port}.service forwardx-socat-udp-${port}.service forwardx-realm-${port}.service 2>/dev/null || true`,
-      `rm -f /etc/systemd/system/forwardx-socat-${port}.service /etc/systemd/system/forwardx-socat-tcp-${port}.service /etc/systemd/system/forwardx-socat-udp-${port}.service /etc/systemd/system/forwardx-realm-${port}.service`,
-      `systemctl daemon-reload`,
+      removeManagedServiceCmd(`forwardx-socat-${port}`),
+      removeManagedServiceCmd(`forwardx-socat-tcp-${port}`),
+      removeManagedServiceCmd(`forwardx-socat-udp-${port}`),
+      removeManagedServiceCmd(`forwardx-realm-${port}`),
       `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
       ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
     ];
@@ -249,8 +249,79 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const killByPatternCmd = (pattern: string) =>
       `for pid in $(pgrep -f '${pattern}' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`;
-    const writeUnitCmd = (svcName: string, unit: string) =>
-      `printf '%s' '${Buffer.from(unit, "utf8").toString("base64")}' | base64 -d > /etc/systemd/system/${svcName}.service`;
+    const shQuote = (value: string) => `'${String(value).replace(/'/g, "'\\''")}'`;
+    const serviceName = (value: string) => {
+      const name = String(value || "").trim();
+      if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error(`Invalid service name: ${value}`);
+      return name;
+    };
+    const unitExecStart = (unit: string) => {
+      const line = unit.split(/\r?\n/).map((item) => item.trim()).find((item) => item.startsWith("ExecStart="));
+      return line ? line.slice("ExecStart=".length).trim() : "";
+    };
+    const openRcScript = (svcName: string, execStart: string) => [
+      "#!/sbin/openrc-run",
+      `name="${svcName}"`,
+      `description="ForwardX managed service ${svcName}"`,
+      'command="/bin/sh"',
+      `command_args="-lc ${shQuote(`exec ${execStart}`)}"`,
+      "command_background=true",
+      'pidfile="/run/${RC_SVCNAME}.pid"',
+      'output_log="/var/log/forwardx-agent/${RC_SVCNAME}.log"',
+      'error_log="/var/log/forwardx-agent/${RC_SVCNAME}.log"',
+      "depend() {",
+      "  need net",
+      "}",
+      "",
+    ].join("\n");
+    const sysVScript = (svcName: string, execStart: string) => [
+      "#!/bin/sh",
+      "### BEGIN INIT INFO",
+      `# Provides:          ${svcName}`,
+      "# Required-Start:    $network",
+      "# Required-Stop:     $network",
+      "# Default-Start:     2 3 4 5",
+      "# Default-Stop:      0 1 6",
+      `# Short-Description: ForwardX managed service ${svcName}`,
+      "### END INIT INFO",
+      `PIDFILE=/run/${svcName}.pid`,
+      `LOGFILE=/var/log/forwardx-agent/${svcName}.log`,
+      `CMD=${shQuote(`exec ${execStart}`)}`,
+      'start() { mkdir -p /run /var/log/forwardx-agent; if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then return 0; fi; nohup sh -lc "$CMD" >> "$LOGFILE" 2>&1 & echo $! > "$PIDFILE"; }',
+      'stop() { if [ -s "$PIDFILE" ]; then kill "$(cat "$PIDFILE")" 2>/dev/null || true; rm -f "$PIDFILE"; fi; }',
+      'case "$1" in',
+      "  start) start ;;",
+      "  stop) stop ;;",
+      "  restart) stop; sleep 1; start ;;",
+      '  status) [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null ;;',
+      '  *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;',
+      "esac",
+      "",
+    ].join("\n");
+    const writeManagedServiceCmd = (svcNameRaw: string, unit: string) => {
+      const svcName = serviceName(svcNameRaw);
+      const execStart = unitExecStart(unit);
+      if (!execStart) return `echo "[service] ${svcName} missing ExecStart"; exit 1`;
+      const unitB64 = Buffer.from(unit, "utf8").toString("base64");
+      const openRcB64 = Buffer.from(openRcScript(svcName, execStart), "utf8").toString("base64");
+      const sysVB64 = Buffer.from(sysVScript(svcName, execStart), "utf8").toString("base64");
+      return `mkdir -p /var/log/forwardx-agent; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then mkdir -p /etc/systemd/system; printf '%s' '${unitB64}' | base64 -d > /etc/systemd/system/${svcName}.service; systemctl daemon-reload; elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then printf '%s' '${openRcB64}' | base64 -d > /etc/init.d/${svcName}; chmod 755 /etc/init.d/${svcName}; elif [ -d /etc/init.d ]; then printf '%s' '${sysVB64}' | base64 -d > /etc/init.d/${svcName}; chmod 755 /etc/init.d/${svcName}; else echo "[service] unsupported init system for ${svcName}"; exit 1; fi`;
+    };
+    const startManagedServiceCmd = (svcNameRaw: string) => {
+      const svcName = serviceName(svcNameRaw);
+      const q = shQuote(svcName);
+      return `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${q}.service 2>/dev/null || true; systemctl restart ${q}.service || { systemctl status ${q}.service --no-pager -l 2>/dev/null || true; journalctl -u ${q}.service -n 80 --no-pager 2>/dev/null || true; exit 1; }; elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then rc-update add ${q} default >/dev/null 2>&1 || true; rc-service ${q} restart || { rc-service ${q} status 2>/dev/null || true; exit 1; }; elif [ -x /etc/init.d/${svcName} ]; then command -v update-rc.d >/dev/null 2>&1 && update-rc.d ${q} defaults >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} on >/dev/null 2>&1 || true; /etc/init.d/${svcName} restart; else echo "[service] missing init script for ${svcName}"; exit 1; fi`;
+    };
+    const stopManagedServiceCmd = (svcNameRaw: string) => {
+      const svcName = serviceName(svcNameRaw);
+      const q = shQuote(svcName);
+      return `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl disable ${q}.service 2>/dev/null || true; systemctl stop ${q}.service 2>/dev/null || true; fi; if command -v rc-service >/dev/null 2>&1; then rc-service ${q} stop 2>/dev/null || true; fi; if command -v rc-update >/dev/null 2>&1; then rc-update del ${q} default 2>/dev/null || true; fi; if [ -x /etc/init.d/${svcName} ]; then /etc/init.d/${svcName} stop 2>/dev/null || true; fi`;
+    };
+    const removeManagedServiceCmd = (svcNameRaw: string) => {
+      const svcName = serviceName(svcNameRaw);
+      const q = shQuote(svcName);
+      return `${stopManagedServiceCmd(svcName)}; rm -f /etc/systemd/system/${svcName}.service /etc/init.d/${svcName}; if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi; command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f ${q} remove >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} off >/dev/null 2>&1 || true`;
+    };
     const gostServiceName = "forwardx-gost";
     const gostServiceUnit = [
       "[Unit]",
@@ -885,18 +956,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `mkdir -p /etc/forwardx-gost`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-gost/config.json`,
         `echo "[gost-config] forwardx-gost services=${gostServiceConfig.length} chains=${gostChains.length}"`,
-        writeUnitCmd(gostServiceName, gostServiceUnit),
-        `systemctl daemon-reload`,
+        writeManagedServiceCmd(gostServiceName, gostServiceUnit),
       ];
       if (gostServiceConfig.length > 0) {
         cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(
-          `systemctl enable ${gostServiceName}.service 2>/dev/null || true`,
-          `systemctl restart ${gostServiceName}.service || { systemctl status ${gostServiceName}.service --no-pager -l; journalctl -u ${gostServiceName}.service -n 80 --no-pager; exit 1; }`,
-        );
+        cmds.push(startManagedServiceCmd(gostServiceName));
       } else {
-        cmds.push(`systemctl disable ${gostServiceName}.service 2>/dev/null || true`);
-        cmds.push(`systemctl stop ${gostServiceName}.service 2>/dev/null || true`);
+        cmds.push(stopManagedServiceCmd(gostServiceName));
       }
       return cmds;
     };
@@ -971,7 +1037,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         `mkdir -p /etc/forwardx-tunnels`,
         `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-tunnels/config.json`,
         `echo "[gost-config] forwardx-tunnels services=${services.length}"`,
-        writeUnitCmd("forwardx-tunnels", [
+        writeManagedServiceCmd("forwardx-tunnels", [
           "[Unit]",
           "Description=ForwardX managed gost tunnels",
           "After=network.target",
@@ -987,17 +1053,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           "WantedBy=multi-user.target",
           "",
         ].join("\n")),
-        `systemctl daemon-reload`,
       ];
       if (services.length > 0) {
         cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(
-          `systemctl enable forwardx-tunnels.service 2>/dev/null || true`,
-          `systemctl restart forwardx-tunnels.service || { systemctl status forwardx-tunnels.service --no-pager -l; journalctl -u forwardx-tunnels.service -n 80 --no-pager; exit 1; }`,
-        );
+        cmds.push(startManagedServiceCmd("forwardx-tunnels"));
       } else {
-        cmds.push(`systemctl disable forwardx-tunnels.service 2>/dev/null || true`);
-        cmds.push(`systemctl stop forwardx-tunnels.service 2>/dev/null || true`);
+        cmds.push(stopManagedServiceCmd("forwardx-tunnels"));
       }
       cmds.push(...countingCmds);
       return cmds;
@@ -1076,10 +1137,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           protocol: rule.protocol,
           svcName,
           commands: [
-            `systemctl stop ${svcName}.service 2>/dev/null || true`,
-            `systemctl disable ${svcName}.service 2>/dev/null || true`,
-            `rm -f /etc/systemd/system/${svcName}.service`,
-            `systemctl daemon-reload`,
+            removeManagedServiceCmd(svcName),
             killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
             `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
@@ -1093,19 +1151,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (rule.protocol === "both") {
           const svcTcp = `forwardx-socat-tcp-${rule.sourcePort}`;
           const svcUdp = `forwardx-socat-udp-${rule.sourcePort}`;
-          removeCmds.push(`systemctl stop ${svcTcp}.service 2>/dev/null || true`);
-          removeCmds.push(`systemctl disable ${svcTcp}.service 2>/dev/null || true`);
-          removeCmds.push(`rm -f /etc/systemd/system/${svcTcp}.service`);
-          removeCmds.push(`systemctl stop ${svcUdp}.service 2>/dev/null || true`);
-          removeCmds.push(`systemctl disable ${svcUdp}.service 2>/dev/null || true`);
-          removeCmds.push(`rm -f /etc/systemd/system/${svcUdp}.service`);
+          removeCmds.push(removeManagedServiceCmd(svcTcp));
+          removeCmds.push(removeManagedServiceCmd(svcUdp));
         } else {
           const svcName = `forwardx-socat-${rule.sourcePort}`;
-          removeCmds.push(`systemctl stop ${svcName}.service 2>/dev/null || true`);
-          removeCmds.push(`systemctl disable ${svcName}.service 2>/dev/null || true`);
-          removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
+          removeCmds.push(removeManagedServiceCmd(svcName));
         }
-        removeCmds.push(`systemctl daemon-reload`);
         removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
         removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
@@ -1469,9 +1520,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             svcName,
             unit,
             commands: [
-              `systemctl daemon-reload`,
-              `systemctl enable ${svcName}.service`,
-              `systemctl restart ${svcName}.service`,
               // 同时为该端口挂入 mangle 计数链，保证 realm 转发也能被准确统计
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildRuleAccessLimitCmds(rule),
@@ -1483,7 +1531,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const svcName = `forwardx-socat-${rule.sourcePort}`;
           const socatPreCmds: string[] = [
             ...buildGostReloadCmds(),
-            `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || apk add --no-cache socat; } 2>/dev/null`,
+            `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
           ];
           const socatPostCmds: string[] = [];
 
@@ -1703,10 +1751,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: rule.protocol,
             svcName,
             commands: [
-              `systemctl stop ${svcName}.service 2>/dev/null || true`,
-              `systemctl disable ${svcName}.service 2>/dev/null || true`,
-              `rm -f /etc/systemd/system/${svcName}.service`,
-              `systemctl daemon-reload`,
+              removeManagedServiceCmd(svcName),
               killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
@@ -1736,19 +1781,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (rule.protocol === "both") {
             const svcTcp = `forwardx-socat-tcp-${rule.sourcePort}`;
             const svcUdp = `forwardx-socat-udp-${rule.sourcePort}`;
-            removeCmds.push(`systemctl stop ${svcTcp}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcTcp}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcTcp}.service`);
-            removeCmds.push(`systemctl stop ${svcUdp}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcUdp}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcUdp}.service`);
+            removeCmds.push(removeManagedServiceCmd(svcTcp));
+            removeCmds.push(removeManagedServiceCmd(svcUdp));
           } else {
             const svcName = `forwardx-socat-${rule.sourcePort}`;
-            removeCmds.push(`systemctl stop ${svcName}.service 2>/dev/null || true`);
-            removeCmds.push(`systemctl disable ${svcName}.service 2>/dev/null || true`);
-            removeCmds.push(`rm -f /etc/systemd/system/${svcName}.service`);
+            removeCmds.push(removeManagedServiceCmd(svcName));
           }
-          removeCmds.push(`systemctl daemon-reload`);
           removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);

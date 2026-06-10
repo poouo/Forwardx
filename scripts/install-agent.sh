@@ -52,6 +52,32 @@ require_root() {
   fi
 }
 
+is_systemd_host() {
+  command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
+remove_service_by_name() {
+  local name="$1"
+  if is_systemd_host; then
+    systemctl stop "$name" 2>/dev/null || true
+    systemctl disable "$name" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$name.service"
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service "$name" stop 2>/dev/null || true
+  fi
+  if command -v rc-update >/dev/null 2>&1; then
+    rc-update del "$name" default 2>/dev/null || true
+  fi
+  if [ -x "/etc/init.d/$name" ]; then
+    "/etc/init.d/$name" stop 2>/dev/null || true
+  fi
+  command -v update-rc.d >/dev/null 2>&1 && update-rc.d -f "$name" remove >/dev/null 2>&1 || true
+  command -v chkconfig >/dev/null 2>&1 && chkconfig "$name" off >/dev/null 2>&1 || true
+  rm -f "/etc/init.d/$name"
+}
+
 read_existing_config() {
   EXISTING_PANEL_URL=""
   EXISTING_TOKEN=""
@@ -174,10 +200,7 @@ do_uninstall() {
   echo "  ForwardX Agent 卸载程序（本地）"
   echo "======================================"
 
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$SERVICE_NAME.service"
-  systemctl daemon-reload 2>/dev/null || true
+  remove_service_by_name "$SERVICE_NAME"
 
   for pid in $(pgrep -f "[/]usr/local/bin/forwardx-fxp" 2>/dev/null || true); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
@@ -195,12 +218,15 @@ do_uninstall() {
   for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service; do
     if [ -f "$SVC" ]; then
       SVCNAME="$(basename "$SVC" .service)"
-      systemctl stop "$SVCNAME" 2>/dev/null || true
-      systemctl disable "$SVCNAME" 2>/dev/null || true
-      rm -f "$SVC"
+      remove_service_by_name "$SVCNAME"
     fi
   done
-  systemctl daemon-reload 2>/dev/null || true
+  for SVC in /etc/init.d/forwardx-socat-* /etc/init.d/forwardx-realm-* /etc/init.d/forwardx-gost-* /etc/init.d/forwardx-tunnels; do
+    if [ -f "$SVC" ]; then
+      SVCNAME="$(basename "$SVC")"
+      remove_service_by_name "$SVCNAME"
+    fi
+  done
 
   rm -f "$GO_AGENT_BIN" "$FXP_BIN"
   rm -rf "$CONFIG_DIR" "$LOG_DIR" "$STATE_DIR"

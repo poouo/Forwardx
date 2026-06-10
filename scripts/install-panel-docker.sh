@@ -39,6 +39,19 @@ valid_port() {
   [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
 
+start_docker_service() {
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable --now docker 2>/dev/null || systemctl restart docker 2>/dev/null || true
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-update add docker default 2>/dev/null || true
+    rc-service docker restart 2>/dev/null || rc-service docker start 2>/dev/null || true
+  elif command -v service >/dev/null 2>&1; then
+    service docker restart 2>/dev/null || service docker start 2>/dev/null || true
+  elif [ -x /etc/init.d/docker ]; then
+    /etc/init.d/docker restart 2>/dev/null || /etc/init.d/docker start 2>/dev/null || true
+  fi
+}
+
 normalize_version() {
   local raw="${1:-}"
   raw="${raw#v}"
@@ -126,30 +139,39 @@ install_base_deps() {
     dnf install -y -q curl ca-certificates openssl
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q curl ca-certificates openssl
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper -n install curl ca-certificates openssl
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache curl ca-certificates openssl
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm curl ca-certificates openssl
   fi
 }
 
 install_docker() {
   install_base_deps
   if command -v docker >/dev/null 2>&1; then
-    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+    start_docker_service
     return
   fi
   if command -v apt-get >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com | sh
-    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+    start_docker_service
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q docker
-    systemctl enable --now docker
+    start_docker_service
   elif command -v yum >/dev/null 2>&1; then
     yum install -y -q docker
-    systemctl enable --now docker
+    start_docker_service
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper -n install docker docker-compose-plugin || zypper -n install docker docker-compose
+    start_docker_service
   elif command -v apk >/dev/null 2>&1; then
     apk add --no-cache docker docker-cli-compose
-    rc-update add docker default 2>/dev/null || true
-    service docker start 2>/dev/null || true
+    start_docker_service
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm docker docker-compose
+    start_docker_service
   fi
 }
 
