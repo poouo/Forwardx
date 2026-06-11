@@ -52,7 +52,6 @@ import {
   ArrowUpFromLine,
   Stethoscope,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   XCircle,
   Loader2,
@@ -354,6 +353,27 @@ type RuleFilterState = {
   forwardGroupById: Map<number, any>;
   getRuleEntryHostId: (rule: any) => number;
 };
+
+function RuleGroupItems({
+  open,
+  className,
+  children,
+}: {
+  open: boolean;
+  className: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      aria-hidden={!open}
+      className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+    >
+      <div className={`min-h-0 overflow-hidden ${className}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
   if (filters.isAdmin) {
@@ -2695,14 +2715,10 @@ function RulesContent() {
       <button
         type="button"
         aria-expanded={!collapsed}
-        className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/45 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={() => toggleRuleGroupCollapsed(group.type)}
       >
-        {collapsed ? (
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        )}
+        <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${collapsed ? "" : "rotate-90"}`} />
         {renderRuleGroupIcon(group.type, compact ? "h-3.5 w-3.5" : "h-4 w-4")}
         <span className="truncate text-sm font-semibold">{group.label}</span>
         <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{group.rules.length}</Badge>
@@ -2715,7 +2731,7 @@ function RulesContent() {
     const supported = isRuleSupported(rule);
     const protocolKey = getRuleProtocolKey(rule);
     return (
-      <TableRow key={rule.id} className={!supported ? "opacity-70" : ""} title={!supported ? unsupportedProtocolTitle : undefined}>
+      <TableRow key={rule.id} className={`animate-in fade-in-0 duration-150 ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
         <TableCell>
           <div className="flex items-center justify-center">
             {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
@@ -3169,11 +3185,9 @@ function RulesContent() {
                   return (
                     <section key={group.type} className="space-y-2">
                       {renderRuleGroupHeader(group)}
-                      {!collapsed && (
-                        <AutoAnimateContainer className={ruleCardGridClass}>
-                          {group.rules.map((rule: any) => renderRuleCard(rule))}
-                        </AutoAnimateContainer>
-                      )}
+                      <RuleGroupItems open={!collapsed} className={ruleCardGridClass}>
+                        {group.rules.map((rule: any) => renderRuleCard(rule))}
+                      </RuleGroupItems>
                     </section>
                   );
                 })}
@@ -3192,11 +3206,9 @@ function RulesContent() {
                     return (
                       <section key={group.type} className="space-y-2">
                         {renderRuleGroupHeader(group)}
-                        {!collapsed && (
-                          <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
-                            {group.rules.map((rule: any) => renderRuleCard(rule))}
-                          </AutoAnimateContainer>
-                        )}
+                        <RuleGroupItems open={!collapsed} className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                          {group.rules.map((rule: any) => renderRuleCard(rule))}
+                        </RuleGroupItems>
                       </section>
                     );
                   })
@@ -3229,7 +3241,7 @@ function RulesContent() {
                             return (
                               <Fragment key={group.type}>
                                 <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/50">
-                                  <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="p-0">
+                                  <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="p-1">
                                     {renderRuleGroupHeader(group, true)}
                                   </TableCell>
                                 </TableRow>
