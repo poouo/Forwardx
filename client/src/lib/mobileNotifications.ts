@@ -28,8 +28,8 @@ export type MobileAppUpdateResult = {
   currentVersion: string;
   latestVersion: string;
   releaseUrl: string;
-  platform: "android" | "ios";
-  packageLabel: "APK" | "IPA";
+  platform: "android";
+  packageLabel: "APK";
   hasPackage: boolean;
   hasApk: boolean;
 };
@@ -157,10 +157,8 @@ function compareVersions(a: string, b: string) {
   return 0;
 }
 
-function extractMobilePackageVersion(assetName: string, platform: "android" | "ios") {
-  const pattern = platform === "ios"
-    ? /^forwardx-ios-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.ipa$/i
-    : /^forwardx-android-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.apk$/i;
+function extractMobilePackageVersion(assetName: string) {
+  const pattern = /^forwardx-android-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.apk$/i;
   const match = assetName.match(pattern);
   return match?.[1] || null;
 }
@@ -173,6 +171,7 @@ export async function openMobileReleasePage(url = RELEASES_URL) {
 
 export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): Promise<MobileAppUpdateResult | null> {
   if (!mobileAuth.isNative) return null;
+  if (mobileAuth.platform !== "android") return null;
 
   try {
     const [appInfo, response] = await Promise.all([
@@ -185,12 +184,10 @@ export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): 
 
     const releases = await response.json();
     const current = String(appInfo.version || "").replace(/^v/i, "");
-    const platform = mobileAuth.platform === "ios" ? "ios" : "android";
-    const packageLabel = platform === "ios" ? "IPA" : "APK";
     const packageCandidates = (Array.isArray(releases) ? releases : [])
       .flatMap((release: any) => (Array.isArray(release?.assets) ? release.assets : []).map((asset: any) => {
         const name = String(asset?.name || "");
-        const version = extractMobilePackageVersion(name, platform);
+        const version = extractMobilePackageVersion(name);
         if (!version) return null;
         return {
           version,
@@ -210,10 +207,10 @@ export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): 
       currentVersion: current,
       latestVersion: latest,
       releaseUrl,
-      platform,
-      packageLabel,
+      platform: "android",
+      packageLabel: "APK",
       hasPackage,
-      hasApk: platform === "android" && hasPackage,
+      hasApk: hasPackage,
     };
   } catch (error) {
     if (!options.silent) throw error;

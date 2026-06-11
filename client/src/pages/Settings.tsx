@@ -2164,7 +2164,6 @@ function SystemInfoSection() {
     settings?.upgrade?.manualUpgradeCommand ||
     manualPanelUpgradeCommands[1].command;
   const androidApkDownloadUrl = settings?.androidApkDownloadUrl || "";
-  const iosIpaDownloadUrl = settings?.iosIpaDownloadUrl || "";
   const contactLinks = [
     {
       label: "GitHub 仓库",
@@ -2189,12 +2188,6 @@ function SystemInfoSection() {
       url: androidApkDownloadUrl,
       icon: Download,
       iconClassName: "text-emerald-600",
-    }] : []),
-    ...(iosIpaDownloadUrl ? [{
-      label: "iOS IPA 下载",
-      url: iosIpaDownloadUrl,
-      icon: Download,
-      iconClassName: "text-sky-600",
     }] : []),
   ];
   const isUpgradeRunning = upgradeStatus?.job.status === "running";
@@ -3265,10 +3258,6 @@ function SystemInfoSection() {
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Android APP</span>
             <code className="font-mono">v{settings?.androidAppVersion}</code>
-          </div>
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>iOS APP</span>
-            <code className="font-mono">v{settings?.iosAppVersion}</code>
           </div>
         </CardContent>
       </Card>
