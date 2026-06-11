@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.89"
+var Version = "2.2.90"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -41,6 +42,7 @@ const selfTestIdlePollInterval = time.Minute
 const selfTestActivePollInterval = 3 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
+const publicIPRefreshInterval = time.Minute
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -61,6 +63,14 @@ var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
 var iperf3Mu sync.Mutex
 var iperf3Server *iperf3Process
+var dnsWatchMu sync.Mutex
+var dnsWatchSnapshot = map[string][]string{}
+var pendingDNSChanges []dnsChangeReport
+var publicIPMu sync.Mutex
+var publicIPv4Cache string
+var publicIPv6Cache string
+var publicIPCheckedAt time.Time
+var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
 
 type actionJob struct {
 	cfg    Config
@@ -99,6 +109,7 @@ type heartbeatResp struct {
 	TunnelProbes       []tunnelProbe       `json:"tunnelProbes"`
 	ForwardGroupProbes []forwardGroupProbe `json:"forwardGroupProbes"`
 	GuardRules         []guardRule         `json:"guardRules"`
+	DNSWatch           []dnsWatchItem      `json:"dnsWatch"`
 	LookingGlassTests  []lookingGlassTask  `json:"lookingGlassTests"`
 	Iperf3Tasks        []iperf3Task        `json:"iperf3Tasks"`
 	AgentUpgrade       *agentUpgrade       `json:"agentUpgrade"`
@@ -175,6 +186,18 @@ type forwardGroupProbe struct {
 	Method     string `json:"method"`
 	HopIndex   int    `json:"hopIndex"`
 	HopCount   int    `json:"hopCount"`
+}
+
+type dnsWatchItem struct {
+	Host  string `json:"host"`
+	Scope string `json:"scope"`
+	RefID int    `json:"refId"`
+}
+
+type dnsChangeReport struct {
+	Host string   `json:"host"`
+	Old  []string `json:"old,omitempty"`
+	New  []string `json:"new,omitempty"`
 }
 
 type agentUpgrade struct {
@@ -326,6 +349,12 @@ func register(cfg Config) error {
 }
 
 func heartbeat(cfg Config) (int, error) {
+	ipv4, ipv6 := publicIPs()
+	primaryIP := ipv4
+	if primaryIP == "" {
+		primaryIP = ipv6
+	}
+	dnsChanges := takePendingDNSChanges()
 	payload := map[string]any{
 		"cpuUsage":     cpuUsage(),
 		"memoryUsage":  memUsagePercent(),
@@ -340,8 +369,21 @@ func heartbeat(cfg Config) (int, error) {
 		"cpuInfo":      cpuInfo(),
 		"agentVersion": Version,
 	}
+	if primaryIP != "" {
+		payload["ip"] = primaryIP
+	}
+	if ipv4 != "" {
+		payload["ipv4"] = ipv4
+	}
+	if ipv6 != "" {
+		payload["ipv6"] = ipv6
+	}
+	if len(dnsChanges) > 0 {
+		payload["dnsChanged"] = dnsChanges
+	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
+		queuePendingDNSChanges(dnsChanges)
 		var migrated migratedPanelError
 		if errors.As(err, &migrated) {
 			go selfUpgrade(cfg, &agentUpgrade{TargetVersion: "9999.0.0", PanelURL: migrated.PanelURL})
@@ -352,6 +394,7 @@ func heartbeat(cfg Config) (int, error) {
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
+	dnsWatchChanged := updateDNSWatch(resp.DNSWatch)
 	agentLogUploadEnabled.Store(resp.LogUpload)
 	pendingActionPorts := map[string]bool{}
 	for _, a := range resp.Actions {
@@ -383,7 +426,130 @@ func heartbeat(cfg Config) (int, error) {
 		lastTCPingAt = time.Now()
 	}
 	flushAgentLogs(cfg)
+	if dnsWatchChanged && resp.NextInterval > 2 {
+		return 2, nil
+	}
 	return resp.NextInterval, nil
+}
+
+func takePendingDNSChanges() []dnsChangeReport {
+	dnsWatchMu.Lock()
+	defer dnsWatchMu.Unlock()
+	if len(pendingDNSChanges) == 0 {
+		return nil
+	}
+	changes := append([]dnsChangeReport(nil), pendingDNSChanges...)
+	pendingDNSChanges = nil
+	return changes
+}
+
+func queuePendingDNSChanges(changes []dnsChangeReport) {
+	if len(changes) == 0 {
+		return
+	}
+	dnsWatchMu.Lock()
+	pendingDNSChanges = append(pendingDNSChanges, changes...)
+	dnsWatchMu.Unlock()
+}
+
+func updateDNSWatch(items []dnsWatchItem) bool {
+	watched := map[string]string{}
+	for _, item := range items {
+		host := normalizeDNSWatchHost(item.Host)
+		if host == "" {
+			continue
+		}
+		watched[strings.ToLower(host)] = host
+	}
+
+	resolved := map[string][]string{}
+	for key, host := range watched {
+		if ips := lookupDNSWatchIPs(host); len(ips) > 0 {
+			resolved[key] = ips
+		}
+	}
+
+	dnsWatchMu.Lock()
+	defer dnsWatchMu.Unlock()
+
+	nextSnapshot := map[string][]string{}
+	for key, oldIPs := range dnsWatchSnapshot {
+		if _, ok := watched[key]; ok && len(oldIPs) > 0 {
+			nextSnapshot[key] = append([]string(nil), oldIPs...)
+		}
+	}
+
+	var reports []dnsChangeReport
+	for key, host := range watched {
+		ips := resolved[key]
+		if len(ips) == 0 {
+			continue
+		}
+		oldIPs, hadOld := dnsWatchSnapshot[key]
+		nextSnapshot[key] = append([]string(nil), ips...)
+		if hadOld && len(oldIPs) > 0 && !sameStringSlice(oldIPs, ips) {
+			reports = append(reports, dnsChangeReport{
+				Host: host,
+				Old:  append([]string(nil), oldIPs...),
+				New:  append([]string(nil), ips...),
+			})
+		}
+	}
+
+	dnsWatchSnapshot = nextSnapshot
+	if len(reports) > 0 {
+		pendingDNSChanges = append(pendingDNSChanges, reports...)
+		return true
+	}
+	return false
+}
+
+func normalizeDNSWatchHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
+		return ""
+	}
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || !dnsWatchHostPattern.MatchString(host) {
+		return ""
+	}
+	return host
+}
+
+func lookupDNSWatchIPs(host string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil
+	}
+	values := make([]string, 0, len(ips))
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		value := ip.String()
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func enqueueAction(cfg Config, a action) {
@@ -1178,6 +1344,8 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
 				waitForActionListenPortFree(a, 2*time.Second)
 			}
+			cleanupGostRuntimeIfPortBusy(a.SourcePort)
+			waitForActionListenPortFree(a, 2*time.Second)
 			return false
 		}
 		if localTunnelID == a.TunnelID && (localForwardType == "" || localForwardType == a.ForwardType) {
@@ -1222,6 +1390,8 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
 			waitForActionListenPortFree(a, 2*time.Second)
 		}
+		cleanupGostRuntimeIfPortBusy(a.SourcePort)
+		waitForActionListenPortFree(a, 2*time.Second)
 		return false
 	}
 	if localRuleID == a.RuleID && (localForwardType == "" || localForwardType == a.ForwardType) {
@@ -1276,6 +1446,161 @@ func cleanupUnknownManagedListener(port string, listenPort int, forwardType stri
 	for _, cmd := range managedListenerCleanupCmds(port) {
 		_ = runShell(cmd)
 	}
+}
+
+func cleanupGostRuntimeIfPortBusy(port int) {
+	if port <= 0 {
+		return
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
+	if err == nil {
+		_ = ln.Close()
+		return
+	}
+	stopped := false
+	if gostRuntimeConfigUsesPort("/etc/forwardx-gost/config.json", port) {
+		logf("runtime cleanup stopping forwardx-gost for busy port=%d: %v", port, err)
+		cleanupManagedService("forwardx-gost")
+		stopped = true
+	}
+	if gostRuntimeConfigUsesPort("/etc/forwardx-tunnels/config.json", port) {
+		logf("runtime cleanup stopping forwardx-tunnels for busy port=%d: %v", port, err)
+		cleanupManagedService("forwardx-tunnels")
+		stopped = true
+	}
+	for _, configPath := range managedGostConfigPathsForListenPort(port) {
+		svcName := managedGostServiceNameForConfig(configPath)
+		if svcName == "" || gostRuntimeConfigUsesPort(configPath, port) {
+			continue
+		}
+		serviceCount, ok := gostRuntimeConfigServiceCount(configPath)
+		if !ok || serviceCount > 0 {
+			logf("runtime cleanup restarting %s for stale gost listener port=%d config=%s", svcName, port, configPath)
+			restartManagedService(svcName)
+		} else {
+			logf("runtime cleanup stopping %s for stale gost listener port=%d config=%s", svcName, port, configPath)
+			cleanupManagedService(svcName)
+		}
+		stopped = true
+	}
+	if !stopped {
+		logf("runtime cleanup found busy port=%d but no managed gost config owns it: %v", port, err)
+	}
+}
+
+func gostRuntimeConfigUsesPort(path string, port int) bool {
+	addrs, ok := readGostRuntimeServiceAddrs(path)
+	if !ok {
+		return false
+	}
+	for _, addr := range addrs {
+		if addrUsesPort(addr, port) {
+			return true
+		}
+	}
+	return false
+}
+
+func gostRuntimeConfigServiceCount(path string) (int, bool) {
+	addrs, ok := readGostRuntimeServiceAddrs(path)
+	return len(addrs), ok
+}
+
+func readGostRuntimeServiceAddrs(path string) ([]string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var cfg struct {
+		Services []struct {
+			Addr string `json:"addr"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, false
+	}
+	addrs := make([]string, 0, len(cfg.Services))
+	for _, svc := range cfg.Services {
+		addrs = append(addrs, svc.Addr)
+	}
+	return addrs, true
+}
+
+func addrUsesPort(addr string, port int) bool {
+	text := strings.TrimSpace(addr)
+	if text == "" || port <= 0 {
+		return false
+	}
+	if text == ":"+strconv.Itoa(port) {
+		return true
+	}
+	_, rawPort, err := net.SplitHostPort(text)
+	if err != nil {
+		return strings.HasSuffix(text, ":"+strconv.Itoa(port))
+	}
+	value, err := strconv.Atoi(rawPort)
+	return err == nil && value == port
+}
+
+func managedGostConfigPathsForListenPort(port int) []string {
+	paths := map[string]bool{}
+	for _, pid := range listenPortOwnerPIDs(port) {
+		cmdline, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err != nil {
+			continue
+		}
+		cmd := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		for _, path := range []string{"/etc/forwardx-gost/config.json", "/etc/forwardx-tunnels/config.json"} {
+			if strings.Contains(cmd, path) {
+				paths[path] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func managedGostServiceNameForConfig(path string) string {
+	switch path {
+	case "/etc/forwardx-gost/config.json":
+		return "forwardx-gost"
+	case "/etc/forwardx-tunnels/config.json":
+		return "forwardx-tunnels"
+	default:
+		return ""
+	}
+}
+
+func listenPortOwnerPIDs(port int) []int {
+	if port <= 0 {
+		return nil
+	}
+	if _, err := exec.LookPath("ss"); err != nil {
+		return nil
+	}
+	portText := strconv.Itoa(port)
+	out, _ := exec.Command("ss", "-ltnup").CombinedOutput()
+	text := filterListenPortLines(string(out), portText)
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	re := regexp.MustCompile(`pid=([0-9]+)`)
+	seen := map[int]bool{}
+	var pids []int
+	for _, match := range re.FindAllStringSubmatch(text, -1) {
+		pid, err := strconv.Atoi(match[1])
+		if err != nil || pid <= 0 || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	return pids
 }
 
 func fxpMatchesRunning(spec *fxpSpec) bool {
@@ -1406,6 +1731,15 @@ func cleanupManagedService(name string) {
 		return
 	}
 	_ = runShell(managedServiceCleanupShell(name))
+}
+
+func restartManagedService(name string) {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return
+	}
+	q := shellQuote(name)
+	_ = runShell("if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl restart " + q + ".service 2>/dev/null || true; elif command -v rc-service >/dev/null 2>&1; then rc-service " + q + " restart 2>/dev/null || true; elif [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " restart 2>/dev/null || true; fi")
 }
 
 func sanitizeServiceName(name string) string {
@@ -3725,6 +4059,14 @@ func osInfo() string {
 }
 
 func publicIPs() (string, string) {
+	publicIPMu.Lock()
+	if !publicIPCheckedAt.IsZero() && time.Since(publicIPCheckedAt) < publicIPRefreshInterval {
+		ipv4, ipv6 := publicIPv4Cache, publicIPv6Cache
+		publicIPMu.Unlock()
+		return ipv4, ipv6
+	}
+	publicIPMu.Unlock()
+
 	ipv4 := fetchPublicIP([]string{
 		"https://api.ipify.org",
 		"https://ipv4.icanhazip.com",
@@ -3735,6 +4077,15 @@ func publicIPs() (string, string) {
 		"https://ipv6.icanhazip.com",
 		"https://v6.ident.me",
 	})
+	publicIPMu.Lock()
+	if ipv4 != "" || ipv6 != "" {
+		publicIPv4Cache = ipv4
+		publicIPv6Cache = ipv6
+	} else {
+		ipv4, ipv6 = publicIPv4Cache, publicIPv6Cache
+	}
+	publicIPCheckedAt = time.Now()
+	publicIPMu.Unlock()
 	return ipv4, ipv6
 }
 

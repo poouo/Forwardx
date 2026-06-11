@@ -18,12 +18,48 @@ import { resolve4 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
-import { normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
+import { normalizeAgentAddress, normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
+import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
 const resolvedIpCache = new Map<number, string>();
 const tunnelRouteLogCache = new Map<string, string>();
+
+type AgentDnsWatch = {
+  host: string;
+  scope: string;
+  refId?: number;
+};
+
+function isHostnameAddress(value: string) {
+  const text = String(value || "").trim();
+  return !!text && !isIP(text) && /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$/.test(text);
+}
+
+function agentReportedAddress(body: any, existingHost: any) {
+  const hasIp = Object.prototype.hasOwnProperty.call(body || {}, "ip");
+  const hasIpv4 = Object.prototype.hasOwnProperty.call(body || {}, "ipv4");
+  const hasIpv6 = Object.prototype.hasOwnProperty.call(body || {}, "ipv6");
+  const safeIpv4 = normalizeAgentAddress(body?.ipv4);
+  const safeIpv6 = normalizeAgentAddress(body?.ipv6);
+  const safeIp = normalizeAgentAddress(body?.ip);
+  const nextIpv4 = hasIpv4 ? (safeIpv4 || null) : (existingHost?.ipv4 || null);
+  const nextIpv6 = hasIpv6 ? (safeIpv6 || null) : (existingHost?.ipv6 || null);
+  const primaryIp = safeIpv4 || safeIp || safeIpv6 || (!hasIp ? String(existingHost?.ip || "") : "");
+  return {
+    ip: primaryIp || "unknown",
+    ipv4: nextIpv4,
+    ipv6: nextIpv6,
+  };
+}
+
+function addDnsWatch(watches: Map<string, AgentDnsWatch>, host: string, scope: string, refId?: number) {
+  const value = String(host || "").trim();
+  if (!isHostnameAddress(value)) return;
+  const key = `${scope}:${refId || 0}:${value.toLowerCase()}`;
+  watches.set(key, { host: value, scope, ...(refId ? { refId } : {}) });
+}
 
 function parseFailoverTargets(raw: unknown) {
   if (!raw || typeof raw !== "string") return [];
@@ -72,11 +108,47 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const { cpuUsage, cpuInfo, memoryUsage, memoryUsed, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
+    const previousHost = { ...(host as any) };
+    const reportedAddress = agentReportedAddress(req.body, host);
+    const dnsChangedReports = Array.isArray(req.body?.dnsChanged) ? req.body.dnsChanged : [];
+    const dnsChangedIpByHost = new Map<string, string>();
+    for (const report of dnsChangedReports) {
+      const name = String(report?.host || "").trim().toLowerCase();
+      const nextIps = Array.isArray(report?.new) ? report.new : [];
+      const nextIp = nextIps.map((value: unknown) => String(value || "").trim()).find((value: string) => !!value && isIP(value));
+      if (name && nextIp) dnsChangedIpByHost.set(name, nextIp);
+    }
+    const addressChanged = [
+      ["ip", reportedAddress.ip],
+      ["ipv4", reportedAddress.ipv4],
+      ["ipv6", reportedAddress.ipv6],
+    ].some(([key, value]) => String(value || "") !== String((host as any)[key as string] || ""));
 
     await db.updateHostHeartbeat(host.id, {
+      ip: reportedAddress.ip,
+      ipv4: reportedAddress.ipv4,
+      ipv6: reportedAddress.ipv6,
       agentVersion: nextAgentVersion || (host as any).agentVersion || null,
       cpuInfo: nextCpuInfo || (host as any).cpuInfo || null,
+      ...(addressChanged ? {
+        geoCountryCode: null,
+        geoCountryName: null,
+        geoRegion: null,
+        geoEmoji: null,
+        geoLatitudeMicro: null,
+        geoLongitudeMicro: null,
+        geoUpdatedAt: null,
+      } : {}),
     } as any);
+    Object.assign(host as any, reportedAddress);
+    if (addressChanged && hostUsesAutomaticIngress(previousHost)) {
+      await refreshHostAddressRuntime(host.id, previousHost, "agent-address-changed");
+    }
+    if (dnsChangedReports.length > 0) {
+      await db.resetAgentRuntimeStateForHost(host.id);
+      await refreshAgentsAffectedByHostAddress(host.id, "agent-dns-changed");
+      appendPanelLog("info", `[AgentDNS] host=${host.id} reported DNS change for ${dnsChangedReports.length} watched name(s)`);
+    }
 
     await db.insertHostMetric({
       hostId: host.id,
@@ -96,6 +168,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const hostTunnels = await db.getTunnelsByHost(host.id);
     const forwardProtocolSettings = await getForwardProtocolSettings();
     const actions: any[] = [];
+    const dnsWatches = new Map<string, AgentDnsWatch>();
     const responseIssuedAt = Date.now();
 
     // 获取主机配置的网卡名称（用于 realm --interface）
@@ -312,6 +385,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const q = shQuote(svcName);
       return `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl enable ${q}.service 2>/dev/null || true; systemctl restart ${q}.service || { systemctl status ${q}.service --no-pager -l 2>/dev/null || true; journalctl -u ${q}.service -n 80 --no-pager 2>/dev/null || true; exit 1; }; elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then rc-update add ${q} default >/dev/null 2>&1 || true; rc-service ${q} restart || { rc-service ${q} status 2>/dev/null || true; exit 1; }; elif [ -x /etc/init.d/${svcName} ]; then command -v update-rc.d >/dev/null 2>&1 && update-rc.d ${q} defaults >/dev/null 2>&1 || true; command -v chkconfig >/dev/null 2>&1 && chkconfig ${q} on >/dev/null 2>&1 || true; /etc/init.d/${svcName} restart; else echo "[service] missing init script for ${svcName}"; exit 1; fi`;
     };
+    const restartManagedServiceIfConfigChangedCmd = (svcNameRaw: string, configPath: string) => {
+      const svcName = serviceName(svcNameRaw);
+      const q = shQuote(svcName);
+      const config = shQuote(configPath);
+      const start = startManagedServiceCmd(svcName);
+      const alreadyRunning = `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${q}.service; elif command -v rc-service >/dev/null 2>&1; then rc-service ${q} status >/dev/null 2>&1; elif [ -x /etc/init.d/${svcName} ]; then /etc/init.d/${svcName} status >/dev/null 2>&1; else false; fi`;
+      const configHash = `if command -v sha256sum >/dev/null 2>&1; then sha256sum ${config} 2>/dev/null | awk '{print "sha256:"$1}'; elif command -v cksum >/dev/null 2>&1; then cksum ${config} 2>/dev/null | awk '{print "cksum:"$1":"$2}'; else echo "mtime:$(wc -c < ${config} 2>/dev/null):$(date -r ${config} +%s 2>/dev/null)"; fi`;
+      return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ "$new_hash" != "$old_hash" ] || ! { ${alreadyRunning}; }; then ${start}; [ -n "$new_hash" ] && printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${svcName} config unchanged"; fi`;
+    };
     const stopManagedServiceCmd = (svcNameRaw: string) => {
       const svcName = serviceName(svcNameRaw);
       const q = shQuote(svcName);
@@ -345,7 +427,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const dnsPreviousIpByRuleId = new Map<number, string>();
     for (const rule of agentHostRules as any[]) {
       if (!rule.targetIp) continue;
-      const resolved = await resolveTargetIp(rule.targetIp);
+      addDnsWatch(dnsWatches, rule.targetIp, "forward-rule-target", Number(rule.id));
+      const rawTargetIp = String(rule.targetIp || "").trim();
+      const resolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase()) || await resolveTargetIp(rawTargetIp);
       const cachedIp = resolvedIpCache.get(rule.id);
       if (cachedIp && cachedIp !== resolved) {
         // IP 变更：标记为需要重新下发
@@ -395,8 +479,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     const chainMemberAddress = (member: any, hostLike: any) => {
       const configured = String(member?.connectHost || "").trim();
-      if (configured) return configured;
-      return String(hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
+      if (configured) {
+        addDnsWatch(dnsWatches, configured, "forward-chain-member", Number(member?.id || 0));
+        return configured;
+      }
+      const value = hostIngressAddress(hostLike);
+      addDnsWatch(dnsWatches, value, "host-entry", Number(hostLike?.id || member?.hostId || 0));
+      return value;
     };
     const forwardChainHostById = new Map<number, any>();
     const forwardChainGroupById = new Map<number, any>();
@@ -657,11 +746,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     );
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
-    const hostPublicAddress = (hostLike: any) =>
-      String(hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
+    const hostPublicAddress = (hostLike: any) => {
+      const value = hostIngressAddress(hostLike);
+      addDnsWatch(dnsWatches, value, "host-entry", Number(hostLike?.id || 0));
+      return value;
+    };
     const tunnelExitHostAddress = async (tunnel: any) => {
       const connectHost = String(tunnel?.connectHost || "").trim();
-      if (connectHost) return connectHost;
+      if (connectHost) {
+        addDnsWatch(dnsWatches, connectHost, "tunnel-connect", Number(tunnel?.id || 0));
+        return connectHost;
+      }
       const exit = await db.getHostById(tunnel.exitHostId);
       if (!exit) return "";
       return hostPublicAddress(exit);
@@ -680,7 +775,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const getHopDialAddress = async (hop: any) => {
       const configured = String((hop as any)?.connectHost || "").trim();
-      if (configured) return configured;
+      if (configured) {
+        addDnsWatch(dnsWatches, configured, "tunnel-hop-connect", Number((hop as any)?.id || 0));
+        return configured;
+      }
       return getHostIngressAddress(Number((hop as any)?.hostId));
     };
     const hopKey = (secret: string, idx: number) =>
@@ -960,7 +1058,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ];
       if (gostServiceConfig.length > 0) {
         cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(startManagedServiceCmd(gostServiceName));
+        cmds.push(restartManagedServiceIfConfigChangedCmd(gostServiceName, "/etc/forwardx-gost/config.json"));
       } else {
         cmds.push(stopManagedServiceCmd(gostServiceName));
       }
@@ -1056,7 +1154,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ];
       if (services.length > 0) {
         cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(startManagedServiceCmd("forwardx-tunnels"));
+        cmds.push(restartManagedServiceIfConfigChangedCmd("forwardx-tunnels", "/etc/forwardx-tunnels/config.json"));
       } else {
         cmds.push(stopManagedServiceCmd("forwardx-tunnels"));
       }
@@ -1065,6 +1163,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
 
     // 收集所有正在运行的规则的 port→ruleId 映射，用于 agent 重建映射文件
+    const buildGostRuntimeSyncCmds = async () => [
+      ...buildGostReloadCmds(),
+      ...await buildTunnelReloadCmds(),
+    ];
+
+    actions.push({
+      statusType: "runtime",
+      ruleId: 0,
+      tunnelId: 0,
+      op: "apply",
+      forwardType: "gost-runtime-sync",
+      sourcePort: 0,
+      targetIp: "",
+      targetPort: 0,
+      protocol: "tcp",
+      commands: await buildGostRuntimeSyncCmds(),
+    } as any);
+
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
       if (tunnel && !isForwardXTunnel(tunnel) && tunnel.exitHostId === host.id && rule.tunnelExitPort) {
@@ -2059,15 +2175,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
       runningRuleKeys.add(key);
     }
-    const orderedActions = normalizedActions.slice().sort((a: any, b: any) => {
-      if (a.op === b.op) return 0;
-      return a.op === "remove" ? -1 : 1;
-    });
+    const actionRank = (action: any) => (
+      action.op === "remove" ? 0 : action.statusType === "runtime" ? 1 : 2
+    );
+    const orderedActions = normalizedActions.slice().sort((a: any, b: any) => actionRank(a) - actionRank(b));
 
     const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

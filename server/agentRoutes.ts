@@ -15,6 +15,7 @@ import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
 import { registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
+import { hostUsesAutomaticIngress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -218,6 +219,15 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip,
         ipv4: nextIpv4,
         ipv6: nextIpv6,
+        ...(entryChanged ? {
+          geoCountryCode: null,
+          geoCountryName: null,
+          geoRegion: null,
+          geoEmoji: null,
+          geoLatitudeMicro: null,
+          geoLongitudeMicro: null,
+          geoUpdatedAt: null,
+        } : {}),
         osInfo: nextOsInfo || existingHost.osInfo,
         cpuInfo: nextCpuInfo || existingHost.cpuInfo,
         memoryTotal: memoryTotal || existingHost.memoryTotal,
@@ -225,8 +235,8 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         isOnline: true,
         lastHeartbeat: new Date(),
       });
-      if (entryChanged) {
-        await db.syncForwardChainsForHost(existingHost.id, existingHost);
+      if (entryChanged && hostUsesAutomaticIngress(existingHost)) {
+        await refreshHostAddressRuntime(existingHost.id, existingHost, "agent-address-changed");
       }
       await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-registered");
       res.json({ success: true, hostId: existingHost.id, message: "Host updated" });

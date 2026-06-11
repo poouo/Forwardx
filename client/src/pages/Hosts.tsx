@@ -180,15 +180,20 @@ function hostAddressLines(host: any) {
   const rows: Array<{ label: string; value: string }> = [];
   if (host.ipv4) rows.push({ label: "IPv4", value: host.ipv4 });
   if (host.ipv6) rows.push({ label: "IPv6", value: host.ipv6 });
-  if (rows.length === 0 && host.ip) rows.push({ label: "IP", value: host.ip });
+  if (rows.length === 0 && host.ip && host.ip !== "unknown") rows.push({ label: "IP", value: host.ip });
+  if (rows.length === 0) rows.push({ label: "IP", value: "-" });
   return rows;
+}
+
+function agentDetectedIpText(host: any) {
+  return hostAddressText(host);
 }
 
 function hostAddressText(host: any) {
   const parts: string[] = [];
   if (host.ipv4) parts.push(`IPv4 ${host.ipv4}`);
   if (host.ipv6) parts.push(`IPv6 ${host.ipv6}`);
-  if (parts.length === 0 && host.ip) parts.push(`IP ${host.ip}`);
+  if (parts.length === 0 && host.ip && host.ip !== "unknown") parts.push(`IP ${host.ip}`);
   return parts.join("  /  ") || "-";
 }
 
@@ -1088,7 +1093,7 @@ function HostsContent() {
       ip: host.ip,
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
-      entryIp: host.entryIp || host.ip || "",
+      entryIp: host.entryIp || "",
       tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
@@ -1102,9 +1107,8 @@ function HostsContent() {
     const entry = (form.entryIp || "").trim();
     const tunnelEntry = (form.tunnelEntryIp || "").trim();
     if (!name) { toast.error("请输入主机名称"); return; }
-    if (!entry) { toast.error("请输入入口 IP / 域名"); return; }
     if (name.length > 128) { toast.error("主机名称不能超过 128 个字符"); return; }
-    if (entry.length > 128) { toast.error("入口 IP / 域名不能超过 128 个字符"); return; }
+    if (entry.length > 253) { toast.error("入口 IP / 域名不能超过 253 个字符"); return; }
     if (tunnelEntry.length > 128) { toast.error("内网地址不能超过 128 个字符"); return; }
 
     const ps = form.portRangeStart;
@@ -1118,27 +1122,26 @@ function HostsContent() {
     }
 
     const ni = (form.networkInterface || "").trim();
-    const ip = (form.ip || entry || "unknown").trim();
 
     if (editingId) {
       updateMutation.mutate({
         id: editingId,
         name,
-        ip,
         hostType: form.hostType,
         networkInterface: ni || null,
-        entryIp: entry,
+        entryIp: entry || null,
         tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
       });
     } else {
+      const ip = (form.ip || entry || "unknown").trim();
       createMutation.mutate({
         name,
         ip,
         hostType: form.hostType,
         networkInterface: ni || undefined,
-        entryIp: entry,
+        entryIp: entry || undefined,
         tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
@@ -1745,6 +1748,15 @@ function HostsContent() {
                   />
                 </div>
               </div>
+              {editingId && (
+                <div className="space-y-2">
+                  <Label>Agent 自动检测 IP</Label>
+                  <Input value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                  <p className="text-xs text-muted-foreground">
+                    由 Agent 心跳自动上报，用于面板展示和地理位置识别。
+                  </p>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>入口 IP / 域名</Label>
                 <Input
@@ -1753,7 +1765,7 @@ function HostsContent() {
                   onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  用于转发入口展示和复制。
+                  留空时使用 Agent 自动检测 IP；填写域名时由 Agent 监控解析变化并刷新转发。
                 </p>
               </div>
               <div className="space-y-2">
@@ -1842,7 +1854,7 @@ function HostsContent() {
             <Button variant="outline" onClick={() => setShowDialog(false)}>
               取消
             </Button>
-            <Button onClick={handleSubmit} disabled={isPending || !form.name || !form.entryIp}>
+            <Button onClick={handleSubmit} disabled={isPending || !form.name}>
               {isPending ? "处理中..." : editingId ? "保存" : "添加"}
             </Button>
           </DialogFooter>

@@ -51,10 +51,10 @@ function isRefreshDue(host: any) {
 }
 
 function pickLookupAddress(host: any) {
-  const candidates = [host?.entryIp, host?.ipv4, host?.ipv6, host?.ip];
+  const candidates = [host?.ipv4, host?.ipv6, host?.ip, host?.entryIp];
   for (const candidate of candidates) {
     const value = String(candidate || "").trim();
-    if (!value) continue;
+    if (!value || value.toLowerCase() === "unknown") continue;
     return value;
   }
   return "";

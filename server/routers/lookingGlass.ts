@@ -114,7 +114,7 @@ async function resolvePublicTarget(target: string, method: LookingGlassMethod) {
 }
 
 function normalizeAgentPublicAddress(host: any) {
-  const raw = String(host?.entryIp || host?.ip || host?.ipv4 || "").trim();
+  const raw = String(host?.ipv4 || host?.ipv6 || host?.ip || host?.entryIp || "").trim();
   if (!raw || raw.toLowerCase() === "unknown") {
     throw new Error("该主机缺少可用于 iperf3 测试的公网地址");
   }

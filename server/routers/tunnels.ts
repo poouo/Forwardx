@@ -411,6 +411,12 @@ export const tunnelsRouter = router({
             clearTunnelRuntimeStatus(id);
             await pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
           }
+          const endpointHostIds = [tunnel.entryHostId, tunnel.exitHostId, entryHostId, exitHostId]
+            .map((hostId) => Number(hostId))
+            .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+          for (const hostId of Array.from(new Set(endpointHostIds))) {
+            pushAgentRefresh(hostId, "tunnel-runtime-sync");
+          }
           if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
           if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
         }

@@ -8,6 +8,7 @@ import { requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
+import { refreshHostAddressRuntime } from "../hostAddressRuntime";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -241,7 +242,7 @@ export const hostsRouter = router({
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
-        const entryChanged = ["ip", "ipv4", "ipv6", "entryIp", "tunnelEntryIp"].some((key) =>
+        const entryChanged = ["entryIp", "tunnelEntryIp"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
         if (entryChanged) {
@@ -257,7 +258,7 @@ export const hostsRouter = router({
         }
         await db.updateHost(id, data as any);
         if (entryChanged) {
-          await db.syncForwardChainsForHost(id, host);
+          await refreshHostAddressRuntime(id, host, "host-address-updated");
         }
         return { success: true };
       }),
