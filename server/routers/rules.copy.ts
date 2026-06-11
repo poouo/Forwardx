@@ -17,6 +17,14 @@ async function requireForwardAccessReady(userId: number) {
   return check.user || await db.getUserById(userId);
 }
 
+async function requireTrafficBillingBalanceForCopy(userId: number, isTrafficBillingResource: boolean) {
+  if (!isTrafficBillingResource) return;
+  const user = await db.getUserById(userId);
+  if (Number((user as any)?.balanceCents || 0) <= 0) {
+    throw new Error("流量计费余额不足，请充值后再复制到该计费资源");
+  }
+}
+
 export const copyRulesRouter = router({
   copyToHosts: protectedProcedure
     .input(z.object({
@@ -79,6 +87,7 @@ export const copyRulesRouter = router({
           }
 
           if (ctx.user.role !== "admin") {
+            await requireTrafficBillingBalanceForCopy(ctx.user.id, isTrafficBillingResource);
             if (currentUser.maxRules > 0) {
               const ruleCount = await db.getUserRuleCount(ctx.user.id);
               if (ruleCount >= currentUser.maxRules) {

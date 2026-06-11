@@ -212,6 +212,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
           ? await db.findTrafficBillingConfig(billingResource.resourceType, billingResource.resourceId)
           : null;
         if (billingConfig) {
+          const user = await db.getUserById(Number(rule.userId));
+          if (user && Number((user as any).balanceCents || 0) <= 0) {
+            console.warn(`[TrafficBilling] user=${rule.userId} balance unavailable, disabling rules`);
+            await db.setUserForwardAccess(rule.userId, false, "traffic_billing_balance");
+            await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-unavailable");
+            continue;
+          }
           const billed = await db.billTrafficUsage({
             userId: Number(rule.userId),
             ruleId: Number(rule.id),

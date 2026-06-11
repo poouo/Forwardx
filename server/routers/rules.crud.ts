@@ -171,6 +171,28 @@ async function requireForwardAccessReady(userId: number, options?: { allowTraffi
   return check.user || await db.getUserById(userId);
 }
 
+async function requireTrafficBillingBalanceForRule(userId: number, isTrafficBillingRule: boolean, message = "流量计费余额不足，请充值后再使用该计费资源") {
+  if (!isTrafficBillingRule) return;
+  const user = await db.getUserById(userId);
+  if (Number((user as any)?.balanceCents || 0) <= 0) {
+    throw new Error(message);
+  }
+}
+
+async function isForwardGroupTrafficBillingRule(group: any, userId: number) {
+  if (!group || String((group as any).groupMode || "failover") === "chain") return false;
+  const members = Array.isArray((group as any).members) ? (group as any).members : [];
+  for (const member of members) {
+    if (!member?.isEnabled) continue;
+    const resourceType = member.memberType === "tunnel" ? "tunnel" : member.memberType === "host" ? "host" : null;
+    const resourceId = resourceType === "tunnel" ? Number(member.tunnelId || 0) : resourceType === "host" ? Number(member.hostId || 0) : 0;
+    if (!resourceType || resourceId <= 0) continue;
+    const config = await db.findTrafficBillingConfig(resourceType, resourceId);
+    if (config) return true;
+  }
+  return false;
+}
+
 async function settleTrafficBillingForDeletedRule(rule: any) {
   const tunnelId = Number(rule?.tunnelId || 0);
   const billed = await db.settleTrafficBillingRuleOnDelete({
@@ -250,6 +272,10 @@ export const crudRulesRouter = router({
         }
         const group = await db.validateForwardGroupRuleConfig(input.forwardGroupId, { sourcePort });
         const isForwardChain = (group as any).groupMode === "chain";
+        if (ctx.user.role !== "admin") {
+          const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, ctx.user.id);
+          await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
+        }
         if (isForwardChain && input.failoverEnabled) {
           throw new Error("端口转发链不支持出站策略");
         }
@@ -323,6 +349,7 @@ export const crudRulesRouter = router({
       }
       if (ctx.user.role !== "admin") {
         currentUser = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
+        await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
         if (String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" && !(currentUser as any)?.canAddRules) {
           throw new Error("No permission to use custom encrypted tunnels");
         }
@@ -471,6 +498,10 @@ export const crudRulesRouter = router({
           excludeTemplateRuleId: rule.id,
         });
         const isForwardChain = (group as any).groupMode === "chain";
+        if (ctx.user.role !== "admin" && (input.isEnabled === true || (rule as any).isEnabled)) {
+          const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, ctx.user.id);
+          await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
+        }
         validateProtocolBlockInput({
           protocol: input.protocol ?? (rule as any).protocol,
           blockHttp: input.blockHttp ?? (rule as any).blockHttp,
@@ -559,6 +590,7 @@ export const crudRulesRouter = router({
           nextHostIdForRule = Number(selectedTunnelForRule.entryHostId);
           if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode).toLowerCase() === "forwardx") {
             const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!access.isTrafficBillingResource });
+            await requireTrafficBillingBalanceForRule(ctx.user.id, !!access.isTrafficBillingResource);
             if (!(owner as any)?.canAddRules) {
               throw new Error("No permission to use custom encrypted tunnels");
             }
@@ -579,16 +611,21 @@ export const crudRulesRouter = router({
         tunnelId: nextTunnelIdForRule,
         isAdmin: ctx.user.role === "admin",
       });
+      const nextRuleEnabled = input.isEnabled ?? (rule as any).isEnabled;
       if (!nextTunnelIdForRule) {
-        await requireHostUseAccess(ctx, nextHostIdForRule);
+        const access = await requireHostUseAccess(ctx, nextHostIdForRule);
+        if (ctx.user.role !== "admin" && nextRuleEnabled) {
+          await requireTrafficBillingBalanceForRule(ctx.user.id, !!access.isTrafficBillingResource);
+        }
       }
 
-      if (input.isEnabled === true && ctx.user.role !== "admin") {
+      if (nextRuleEnabled && ctx.user.role !== "admin") {
         const activeTunnelId = Number(nextTunnelIdForRule || 0);
         const resourceAccess = activeTunnelId
           ? await requireTunnelUseOrTrafficBillingAccess(ctx, activeTunnelId)
           : await requireHostUseAccess(ctx, nextHostIdForRule);
         const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!resourceAccess.isTrafficBillingResource });
+        await requireTrafficBillingBalanceForRule(ctx.user.id, !!resourceAccess.isTrafficBillingResource);
         if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
           throw new Error("套餐已到期，请续费后再启用规则");
         }
@@ -783,6 +820,9 @@ export const crudRulesRouter = router({
           if (!hasPermission) throw new Error("无权操作该转发组规则");
           if (input.isEnabled) {
             const owner = await requireForwardAccessReady(ctx.user.id);
+            const group = await db.getForwardGroupById(groupId);
+            const isTrafficBillingRule = await isForwardGroupTrafficBillingRule(group, ctx.user.id);
+            await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
             if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
               throw new Error("套餐已到期，请续费后再启用规则");
             }
@@ -829,6 +869,7 @@ export const crudRulesRouter = router({
             ? await requireTunnelUseOrTrafficBillingAccess(ctx, activeTunnelId)
             : await requireHostUseAccess(ctx, rule.hostId);
           const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: !!resourceAccess.isTrafficBillingResource });
+          await requireTrafficBillingBalanceForRule(ctx.user.id, !!resourceAccess.isTrafficBillingResource);
           if (owner.expiresAt && new Date(owner.expiresAt) <= new Date()) {
             throw new Error("套餐已到期，请续费后再启用规则");
           }
