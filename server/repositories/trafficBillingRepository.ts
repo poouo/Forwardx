@@ -5,7 +5,9 @@ import {
   hosts,
   trafficBillingConfigs,
   trafficBillingRecords,
+  trafficBillingRuleUsage,
   trafficBillingUsage,
+  trafficStats,
   tunnels,
   userTrafficBillingPermissions,
   users,
@@ -17,6 +19,7 @@ import { getUserById } from "./userRepository";
 
 const GB_BYTES = 1024 ** 3;
 const MILLI_CENTS_PER_CENT = 1000;
+const BILLING_DENOMINATOR = 100n * BigInt(MILLI_CENTS_PER_CENT);
 
 export type TrafficBillingResourceType = "host" | "tunnel";
 
@@ -36,6 +39,41 @@ function configPriceMilliCents(config: any) {
   const milliCents = normalizePriceMilliCents(Number(config?.pricePerGbMilliCents || 0));
   if (milliCents > 0) return milliCents;
   return normalizePrice(Number(config?.pricePerGbCents || 0)) * MILLI_CENTS_PER_CENT;
+}
+
+function billedFullGb(totalBytes: number) {
+  return Math.max(0, Math.floor(Math.max(0, Number(totalBytes) || 0) / GB_BYTES));
+}
+
+function effectiveAmountCentsForGb(gb: number, pricePerGbMilliCents: number, multiplier: number) {
+  const numerator = BigInt(Math.max(0, Math.floor(gb)))
+    * BigInt(normalizePriceMilliCents(pricePerGbMilliCents))
+    * BigInt(normalizeMultiplier(multiplier));
+  return Number(numerator / BILLING_DENOMINATOR);
+}
+
+function effectiveAmountCentsForBytes(bytes: number, pricePerGbMilliCents: number, multiplier: number) {
+  const normalizedBytes = Math.max(0, Math.floor(Number(bytes) || 0));
+  const numerator = BigInt(normalizedBytes)
+    * BigInt(normalizePriceMilliCents(pricePerGbMilliCents))
+    * BigInt(normalizeMultiplier(multiplier));
+  return Number(numerator / (BigInt(GB_BYTES) * BILLING_DENOMINATOR));
+}
+
+function trafficBillingResourceLabel(resourceType: TrafficBillingResourceType) {
+  return resourceType === "host" ? "主机" : "隧道";
+}
+
+async function getHistoricalRuleTrafficBytes(ruleId: number) {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select({
+      totalBytes: sql<number>`COALESCE(SUM(${trafficStats.bytesIn} + ${trafficStats.bytesOut}), 0)`,
+    })
+    .from(trafficStats)
+    .where(eq(trafficStats.ruleId, ruleId));
+  return Number(rows[0]?.totalBytes || 0);
 }
 
 export async function isTrafficBillingEnabled() {
@@ -192,6 +230,51 @@ export async function findTrafficBillingConfig(resourceType: TrafficBillingResou
   return rows[0];
 }
 
+async function insertTrafficBillingCharge(input: {
+  userId: number;
+  ruleId: number;
+  resourceType: TrafficBillingResourceType;
+  resourceId: number;
+  bytes: number;
+  billedGb: number;
+  amountCents: number;
+  pricePerGbMilliCents: number;
+  multiplier: number;
+  description: string;
+}) {
+  const amountCents = Math.max(0, Math.floor(Number(input.amountCents) || 0));
+  if (amountCents <= 0) return null;
+  const db = await getDb();
+  if (!db) return null;
+  const user = await getUserById(input.userId);
+  if (!user) return null;
+  const balanceAfterCents = Number((user as any).balanceCents || 0) - amountCents;
+  await db.update(users).set({ balanceCents: balanceAfterCents, updatedAt: nowDate() } as any).where(eq(users.id, input.userId));
+  await db.insert(balanceTransactions).values({
+    userId: input.userId,
+    type: "traffic_billing",
+    amountCents: -amountCents,
+    balanceAfterCents,
+    description: input.description,
+    createdAt: nowDate(),
+  } as any);
+  await db.insert(trafficBillingRecords).values({
+    userId: input.userId,
+    ruleId: input.ruleId,
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
+    bytes: Math.max(0, Math.floor(Number(input.bytes) || 0)),
+    billedGb: Math.max(0, Math.floor(Number(input.billedGb) || 0)),
+    pricePerGbCents: Math.floor(input.pricePerGbMilliCents / MILLI_CENTS_PER_CENT),
+    pricePerGbMilliCents: input.pricePerGbMilliCents,
+    multiplier: input.multiplier,
+    amountCents,
+    balanceAfterCents,
+    createdAt: nowDate(),
+  } as any);
+  return { amountCents, billedGb: input.billedGb, balanceAfterCents };
+}
+
 export async function billTrafficUsage(input: {
   userId: number;
   ruleId: number;
@@ -206,30 +289,41 @@ export async function billTrafficUsage(input: {
   if (!config || pricePerGbMilliCents <= 0) return null;
   const db = await getDb();
   if (!db) return null;
-  const usageRows = await db.select().from(trafficBillingUsage).where(and(
-    eq(trafficBillingUsage.userId, input.userId),
-    eq(trafficBillingUsage.resourceType, input.resourceType),
-    eq(trafficBillingUsage.resourceId, input.resourceId),
-  )).limit(1);
+  const [usageRows, ruleUsageRows] = await Promise.all([
+    db.select().from(trafficBillingUsage).where(and(
+      eq(trafficBillingUsage.userId, input.userId),
+      eq(trafficBillingUsage.resourceType, input.resourceType),
+      eq(trafficBillingUsage.resourceId, input.resourceId),
+    )).limit(1),
+    db.select().from(trafficBillingRuleUsage).where(and(
+      eq(trafficBillingRuleUsage.ruleId, input.ruleId),
+      eq(trafficBillingRuleUsage.resourceType, input.resourceType),
+      eq(trafficBillingRuleUsage.resourceId, input.resourceId),
+    )).limit(1),
+  ]);
   const usage = usageRows[0] as any;
   const previousBytes = Number(usage?.totalBytes || 0);
   const totalBytes = previousBytes + input.bytes;
   const previousBilledGb = Number(usage?.billedGb || 0);
-  const totalBilledGb = Math.max(1, Math.ceil(totalBytes / GB_BYTES));
-  const newlyBilledGb = Math.max(0, totalBilledGb - previousBilledGb);
-  const previousPendingMilliCents = normalizePriceMilliCents(Number(usage?.pendingMilliCents || 0));
   const multiplier = normalizeMultiplier(Number(config.multiplier || 100));
-  const accruedMilliCents = newlyBilledGb > 0
-    ? Math.round(newlyBilledGb * pricePerGbMilliCents * multiplier / 100)
-    : 0;
-  const pendingAfterAccrual = previousPendingMilliCents + accruedMilliCents;
-  const amountCents = Math.floor(pendingAfterAccrual / MILLI_CENTS_PER_CENT);
-  const pendingMilliCents = pendingAfterAccrual % MILLI_CENTS_PER_CENT;
+  const ruleUsage = ruleUsageRows[0] as any;
+  const hasAnyRuleUsage = ruleUsage
+    ? true
+    : (await db.select({ id: trafficBillingRuleUsage.id }).from(trafficBillingRuleUsage).where(eq(trafficBillingRuleUsage.ruleId, input.ruleId)).limit(1)).length > 0;
+  const historicalRuleBytes = ruleUsage || hasAnyRuleUsage || !usage
+    ? 0
+    : Math.max(0, (await getHistoricalRuleTrafficBytes(input.ruleId)) - input.bytes);
+  const previousRuleBytes = Number(ruleUsage?.totalBytes || historicalRuleBytes);
+  const previousRuleBilledGb = Number(ruleUsage?.billedGb || (historicalRuleBytes > 0 ? Math.ceil(historicalRuleBytes / GB_BYTES) : 0));
+  const nextRuleBytes = previousRuleBytes + input.bytes;
+  const nextRuleBilledGb = billedFullGb(nextRuleBytes);
+  const newlyBilledGb = Math.max(0, nextRuleBilledGb - previousRuleBilledGb);
+  const storedRuleBilledGb = Math.max(previousRuleBilledGb, nextRuleBilledGb);
   if (usage) {
     await db.update(trafficBillingUsage).set({
       totalBytes,
-      billedGb: Math.max(previousBilledGb, totalBilledGb),
-      pendingMilliCents,
+      billedGb: previousBilledGb + newlyBilledGb,
+      pendingMilliCents: 0,
       updatedAt: nowDate(),
     } as any).where(eq(trafficBillingUsage.id, usage.id));
   } else {
@@ -238,40 +332,125 @@ export async function billTrafficUsage(input: {
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       totalBytes,
-      billedGb: totalBilledGb,
-      pendingMilliCents,
+      billedGb: newlyBilledGb,
+      pendingMilliCents: 0,
+      updatedAt: nowDate(),
+    } as any);
+  }
+  if (ruleUsage) {
+    await db.update(trafficBillingRuleUsage).set({
+      userId: input.userId,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId,
+      totalBytes: nextRuleBytes,
+      billedGb: storedRuleBilledGb,
+      pendingMilliCents: 0,
+      settled: false,
+      updatedAt: nowDate(),
+    } as any).where(eq(trafficBillingRuleUsage.id, ruleUsage.id));
+  } else {
+    await db.insert(trafficBillingRuleUsage).values({
+      userId: input.userId,
+      ruleId: input.ruleId,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId,
+      totalBytes: nextRuleBytes,
+      billedGb: storedRuleBilledGb,
+      pendingMilliCents: 0,
+      settled: false,
       updatedAt: nowDate(),
     } as any);
   }
   if (newlyBilledGb <= 0) return null;
-  if (amountCents <= 0) return null;
-  const user = await getUserById(input.userId);
-  if (!user) return null;
-  const balanceAfterCents = Number((user as any).balanceCents || 0) - amountCents;
-  await db.update(users).set({ balanceCents: balanceAfterCents, updatedAt: nowDate() } as any).where(eq(users.id, input.userId));
-  await db.insert(balanceTransactions).values({
-    userId: input.userId,
-    type: "traffic_billing",
-    amountCents: -amountCents,
-    balanceAfterCents,
-    description: `流量计费：${input.resourceType === "host" ? "主机" : "隧道"} #${input.resourceId} 新增 ${newlyBilledGb}GB x ${(multiplier / 100).toFixed(2)}`,
-    createdAt: nowDate(),
-  } as any);
-  await db.insert(trafficBillingRecords).values({
+  const amountCents = effectiveAmountCentsForGb(newlyBilledGb, pricePerGbMilliCents, multiplier);
+  return insertTrafficBillingCharge({
     userId: input.userId,
     ruleId: input.ruleId,
     resourceType: input.resourceType,
     resourceId: input.resourceId,
     bytes: input.bytes,
     billedGb: newlyBilledGb,
-    pricePerGbCents: Math.floor(pricePerGbMilliCents / MILLI_CENTS_PER_CENT),
     pricePerGbMilliCents,
     multiplier,
     amountCents,
-    balanceAfterCents,
-    createdAt: nowDate(),
-  } as any);
-  return { amountCents, billedGb: newlyBilledGb, balanceAfterCents };
+    description: `流量计费：${trafficBillingResourceLabel(input.resourceType)} #${input.resourceId} 新增 ${newlyBilledGb}GB x ${(multiplier / 100).toFixed(2)}`,
+  });
+}
+
+export async function settleTrafficBillingRuleOnDelete(input: {
+  userId: number;
+  ruleId: number;
+  resourceType: TrafficBillingResourceType;
+  resourceId: number;
+}) {
+  if (!(await isTrafficBillingEnabled())) return null;
+  const db = await getDb();
+  if (!db) return null;
+  let rows = await db.select().from(trafficBillingRuleUsage).where(eq(trafficBillingRuleUsage.ruleId, input.ruleId));
+  if (rows.length === 0) {
+    const usageRows = await db.select({ id: trafficBillingUsage.id }).from(trafficBillingUsage).where(and(
+      eq(trafficBillingUsage.userId, input.userId),
+      eq(trafficBillingUsage.resourceType, input.resourceType),
+      eq(trafficBillingUsage.resourceId, input.resourceId),
+    )).limit(1);
+    const historicalRuleBytes = usageRows.length > 0 ? await getHistoricalRuleTrafficBytes(input.ruleId) : 0;
+    if (historicalRuleBytes > 0) {
+      await db.insert(trafficBillingRuleUsage).values({
+        userId: input.userId,
+        ruleId: input.ruleId,
+        resourceType: input.resourceType,
+        resourceId: input.resourceId,
+        totalBytes: historicalRuleBytes,
+        billedGb: Math.ceil(historicalRuleBytes / GB_BYTES),
+        pendingMilliCents: 0,
+        settled: false,
+        updatedAt: nowDate(),
+      } as any);
+      rows = await db.select().from(trafficBillingRuleUsage).where(eq(trafficBillingRuleUsage.ruleId, input.ruleId));
+    }
+  }
+  let totalAmountCents = 0;
+  let balanceAfterCents: number | null = null;
+  for (const usage of rows as any[]) {
+    if (!usage || usage.settled) continue;
+    const resourceType = String(usage.resourceType || input.resourceType) as TrafficBillingResourceType;
+    const resourceId = Number(usage.resourceId || input.resourceId);
+    const config = resourceType === "host" || resourceType === "tunnel"
+      ? await findTrafficBillingConfig(resourceType, resourceId)
+      : null;
+    const pricePerGbMilliCents = configPriceMilliCents(config);
+    const totalBytes = Math.max(0, Number(usage.totalBytes || 0));
+    const billedBytes = Math.max(0, Number(usage.billedGb || 0)) * GB_BYTES;
+    const remainingBytes = Math.max(0, totalBytes - billedBytes);
+    const multiplier = normalizeMultiplier(Number(config?.multiplier || 100));
+    const amountCents = config && pricePerGbMilliCents > 0
+      ? effectiveAmountCentsForBytes(remainingBytes, pricePerGbMilliCents, multiplier)
+      : 0;
+    await db.update(trafficBillingRuleUsage).set({
+      pendingMilliCents: 0,
+      settled: true,
+      updatedAt: nowDate(),
+    } as any).where(eq(trafficBillingRuleUsage.id, usage.id));
+    if (remainingBytes <= 0 || amountCents <= 0) continue;
+    const charged = await insertTrafficBillingCharge({
+      userId: input.userId,
+      ruleId: input.ruleId,
+      resourceType,
+      resourceId,
+      bytes: remainingBytes,
+      billedGb: 0,
+      pricePerGbMilliCents,
+      multiplier,
+      amountCents,
+      description: `流量计费：${trafficBillingResourceLabel(resourceType)} #${resourceId} 删除规则结算 ${remainingBytes} bytes x ${(multiplier / 100).toFixed(2)}`,
+    });
+    if (charged) {
+      totalAmountCents += charged.amountCents;
+      balanceAfterCents = charged.balanceAfterCents;
+    }
+  }
+  if (totalAmountCents <= 0 || balanceAfterCents === null) return null;
+  return { amountCents: totalAmountCents, billedGb: 0, balanceAfterCents };
 }
 
 export async function listTrafficBillingRecords(options?: { userId?: number; limit?: number }) {

@@ -22,6 +22,8 @@ import {
 } from "./forwardRuleRepository";
 import { getHostById } from "./hostRepository";
 import { findAvailableTunnelExitPort, getTunnelById, updateTunnel } from "./tunnelRepository";
+import { setUserForwardAccess } from "./userRepository";
+import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -802,6 +804,16 @@ async function ensureChainRuleForTemplate(
 async function removeManagedRule(ruleId: number) {
   const rule = await getForwardRuleById(ruleId);
   if (!rule) return;
+  const tunnelId = Number((rule as any).tunnelId || 0);
+  const billed = await settleTrafficBillingRuleOnDelete({
+    userId: Number((rule as any).userId),
+    ruleId: Number((rule as any).id),
+    resourceType: tunnelId > 0 ? "tunnel" : "host",
+    resourceId: tunnelId > 0 ? tunnelId : Number((rule as any).hostId),
+  });
+  if (billed && Number(billed.balanceAfterCents) < 0) {
+    await setUserForwardAccess(Number((rule as any).userId), false, "traffic_billing_balance");
+  }
   await markForwardRulePendingDelete(ruleId);
   await refreshRuleEndpoints(rule, "forward-group-child-deleted");
 }
@@ -973,6 +985,16 @@ export async function deleteForwardGroup(id: number) {
   for (const rule of childRules as any[]) await removeManagedRule(Number(rule.id));
   const templates = await getForwardGroupTemplateRules(id);
   for (const template of templates as any[]) {
+    const tunnelId = Number((template as any).tunnelId || 0);
+    const billed = await settleTrafficBillingRuleOnDelete({
+      userId: Number((template as any).userId),
+      ruleId: Number((template as any).id),
+      resourceType: tunnelId > 0 ? "tunnel" : "host",
+      resourceId: tunnelId > 0 ? tunnelId : Number((template as any).hostId),
+    });
+    if (billed && Number(billed.balanceAfterCents) < 0) {
+      await setUserForwardAccess(Number((template as any).userId), false, "traffic_billing_balance");
+    }
     await markForwardRulePendingDelete(Number(template.id));
   }
   const members = await db.select().from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, id));

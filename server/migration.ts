@@ -320,6 +320,7 @@ const IMPORT_TABLE_ORDER = [
   "balance_transactions",
   "traffic_billing_configs",
   "traffic_billing_usage",
+  "traffic_billing_rule_usage",
   "traffic_billing_records",
   "user_traffic_billing_permissions",
   "announcements",
@@ -545,6 +546,12 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.userId = mapRequiredId(maps, "users", source.userId);
       row.resourceId = mappedResourceId(maps, source.resourceType, source.resourceId);
       return { row, existingWhere: { userId: row.userId, resourceType: row.resourceType, resourceId: row.resourceId } };
+
+    case "traffic_billing_rule_usage":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.resourceId = mappedResourceId(maps, source.resourceType, source.resourceId);
+      return { row, existingWhere: { ruleId: row.ruleId, resourceType: row.resourceType, resourceId: row.resourceId } };
 
     case "traffic_billing_records":
       row.userId = mapRequiredId(maps, "users", source.userId);
