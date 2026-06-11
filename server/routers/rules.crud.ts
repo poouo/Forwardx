@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
-import { pushTunnelEndpointRefresh, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
+import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
@@ -169,6 +169,21 @@ async function requireForwardAccessReady(userId: number, options?: { allowTraffi
     throw new Error(check.message || "转发权限已暂停，请续费后再启用规则");
   }
   return check.user || await db.getUserById(userId);
+}
+
+async function settleTrafficBillingForDeletedRule(rule: any) {
+  const tunnelId = Number(rule?.tunnelId || 0);
+  const billed = await db.settleTrafficBillingRuleOnDelete({
+    userId: Number(rule.userId),
+    ruleId: Number(rule.id),
+    resourceType: tunnelId > 0 ? "tunnel" : "host",
+    resourceId: tunnelId > 0 ? tunnelId : Number(rule.hostId),
+  });
+  if (billed && Number(billed.balanceAfterCents) < 0) {
+    await db.setUserForwardAccess(Number(rule.userId), false, "traffic_billing_balance");
+    await refreshUserForwardEndpoints(Number(rule.userId), "traffic-billing-delete-balance-negative");
+  }
+  return billed;
 }
 
 export const crudRulesRouter = router({
@@ -731,6 +746,7 @@ export const crudRulesRouter = router({
       if ((rule as any).isForwardGroupTemplate) {
         const childRules = await db.getForwardGroupChildRulesForTemplate(input.id);
         for (const child of childRules as any[]) {
+          await settleTrafficBillingForDeletedRule(child);
           if ((child as any).tunnelId) {
             const tunnel = await db.getTunnelById((child as any).tunnelId);
             await db.updateTunnel((child as any).tunnelId, { isRunning: false } as any);
@@ -739,9 +755,11 @@ export const crudRulesRouter = router({
           await db.markForwardRulePendingDelete(Number(child.id));
           pushAgentRefresh(Number(child.hostId), "forward-group-rule-deleted");
         }
+        await settleTrafficBillingForDeletedRule(rule);
         await db.markForwardRulePendingDelete(input.id);
         return { success: true };
       }
+      await settleTrafficBillingForDeletedRule(rule);
       if ((rule as any).tunnelId) {
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);

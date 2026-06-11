@@ -616,6 +616,21 @@ export const trafficBillingUsage = table("traffic_billing_usage", {
 export type TrafficBillingUsage = typeof trafficBillingUsage.$inferSelect;
 export type InsertTrafficBillingUsage = typeof trafficBillingUsage.$inferInsert;
 
+export const trafficBillingRuleUsage = table("traffic_billing_rule_usage", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  resourceType: varchar("resourceType", { length: 16 }).notNull(),
+  resourceId: int("resourceId").notNull(),
+  totalBytes: bigint("totalBytes", { mode: "number" }).notNull().default(0),
+  billedGb: int("billedGb").notNull().default(0),
+  pendingMilliCents: bigint("pendingMilliCents", { mode: "number" }).notNull().default(0),
+  settled: boolean("settled").notNull().default(false),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type TrafficBillingRuleUsage = typeof trafficBillingRuleUsage.$inferSelect;
+export type InsertTrafficBillingRuleUsage = typeof trafficBillingRuleUsage.$inferInsert;
+
 export const userTrafficBillingPermissions = table("user_traffic_billing_permissions", {
   id: serial("id"),
   userId: int("userId").notNull(),
