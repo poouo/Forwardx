@@ -1587,6 +1587,14 @@ function TunnelsContent() {
     </TooltipProvider>
   );
   const renderTunnelLatencyLabel = (tunnel: any, compact = false) => {
+    if (tunnel.lastTestStatus === "pending" || tunnel.lastTestStatus === "running") {
+      return (
+        <span className={`inline-flex items-center gap-1.5 text-amber-600 ${compact ? "text-xs" : ""}`}>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          测试中
+        </span>
+      );
+    }
     const latency = typeof tunnel.lastLatencyMs === "number" && Number.isFinite(tunnel.lastLatencyMs)
       ? tunnel.lastLatencyMs
       : null;

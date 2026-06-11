@@ -10,6 +10,7 @@ import { requireTunnelProtocolEnabled } from "../forwardProtocolSettings";
 import * as hopRepo from "../repositories/tunnelRepository";
 import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
+import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
@@ -108,6 +109,26 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
       return value ? value : null;
     });
     if (hopConnectHosts.length >= 2) hopConnectHostsByTunnel.set(Number(tunnel.id), hopConnectHosts);
+  }));
+  await Promise.all(tunnels.map(async (tunnel) => {
+    const hopIds = hopHostIdsByTunnel.get(Number(tunnel.id));
+    if (!hopIds || hopIds.length < 3) return;
+    const aggregate = getTunnelAutoHopAggregate(Number(tunnel.id), hopIds.length - 1);
+    if (!aggregate) return;
+    const currentLatency = typeof (tunnel as any).lastLatencyMs === "number" ? Number((tunnel as any).lastLatencyMs) : null;
+    const nextLatency = aggregate.success ? aggregate.latencyMs : null;
+    const shouldUpdate =
+      String((tunnel as any).lastTestStatus || "") === "pending" ||
+      String((tunnel as any).lastTestStatus || "") === "running" ||
+      currentLatency !== nextLatency;
+    if (!shouldUpdate) return;
+    await db.insertTunnelLatencyStat({
+      tunnelId: Number(tunnel.id),
+      latencyMs: aggregate.success ? aggregate.latencyMs : null,
+      isTimeout: !aggregate.success,
+    }, { message: aggregate.success ? `MULTI_HOP_AUTO_LATENCY_OK hops=${hopIds.length - 1}` : `MULTI_HOP_AUTO_LATENCY_FAILED hops=${hopIds.length - 1}` });
+    (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
+    (tunnel as any).lastTestStatus = aggregate.success ? "success" : "failed";
   }));
   await Promise.all(Array.from(hostIds).map(async (hostId) => {
     const host = await db.getHostById(hostId);

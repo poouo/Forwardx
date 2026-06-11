@@ -20,6 +20,7 @@ import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
 import { normalizeAgentAddress, normalizeAgentText, normalizeNetworkInterface } from "./agentInputValidation";
 import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -857,6 +858,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (Array.isArray(hops) && hops.length >= 3) {
           const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
           if (hostIdx < 0 || hostIdx >= hops.length - 1) return null;
+          if (hostIdx === 0) {
+            const aggregate = getTunnelAutoHopAggregate(Number(tunnel.id), hops.length - 1);
+            if (aggregate) {
+              await db.insertTunnelLatencyStat({
+                tunnelId: Number(tunnel.id),
+                latencyMs: aggregate.success ? aggregate.latencyMs : null,
+                isTimeout: !aggregate.success,
+              }, { message: aggregate.success ? `MULTI_HOP_AUTO_LATENCY_OK hops=${hops.length - 1}` : `MULTI_HOP_AUTO_LATENCY_FAILED hops=${hops.length - 1}` });
+            }
+          }
           const nextHop = hops[hostIdx + 1] as any;
           const targetIp = await getHopDialAddress(nextHop);
           const targetPort = Number(nextHop.listenPort) || 0;
