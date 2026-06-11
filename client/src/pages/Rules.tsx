@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
@@ -51,6 +52,8 @@ import {
   ArrowUpFromLine,
   Stethoscope,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   XCircle,
   Loader2,
   Shuffle,
@@ -62,6 +65,7 @@ import {
   LayoutGrid,
   List,
   Rows3,
+  GitBranch,
   Globe,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
@@ -172,11 +176,13 @@ const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 const desktopRuleTypeLabels = {
   local: "端口转发",
   tunnel: "隧道转发",
+  chain: "转发链",
   group: "转发组",
 } as const;
 const ruleTypeDescriptions = {
   local: "主机端口直接转发",
   tunnel: "通过隧道出口转发",
+  chain: "按转发链顺序转发",
   group: "使用转发组入口",
 } as const;
 
@@ -184,10 +190,18 @@ type RuleViewMode = "card" | "table" | "globe";
 type RuleCardSize = "standard" | "compact";
 type RuleDisplayMode = RuleCardSize | "table" | "globe";
 type RulePageSize = 12 | 24 | 36 | 48;
+type RuleGroupType = keyof typeof desktopRuleTypeLabels;
+type RuleGroupCollapsedState = Partial<Record<RuleGroupType, boolean>>;
+type RuleCategory = "all" | "local" | "tunnel" | "chain" | "group";
 
 const RULE_VIEW_MODE_STORAGE_KEY = "forwardx.rules.viewMode";
 const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
 const RULE_PAGE_SIZE_STORAGE_KEY = "forwardx.rules.pageSize";
+const RULE_GROUP_COLLAPSED_STORAGE_KEY = "forwardx.rules.groupCollapsed";
+const RULE_CATEGORY_STORAGE_KEY = "forwardx.rules.category";
+const RULE_FILTER_USER_STORAGE_KEY = "forwardx.rules.filterUser";
+const RULE_FILTER_HOST_STORAGE_KEY = "forwardx.rules.filterHost";
+const RULE_FILTER_TUNNEL_STORAGE_KEY = "forwardx.rules.filterTunnel";
 const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
 const RULE_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const RULE_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
@@ -265,48 +279,105 @@ function storeRulePageSize(pageSize: RulePageSize) {
   }
 }
 
-function getRuleDisplayType(rule: any): keyof typeof desktopRuleTypeLabels {
-  if (rule.forwardGroupId) return "group";
-  if (rule.forwardType === "gost" && rule.tunnelId) return "tunnel";
-  return "local";
+function getStoredRuleGroupCollapsed(): RuleGroupCollapsedState {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(RULE_GROUP_COLLAPSED_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const next: RuleGroupCollapsedState = {};
+    (["local", "tunnel", "chain", "group"] as RuleGroupType[]).forEach((type) => {
+      if (typeof parsed[type] === "boolean") next[type] = parsed[type];
+    });
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+function storeRuleGroupCollapsed(state: RuleGroupCollapsedState) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RULE_GROUP_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredString(key: string, fallback: string) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const value = window.localStorage.getItem(key);
+    return value || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeString(key: string, value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function getStoredRuleCategory(): RuleCategory {
+  const value = getStoredString(RULE_CATEGORY_STORAGE_KEY, "all");
+  return value === "local" || value === "tunnel" || value === "chain" || value === "group" ? value : "all";
+}
+
+function getRuleForwardGroupKind(rule: any, forwardGroupById: Map<number, any>): "chain" | "group" | null {
+  const groupId = Number(rule?.forwardGroupId || 0);
+  if (!groupId) return null;
+  const group = forwardGroupById.get(groupId);
+  return isForwardChainGroup(group) ? "chain" : "group";
+}
+
+function getRuleCategory(rule: any, forwardGroupById: Map<number, any>): Exclude<RuleCategory, "all"> {
+  const groupKind = getRuleForwardGroupKind(rule, forwardGroupById);
+  if (groupKind) return groupKind;
+  return rule.forwardType === "gost" && rule.tunnelId ? "tunnel" : "local";
+}
+
+function getRuleDisplayType(rule: any, forwardGroupById: Map<number, any>): RuleGroupType {
+  return getRuleCategory(rule, forwardGroupById);
 }
 
 type RuleFilterState = {
   filterUser: string;
   filterHost: string;
   filterTunnel: string;
-  filterType: string;
+  ruleCategory: RuleCategory;
   isAdmin: boolean;
   userId?: number | null;
+  forwardGroupById: Map<number, any>;
+  getRuleEntryHostId: (rule: any) => number;
 };
 
 function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
-  if (filters.isAdmin && filters.filterUser === "self" && Number(rule.userId) !== Number(filters.userId)) {
-    return false;
-  }
-  if (filters.filterUser !== "all" && filters.filterUser !== "self" && Number(rule.userId) !== Number(filters.filterUser)) {
-    return false;
-  }
-  if (filters.filterHost !== "all") {
-    if (String(filters.filterHost).startsWith("group:")) {
-      if (Number(rule.forwardGroupId || 0) !== Number(String(filters.filterHost).slice(6))) return false;
-    } else if (rule.forwardGroupId || rule.hostId !== parseInt(filters.filterHost)) {
+  if (filters.isAdmin) {
+    if (filters.filterUser === "self" && Number(rule.userId) !== Number(filters.userId)) {
+      return false;
+    }
+    if (filters.filterUser !== "all" && filters.filterUser !== "self" && Number(rule.userId) !== Number(filters.filterUser)) {
       return false;
     }
   }
-  if (filters.filterTunnel !== "all") {
+  if (filters.filterHost !== "all" && filters.getRuleEntryHostId(rule) !== parseInt(filters.filterHost)) {
+    return false;
+  }
+  if (filters.filterTunnel !== "all" && (filters.ruleCategory === "all" || filters.ruleCategory === "tunnel")) {
     if (filters.filterTunnel === "none") {
       if (rule.tunnelId) return false;
     } else if (Number(rule.tunnelId || 0) !== Number(filters.filterTunnel)) {
       return false;
     }
   }
-  if (filters.filterType !== "all") {
-    if (filters.filterType === "forward-group") {
-      if (!rule.forwardGroupId) return false;
-    } else if (rule.forwardType !== filters.filterType) {
-      return false;
-    }
+  if (filters.ruleCategory !== "all") {
+    if (getRuleCategory(rule, filters.forwardGroupById) !== filters.ruleCategory) return false;
   }
   return true;
 }
@@ -1295,15 +1366,17 @@ function RulesContent() {
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [form, setForm] = useState<RuleFormData>(defaultForm);
-  const [filterHost, setFilterHost] = useState<string>("all");
-  const [filterUser, setFilterUser] = useState<string>("self");
-  const [filterTunnel, setFilterTunnel] = useState<string>("all");
-  const [filterType, setFilterType] = useState<string>("all");
+  const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
+  const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
+  const [filterTunnel, setFilterTunnel] = useState<string>(() => getStoredString(RULE_FILTER_TUNNEL_STORAGE_KEY, "all"));
+  const [ruleCategory, setRuleCategory] = useState<RuleCategory>(() => getStoredRuleCategory());
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
   const [rulePageSize, setRulePageSize] = useState<RulePageSize>(() =>
     getStoredRulePageSize(getStoredRuleCardSize() === "compact" ? 24 : 12)
   );
+  const [ruleGroupCollapsed, setRuleGroupCollapsed] = useState<RuleGroupCollapsedState>(() => getStoredRuleGroupCollapsed());
+  const effectiveFilterTunnel = ruleCategory === "all" || ruleCategory === "tunnel" ? filterTunnel : "all";
   const selectedRulesQuery = useMemo(() => {
     if (user?.role !== "admin") return undefined;
     const input: { userId?: number; scope?: "self" | "all"; hostId?: number; tunnelId?: number | null } = {};
@@ -1314,10 +1387,11 @@ function RulesContent() {
     } else {
       input.userId = Number(filterUser);
     }
-    if (filterHost !== "all" && !String(filterHost).startsWith("group:")) input.hostId = Number(filterHost);
-    if (filterTunnel !== "all") input.tunnelId = filterTunnel === "none" ? null : Number(filterTunnel);
+    if (effectiveFilterTunnel !== "all") {
+      input.tunnelId = effectiveFilterTunnel === "none" ? null : Number(effectiveFilterTunnel);
+    }
     return Object.keys(input).length ? input : undefined;
-  }, [filterHost, filterTunnel, filterUser, user?.id, user?.role]);
+  }, [effectiveFilterTunnel, filterUser, user?.id, user?.role]);
   const effectiveRulesQuery = selectedRulesQuery || undefined;
   const selectedScopeQueryEnabled = user?.role === "admin" && !!effectiveRulesQuery;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
@@ -1621,6 +1695,28 @@ function RulesContent() {
     (forwardGroups || []).forEach((group: any) => map.set(Number(group.id), group));
     return map;
   }, [forwardGroups]);
+  useEffect(() => {
+    if (!String(filterHost).startsWith("group:")) return;
+    setFilterHost("all");
+    storeString(RULE_FILTER_HOST_STORAGE_KEY, "all");
+  }, [filterHost]);
+  const getRuleEntryHostIdForSort = useCallback((rule: any) => {
+    const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    if (group) {
+      const member = [...(group.members || [])]
+        .filter((item: any) => item.isEnabled !== false)
+        .sort((a: any, b: any) => Number(a.priority) - Number(b.priority))
+        .find((item: any) => Number(item.hostId || 0) > 0 || Number(item.tunnelId || 0) > 0);
+      if (Number(member?.hostId || 0) > 0) return Number(member.hostId);
+      if (Number(member?.tunnelId || 0) > 0) {
+        const tunnel = tunnelById.get(Number(member.tunnelId));
+        if (Number(tunnel?.entryHostId || 0) > 0) return Number(tunnel.entryHostId);
+      }
+    }
+    const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    if (Number(tunnel?.entryHostId || 0) > 0) return Number(tunnel.entryHostId);
+    return Number(rule.hostId || 0);
+  }, [forwardGroupById, tunnelById]);
   const availableForwardGroups = useMemo(
     () => (forwardGroups || []).filter((group: any) => group.isEnabled && (group.members || []).length > 0),
     [forwardGroups]
@@ -1968,11 +2064,13 @@ function RulesContent() {
   const ruleFilters = useMemo<RuleFilterState>(() => ({
     filterUser,
     filterHost,
-    filterTunnel,
-    filterType,
+    filterTunnel: effectiveFilterTunnel,
+    ruleCategory,
     isAdmin: user?.role === "admin",
     userId: user?.id,
-  }), [filterHost, filterTunnel, filterType, filterUser, user?.id, user?.role]);
+    forwardGroupById,
+    getRuleEntryHostId: getRuleEntryHostIdForSort,
+  }), [filterHost, effectiveFilterTunnel, forwardGroupById, getRuleEntryHostIdForSort, ruleCategory, filterUser, user?.id, user?.role]);
   const baseScopedRules = useMemo(() => rules || [], [rules]);
   const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
   const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
@@ -1985,6 +2083,22 @@ function RulesContent() {
     setFilteredRulesPrimed(true);
   }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
   const filteredRules = stableFilteredRules;
+  const ruleCategoryCounts = useMemo(() => {
+    const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
+    const baseFilters = {
+      ...ruleFilters,
+      ruleCategory: "all" as RuleCategory,
+    };
+    const counts: Record<RuleCategory, number> = { all: 0, local: 0, tunnel: 0, chain: 0, group: 0 };
+    sourceRules
+      .filter((rule: any) => isForwardRuleVisibleByFilters(rule, baseFilters))
+      .forEach((rule: any) => {
+        const category = getRuleCategory(rule, forwardGroupById);
+        counts.all += 1;
+        counts[category] += 1;
+      });
+    return counts;
+  }, [baseScopedRules, forwardGroupById, ruleFilters, selectedScopeQueryEnabled, selectedScopedRules]);
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
   ), [filteredRules]);
@@ -2082,25 +2196,41 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [trafficSummaryRows]);
+  const sortedFilteredRules = useMemo(() => {
+    return [...filteredRules].sort((a: any, b: any) => {
+      const aHostId = getRuleEntryHostIdForSort(a);
+      const bHostId = getRuleEntryHostIdForSort(b);
+      const aHostName = String(hosts?.find((host: any) => Number(host.id) === aHostId)?.name || "").toLowerCase();
+      const bHostName = String(hosts?.find((host: any) => Number(host.id) === bHostId)?.name || "").toLowerCase();
+      const hostCompare = (aHostName || `~${aHostId}`).localeCompare(bHostName || `~${bHostId}`, "zh-CN");
+      if (hostCompare !== 0) return hostCompare;
+      if (aHostId !== bHostId) return aHostId - bHostId;
+      const categoryCompare = getRuleCategory(a, forwardGroupById).localeCompare(getRuleCategory(b, forwardGroupById));
+      if (categoryCompare !== 0) return categoryCompare;
+      const portCompare = Number(a.sourcePort || 0) - Number(b.sourcePort || 0);
+      if (portCompare !== 0) return portCompare;
+      return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    });
+  }, [filteredRules, forwardGroupById, getRuleEntryHostIdForSort, hosts]);
   const trafficTotalsCacheScope = useMemo(
     () => [
       user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
       filterHost,
-      filterTunnel,
-      filterType,
+      effectiveFilterTunnel,
+      ruleCategory,
     ].join("."),
-    [filterHost, filterTunnel, filterType, filterUser, user?.id, user?.role],
+    [filterHost, effectiveFilterTunnel, ruleCategory, filterUser, user?.id, user?.role],
   );
   const trafficTotalsLastCacheScope = user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
-  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || filterTunnel !== "all" || filterType !== "all";
+  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || effectiveFilterTunnel !== "all" || ruleCategory !== "all";
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const trafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!trafficSummary && stableTrafficSummaryRows.length === 0)));
   const activeCount = useMemo(
     () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,
     [filteredRules, isRuleSupported]
   );
-  const rulePagination = usePersistentPagination(filteredRules, {
+  const rulePagination = usePersistentPagination(sortedFilteredRules, {
     storageKey: "forwardx.rules.page",
     pageSize: rulePageSize,
     isReady: !isLoading && !!rules,
@@ -2110,15 +2240,16 @@ function RulesContent() {
     const groups = [
       { type: "local" as const, label: desktopRuleTypeLabels.local, rules: [] as any[] },
       { type: "tunnel" as const, label: desktopRuleTypeLabels.tunnel, rules: [] as any[] },
+      { type: "chain" as const, label: desktopRuleTypeLabels.chain, rules: [] as any[] },
       { type: "group" as const, label: desktopRuleTypeLabels.group, rules: [] as any[] },
     ];
     const groupByType = new Map(groups.map((group) => [group.type, group]));
     pagedRules.forEach((rule: any) => {
-      groupByType.get(getRuleDisplayType(rule))?.rules.push(rule);
+      groupByType.get(getRuleDisplayType(rule, forwardGroupById))?.rules.push(rule);
     });
     return groups.filter((group) => group.rules.length > 0);
-  }, [pagedRules]);
-  const shouldGroupRuleCards = filterHost === "all" && filterTunnel === "all" && filterType === "all";
+  }, [forwardGroupById, pagedRules]);
+  const shouldGroupRuleCards = ruleCategory === "all";
 
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
@@ -2532,6 +2663,27 @@ function RulesContent() {
 
   const displayMode: RuleDisplayMode = viewMode === "table" || viewMode === "globe" ? viewMode : ruleCardSize;
 
+  const handleRuleCategoryChange = (value: string) => {
+    const next = (value === "local" || value === "tunnel" || value === "chain" || value === "group" ? value : "all") as RuleCategory;
+    setRuleCategory(next);
+    storeString(RULE_CATEGORY_STORAGE_KEY, next);
+  };
+
+  const handleFilterUserChange = (value: string) => {
+    setFilterUser(value);
+    storeString(RULE_FILTER_USER_STORAGE_KEY, value);
+  };
+
+  const handleFilterHostChange = (value: string) => {
+    setFilterHost(value);
+    storeString(RULE_FILTER_HOST_STORAGE_KEY, value);
+  };
+
+  const handleFilterTunnelChange = (value: string) => {
+    setFilterTunnel(value);
+    storeString(RULE_FILTER_TUNNEL_STORAGE_KEY, value);
+  };
+
   const handleRulePageSizeChange = (value: string) => {
     const nextPageSize = Number(value) as RulePageSize;
     if (!RULE_PAGE_SIZE_OPTIONS.includes(nextPageSize)) return;
@@ -2539,9 +2691,108 @@ function RulesContent() {
     storeRulePageSize(nextPageSize);
   };
 
+  const toggleRuleGroupCollapsed = (type: RuleGroupType) => {
+    setRuleGroupCollapsed((prev) => {
+      const next = { ...prev, [type]: !prev[type] };
+      storeRuleGroupCollapsed(next);
+      return next;
+    });
+  };
+
   const ruleCardGridClass = ruleCardSize === "compact"
     ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5"
     : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3";
+
+  const renderRuleGroupIcon = (type: RuleGroupType, className = "h-4 w-4") => {
+    if (type === "chain") return <GitBranch className={`${className} text-amber-600`} />;
+    if (type === "group") return <Layers3 className={`${className} text-emerald-600`} />;
+    if (type === "tunnel") return <Network className={`${className} text-chart-4`} />;
+    return <ArrowRightLeft className={`${className} text-primary`} />;
+  };
+
+  const renderRuleGroupHeader = (group: { type: RuleGroupType; label: string; rules: any[] }, compact = false) => {
+    const collapsed = !!ruleGroupCollapsed[group.type];
+    return (
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/45 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        onClick={() => toggleRuleGroupCollapsed(group.type)}
+      >
+        {collapsed ? (
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
+        {renderRuleGroupIcon(group.type, compact ? "h-3.5 w-3.5" : "h-4 w-4")}
+        <span className="truncate text-sm font-semibold">{group.label}</span>
+        <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{group.rules.length}</Badge>
+        {!compact && <span className="min-w-0 truncate text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>}
+      </button>
+    );
+  };
+
+  const renderRuleTableRow = (rule: any) => {
+    const supported = isRuleSupported(rule);
+    const protocolKey = getRuleProtocolKey(rule);
+    return (
+      <TableRow key={rule.id} className={!supported ? "opacity-70" : ""} title={!supported ? unsupportedProtocolTitle : undefined}>
+        <TableCell>
+          <div className="flex items-center justify-center">
+            {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
+          </div>
+        </TableCell>
+        <TableCell>
+          <span className="block truncate font-medium" title={rule.name}>{rule.name}</span>
+          {!supported && (
+            <span className="mt-1 block text-[11px] text-destructive">
+              {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+            </span>
+          )}
+          {rule.protocolBlockReason && (
+            <span className="mt-1 block text-[11px] leading-4 text-destructive">
+              {rule.protocolBlockReason}
+            </span>
+          )}
+        </TableCell>
+        {user?.role === "admin" && (
+          <TableCell>
+            <span className="block truncate text-sm text-muted-foreground" title={getRuleOwnerName(rule)}>
+              {getRuleOwnerName(rule)}
+            </span>
+          </TableCell>
+        )}
+        <TableCell>
+          <span className="block truncate text-sm text-muted-foreground" title={rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}>
+            {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
+          </span>
+        </TableCell>
+        <TableCell>{renderTransfer(rule)}</TableCell>
+        <TableCell>{renderRouteBadge(rule)}</TableCell>
+        <TableCell>
+          <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
+        </TableCell>
+        <TableCell>
+          <div className="space-y-1">
+            {renderRuleTraffic(rule)}
+            {renderLatestLatency(rule)}
+          </div>
+        </TableCell>
+        <TableCell className="text-center">
+          {supported ? (
+            <Switch
+              checked={rule.isEnabled}
+              onCheckedChange={(checked) => handleToggleRule(rule, checked)}
+              className="scale-75"
+            />
+          ) : (
+            renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
+          )}
+        </TableCell>
+        <TableCell className="text-right">{renderRuleActions(rule)}</TableCell>
+      </TableRow>
+    );
+  };
 
   const renderRuleCard = (rule: any) => {
     const supported = isRuleSupported(rule);
@@ -2783,88 +3034,90 @@ function RulesContent() {
       )}
 
       {(user?.role === "admin" || (rules && rules.length > 0)) && (
-        <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">筛选:</span>
-          </div>
-          {user?.role === "admin" && (
-            <Select value={filterUser} onValueChange={setFilterUser}>
+        <div className="space-y-3">
+          <Tabs value={ruleCategory} onValueChange={handleRuleCategoryChange}>
+            <TabsList className="grid h-auto w-full grid-cols-2 border border-border/30 bg-muted/30 sm:grid-cols-5">
+              {([
+                { value: "all", label: "全部", icon: LayoutGrid, count: ruleCategoryCounts.all },
+                { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, count: ruleCategoryCounts.local },
+                { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, count: ruleCategoryCounts.tunnel },
+                { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, count: ruleCategoryCounts.chain },
+                { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, count: ruleCategoryCounts.group },
+              ] as Array<{ value: RuleCategory; label: string; icon: typeof LayoutGrid; count: number }>).map((item) => {
+                const Icon = item.icon;
+                return (
+                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                    <Badge variant="secondary" className="ml-0.5 h-5 shrink-0 px-1.5 text-[10px]">{item.count}</Badge>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </Tabs>
+
+          <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">筛选:</span>
+            </div>
+            {user?.role === "admin" && (
+              <Select value={filterUser} onValueChange={handleFilterUserChange}>
+                <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
+                  <SelectValue placeholder="我的规则" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="self">我的规则</SelectItem>
+                  <SelectItem value="all">所有用户</SelectItem>
+                  {(users || []).map((item: any) => (
+                    <SelectItem key={item.id} value={String(item.id)}>
+                      {item.name || item.username}
+                      {item.displayRemark ? ` · ${item.displayRemark}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Select value={filterHost} onValueChange={handleFilterHostChange}>
               <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
-                <SelectValue placeholder="我的规则" />
+                <SelectValue placeholder="所有入口主机" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="self">我的规则</SelectItem>
-                <SelectItem value="all">所有用户</SelectItem>
-                {(users || []).map((item: any) => (
-                  <SelectItem key={item.id} value={String(item.id)}>
-                    {item.name || item.username}
-                    {item.displayRemark ? ` · ${item.displayRemark}` : ""}
+                <SelectItem value="all">所有入口主机</SelectItem>
+                {hosts?.map((h: any) => (
+                  <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {(ruleCategory === "all" || ruleCategory === "tunnel") && (
+              <Select value={filterTunnel} onValueChange={handleFilterTunnelChange}>
+                <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
+                  <SelectValue placeholder="所有隧道" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">所有隧道</SelectItem>
+                  <SelectItem value="none">不使用隧道</SelectItem>
+                  {(tunnels || []).map((t: any) => (
+                    <SelectItem key={t.id} value={String(t.id)}>
+                      {t.name} / {getTunnelRouteText(t, hosts)} / {getTunnelDisplay(t).shortLabel}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Select value={String(rulePageSize)} onValueChange={handleRulePageSizeChange}>
+              <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]">
+                <SelectValue placeholder="每页数量" />
+              </SelectTrigger>
+              <SelectContent>
+                {RULE_PAGE_SIZE_OPTIONS.map((pageSize) => (
+                  <SelectItem key={pageSize} value={String(pageSize)}>
+                    每页 {pageSize} 条
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          )}
-          <Select value={filterHost} onValueChange={setFilterHost}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
-              <SelectValue placeholder="所有主机" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">所有主机</SelectItem>
-              {hosts?.map((h: any) => (
-                <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
-              ))}
-              {canUseForwardGroup && forwardGroups && forwardGroups.length > 0 && (
-                <>
-                  {(forwardGroups || []).map((group: any) => (
-                    <SelectItem key={`group-${group.id}`} value={`group:${group.id}`}>
-                      {getForwardGroupKindLabel(group)} / {group.name}
-                    </SelectItem>
-                  ))}
-                </>
-              )}
-            </SelectContent>
-          </Select>
-          <Select value={filterType} onValueChange={setFilterType}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[140px]">
-              <SelectValue placeholder="所有类型" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">所有类型</SelectItem>
-              <SelectItem value="iptables">iptables</SelectItem>
-              <SelectItem value="nftables">nftables</SelectItem>
-              <SelectItem value="realm">realm</SelectItem>
-              <SelectItem value="socat">socat</SelectItem>
-              <SelectItem value="gost">gost</SelectItem>
-              {canUseForwardGroup && <SelectItem value="forward-group">转发组</SelectItem>}
-            </SelectContent>
-          </Select>
-          <Select value={filterTunnel} onValueChange={setFilterTunnel}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
-              <SelectValue placeholder="所有隧道" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">所有隧道</SelectItem>
-              <SelectItem value="none">不使用隧道</SelectItem>
-              {(tunnels || []).map((t: any) => (
-                <SelectItem key={t.id} value={String(t.id)}>
-                  {t.name} / {getTunnelRouteText(t, hosts)} / {getTunnelDisplay(t).shortLabel}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={String(rulePageSize)} onValueChange={handleRulePageSizeChange}>
-            <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]">
-              <SelectValue placeholder="每页数量" />
-            </SelectTrigger>
-            <SelectContent>
-              {RULE_PAGE_SIZE_OPTIONS.map((pageSize) => (
-                <SelectItem key={pageSize} value={String(pageSize)}>
-                  每页 {pageSize} 条
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          </div>
         </div>
       )}
 
@@ -2948,25 +3201,19 @@ function RulesContent() {
           ) : viewMode === "card" ? (
             shouldGroupRuleCards ? (
               <AutoAnimateContainer className="space-y-5">
-                {desktopRuleGroups.map((group) => (
-                  <section key={group.type} className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      {group.type === "group" ? (
-                        <Layers3 className="h-4 w-4 text-emerald-600" />
-                      ) : group.type === "tunnel" ? (
-                        <Network className="h-4 w-4 text-chart-4" />
-                      ) : (
-                        <ArrowRightLeft className="h-4 w-4 text-primary" />
+                {desktopRuleGroups.map((group) => {
+                  const collapsed = !!ruleGroupCollapsed[group.type];
+                  return (
+                    <section key={group.type} className="space-y-2">
+                      {renderRuleGroupHeader(group)}
+                      {!collapsed && (
+                        <AutoAnimateContainer className={ruleCardGridClass}>
+                          {group.rules.map((rule: any) => renderRuleCard(rule))}
+                        </AutoAnimateContainer>
                       )}
-                      <h2 className="text-sm font-semibold">{group.label}</h2>
-                      <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
-                      <span className="text-xs text-muted-foreground">{ruleTypeDescriptions[group.type]}</span>
-                    </div>
-                    <AutoAnimateContainer className={ruleCardGridClass}>
-                      {group.rules.map((rule: any) => renderRuleCard(rule))}
-                    </AutoAnimateContainer>
-                  </section>
-                ))}
+                    </section>
+                  );
+                })}
               </AutoAnimateContainer>
             ) : (
               <AutoAnimateContainer className={ruleCardGridClass}>
@@ -2976,7 +3223,23 @@ function RulesContent() {
           ) : (
             <>
               <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2 sm:hidden" : "grid gap-3 sm:hidden"}>
-                {pagedRules.map((rule: any) => renderRuleCard(rule))}
+                {shouldGroupRuleCards ? (
+                  desktopRuleGroups.map((group) => {
+                    const collapsed = !!ruleGroupCollapsed[group.type];
+                    return (
+                      <section key={group.type} className="space-y-2">
+                        {renderRuleGroupHeader(group)}
+                        {!collapsed && (
+                          <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                            {group.rules.map((rule: any) => renderRuleCard(rule))}
+                          </AutoAnimateContainer>
+                        )}
+                      </section>
+                    );
+                  })
+                ) : (
+                  pagedRules.map((rule: any) => renderRuleCard(rule))
+                )}
               </AutoAnimateContainer>
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
@@ -2997,86 +3260,23 @@ function RulesContent() {
                         </TableRow>
                       </TableHeader>
                       <AutoAnimateContainer as={TableBody}>
-                        {desktopRuleGroups.map((group) => (
-                          <Fragment key={group.type}>
-                            <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/35">
-                              <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="py-2">
-                                <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                                  {group.type === "group" ? (
-                                    <Layers3 className="h-3.5 w-3.5" />
-                                  ) : group.type === "tunnel" ? (
-                                    <Network className="h-3.5 w-3.5" />
-                                  ) : (
-                                    <ArrowRightLeft className="h-3.5 w-3.5" />
-                                  )}
-                                  <span>{group.label}</span>
-                                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">{group.rules.length}</Badge>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                            {group.rules.map((rule: any) => {
-                              const supported = isRuleSupported(rule);
-                              const protocolKey = getRuleProtocolKey(rule);
-                              return (
-                                <TableRow key={rule.id} className={!supported ? "opacity-70" : ""} title={!supported ? unsupportedProtocolTitle : undefined}>
-                                  <TableCell>
-                                    <div className="flex items-center justify-center">
-                                      {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
-                                    </div>
+                        {shouldGroupRuleCards ? (
+                          desktopRuleGroups.map((group) => {
+                            const collapsed = !!ruleGroupCollapsed[group.type];
+                            return (
+                              <Fragment key={group.type}>
+                                <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/50">
+                                  <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="p-0">
+                                    {renderRuleGroupHeader(group, true)}
                                   </TableCell>
-                                  <TableCell>
-                                    <span className="block truncate font-medium" title={rule.name}>{rule.name}</span>
-                                    {!supported && (
-                                      <span className="mt-1 block text-[11px] text-destructive">
-                                        {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
-                                      </span>
-                                    )}
-                                    {rule.protocolBlockReason && (
-                                      <span className="mt-1 block text-[11px] leading-4 text-destructive">
-                                        {rule.protocolBlockReason}
-                                      </span>
-                                    )}
-                                  </TableCell>
-                                  {user?.role === "admin" && (
-                                    <TableCell>
-                                      <span className="block truncate text-sm text-muted-foreground" title={getRuleOwnerName(rule)}>
-                                        {getRuleOwnerName(rule)}
-                                      </span>
-                                    </TableCell>
-                                  )}
-                                  <TableCell>
-                                    <span className="block truncate text-sm text-muted-foreground" title={rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}>
-                                      {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell>{renderTransfer(rule)}</TableCell>
-                                  <TableCell>{renderRouteBadge(rule)}</TableCell>
-                                  <TableCell>
-                                    <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
-                                  </TableCell>
-                                  <TableCell>
-                                    <div className="space-y-1">
-                                      {renderRuleTraffic(rule)}
-                                      {renderLatestLatency(rule)}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="text-center">
-                                    {supported ? (
-                                      <Switch
-                                        checked={rule.isEnabled}
-                                        onCheckedChange={(checked) => handleToggleRule(rule, checked)}
-                                        className="scale-75"
-                                      />
-                                    ) : (
-                                      renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
-                                    )}
-                                  </TableCell>
-                                  <TableCell className="text-right">{renderRuleActions(rule)}</TableCell>
                                 </TableRow>
-                              );
-                            })}
-                          </Fragment>
-                        ))}
+                                {!collapsed && group.rules.map((rule: any) => renderRuleTableRow(rule))}
+                              </Fragment>
+                            );
+                          })
+                        ) : (
+                          pagedRules.map((rule: any) => renderRuleTableRow(rule))
+                        )}
                       </AutoAnimateContainer>
                     </Table>
                   </div>
