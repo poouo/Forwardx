@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { APP_VERSION } from "../shared/versions";
+import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
 
 export const AGENT_ASSET_NAMES = [
   "forwardx-agent-linux-amd64",
@@ -24,8 +24,15 @@ function isSemver(version: string) {
 
 function getAgentAssetCandidates(version: string, asset: string) {
   const normalized = normalizeVersion(version);
-  const includeVersionless = normalized === normalizeVersion(APP_VERSION);
+  const agentVersion = normalizeVersion(AGENT_VERSION);
+  const appVersion = normalizeVersion(APP_VERSION);
+  const includeVersionless = normalized === agentVersion || normalized === appVersion;
   const versionDirs = [`v${normalized}`, normalized];
+  if (normalized === agentVersion && appVersion !== agentVersion) {
+    versionDirs.push(`v${appVersion}`, appVersion);
+  } else if (normalized === appVersion && appVersion !== agentVersion) {
+    versionDirs.push(`v${agentVersion}`, agentVersion);
+  }
   const assetRoots = [
     path.resolve(process.cwd(), "dist", "agent"),
     path.resolve(process.cwd(), "data", "agent-assets"),

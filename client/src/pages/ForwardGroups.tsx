@@ -1,8 +1,9 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
+import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -246,16 +247,7 @@ function ForwardGroupLatencyDialog({
   }, [seriesData]);
 
   const stats = useMemo(() => {
-    const ok = chartData.filter((d) => !d.isTimeout && d.latency > 0).map((d) => d.latency);
-    const timeouts = chartData.filter((d) => d.isTimeout).length;
-    if (ok.length === 0) return { min: null as number | null, max: null as number | null, avg: null as number | null, timeouts, samples: chartData.length };
-    return {
-      min: Math.min(...ok),
-      max: Math.max(...ok),
-      avg: Math.round(ok.reduce((sum, value) => sum + value, 0) / ok.length),
-      timeouts,
-      samples: chartData.length,
-    };
+    return getLatencyStabilityStats(chartData);
   }, [chartData]);
   const yMax = useMemo(() => getLatencyYAxisMax(Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.chartLatency), 0), 120), [chartData]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
@@ -309,28 +301,7 @@ function ForwardGroupLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-latency-stats="true">
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">样本</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.samples}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">最低</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.min === null ? "--" : `${stats.min} ms`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">最高</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.max === null ? "--" : `${stats.max} ms`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">平均</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.avg === null ? "--" : `${stats.avg} ms`}</p>
-          </div>
-          <div className="latency-stat-card col-span-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 sm:col-span-1">
-            <p className="text-xs text-muted-foreground">超时</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.timeouts}</p>
-          </div>
-        </div>
+        <LatencyStabilityStats stats={stats} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>

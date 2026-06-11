@@ -2,6 +2,7 @@
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
+import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
@@ -39,7 +40,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -955,15 +956,7 @@ function TunnelLatencyDialog({
     }));
   }, [seriesData]);
   const stats = useMemo(() => {
-    const total = chartData.length;
-    const timeout = chartData.filter((d) => d.isTimeout).length;
-    const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
-    const values = chartData
-      .filter((d) => !d.isTimeout && d.latency > 0)
-      .map((d) => d.latency);
-    if (values.length === 0) return { total, timeout, lossRate, max: null as number | null, min: null as number | null, avg: null as number | null };
-    const sum = values.reduce((acc: number, v: number) => acc + v, 0);
-    return { total, timeout, lossRate, max: Math.max(...values), min: Math.min(...values), avg: Math.round(sum / values.length) };
+    return getLatencyStabilityStats(chartData);
   }, [chartData]);
   const yMax = useMemo(() => {
     if (chartData.length === 0) return 120;
@@ -1031,28 +1024,7 @@ function TunnelLatencyDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-latency-stats="true">
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">统计次数</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">最大延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.max === null ? "--" : `${stats.max} ms`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">丢包率</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total === 0 ? "--" : `${stats.lossRate}%`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">最小延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.min === null ? "--" : `${stats.min} ms`}</p>
-          </div>
-          <div className="latency-stat-card col-span-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 sm:col-span-1">
-            <p className="text-[11px] text-muted-foreground">平均延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{stats.avg === null ? "--" : `${stats.avg} ms`}</p>
-          </div>
-        </div>
+        <LatencyStabilityStats stats={stats} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>

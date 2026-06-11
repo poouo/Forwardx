@@ -336,7 +336,7 @@ function mobileLoginConfirmKeyboard(code: string): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
-        { text: "确认登录 APP", callback_data: `fx:app-login:${code}` },
+        { text: "确认登录", callback_data: `fx:app-login:${code}` },
         { text: "取消", callback_data: `fx:app-login-cancel:${code}` },
       ],
     ],
@@ -761,7 +761,7 @@ async function handleBind(message: TelegramMessage, code: string) {
 async function handleMobileLoginStart(message: TelegramMessage, code: string, user: any | null | undefined) {
   const normalized = code.trim().toUpperCase();
   if (!hasMobileTelegramLoginChallenge(normalized)) {
-    await sendMessage(message.chat.id, "APP 登录请求已过期，请回到 ForwardX APP 重新发起。");
+    await sendMessage(message.chat.id, "登录请求已过期，请回到 ForwardX 重新发起。");
     return;
   }
   if (!user) {
@@ -775,7 +775,7 @@ async function handleMobileLoginStart(message: TelegramMessage, code: string, us
   await sendMessage(
     message.chat.id,
     [
-      "<b>ForwardX APP 登录确认</b>",
+      "<b>ForwardX 登录确认</b>",
       "",
       `将登录账户：<b>${escapeHtml(user.name || user.username)}</b>`,
       "如果这是你本人操作，请点击下方按钮确认。登录请求 5 分钟内有效。",
@@ -787,7 +787,7 @@ async function handleMobileLoginStart(message: TelegramMessage, code: string, us
 async function confirmMobileLogin(chatId: number | string, messageId: number, code: string, user: any) {
   const normalized = code.trim().toUpperCase();
   if (!hasMobileTelegramLoginChallenge(normalized)) {
-    await editMessage(chatId, messageId, "APP 登录请求已过期，请回到 ForwardX APP 重新发起。");
+    await editMessage(chatId, messageId, "登录请求已过期，请回到 ForwardX 重新发起。");
     return;
   }
   if ((user as any).accountEnabled === false) {
@@ -795,7 +795,7 @@ async function confirmMobileLogin(chatId: number | string, messageId: number, co
     return;
   }
   await db.createTelegramLoginCode(user.id, normalized, new Date(Date.now() + LOGIN_CODE_TTL_MS));
-  await editMessage(chatId, messageId, "APP 登录已确认，请返回 ForwardX APP。");
+  await editMessage(chatId, messageId, "登录已确认，请返回 ForwardX。");
 }
 
 async function handleUsage(message: TelegramMessage, user: any) {
@@ -1110,7 +1110,7 @@ async function handleCallback(query: TelegramCallbackQuery) {
   }
   if (data.startsWith("fx:app-login-cancel:")) {
     clearMobileTelegramLoginChallenge(data.slice("fx:app-login-cancel:".length));
-    await editMessage(chatId, messageId, "已取消本次 APP 登录。");
+    await editMessage(chatId, messageId, "已取消本次登录。");
     return;
   }
 

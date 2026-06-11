@@ -21,55 +21,9 @@ function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-function getTelegramLoginDomainStatus(panelPublicUrl?: string | null) {
-  if (typeof window === "undefined") {
-    return { valid: false, message: "正在检测当前访问地址..." };
-  }
-  const configuredUrl = String(panelPublicUrl || "").trim();
-  if (!configuredUrl) {
-    return { valid: false, message: "管理员尚未配置面板公开访问域名，暂不能使用 Telegram 快捷登录。" };
-  }
-  let configured: URL;
-  try {
-    configured = new URL(configuredUrl);
-  } catch {
-    return { valid: false, message: "面板公开访问地址配置无效，请联系管理员检查系统设置。" };
-  }
-  const { protocol, hostname } = window.location;
-  if (configured.hostname && configured.hostname !== hostname) {
-    return { valid: false, message: "当前访问域名与面板公开访问域名不一致，请使用管理员配置的域名访问。" };
-  }
-  const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-  const isIpAddress = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname) || hostname.includes(":");
-
-  if (isLocalhost) {
-    return { valid: false, message: "请使用已配置的正式域名。" };
-  }
-  if (protocol !== "https:" && !isLocalhost) {
-    return { valid: false, message: "请使用 HTTPS 域名访问。" };
-  }
-  if (configured.protocol !== "https:") {
-    return { valid: false, message: "面板公开访问地址需要配置为 HTTPS 域名。" };
-  }
-  if (isIpAddress) {
-    return { valid: false, message: "请使用已配置的域名访问。" };
-  }
-  return { valid: true, message: "" };
-}
-
 function isMobileNetworkError(message: string) {
   return /failed to fetch|fetch failed|networkerror/i.test(message);
 }
-
-type TelegramLoginPayload = {
-  id: string | number;
-  first_name?: string;
-  last_name?: string;
-  username?: string;
-  photo_url?: string;
-  auth_date: string | number;
-  hash: string;
-};
 
 type MobileTelegramLoginState = {
   code: string;
@@ -101,12 +55,6 @@ function rememberLoginWelcome(user: any) {
   window.sessionStorage.setItem(LOGIN_WELCOME_TOAST_KEY, getWelcomeName(user));
 }
 
-declare global {
-  interface Window {
-    forwardxTelegramLogin?: (user: TelegramLoginPayload) => void;
-  }
-}
-
 export default function Login() {
   const [location] = useLocation();
   const initialMode = new URLSearchParams(location.split("?")[1] || "").get("mode") === "register" ? "register" : "login";
@@ -126,7 +74,6 @@ export default function Login() {
   const [twoFactorCode, setTwoFactorCode] = useState("");
   const [panelUrlDraft, setPanelUrlDraft] = useState(() => mobileAuth.getPanelUrl());
   const [showPanelSettings, setShowPanelSettings] = useState(false);
-  const telegramWidgetRef = useRef<HTMLDivElement | null>(null);
   const { resolvedTheme, setTheme } = useTheme();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
 
@@ -230,18 +177,6 @@ export default function Login() {
       if (mobileAuth.isNative) {
         mobileAuth.setToken(data.mobileToken);
       }
-      rememberLoginWelcome(data);
-      utils.auth.me.invalidate();
-      window.location.href = "/";
-    },
-    onError: (error) => {
-      if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
-      toast.error(error.message || "Telegram 登录失败");
-    },
-  });
-
-  const telegramWidgetLoginMutation = trpc.telegram.loginWithWidget.useMutation({
-    onSuccess: (data) => {
       rememberLoginWelcome(data);
       utils.auth.me.invalidate();
       window.location.href = "/";
@@ -372,10 +307,7 @@ export default function Login() {
     telegramLoginMutation.mutate({ code, mobile: mobileAuth.isNative });
   }, [location, telegramLoginCode, telegramLoginMutation]);
 
-  const telegramBotUsername = telegramLoginStatus?.botUsername?.replace(/^@/, "").trim();
   const showTelegramLogin = mode === "login" && !!telegramLoginStatus?.enabled && !!telegramLoginStatus?.configured;
-  const telegramDomainStatus = getTelegramLoginDomainStatus(telegramLoginStatus?.panelPublicUrl);
-  const canRenderTelegramWidget = !mobileAuth.isNative && showTelegramLogin && !!telegramBotUsername && telegramDomainStatus.valid;
 
   useEffect(() => {
     if (!mobileTelegramLogin) return;
@@ -407,30 +339,6 @@ export default function Login() {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [mobileTelegramLogin?.code, mobileTelegramLogin?.expiresAt]);
-
-  useEffect(() => {
-    const container = telegramWidgetRef.current;
-    if (!canRenderTelegramWidget || !telegramBotUsername || !container) return;
-
-    window.forwardxTelegramLogin = (user: TelegramLoginPayload) => {
-      telegramWidgetLoginMutation.mutate(user);
-    };
-
-    container.innerHTML = "";
-    const script = document.createElement("script");
-    script.async = true;
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", telegramBotUsername);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-radius", "8");
-    script.setAttribute("data-onauth", "forwardxTelegramLogin(user)");
-    container.appendChild(script);
-
-    return () => {
-      container.innerHTML = "";
-      delete window.forwardxTelegramLogin;
-    };
-  }, [canRenderTelegramWidget, telegramBotUsername, telegramWidgetLoginMutation]);
 
   const handleVerifyTwoFactorLogin = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -574,7 +482,7 @@ export default function Login() {
 
   const isPending = loginMutation.isPending || registerMutation.isPending;
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
-  const isTelegramPending = telegramLoginMutation.isPending || telegramWidgetLoginMutation.isPending;
+  const isTelegramPending = telegramLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
   const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && (!telegramLoginStatus || showTelegramLogin);
 
@@ -796,7 +704,7 @@ export default function Login() {
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         <span>正在加载 Telegram</span>
                       </div>
-                    ) : mobileAuth.isNative ? (
+                    ) : (
                       <div className="space-y-2">
                         <Button
                           type="button"
@@ -838,43 +746,6 @@ export default function Login() {
                           </p>
                         )}
                       </div>
-                    ) : canRenderTelegramWidget ? (
-                      <div className="space-y-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="w-full gap-2"
-                          onClick={handleMobileTelegramLogin}
-                          disabled={isMobileTelegramWaiting}
-                        >
-                          {isMobileTelegramWaiting ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              等待 Telegram 确认
-                            </>
-                          ) : (
-                            <>
-                              <Send className="h-4 w-4" />
-                              打开 Telegram 登录
-                            </>
-                          )}
-                        </Button>
-                        <div className="relative min-h-[72px] overflow-visible">
-                          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          </div>
-                          <div
-                            ref={telegramWidgetRef}
-                            className={`relative z-10 flex min-h-[72px] items-center justify-center overflow-visible ${telegramWidgetLoginMutation.isPending ? "pointer-events-none opacity-60" : ""}`}
-                          />
-                        </div>
-                      </div>
-                    ) : !telegramDomainStatus.valid ? (
-                      <p className="flex min-h-[72px] items-center justify-center text-center text-xs leading-5 text-muted-foreground">
-                        {telegramDomainStatus.message}
-                      </p>
-                    ) : (
-                      <p className="text-center text-xs text-muted-foreground">配置完成后可用。</p>
                     )}
                   </div>
                 </div>

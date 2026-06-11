@@ -14,6 +14,13 @@ function isCapacitorRuntime() {
   return !!capacitor?.isNativePlatform?.();
 }
 
+function getNativePlatform() {
+  if (!isCapacitorRuntime() || typeof window === "undefined") return "web";
+  const platform = String((window as any).Capacitor?.getPlatform?.() || "").toLowerCase();
+  if (platform === "android" || platform === "ios") return platform;
+  return "native";
+}
+
 function getLocalValue(key: string) {
   if (typeof window === "undefined") return "";
   return window.localStorage.getItem(key) || "";
@@ -54,6 +61,10 @@ function isValidPanelUrl(url: string) {
 export const mobileAuth = {
   get isNative() {
     return isCapacitorRuntime();
+  },
+
+  get platform() {
+    return getNativePlatform();
   },
 
   normalizePanelUrl,

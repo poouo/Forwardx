@@ -5,14 +5,15 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、转发组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.115-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.124-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
 ## 社群与下载
 
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.79/forwardx-android-v2.3.33.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-android-v2.3.42.apk
+- iOS IPA 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-ios-v2.3.42.ipa
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -275,19 +276,42 @@ pnpm build
 pnpm check:versions
 ```
 
-## Android APK
+## 移动端安装包
 
-ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
+ForwardX 移动端客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
-下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.79/forwardx-android-v2.3.33.apk
+Android APK 下载地址：
+https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-android-v2.3.42.apk
 
-常用命令：
+iOS IPA 下载地址：
+https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-ios-v2.3.42.ipa
+
+Android 常用命令：
 
 ```bash
-pnpm mobile:sync
+pnpm mobile:sync:android
 pnpm mobile:apk
 ```
+
+iOS 本地同步需要 macOS/Xcode：
+
+```bash
+pnpm mobile:add:ios
+pnpm mobile:sync:ios
+pnpm mobile:open:ios
+```
+
+IPA 不能像 APK 一样在普通 Linux/Windows 环境直接打包。仓库已提供 GitHub Actions 工作流 `.github/workflows/build-ios-ipa.yml`，使用 GitHub 的 macOS runner 通过 Xcode 归档并导出 `forwardx-ios-v<版本>.ipa`。
+
+使用前需要在 GitHub 仓库 Secrets 中配置：
+
+- `APPLE_TEAM_ID`
+- `APPLE_CERTIFICATE_BASE64`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_PROVISIONING_PROFILE_BASE64`
+- `KEYCHAIN_PASSWORD`
+
+如果 Bundle ID 不是默认的 `com.forwardx.app`，在 GitHub 仓库 Variables 中设置 `IOS_BUNDLE_ID`。
 
 ## 安全建议
 

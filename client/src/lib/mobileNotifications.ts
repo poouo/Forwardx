@@ -28,6 +28,9 @@ export type MobileAppUpdateResult = {
   currentVersion: string;
   latestVersion: string;
   releaseUrl: string;
+  platform: "android" | "ios";
+  packageLabel: "APK" | "IPA";
+  hasPackage: boolean;
   hasApk: boolean;
 };
 
@@ -154,8 +157,11 @@ function compareVersions(a: string, b: string) {
   return 0;
 }
 
-function extractAndroidApkVersion(assetName: string) {
-  const match = assetName.match(/^forwardx-android-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.apk$/i);
+function extractMobilePackageVersion(assetName: string, platform: "android" | "ios") {
+  const pattern = platform === "ios"
+    ? /^forwardx-ios-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.ipa$/i
+    : /^forwardx-android-v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\.apk$/i;
+  const match = assetName.match(pattern);
   return match?.[1] || null;
 }
 
@@ -179,10 +185,12 @@ export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): 
 
     const releases = await response.json();
     const current = String(appInfo.version || "").replace(/^v/i, "");
-    const apkCandidates = (Array.isArray(releases) ? releases : [])
+    const platform = mobileAuth.platform === "ios" ? "ios" : "android";
+    const packageLabel = platform === "ios" ? "IPA" : "APK";
+    const packageCandidates = (Array.isArray(releases) ? releases : [])
       .flatMap((release: any) => (Array.isArray(release?.assets) ? release.assets : []).map((asset: any) => {
         const name = String(asset?.name || "");
-        const version = extractAndroidApkVersion(name);
+        const version = extractMobilePackageVersion(name, platform);
         if (!version) return null;
         return {
           version,
@@ -191,13 +199,22 @@ export async function checkMobileAppUpdate(options: { silent?: boolean } = {}): 
       }))
       .filter(Boolean)
       .sort((a: any, b: any) => compareVersions(b.version, a.version));
-    const latestApk = apkCandidates[0] as { version: string; releaseUrl: string } | undefined;
-    const latest = latestApk?.version || current;
-    const hasApk = apkCandidates.length > 0;
-    const hasUpdate = hasApk && !!latest && !!current && compareVersions(latest, current) > 0;
-    const releaseUrl = latestApk?.releaseUrl || LATEST_RELEASE_URL;
+    const latestPackage = packageCandidates[0] as { version: string; releaseUrl: string } | undefined;
+    const latest = latestPackage?.version || current;
+    const hasPackage = packageCandidates.length > 0;
+    const hasUpdate = hasPackage && !!latest && !!current && compareVersions(latest, current) > 0;
+    const releaseUrl = latestPackage?.releaseUrl || LATEST_RELEASE_URL;
 
-    return { hasUpdate, currentVersion: current, latestVersion: latest, releaseUrl, hasApk };
+    return {
+      hasUpdate,
+      currentVersion: current,
+      latestVersion: latest,
+      releaseUrl,
+      platform,
+      packageLabel,
+      hasPackage,
+      hasApk: platform === "android" && hasPackage,
+    };
   } catch (error) {
     if (!options.silent) throw error;
     return null;

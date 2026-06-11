@@ -2,8 +2,9 @@ import { useEffect, useMemo } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -101,25 +102,7 @@ function TcpingDetailDialog({
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
   const tcpingStats = useMemo(() => {
-    const total = chartData.length;
-    const timeout = chartData.filter((d) => d.isTimeout).length;
-    const lossRate = total > 0 ? Math.round((timeout / total) * 100) : 0;
-    const values = chartData
-      .filter((d) => !d.isTimeout && d.latency > 0)
-      .map((d) => d.latency);
-    if (values.length === 0) {
-      return { total, timeout, lossRate, valid: 0, max: null as number | null, min: null as number | null, avg: null as number | null };
-    }
-    const sum = values.reduce((acc: number, v: number) => acc + v, 0);
-    return {
-      total,
-      timeout,
-      lossRate,
-      valid: values.length,
-      max: Math.max(...values),
-      min: Math.min(...values),
-      avg: Math.round(sum / values.length),
-    };
+    return getLatencyStabilityStats(chartData);
   }, [chartData]);
   const shouldAnimateChart = open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
 
@@ -189,30 +172,7 @@ function TcpingDetailDialog({
             </ResponsiveContainer>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-latency-stats="true">
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">统计次数</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">
-              {tcpingStats.total}
-            </p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">最大延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.max === null ? "--" : `${tcpingStats.max} ms`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">丢包率</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.total === 0 ? "--" : `${tcpingStats.lossRate}%`}</p>
-          </div>
-          <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground">最小延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.min === null ? "--" : `${tcpingStats.min} ms`}</p>
-          </div>
-          <div className="latency-stat-card col-span-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 sm:col-span-1">
-            <p className="text-[11px] text-muted-foreground">平均延迟</p>
-            <p className="mt-1 text-sm font-semibold tabular-nums">{tcpingStats.avg === null ? "--" : `${tcpingStats.avg} ms`}</p>
-          </div>
-        </div>
+        <LatencyStabilityStats stats={tcpingStats} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>

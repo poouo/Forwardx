@@ -1094,23 +1094,23 @@ func runLookingGlassCommand(name string, args []string, timeout time.Duration, o
 	go readPipe(stderr)
 
 	ticker := time.NewTicker(time.Second)
-	done := make(chan error, 1)
+	readDone := make(chan struct{})
 	go func() {
-		done <- cmd.Wait()
+		wg.Wait()
+		close(readDone)
 	}()
 
-	var waitErr error
 	running := true
 	for running {
 		select {
 		case <-ticker.C:
 			report(fmt.Sprintf("命令正在执行，已运行 %ds...", int(time.Since(started).Seconds())))
-		case waitErr = <-done:
+		case <-readDone:
 			running = false
 		}
 	}
 	ticker.Stop()
-	wg.Wait()
+	waitErr := cmd.Wait()
 
 	outputText := currentOutput()
 	timedOut := ctx.Err() == context.DeadlineExceeded

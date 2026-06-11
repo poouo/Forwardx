@@ -698,7 +698,7 @@ function DashboardLayoutContent({
         }
         setShowMobileUpdateDialog(true);
       } else if (result) {
-        toast.success(result.hasApk ? "当前 APP 已是最新版本" : "当前版本暂无 APK 更新");
+        toast.success(result.hasPackage ? "当前 APP 已是最新版本" : `当前版本暂无 ${result.packageLabel} 更新`);
       }
     } catch (error: any) {
       toast.error(error?.message || "APP 更新检查失败");
@@ -1318,7 +1318,7 @@ function DashboardLayoutContent({
               发现 APP 新版本
             </DialogTitle>
             <DialogDescription className="mt-1 text-xs">
-              前往下载新版 APK。
+              前往下载新版 {mobileUpdateInfo?.packageLabel || "安装包"}。
             </DialogDescription>
           </div>
           <div className="space-y-3 px-5 py-4">

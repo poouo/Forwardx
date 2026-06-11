@@ -29,9 +29,23 @@ import {
   normalizeForwardProtocolSettings,
 } from "../../shared/forwardTypes";
 import { isValidBrandLogoValue } from "../../shared/avatar";
-import { AGENT_VERSION, ANDROID_APK_RELEASE_VERSION, ANDROID_APP_VERSION, APP_VERSION } from "../../shared/versions";
+import {
+  AGENT_VERSION,
+  ANDROID_APK_RELEASE_VERSION,
+  ANDROID_APP_VERSION,
+  APP_VERSION,
+  IOS_APP_VERSION,
+  IOS_IPA_RELEASE_VERSION,
+} from "../../shared/versions";
 
-export { AGENT_VERSION, ANDROID_APK_RELEASE_VERSION, ANDROID_APP_VERSION, APP_VERSION } from "../../shared/versions";
+export {
+  AGENT_VERSION,
+  ANDROID_APK_RELEASE_VERSION,
+  ANDROID_APP_VERSION,
+  APP_VERSION,
+  IOS_APP_VERSION,
+  IOS_IPA_RELEASE_VERSION,
+} from "../../shared/versions";
 
 /**
  * 系统级别 router：
@@ -45,6 +59,8 @@ export const REPO_URL = "https://github.com/poouo/Forwardx";
 export const TELEGRAM_BOT_URL = "https://t.me/miyin_private_bot";
 const ANDROID_APK_DOWNLOAD_URL =
   `${REPO_URL}/releases/download/v${ANDROID_APK_RELEASE_VERSION}/forwardx-android-v${ANDROID_APP_VERSION}.apk`;
+const IOS_IPA_DOWNLOAD_URL =
+  `${REPO_URL}/releases/download/v${IOS_IPA_RELEASE_VERSION}/forwardx-ios-v${IOS_APP_VERSION}.ipa`;
 const UPDATE_CHECK_COOLDOWN_MS = 60 * 1000;
 const UPGRADE_ASSETS_PENDING_EXIT_CODE = 12;
 const MANUAL_LOCAL_UPGRADE_COMMAND =
@@ -617,6 +633,8 @@ export const systemRouter = router({
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+      iosAppVersion: IOS_APP_VERSION,
+      iosIpaDownloadUrl: IOS_IPA_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
@@ -635,6 +653,8 @@ export const systemRouter = router({
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+      iosAppVersion: IOS_APP_VERSION,
+      iosIpaDownloadUrl: IOS_IPA_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
@@ -664,6 +684,8 @@ export const systemRouter = router({
       version: APP_VERSION,
       androidAppVersion: ANDROID_APP_VERSION,
       androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+      iosAppVersion: IOS_APP_VERSION,
+      iosIpaDownloadUrl: IOS_IPA_DOWNLOAD_URL,
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
@@ -1188,6 +1210,7 @@ export const systemRouter = router({
       const exported = formatPanelLogsForExport(level, {
         "App Version": APP_VERSION,
         "Android App Version": ANDROID_APP_VERSION,
+        "iOS App Version": IOS_APP_VERSION,
         "Agent Version": AGENT_VERSION,
         "Repository": REPO_URL,
       });

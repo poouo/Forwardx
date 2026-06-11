@@ -360,7 +360,7 @@ function ProfileContent() {
       const result = await checkMobileAppUpdate({ silent: false });
       setMobileUpdateInfo(result);
       if (result?.hasUpdate) toast.success(`发现 APP 新版本 v${result.latestVersion.replace(/^v/i, "")}`);
-      else if (result) toast.success(result.hasApk ? "当前 APP 已是最新版本" : "当前版本暂无 APK 更新");
+      else if (result) toast.success(result.hasPackage ? "当前 APP 已是最新版本" : `当前版本暂无 ${result.packageLabel} 更新`);
     } catch (error: any) {
       toast.error(error?.message || "APP 更新检查失败");
     } finally {
@@ -712,7 +712,7 @@ function ProfileContent() {
               <Download className="h-4 w-4 text-primary" />
               软件更新
             </CardTitle>
-            <CardDescription>检查 Android APP 是否有新版本。</CardDescription>
+            <CardDescription>检查当前 APP 是否有新版本。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {mobileUpdateInfo && (

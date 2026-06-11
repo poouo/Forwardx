@@ -15,6 +15,7 @@ client/dist/
 *.db-journal
 *.db-wal
 *.db-shm
+data/
 
 # IDE
 .vscode/
@@ -58,3 +59,10 @@ android/build/
 android/app/build/
 android/local.properties
 android/capacitor-cordova-android-plugins/build/
+
+# iOS local build output
+ios/DerivedData/
+ios/build/
+ios/App/build/
+ios/App/Pods/
+ios/App/Podfile.lock
