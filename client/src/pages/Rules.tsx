@@ -201,7 +201,6 @@ const RULE_GROUP_COLLAPSED_STORAGE_KEY = "forwardx.rules.groupCollapsed";
 const RULE_CATEGORY_STORAGE_KEY = "forwardx.rules.category";
 const RULE_FILTER_USER_STORAGE_KEY = "forwardx.rules.filterUser";
 const RULE_FILTER_HOST_STORAGE_KEY = "forwardx.rules.filterHost";
-const RULE_FILTER_TUNNEL_STORAGE_KEY = "forwardx.rules.filterTunnel";
 const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
 const RULE_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const RULE_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
@@ -349,7 +348,6 @@ function getRuleDisplayType(rule: any, forwardGroupById: Map<number, any>): Rule
 type RuleFilterState = {
   filterUser: string;
   filterHost: string;
-  filterTunnel: string;
   ruleCategory: RuleCategory;
   isAdmin: boolean;
   userId?: number | null;
@@ -368,13 +366,6 @@ function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
   }
   if (filters.filterHost !== "all" && filters.getRuleEntryHostId(rule) !== parseInt(filters.filterHost)) {
     return false;
-  }
-  if (filters.filterTunnel !== "all" && (filters.ruleCategory === "all" || filters.ruleCategory === "tunnel")) {
-    if (filters.filterTunnel === "none") {
-      if (rule.tunnelId) return false;
-    } else if (Number(rule.tunnelId || 0) !== Number(filters.filterTunnel)) {
-      return false;
-    }
   }
   if (filters.ruleCategory !== "all") {
     if (getRuleCategory(rule, filters.forwardGroupById) !== filters.ruleCategory) return false;
@@ -1368,7 +1359,6 @@ function RulesContent() {
   const [form, setForm] = useState<RuleFormData>(defaultForm);
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
   const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
-  const [filterTunnel, setFilterTunnel] = useState<string>(() => getStoredString(RULE_FILTER_TUNNEL_STORAGE_KEY, "all"));
   const [ruleCategory, setRuleCategory] = useState<RuleCategory>(() => getStoredRuleCategory());
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
@@ -1376,10 +1366,9 @@ function RulesContent() {
     getStoredRulePageSize(getStoredRuleCardSize() === "compact" ? 24 : 12)
   );
   const [ruleGroupCollapsed, setRuleGroupCollapsed] = useState<RuleGroupCollapsedState>(() => getStoredRuleGroupCollapsed());
-  const effectiveFilterTunnel = ruleCategory === "all" || ruleCategory === "tunnel" ? filterTunnel : "all";
   const selectedRulesQuery = useMemo(() => {
     if (user?.role !== "admin") return undefined;
-    const input: { userId?: number; scope?: "self" | "all"; hostId?: number; tunnelId?: number | null } = {};
+    const input: { userId?: number; scope?: "self" | "all"; hostId?: number } = {};
     if (filterUser === "all") {
       input.scope = "all";
     } else if (filterUser === "self") {
@@ -1387,11 +1376,8 @@ function RulesContent() {
     } else {
       input.userId = Number(filterUser);
     }
-    if (effectiveFilterTunnel !== "all") {
-      input.tunnelId = effectiveFilterTunnel === "none" ? null : Number(effectiveFilterTunnel);
-    }
     return Object.keys(input).length ? input : undefined;
-  }, [effectiveFilterTunnel, filterUser, user?.id, user?.role]);
+  }, [filterUser, user?.id, user?.role]);
   const effectiveRulesQuery = selectedRulesQuery || undefined;
   const selectedScopeQueryEnabled = user?.role === "admin" && !!effectiveRulesQuery;
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
@@ -2064,13 +2050,12 @@ function RulesContent() {
   const ruleFilters = useMemo<RuleFilterState>(() => ({
     filterUser,
     filterHost,
-    filterTunnel: effectiveFilterTunnel,
     ruleCategory,
     isAdmin: user?.role === "admin",
     userId: user?.id,
     forwardGroupById,
     getRuleEntryHostId: getRuleEntryHostIdForSort,
-  }), [filterHost, effectiveFilterTunnel, forwardGroupById, getRuleEntryHostIdForSort, ruleCategory, filterUser, user?.id, user?.role]);
+  }), [filterHost, forwardGroupById, getRuleEntryHostIdForSort, ruleCategory, filterUser, user?.id, user?.role]);
   const baseScopedRules = useMemo(() => rules || [], [rules]);
   const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
   const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
@@ -2216,14 +2201,13 @@ function RulesContent() {
     () => [
       user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
       filterHost,
-      effectiveFilterTunnel,
       ruleCategory,
     ].join("."),
-    [filterHost, effectiveFilterTunnel, ruleCategory, filterUser, user?.id, user?.role],
+    [filterHost, ruleCategory, filterUser, user?.id, user?.role],
   );
   const trafficTotalsLastCacheScope = user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
-  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || effectiveFilterTunnel !== "all" || ruleCategory !== "all";
+  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all";
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const trafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!trafficSummary && stableTrafficSummaryRows.length === 0)));
   const activeCount = useMemo(
@@ -2679,11 +2663,6 @@ function RulesContent() {
     storeString(RULE_FILTER_HOST_STORAGE_KEY, value);
   };
 
-  const handleFilterTunnelChange = (value: string) => {
-    setFilterTunnel(value);
-    storeString(RULE_FILTER_TUNNEL_STORAGE_KEY, value);
-  };
-
   const handleRulePageSizeChange = (value: string) => {
     const nextPageSize = Number(value) as RulePageSize;
     if (!RULE_PAGE_SIZE_OPTIONS.includes(nextPageSize)) return;
@@ -3035,27 +3014,6 @@ function RulesContent() {
 
       {(user?.role === "admin" || (rules && rules.length > 0)) && (
         <div className="space-y-3">
-          <Tabs value={ruleCategory} onValueChange={handleRuleCategoryChange}>
-            <TabsList className="grid h-auto w-full grid-cols-2 border border-border/30 bg-muted/30 sm:grid-cols-5">
-              {([
-                { value: "all", label: "全部", icon: LayoutGrid, count: ruleCategoryCounts.all },
-                { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, count: ruleCategoryCounts.local },
-                { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, count: ruleCategoryCounts.tunnel },
-                { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, count: ruleCategoryCounts.chain },
-                { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, count: ruleCategoryCounts.group },
-              ] as Array<{ value: RuleCategory; label: string; icon: typeof LayoutGrid; count: number }>).map((item) => {
-                const Icon = item.icon;
-                return (
-                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{item.label}</span>
-                    <Badge variant="secondary" className="ml-0.5 h-5 shrink-0 px-1.5 text-[10px]">{item.count}</Badge>
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-          </Tabs>
-
           <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
@@ -3089,22 +3047,6 @@ function RulesContent() {
                 ))}
               </SelectContent>
             </Select>
-            {(ruleCategory === "all" || ruleCategory === "tunnel") && (
-              <Select value={filterTunnel} onValueChange={handleFilterTunnelChange}>
-                <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
-                  <SelectValue placeholder="所有隧道" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">所有隧道</SelectItem>
-                  <SelectItem value="none">不使用隧道</SelectItem>
-                  {(tunnels || []).map((t: any) => (
-                    <SelectItem key={t.id} value={String(t.id)}>
-                      {t.name} / {getTunnelRouteText(t, hosts)} / {getTunnelDisplay(t).shortLabel}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
             <Select value={String(rulePageSize)} onValueChange={handleRulePageSizeChange}>
               <SelectTrigger className="h-8 w-full text-xs sm:w-[120px]">
                 <SelectValue placeholder="每页数量" />
@@ -3118,6 +3060,27 @@ function RulesContent() {
               </SelectContent>
             </Select>
           </div>
+
+          <Tabs value={ruleCategory} onValueChange={handleRuleCategoryChange}>
+            <TabsList className="grid h-auto w-full grid-cols-2 border border-border/30 bg-muted/30 sm:grid-cols-5">
+              {([
+                { value: "all", label: "全部", icon: LayoutGrid, count: ruleCategoryCounts.all },
+                { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, count: ruleCategoryCounts.local },
+                { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, count: ruleCategoryCounts.tunnel },
+                { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, count: ruleCategoryCounts.chain },
+                { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, count: ruleCategoryCounts.group },
+              ] as Array<{ value: RuleCategory; label: string; icon: typeof LayoutGrid; count: number }>).map((item) => {
+                const Icon = item.icon;
+                return (
+                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                    <Badge variant="secondary" className="ml-0.5 h-5 shrink-0 px-1.5 text-[10px]">{item.count}</Badge>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </Tabs>
         </div>
       )}
 
@@ -3259,7 +3222,7 @@ function RulesContent() {
                           <TableHead className="w-[164px] text-right">操作</TableHead>
                         </TableRow>
                       </TableHeader>
-                      <AutoAnimateContainer as={TableBody}>
+                      <TableBody>
                         {shouldGroupRuleCards ? (
                           desktopRuleGroups.map((group) => {
                             const collapsed = !!ruleGroupCollapsed[group.type];
@@ -3277,7 +3240,7 @@ function RulesContent() {
                         ) : (
                           pagedRules.map((rule: any) => renderRuleTableRow(rule))
                         )}
-                      </AutoAnimateContainer>
+                      </TableBody>
                     </Table>
                   </div>
                 </CardContent>
