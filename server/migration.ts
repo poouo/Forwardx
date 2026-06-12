@@ -5,6 +5,7 @@ import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, 
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { getHosts, requestHostAgentUpgrade } from "./db";
 import { pushAgentUpgrade } from "./agentEvents";
+import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
 import {
   consumeApprovedMigrationRequest,
@@ -767,6 +768,11 @@ export async function importMigrationSnapshot(
   await setSetting("lastPanelImportAt", String(Math.floor(Date.now() / 1000)));
   await setSetting("lastPanelImportMode", mode);
   if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
+
+  onProgress?.(97, "正在优化 PostgreSQL 查询性能");
+  await maintainCurrentPostgresqlDatabase({ forceAnalyze: true }).catch((error) => {
+    console.warn("[PostgreSQL] Post-migration maintenance skipped:", error instanceof Error ? error.message : String(error));
+  });
 
   return {
     success: true,

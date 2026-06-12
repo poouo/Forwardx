@@ -11,6 +11,7 @@ import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
 import { connectDatabase, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
+import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { randomMultiavatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 
@@ -42,6 +43,9 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await maintainCurrentPostgresqlDatabase().catch((error) => {
+      console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
+    });
     const migratedAvatars = await migrateLegacyUserAvatars();
     if (migratedAvatars > 0) {
       console.log(`[Database] Migrated legacy preset avatars count=${migratedAvatars}`);

@@ -19,6 +19,7 @@ import {
 } from "./dbRuntime";
 import { ENV } from "./env";
 import { exportMigrationSnapshot, summarizeMigrationSnapshot, type MigrationSnapshotSummary } from "./migration";
+import { maintainPostgresqlDatabase } from "./postgresqlMaintenance";
 
 export type DatabaseSwitchJobStatus = "pending" | "running" | "success" | "failed";
 
@@ -511,6 +512,13 @@ export function startDatabaseSwitch(target: DatabaseConfig) {
         await targetExecute(session, `DELETE FROM ${quote(session.kind, "system_settings")}`);
         return copySnapshotIntoTarget(session, target, job);
       });
+
+      if (handle.kind === "postgresql") {
+        setJob(job, { progress: 95, step: "正在优化 PostgreSQL 查询性能" });
+        await maintainPostgresqlDatabase(handle.pool, { forceAnalyze: true }).catch((error) => {
+          console.warn("[PostgreSQL] Database switch maintenance skipped:", error instanceof Error ? error.message : String(error));
+        });
+      }
 
       setJob(job, { progress: 97, step: "正在写入数据库切换配置" });
       const restartRequired = await finalizeDatabaseSwitch(target);

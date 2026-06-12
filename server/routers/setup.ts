@@ -9,6 +9,7 @@ import {
   defaultSqlitePath,
   executeRaw,
   getConfiguredDatabaseKind,
+  getDb,
   getDatabaseKind,
   getSchemaDialect,
   maskDatabaseConfig,
@@ -21,6 +22,8 @@ import {
 import { createInitialAdmin, hasAdminUser, updateInitialAdmin } from "../db";
 import { getAllSettings, setSettings } from "../repositories/settingsRepository";
 import { getMigrationJob, startPanelMigration } from "../migration";
+
+let setupSchemaReadyKey = "";
 
 const mysqlConfigInput = z.object({
   host: z.string().trim().min(1, "请输入 MySQL 地址"),
@@ -51,6 +54,17 @@ const databaseConfigInput = z.discriminatedUnion("type", [
   }),
 ]);
 
+async function ensureSetupSchemaReady() {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not connected");
+  const key = `${getConfiguredDatabaseKind() || ""}:${getDatabaseKind() || ""}`;
+  if (setupSchemaReadyKey !== key) {
+    await ensureDatabaseSchema();
+    setupSchemaReadyKey = key;
+  }
+  return db;
+}
+
 async function setupStatus() {
   const config = readDatabaseConfig();
   if (!config) {
@@ -73,13 +87,15 @@ async function setupStatus() {
   }
 
   try {
-    const db = await reconnectDatabase();
+    const db = await getDb();
     if (!db) throw new Error("数据库未连接");
-    await ensureDatabaseSchema();
+    await ensureSetupSchemaReady();
     const hasAdmin = await hasAdminUser();
     const settings = await getAllSettings();
     const setupDataChoice = settings.setupDataChoice || null;
-    const existingData = await getExistingDataSummary();
+    const fastSetupComplete = hasAdmin && (setupDataChoice === "use-existing" || setupDataChoice === "new-panel");
+    const existingData = fastSetupComplete ? null : await getExistingDataSummary();
+    const hasExistingData = existingData?.hasExistingData ?? false;
     return {
       databaseConfigured: true,
       databaseConnected: true,
@@ -87,10 +103,10 @@ async function setupStatus() {
       activeDatabaseType: getDatabaseKind(),
       schemaReady: true,
       hasAdmin,
-      hasExistingData: existingData.hasExistingData,
+      hasExistingData,
       existingData,
       setupDataChoice,
-      setupComplete: hasAdmin && (!existingData.hasExistingData || setupDataChoice === "use-existing" || setupDataChoice === "new-panel"),
+      setupComplete: fastSetupComplete || (hasAdmin && !hasExistingData),
       config: maskDatabaseConfig(config),
       needsRestart: false,
       defaultSqlitePath: defaultSqlitePath(),
@@ -122,9 +138,7 @@ async function ensureSetupWriteAllowed(ctx: { user?: { role?: string } | null })
   const config = readDatabaseConfig();
   if (!config) return;
   try {
-    const db = await reconnectDatabase();
-    if (!db) throw new Error("Database is not connected");
-    await ensureDatabaseSchema();
+    await ensureSetupSchemaReady();
     if (!await hasAdminUser()) return;
   } catch {
     throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
