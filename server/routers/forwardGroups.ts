@@ -4,6 +4,7 @@ import * as db from "../db";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
+import { createQueryCache } from "../queryCache";
 
 const memberSchema = z.object({
   memberType: z.enum(["host", "tunnel"]),
@@ -13,6 +14,7 @@ const memberSchema = z.object({
   priority: z.number().int().min(0).optional(),
   isEnabled: z.boolean().optional(),
 });
+const forwardGroupQueryCache = createQueryCache(300);
 
 const baseSchema = z.object({
   name: z.string().min(1).max(128),
@@ -95,7 +97,11 @@ export const forwardGroupsRouter = router({
         if (!allowed) throw new Error("无权查看此转发链");
       }
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
-      return db.getForwardGroupLatencySeries(input.groupId, { since });
+      return forwardGroupQueryCache.get(
+        `latencySeries:${ctx.user.id}:${input.groupId}:${input.hours}`,
+        { ttlMs: 30_000, staleMs: 5 * 60_000 },
+        () => db.getForwardGroupLatencySeries(input.groupId, { since }),
+      );
     }),
 
   latestTest: protectedProcedure

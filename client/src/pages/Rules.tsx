@@ -1594,9 +1594,9 @@ function RulesContent() {
       sourcePort: rule.sourcePort,
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
-      blockHttp: !!rule.blockHttp,
-      blockSocks: !!rule.blockSocks,
-      blockTls: !!rule.blockTls,
+      blockHttp: false,
+      blockSocks: false,
+      blockTls: false,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
       failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
@@ -1776,17 +1776,6 @@ function RulesContent() {
     : form.protocol !== "tcp"
     ? "出站策略仅支持 TCP 协议。"
     : "";
-  const protocolBlockEnabled = form.blockHttp || form.blockSocks || form.blockTls;
-  const canUseProtocolBlock = form.routeMode !== "tunnel"
-    && form.protocol === "tcp"
-    && !(form.routeMode === "group" && !selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
-  const protocolBlockDisabledText = form.routeMode === "tunnel"
-    ? "隧道转发请在隧道管理中配置协议屏蔽。"
-    : form.routeMode === "group" && !selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel"
-    ? "隧道类型转发组请在隧道管理中配置协议屏蔽。"
-    : form.protocol !== "tcp"
-    ? "协议屏蔽仅支持 TCP 规则。"
-    : "";
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
     return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
@@ -1878,11 +1867,6 @@ function RulesContent() {
     if (!form.failoverEnabled || canUseMainBackup) return;
     setForm((prev) => ({ ...prev, failoverEnabled: false }));
   }, [canUseMainBackup, form.failoverEnabled]);
-
-  useEffect(() => {
-    if (!protocolBlockEnabled || canUseProtocolBlock) return;
-    setForm((prev) => ({ ...prev, blockHttp: false, blockSocks: false, blockTls: false }));
-  }, [canUseProtocolBlock, protocolBlockEnabled]);
 
   // 随机分配端口
   const handleRandomPort = async () => {
@@ -2001,11 +1985,6 @@ function RulesContent() {
         return;
       }
     }
-    const protocolBlockEnabled = form.blockHttp || form.blockSocks || form.blockTls;
-    if (protocolBlockEnabled && form.protocol !== "tcp") {
-      toast.error("协议屏蔽仅支持 TCP 规则，启用后规则会工作在 guard 模式");
-      return;
-    }
     const failoverPayload = {
       failoverEnabled: selectedForwardGroupIsChain ? false : form.failoverEnabled,
       failoverStrategy: form.failoverStrategy,
@@ -2038,9 +2017,6 @@ function RulesContent() {
         isEnabled: portStatus === "available" ? true : undefined,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
-        blockHttp: form.blockHttp,
-        blockSocks: form.blockSocks,
-        blockTls: form.blockTls,
         ...failoverPayload,
       });
     } else {
@@ -2057,9 +2033,6 @@ function RulesContent() {
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
-        blockHttp: form.blockHttp,
-        blockSocks: form.blockSocks,
-        blockTls: form.blockTls,
         ...failoverPayload,
       });
     }
@@ -3522,9 +3495,6 @@ function RulesContent() {
                     ...form,
                     protocol: v as any,
                     failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
-                    blockHttp: v === "tcp" ? form.blockHttp : false,
-                    blockSocks: v === "tcp" ? form.blockSocks : false,
-                    blockTls: v === "tcp" ? form.blockTls : false,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3603,54 +3573,6 @@ function RulesContent() {
                   value={form.targetPort || ""}
                   onChange={(e) => setForm({ ...form, targetPort: parseInt(e.target.value) || 0 })}
                 />
-              </div>
-            </div>
-            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <Label className="text-sm">协议屏蔽</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    检测到 HTTP、SOCKS 或 TLS 首包时将阻断连接，并禁用对应规则。
-                  </p>
-                  {protocolBlockEnabled ? (
-                    <p className="mt-1 text-xs text-amber-600">
-                      启用后此 TCP 规则会工作在 guard 模式，由 Agent 用户态监听入口端口，性能和源 IP 展示可能与内核转发不同。
-                    </p>
-                  ) : protocolBlockDisabledText ? (
-                    <p className="mt-1 text-xs text-muted-foreground">{protocolBlockDisabledText}</p>
-                  ) : null}
-                </div>
-                {protocolBlockEnabled && (
-                  <Badge variant="outline" className="w-fit border-amber-500/30 text-amber-600">
-                    Guard 模式
-                  </Badge>
-                )}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
-                  <Label className="text-sm">HTTP</Label>
-                  <Switch
-                    checked={form.blockHttp}
-                    disabled={!canUseProtocolBlock}
-                    onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
-                  <Label className="text-sm">SOCKS</Label>
-                  <Switch
-                    checked={form.blockSocks}
-                    disabled={!canUseProtocolBlock}
-                    onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
-                  <Label className="text-sm">TLS</Label>
-                  <Switch
-                    checked={form.blockTls}
-                    disabled={!canUseProtocolBlock}
-                    onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })}
-                  />
-                </div>
               </div>
             </div>
             <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
