@@ -124,13 +124,12 @@ export async function getTotalTraffic(userId?: number) {
   if (!db) return { totalIn: 0, totalOut: 0 };
 
   if (userId) {
-    const ruleIds = await getRuleIdsByUser(userId);
-    if (ruleIds.length === 0) return { totalIn: 0, totalOut: 0 };
     const r = await db.select({
       totalIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
       totalOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
     }).from(trafficStats)
-      .where(sql`${trafficStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
+      .innerJoin(forwardRules, eq(forwardRules.id, trafficStats.ruleId))
+      .where(eq(forwardRules.userId, userId));
     const row = r[0];
     return {
       totalIn: Number(row?.totalIn) || 0,
@@ -155,6 +154,7 @@ export async function getTrafficSummaryByRule(opts: {
   hostId?: number;
   since?: Date;
   ruleIds?: number[];
+  includeLatency?: boolean;
 } = {}) {
   const db = await getDb();
   if (!db) return [] as Array<{ ruleId: number; hostId: number; bytesIn: number; bytesOut: number; connections: number; latestLatencyMs: number | null; latestLatencyIsTimeout: boolean; latestLatencyAt: Date | null }>;
@@ -164,6 +164,7 @@ export async function getTrafficSummaryByRule(opts: {
   const conds: any[] = [];
   if (opts.hostId) conds.push(eq(trafficStats.hostId, opts.hostId));
   if (opts.since) conds.push(gte(trafficStats.recordedAt, opts.since));
+  if (opts.userId) conds.push(eq(forwardRules.userId, opts.userId));
   const baseQuery = db
     .select({
       ruleId: trafficStats.ruleId,
@@ -328,6 +329,14 @@ export async function getTrafficSummaryByRule(opts: {
   }
 
   if (result.length === 0) return result.map((item) => ({ ...item, latestLatencyMs: null, latestLatencyIsTimeout: false, latestLatencyAt: null }));
+  if (opts.includeLatency === false) {
+    return result.map((item) => ({
+      ...item,
+      latestLatencyMs: null,
+      latestLatencyIsTimeout: false,
+      latestLatencyAt: null,
+    }));
+  }
 
   const ruleIds = Array.from(new Set(result.map((r) => r.ruleId)));
   const childLatencyRows = ruleIds.length > 0
@@ -465,25 +474,27 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bucketSec = bucket * 60;
 
-  const conds: any[] = [gte(trafficStats.recordedAt, since)];
-  if (opts.userId) {
-    const ruleIds = await getRuleIdsByUser(opts.userId);
-    if (ruleIds.length === 0) return [];
-    conds.push(sql`${trafficStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
-  }
-
   const bucketExpr = sql`(FLOOR(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec})`;
 
-  const rows = await db
-    .select({
-      bucket: sql<number>`${bucketExpr}`,
-      bytesIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
-      bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
-    })
-    .from(trafficStats)
-    .where(and(...conds))
-    .groupBy(bucketExpr)
-    .orderBy(asc(bucketExpr));
+  const selectFields = {
+    bucket: sql<number>`${bucketExpr}`,
+    bytesIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
+    bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
+  };
+  const rows = opts.userId
+    ? await db
+      .select(selectFields)
+      .from(trafficStats)
+      .innerJoin(forwardRules, eq(forwardRules.id, trafficStats.ruleId))
+      .where(and(gte(trafficStats.recordedAt, since), eq(forwardRules.userId, opts.userId)))
+      .groupBy(bucketExpr)
+      .orderBy(asc(bucketExpr))
+    : await db
+      .select(selectFields)
+      .from(trafficStats)
+      .where(gte(trafficStats.recordedAt, since))
+      .groupBy(bucketExpr)
+      .orderBy(asc(bucketExpr));
 
   return rows.map((r: any) => ({
     bucket: new Date(Number(r.bucket) * 1000),

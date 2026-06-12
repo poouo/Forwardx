@@ -4,7 +4,14 @@ import * as db from "../db";
 
 export const dashboardRouter = router({
     stats: protectedProcedure.query(async ({ ctx }) => {
-      return db.getDashboardStats(ctx.user.id);
+      return db.getDashboardStats(ctx.user.id, { includeTraffic: false });
+    }),
+    trafficTotals: protectedProcedure.query(async ({ ctx }) => {
+      const traffic = await db.getTotalTraffic(ctx.user.id);
+      return {
+        totalTrafficIn: traffic.totalIn,
+        totalTrafficOut: traffic.totalOut,
+      };
     }),
     /** 当前用户流量走势（仪表盘图表） */
     trafficSeries: protectedProcedure

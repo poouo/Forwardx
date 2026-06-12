@@ -85,10 +85,11 @@ function qualified(alias: string, column: string) {
 
 // ==================== Dashboard Stats ====================
 
-export async function getDashboardStats(userId?: number) {
+export async function getDashboardStats(userId?: number, opts: { includeTraffic?: boolean } = {}) {
   const db = await getDb();
   if (!db) return { totalHosts: 0, onlineHosts: 0, totalRules: 0, activeRules: 0, totalTrafficIn: 0, totalTrafficOut: 0 };
 
+  const heartbeatFreshSince = new Date(Date.now() - 90 * 1000);
   const hostConditions = userId ? eq(hosts.userId, userId) : undefined;
   const ruleConditions = [
     eq(forwardRules.pendingDelete, false),
@@ -96,15 +97,15 @@ export async function getDashboardStats(userId?: number) {
     ...(userId ? [eq(forwardRules.userId, userId)] : []),
   ];
 
-  const hostStatsRows = await db
+  const hostStatsQuery = db
     .select({
       totalHosts: sql<number>`COUNT(*)`,
-      onlineHosts: sql<number>`SUM(CASE WHEN ${hosts.isOnline} = ${true} THEN 1 ELSE 0 END)`,
+      onlineHosts: sql<number>`COALESCE(SUM(CASE WHEN ${hosts.isOnline} = ${true} AND ${hosts.lastHeartbeat} >= ${heartbeatFreshSince} THEN 1 ELSE 0 END), 0)`,
     })
     .from(hosts)
     .where(hostConditions as any);
 
-  const ruleStatsRows = await db
+  const ruleStatsQuery = db
     .select({
       totalRules: sql<number>`COUNT(*)`,
       activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${true} AND (${forwardRules.isRunning} = ${true} OR (${forwardRules.isForwardGroupTemplate} = ${true} AND EXISTS (SELECT 1 FROM ${sql.raw(quoteDbIdentifier("forward_rules"))} child WHERE ${qualified("child", "forwardGroupRuleId")} = ${forwardRules.id} AND ${qualified("child", "pendingDelete")} = ${false} AND ${qualified("child", "isEnabled")} = ${true} AND ${qualified("child", "isRunning")} = ${true}))) THEN 1 ELSE 0 END)`,
@@ -112,19 +113,17 @@ export async function getDashboardStats(userId?: number) {
     .from(forwardRules)
     .where(and(...ruleConditions));
 
+  const [hostStatsRows, ruleStatsRows, traffic] = await Promise.all([
+    hostStatsQuery,
+    ruleStatsQuery,
+    opts.includeTraffic === false ? Promise.resolve({ totalIn: 0, totalOut: 0 }) : getTotalTraffic(userId),
+  ]);
   const hostStats = hostStatsRows[0];
   const ruleStats = ruleStatsRows[0];
-  const traffic = await getTotalTraffic(userId);
-  const freshOnlineHosts = (await db.select().from(hosts).where(hostConditions as any))
-    .filter((host: any) => {
-      if (!host.isOnline || !host.lastHeartbeat) return false;
-      const time = new Date(host.lastHeartbeat).getTime();
-      return Number.isFinite(time) && Date.now() - time <= 90 * 1000;
-    }).length;
 
   return {
     totalHosts: Number(hostStats?.totalHosts) || 0,
-    onlineHosts: freshOnlineHosts,
+    onlineHosts: Number(hostStats?.onlineHosts) || 0,
     totalRules: Number(ruleStats?.totalRules) || 0,
     activeRules: Number(ruleStats?.activeRules) || 0,
     totalTrafficIn: traffic.totalIn,
@@ -144,7 +143,7 @@ export async function getDashboardTrafficBreakdown(opts: {
 
   const limit = clampPositiveInt(opts.limit, 30, 100);
   const since = opts.since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const summaries = await getTrafficSummaryByRule({ userId: opts.userId, since }) as TrafficSummaryItem[];
+  const summaries = await getTrafficSummaryByRule({ userId: opts.userId, since, includeLatency: false }) as TrafficSummaryItem[];
   if (summaries.length === 0) return emptyTrafficBreakdown();
 
   const ruleIds = Array.from(new Set(summaries.map((item) => Number(item.ruleId)).filter(Boolean)));

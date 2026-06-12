@@ -24,7 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import { motion } from "motion/react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import PublicHome, { CustomPublicHome } from "./PublicHome";
 import {
@@ -244,18 +244,6 @@ function renderPieLabel(props: any) {
   );
 }
 
-function PieLoading() {
-  return (
-    <div className="flex h-56 items-center justify-center">
-      <div className="relative h-32 w-32">
-        <div className="absolute inset-0 rounded-full border-8 border-muted/50" />
-        <div className="absolute inset-0 animate-spin rounded-full border-8 border-transparent border-t-primary border-r-emerald-500" />
-        <div className="absolute inset-8 rounded-full bg-card shadow-inner" />
-      </div>
-    </div>
-  );
-}
-
 function TrafficPieCard({
   title,
   data,
@@ -298,10 +286,10 @@ function TrafficPieCard({
         </div>
       </CardHeader>
       <CardContent>
-        {loading ? (
-          <PieLoading />
-        ) : chartData.length === 0 || total <= 0 ? (
-          <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">暂无流量数据</div>
+        {chartData.length === 0 || total <= 0 ? (
+          <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">
+            {loading ? "正在读取流量统计" : "暂无流量数据"}
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="h-72 min-w-0">
@@ -350,17 +338,22 @@ function DashboardContent() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: 15000 });
+  const { data: trafficTotals, isLoading: trafficTotalsLoading } = trpc.dashboard.trafficTotals.useQuery(undefined, {
+    enabled: !isLoading,
+    refetchInterval: 60000,
+    staleTime: 55000,
+  });
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
   const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery();
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
   const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 168, limit: 30 },
-    { refetchInterval: 30000 },
+    { enabled: !isLoading, refetchInterval: 30000, staleTime: 25000 },
   );
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 168, bucketMinutes: 30 },
-    { refetchInterval: 30000 },
+    { enabled: !isLoading, refetchInterval: 30000, staleTime: 25000 },
   );
 
   const chartData = useMemo(
@@ -378,6 +371,12 @@ function DashboardContent() {
     if (!userTraffic.length) return null;
     return userTraffic.find((item: any) => Number(item.id) === Number(user?.id)) || userTraffic[0];
   }, [userTraffic, user?.id]);
+
+  const [cachedTrafficBreakdown, setCachedTrafficBreakdown] = useState<typeof trafficBreakdown | null>(null);
+  useEffect(() => {
+    if (trafficBreakdown) setCachedTrafficBreakdown(trafficBreakdown);
+  }, [trafficBreakdown]);
+  const visibleTrafficBreakdown = trafficBreakdown || cachedTrafficBreakdown;
 
   const accountTrafficLimit = Number(currentUserTraffic?.trafficLimit) || 0;
   const trafficUsed = Number(currentUserTraffic?.trafficUsed) || 0;
@@ -445,16 +444,16 @@ function DashboardContent() {
   const onlineRate = stats?.totalHosts ? Math.round((stats.onlineHosts / stats.totalHosts) * 100) : 0;
   const activeRate = stats?.totalRules ? Math.round((stats.activeRules / stats.totalRules) * 100) : 0;
   const tunnelRuleTrafficData = useMemo(
-    () => (trafficBreakdown?.tunnelRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
-    [trafficBreakdown?.tunnelRules],
+    () => (visibleTrafficBreakdown?.tunnelRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [visibleTrafficBreakdown?.tunnelRules],
   );
   const portRuleTrafficData = useMemo(
-    () => (trafficBreakdown?.portRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
-    [trafficBreakdown?.portRules],
+    () => (visibleTrafficBreakdown?.portRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [visibleTrafficBreakdown?.portRules],
   );
   const forwardGroupRuleTrafficData = useMemo(
-    () => (trafficBreakdown?.forwardGroupRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
-    [trafficBreakdown?.forwardGroupRules],
+    () => (visibleTrafficBreakdown?.forwardGroupRules || []).map((item: any) => ({ id: Number(item.id), name: item.name, value: Number(item.totalBytes) || 0 })),
+    [visibleTrafficBreakdown?.forwardGroupRules],
   );
 
   return (
@@ -497,11 +496,11 @@ function DashboardContent() {
         />
         <StatCard
           title="入站流量"
-          value={formatBytes(stats?.totalTrafficIn ?? 0)}
+          value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
           subtitle="累计入站"
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-violet-500 to-violet-600"
-          loading={isLoading}
+          loading={trafficTotalsLoading}
           cacheKey="home.stats.totalTrafficIn"
           fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
@@ -509,11 +508,11 @@ function DashboardContent() {
         />
         <StatCard
           title="出站流量"
-          value={formatBytes(stats?.totalTrafficOut ?? 0)}
+          value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
           subtitle="累计出站"
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
-          loading={isLoading}
+          loading={trafficTotalsLoading}
           cacheKey="home.stats.totalTrafficOut"
           fallbackValue="0 B"
           className="col-span-2 sm:col-span-1"
