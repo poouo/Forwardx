@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.133] - 2026-06-13
+
+### Fixed
+
+- Added animated loading placeholders for home traffic doughnut charts so the chart, ranking rows, and legend keep a stable shape while traffic data loads.
+- Fixed home traffic doughnut ranking rows so long names, traffic values, and percentages no longer overlap in narrow cards.
+- Added online/offline status dots to host choices in forwarding-rule filters, local forwarding host selection, and rule copy host lists.
+
+### Changed
+
+- Bumped panel version to 2.3.133. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.133.
+
 ## [2.3.132] - 2026-06-13
 
 ### Added

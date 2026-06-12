@@ -226,6 +226,45 @@ function PieTooltipContent({ active, payload }: any) {
   );
 }
 
+function TrafficPieLoadingState() {
+  return (
+    <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
+      <div className="flex h-44 min-w-0 items-center justify-center">
+        <div className="relative flex h-32 w-32 items-center justify-center">
+          <div className="absolute inset-0 rounded-full border-[18px] border-muted/70" />
+          <div className="absolute inset-0 animate-spin rounded-full border-[18px] border-transparent border-t-primary/80 border-r-primary/30" />
+          <div className="absolute inset-7 rounded-full bg-card/90 shadow-inner" />
+          <div className="relative space-y-2 text-center">
+            <Skeleton className="mx-auto h-4 w-16" />
+            <Skeleton className="mx-auto h-2.5 w-8" />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-2 py-1 text-xs">
+        {[0, 1, 2].map((item) => (
+          <div key={item} className="grid grid-cols-[minmax(0,1fr)_4.75rem_3rem] items-center gap-2 border-t border-border/50 py-1.5 first:border-t-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <Skeleton className="h-2.5 w-2.5 shrink-0 rounded-full" />
+              <Skeleton className="h-3 w-5 shrink-0" />
+              <Skeleton className="h-3 min-w-0 flex-1" />
+            </div>
+            <Skeleton className="ml-auto h-3 w-16" />
+            <Skeleton className="ml-auto h-3 w-9" />
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-2 sm:col-span-2 lg:col-span-1 2xl:col-span-2">
+        {[0, 1, 2].map((item) => (
+          <div key={item} className="flex items-center gap-1.5">
+            <Skeleton className="h-2.5 w-3.5 rounded-sm" />
+            <Skeleton className="h-3 w-16" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TrafficPieCard({
   title,
   data,
@@ -270,9 +309,12 @@ function TrafficPieCard({
         </div>
       </CardHeader>
       <CardContent>
-        {chartData.length === 0 || total <= 0 ? (
-          <div className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-            {loading ? "正在读取流量统计" : "暂无流量数据"}
+        {loading && chartData.length === 0 ? (
+          <TrafficPieLoadingState />
+        ) : chartData.length === 0 || total <= 0 ? (
+          <div className="flex h-56 flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+            <BarChart3 className="h-5 w-5 text-muted-foreground/50" />
+            暂无流量数据
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
@@ -314,28 +356,25 @@ function TrafficPieCard({
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="max-h-44 min-w-0 overflow-y-auto">
-              <table className="w-full table-fixed text-xs">
-                <tbody>
-                  {chartData.map((item, index) => (
-                    <tr key={item.id} className="border-t border-border/50 first:border-t-0">
-                      <td className="w-full py-1.5 pr-2">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
-                          <span className="w-5 shrink-0 text-[11px] font-semibold text-muted-foreground">#{index + 1}</span>
-                          <span className="min-w-0 truncate font-medium" title={item.name}>{item.name}</span>
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap py-1.5 text-right text-muted-foreground tabular-nums">
-                        {formatBytes(item.value)}
-                      </td>
-                      <td className="w-12 whitespace-nowrap py-1.5 text-right font-semibold tabular-nums">
-                        {item.percent}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="max-h-44 min-w-0 overflow-y-auto text-xs">
+              {chartData.map((item, index) => (
+                <div
+                  key={item.id}
+                  className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(4.75rem,max-content)_3rem] items-center gap-2 border-t border-border/50 py-1.5 first:border-t-0"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                    <span className="w-5 shrink-0 text-[11px] font-semibold text-muted-foreground">#{index + 1}</span>
+                    <span className="min-w-0 truncate font-medium" title={item.name}>{item.name}</span>
+                  </div>
+                  <div className="whitespace-nowrap text-right text-muted-foreground tabular-nums">
+                    {formatBytes(item.value)}
+                  </div>
+                  <div className="whitespace-nowrap text-right font-semibold tabular-nums">
+                    {item.percent}%
+                  </div>
+                </div>
+              ))}
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-2 sm:col-span-2 lg:col-span-1 2xl:col-span-2">
               {chartData.map((item) => (

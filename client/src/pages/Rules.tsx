@@ -2231,6 +2231,25 @@ function RulesContent() {
   const getHostName = (hostId: number) => {
     return hosts?.find((h: any) => h.id === hostId)?.name || `主机 #${hostId}`;
   };
+  const getHostOptionName = (host: any) => host?.name || `主机 #${host?.id || "-"}`;
+  const getHostOptionText = (host: any) => `${getHostOptionName(host)}（${host?.isOnline ? "在线" : "离线"}）`;
+  const renderHostStatusLabel = (host: any) => {
+    const online = !!host?.isOnline;
+    return (
+      <span className="inline-flex min-w-0 items-center gap-2" title={getHostOptionText(host)}>
+        <span
+          className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+            online
+              ? "bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)]"
+              : "bg-rose-500 shadow-[0_0_0_3px_rgba(244,63,94,0.14)]"
+          }`}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate">{getHostOptionName(host)}</span>
+        <span className="sr-only">{online ? "在线" : "离线"}</span>
+      </span>
+    );
+  };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
     return (
@@ -3032,7 +3051,9 @@ function RulesContent() {
               <SelectContent>
                 <SelectItem value="all">所有入口主机</SelectItem>
                 {hosts?.map((h: any) => (
-                  <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
+                  <SelectItem key={h.id} value={String(h.id)} textValue={getHostOptionText(h)}>
+                    {renderHostStatusLabel(h)}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -3462,7 +3483,9 @@ function RulesContent() {
                     <SelectTrigger><SelectValue placeholder="选择主机" /></SelectTrigger>
                     <SelectContent>
                       {hosts?.map((h: any) => (
-                        <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>
+                        <SelectItem key={h.id} value={String(h.id)} textValue={getHostOptionText(h)}>
+                          {renderHostStatusLabel(h)}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -3698,7 +3721,9 @@ function RulesContent() {
                   <SelectTrigger><SelectValue placeholder="选择源主机" /></SelectTrigger>
                   <SelectContent>
                     {hosts?.map((host: any) => (
-                      <SelectItem key={host.id} value={String(host.id)}>{host.name}</SelectItem>
+                      <SelectItem key={host.id} value={String(host.id)} textValue={getHostOptionText(host)}>
+                        {renderHostStatusLabel(host)}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -3777,7 +3802,7 @@ function RulesContent() {
                         onChange={(e) => toggleCopyTargetHost(Number(host.id), e.target.checked)}
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{host.name}</span>
+                        <span className="block truncate text-sm font-medium">{renderHostStatusLabel(host)}</span>
                         <span className="mt-1 block truncate text-xs text-muted-foreground">{host.entryIp || host.ip || "-"}</span>
                       </span>
                     </label>
