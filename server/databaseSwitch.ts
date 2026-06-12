@@ -10,6 +10,7 @@ import {
   type DatabaseKind,
   defaultSqlitePath,
   getDatabaseKind,
+  getDatabasePoolSettings,
   getSchemaDialect,
   maskDatabaseConfig,
   readDatabaseConfig,
@@ -158,6 +159,7 @@ export async function testDatabaseSwitchTarget(target: DatabaseConfig) {
 
 function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptions {
   const mysqlConfig = normalizeMysqlConfig(config);
+  const pool = getDatabasePoolSettings();
   return {
     host: mysqlConfig.host,
     port: mysqlConfig.port,
@@ -165,8 +167,11 @@ function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptio
     password: mysqlConfig.password,
     database: mysqlConfig.database,
     waitForConnections: true,
-    connectionLimit: 5,
+    connectionLimit: pool.maxOpen,
+    maxIdle: pool.maxIdle,
+    idleTimeout: pool.idleTimeoutMillis,
     queueLimit: 0,
+    connectTimeout: pool.connectTimeoutMillis,
     timezone: "+00:00",
     dateStrings: false,
     ssl: mysqlConfig.ssl ? {} : undefined,
@@ -175,16 +180,20 @@ function mysqlPoolOptions(config: DatabaseConfig & { type: "mysql" }): PoolOptio
 
 function postgresqlPoolOptions(config: DatabaseConfig & { type: "postgresql" }): pg.PoolConfig {
   const postgresqlConfig = normalizePostgresqlConfig(config);
-  return {
+  const pool = getDatabasePoolSettings();
+  const options: pg.PoolConfig & { maxLifetimeSeconds?: number } = {
     host: postgresqlConfig.host,
     port: postgresqlConfig.port,
     user: postgresqlConfig.user,
     password: postgresqlConfig.password,
     database: postgresqlConfig.database,
-    max: 5,
-    connectionTimeoutMillis: 6000,
+    max: pool.maxOpen,
+    idleTimeoutMillis: pool.idleTimeoutMillis,
+    connectionTimeoutMillis: pool.connectTimeoutMillis,
+    maxLifetimeSeconds: pool.maxLifetimeSeconds,
     ssl: postgresqlConfig.ssl ? { rejectUnauthorized: false } : undefined,
   };
+  return options;
 }
 
 async function openTarget(config: DatabaseConfig): Promise<TargetHandle> {

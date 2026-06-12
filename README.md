@@ -5,14 +5,14 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、转发组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.130-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.132-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
 ## 社群与下载
 
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.130/forwardx-android-v2.3.42.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.132/forwardx-android-v2.3.42.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -77,6 +77,10 @@ DDNS 操作会写入系统日志和转发组事件，包括跳过、当前记录
 - 如果连接的是已有数据库，且里面已经存在管理员账户，会直接进入登录流程。
 - 原地升级会保留已有配置和数据；Docker 部署会保留数据卷，本地 systemd 部署会保留安装目录下的 `data` 目录。
 - 数据库备份建议由用户在 SQLite 文件、MySQL 或 PostgreSQL 侧自行维护。
+
+MySQL 和 PostgreSQL 默认连接池按约 30 台 Agent 主机的常规生产使用量配置：最大连接数 `50`、空闲连接 `10`、连接最长生命周期 `30` 分钟、空闲回收 `5` 分钟、连接超时 `6000` 毫秒。小规模部署（例如 7-8 台主机）可降到 `DATABASE_MAX_OPEN_CONNS=20`、`DATABASE_MAX_IDLE_CONNS=5`；30 台左右建议先使用默认值；更大规模或多管理员高频查看时再逐步提高到 `80-100` 最大连接和 `20-40` 空闲连接。
+
+这些参数通过环境变量调整，MySQL 和 PostgreSQL 共用同一组连接池变量；SQLite 不使用连接池参数。调整时要同时确认数据库服务端的连接上限：PostgreSQL 的 `max_connections`、MySQL 的 `max_connections` 应大于所有 ForwardX 实例 `DATABASE_MAX_OPEN_CONNS` 的总和，并预留运维、备份和其他程序连接余量。Docker 部署可在部署目录 `.env` 中增加变量后重启容器；本地 systemd 部署可在服务环境变量或安装目录环境配置中增加变量后重启 `forwardx-panel.service`。
 
 ## 快速部署
 
@@ -234,6 +238,11 @@ ForwardX 支持两类隧道：
 | `DATABASE_CONFIG_PATH` | `/data/database.json` | 面板保存数据库连接配置的位置 |
 | `SQLITE_PATH` | `/data/forwardx.db` | SQLite 默认数据文件路径 |
 | `DATABASE_TYPE` / `DB_TYPE` | 空 | 可选，强制指定 `mysql`、`postgresql` 或 `sqlite` |
+| `DATABASE_MAX_OPEN_CONNS` / `DB_MAX_OPEN_CONNS` | `50` | MySQL/PostgreSQL 连接池最大连接数，默认按约 30 台 Agent 主机配置 |
+| `DATABASE_MAX_IDLE_CONNS` / `DB_MAX_IDLE_CONNS` | `10` | MySQL/PostgreSQL 连接池最大空闲连接数，不能超过最大连接数 |
+| `DATABASE_CONN_MAX_LIFETIME_MINUTES` / `DB_CONN_MAX_LIFETIME_MINUTES` | `30` | MySQL/PostgreSQL 连接最长生命周期，`0` 表示不主动按生命周期回收 |
+| `DATABASE_CONN_MAX_IDLE_TIME_MINUTES` / `DB_CONN_MAX_IDLE_TIME_MINUTES` | `5` | MySQL/PostgreSQL 空闲连接回收时间 |
+| `DATABASE_CONNECT_TIMEOUT_MS` / `DB_CONNECT_TIMEOUT_MS` | `6000` | MySQL/PostgreSQL 建立连接超时时间，单位毫秒 |
 | `MYSQL_CONFIG_PATH` | `/data/mysql.json` | 兼容旧版 MySQL 配置文件路径 |
 | `MYSQL_URL` | 空 | 可选，通过环境变量直接提供 MySQL 连接串 |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | 空 | 可选，通过环境变量提供 MySQL 连接信息 |
@@ -284,7 +293,7 @@ pnpm check:versions
 ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
 下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.130/forwardx-android-v2.3.42.apk
+https://github.com/poouo/Forwardx/releases/download/v2.3.132/forwardx-android-v2.3.42.apk
 
 常用命令：
 

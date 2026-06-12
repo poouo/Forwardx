@@ -1,5 +1,217 @@
 # Changelog
 
+## [2.3.132] - 2026-06-13
+
+### Added
+
+- Added production-oriented MySQL/PostgreSQL connection pool defaults for roughly 30 Agent hosts, plus environment variables and README guidance for tuning pool size, idle connections, lifetime, idle timeout, and connect timeout.
+
+### Fixed
+
+- Unified host editing into a single form view instead of splitting basic info, port limits, and protocol controls into separate inner sections.
+- Host protocol blocking is now managed only from Host Management; forwarding rules and tunnels ignore legacy per-rule/per-tunnel HTTP/SOCKS/TLS block fields.
+- Host protocol and address policy changes now refresh existing direct, tunnel, forwarding-group, and forwarding-chain runtimes so already-created entries follow the updated host policy.
+- Host port range changes now pause existing direct rules on that entry host when their source port is outside the new range; users must edit to an allowed port before enabling again.
+- Rule enabling from the panel and Telegram now rechecks the current host or tunnel entry port policy before clearing a policy block.
+- Home traffic doughnut charts now use the cleaner reference-style ring layout with center totals, ranked detail rows, and a one-time initial animation so frequent refreshes no longer replay the chart animation.
+
+### Changed
+
+- Bumped panel version to 2.3.132. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.132.
+
+## [2.3.131] - 2026-06-12
+
+### Fixed
+
+- Optimized dashboard, metrics, forwarding-rule, tunnel, and forwarding-group queries for MySQL/PostgreSQL by adding summary-oriented reads, cache helpers, and database maintenance coverage.
+- Moved HTTP/SOCKS/TLS protocol blocking toward host-side policy enforcement and refreshed affected Agent runtime state when policies change.
+- Improved host, tunnel, rule, and forwarding-group loading behavior under frequent refreshes.
+
+### Changed
+
+- Bumped panel version to 2.3.131. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.131.
+
+## [2.3.130] - 2026-06-12
+
+### Fixed
+
+- Fixed the dashboard recent traffic trend on PostgreSQL after migration by using database-compatible aggregation and timestamp handling.
+
+### Changed
+
+- Bumped panel version to 2.3.130. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.130.
+
+## [2.3.129] - 2026-06-12
+
+### Added
+
+- Added PostgreSQL migration health checks that run once per marker, report checked/created indexes, analyzed tables, and largest traffic/metrics tables in panel logs.
+
+### Fixed
+
+- Improved PostgreSQL setup and migration handling so database initialization can backfill indexes and table statistics after migration without repeating every startup.
+
+### Changed
+
+- Bumped panel version to 2.3.129. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.129.
+
+## [2.3.128] - 2026-06-12
+
+### Fixed
+
+- Removed global loading screens that caused the panel to blank during background refreshes.
+- Improved dashboard traffic summaries and homepage loading states so cached data remains visible while refreshes are in progress.
+
+### Changed
+
+- Bumped panel version to 2.3.128. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.128.
+
+## [2.3.127] - 2026-06-12
+
+### Fixed
+
+- Hardened repository boolean handling across SQLite, MySQL, and PostgreSQL to avoid cross-database query mismatches.
+- Improved dashboard, host, metrics, and forwarding-rule repository compatibility after database migration.
+
+### Changed
+
+- Bumped panel version to 2.3.127. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.127.
+
+## [2.3.126] - 2026-06-12
+
+### Fixed
+
+- Improved dashboard traffic totals and recent traffic cards for migrated databases.
+- Refined metrics aggregation and dashboard loading behavior across supported database engines.
+
+### Changed
+
+- Bumped panel version to 2.3.126. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.126.
+
+## [2.3.125] - 2026-06-12
+
+### Added
+
+- Added database switching and setup support for SQLite, MySQL, and PostgreSQL, including migration helpers and Docker/local install script support.
+
+### Removed
+
+- Removed experimental iOS IPA build support from the release flow.
+
+### Fixed
+
+- Updated repositories, setup flow, forwarding groups, tunnels, hosts, billing, announcements, and token management to work across supported database engines.
+
+### Changed
+
+- Bumped panel version to 2.3.125. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.125.
+
+## [2.3.124] - 2026-06-12
+
+### Added
+
+- Added latency stability summary components and shared latency chart utilities.
+- Added experimental iOS IPA build workflow support.
+
+### Changed
+
+- Bumped panel version to 2.3.124 and Agent target version to 2.2.90.
+- Android APP version was bumped to 2.3.42.
+
+## [2.3.123] - 2026-06-11
+
+### Fixed
+
+- Required sufficient balance before enabling traffic-billing rules so users cannot start balance-backed resources with no remaining funds.
+
+### Changed
+
+- Bumped panel version to 2.3.123. Agent target version remains 2.2.88.
+
+## [2.3.122] - 2026-06-11
+
+### Fixed
+
+- Adjusted traffic billing settlement so deletion and disabling paths settle usage consistently before changing rule state.
+- Improved rule group toggles, rule category filters, and dialog close hover behavior.
+
+### Changed
+
+- Bumped panel version to 2.3.122. Agent target version remains 2.2.88.
+
+## [2.3.121] - 2026-06-11
+
+### Fixed
+
+- Fixed dynamic host address runtime sync so updated entry/internal addresses refresh dependent tunnels, rules, and forwarding chains.
+- Fixed multi-hop tunnel latency aggregation.
+
+### Changed
+
+- Bumped panel version to 2.3.121. Agent target version remains 2.2.88.
+
+## [2.3.120] - 2026-06-10
+
+### Added
+
+- Added support for non-systemd installs and clearer Agent test hints.
+
+### Changed
+
+- Bumped panel version to 2.3.120. Agent target version remains 2.2.88.
+
+## [2.3.119] - 2026-06-10
+
+### Fixed
+
+- Polished authentication transitions and rule traffic globe paths.
+- Added country layer support to the rule globe view.
+
+### Changed
+
+- Bumped panel version to 2.3.119. Agent target version remains 2.2.88.
+
+## [2.3.118] - 2026-06-10
+
+### Fixed
+
+- Improved panel/Agent upgrade handling while GitHub Release assets are still pending build completion.
+
+### Changed
+
+- Bumped panel version to 2.3.118. Agent target version remains 2.2.88.
+
+## [2.3.117] - 2026-06-10
+
+### Changed
+
+- Refreshed the login/auth experience and public home page styling.
+- Added motion polish across the panel shell.
+- Bumped panel version to 2.3.117. Agent target version remains 2.2.88.
+
+## [2.3.116] - 2026-06-09
+
+### Added
+
+- Added host geo lookup, flat map, 3D globe map, and tunnel traffic globe views with improved map labels, country highlighting, route separation, and flow animation stability.
+
+### Fixed
+
+- Fixed installer scripts by removing BOM-related shell issues and adjusted panel release workflow triggering on main pushes.
+- Improved deployment flow to use prebuilt panel artifacts for install and upgrade.
+
+### Changed
+
+- Bumped panel version to 2.3.116. Agent target version remains 2.2.88.
+
 ## [2.3.115] - 2026-06-08
 
 ### Added

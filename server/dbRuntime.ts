@@ -3,7 +3,7 @@ import path from "path";
 import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
 import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
-import mysql, { Pool, PoolOptions } from "mysql2/promise";
+import mysql, { Pool, PoolOptions, type ConnectionOptions } from "mysql2/promise";
 import pg from "pg";
 import Database from "better-sqlite3";
 import { SCHEMA_DIALECT } from "../drizzle/schema";
@@ -108,6 +108,22 @@ function normalizePostgresql(config: PostgresqlConfig): PostgresqlConfig {
 function normalizeSqlite(config: SqliteConfig): SqliteConfig {
   return {
     path: (config.path || defaultSqlitePath()).trim() || defaultSqlitePath(),
+  };
+}
+
+export function getDatabasePoolSettings() {
+  const maxOpen = ENV.databaseMaxOpenConns;
+  const maxIdle = Math.min(ENV.databaseMaxIdleConns, maxOpen);
+  const idleTimeoutMillis = ENV.databaseConnMaxIdleTimeMinutes * 60_000;
+  const maxLifetimeSeconds = ENV.databaseConnMaxLifetimeMinutes > 0
+    ? ENV.databaseConnMaxLifetimeMinutes * 60
+    : undefined;
+  return {
+    maxOpen,
+    maxIdle,
+    idleTimeoutMillis,
+    maxLifetimeSeconds,
+    connectTimeoutMillis: ENV.databaseConnectTimeoutMs,
   };
 }
 
@@ -275,40 +291,51 @@ export function writeMysqlConfig(config: MysqlConfig) {
   writeDatabaseConfig({ type: "mysql", mysql: config });
 }
 
-function poolOptions(config: MysqlConfig): PoolOptions {
+function mysqlConnectionOptions(config: MysqlConfig): ConnectionOptions {
   return {
     host: config.host,
     port: config.port,
     user: config.user,
     password: config.password,
     database: config.database,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
+    connectTimeout: ENV.databaseConnectTimeoutMs,
     timezone: "+00:00",
     dateStrings: false,
     ssl: config.ssl ? {} : undefined,
   };
 }
 
-function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
+function poolOptions(config: MysqlConfig): PoolOptions {
+  const pool = getDatabasePoolSettings();
   return {
+    ...mysqlConnectionOptions(config),
+    waitForConnections: true,
+    connectionLimit: pool.maxOpen,
+    maxIdle: pool.maxIdle,
+    idleTimeout: pool.idleTimeoutMillis,
+    queueLimit: 0,
+  };
+}
+
+function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
+  const pool = getDatabasePoolSettings();
+  const options: pg.PoolConfig & { maxLifetimeSeconds?: number } = {
     host: config.host,
     port: config.port,
     user: config.user,
     password: config.password,
     database: config.database,
-    max: 10,
-    connectionTimeoutMillis: 6000,
+    max: pool.maxOpen,
+    idleTimeoutMillis: pool.idleTimeoutMillis,
+    connectionTimeoutMillis: pool.connectTimeoutMillis,
+    maxLifetimeSeconds: pool.maxLifetimeSeconds,
     ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
   };
+  return options;
 }
 
 export async function testMysqlConnection(config: MysqlConfig) {
-  const conn = await mysql.createConnection({
-    ...poolOptions(normalizeMysql(config)),
-    connectTimeout: 6000,
-  });
+  const conn = await mysql.createConnection(mysqlConnectionOptions(normalizeMysql(config)));
   try {
     await conn.ping();
   } finally {

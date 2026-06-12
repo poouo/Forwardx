@@ -886,6 +886,26 @@ async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
   let group: any = null;
   if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
     group = await db.getForwardGroupById(Number((rule as any).forwardGroupId));
+    await db.validateForwardGroupRuleConfig(Number((rule as any).forwardGroupId), {
+      sourcePort: Number(rule.sourcePort),
+      excludeTemplateRuleId: Number(rule.id),
+    });
+  } else {
+    let rangeStart: number | null | undefined;
+    let rangeEnd: number | null | undefined;
+    if (Number((rule as any).tunnelId || 0) > 0) {
+      const tunnel = await db.getTunnelById(Number((rule as any).tunnelId));
+      rangeStart = (tunnel as any)?.portRangeStart;
+      rangeEnd = (tunnel as any)?.portRangeEnd;
+    } else {
+      const host = await db.getHostById(Number(rule.hostId));
+      rangeStart = (host as any)?.portRangeStart;
+      rangeEnd = (host as any)?.portRangeEnd;
+    }
+    const sourcePort = Number(rule.sourcePort);
+    if (rangeStart != null && rangeEnd != null && (sourcePort < Number(rangeStart) || sourcePort > Number(rangeEnd))) {
+      throw new Error(`入口端口必须在 ${rangeStart}-${rangeEnd} 范围内，请修改端口后再启用`);
+    }
   }
   requireMainBackupAllowed({
     enabled: (rule as any).failoverEnabled,

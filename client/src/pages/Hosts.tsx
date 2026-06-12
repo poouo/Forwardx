@@ -1756,29 +1756,22 @@ function HostsContent() {
 
       {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
             <DialogDescription>
               {editingId ? "修改主机信息" : "添加 Agent 主机"}
             </DialogDescription>
           </DialogHeader>
-          <Tabs defaultValue="basic" className="space-y-4">
-            <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-2"} bg-muted/50`}>
-              <TabsTrigger value="basic" className="flex-1">基本信息</TabsTrigger>
-              <TabsTrigger value="port" className="flex-1">端口限制</TabsTrigger>
-              {user?.role === "admin" && <TabsTrigger value="protocol" className="flex-1">协议管控</TabsTrigger>}
-            </TabsList>
-            <TabsContent value="basic" className="space-y-4">
-              <div className="grid grid-cols-1 gap-4">
-                <div className="space-y-2">
-                  <Label>主机名称</Label>
-                  <Input
-                    placeholder="例如: 香港节点-01"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  />
-                </div>
+          <div className="space-y-5">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>主机名称</Label>
+                <Input
+                  placeholder="例如: 香港节点-01"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                />
               </div>
               {editingId && (
                 <div className="space-y-2">
@@ -1828,86 +1821,82 @@ function HostsContent() {
                   留空自动检测默认出口网卡。
                 </p>
               </div>
-            </TabsContent>
-            <TabsContent value="port" className="space-y-4">
-              <div className="space-y-3">
-                <div>
-                  <Label className="text-sm font-medium">转发端口区间</Label>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    留空表示不限制。
-                  </p>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">起始端口</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      step={1}
-                      placeholder="例如: 10000"
-                      value={form.portRangeStart ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value ? parseInt(e.target.value) : null;
-                        setForm({ ...form, portRangeStart: v });
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">结束端口</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      step={1}
-                      placeholder="例如: 20000"
-                      value={form.portRangeEnd ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value ? parseInt(e.target.value) : null;
-                        setForm({ ...form, portRangeEnd: v });
-                      }}
-                    />
-                  </div>
-                </div>
-                {form.portRangeStart != null && form.portRangeEnd != null && (
-                  <p className="text-xs text-muted-foreground">
-                    可用端口数量: <span className="font-medium">{Math.max(0, form.portRangeEnd - form.portRangeStart + 1)}</span> 个
-                  </p>
-                )}
-                {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
-                  <p className="text-xs text-destructive">
-                    起始端口不能大于结束端口
-                  </p>
-                )}
+            </div>
+            <div className="space-y-3 border-t border-border/50 pt-4">
+              <div>
+                <Label className="text-sm font-medium">转发端口区间</Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  留空表示不限制。
+                </p>
               </div>
-            </TabsContent>
-            {user?.role === "admin" && (
-              <TabsContent value="protocol" className="space-y-4">
-                <div className="space-y-3">
-                  <div>
-                    <Label className="text-sm font-medium">入口协议屏蔽</Label>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      启用后，所有以该主机作为入口的 TCP 转发都会阻断对应协议。
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">HTTP</span>
-                      <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
-                    </label>
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">SOCKS</span>
-                      <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
-                    </label>
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">TLS</span>
-                      <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
-                    </label>
-                  </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">起始端口</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    placeholder="例如: 10000"
+                    value={form.portRangeStart ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value ? parseInt(e.target.value) : null;
+                      setForm({ ...form, portRangeStart: v });
+                    }}
+                  />
                 </div>
-              </TabsContent>
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">结束端口</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    placeholder="例如: 20000"
+                    value={form.portRangeEnd ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value ? parseInt(e.target.value) : null;
+                      setForm({ ...form, portRangeEnd: v });
+                    }}
+                  />
+                </div>
+              </div>
+              {form.portRangeStart != null && form.portRangeEnd != null && (
+                <p className="text-xs text-muted-foreground">
+                  可用端口数量: <span className="font-medium">{Math.max(0, form.portRangeEnd - form.portRangeStart + 1)}</span> 个
+                </p>
+              )}
+              {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
+                <p className="text-xs text-destructive">
+                  起始端口不能大于结束端口
+                </p>
+              )}
+            </div>
+            {user?.role === "admin" && (
+              <div className="space-y-3 border-t border-border/50 pt-4">
+                <div>
+                  <Label className="text-sm font-medium">入口协议屏蔽</Label>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    启用后，所有以该主机作为入口的 TCP 转发都会阻断对应协议。
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                    <span className="text-sm font-medium">HTTP</span>
+                    <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                    <span className="text-sm font-medium">SOCKS</span>
+                    <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                    <span className="text-sm font-medium">TLS</span>
+                    <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                  </label>
+                </div>
+              </div>
             )}
-          </Tabs>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>
               取消

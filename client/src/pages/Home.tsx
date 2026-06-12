@@ -41,9 +41,8 @@ import {
 } from "recharts";
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
-const TRAFFIC_PIE_COLORS = ["#38bdf8", "#818cf8", "#f472b6", "#34d399", "#facc15", "#fb7185", "#22d3ee", "#a78bfa"];
+const TRAFFIC_PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16"];
 const TRAFFIC_PIE_MAX_SEGMENTS = 5;
-const RADIAN = Math.PI / 180;
 
 type TrafficPieDatum = {
   id: number | string;
@@ -227,23 +226,6 @@ function PieTooltipContent({ active, payload }: any) {
   );
 }
 
-function renderPieLabel(props: any) {
-  const { cx, cy, midAngle, outerRadius, name, percent } = props;
-  if (!percent || percent < 4) return null;
-  const radius = outerRadius + 18;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
-  const anchor = x > cx ? "start" : "end";
-  const displayName = String(name || "");
-  const label = displayName.length > 8 ? `${displayName.slice(0, 8)}...` : displayName;
-  return (
-    <text x={x} y={y} textAnchor={anchor} dominantBaseline="central" className="fill-foreground text-[10px]">
-      <tspan x={x} dy="-0.45em">{label}</tspan>
-      <tspan x={x} dy="1.15em" className="fill-muted-foreground tabular-nums">{percent}%</tspan>
-    </text>
-  );
-}
-
 function TrafficPieCard({
   title,
   data,
@@ -253,6 +235,7 @@ function TrafficPieCard({
   data: Array<{ id: number; name: string; value: number }>;
   loading: boolean;
 }) {
+  const [hasAnimated, setHasAnimated] = useState(false);
   const chartData = useMemo<TrafficPieDatum[]>(() => {
     const normalized = data
       .map((item) => ({ ...item, value: Number(item.value) || 0 }))
@@ -273,6 +256,7 @@ function TrafficPieCard({
     }));
   }, [data]);
   const total = chartData.reduce((sum, item) => sum + item.value, 0);
+  const shouldAnimate = chartData.length > 0 && total > 0 && !hasAnimated;
 
   return (
     <Card className="border-border/40 bg-card/60 backdrop-blur-md">
@@ -291,35 +275,69 @@ function TrafficPieCard({
             {loading ? "正在读取流量统计" : "暂无流量数据"}
           </div>
         ) : (
-          <div className="space-y-3">
-            <div className="h-72 min-w-0">
+          <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)] lg:grid-cols-1 2xl:grid-cols-[170px_minmax(0,1fr)]">
+            <div className="h-44 min-w-0">
               <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
+                <PieChart margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
                   <Pie
                     data={chartData}
                     dataKey="value"
                     nameKey="name"
                     cx="50%"
-                    cy="46%"
-                    innerRadius="46%"
-                    outerRadius="68%"
-                    paddingAngle={3}
+                    cy="50%"
+                    startAngle={90}
+                    endAngle={-270}
+                    innerRadius="60%"
+                    outerRadius="80%"
+                    paddingAngle={2}
                     minAngle={3}
-                    cornerRadius={8}
-                    label={renderPieLabel}
-                    labelLine={{ stroke: "var(--color-muted-foreground)", strokeWidth: 1 }}
-                    isAnimationActive
-                    animationDuration={700}
+                    cornerRadius={6}
+                    label={false}
+                    labelLine={false}
+                    isAnimationActive={shouldAnimate}
+                    animationBegin={shouldAnimate ? 80 : 0}
+                    animationDuration={shouldAnimate ? 900 : 0}
+                    animationEasing="ease-out"
+                    onAnimationEnd={() => setHasAnimated(true)}
                   >
                     {chartData.map((item) => (
-                      <Cell key={item.id} fill={item.color} stroke="var(--color-card)" strokeWidth={4} />
+                      <Cell key={item.id} fill={item.color} stroke="transparent" strokeWidth={0} />
                     ))}
                   </Pie>
+                  <text x="50%" y="46%" textAnchor="middle" dominantBaseline="central" className="fill-foreground text-sm font-semibold tabular-nums">
+                    {formatBytes(total)}
+                  </text>
+                  <text x="50%" y="59%" textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground text-[10px]">
+                    合计
+                  </text>
                   <RTooltip content={<PieTooltipContent />} wrapperStyle={{ pointerEvents: "none" }} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="flex flex-wrap justify-center gap-x-3 gap-y-2">
+            <div className="max-h-44 min-w-0 overflow-y-auto">
+              <table className="w-full table-fixed text-xs">
+                <tbody>
+                  {chartData.map((item, index) => (
+                    <tr key={item.id} className="border-t border-border/50 first:border-t-0">
+                      <td className="w-full py-1.5 pr-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                          <span className="w-5 shrink-0 text-[11px] font-semibold text-muted-foreground">#{index + 1}</span>
+                          <span className="min-w-0 truncate font-medium" title={item.name}>{item.name}</span>
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap py-1.5 text-right text-muted-foreground tabular-nums">
+                        {formatBytes(item.value)}
+                      </td>
+                      <td className="w-12 whitespace-nowrap py-1.5 text-right font-semibold tabular-nums">
+                        {item.percent}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-2 sm:col-span-2 lg:col-span-1 2xl:col-span-2">
               {chartData.map((item) => (
                 <div key={item.id} className="flex max-w-full items-center gap-1.5 text-[11px] text-muted-foreground">
                   <span className="h-2.5 w-3.5 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />

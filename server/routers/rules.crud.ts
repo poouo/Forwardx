@@ -178,6 +178,30 @@ async function isForwardGroupTrafficBillingRule(group: any, userId: number) {
   return false;
 }
 
+async function assertRulePortWithinEntryPolicy(options: {
+  hostId: number;
+  sourcePort: number;
+  tunnelId?: number | null;
+  tunnel?: any;
+}) {
+  const port = Number(options.sourcePort || 0);
+  if (!port) return;
+  let rangeStart: number | null | undefined;
+  let rangeEnd: number | null | undefined;
+  if (Number(options.tunnelId || 0) > 0) {
+    const tunnel = options.tunnel || await db.getTunnelById(Number(options.tunnelId));
+    rangeStart = (tunnel as any)?.portRangeStart;
+    rangeEnd = (tunnel as any)?.portRangeEnd;
+  } else {
+    const host = await db.getHostById(Number(options.hostId));
+    rangeStart = (host as any)?.portRangeStart;
+    rangeEnd = (host as any)?.portRangeEnd;
+  }
+  if (rangeStart != null && rangeEnd != null && (port < Number(rangeStart) || port > Number(rangeEnd))) {
+    throw new Error(`入口端口必须在 ${rangeStart}-${rangeEnd} 范围内，请修改端口后再启用`);
+  }
+}
+
 async function settleTrafficBillingForDeletedRule(rule: any) {
   const tunnelId = Number(rule?.tunnelId || 0);
   const billed = await db.settleTrafficBillingRuleOnDelete({
@@ -690,6 +714,12 @@ export const crudRulesRouter = router({
       }
       if (data.isEnabled === true) {
         const sourcePort = Number(data.sourcePort ?? rule.sourcePort);
+        await assertRulePortWithinEntryPolicy({
+          hostId: nextHostIdForRule,
+          sourcePort,
+          tunnelId: nextTunnelIdForRule,
+          tunnel: selectedTunnelForRule,
+        });
         const used = await db.isPortUsedOnHost(nextHostIdForRule, sourcePort, rule.id);
         if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再启用`);
         (data as any).disabledByUser = false;
@@ -839,6 +869,11 @@ export const crudRulesRouter = router({
           forwardType: (rule as any).forwardType,
           tunnelId: (rule as any).tunnelId,
           isAdmin: ctx.user.role === "admin",
+        });
+        await assertRulePortWithinEntryPolicy({
+          hostId: Number(rule.hostId),
+          sourcePort: Number(rule.sourcePort),
+          tunnelId: Number((rule as any).tunnelId || 0) || null,
         });
         if (ctx.user.role !== "admin") {
           const activeTunnelId = Number((rule as any).tunnelId || 0);

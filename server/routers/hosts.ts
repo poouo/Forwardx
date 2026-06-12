@@ -19,23 +19,15 @@ let lastHostUpgradeCleanupAt = 0;
 let hostUpgradeCleanupRunning = false;
 const hostProtocolPolicyFields = ["blockHttp", "blockSocks", "blockTls"] as const;
 
-async function refreshHostProtocolPolicyRuntime(hostId: number) {
+async function refreshHostPolicyRuntime(hostId: number, reason: string) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
-  const rules = await db.getForwardRulesForAgent(id);
-  for (const rule of rules as any[]) {
-    if (Number(rule?.id) > 0) {
-      await db.updateForwardRule(Number(rule.id), { isRunning: false } as any);
-    }
-  }
+  await db.resetAgentRuntimeStateForHost(id);
   const tunnels = await db.getTunnelsByHost(id);
   for (const tunnel of tunnels as any[]) {
-    if (Number((tunnel as any).entryHostId) !== id) continue;
-    await db.updateTunnel(Number(tunnel.id), { isRunning: false } as any);
-    await db.resetForwardRulesByTunnel(Number(tunnel.id));
-    await pushTunnelEndpointRefresh(tunnel, "host-protocol-policy-updated");
+    await pushTunnelEndpointRefresh(tunnel, reason);
   }
-  pushAgentRefresh(id, "host-protocol-policy-updated");
+  pushAgentRefresh(id, reason);
 }
 
 function isValidHostOrIp(value: string) {
@@ -279,6 +271,9 @@ export const hostsRouter = router({
         const protocolPolicyChanged = hostProtocolPolicyFields.some((key) =>
           (data as any)[key] !== undefined && !!(data as any)[key] !== !!(host as any)[key]
         );
+        const portRangeChanged = ["portRangeStart", "portRangeEnd"].some((key) =>
+          (data as any)[key] !== undefined && Number((data as any)[key] ?? 0) !== Number((host as any)[key] ?? 0)
+        );
         const entryChanged = ["entryIp", "tunnelEntryIp"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
@@ -297,8 +292,22 @@ export const hostsRouter = router({
         if (entryChanged) {
           await refreshHostAddressRuntime(id, host, "host-address-updated");
         }
+        if (portRangeChanged) {
+          const disabledCount = await db.disableForwardRulesOutsideHostPortRange(
+            id,
+            pStart,
+            pEnd,
+            pStart != null && pEnd != null
+              ? `入口端口不在当前主机允许范围 ${pStart}-${pEnd} 内，请修改端口后再启用。`
+              : "主机端口限制已变更，请确认端口后再启用。",
+          );
+          if (disabledCount > 0) {
+            console.info(`[HostPolicy] disabled out-of-range rules host=${id} count=${disabledCount} range=${pStart ?? "-"}-${pEnd ?? "-"}`);
+          }
+          await refreshHostPolicyRuntime(id, "host-port-policy-updated");
+        }
         if (protocolPolicyChanged) {
-          await refreshHostProtocolPolicyRuntime(id);
+          await refreshHostPolicyRuntime(id, "host-protocol-policy-updated");
         }
         return { success: true };
       }),

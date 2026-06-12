@@ -1,6 +1,6 @@
 ﻿import { and, desc, eq, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardRules, InsertForwardRule } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, quoteDbIdentifier } from "../dbRuntime";
 import { sqlBool } from "./repositoryUtils";
 
 // ==================== Forward Rule Queries ====================
@@ -172,5 +172,39 @@ export async function disableForwardRuleByProtocolBlock(id: number, reason: stri
     protocolBlockReason: message,
     updatedAt: nowDate(),
   } as any).where(eq(forwardRules.id, id));
+}
+
+export async function disableForwardRulesOutsideHostPortRange(
+  hostId: number,
+  rangeStart?: number | null,
+  rangeEnd?: number | null,
+  reason?: string,
+) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0 || rangeStart == null || rangeEnd == null) return 0;
+  const start = Number(rangeStart);
+  const end = Number(rangeEnd);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) return 0;
+  const rows = await getForwardRulesForAgent(id);
+  const affected = rows.filter((rule: any) => {
+    const port = Number(rule?.sourcePort || 0);
+    return port > 0 && (port < start || port > end);
+  });
+  if (affected.length === 0) return 0;
+  const message = String(reason || `入口端口不在当前主机允许范围 ${start}-${end} 内，请修改端口后再启用。`).slice(0, 300);
+  const now = Math.floor(Date.now() / 1000);
+  await executeRaw(
+    `UPDATE ${quoteDbIdentifier("forward_rules")}
+     SET ${quoteDbIdentifier("isEnabled")} = ?,
+         ${quoteDbIdentifier("isRunning")} = ?,
+         ${quoteDbIdentifier("protocolBlockReason")} = ?,
+         ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("hostId")} = ?
+       AND ${quoteDbIdentifier("pendingDelete")} = ?
+       AND ${quoteDbIdentifier("isForwardGroupTemplate")} = ?
+       AND (${quoteDbIdentifier("sourcePort")} < ? OR ${quoteDbIdentifier("sourcePort")} > ?)`,
+    [false, false, message, now, id, false, false, start, end],
+  );
+  return affected.length;
 }
 
