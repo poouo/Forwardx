@@ -13,7 +13,7 @@ import {
   forwardGroupLatencyStats, InsertForwardGroupLatencyStat,
 } from "../../drizzle/schema";
 import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows, quoteDbIdentifier } from "../dbRuntime";
-import { clampPositiveInt } from "./repositoryUtils";
+import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 
 // ==================== Host Metrics Queries ====================
 
@@ -348,7 +348,7 @@ export async function getTrafficSummaryByRule(opts: {
         memberId: forwardRules.forwardGroupMemberId,
       })
       .from(forwardRules)
-      .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${false}`)
+      .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${sqlBool(false)}`)
     : [];
   const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
   const parentChainChildren = new Map<number, number[]>();
@@ -615,7 +615,7 @@ export async function getTcpingSeriesByRule(
           recordedAt: tcpingStats.recordedAt,
         })
         .from(tcpingStats)
-        .where(sql`${tcpingStats.ruleId} IN (${sql.join(childIds.map((id) => sql`${id}`), sql`, `)}) AND ${tcpingStats.recordedAt} >= ${since}`)
+        .where(sql`${tcpingStats.ruleId} IN (${sql.join(childIds.map((id) => sql`${id}`), sql`, `)}) AND ${tcpingStats.recordedAt} >= ${epochSeconds(since)}`)
         .orderBy(asc(tcpingStats.recordedAt))
         .limit(Math.max(limit * childIds.length, limit));
       const bucketMs = 30_000;
@@ -676,10 +676,10 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
   const rows = await db
     .select({
       bucket: sql<number>`${bucketExpr}`,
-      avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      timeoutCount: sql<number>`SUM(CASE WHEN ${tcpingStats.isTimeout} = ${true} THEN 1 ELSE 0 END)`,
+      avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = ${sqlBool(false)} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = ${sqlBool(false)} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = ${sqlBool(false)} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      timeoutCount: sql<number>`SUM(CASE WHEN ${tcpingStats.isTimeout} = ${sqlBool(true)} THEN 1 ELSE 0 END)`,
       totalCount: sql<number>`COUNT(*)`,
     })
     .from(tcpingStats)

@@ -1,6 +1,7 @@
 ﻿import { and, desc, eq, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardRules, InsertForwardRule } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { sqlBool } from "./repositoryUtils";
 
 // ==================== Forward Rule Queries ====================
 
@@ -32,7 +33,7 @@ export async function getForwardRulesForAgent(hostId?: number) {
   if (!db) return [];
   const conds: any[] = [
     eq(forwardRules.isForwardGroupTemplate, false),
-    sql`(${forwardRules.pendingDelete} = ${false} OR ${forwardRules.isRunning} = ${true})`,
+    sql`(${forwardRules.pendingDelete} = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
   ];
   if (hostId) {
     conds.push(eq(forwardRules.hostId, hostId));

@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { forwardRules, hosts } from "../../drizzle/schema";
 import { getDb, quoteDbIdentifier } from "../dbRuntime";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
-import { clampPositiveInt } from "./repositoryUtils";
+import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 
 type DashboardTrafficBreakdownItem = {
   id: number;
@@ -89,7 +89,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
   const db = await getDb();
   if (!db) return { totalHosts: 0, onlineHosts: 0, totalRules: 0, activeRules: 0, totalTrafficIn: 0, totalTrafficOut: 0 };
 
-  const heartbeatFreshSince = new Date(Date.now() - 90 * 1000);
+  const heartbeatFreshSince = epochSeconds(new Date(Date.now() - 90 * 1000));
   const hostConditions = userId ? eq(hosts.userId, userId) : undefined;
   const ruleConditions = [
     eq(forwardRules.pendingDelete, false),
@@ -100,7 +100,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
   const hostStatsQuery = db
     .select({
       totalHosts: sql<number>`COUNT(*)`,
-      onlineHosts: sql<number>`COALESCE(SUM(CASE WHEN ${hosts.isOnline} = ${true} AND ${hosts.lastHeartbeat} >= ${heartbeatFreshSince} THEN 1 ELSE 0 END), 0)`,
+      onlineHosts: sql<number>`COALESCE(SUM(CASE WHEN ${hosts.isOnline} = ${sqlBool(true)} AND ${hosts.lastHeartbeat} >= ${heartbeatFreshSince} THEN 1 ELSE 0 END), 0)`,
     })
     .from(hosts)
     .where(hostConditions as any);
@@ -108,7 +108,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
   const ruleStatsQuery = db
     .select({
       totalRules: sql<number>`COUNT(*)`,
-      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${true} AND (${forwardRules.isRunning} = ${true} OR (${forwardRules.isForwardGroupTemplate} = ${true} AND EXISTS (SELECT 1 FROM ${sql.raw(quoteDbIdentifier("forward_rules"))} child WHERE ${qualified("child", "forwardGroupRuleId")} = ${forwardRules.id} AND ${qualified("child", "pendingDelete")} = ${false} AND ${qualified("child", "isEnabled")} = ${true} AND ${qualified("child", "isRunning")} = ${true}))) THEN 1 ELSE 0 END)`,
+      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${sqlBool(true)} AND (${forwardRules.isRunning} = ${sqlBool(true)} OR (${forwardRules.isForwardGroupTemplate} = ${sqlBool(true)} AND EXISTS (SELECT 1 FROM ${sql.raw(quoteDbIdentifier("forward_rules"))} child WHERE ${qualified("child", "forwardGroupRuleId")} = ${forwardRules.id} AND ${qualified("child", "pendingDelete")} = ${sqlBool(false)} AND ${qualified("child", "isEnabled")} = ${sqlBool(true)} AND ${qualified("child", "isRunning")} = ${sqlBool(true)}))) THEN 1 ELSE 0 END)`,
     })
     .from(forwardRules)
     .where(and(...ruleConditions));
