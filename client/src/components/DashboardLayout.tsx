@@ -155,6 +155,17 @@ function readPanelUpgradeSession(): PanelUpgradeSession | null {
   }
 }
 
+function DashboardBootLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="flex items-center gap-3 rounded-lg border border-border/40 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-md">
+        <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
+        <span>正在加载面板</span>
+      </div>
+    </div>
+  );
+}
+
 function getLayoutUpgradeProgress(job: any) {
   const status = job?.status || "idle";
   const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
@@ -218,7 +229,7 @@ export default function DashboardLayout({
   const { loading, user } = useAuth();
 
   if (loading) {
-    return null;
+    return <DashboardBootLoading />;
   }
 
   if (!user) {
@@ -252,8 +263,13 @@ function DashboardLayoutContent({
   const isAdmin = user?.role === "admin";
   const utils = trpc.useUtils();
   const { resolvedTheme, setTheme } = useTheme();
+  const [deferBackgroundQueries, setDeferBackgroundQueries] = useState(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDeferBackgroundQueries(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
   const { data: updateInfo } = trpc.system.checkUpdate.useQuery(undefined, {
-    enabled: isAdmin,
+    enabled: isAdmin && !deferBackgroundQueries,
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 60 * 1000,

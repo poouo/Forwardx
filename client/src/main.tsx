@@ -1,7 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { ACCOUNT_DISABLED_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { httpBatchLink, TRPCClientError } from "@trpc/client";
+import { httpBatchLink, httpLink, splitLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
@@ -21,7 +21,20 @@ if (cachedSiteTitle) {
   document.title = cachedSiteTitle;
 }
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: (failureCount, error) => {
+        if (error instanceof TRPCClientError) {
+          if (error.message === UNAUTHED_ERR_MSG || error.message === ACCOUNT_DISABLED_ERR_MSG) return false;
+        }
+        return failureCount < 1;
+      },
+      staleTime: 5_000,
+    },
+  },
+});
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
@@ -57,37 +70,57 @@ queryClient.getMutationCache().subscribe(event => {
   }
 });
 
+const criticalQueryPaths = new Set([
+  "auth.me",
+  "setup.status",
+  "dashboard.stats",
+  "dashboard.trafficTotals",
+  "dashboard.trafficSeries",
+  "dashboard.trafficBreakdown",
+  "dashboard.userTraffic",
+]);
+
+const trpcFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  let requestInput = input;
+  if (mobileAuth.isNative) {
+    const panelUrl = mobileAuth.getPanelUrl();
+    const rawUrl = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    const parsed = new URL(rawUrl, window.location.href);
+    if (panelUrl && parsed.pathname.startsWith("/api/trpc")) {
+      requestInput = `${panelUrl}${parsed.pathname}${parsed.search}`;
+    }
+  }
+  const headers = new Headers(init?.headers);
+  if (mobileAuth.isNative) {
+    headers.set("x-forwardx-mobile", "1");
+    const token = mobileAuth.getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  return globalThis.fetch(requestInput, {
+    ...(init ?? {}),
+    headers,
+    credentials: "include",
+  });
+};
+
 const trpcClient = trpc.createClient({
   links: [
-    httpBatchLink({
-      url: "/api/trpc",
-      transformer: superjson,
-      fetch(input, init) {
-        let requestInput = input;
-        if (mobileAuth.isNative) {
-          const panelUrl = mobileAuth.getPanelUrl();
-          const rawUrl = typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
-          const parsed = new URL(rawUrl, window.location.href);
-          if (panelUrl && parsed.pathname.startsWith("/api/trpc")) {
-            requestInput = `${panelUrl}${parsed.pathname}${parsed.search}`;
-          }
-        }
-        const headers = new Headers(init?.headers);
-        if (mobileAuth.isNative) {
-          headers.set("x-forwardx-mobile", "1");
-          const token = mobileAuth.getToken();
-          if (token) headers.set("Authorization", `Bearer ${token}`);
-        }
-        return globalThis.fetch(requestInput, {
-          ...(init ?? {}),
-          headers,
-          credentials: "include",
-        });
-      },
+    splitLink({
+      condition: (op) => op.type === "query" && criticalQueryPaths.has(op.path),
+      true: httpLink({
+        url: "/api/trpc",
+        transformer: superjson,
+        fetch: trpcFetch,
+      }),
+      false: httpBatchLink({
+        url: "/api/trpc",
+        transformer: superjson,
+        fetch: trpcFetch,
+      }),
     }),
   ],
 });

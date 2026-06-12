@@ -19,6 +19,7 @@ import {
   Package,
   Server,
   Shield,
+  Loader2,
   WalletCards,
   Wifi,
   Zap,
@@ -59,6 +60,17 @@ function formatBytes(bytes: number | string | null | undefined): string {
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   const index = Math.min(units.length - 1, Math.floor(Math.log(Math.abs(num)) / Math.log(1024)));
   return `${parseFloat((num / 1024 ** index).toFixed(index === 0 ? 0 : 2))} ${units[index]}`;
+}
+
+function HomeBootLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <div className="flex items-center gap-3 rounded-lg border border-border/40 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-md">
+        <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
+        <span>正在加载面板</span>
+      </div>
+    </div>
+  );
 }
 
 function money(cents?: number | null, currency = "CNY") {
@@ -339,7 +351,6 @@ function DashboardContent() {
   const isAdmin = user?.role === "admin";
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: 15000 });
   const { data: trafficTotals, isLoading: trafficTotalsLoading } = trpc.dashboard.trafficTotals.useQuery(undefined, {
-    enabled: !isLoading,
     refetchInterval: 60000,
     staleTime: 55000,
   });
@@ -349,11 +360,11 @@ function DashboardContent() {
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
   const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
     { hours: 168, limit: 30 },
-    { enabled: !isLoading, refetchInterval: 30000, staleTime: 25000 },
+    { refetchInterval: 30000, staleTime: 25000 },
   );
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
     { hours: 168, bucketMinutes: 30 },
-    { enabled: !isLoading, refetchInterval: 30000, staleTime: 25000 },
+    { refetchInterval: 30000, staleTime: 25000 },
   );
 
   const chartData = useMemo(
@@ -790,7 +801,7 @@ function DashboardContent() {
         </CardHeader>
         <CardContent>
           <div className="h-52 w-full sm:h-64">
-            {trendLoading ? (
+            {trendLoading && !trafficSeries ? (
               <Skeleton className="h-full w-full" />
             ) : chartData.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无流量数据</div>
@@ -921,7 +932,7 @@ function DashboardContent() {
 export default function Home() {
   const { user, loading } = useAuth();
   const { data: settings, isLoading: settingsLoading } = trpc.system.getSettings.useQuery(undefined, {
-    enabled: !mobileAuth.isNative || mobileAuth.hasPanelUrl(),
+    enabled: !user && (!mobileAuth.isNative || mobileAuth.hasPanelUrl()),
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -934,12 +945,13 @@ export default function Home() {
     toast.success(`欢迎回来！${welcomeName} 用户`, { position: "top-right" });
   }, [user?.id]);
 
-  if (loading || settingsLoading) return null;
+  if (loading) return <HomeBootLoading />;
 
   if (!user) {
+    if (settingsLoading) return <HomeBootLoading />;
     if (mobileAuth.isNative) {
       if (typeof window !== "undefined") window.location.href = "/login";
-      return null;
+      return <HomeBootLoading />;
     }
     if (settings?.homepageEnabled !== false) {
       if (settings?.homepageCustomEnabled && settings?.homepageHtml?.trim()) {
@@ -948,7 +960,7 @@ export default function Home() {
       return <PublicHome />;
     }
     if (typeof window !== "undefined") window.location.href = "/login";
-    return null;
+    return <HomeBootLoading />;
   }
 
   return (
