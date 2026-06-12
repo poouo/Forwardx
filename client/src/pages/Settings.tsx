@@ -61,7 +61,7 @@ import {
   MoveRight,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -355,6 +355,7 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
 
 const settingsTabs = ["system", "telegram", "email", "backup", "install", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
+type DatabaseType = "sqlite" | "mysql" | "postgresql";
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
   return !!tab && settingsTabs.includes(tab as SettingsTab);
@@ -978,6 +979,7 @@ function PanelLogsSection() {
 function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const utils = trpc.useUtils();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const defaultSqlitePath = "/data/forwardx.db";
   const [migrationCode, setMigrationCode] = useState<{
     code: string;
     expiresAt: number;
@@ -1007,9 +1009,34 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [showOnlineConfirm, setShowOnlineConfirm] = useState(false);
   const [migrationJobId, setMigrationJobId] = useState<string | null>(null);
   const [reportedMigrationJobId, setReportedMigrationJobId] = useState<string | null>(null);
+  const [databaseSwitchType, setDatabaseSwitchType] = useState<DatabaseType>("sqlite");
+  const [databaseSwitchMysql, setDatabaseSwitchMysql] = useState({
+    host: "127.0.0.1",
+    port: 3306,
+    user: "forwardx",
+    password: "",
+    database: "forwardx",
+    ssl: false,
+  });
+  const [databaseSwitchPostgresql, setDatabaseSwitchPostgresql] = useState({
+    host: "127.0.0.1",
+    port: 5432,
+    user: "forwardx",
+    password: "",
+    database: "forwardx",
+    ssl: false,
+  });
+  const [databaseSwitchSqlitePath, setDatabaseSwitchSqlitePath] = useState(defaultSqlitePath);
+  const [testedDatabaseSwitchKey, setTestedDatabaseSwitchKey] = useState("");
+  const [databaseSwitchJobId, setDatabaseSwitchJobId] = useState<string | null>(null);
+  const [reportedDatabaseSwitchJobId, setReportedDatabaseSwitchJobId] = useState<string | null>(null);
+  const [showDatabaseSwitchConfirm, setShowDatabaseSwitchConfirm] = useState(false);
 
   const { data: currentMigrationCode } = trpc.system.getMigrationCode.useQuery(undefined, {
     refetchInterval: 1000,
+  });
+  const { data: databaseSwitchStatus } = trpc.system.databaseSwitchStatus.useQuery(undefined, {
+    refetchInterval: 15000,
   });
   const { data: backupSummary, isLoading: backupSummaryLoading } = trpc.system.backupSummary.useQuery(undefined, {
     refetchInterval: 15000,
@@ -1024,6 +1051,33 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       },
     },
   );
+  const { data: databaseSwitchJob } = trpc.system.databaseSwitchJob.useQuery(
+    { jobId: databaseSwitchJobId || "" },
+    {
+      enabled: !!databaseSwitchJobId,
+      refetchInterval: (query) => {
+        const status = query.state.data?.status;
+        return status === "success" || status === "failed" ? false : 1200;
+      },
+    },
+  );
+
+  const actualDefaultSqlitePath = databaseSwitchStatus?.defaultSqlitePath || defaultSqlitePath;
+  const databaseSwitchConfig = useMemo(
+    () =>
+      databaseSwitchType === "mysql"
+        ? { type: "mysql" as const, mysql: databaseSwitchMysql }
+        : databaseSwitchType === "postgresql"
+          ? { type: "postgresql" as const, postgresql: databaseSwitchPostgresql }
+          : { type: "sqlite" as const, sqlite: { path: databaseSwitchSqlitePath || actualDefaultSqlitePath } },
+    [actualDefaultSqlitePath, databaseSwitchMysql, databaseSwitchPostgresql, databaseSwitchSqlitePath, databaseSwitchType],
+  );
+  const databaseSwitchConfigKey = useMemo(() => JSON.stringify(databaseSwitchConfig), [databaseSwitchConfig]);
+  const databaseSwitchExternal = databaseSwitchType === "postgresql" ? databaseSwitchPostgresql : databaseSwitchMysql;
+  const setDatabaseSwitchExternal = databaseSwitchType === "postgresql" ? setDatabaseSwitchPostgresql : setDatabaseSwitchMysql;
+  const databaseSwitchExternalDefaultPort = databaseSwitchType === "postgresql" ? 5432 : 3306;
+  const isDatabaseSwitchTested = testedDatabaseSwitchKey === databaseSwitchConfigKey;
+  const databaseSwitchRunning = databaseSwitchJob?.status === "pending" || databaseSwitchJob?.status === "running";
 
   useEffect(() => {
     setMigrationCode(currentMigrationCode || null);
@@ -1053,6 +1107,37 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       setReportedMigrationJobId(migrationJob.id);
     }
   }, [migrationJob, reportedMigrationJobId, utils.system.backupSummary]);
+
+  useEffect(() => {
+    const activeJob = databaseSwitchStatus?.activeJob;
+    if (!databaseSwitchJobId && activeJob?.id) {
+      setDatabaseSwitchJobId(activeJob.id);
+    }
+  }, [databaseSwitchJobId, databaseSwitchStatus?.activeJob]);
+
+  useEffect(() => {
+    if (!databaseSwitchStatus?.defaultSqlitePath) return;
+    setDatabaseSwitchSqlitePath((current) => (
+      !current || current === defaultSqlitePath ? databaseSwitchStatus.defaultSqlitePath : current
+    ));
+  }, [databaseSwitchStatus?.defaultSqlitePath]);
+
+  useEffect(() => {
+    if (!databaseSwitchJob || reportedDatabaseSwitchJobId === databaseSwitchJob.id) return;
+    if (databaseSwitchJob.status === "success") {
+      toast.success(databaseSwitchJob.message || "数据库切换完成");
+      utils.system.backupSummary.invalidate();
+      utils.system.databaseSwitchStatus.invalidate();
+      setReportedDatabaseSwitchJobId(databaseSwitchJob.id);
+      if (databaseSwitchJob.restartRequired) {
+        window.setTimeout(() => window.location.reload(), 3000);
+      }
+    }
+    if (databaseSwitchJob.status === "failed") {
+      toast.error(databaseSwitchJob.error || "数据库切换失败");
+      setReportedDatabaseSwitchJobId(databaseSwitchJob.id);
+    }
+  }, [databaseSwitchJob, reportedDatabaseSwitchJobId, utils.system.backupSummary, utils.system.databaseSwitchStatus]);
 
   const createMigrationCodeMutation = trpc.system.createMigrationCode.useMutation({
     onSuccess: (data) => {
@@ -1110,6 +1195,27 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       toast.success("在线迁移任务已开始");
     },
     onError: (err) => toast.error(err.message || "启动在线迁移失败"),
+  });
+
+  const testDatabaseSwitchMutation = trpc.system.testDatabaseSwitchTarget.useMutation({
+    onSuccess: (_data, variables) => {
+      setTestedDatabaseSwitchKey(JSON.stringify(variables));
+      toast.success("目标数据库连接测试通过");
+    },
+    onError: (err) => {
+      setTestedDatabaseSwitchKey("");
+      toast.error(err.message || "目标数据库连接测试失败");
+    },
+  });
+
+  const startDatabaseSwitchMutation = trpc.system.startDatabaseSwitch.useMutation({
+    onSuccess: (job) => {
+      setDatabaseSwitchJobId(job.id);
+      setReportedDatabaseSwitchJobId(null);
+      setShowDatabaseSwitchConfirm(false);
+      toast.success("数据库迁移切换任务已开始");
+    },
+    onError: (err) => toast.error(err.message || "启动数据库切换失败"),
   });
 
   const copyMigrationCode = async (code: string) => {
@@ -1187,6 +1293,31 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       return;
     }
     setShowOnlineConfirm(true);
+  };
+
+  const handleTestDatabaseSwitch = () => {
+    setTestedDatabaseSwitchKey("");
+    testDatabaseSwitchMutation.mutate(databaseSwitchConfig);
+  };
+
+  const openDatabaseSwitchConfirm = () => {
+    if (databaseSwitchStatus?.blockedReason) {
+      toast.error(databaseSwitchStatus.blockedReason);
+      return;
+    }
+    if (!backupSummaryReady) {
+      toast.info("正在读取当前面板数据，请稍后再切换");
+      return;
+    }
+    if (!isDatabaseSwitchTested) {
+      toast.error("请先测试目标数据库连接，测试通过后才能开始切换");
+      return;
+    }
+    if (databaseSwitchRunning || startDatabaseSwitchMutation.isPending) {
+      toast.info("已有数据库切换任务正在执行");
+      return;
+    }
+    setShowDatabaseSwitchConfirm(true);
   };
 
   return (
@@ -1367,6 +1498,200 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
         </Card>
       </div>
 
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Database className="h-4 w-4 text-primary" />
+            数据库在线切换
+          </CardTitle>
+          <CardDescription>
+            在 SQLite、MySQL、PostgreSQL 之间迁移当前面板数据，连接测试通过后才能开始。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {(["sqlite", "mysql", "postgresql"] as DatabaseType[]).map((type) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => {
+                  setDatabaseSwitchType(type);
+                  setTestedDatabaseSwitchKey("");
+                }}
+                className={`rounded-lg border p-3 text-left transition ${
+                  databaseSwitchType === type
+                    ? "border-primary/50 bg-primary/10"
+                    : "border-border/50 bg-background/40 hover:border-primary/30"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold">
+                    {type === "sqlite" ? "SQLite" : type === "mysql" ? "MySQL" : "PostgreSQL"}
+                  </span>
+                  {databaseSwitchType === type && <CheckCircle2 className="h-4 w-4 text-primary" />}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {type === "sqlite" ? "本地数据文件" : type === "mysql" ? "外部 MySQL 数据库" : "外部 PostgreSQL 数据库"}
+                </p>
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-4 rounded-lg border border-border/40 bg-muted/20 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">
+                  当前数据库：{databaseSwitchStatus?.currentType
+                    ? databaseSwitchStatus.currentType === "sqlite"
+                      ? "SQLite"
+                      : databaseSwitchStatus.currentType === "mysql"
+                        ? "MySQL"
+                        : "PostgreSQL"
+                    : "未识别"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  目标数据库需要为空库；迁移完成后面板会自动重启或刷新连接。
+                </p>
+              </div>
+              <Badge variant={isDatabaseSwitchTested ? "default" : "outline"} className="w-fit">
+                {isDatabaseSwitchTested ? "连接已测试" : "等待测试"}
+              </Badge>
+            </div>
+
+            {databaseSwitchStatus?.blockedReason && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>当前环境暂不支持面板内切换</AlertTitle>
+                <AlertDescription>{databaseSwitchStatus.blockedReason}</AlertDescription>
+              </Alert>
+            )}
+
+            {databaseSwitchType === "sqlite" ? (
+              <div className="space-y-2">
+                <Label>SQLite 数据文件</Label>
+                <Input
+                  value={databaseSwitchSqlitePath}
+                  onChange={(e) => {
+                    setDatabaseSwitchSqlitePath(e.target.value);
+                    setTestedDatabaseSwitchKey("");
+                  }}
+                  placeholder={actualDefaultSqlitePath}
+                />
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
+                  <div className="space-y-2">
+                    <Label>地址</Label>
+                    <Input
+                      value={databaseSwitchExternal.host}
+                      onChange={(e) => {
+                        setDatabaseSwitchExternal({ ...databaseSwitchExternal, host: e.target.value });
+                        setTestedDatabaseSwitchKey("");
+                      }}
+                      placeholder="127.0.0.1"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>端口</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={databaseSwitchExternal.port}
+                      onChange={(e) => {
+                        setDatabaseSwitchExternal({
+                          ...databaseSwitchExternal,
+                          port: Number(e.target.value || databaseSwitchExternalDefaultPort),
+                        });
+                        setTestedDatabaseSwitchKey("");
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>数据库名</Label>
+                    <Input
+                      value={databaseSwitchExternal.database}
+                      onChange={(e) => {
+                        setDatabaseSwitchExternal({ ...databaseSwitchExternal, database: e.target.value });
+                        setTestedDatabaseSwitchKey("");
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>用户名</Label>
+                    <Input
+                      value={databaseSwitchExternal.user}
+                      onChange={(e) => {
+                        setDatabaseSwitchExternal({ ...databaseSwitchExternal, user: e.target.value });
+                        setTestedDatabaseSwitchKey("");
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>密码</Label>
+                  <Input
+                    type="password"
+                    value={databaseSwitchExternal.password}
+                    onChange={(e) => {
+                      setDatabaseSwitchExternal({ ...databaseSwitchExternal, password: e.target.value });
+                      setTestedDatabaseSwitchKey("");
+                    }}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border/50 bg-background/40 p-3">
+                  <div>
+                    <p className="text-sm font-medium">启用 SSL</p>
+                    <p className="text-xs text-muted-foreground">远程数据库或云数据库可按需开启。</p>
+                  </div>
+                  <Switch
+                    checked={databaseSwitchExternal.ssl}
+                    onCheckedChange={(ssl) => {
+                      setDatabaseSwitchExternal({ ...databaseSwitchExternal, ssl });
+                      setTestedDatabaseSwitchKey("");
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {databaseSwitchJob && (
+              <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">{databaseSwitchJob.step}</span>
+                  <span>{databaseSwitchJob.progress}%</span>
+                </div>
+                <Progress value={databaseSwitchJob.progress} className="mt-3" />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {databaseSwitchJob.error || databaseSwitchJob.message || "数据库迁移切换正在执行，请不要重复提交。"}
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                onClick={handleTestDatabaseSwitch}
+                disabled={testDatabaseSwitchMutation.isPending || databaseSwitchRunning || !!databaseSwitchStatus?.blockedReason}
+              >
+                {testDatabaseSwitchMutation.isPending ? "测试中..." : "测试连接"}
+              </Button>
+              <Button
+                className="gap-2"
+                onClick={openDatabaseSwitchConfirm}
+                disabled={!isDatabaseSwitchTested || databaseSwitchRunning || startDatabaseSwitchMutation.isPending || !!databaseSwitchStatus?.blockedReason}
+              >
+                <MoveRight className="h-4 w-4" />
+                开始迁移切换
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>
@@ -1505,6 +1830,55 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               disabled={startPanelMigrationMutation.isPending}
             >
               确认迁移
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showDatabaseSwitchConfirm} onOpenChange={setShowDatabaseSwitchConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              确认切换数据库
+            </DialogTitle>
+            <DialogDescription>
+              面板会把当前数据迁移到目标数据库，完成后自动重启或刷新连接。
+            </DialogDescription>
+          </DialogHeader>
+          <Alert>
+            <ShieldCheck className="h-4 w-4" />
+            <AlertTitle>请确认目标数据库为空库</AlertTitle>
+            <AlertDescription>
+              迁移会保留当前数据 ID；如果目标数据库已有业务数据，后端会阻止切换以避免覆盖或混合数据。
+            </AlertDescription>
+          </Alert>
+          <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">当前数据库</span>
+              <code>{databaseSwitchStatus?.currentType || "-"}</code>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">目标数据库</span>
+              <code>{databaseSwitchConfig.type}</code>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDatabaseSwitchConfirm(false)}
+              disabled={startDatabaseSwitchMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={() => startDatabaseSwitchMutation.mutate({
+                target: databaseSwitchConfig,
+                confirmed: true,
+              })}
+              disabled={startDatabaseSwitchMutation.isPending || !isDatabaseSwitchTested}
+            >
+              确认切换
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2163,6 +2537,12 @@ function SystemInfoSection() {
     upgradeStatus?.manualUpgradeCommand ||
     settings?.upgrade?.manualUpgradeCommand ||
     manualPanelUpgradeCommands[1].command;
+  const canShowDockerUpgradeScript =
+    isDockerDeployment &&
+    !!updateInfo?.latestVersion &&
+    (updateInfo.hasUpdate || (!!updateInfo.pendingReason && !updateInfo.error));
+  const canStartPanelUpgrade =
+    isDockerDeployment ? canShowDockerUpgradeScript : !!updateInfo?.hasUpdate;
   const androidApkDownloadUrl = settings?.androidApkDownloadUrl || "";
   const contactLinks = [
     {
@@ -2199,11 +2579,11 @@ function SystemInfoSection() {
   const totalProtocolCount = directForwardProtocolKeys.length + tunnelForwardProtocolKeys.length;
 
   useEffect(() => {
-    if (!isDockerDeployment || !updateInfo?.hasUpdate || !updateInfo.latestVersion) return;
+    if (!canShowDockerUpgradeScript || !updateInfo?.latestVersion) return;
     if (shownDockerUpgradeVersion.current === updateInfo.latestVersion) return;
     shownDockerUpgradeVersion.current = updateInfo.latestVersion;
     setShowDockerUpgradeScript(true);
-  }, [isDockerDeployment, updateInfo?.hasUpdate, updateInfo?.latestVersion]);
+  }, [canShowDockerUpgradeScript, updateInfo?.latestVersion]);
 
   if (isLoading) {
     return (
@@ -2917,7 +3297,7 @@ function SystemInfoSection() {
             </div>
           )}
 
-          {updateInfo?.pendingReason && !updateInfo.error && !updateInfo.hasUpdate && (
+          {updateInfo?.pendingReason && !updateInfo.error && (!updateInfo.hasUpdate || updateInfo.deployable === false) && (
             <Alert>
               <AlertTriangle className="h-4 w-4" />
               <AlertTitle>新版本正在准备中</AlertTitle>
@@ -2957,7 +3337,7 @@ function SystemInfoSection() {
                 }
                 setShowUpgradeConfirm(true);
               }}
-              disabled={!updateInfo?.hasUpdate || (!upgradeEnabled && !isDockerDeployment) || isUpgradeRunning || startUpgradeMutation.isPending}
+              disabled={!canStartPanelUpgrade || (!upgradeEnabled && !isDockerDeployment) || isUpgradeRunning || startUpgradeMutation.isPending}
               className="gap-2"
             >
               <Rocket className="h-4 w-4" />
@@ -3192,6 +3572,13 @@ function SystemInfoSection() {
               检测到新版本 {updateInfo?.latestVersion || ""}，请在服务器执行以下命令升级 Docker 部署。
             </DialogDescription>
           </DialogHeader>
+          {updateInfo?.pendingReason && !updateInfo.error && updateInfo.deployable === false && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Docker 镜像可能仍在构建</AlertTitle>
+              <AlertDescription>{updateInfo.pendingReason}</AlertDescription>
+            </Alert>
+          )}
           <Alert>
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>升级会重建原有 ForwardX 容器</AlertTitle>

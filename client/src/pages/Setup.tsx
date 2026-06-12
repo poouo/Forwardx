@@ -26,7 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 
-type DatabaseType = "mysql" | "sqlite";
+type DatabaseType = "mysql" | "postgresql" | "sqlite";
 type SetupMode = "new" | "migrate" | null;
 
 const steps = [
@@ -50,6 +50,14 @@ export default function Setup() {
     database: "forwardx",
     ssl: false,
   });
+  const [postgresql, setPostgresql] = useState({
+    host: "127.0.0.1",
+    port: 5432,
+    user: "forwardx",
+    password: "",
+    database: "forwardx",
+    ssl: false,
+  });
   const [sqlitePath, setSqlitePath] = useState(defaultSqlitePath);
   const [admin, setAdmin] = useState({ email: "", password: "", name: "" });
   const [migration, setMigration] = useState({ oldPanelUrl: "", migrationCode: "", targetPanelUrl: window.location.origin });
@@ -63,9 +71,14 @@ export default function Setup() {
     () =>
       databaseType === "mysql"
         ? { type: "mysql" as const, mysql }
+        : databaseType === "postgresql"
+          ? { type: "postgresql" as const, postgresql }
         : { type: "sqlite" as const, sqlite: { path: sqlitePath || defaultSqlitePath } },
-    [databaseType, defaultSqlitePath, mysql, sqlitePath],
+    [databaseType, defaultSqlitePath, mysql, postgresql, sqlitePath],
   );
+  const externalDatabase = databaseType === "postgresql" ? postgresql : mysql;
+  const setExternalDatabase = databaseType === "postgresql" ? setPostgresql : setMysql;
+  const externalDefaultPort = databaseType === "postgresql" ? 5432 : 3306;
 
   const data = status.data;
   const dbReady = !!data?.databaseConnected && !!data?.schemaReady;
@@ -255,8 +268,8 @@ export default function Setup() {
                   <CardDescription>选择数据库并初始化。</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-5">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {(["sqlite", "mysql"] as DatabaseType[]).map((type) => (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {(["sqlite", "mysql", "postgresql"] as DatabaseType[]).map((type) => (
                       <button
                         key={type}
                         type="button"
@@ -264,11 +277,13 @@ export default function Setup() {
                         className={`rounded-lg border p-4 text-left transition ${databaseType === type ? "border-primary/50 bg-primary/10 shadow-sm" : "border-border bg-white/70 hover:border-primary/30"}`}
                       >
                         <div className="flex items-center justify-between gap-3">
-                          <div className="font-semibold">{type === "sqlite" ? "SQLite 本地数据库" : "MySQL 外部数据库"}</div>
+                          <div className="font-semibold">
+                            {type === "sqlite" ? "SQLite 本地数据库" : type === "mysql" ? "MySQL 外部数据库" : "PostgreSQL 外部数据库"}
+                          </div>
                           {databaseType === type && <CheckCircle2 className="h-4 w-4 text-primary" />}
                         </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          {type === "sqlite" ? "适合单机部署。" : "适合独立运维。"}
+                          {type === "sqlite" ? "适合单机部署。" : type === "mysql" ? "适合现有 MySQL 环境。" : "适合 PostgreSQL 环境。"}
                         </p>
                       </button>
                     ))}
@@ -284,33 +299,33 @@ export default function Setup() {
                       <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
                         <div className="space-y-2">
                           <Label>地址</Label>
-                          <Input value={mysql.host} onChange={(e) => setMysql({ ...mysql, host: e.target.value })} placeholder="127.0.0.1" />
+                          <Input value={externalDatabase.host} onChange={(e) => setExternalDatabase({ ...externalDatabase, host: e.target.value })} placeholder="127.0.0.1" />
                         </div>
                         <div className="space-y-2">
                           <Label>端口</Label>
-                          <Input type="number" min={1} max={65535} value={mysql.port} onChange={(e) => setMysql({ ...mysql, port: Number(e.target.value || 3306) })} />
+                          <Input type="number" min={1} max={65535} value={externalDatabase.port} onChange={(e) => setExternalDatabase({ ...externalDatabase, port: Number(e.target.value || externalDefaultPort) })} />
                         </div>
                       </div>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                           <Label>数据库名</Label>
-                          <Input value={mysql.database} onChange={(e) => setMysql({ ...mysql, database: e.target.value })} />
+                          <Input value={externalDatabase.database} onChange={(e) => setExternalDatabase({ ...externalDatabase, database: e.target.value })} />
                         </div>
                         <div className="space-y-2">
                           <Label>用户名</Label>
-                          <Input value={mysql.user} onChange={(e) => setMysql({ ...mysql, user: e.target.value })} />
+                          <Input value={externalDatabase.user} onChange={(e) => setExternalDatabase({ ...externalDatabase, user: e.target.value })} />
                         </div>
                       </div>
                       <div className="space-y-2">
                         <Label>密码</Label>
-                        <Input type="password" value={mysql.password} onChange={(e) => setMysql({ ...mysql, password: e.target.value })} />
+                        <Input type="password" value={externalDatabase.password} onChange={(e) => setExternalDatabase({ ...externalDatabase, password: e.target.value })} />
                       </div>
                       <div className="flex items-center justify-between rounded-md border border-border/50 bg-white/70 p-3">
                         <div>
                           <p className="text-sm font-medium">启用 SSL</p>
                           <p className="text-xs text-muted-foreground">远程数据库或云数据库可按需开启。</p>
                         </div>
-                        <Switch checked={mysql.ssl} onCheckedChange={(ssl) => setMysql({ ...mysql, ssl })} />
+                        <Switch checked={externalDatabase.ssl} onCheckedChange={(ssl) => setExternalDatabase({ ...externalDatabase, ssl })} />
                       </div>
                     </div>
                   )}

@@ -60,6 +60,132 @@ read_install_port() {
   done
 }
 
+json_escape() {
+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+read_secret() {
+  local prompt="$1"
+  local value=""
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf "%s" "$prompt" > /dev/tty
+    stty -echo < /dev/tty 2>/dev/null || true
+    IFS= read -r value < /dev/tty || value=""
+    stty echo < /dev/tty 2>/dev/null || true
+    printf "\n" > /dev/tty
+  fi
+  printf "%s" "$value"
+}
+
+read_database_port() {
+  local prompt="$1"
+  local default_port="$2"
+  local value=""
+  while true; do
+    printf "%s [%s]: " "$prompt" "$default_port" > /dev/tty
+    IFS= read -r value < /dev/tty || value=""
+    value="${value//[[:space:]]/}"
+    [ -z "$value" ] && value="$default_port"
+    if valid_port "$value"; then
+      printf "%s" "$value"
+      return
+    fi
+    echo "[ERROR] Port must be a number in 1-65535, please retry." > /dev/tty
+  done
+}
+
+read_database_config() {
+  local config_file="$APP_DIR/data/database.json"
+  local choice host port user password database ssl
+  if [ "$ACTION" != "install" ] || [ -f "$config_file" ]; then
+    return
+  fi
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    echo "[INFO] Non-interactive environment, database can be selected on first panel visit."
+    return
+  fi
+
+  echo "Select database type:" > /dev/tty
+  echo "  1) SQLite local database (default)" > /dev/tty
+  echo "  2) MySQL external database" > /dev/tty
+  echo "  3) PostgreSQL external database" > /dev/tty
+  printf "Enter choice [1]: " > /dev/tty
+  IFS= read -r choice < /dev/tty || choice=""
+  choice="${choice//[[:space:]]/}"
+  [ -z "$choice" ] && choice="1"
+  if [ "$choice" = "1" ]; then
+    mkdir -p "$APP_DIR/data"
+    cat > "$config_file" <<EOF
+{
+  "type": "sqlite",
+  "sqlite": {
+    "path": "$(json_escape "$APP_DIR/data/forwardx.db")"
+  }
+}
+EOF
+    chmod 600 "$config_file" 2>/dev/null || true
+    return
+  fi
+  if [ "$choice" != "2" ] && [ "$choice" != "3" ]; then
+    echo "[INFO] Unknown database choice, database can be selected on first panel visit." > /dev/tty
+    return
+  fi
+
+  if [ "$choice" = "2" ]; then
+    printf "MySQL host [127.0.0.1]: " > /dev/tty
+    IFS= read -r host < /dev/tty || host=""
+    host="${host:-127.0.0.1}"
+    port="$(read_database_port "MySQL port" "3306")"
+  else
+    printf "PostgreSQL host [127.0.0.1]: " > /dev/tty
+    IFS= read -r host < /dev/tty || host=""
+    host="${host:-127.0.0.1}"
+    port="$(read_database_port "PostgreSQL port" "5432")"
+  fi
+  printf "Database name [forwardx]: " > /dev/tty
+  IFS= read -r database < /dev/tty || database=""
+  database="${database:-forwardx}"
+  printf "Database user [forwardx]: " > /dev/tty
+  IFS= read -r user < /dev/tty || user=""
+  user="${user:-forwardx}"
+  password="$(read_secret "Database password: ")"
+  printf "Enable SSL? [y/N]: " > /dev/tty
+  IFS= read -r ssl < /dev/tty || ssl=""
+  case "$ssl" in y|Y|yes|YES) ssl="true" ;; *) ssl="false" ;; esac
+
+  mkdir -p "$APP_DIR/data"
+  if [ "$choice" = "2" ]; then
+    cat > "$config_file" <<EOF
+{
+  "type": "mysql",
+  "mysql": {
+    "host": "$(json_escape "$host")",
+    "port": $port,
+    "user": "$(json_escape "$user")",
+    "password": "$(json_escape "$password")",
+    "database": "$(json_escape "$database")",
+    "ssl": $ssl
+  }
+}
+EOF
+  else
+    cat > "$config_file" <<EOF
+{
+  "type": "postgresql",
+  "postgresql": {
+    "host": "$(json_escape "$host")",
+    "port": $port,
+    "user": "$(json_escape "$user")",
+    "password": "$(json_escape "$password")",
+    "database": "$(json_escape "$database")",
+    "ssl": $ssl
+  }
+}
+EOF
+  fi
+  chmod 600 "$config_file" 2>/dev/null || true
+}
+
 resolve_runtime_env() {
   local existing_port existing_jwt
   existing_port="$(get_env_value PORT || true)"
@@ -411,6 +537,7 @@ install_panel() {
   download_panel_bundle "$release_version"
   install_runtime_dependencies
   write_env
+  read_database_config
   write_service
   restart_service
   echo "[DONE] ForwardX panel started (release v$release_version): http://SERVER_IP:$PORT"

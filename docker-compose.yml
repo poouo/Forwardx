@@ -13,6 +13,13 @@ services:
       DATABASE_CONFIG_PATH: /data/database.json
       SQLITE_PATH: /data/forwardx.db
       MYSQL_CONFIG_PATH: /data/mysql.json
+      POSTGRES_URL: ${POSTGRES_URL:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-}
+      POSTGRES_SSL: ${POSTGRES_SSL:-false}
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
     volumes:
       - forwardx-data:/data

@@ -78,6 +78,138 @@ get_env_value() {
   grep -E "^${key}=" "$file" | tail -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
 }
 
+json_escape() {
+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+read_secret() {
+  local prompt="$1"
+  local value=""
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf "%s" "$prompt" > /dev/tty
+    stty -echo < /dev/tty 2>/dev/null || true
+    IFS= read -r value < /dev/tty || value=""
+    stty echo < /dev/tty 2>/dev/null || true
+    printf "\n" > /dev/tty
+  fi
+  printf "%s" "$value"
+}
+
+read_database_port() {
+  local prompt="$1"
+  local default_port="$2"
+  local value=""
+  while true; do
+    printf "%s [%s]: " "$prompt" "$default_port" > /dev/tty
+    IFS= read -r value < /dev/tty || value=""
+    value="${value//[[:space:]]/}"
+    [ -z "$value" ] && value="$default_port"
+    if valid_port "$value"; then
+      printf "%s" "$value"
+      return
+    fi
+    echo "[ERROR] Port must be a number in 1-65535, please retry." > /dev/tty
+  done
+}
+
+read_database_config_json() {
+  local choice host port user password database ssl
+  DATABASE_CONFIG_JSON=""
+  if [ "$ACTION" != "install" ]; then
+    return
+  fi
+  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    echo "[INFO] Non-interactive environment, database can be selected on first panel visit."
+    return
+  fi
+
+  echo "Select database type:" > /dev/tty
+  echo "  1) SQLite local database (default)" > /dev/tty
+  echo "  2) MySQL external database" > /dev/tty
+  echo "  3) PostgreSQL external database" > /dev/tty
+  printf "Enter choice [1]: " > /dev/tty
+  IFS= read -r choice < /dev/tty || choice=""
+  choice="${choice//[[:space:]]/}"
+  [ -z "$choice" ] && choice="1"
+  if [ "$choice" = "1" ]; then
+    DATABASE_CONFIG_JSON="$(cat <<EOF
+{
+  "type": "sqlite",
+  "sqlite": {
+    "path": "/data/forwardx.db"
+  }
+}
+EOF
+)"
+    return
+  fi
+  if [ "$choice" != "2" ] && [ "$choice" != "3" ]; then
+    echo "[INFO] Unknown database choice, database can be selected on first panel visit." > /dev/tty
+    return
+  fi
+
+  if [ "$choice" = "2" ]; then
+    printf "MySQL host [127.0.0.1]: " > /dev/tty
+    IFS= read -r host < /dev/tty || host=""
+    host="${host:-127.0.0.1}"
+    port="$(read_database_port "MySQL port" "3306")"
+  else
+    printf "PostgreSQL host [127.0.0.1]: " > /dev/tty
+    IFS= read -r host < /dev/tty || host=""
+    host="${host:-127.0.0.1}"
+    port="$(read_database_port "PostgreSQL port" "5432")"
+  fi
+  printf "Database name [forwardx]: " > /dev/tty
+  IFS= read -r database < /dev/tty || database=""
+  database="${database:-forwardx}"
+  printf "Database user [forwardx]: " > /dev/tty
+  IFS= read -r user < /dev/tty || user=""
+  user="${user:-forwardx}"
+  password="$(read_secret "Database password: ")"
+  printf "Enable SSL? [y/N]: " > /dev/tty
+  IFS= read -r ssl < /dev/tty || ssl=""
+  case "$ssl" in y|Y|yes|YES) ssl="true" ;; *) ssl="false" ;; esac
+
+  if [ "$choice" = "2" ]; then
+    DATABASE_CONFIG_JSON="$(cat <<EOF
+{
+  "type": "mysql",
+  "mysql": {
+    "host": "$(json_escape "$host")",
+    "port": $port,
+    "user": "$(json_escape "$user")",
+    "password": "$(json_escape "$password")",
+    "database": "$(json_escape "$database")",
+    "ssl": $ssl
+  }
+}
+EOF
+)"
+  else
+    DATABASE_CONFIG_JSON="$(cat <<EOF
+{
+  "type": "postgresql",
+  "postgresql": {
+    "host": "$(json_escape "$host")",
+    "port": $port,
+    "user": "$(json_escape "$user")",
+    "password": "$(json_escape "$password")",
+    "database": "$(json_escape "$database")",
+    "ssl": $ssl
+  }
+}
+EOF
+)"
+  fi
+}
+
+write_database_config_to_volume() {
+  if [ -z "${DATABASE_CONFIG_JSON:-}" ]; then
+    return
+  fi
+  printf "%s\n" "$DATABASE_CONFIG_JSON" | docker run --rm -i -v "${PROJECT_NAME}_forwardx-data:/data" busybox sh -c 'umask 077; cat > /data/database.json'
+}
+
 load_existing_env() {
   local value
   value="$(get_env_value PORT || true)"
@@ -193,6 +325,13 @@ services:
       DATABASE_CONFIG_PATH: /data/database.json
       SQLITE_PATH: /data/forwardx.db
       MYSQL_CONFIG_PATH: /data/mysql.json
+      POSTGRES_URL: ${POSTGRES_URL:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-}
+      POSTGRES_SSL: ${POSTGRES_SSL:-false}
       JWT_SECRET: ${JWT_SECRET:-change-me-to-a-random-string}
     volumes:
       - forwardx-data:/data
@@ -287,9 +426,11 @@ install_panel() {
   require_root
   install_docker
   load_existing_env
+  read_database_config_json
   image="$(resolve_image_ref)"
   write_compose_file
   write_env "$image"
+  write_database_config_to_volume
   start_panel "$image"
   echo "[DONE] ForwardX Docker panel started: http://SERVER_IP:$PORT"
   echo "[INFO] Image: $image"

@@ -81,6 +81,11 @@ export async function dismissAnnouncement(userId: number, announcementId: number
       "INSERT INTO announcement_reads (userId, announcementId, dismissedAt) VALUES (?, ?, ?) ON CONFLICT(announcementId, userId) DO UPDATE SET dismissedAt=excluded.dismissedAt",
       [userId, announcementId, nowSec],
     );
+  } else if (getDatabaseKind() === "postgresql") {
+    await executeRaw(
+      'INSERT INTO announcement_reads ("userId", "announcementId", "dismissedAt") VALUES (?, ?, ?) ON CONFLICT ("announcementId", "userId") DO UPDATE SET "dismissedAt"=excluded."dismissedAt"',
+      [userId, announcementId, nowSec],
+    );
   } else {
     await executeRaw(
       "INSERT INTO announcement_reads (userId, announcementId, dismissedAt) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE dismissedAt=VALUES(dismissedAt)",

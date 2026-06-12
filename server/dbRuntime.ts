@@ -2,12 +2,14 @@ import fs from "fs";
 import path from "path";
 import { drizzle as drizzleMysql } from "drizzle-orm/mysql2";
 import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3";
+import { drizzle as drizzlePostgres } from "drizzle-orm/node-postgres";
 import mysql, { Pool, PoolOptions } from "mysql2/promise";
+import pg from "pg";
 import Database from "better-sqlite3";
 import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
 
-export type DatabaseKind = "mysql" | "sqlite";
+export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
 
 export interface MysqlConfig {
   host: string;
@@ -22,14 +24,25 @@ export interface SqliteConfig {
   path: string;
 }
 
+export interface PostgresqlConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  ssl?: boolean;
+}
+
 export type DatabaseConfig =
   | { type: "mysql"; mysql: MysqlConfig }
-  | { type: "sqlite"; sqlite: SqliteConfig };
+  | { type: "sqlite"; sqlite: SqliteConfig }
+  | { type: "postgresql"; postgresql: PostgresqlConfig };
 
 type Db = any;
 
 let _kind: DatabaseKind | null = null;
 let _pool: Pool | null = null;
+let _pgPool: pg.Pool | null = null;
 let _sqlite: Database.Database | null = null;
 let _db: Db | null = null;
 
@@ -81,6 +94,17 @@ function normalizeMysql(config: MysqlConfig): MysqlConfig {
   };
 }
 
+function normalizePostgresql(config: PostgresqlConfig): PostgresqlConfig {
+  return {
+    host: config.host.trim(),
+    port: Number(config.port || 5432),
+    user: config.user.trim(),
+    password: config.password || "",
+    database: config.database.trim(),
+    ssl: !!config.ssl,
+  };
+}
+
 function normalizeSqlite(config: SqliteConfig): SqliteConfig {
   return {
     path: (config.path || defaultSqlitePath()).trim() || defaultSqlitePath(),
@@ -112,28 +136,72 @@ function readMysqlFromEnv(): MysqlConfig | null {
   return null;
 }
 
+function readPostgresqlFromEnv(): PostgresqlConfig | null {
+  if (ENV.postgresUrl) {
+    const url = new URL(ENV.postgresUrl);
+    return normalizePostgresql({
+      host: url.hostname,
+      port: Number(url.port || 5432),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: url.pathname.replace(/^\/+/, ""),
+      ssl: url.searchParams.get("ssl") === "true" || url.searchParams.get("sslmode") === "require",
+    });
+  }
+  if (ENV.postgresHost && ENV.postgresUser && ENV.postgresDatabase) {
+    return normalizePostgresql({
+      host: ENV.postgresHost,
+      port: ENV.postgresPort,
+      user: ENV.postgresUser,
+      password: ENV.postgresPassword,
+      database: ENV.postgresDatabase,
+      ssl: ENV.postgresSsl,
+    });
+  }
+  return null;
+}
+
+function normalizeDatabaseType(value: string | null | undefined): DatabaseKind | "" {
+  const type = String(value || "").toLowerCase();
+  if (type === "postgresql" || type === "postgres" || type === "pg") return "postgresql";
+  if (type === "mysql" || type === "sqlite") return type;
+  return "";
+}
+
 export function readDatabaseConfig(): DatabaseConfig | null {
-  const explicitType = (ENV.databaseType || "").toLowerCase();
+  const explicitType = normalizeDatabaseType(ENV.databaseType);
   const envMysql = readMysqlFromEnv();
+  const envPostgresql = readPostgresqlFromEnv();
   if (explicitType === "sqlite") {
     return { type: "sqlite", sqlite: normalizeSqlite({ path: defaultSqlitePath() }) };
   }
   if (explicitType === "mysql" && envMysql) {
     return { type: "mysql", mysql: envMysql };
   }
+  if (explicitType === "postgresql" && envPostgresql) {
+    return { type: "postgresql", postgresql: envPostgresql };
+  }
+  if (envPostgresql) return { type: "postgresql", postgresql: envPostgresql };
   if (envMysql) return { type: "mysql", mysql: envMysql };
 
   const file = configFilePath();
   if (fs.existsSync(file)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (parsed?.type === "sqlite") {
+      const parsedType = normalizeDatabaseType(parsed?.type);
+      if (parsedType === "sqlite") {
         return { type: "sqlite", sqlite: normalizeSqlite(parsed.sqlite || parsed) };
       }
-      if (parsed?.type === "mysql") {
+      if (parsedType === "mysql") {
         const mysqlConfig = parsed.mysql || parsed;
         if (mysqlConfig?.host && mysqlConfig?.user && mysqlConfig?.database) {
           return { type: "mysql", mysql: normalizeMysql(mysqlConfig) };
+        }
+      }
+      if (parsedType === "postgresql") {
+        const postgresqlConfig = parsed.postgresql || parsed.postgres || parsed.pg || parsed;
+        if (postgresqlConfig?.host && postgresqlConfig?.user && postgresqlConfig?.database) {
+          return { type: "postgresql", postgresql: normalizePostgresql(postgresqlConfig) };
         }
       }
     } catch {
@@ -169,6 +237,15 @@ export function maskDatabaseConfig(config: DatabaseConfig | null) {
   if (config.type === "sqlite") {
     return { type: "sqlite" as const, sqlite: { path: config.sqlite.path } };
   }
+  if (config.type === "postgresql") {
+    return {
+      type: "postgresql" as const,
+      postgresql: {
+        ...config.postgresql,
+        password: config.postgresql.password ? "********" : "",
+      },
+    };
+  }
   return {
     type: "mysql" as const,
     mysql: {
@@ -186,7 +263,9 @@ export function maskMysqlConfig(config: MysqlConfig | null) {
 export function writeDatabaseConfig(config: DatabaseConfig) {
   const normalized: DatabaseConfig = config.type === "sqlite"
     ? { type: "sqlite", sqlite: normalizeSqlite(config.sqlite) }
-    : { type: "mysql", mysql: normalizeMysql(config.mysql) };
+    : config.type === "postgresql"
+      ? { type: "postgresql", postgresql: normalizePostgresql(config.postgresql) }
+      : { type: "mysql", mysql: normalizeMysql(config.mysql) };
   const file = configFilePath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(normalized, null, 2), { mode: 0o600 });
@@ -212,6 +291,19 @@ function poolOptions(config: MysqlConfig): PoolOptions {
   };
 }
 
+function pgPoolOptions(config: PostgresqlConfig): pg.PoolConfig {
+  return {
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    max: 10,
+    connectionTimeoutMillis: 6000,
+    ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
+  };
+}
+
 export async function testMysqlConnection(config: MysqlConfig) {
   const conn = await mysql.createConnection({
     ...poolOptions(normalizeMysql(config)),
@@ -221,6 +313,15 @@ export async function testMysqlConnection(config: MysqlConfig) {
     await conn.ping();
   } finally {
     await conn.end();
+  }
+}
+
+export async function testPostgresqlConnection(config: PostgresqlConfig) {
+  const pool = new pg.Pool(pgPoolOptions(normalizePostgresql(config)));
+  try {
+    await pool.query("SELECT 1");
+  } finally {
+    await pool.end().catch(() => undefined);
   }
 }
 
@@ -240,6 +341,8 @@ export function testSqliteConnection(config: SqliteConfig) {
 export async function testDatabaseConnection(config: DatabaseConfig) {
   if (config.type === "mysql") {
     await testMysqlConnection(config.mysql);
+  } else if (config.type === "postgresql") {
+    await testPostgresqlConnection(config.postgresql);
   } else {
     testSqliteConnection(config.sqlite);
   }
@@ -249,6 +352,7 @@ export async function connectDatabase(config = readDatabaseConfig()) {
   if (!config) {
     _kind = null;
     _pool = null;
+    _pgPool = null;
     _sqlite = null;
     _db = null;
     return null;
@@ -269,6 +373,16 @@ export async function connectDatabase(config = readDatabaseConfig()) {
     return _db;
   }
 
+  if (config.type === "postgresql") {
+    const normalized = normalizePostgresql(config.postgresql);
+    _pgPool = new pg.Pool(pgPoolOptions(normalized));
+    await _pgPool.query("SELECT 1");
+    _db = drizzlePostgres(_pgPool) as Db;
+    _kind = "postgresql";
+    console.log(`[Database] PostgreSQL connected at ${normalized.host}:${normalized.port}/${normalized.database}`);
+    return _db;
+  }
+
   const normalized = normalizeSqlite(config.sqlite);
   fs.mkdirSync(path.dirname(normalized.path), { recursive: true });
   _sqlite = new Database(normalized.path);
@@ -284,6 +398,9 @@ export async function closeDatabase() {
   if (_pool) {
     await _pool.end().catch(() => undefined);
   }
+  if (_pgPool) {
+    await _pgPool.end().catch(() => undefined);
+  }
   if (_sqlite) {
     try {
       _sqlite.close();
@@ -292,6 +409,7 @@ export async function closeDatabase() {
     }
   }
   _pool = null;
+  _pgPool = null;
   _sqlite = null;
   _db = null;
   _kind = null;
@@ -323,6 +441,10 @@ export function getPool() {
   return _pool;
 }
 
+export function getPostgresPool() {
+  return _pgPool;
+}
+
 export function getSqlite() {
   return _sqlite;
 }
@@ -332,6 +454,11 @@ export function requirePool() {
   return _pool;
 }
 
+export function requirePostgresPool() {
+  if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+  return _pgPool;
+}
+
 export function requireSqlite() {
   if (!_sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
   return _sqlite;
@@ -339,50 +466,87 @@ export function requireSqlite() {
 
 export function requireConnectedDatabase() {
   if (!_kind || !_db) throw new DatabaseNotConfiguredError();
-  return { kind: _kind, db: _db, pool: _pool, sqlite: _sqlite };
+  return { kind: _kind, db: _db, pool: _pool, pgPool: _pgPool, sqlite: _sqlite };
+}
+
+function postgresSql(sqlText: string, params: any[] = []) {
+  let index = 0;
+  return {
+    text: sqlText.replace(/\?/g, () => `$${++index}`),
+    values: params,
+  };
 }
 
 export async function executeRaw(sqlText: string, params: any[] = []) {
+  const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
     if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
-    const [result] = await _pool.execute(sqlText, params);
+    const [result] = await _pool.execute(sqlText, normalizedParams);
     return result as any;
   }
   if (_kind === "sqlite") {
     if (!_sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return _sqlite.prepare(sqlText).run(...params);
+    return _sqlite.prepare(sqlText).run(...normalizedParams);
+  }
+  if (_kind === "postgresql") {
+    if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+    const result = await _pgPool.query(postgresSql(sqlText, normalizedParams));
+    return result as any;
   }
   throw new DatabaseNotConfiguredError();
 }
 
 export async function queryRaw<T = Record<string, any>>(sqlText: string, params: any[] = []): Promise<T[]> {
+  const normalizedParams = params.map((value) => normalizeRawValue(value, _kind));
   if (_kind === "mysql") {
     if (!_pool) throw new DatabaseNotConfiguredError("MySQL database is not connected");
-    const [rows] = await _pool.query(sqlText, params);
+    const [rows] = await _pool.query(sqlText, normalizedParams);
     return rows as T[];
   }
   if (_kind === "sqlite") {
     if (!_sqlite) throw new DatabaseNotConfiguredError("SQLite database is not connected");
-    return _sqlite.prepare(sqlText).all(...params) as T[];
+    return _sqlite.prepare(sqlText).all(...normalizedParams) as T[];
+  }
+  if (_kind === "postgresql") {
+    if (!_pgPool) throw new DatabaseNotConfiguredError("PostgreSQL database is not connected");
+    const result = await _pgPool.query(postgresSql(sqlText, normalizedParams));
+    return result.rows as T[];
   }
   throw new DatabaseNotConfiguredError();
 }
 
-function normalizeRawValue(value: any) {
+function normalizeRawValue(value: any, kind = _kind) {
   if (value instanceof Date) return Math.floor(value.getTime() / 1000);
-  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "boolean" && kind !== "postgresql") return value ? 1 : 0;
   return value;
 }
 
+function quoteIdentifier(kind: DatabaseKind, id: string) {
+  if (kind === "mysql") return `\`${id.replace(/`/g, "``")}\``;
+  return `"${id.replace(/"/g, "\"\"")}"`;
+}
+
+export function quoteDbIdentifier(id: string) {
+  if (!_kind) return `"${id}"`;
+  return quoteIdentifier(_kind, id);
+}
+
+export function rawAffectedRows(result: any) {
+  return Number(result?.affectedRows ?? result?.changes ?? result?.rowCount ?? 0);
+}
+
 export async function insertAndGetId(tableName: string, values: Record<string, any>): Promise<number> {
-  if (_kind === "mysql") {
+  if (_kind === "mysql" || _kind === "postgresql") {
     const columns = Object.keys(values).filter((key) => values[key] !== undefined);
     const placeholders = columns.map(() => "?").join(", ");
-    const quoted = columns.map((key) => `\`${key}\``).join(", ");
+    const quoted = columns.map((key) => quoteIdentifier(_kind as DatabaseKind, key)).join(", ");
+    const table = quoteIdentifier(_kind as DatabaseKind, tableName);
+    const returning = _kind === "postgresql" ? " RETURNING id" : "";
     const result: any = await executeRaw(
-      `INSERT INTO \`${tableName}\` (${quoted}) VALUES (${placeholders})`,
-      columns.map((key) => normalizeRawValue(values[key])),
+      `INSERT INTO ${table} (${quoted}) VALUES (${placeholders})${returning}`,
+      columns.map((key) => normalizeRawValue(values[key], _kind)),
     );
+    if (_kind === "postgresql") return Number(result?.rows?.[0]?.id || 0);
     return Number(result?.insertId || 0);
   }
   if (_kind === "sqlite") {
@@ -391,7 +555,7 @@ export async function insertAndGetId(tableName: string, values: Record<string, a
     const quoted = columns.map((key) => `"${key}"`).join(", ");
     const result: any = await executeRaw(
       `INSERT INTO "${tableName}" (${quoted}) VALUES (${placeholders})`,
-      columns.map((key) => normalizeRawValue(values[key])),
+      columns.map((key) => normalizeRawValue(values[key], _kind)),
     );
     return Number(result?.lastInsertRowid || 0);
   }

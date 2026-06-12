@@ -12,7 +12,7 @@ import {
   tunnelLatencyStats, InsertTunnelLatencyStat,
   forwardGroupLatencyStats, InsertForwardGroupLatencyStat,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows, quoteDbIdentifier } from "../dbRuntime";
 import { clampPositiveInt } from "./repositoryUtils";
 
 // ==================== Host Metrics Queries ====================
@@ -139,8 +139,8 @@ export async function getTotalTraffic(userId?: number) {
   }
 
   const r = await db.select({
-    totalIn: sql<number>`COALESCE(SUM(bytesIn), 0)`,
-    totalOut: sql<number>`COALESCE(SUM(bytesOut), 0)`,
+    totalIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
+    totalOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
   }).from(trafficStats);
   const row = r[0];
   return {
@@ -339,7 +339,7 @@ export async function getTrafficSummaryByRule(opts: {
         memberId: forwardRules.forwardGroupMemberId,
       })
       .from(forwardRules)
-      .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = 0`)
+      .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${false}`)
     : [];
   const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
   const parentChainChildren = new Map<number, number[]>();
@@ -435,7 +435,7 @@ export async function getTrafficSeriesByRule(
   const sinceSec = Math.floor(effectiveSince.getTime() / 1000);
   const bucketSec = bucket * 60;
 
-  const bucketExpr = sql.raw(`(FLOOR(recordedAt / ${bucketSec}) * ${bucketSec})`);
+  const bucketExpr = sql`(FLOOR(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec})`;
 
   const rows = await db
     .select({
@@ -472,7 +472,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
     conds.push(sql`${trafficStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
-  const bucketExpr = sql.raw(`(FLOOR(recordedAt / ${bucketSec}) * ${bucketSec})`);
+  const bucketExpr = sql`(FLOOR(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec})`;
 
   const rows = await db
     .select({
@@ -660,15 +660,15 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
     conds.push(sql`${tcpingStats.ruleId} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)})`);
   }
 
-  const bucketExpr = sql.raw(`(FLOOR(recordedAt / ${bucketSec}) * ${bucketSec})`);
+  const bucketExpr = sql`(FLOOR(${tcpingStats.recordedAt} / ${bucketSec}) * ${bucketSec})`;
 
   const rows = await db
     .select({
       bucket: sql<number>`${bucketExpr}`,
-      avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = 0 AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
-      timeoutCount: sql<number>`SUM(CASE WHEN ${tcpingStats.isTimeout} = 1 THEN 1 ELSE 0 END)`,
+      avgLatency: sql<number>`COALESCE(AVG(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      maxLatency: sql<number>`COALESCE(MAX(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      minLatency: sql<number>`COALESCE(MIN(CASE WHEN ${tcpingStats.isTimeout} = ${false} AND ${tcpingStats.latencyMs} IS NOT NULL THEN ${tcpingStats.latencyMs} END), 0)`,
+      timeoutCount: sql<number>`SUM(CASE WHEN ${tcpingStats.isTimeout} = ${true} THEN 1 ELSE 0 END)`,
       totalCount: sql<number>`COUNT(*)`,
     })
     .from(tcpingStats)
@@ -708,37 +708,38 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
   const cutoffSec = Math.floor((Date.now() - ttlSeconds * 1000) / 1000);
   const nowSec = Math.floor(Date.now() / 1000);
   const staleTests = await queryRaw<TimedOutForwardTest>(
-    `SELECT id, ruleId, hostId, message
-     FROM forward_tests
-     WHERE status IN ('pending', 'running')
-       AND updatedAt < ?`,
+    `SELECT ${quoteDbIdentifier("id")}, ${quoteDbIdentifier("ruleId")}, ${quoteDbIdentifier("hostId")}, ${quoteDbIdentifier("message")}
+     FROM ${quoteDbIdentifier("forward_tests")}
+     WHERE ${quoteDbIdentifier("status")} IN ('pending', 'running')
+       AND ${quoteDbIdentifier("updatedAt")} < ?`,
     [cutoffSec],
   );
   if (staleTests.length === 0) return [];
-  const messageExpr = getDatabaseKind() === "sqlite"
-    ? "('自测超时：Agent 未在' || ? || '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')"
-    : "CONCAT('自测超时：Agent 未在', ?, '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')";
+  const kind = getDatabaseKind();
+  const messageExpr = kind === "mysql"
+    ? "CONCAT('自测超时：Agent 未在', ?, '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')"
+    : "('自测超时：Agent 未在' || ? || '秒内上报结果，请检查 Agent 是否在线或已升级到最新版本')";
   const ids = staleTests.map((test) => Number(test.id)).filter((id) => Number.isFinite(id) && id > 0);
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => "?").join(", ");
   const info: any = await executeRaw(
-    `UPDATE forward_tests
-     SET status = 'timeout',
-         message = COALESCE(NULLIF(message, ''), ${messageExpr}),
-         updatedAt = ?
-     WHERE id IN (${placeholders})
-       AND status IN ('pending', 'running')
-       AND updatedAt < ?`,
+    `UPDATE ${quoteDbIdentifier("forward_tests")}
+     SET ${quoteDbIdentifier("status")} = 'timeout',
+         ${quoteDbIdentifier("message")} = COALESCE(NULLIF(${quoteDbIdentifier("message")}, ''), ${messageExpr}),
+         ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("id")} IN (${placeholders})
+       AND ${quoteDbIdentifier("status")} IN ('pending', 'running')
+       AND ${quoteDbIdentifier("updatedAt")} < ?`,
     [ttlSeconds, nowSec, ...ids, cutoffSec],
   );
-  const changed = Number(info?.affectedRows ?? info?.changes ?? 0);
+  const changed = rawAffectedRows(info);
   if (changed <= 0) return [];
   return queryRaw<TimedOutForwardTest>(
-    `SELECT id, ruleId, hostId, message
-     FROM forward_tests
-     WHERE id IN (${placeholders})
-       AND status = 'timeout'
-       AND updatedAt = ?`,
+    `SELECT ${quoteDbIdentifier("id")}, ${quoteDbIdentifier("ruleId")}, ${quoteDbIdentifier("hostId")}, ${quoteDbIdentifier("message")}
+     FROM ${quoteDbIdentifier("forward_tests")}
+     WHERE ${quoteDbIdentifier("id")} IN (${placeholders})
+       AND ${quoteDbIdentifier("status")} = 'timeout'
+       AND ${quoteDbIdentifier("updatedAt")} = ?`,
     [...ids, nowSec],
   );
 }

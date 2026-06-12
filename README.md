@@ -5,14 +5,14 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、转发组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.124-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.125-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
 ## 社群与下载
 
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-android-v2.3.42.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.125/forwardx-android-v2.3.42.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -68,14 +68,15 @@ DDNS 操作会写入系统日志和转发组事件，包括跳过、当前记录
 
 ## 数据库
 
-首次部署时可以选择 SQLite 或 MySQL：
+首次部署时可以选择 SQLite、MySQL 或 PostgreSQL：
 
 - SQLite 适合单机轻量部署，默认数据文件为 `/data/forwardx.db` 或本地安装目录下的 `data/forwardx.db`。
 - MySQL 适合生产环境、长期运维和跨机器迁移。
+- PostgreSQL 适合已有 PostgreSQL 运维体系或偏好 PostgreSQL 的生产环境。
 - 首次打开面板会进入初始化向导，先选择数据库，再选择新面板或从旧面板迁移。
 - 如果连接的是已有数据库，且里面已经存在管理员账户，会直接进入登录流程。
 - 原地升级会保留已有配置和数据；Docker 部署会保留数据卷，本地 systemd 部署会保留安装目录下的 `data` 目录。
-- 数据库备份建议由用户在 SQLite 文件或 MySQL 侧自行维护。
+- 数据库备份建议由用户在 SQLite 文件、MySQL 或 PostgreSQL 侧自行维护。
 
 ## 快速部署
 
@@ -140,7 +141,7 @@ Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database
 ## 首次初始化
 
 1. 访问 `http://服务器IP:3000`。
-2. 选择 SQLite 或 MySQL，并完成连接检测。
+2. 选择 SQLite、MySQL 或 PostgreSQL，并完成连接检测。
 3. 选择作为新面板使用，或输入旧面板地址和管理员账户发起迁移。
 4. 如果是新库，注册第一个管理员账户；如果是旧库或迁移完成，直接使用原管理员账户登录。
 5. 登录后建议在系统设置中配置面板公开地址、Agent Token、邮件、开放注册和 DDNS 服务商。
@@ -232,11 +233,14 @@ ForwardX 支持两类隧道：
 | `PORT` | `3000` | 面板监听端口 |
 | `DATABASE_CONFIG_PATH` | `/data/database.json` | 面板保存数据库连接配置的位置 |
 | `SQLITE_PATH` | `/data/forwardx.db` | SQLite 默认数据文件路径 |
-| `DATABASE_TYPE` / `DB_TYPE` | 空 | 可选，强制指定 `mysql` 或 `sqlite` |
+| `DATABASE_TYPE` / `DB_TYPE` | 空 | 可选，强制指定 `mysql`、`postgresql` 或 `sqlite` |
 | `MYSQL_CONFIG_PATH` | `/data/mysql.json` | 兼容旧版 MySQL 配置文件路径 |
 | `MYSQL_URL` | 空 | 可选，通过环境变量直接提供 MySQL 连接串 |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | 空 | 可选，通过环境变量提供 MySQL 连接信息 |
 | `MYSQL_SSL` | `false` | MySQL 是否启用 SSL |
+| `POSTGRES_URL` / `POSTGRESQL_URL` / `PG_URL` | 空 | 可选，通过环境变量直接提供 PostgreSQL 连接串 |
+| `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DATABASE` | 空 | 可选，通过环境变量提供 PostgreSQL 连接信息 |
+| `POSTGRES_SSL` | `false` | PostgreSQL 是否启用 SSL |
 | `JWT_SECRET` | `change-me-to-a-random-string` | 登录签名密钥，生产环境必须修改 |
 | `TELEGRAM_BOT_TOKEN` | 空 | Telegram 机器人 Token |
 | `FORWARDX_IMAGE` | `ghcr.io/poouo/forwardx:latest` | Docker 部署使用的预编译镜像 |
@@ -280,7 +284,7 @@ pnpm check:versions
 ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
 下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.124/forwardx-android-v2.3.42.apk
+https://github.com/poouo/Forwardx/releases/download/v2.3.125/forwardx-android-v2.3.42.apk
 
 常用命令：
 
@@ -294,8 +298,8 @@ pnpm mobile:apk
 - 使用强密码注册管理员账户。
 - 生产环境关闭不需要的开放注册。
 - 设置随机 `JWT_SECRET`。
-- 使用 MySQL 时建议设置独立账号，并只授予 ForwardX 所需数据库权限。
-- 定期备份 MySQL 数据库或 SQLite 数据文件。
+- 使用 MySQL 或 PostgreSQL 时建议设置独立账号，并只授予 ForwardX 所需数据库权限。
+- 定期备份 MySQL/PostgreSQL 数据库或 SQLite 数据文件。
 - 使用防火墙或反向代理限制面板访问范围。
 - 妥善保存 Agent Token，泄露后应立即禁用并重新生成。
 - DDNS Token 建议只授予目标域名所需的最小权限。

@@ -1,7 +1,7 @@
 ﻿import crypto from "crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { tunnels, InsertTunnel, forwardRules, userTunnelPermissions, tunnelHops, InsertTunnelHop } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, quoteDbIdentifier, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Tunnel Queries ====================
 
@@ -66,43 +66,42 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
   const db = await getDb();
   if (!db) return;
   const now = Math.floor(Date.now() / 1000);
-  const q = getDatabaseKind() === "mysql" ? "`" : "\"";
 
   await executeRaw(
-    `UPDATE ${q}tunnels${q}
-     SET ${q}isRunning${q} = ?, ${q}updatedAt${q} = ?
-     WHERE ${q}isRunning${q} = ?
+    `UPDATE ${quoteDbIdentifier("tunnels")}
+     SET ${quoteDbIdentifier("isRunning")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("isRunning")} = ?
        AND (
-         ${q}entryHostId${q} = ?
-         OR ${q}exitHostId${q} = ?
-         OR ${q}id${q} IN (
-           SELECT ${q}tunnelId${q}
-           FROM ${q}tunnel_hops${q}
-           WHERE ${q}hostId${q} = ?
+         ${quoteDbIdentifier("entryHostId")} = ?
+         OR ${quoteDbIdentifier("exitHostId")} = ?
+         OR ${quoteDbIdentifier("id")} IN (
+           SELECT ${quoteDbIdentifier("tunnelId")}
+           FROM ${quoteDbIdentifier("tunnel_hops")}
+           WHERE ${quoteDbIdentifier("hostId")} = ?
          )
        )`,
-    [0, now, 1, id, id, id],
+    [false, now, true, id, id, id],
   );
 
   await executeRaw(
-    `UPDATE ${q}forward_rules${q}
-     SET ${q}isRunning${q} = ?, ${q}updatedAt${q} = ?
-     WHERE ${q}isRunning${q} = ?
+    `UPDATE ${quoteDbIdentifier("forward_rules")}
+     SET ${quoteDbIdentifier("isRunning")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("isRunning")} = ?
        AND (
-         ${q}hostId${q} = ?
-         OR ${q}tunnelId${q} IN (
-           SELECT ${q}id${q}
-           FROM ${q}tunnels${q}
-            WHERE ${q}entryHostId${q} = ?
-              OR ${q}exitHostId${q} = ?
-              OR ${q}id${q} IN (
-                SELECT ${q}tunnelId${q}
-                FROM ${q}tunnel_hops${q}
-                WHERE ${q}hostId${q} = ?
+         ${quoteDbIdentifier("hostId")} = ?
+         OR ${quoteDbIdentifier("tunnelId")} IN (
+           SELECT ${quoteDbIdentifier("id")}
+           FROM ${quoteDbIdentifier("tunnels")}
+            WHERE ${quoteDbIdentifier("entryHostId")} = ?
+              OR ${quoteDbIdentifier("exitHostId")} = ?
+              OR ${quoteDbIdentifier("id")} IN (
+                SELECT ${quoteDbIdentifier("tunnelId")}
+                FROM ${quoteDbIdentifier("tunnel_hops")}
+                WHERE ${quoteDbIdentifier("hostId")} = ?
               )
           )
         )`,
-    [0, now, 1, id, id, id, id],
+    [false, now, true, id, id, id, id],
   );
 }
 

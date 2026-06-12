@@ -780,6 +780,16 @@ function HostCard({
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
+  const isOnline = !!host.isOnline;
+  const infoPanelClass = isOnline
+    ? "border-border/40 bg-background/30"
+    : "border-muted-foreground/20 bg-muted/25";
+  const metricProgressClass = isOnline
+    ? "h-1.5"
+    : "h-1.5 bg-muted [&>div]:bg-muted-foreground/40";
+  const trafficPanelClass = isOnline
+    ? "border-border/40 bg-muted/20"
+    : "border-muted-foreground/20 bg-muted/25";
 
   useEffect(() => {
     if (!metrics?.length) return;
@@ -787,14 +797,20 @@ function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className="min-h-[420px] border-border/40 bg-card/60 backdrop-blur-md hover:border-border/60 transition-colors">
+    <Card className={`min-h-[420px] backdrop-blur-md transition-colors ${
+      isOnline
+        ? "border-border/40 bg-card/60 hover:border-border/60"
+        : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
+    }`}>
       <CardHeader className="pb-2">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <CardTitle className="min-w-0 text-base font-semibold">
+          <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
             <span className="flex min-w-0 flex-wrap items-center gap-2">
               <Monitor className="h-4 w-4 shrink-0" />
               <span className="min-w-0 max-w-full truncate">{host.name}</span>
-              <span className="shrink-0 rounded border border-border/50 px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+              <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground ${
+                isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
+              }`}>
                 {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
               </span>
               {agentNeedsUpdate && (
@@ -841,23 +857,23 @@ function HostCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className={`space-y-3 ${isOnline ? "" : "text-muted-foreground"}`}>
         {/* 基本信息 */}
         <div className="space-y-2">
-          <div className="min-w-0 rounded-md border border-border/40 bg-background/30 px-2.5 py-2">
+          <div className={`min-w-0 rounded-md border px-2.5 py-2 ${infoPanelClass}`}>
             <p className="truncate font-mono text-xs leading-5" title={hostAddressText(host)}>
               <span className="mr-1.5 text-muted-foreground">地址</span>
               {hostAddressText(host)}
             </p>
-            <div className="mt-1">
+            <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
               <HostRegionBadge host={host} />
             </div>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <div className="flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className={`h-2 w-2 rounded-full ${host.isOnline ? "bg-chart-2 animate-pulse" : "bg-muted-foreground/30"}`} />
-              <span>{host.isOnline ? "在线" : "离线"}</span>
+              <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
+              <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
             </div>
             <div className="flex min-w-0 items-center gap-1.5">
               <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -878,7 +894,7 @@ function HostCard({
               <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
                 {host.cpuInfo || "未上报 CPU 型号"}
               </p>
-              <Progress value={latestMetric.cpuUsage ?? 0} className="h-1.5" />
+              <Progress value={latestMetric.cpuUsage ?? 0} className={metricProgressClass} />
             </div>
             {/* 内存 - 显示具体数据和百分比 */}
             <div className="space-y-1.5">
@@ -890,7 +906,7 @@ function HostCard({
                     : `${latestMetric.memoryUsage ?? 0}%`}
                 </span>
               </div>
-              <Progress value={latestMetric.memoryUsage ?? 0} className="h-1.5" />
+              <Progress value={latestMetric.memoryUsage ?? 0} className={metricProgressClass} />
             </div>
             {/* 磁盘 */}
             <div className="space-y-1.5">
@@ -902,11 +918,11 @@ function HostCard({
                     : `-- / -- (${latestMetric.diskUsage ?? 0}%)`}
                 </span>
               </div>
-              <Progress value={latestMetric.diskUsage ?? 0} className="h-1.5" />
+              <Progress value={latestMetric.diskUsage ?? 0} className={metricProgressClass} />
             </div>
             {/* 流量 */}
             <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-              <div className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
+              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ArrowDownToLine className="h-3 w-3" />
                   <span>入站</span>
@@ -920,7 +936,7 @@ function HostCard({
                   <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
                 </div>
               </div>
-              <div className="rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
+              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ArrowUpFromLine className="h-3 w-3" />
                   <span>出站</span>
@@ -1493,7 +1509,7 @@ function HostsContent() {
                             {host.isOnline ? (
                               <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
                             ) : (
-                              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />
+                              <span className="h-2.5 w-2.5 rounded-full bg-destructive shadow-sm shadow-destructive/50" />
                             )}
                           </div>
                         </TableCell>

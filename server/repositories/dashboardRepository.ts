@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { forwardRules, hosts } from "../../drizzle/schema";
-import { getDb } from "../dbRuntime";
+import { getDb, quoteDbIdentifier } from "../dbRuntime";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
 import { clampPositiveInt } from "./repositoryUtils";
 
@@ -79,6 +79,10 @@ function getRuleTrafficBucket(rule: RuleTrafficMeta | undefined): RuleTrafficBuc
   return "portRules";
 }
 
+function qualified(alias: string, column: string) {
+  return sql.raw(`${alias}.${quoteDbIdentifier(column)}`);
+}
+
 // ==================== Dashboard Stats ====================
 
 export async function getDashboardStats(userId?: number) {
@@ -95,7 +99,7 @@ export async function getDashboardStats(userId?: number) {
   const hostStatsRows = await db
     .select({
       totalHosts: sql<number>`COUNT(*)`,
-      onlineHosts: sql<number>`SUM(CASE WHEN isOnline = 1 THEN 1 ELSE 0 END)`,
+      onlineHosts: sql<number>`SUM(CASE WHEN ${hosts.isOnline} = ${true} THEN 1 ELSE 0 END)`,
     })
     .from(hosts)
     .where(hostConditions as any);
@@ -103,7 +107,7 @@ export async function getDashboardStats(userId?: number) {
   const ruleStatsRows = await db
     .select({
       totalRules: sql<number>`COUNT(*)`,
-      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = 1 AND (${forwardRules.isRunning} = 1 OR (${forwardRules.isForwardGroupTemplate} = 1 AND EXISTS (SELECT 1 FROM forward_rules child WHERE child.forwardGroupRuleId = ${forwardRules.id} AND child.pendingDelete = 0 AND child.isEnabled = 1 AND child.isRunning = 1))) THEN 1 ELSE 0 END)`,
+      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${true} AND (${forwardRules.isRunning} = ${true} OR (${forwardRules.isForwardGroupTemplate} = ${true} AND EXISTS (SELECT 1 FROM ${sql.raw(quoteDbIdentifier("forward_rules"))} child WHERE ${qualified("child", "forwardGroupRuleId")} = ${forwardRules.id} AND ${qualified("child", "pendingDelete")} = ${false} AND ${qualified("child", "isEnabled")} = ${true} AND ${qualified("child", "isRunning")} = ${true}))) THEN 1 ELSE 0 END)`,
     })
     .from(forwardRules)
     .where(and(...ruleConditions));

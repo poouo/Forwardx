@@ -10,7 +10,7 @@ import {
 import { pushAgentRefresh } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
 import { getDdnsSettings, updateDdnsRecord } from "../ddns";
-import { getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier } from "../dbRuntime";
 import {
   createForwardRule,
   getForwardGroupChildRules,
@@ -47,7 +47,7 @@ type SyncForwardGroupRulesOptions = {
 type ForwardGroupMode = "failover" | "chain";
 
 function quoteId(id: string) {
-  return getDatabaseKind() === "sqlite" ? `"${id}"` : `\`${id}\``;
+  return quoteDbIdentifier(id);
 }
 
 function toDate(value: unknown): Date | null {
@@ -399,8 +399,8 @@ async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number,
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
   const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN (${ignore.map(() => "?").join(",")})` : "";
   const rows = await queryRaw<{ count: number }>(
-    `SELECT COUNT(*) AS count FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = 0 AND ${enabledCol} = 1${ignoreSql}`,
-    [hostId, sourcePort, ...ignore],
+    `SELECT COUNT(*) AS "count" FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
+    [hostId, sourcePort, false, true, ...ignore],
   );
   return (Number(rows[0]?.count) || 0) > 0;
 }
@@ -460,8 +460,8 @@ async function usedPortsOnEntryHost(hostId: number, start: number, end: number, 
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
   const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN (${ignore.map(() => "?").join(",")})` : "";
   const rows = await queryRaw<{ port: number }>(
-    `SELECT ${portCol} AS port FROM ${table} WHERE ${hostCol} = ? AND ${portCol} BETWEEN ? AND ? AND ${pendingCol} = 0 AND ${enabledCol} = 1${ignoreSql}`,
-    [hostId, start, end, ...ignore],
+    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ? AND ${portCol} BETWEEN ? AND ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
+    [hostId, start, end, false, true, ...ignore],
   );
   return new Set(rows.map((row) => Number(row.port)).filter((port) => Number.isInteger(port)));
 }

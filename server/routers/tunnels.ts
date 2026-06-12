@@ -157,8 +157,23 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
   }));
 }
 
+async function getTunnelDeleteImpact(tunnelId: number) {
+  const rules = ((await db.getForwardRulesByTunnel(tunnelId)) as any[])
+    .filter((rule) => !rule.pendingDelete);
+  return {
+    forwardRuleCount: rules.length,
+    forwardRules: rules.slice(0, 8).map((rule) => ({
+      id: Number(rule.id),
+      name: String(rule.name || `规则 #${rule.id}`),
+      sourcePort: Number(rule.sourcePort || 0),
+      targetIp: String(rule.targetIp || ""),
+      targetPort: Number(rule.targetPort || 0),
+    })),
+  };
+}
+
 export const tunnelsRouter = router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+  list: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       const tunnels = isAdmin ? await db.getTunnels() : await db.getTunnelsForUser(ctx.user.id);
       return attachTunnelEndpointHosts(tunnels as any[]);
@@ -443,12 +458,24 @@ export const tunnelsRouter = router({
         }
         return { success: true, reset: keyChanged };
       }),
-    delete: protectedProcedure
+    deleteImpact: protectedProcedure
       .input(z.object({ id: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const tunnel = await db.getTunnelById(input.id);
+        if (!tunnel) throw new Error("隧道不存在");
+        if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        return getTunnelDeleteImpact(input.id);
+      }),
+    delete: protectedProcedure
+      .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
       .mutation(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.id);
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
+        const impact = await getTunnelDeleteImpact(input.id);
+        if (impact.forwardRuleCount > 0 && !input.confirmRules) {
+          throw new Error(`此链路仍有关联转发规则 ${impact.forwardRuleCount} 条，请确认后再删除`);
+        }
         clearTunnelRuntimeStatus(input.id);
         await pushTunnelEndpointRefresh(tunnel, "tunnel-deleted");
         await db.deleteTunnel(input.id);

@@ -32,6 +32,11 @@ export async function setSetting(key: string, value: string | null): Promise<voi
       "INSERT INTO system_settings (key, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updatedAt=excluded.updatedAt",
       [key, value, nowSec],
     );
+  } else if (getDatabaseKind() === "postgresql") {
+    await executeRaw(
+      'INSERT INTO system_settings ("key", value, "updatedAt") VALUES (?, ?, ?) ON CONFLICT ("key") DO UPDATE SET value=excluded.value, "updatedAt"=excluded."updatedAt"',
+      [key, value, nowSec],
+    );
   } else {
     await executeRaw(
       "INSERT INTO system_settings (`key`, value, updatedAt) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value), updatedAt=VALUES(updatedAt)",

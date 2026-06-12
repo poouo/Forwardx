@@ -1,10 +1,11 @@
 import type { Pool } from "mysql2/promise";
 import type Database from "better-sqlite3";
-import { getDatabaseKind, getPool, getSqlite } from "./dbRuntime";
+import type pg from "pg";
+import { getDatabaseKind, getPool, getPostgresPool, getSqlite } from "./dbRuntime";
 
-type ColumnType = "id" | "text" | "varchar" | "int" | "bigint" | "bool" | "epoch";
+export type ColumnType = "id" | "text" | "varchar" | "int" | "bigint" | "bool" | "epoch";
 
-type ColumnDef = {
+export type ColumnDef = {
   name: string;
   type: ColumnType;
   notNull?: boolean;
@@ -12,7 +13,7 @@ type ColumnDef = {
   length?: number;
 };
 
-type TableDef = {
+export type TableDef = {
   name: string;
   columns: ColumnDef[];
   unique?: string[][];
@@ -221,28 +222,50 @@ const seedSettings = [
   ["twoFactorEnabled", "false"],
 ] as const;
 
-function quote(kind: "mysql" | "sqlite", id: string) {
-  return kind === "mysql" ? `\`${id}\`` : `"${id}"`;
+export function getDatabaseTableDefs(): readonly TableDef[] {
+  return tables;
 }
 
-function defaultSql(kind: "mysql" | "sqlite", value: ColumnDef["default"]) {
+type SchemaKind = "mysql" | "sqlite" | "postgresql";
+
+function quote(kind: SchemaKind, id: string) {
+  if (kind === "mysql") return `\`${id.replace(/`/g, "``")}\``;
+  return `"${id.replace(/"/g, "\"\"")}"`;
+}
+
+function defaultSql(kind: SchemaKind, value: ColumnDef["default"]) {
   if (value === undefined || value === null) return "";
-  if (value === "now") return ` DEFAULT ${kind === "mysql" ? "(UNIX_TIMESTAMP())" : "(unixepoch())"}`;
-  if (typeof value === "boolean") return ` DEFAULT ${value ? 1 : 0}`;
+  if (value === "now") {
+    if (kind === "mysql") return " DEFAULT (UNIX_TIMESTAMP())";
+    if (kind === "postgresql") return " DEFAULT (EXTRACT(EPOCH FROM NOW())::INT)";
+    return " DEFAULT (unixepoch())";
+  }
+  if (typeof value === "boolean") {
+    return kind === "postgresql" ? ` DEFAULT ${value ? "TRUE" : "FALSE"}` : ` DEFAULT ${value ? 1 : 0}`;
+  }
   if (typeof value === "number") return ` DEFAULT ${value}`;
   return ` DEFAULT '${String(value).replace(/'/g, "''")}'`;
 }
 
-function columnSql(kind: "mysql" | "sqlite", column: ColumnDef, forAlter = false) {
+function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
   const name = quote(kind, column.name);
   if (column.type === "id") {
     if (forAlter) return "";
-    return kind === "mysql"
-      ? `${name} BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY`
-      : `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
+    if (kind === "mysql") return `${name} BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY`;
+    if (kind === "postgresql") return `${name} BIGSERIAL PRIMARY KEY`;
+    return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
   }
   const type = kind === "sqlite"
     ? (column.type === "varchar" || column.type === "text" ? "TEXT" : "INTEGER")
+    : kind === "postgresql"
+      ? ({
+        text: "TEXT",
+        varchar: `VARCHAR(${column.length || 191})`,
+        int: "INTEGER",
+        bigint: "BIGINT",
+        bool: "BOOLEAN",
+        epoch: "INTEGER",
+      } as Record<ColumnType, string>)[column.type]
     : ({
       text: "TEXT",
       varchar: `VARCHAR(${column.length || 191})`,
@@ -296,6 +319,38 @@ async function ensureMysqlSchema(pool: Pool) {
   }
 }
 
+function indexName(prefix: string, table: string, cols: string[]) {
+  return `${prefix}_${table}_${cols.join("_")}`.slice(0, 60);
+}
+
+async function ensurePostgresqlSchema(pool: pg.Pool) {
+  for (const table of tables) {
+    const columns = table.columns.map((column) => columnSql("postgresql", column)).filter(Boolean);
+    const unique = (table.unique || []).map((cols) => `UNIQUE (${cols.map((col) => quote("postgresql", col)).join(", ")})`);
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS ${quote("postgresql", table.name)} (${[...columns, ...unique].join(", ")})`,
+    );
+    for (const column of table.columns) {
+      if (column.type === "id") continue;
+      await pool.query(`ALTER TABLE ${quote("postgresql", table.name)} ADD COLUMN ${columnSql("postgresql", column, true)}`).catch(() => undefined);
+    }
+    for (const cols of table.indexes || []) {
+      const name = quote("postgresql", indexName("idx", table.name, cols));
+      await pool.query(`CREATE INDEX IF NOT EXISTS ${name} ON ${quote("postgresql", table.name)} (${cols.map((col) => quote("postgresql", col)).join(", ")})`).catch(() => undefined);
+    }
+    for (const cols of table.unique || []) {
+      const name = quote("postgresql", indexName("uniq", table.name, cols));
+      await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${name} ON ${quote("postgresql", table.name)} (${cols.map((col) => quote("postgresql", col)).join(", ")})`).catch(() => undefined);
+    }
+  }
+  for (const [key, value] of seedSettings) {
+    await pool.query(
+      'INSERT INTO system_settings ("key", value, "updatedAt") VALUES ($1, $2, EXTRACT(EPOCH FROM NOW())::INT) ON CONFLICT ("key") DO NOTHING',
+      [key, value],
+    );
+  }
+}
+
 function ensureSqliteSchema(sqlite: Database.Database) {
   for (const table of tables) {
     const columns = table.columns.map((column) => columnSql("sqlite", column)).filter(Boolean);
@@ -322,13 +377,17 @@ function ensureSqliteSchema(sqlite: Database.Database) {
   }
 }
 
-export async function ensureDatabaseSchema(target?: Pool | Database.Database) {
+export async function ensureDatabaseSchema(target?: Pool | pg.Pool | Database.Database) {
   if (target && "prepare" in target) {
     ensureSqliteSchema(target as Database.Database);
     return;
   }
+  if (target && "getConnection" in target) {
+    await ensureMysqlSchema(target as unknown as Pool);
+    return;
+  }
   if (target) {
-    await ensureMysqlSchema(target as Pool);
+    await ensurePostgresqlSchema(target as pg.Pool);
     return;
   }
   const kind = getDatabaseKind();
@@ -336,6 +395,12 @@ export async function ensureDatabaseSchema(target?: Pool | Database.Database) {
     const sqlite = getSqlite();
     if (!sqlite) throw new Error("SQLite database is not connected");
     ensureSqliteSchema(sqlite);
+    return;
+  }
+  if (kind === "postgresql") {
+    const pool = getPostgresPool();
+    if (!pool) throw new Error("PostgreSQL database is not connected");
+    await ensurePostgresqlSchema(pool);
     return;
   }
   const pool = getPool();

@@ -31,8 +31,18 @@ const mysqlConfigInput = z.object({
   ssl: z.boolean().default(false),
 });
 
+const postgresqlConfigInput = z.object({
+  host: z.string().trim().min(1, "请输入 PostgreSQL 地址"),
+  port: z.coerce.number().int().min(1).max(65535).default(5432),
+  user: z.string().trim().min(1, "请输入 PostgreSQL 用户名"),
+  password: z.string().default(""),
+  database: z.string().trim().min(1, "请输入数据库名"),
+  ssl: z.boolean().default(false),
+});
+
 const databaseConfigInput = z.discriminatedUnion("type", [
   z.object({ type: z.literal("mysql"), mysql: mysqlConfigInput }),
+  z.object({ type: z.literal("postgresql"), postgresql: postgresqlConfigInput }),
   z.object({
     type: z.literal("sqlite"),
     sqlite: z.object({
@@ -132,12 +142,12 @@ function redactSetupStatusForPublic(status: Awaited<ReturnType<typeof setupStatu
 }
 
 function quote(name: string) {
-  return getDatabaseKind() === "sqlite" ? `"${name}"` : `\`${name}\``;
+  return getDatabaseKind() === "mysql" ? `\`${name}\`` : `"${name}"`;
 }
 
 async function countTableRows(table: string) {
   try {
-    const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as count FROM ${quote(table)}`);
+    const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as "count" FROM ${quote(table)}`);
     return Number(rows[0]?.count || 0);
   } catch {
     return 0;
@@ -181,6 +191,9 @@ async function clearExistingPanelData() {
     mysqlConfigured: getDatabaseKind() === "mysql" ? "true" : "false",
     mysqlHost: settings.mysqlHost ?? "",
     mysqlDatabase: settings.mysqlDatabase ?? "",
+    postgresqlConfigured: getDatabaseKind() === "postgresql" ? "true" : "false",
+    postgresqlHost: settings.postgresqlHost ?? "",
+    postgresqlDatabase: settings.postgresqlDatabase ?? "",
     sqlitePath: settings.sqlitePath ?? "",
     setupDataChoice: "new-panel",
   });
@@ -209,6 +222,9 @@ async function saveDatabase(input: DatabaseConfig) {
     mysqlConfigured: input.type === "mysql" ? "true" : "false",
     mysqlHost: input.type === "mysql" ? input.mysql.host.trim() : "",
     mysqlDatabase: input.type === "mysql" ? input.mysql.database.trim() : "",
+    postgresqlConfigured: input.type === "postgresql" ? "true" : "false",
+    postgresqlHost: input.type === "postgresql" ? input.postgresql.host.trim() : "",
+    postgresqlDatabase: input.type === "postgresql" ? input.postgresql.database.trim() : "",
     sqlitePath: input.type === "sqlite" ? input.sqlite.path.trim() : "",
   });
   return setupStatus();

@@ -16,6 +16,16 @@ import {
   sqliteTable,
   text as sqliteText,
 } from "drizzle-orm/sqlite-core";
+import {
+  bigint as pgBigint,
+  bigserial as pgBigSerial,
+  boolean as pgBoolean,
+  customType as pgCustomType,
+  integer as pgInteger,
+  pgTable,
+  text as pgText,
+  varchar as pgVarchar,
+} from "drizzle-orm/pg-core";
 
 /**
  * MySQL schema for ForwardX.
@@ -27,11 +37,13 @@ import {
  * - All `id` fields are auto-incrementing primary keys.
  */
 
-export type DatabaseDialect = "mysql" | "sqlite";
+export type DatabaseDialect = "mysql" | "sqlite" | "postgresql";
 
 function readConfiguredDialect(): DatabaseDialect {
   const explicit = (process.env.DATABASE_TYPE || process.env.DB_TYPE || "").toLowerCase();
-  if (explicit === "sqlite" || explicit === "mysql") return explicit;
+  if (explicit === "sqlite" || explicit === "mysql" || explicit === "postgresql" || explicit === "postgres" || explicit === "pg") {
+    return explicit === "postgres" || explicit === "pg" ? "postgresql" : explicit;
+  }
   const candidates = [
     process.env.DATABASE_CONFIG_PATH || "",
     process.env.DB_CONFIG_PATH || "",
@@ -43,7 +55,9 @@ function readConfiguredDialect(): DatabaseDialect {
       if (!fs.existsSync(file)) continue;
       const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
       const type = String(parsed?.type || "").toLowerCase();
-      if (type === "sqlite" || type === "mysql") return type;
+      if (type === "sqlite" || type === "mysql" || type === "postgresql" || type === "postgres" || type === "pg") {
+        return type === "postgres" || type === "pg" ? "postgresql" : type;
+      }
     } catch {
       // dbRuntime reports malformed config with a useful setup error.
     }
@@ -54,22 +68,41 @@ function readConfiguredDialect(): DatabaseDialect {
 
 export const SCHEMA_DIALECT: DatabaseDialect = readConfiguredDialect();
 const isSqliteDialect = SCHEMA_DIALECT === "sqlite";
+const isPostgresqlDialect = SCHEMA_DIALECT === "postgresql";
 
 const table = (name: string, columns: any): any =>
-  isSqliteDialect ? sqliteTable(name, columns) : mysqlTable(name, columns);
+  isSqliteDialect ? sqliteTable(name, columns) : isPostgresqlDialect ? pgTable(name, columns) : mysqlTable(name, columns);
 const serial = (name: string): any =>
-  isSqliteDialect ? sqliteInteger(name).primaryKey({ autoIncrement: true }) : mysqlSerial(name);
-const text = (name: string): any => (isSqliteDialect ? sqliteText(name) : mysqlText(name));
+  isSqliteDialect
+    ? sqliteInteger(name).primaryKey({ autoIncrement: true })
+    : isPostgresqlDialect
+      ? pgBigSerial(name, { mode: "number" }).primaryKey()
+      : mysqlSerial(name);
+const text = (name: string): any => (isSqliteDialect ? sqliteText(name) : isPostgresqlDialect ? pgText(name) : mysqlText(name));
 const varchar = (name: string, config: { length: number }): any =>
-  isSqliteDialect ? sqliteText(name) : mysqlVarchar(name, config);
-const int = (name: string): any => (isSqliteDialect ? sqliteInteger(name) : mysqlInt(name));
+  isSqliteDialect ? sqliteText(name) : isPostgresqlDialect ? pgVarchar(name, config) : mysqlVarchar(name, config);
+const int = (name: string): any => (isSqliteDialect ? sqliteInteger(name) : isPostgresqlDialect ? pgInteger(name) : mysqlInt(name));
 const boolean = (name: string): any =>
-  isSqliteDialect ? sqliteInteger(name, { mode: "boolean" }) : mysqlBoolean(name);
+  isSqliteDialect ? sqliteInteger(name, { mode: "boolean" }) : isPostgresqlDialect ? pgBoolean(name) : mysqlBoolean(name);
 const bigint = (name: string, config?: { mode?: "number" }): any =>
-  isSqliteDialect ? sqliteInteger(name) : mysqlBigint(name, config as any);
-const nowDefault = () => (isSqliteDialect ? sql`(unixepoch())` : sql`(UNIX_TIMESTAMP())`);
+  isSqliteDialect ? sqliteInteger(name) : isPostgresqlDialect ? pgBigint(name, config as any) : mysqlBigint(name, config as any);
+const nowDefault = () => (isSqliteDialect ? sql`(unixepoch())` : isPostgresqlDialect ? sql`(EXTRACT(EPOCH FROM NOW())::INT)` : sql`(UNIX_TIMESTAMP())`);
 
 const mysqlEpoch = customType<{ data: Date; driverData: number | string | null }>({
+  dataType() {
+    return "int";
+  },
+  fromDriver(value) {
+    const n = Number(value || 0);
+    return new Date(n * 1000);
+  },
+  toDriver(value) {
+    if (!value) return null;
+    return Math.floor(value.getTime() / 1000);
+  },
+});
+
+const postgresEpoch = pgCustomType<{ data: Date; driverData: number | string | null }>({
   dataType() {
     return "int";
   },
@@ -86,6 +119,8 @@ const mysqlEpoch = customType<{ data: Date; driverData: number | string | null }
 const epoch = (name: string): any =>
   isSqliteDialect
     ? sqliteInteger(name, { mode: "timestamp" })
+    : isPostgresqlDialect
+      ? postgresEpoch(name)
     : mysqlEpoch(name);
 
 export const users = table("users", {

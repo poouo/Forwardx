@@ -461,10 +461,15 @@ export function ForwardGroupsContent({
   const [internalViewMode, setInternalViewMode] = useState<ForwardGroupViewMode>(() => getStoredForwardGroupViewMode());
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
+  const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
+  const deleteImpactQuery = trpc.forwardGroups.deleteImpact.useQuery(
+    { id: Number(deleteGroup?.id || 0) },
+    { enabled: !!deleteGroup },
+  );
 
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
@@ -568,6 +573,7 @@ export function ForwardGroupsContent({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
+      setDeleteGroup(null);
       toast.success("转发组已删除，引用规则将同步清理");
     },
     onError: (e) => toast.error(e.message || "删除失败"),
@@ -934,9 +940,7 @@ export function ForwardGroupsContent({
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 text-destructive hover:text-destructive"
-                      onClick={() => {
-                        if (confirm("确定删除此转发组吗？引用它的转发规则会同步清理。")) deleteMutation.mutate({ id: group.id });
-                      }}
+                      onClick={() => setDeleteGroup(group)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -1013,9 +1017,7 @@ export function ForwardGroupsContent({
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 text-destructive hover:text-destructive"
-                      onClick={() => {
-                        if (confirm("确定删除此转发组吗？引用它的转发规则会同步清理。")) deleteMutation.mutate({ id: group.id });
-                      }}
+                      onClick={() => setDeleteGroup(group)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -1090,9 +1092,7 @@ export function ForwardGroupsContent({
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 text-destructive hover:text-destructive"
-                            onClick={() => {
-                              if (confirm("确定删除此转发组吗？引用它的转发规则会同步清理。")) deleteMutation.mutate({ id: group.id });
-                            }}
+                            onClick={() => setDeleteGroup(group)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
@@ -1317,6 +1317,57 @@ export function ForwardGroupsContent({
           onOpenChange={(open) => !open && setTestGroup(null)}
         />
       )}
+      <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{deleteGroup?.groupMode === "chain" ? "删除端口转发链" : "删除转发组"}</DialogTitle>
+            <DialogDescription>
+              确认删除 "{deleteGroup?.name}"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {deleteImpactQuery.isLoading ? (
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+                正在检查关联转发规则...
+              </div>
+            ) : deleteImpactQuery.data?.forwardRuleCount ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
+                <p className="font-medium text-destructive">
+                  当前{deleteGroup?.groupMode === "chain" ? "端口转发链" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  包含 {deleteImpactQuery.data.templateRuleCount || 0} 条用户规则和 {deleteImpactQuery.data.childRuleCount || 0} 条成员运行规则。
+                </p>
+                <div className="mt-2 max-h-44 space-y-1 overflow-auto text-xs text-muted-foreground">
+                  {(deleteImpactQuery.data.forwardRules || []).map((rule: any) => (
+                    <div key={rule.id} className="rounded border border-border/40 bg-background/60 px-2 py-1">
+                      <span className="font-medium text-foreground">{rule.name}</span>
+                      <span className="ml-2">:{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort}</span>
+                    </div>
+                  ))}
+                  {deleteImpactQuery.data.forwardRuleCount > (deleteImpactQuery.data.forwardRules || []).length && (
+                    <p>还有 {deleteImpactQuery.data.forwardRuleCount - (deleteImpactQuery.data.forwardRules || []).length} 条未显示。</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+                未发现关联转发规则。
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteGroup(null)}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={!deleteGroup || deleteMutation.isPending || deleteImpactQuery.isLoading}
+              onClick={() => deleteGroup && deleteMutation.mutate({ id: deleteGroup.id, confirmRules: true })}
+            >
+              {deleteMutation.isPending ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

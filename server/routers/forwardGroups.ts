@@ -51,6 +51,26 @@ function normalizeMembers(groupMode: "failover" | "chain", groupType: "host" | "
   });
 }
 
+async function getForwardGroupDeleteImpact(groupId: number) {
+  const templateRules = ((await db.getForwardGroupTemplateRules(groupId)) as any[])
+    .filter((rule) => !rule.pendingDelete);
+  const childRules = ((await db.getForwardGroupChildRules(groupId)) as any[])
+    .filter((rule) => !rule.pendingDelete);
+  return {
+    templateRuleCount: templateRules.length,
+    childRuleCount: childRules.length,
+    forwardRuleCount: templateRules.length + childRules.length,
+    forwardRules: [...templateRules, ...childRules].slice(0, 8).map((rule) => ({
+      id: Number(rule.id),
+      name: String(rule.name || `规则 #${rule.id}`),
+      sourcePort: Number(rule.sourcePort || 0),
+      targetIp: String(rule.targetIp || ""),
+      targetPort: Number(rule.targetPort || 0),
+      managed: !rule.isForwardGroupTemplate,
+    })),
+  };
+}
+
 export const forwardGroupsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     if (ctx.user.role === "admin") return db.getForwardGroups();
@@ -191,9 +211,23 @@ export const forwardGroupsRouter = router({
       return { success: true };
     }),
 
-  delete: adminProcedure
+  deleteImpact: adminProcedure
     .input(z.object({ id: z.number() }))
+    .query(async ({ input }) => {
+      const group = await db.getForwardGroupById(input.id);
+      if (!group) throw new Error("转发组不存在");
+      return getForwardGroupDeleteImpact(input.id);
+    }),
+
+  delete: adminProcedure
+    .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
     .mutation(async ({ input }) => {
+      const group = await db.getForwardGroupById(input.id);
+      if (!group) throw new Error("转发组不存在");
+      const impact = await getForwardGroupDeleteImpact(input.id);
+      if (impact.forwardRuleCount > 0 && !input.confirmRules) {
+        throw new Error(`此转发组仍有关联转发规则 ${impact.forwardRuleCount} 条，请确认后再删除`);
+      }
       await db.deleteForwardGroup(input.id);
       return { success: true };
     }),

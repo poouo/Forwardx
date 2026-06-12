@@ -32,7 +32,7 @@ export async function getForwardRulesForAgent(hostId?: number) {
   if (!db) return [];
   const conds: any[] = [
     eq(forwardRules.isForwardGroupTemplate, false),
-    sql`(${forwardRules.pendingDelete} = 0 OR ${forwardRules.isRunning} = 1)`,
+    sql`(${forwardRules.pendingDelete} = ${false} OR ${forwardRules.isRunning} = ${true})`,
   ];
   if (hostId) {
     conds.push(eq(forwardRules.hostId, hostId));

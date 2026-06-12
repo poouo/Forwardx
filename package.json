@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.124",
+  "version": "2.3.125",
   "description": "ForwardX 杞彂绠＄悊闈㈡澘锛氬涓绘満绔彛杞彂銆佸姞瀵嗛毀閬撱€佽浆鍙戠粍銆佺敤鎴锋潈闄愩€佸椁愬拰娴侀噺璁¤垂缁熶竴绠＄悊绯荤粺",
   "license": "AGPL-3.0-only",
   "private": true,
@@ -45,6 +45,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@trpc/server": "^11.0.0",
+    "@types/pg": "^8.20.0",
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
     "countup.js": "^2.10.0",
@@ -57,6 +58,7 @@
     "mysql2": "^3.14.1",
     "nanoid": "^5.0.9",
     "nodemailer": "^6.9.16",
+    "pg": "^8.21.0",
     "qrcode": "^1.5.4",
     "react-globe.gl": "^2.38.0",
     "react-map-gl": "^8.1.1",

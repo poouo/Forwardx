@@ -1,7 +1,7 @@
 import { Request, Response, Router } from "express";
 import nodeCrypto from "crypto";
 import { MIGRATION_TABLES, ensureDatabaseSchema } from "./dbSchema";
-import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier } from "./dbRuntime";
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { getHosts, requestHostAgentUpgrade } from "./db";
 import { pushAgentUpgrade } from "./agentEvents";
@@ -116,12 +116,12 @@ export async function exportMigrationSnapshot(sourcePanelUrl?: string): Promise<
 }
 
 function quote(name: string) {
-  return getDatabaseKind() === "sqlite" ? `"${name}"` : `\`${name}\``;
+  return quoteDbIdentifier(name);
 }
 
 function normalizeValue(value: any) {
   if (value instanceof Date) return Math.floor(value.getTime() / 1000);
-  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "boolean" && getDatabaseKind() !== "postgresql") return value ? 1 : 0;
   return value;
 }
 
@@ -160,7 +160,7 @@ function incrementCounter(target: Record<string, number>, table: string) {
 }
 
 async function getTableCount(table: string) {
-  const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as count FROM ${quote(table)}`).catch(() => []);
+  const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as "count" FROM ${quote(table)}`).catch(() => []);
   return Number(rows[0]?.count || 0);
 }
 
@@ -597,6 +597,9 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
         "mysqlConfigured",
         "mysqlHost",
         "mysqlDatabase",
+        "postgresqlConfigured",
+        "postgresqlHost",
+        "postgresqlDatabase",
         "sqlitePath",
         "setupDataChoice",
         "panelPublicUrl",
@@ -673,6 +676,18 @@ async function resetImportedRuntimeState(maps: ImportMaps) {
   await updateByIds("forward_rules", ruleIds, { isRunning: false, pendingDelete: false, updatedAt: now });
 }
 
+async function syncPostgresqlSequences() {
+  if (getDatabaseKind() !== "postgresql") return;
+  for (const table of MIGRATION_TABLES) {
+    if (table === "system_settings") continue;
+    const maxId = `COALESCE((SELECT MAX(${quote("id")}) FROM ${quote(table)}), 0)`;
+    await executeRaw(
+      `SELECT setval(pg_get_serial_sequence(?, 'id')::regclass, GREATEST(${maxId}, 1), ${maxId} > 0)`,
+      [table],
+    ).catch(() => undefined);
+  }
+}
+
 export async function importMigrationSnapshot(
   snapshot: MigrationSnapshot,
   options: {
@@ -729,9 +744,7 @@ export async function importMigrationSnapshot(
           incrementCounter(reused, table);
           continue;
         }
-        const newId = table === "system_settings"
-          ? 0
-          : await insertImportRow(table, prepared.row);
+        const newId = await insertImportRow(table, prepared.row);
         if (oldId && newId) maps[table].set(oldId, newId);
         incrementCounter(inserted, table);
       } catch (error) {
@@ -744,6 +757,7 @@ export async function importMigrationSnapshot(
   onProgress?.(92, "正在修复关联关系");
   await fixDeferredForwardGroupReferences(snapshot, maps);
   await resetImportedRuntimeState(maps);
+  await syncPostgresqlSequences();
 
   onProgress?.(95, "正在恢复系统标记");
   if (!snapshot.tables.system_settings?.some((row) => row.key === "storeEnabled")) {

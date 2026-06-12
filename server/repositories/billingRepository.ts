@@ -16,7 +16,7 @@ import {
   userSubscriptions, InsertUserSubscription,
   users,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, getPool, getSqlite, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, getPool, getPostgresPool, getSqlite, insertAndGetId, nowDate, quoteDbIdentifier, rawAffectedRows } from "../dbRuntime";
 import { getForwardRulesForUserSync } from "./forwardRuleRepository";
 import { getForwardGroupEntryPortRange } from "./forwardGroupRepository";
 import { getHostById } from "./hostRepository";
@@ -448,7 +448,11 @@ export async function expireUserSubscriptions() {
     sql`${userSubscriptions.expiresAt} <= ${nowSec}`,
   ));
   const result: any = await executeRaw(
-    "UPDATE user_subscriptions SET status='expired', updatedAt=? WHERE status='active' AND expiresAt IS NOT NULL AND expiresAt <= ?",
+    `UPDATE ${quoteDbIdentifier("user_subscriptions")}
+     SET ${quoteDbIdentifier("status")} = 'expired', ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("status")} = 'active'
+       AND ${quoteDbIdentifier("expiresAt")} IS NOT NULL
+       AND ${quoteDbIdentifier("expiresAt")} <= ?`,
     [nowSec, nowSec],
   );
   const expiredSubscriptionIds = (expiredRows as any[]).map((row: any) => Number(row.id)).filter((id: number) => id > 0);
@@ -1160,6 +1164,44 @@ function addUserBalanceSqlite(userId: number, amountCents: number, meta: Omit<In
   return tx();
 }
 
+async function addUserBalancePostgresql(userId: number, amountCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
+  const pool = getPostgresPool();
+  if (!pool) throw new Error("Database not available");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const rows = await client.query('SELECT "balanceCents" FROM "users" WHERE "id" = $1 FOR UPDATE', [userId]);
+    const row = rows.rows?.[0];
+    if (!row) throw new Error("用户不存在");
+    const current = Number(row.balanceCents || 0);
+    const next = current + Math.round(amountCents);
+    if (next < 0) throw new Error("余额不足");
+    const now = Math.floor(Date.now() / 1000);
+    await client.query('UPDATE "users" SET "balanceCents" = $1, "updatedAt" = $2 WHERE "id" = $3', [next, now, userId]);
+    await client.query(
+      'INSERT INTO "balance_transactions" ("userId", "type", "amountCents", "balanceAfterCents", "description", "operatorUserId", "paymentOrderNo", "redemptionCodeId", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [
+        userId,
+        meta.type,
+        Math.round(amountCents),
+        next,
+        meta.description ?? null,
+        meta.operatorUserId ?? null,
+        meta.paymentOrderNo ?? null,
+        meta.redemptionCodeId ?? null,
+        now,
+      ],
+    );
+    await client.query("COMMIT");
+    return { balanceCents: next };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function listBalanceTransactions(userId?: number, limit = 100) {
   const db = await getDb();
   if (!db) return [];
@@ -1331,6 +1373,7 @@ export async function addUserBalance(userId: number, amountCents: number, meta: 
   if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("金额无效");
   const kind = getDatabaseKind();
   if (kind === "mysql") return addUserBalanceMysql(userId, amountCents, meta);
+  if (kind === "postgresql") return addUserBalancePostgresql(userId, amountCents, meta);
   if (kind === "sqlite") return addUserBalanceSqlite(userId, amountCents, meta);
   throw new Error("Database not available");
 }
@@ -1615,7 +1658,7 @@ export async function updatePaymentOrder(outTradeNo: string, data: Partial<Inser
 }
 
 function affectedRows(result: any) {
-  return Number(result?.affectedRows ?? result?.changes ?? 0);
+  return rawAffectedRows(result);
 }
 
 export async function claimPaidPaymentOrder(outTradeNo: string) {
@@ -1623,7 +1666,9 @@ export async function claimPaidPaymentOrder(outTradeNo: string) {
   if (!db) return undefined;
   const now = Math.floor(Date.now() / 1000);
   const result = await executeRaw(
-    "UPDATE payment_orders SET status = ?, updatedAt = ? WHERE outTradeNo = ? AND status = ?",
+    `UPDATE ${quoteDbIdentifier("payment_orders")}
+     SET ${quoteDbIdentifier("status")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("outTradeNo")} = ? AND ${quoteDbIdentifier("status")} = ?`,
     ["processing", now, outTradeNo, "paid"],
   );
   if (affectedRows(result) <= 0) return undefined;
@@ -1636,7 +1681,11 @@ export async function resetStaleProcessingPaymentOrder(outTradeNo: string, befor
   const now = Math.floor(Date.now() / 1000);
   const cutoff = Math.floor(before.getTime() / 1000);
   const result = await executeRaw(
-    "UPDATE payment_orders SET status = ?, updatedAt = ? WHERE outTradeNo = ? AND status = ? AND updatedAt < ?",
+    `UPDATE ${quoteDbIdentifier("payment_orders")}
+     SET ${quoteDbIdentifier("status")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("outTradeNo")} = ?
+       AND ${quoteDbIdentifier("status")} = ?
+       AND ${quoteDbIdentifier("updatedAt")} < ?`,
     ["paid", now, outTradeNo, "processing", cutoff],
   );
   return affectedRows(result) > 0;

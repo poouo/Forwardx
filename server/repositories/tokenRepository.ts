@@ -4,6 +4,18 @@ import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Agent Token Queries ====================
 
+const HOST_ONLINE_TTL_MS = 90 * 1000;
+
+function isFreshHeartbeat(lastHeartbeat: unknown) {
+  if (!lastHeartbeat) return false;
+  const time = new Date(lastHeartbeat as any).getTime();
+  return Number.isFinite(time) && Date.now() - time <= HOST_ONLINE_TTL_MS;
+}
+
+function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
+  return { ...host, isOnline: !!host.isOnline && isFreshHeartbeat(host.lastHeartbeat) };
+}
+
 export async function createAgentToken(data: InsertAgentToken) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -59,7 +71,7 @@ export async function getAgentTokens(userId?: number) {
     : await query.orderBy(desc(agentTokens.createdAt));
   return rows.map((row: any) => ({
     ...row.token,
-    host: row.host?.id ? row.host : null,
+    host: row.host?.id ? withComputedOnline(row.host) : null,
   }));
 }
 

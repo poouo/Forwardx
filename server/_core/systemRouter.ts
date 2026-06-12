@@ -23,6 +23,14 @@ import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
 import { pushAgentRefresh } from "../agentEvents";
 import { maskSecret } from "../ddns";
+import type { DatabaseConfig } from "../dbRuntime";
+import { defaultSqlitePath } from "../dbRuntime";
+import {
+  getDatabaseSwitchJob,
+  getDatabaseSwitchStatus,
+  startDatabaseSwitch,
+  testDatabaseSwitchTarget,
+} from "../databaseSwitch";
 import {
   FORWARD_TYPES,
   TUNNEL_PROTOCOLS,
@@ -77,6 +85,27 @@ const logPageInputSchema = z.object({
 const siteTitleSchema = z.string().trim().max(64);
 const brandLogoSchema = z.string().max(90 * 1024);
 const githubAcceleratorUrlSchema = z.string().trim().max(256);
+const mysqlDatabaseConfigInput = z.object({
+  host: z.string().trim().min(1, "请输入 MySQL 地址"),
+  port: z.coerce.number().int().min(1).max(65535).default(3306),
+  user: z.string().trim().min(1, "请输入 MySQL 用户名"),
+  password: z.string().default(""),
+  database: z.string().trim().min(1, "请输入数据库名"),
+  ssl: z.boolean().default(false),
+});
+const postgresqlDatabaseConfigInput = z.object({
+  host: z.string().trim().min(1, "请输入 PostgreSQL 地址"),
+  port: z.coerce.number().int().min(1).max(65535).default(5432),
+  user: z.string().trim().min(1, "请输入 PostgreSQL 用户名"),
+  password: z.string().default(""),
+  database: z.string().trim().min(1, "请输入数据库名"),
+  ssl: z.boolean().default(false),
+});
+const databaseConfigInput = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("sqlite"), sqlite: z.object({ path: z.string().trim().min(1).default(defaultSqlitePath()) }) }),
+  z.object({ type: z.literal("mysql"), mysql: mysqlDatabaseConfigInput }),
+  z.object({ type: z.literal("postgresql"), postgresql: postgresqlDatabaseConfigInput }),
+]);
 
 type UpdateInfo = {
   currentVersion: string;
@@ -354,18 +383,16 @@ async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
     }
     return {
       ...info,
-      hasUpdate: false,
       deployable: false,
       artifactVersion,
-      pendingReason: `已发现新版本 v${expected}，但 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}，等待 GitHub Actions 构建完成后再提示升级。`,
+      pendingReason: `已发现新版本 v${expected}，但 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}。可先复制一键升级脚本，若镜像未就绪脚本会提示稍后重试。`,
     };
   } catch (error: any) {
     return {
       ...info,
-      hasUpdate: false,
       deployable: false,
       artifactVersion: null,
-      pendingReason: `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}`,
+      pendingReason: `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}。可先复制一键升级脚本，若镜像未就绪脚本会提示稍后重试。`,
     };
   }
 }
@@ -1137,6 +1164,30 @@ export const systemRouter = router({
   panelMigrationStatus: adminProcedure
     .input(z.object({ jobId: z.string().min(1) }))
     .query(({ input }) => getMigrationJob(input.jobId)),
+
+  databaseSwitchStatus: adminProcedure.query(() => {
+    return getDatabaseSwitchStatus();
+  }),
+
+  testDatabaseSwitchTarget: adminProcedure
+    .input(databaseConfigInput)
+    .mutation(async ({ input }) => {
+      await testDatabaseSwitchTarget(input as DatabaseConfig);
+      return { success: true };
+    }),
+
+  startDatabaseSwitch: adminProcedure
+    .input(z.object({
+      target: databaseConfigInput,
+      confirmed: z.literal(true),
+    }))
+    .mutation(({ input }) => {
+      return startDatabaseSwitch(input.target as DatabaseConfig);
+    }),
+
+  databaseSwitchJob: adminProcedure
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(({ input }) => getDatabaseSwitchJob(input.jobId)),
 
   sendTestEmail: adminProcedure
     .input(z.object({ to: z.string().email("请输入有效邮箱地址") }))

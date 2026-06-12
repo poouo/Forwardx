@@ -54,6 +54,17 @@ type AgentTokenManagerProps = {
 export type AgentTokenViewMode = "card" | "table";
 
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
+const HOST_ONLINE_TTL_MS = 90 * 1000;
+
+function usePageVisible() {
+  const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
+  useEffect(() => {
+    const onVisibilityChange = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+  return visible;
+}
 
 function getStoredAgentTokenViewMode(): AgentTokenViewMode {
   if (typeof window === "undefined") return "card";
@@ -87,15 +98,33 @@ function tokenHostAddress(host: any) {
   return host.entryIp || host.ipv4 || host.ipv6 || host.ip || "";
 }
 
+function isTokenHostOnline(host: any) {
+  if (!host?.isOnline || !host.lastHeartbeat) return false;
+  const heartbeatAt = new Date(host.lastHeartbeat).getTime();
+  return Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt <= HOST_ONLINE_TTL_MS;
+}
+
 function TokenStatusBadge({ tokenItem }: { tokenItem: any }) {
-  return tokenItem.isUsed ? (
-    <Badge className="shrink-0 border-chart-2/20 bg-chart-2/10 text-chart-2 text-[10px]">
-      <CheckCircle2 className="mr-1 h-3 w-3" />
-      已使用
+  const host = tokenItem.host;
+  if (!host) {
+    return (
+      <Badge variant="secondary" className="shrink-0 gap-1.5 text-[10px]">
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+        未绑定
+      </Badge>
+    );
+  }
+
+  const isOnline = isTokenHostOnline(host);
+  return isOnline ? (
+    <Badge className="shrink-0 gap-1.5 border-chart-2/25 bg-chart-2/10 text-chart-2 text-[10px]">
+      <span className="h-2 w-2 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
+      在线
     </Badge>
   ) : (
-    <Badge variant="secondary" className="shrink-0 text-[10px]">
-      未使用
+    <Badge className="shrink-0 gap-1.5 border-destructive/25 bg-destructive/10 text-destructive text-[10px]">
+      <span className="h-2 w-2 rounded-full bg-destructive shadow-sm shadow-destructive/50" />
+      离线
     </Badge>
   );
 }
@@ -285,6 +314,7 @@ export default function AgentTokenManager({
 }: AgentTokenManagerProps) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const pageVisible = usePageVisible();
   const [showCreate, setShowCreate] = useState(false);
   const [showNewToken, setShowNewToken] = useState(false);
   const [showScript, setShowScript] = useState(false);
@@ -323,7 +353,11 @@ export default function AgentTokenManager({
 
   const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(
     undefined,
-    { enabled: user?.role === "admin" }
+    {
+      enabled: user?.role === "admin",
+      refetchInterval: pageVisible ? 2000 : false,
+      refetchOnWindowFocus: true,
+    }
   );
 
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
@@ -543,7 +577,7 @@ export default function AgentTokenManager({
                     <TableRow className="hover:bg-transparent">
                       <TableHead>Token</TableHead>
                       <TableHead className="hidden sm:table-cell">描述</TableHead>
-                      <TableHead>状态</TableHead>
+                      <TableHead>主机状态</TableHead>
                       <TableHead>对应主机</TableHead>
                       <TableHead className="hidden md:table-cell">创建时间</TableHead>
                       <TableHead className="text-right">操作</TableHead>

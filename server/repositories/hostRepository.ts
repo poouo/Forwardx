@@ -1,6 +1,6 @@
 ﻿import { desc, eq, sql } from "drizzle-orm";
-import { hosts, InsertHost, forwardRules, hostMetrics, trafficStats } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, trafficStats } from "../../drizzle/schema";
+import { executeRaw, quoteDbIdentifier, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Host Queries ====================
 
@@ -87,16 +87,15 @@ export async function clearStaleHostAgentUpgradeRequests(timeoutMs = 10 * 60 * 1
   if (!db) return;
   const cutoffSec = Math.floor((Date.now() - timeoutMs) / 1000);
   const nowSec = Math.floor(Date.now() / 1000);
-  const q = getDatabaseKind() === "mysql" ? "`" : "\"";
   await executeRaw(
-    `UPDATE ${q}hosts${q}
-     SET ${q}agentUpgradeRequested${q} = 0,
-         ${q}agentUpgradeTargetVersion${q} = NULL,
-         ${q}updatedAt${q} = ?
-     WHERE ${q}agentUpgradeRequested${q} = 1
-       AND ${q}agentUpgradeRequestedAt${q} IS NOT NULL
-       AND ${q}agentUpgradeRequestedAt${q} < ?`,
-    [nowSec, cutoffSec],
+    `UPDATE ${quoteDbIdentifier("hosts")}
+     SET ${quoteDbIdentifier("agentUpgradeRequested")} = ?,
+         ${quoteDbIdentifier("agentUpgradeTargetVersion")} = NULL,
+         ${quoteDbIdentifier("updatedAt")} = ?
+     WHERE ${quoteDbIdentifier("agentUpgradeRequested")} = ?
+       AND ${quoteDbIdentifier("agentUpgradeRequestedAt")} IS NOT NULL
+       AND ${quoteDbIdentifier("agentUpgradeRequestedAt")} < ?`,
+    [false, nowSec, true, cutoffSec],
   );
 }
 
@@ -110,23 +109,23 @@ export async function getHostByAgentToken(token: string) {
 export async function getHostRuleDeleteBlockers(hostId: number) {
   const db = await getDb();
   if (!db) return { ruleCount: 0, managedRuleCount: 0, pendingCleanupCount: 0 };
-  const managedRuleSql = sql`${forwardRules.forwardGroupRuleId} IS NOT NULL OR ${forwardRules.id} IN (SELECT ruleId FROM forward_group_members WHERE ruleId IS NOT NULL)`;
+  const managedRuleSql = sql`${forwardRules.forwardGroupRuleId} IS NOT NULL OR ${forwardRules.id} IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)`;
   const [ruleRows, managedRows, pendingRows] = await Promise.all([
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = 0
+      AND ${forwardRules.pendingDelete} = ${false}
       AND ${forwardRules.forwardGroupRuleId} IS NULL
-      AND ${forwardRules.id} NOT IN (SELECT ruleId FROM forward_group_members WHERE ruleId IS NOT NULL)
+      AND ${forwardRules.id} NOT IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)
     `),
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = 0
+      AND ${forwardRules.pendingDelete} = ${false}
       AND (${managedRuleSql})
     `),
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = 1
-      AND ${forwardRules.isRunning} = 1
+      AND ${forwardRules.pendingDelete} = ${true}
+      AND ${forwardRules.isRunning} = ${true}
     `),
   ]);
   return {
@@ -141,8 +140,8 @@ export async function releaseHostPendingRuleCleanup(hostId: number) {
   if (!db) return 0;
   const rows = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
     ${forwardRules.hostId} = ${hostId}
-    AND ${forwardRules.pendingDelete} = 1
-    AND ${forwardRules.isRunning} = 1
+    AND ${forwardRules.pendingDelete} = ${true}
+    AND ${forwardRules.isRunning} = ${true}
   `);
   const count = Number(rows[0]?.count) || 0;
   if (count <= 0) return 0;
@@ -152,8 +151,8 @@ export async function releaseHostPendingRuleCleanup(hostId: number) {
     updatedAt: nowDate(),
   }).where(sql`
     ${forwardRules.hostId} = ${hostId}
-    AND ${forwardRules.pendingDelete} = 1
-    AND ${forwardRules.isRunning} = 1
+    AND ${forwardRules.pendingDelete} = ${true}
+    AND ${forwardRules.isRunning} = ${true}
   `);
   return count;
 }
