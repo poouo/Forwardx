@@ -73,10 +73,10 @@ export const dashboardRouter = router({
         const hours = input?.hours ?? 24;
         const bucketMinutes = input?.bucketMinutes ?? 5;
         const since = new Date(Date.now() - hours * 3600 * 1000);
-        const cacheBucket = Math.floor(Date.now() / 10_000);
+        const cacheBucket = Math.floor(Date.now() / 30_000);
         return cachedDashboardQuery(
           `trafficSeries:${ctx.user.id}:${hours}:${bucketMinutes}:${cacheBucket}`,
-          10_000,
+          30_000,
           () => db.getGlobalTrafficSeries({
             bucketMinutes,
             since,

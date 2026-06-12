@@ -473,34 +473,69 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
   const bucket = clampPositiveInt(opts.bucketMinutes, 5, 60);
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bucketSec = bucket * 60;
-
-  const bucketExpr = sql`(FLOOR(${trafficStats.recordedAt} / ${bucketSec}) * ${bucketSec})`;
-
-  const selectFields = {
-    bucket: sql<number>`${bucketExpr}`,
-    bytesIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
-    bytesOut: sql<number>`COALESCE(SUM(${trafficStats.bytesOut}), 0)`,
-  };
+  const sinceSec = epochSeconds(since);
+  const nowSec = epochSeconds(nowDate());
+  const startBucketSec = Math.floor(sinceSec / bucketSec) * bucketSec;
+  const endBucketSec = Math.floor(nowSec / bucketSec) * bucketSec;
+  const q = quoteDbIdentifier;
+  const trafficTable = q("traffic_stats");
+  const rulesTable = q("forward_rules");
+  const bucketExpr = `(FLOOR(ts.${q("recordedAt")} / ?) * ?)`;
   const rows = opts.userId
-    ? await db
-      .select(selectFields)
-      .from(trafficStats)
-      .innerJoin(forwardRules, eq(forwardRules.id, trafficStats.ruleId))
-      .where(and(gte(trafficStats.recordedAt, since), eq(forwardRules.userId, opts.userId)))
-      .groupBy(bucketExpr)
-      .orderBy(asc(bucketExpr))
-    : await db
-      .select(selectFields)
-      .from(trafficStats)
-      .where(gte(trafficStats.recordedAt, since))
-      .groupBy(bucketExpr)
-      .orderBy(asc(bucketExpr));
+    ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
+      `SELECT bucketed.${q("bucket")} AS ${q("bucket")},
+              COALESCE(SUM(bucketed.${q("bytesIn")}), 0) AS ${q("bytesIn")},
+              COALESCE(SUM(bucketed.${q("bytesOut")}), 0) AS ${q("bytesOut")}
+       FROM (
+         SELECT ${bucketExpr} AS ${q("bucket")},
+                ts.${q("bytesIn")} AS ${q("bytesIn")},
+                ts.${q("bytesOut")} AS ${q("bytesOut")}
+         FROM ${trafficTable} ts
+         INNER JOIN ${rulesTable} fr ON fr.${q("id")} = ts.${q("ruleId")}
+         WHERE ts.${q("recordedAt")} >= ? AND fr.${q("userId")} = ?
+       ) bucketed
+       GROUP BY bucketed.${q("bucket")}
+       ORDER BY bucketed.${q("bucket")} ASC`,
+      [bucketSec, bucketSec, sinceSec, opts.userId],
+    )
+    : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number }>(
+      `SELECT bucketed.${q("bucket")} AS ${q("bucket")},
+              COALESCE(SUM(bucketed.${q("bytesIn")}), 0) AS ${q("bytesIn")},
+              COALESCE(SUM(bucketed.${q("bytesOut")}), 0) AS ${q("bytesOut")}
+       FROM (
+         SELECT ${bucketExpr} AS ${q("bucket")},
+                ts.${q("bytesIn")} AS ${q("bytesIn")},
+                ts.${q("bytesOut")} AS ${q("bytesOut")}
+         FROM ${trafficTable} ts
+         WHERE ts.${q("recordedAt")} >= ?
+       ) bucketed
+       GROUP BY bucketed.${q("bucket")}
+       ORDER BY bucketed.${q("bucket")} ASC`,
+      [bucketSec, bucketSec, sinceSec],
+    );
 
-  return rows.map((r: any) => ({
-    bucket: new Date(Number(r.bucket) * 1000),
-    bytesIn: Number(r.bytesIn) || 0,
-    bytesOut: Number(r.bytesOut) || 0,
-  }));
+  if (rows.length === 0) return [];
+
+  const byBucket = new Map<number, { bytesIn: number; bytesOut: number }>();
+  for (const row of rows as any[]) {
+    const bucketValue = Number(row.bucket);
+    if (!Number.isFinite(bucketValue)) continue;
+    byBucket.set(bucketValue, {
+      bytesIn: Number(row.bytesIn) || 0,
+      bytesOut: Number(row.bytesOut) || 0,
+    });
+  }
+
+  const result: Array<{ bucket: Date; bytesIn: number; bytesOut: number }> = [];
+  for (let bucketValue = startBucketSec; bucketValue <= endBucketSec; bucketValue += bucketSec) {
+    const point = byBucket.get(bucketValue);
+    result.push({
+      bucket: new Date(bucketValue * 1000),
+      bytesIn: point?.bytesIn ?? 0,
+      bytesOut: point?.bytesOut ?? 0,
+    });
+  }
+  return result;
 }
 
 // ==================== TCPing Stats ====================
