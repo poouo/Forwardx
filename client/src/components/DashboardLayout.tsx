@@ -155,17 +155,6 @@ function readPanelUpgradeSession(): PanelUpgradeSession | null {
   }
 }
 
-function DashboardBootLoading() {
-  return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="flex items-center gap-3 rounded-lg border border-border/40 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-md">
-        <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
-        <span>正在加载面板</span>
-      </div>
-    </div>
-  );
-}
-
 function getLayoutUpgradeProgress(job: any) {
   const status = job?.status || "idle";
   const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
@@ -228,9 +217,7 @@ export default function DashboardLayout({
 }) {
   const { loading, user } = useAuth();
 
-  if (loading) {
-    return <DashboardBootLoading />;
-  }
+  if (loading) return null;
 
   if (!user) {
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {

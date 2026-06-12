@@ -19,7 +19,6 @@ import {
   Package,
   Server,
   Shield,
-  Loader2,
   WalletCards,
   Wifi,
   Zap,
@@ -60,17 +59,6 @@ function formatBytes(bytes: number | string | null | undefined): string {
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   const index = Math.min(units.length - 1, Math.floor(Math.log(Math.abs(num)) / Math.log(1024)));
   return `${parseFloat((num / 1024 ** index).toFixed(index === 0 ? 0 : 2))} ${units[index]}`;
-}
-
-function HomeBootLoading() {
-  return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="flex items-center gap-3 rounded-lg border border-border/40 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-md">
-        <Loader2 className="forwardx-icon-spin h-4 w-4 text-primary" />
-        <span>正在加载面板</span>
-      </div>
-    </div>
-  );
 }
 
 function money(cents?: number | null, currency = "CNY") {
@@ -945,13 +933,13 @@ export default function Home() {
     toast.success(`欢迎回来！${welcomeName} 用户`, { position: "top-right" });
   }, [user?.id]);
 
-  if (loading) return <HomeBootLoading />;
+  if (loading) return null;
 
   if (!user) {
-    if (settingsLoading) return <HomeBootLoading />;
+    if (settingsLoading) return null;
     if (mobileAuth.isNative) {
       if (typeof window !== "undefined") window.location.href = "/login";
-      return <HomeBootLoading />;
+      return null;
     }
     if (settings?.homepageEnabled !== false) {
       if (settings?.homepageCustomEnabled && settings?.homepageHtml?.trim()) {
@@ -960,7 +948,7 @@ export default function Home() {
       return <PublicHome />;
     }
     if (typeof window !== "undefined") window.location.href = "/login";
-    return <HomeBootLoading />;
+    return null;
   }
 
   return (

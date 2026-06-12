@@ -30,19 +30,9 @@ import HomepagePreview from "./pages/HomepagePreview";
 import LookingGlass from "./pages/LookingGlass";
 import TrafficBilling from "./pages/TrafficBilling";
 
-function AppBootLoading() {
-  return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="rounded-lg border border-border/40 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-md">
-        正在加载面板
-      </div>
-    </div>
-  );
-}
-
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
-  if (loading) return <AppBootLoading />;
+  if (loading) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
@@ -56,7 +46,7 @@ function LookingGlassRoute() {
     refetchOnWindowFocus: false,
   });
 
-  if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return <AppBootLoading />;
+  if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
   return <LookingGlass />;
@@ -114,7 +104,7 @@ function SetupGate() {
     return <Router />;
   }
 
-  if (setup.isLoading) return <AppBootLoading />;
+  if (setup.isLoading) return null;
 
   const ready = !!setup.data?.setupComplete;
   if (!ready && location !== "/setup") return <Redirect to="/setup" />;
