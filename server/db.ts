@@ -12,8 +12,10 @@ import { hashPassword } from "./password";
 import { connectDatabase, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
+import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomMultiavatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
+import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -43,8 +45,14 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await ensureTrafficStatBucketsBackfilled().catch((error) => {
+      console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
     await maintainCurrentPostgresqlDatabase().catch((error) => {
       console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await maintainCurrentMysqlDatabase().catch((error) => {
+      console.warn("[MySQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));
     });
     const migratedAvatars = await migrateLegacyUserAvatars();
     if (migratedAvatars > 0) {

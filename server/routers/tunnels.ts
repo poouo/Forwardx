@@ -11,9 +11,11 @@ import * as hopRepo from "../repositories/tunnelRepository";
 import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestState";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
+import { createQueryCache } from "../queryCache";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
+const tunnelQueryCache = createQueryCache(300);
 
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
   clearTunnelRuntimeStatus(tunnelId);
@@ -194,7 +196,11 @@ export const tunnelsRouter = router({
           throw new Error("No permission to view this tunnel");
         }
         const since = new Date(Date.now() - input.hours * 3600 * 1000);
-        return db.getTunnelLatencySeries(input.tunnelId, { since });
+        return tunnelQueryCache.get(
+          `latencySeries:${ctx.user.id}:${input.tunnelId}:${input.hours}`,
+          { ttlMs: 30_000, staleMs: 5 * 60_000 },
+          () => db.getTunnelLatencySeries(input.tunnelId, { since }),
+        );
       }),
     create: protectedProcedure
       .input(z.object({
@@ -260,7 +266,14 @@ export const tunnelsRouter = router({
         const connectHost = hopHostIds
           ? normalizeTunnelConnect(input.connectHost)
           : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
-        const { hopHostIds: _ignoredHopHostIds, hopConnectHosts: _ignoredHopConnectHosts, ...tunnelInput } = input as any;
+        const {
+          hopHostIds: _ignoredHopHostIds,
+          hopConnectHosts: _ignoredHopConnectHosts,
+          blockHttp: _ignoredBlockHttp,
+          blockSocks: _ignoredBlockSocks,
+          blockTls: _ignoredBlockTls,
+          ...tunnelInput
+        } = input as any;
         const id = await db.createTunnel({
           ...tunnelInput,
           entryHostId,
@@ -269,9 +282,9 @@ export const tunnelsRouter = router({
           portRangeEnd: input.portRangeEnd ?? null,
           networkType: connectHost ? "private" : "public",
           connectHost,
-          blockHttp: !!input.blockHttp,
-          blockSocks: !!input.blockSocks,
-          blockTls: !!input.blockTls,
+          blockHttp: false,
+          blockSocks: false,
+          blockTls: false,
           listenPort,
           secret,
           userId: ctx.user.id,
@@ -351,7 +364,15 @@ export const tunnelsRouter = router({
         if (entryHostId === exitHostId) throw new Error("入口 Agent 和出口 Agent 不能相同");
         await requireHostAccess(ctx, entryHostId);
         const exit = await requireHostAccess(ctx, exitHostId);
-        const { id, hopHostIds: _ignoredHopHostIds, hopConnectHosts: _ignoredHopConnectHosts, ...data } = input as any;
+        const {
+          id,
+          hopHostIds: _ignoredHopHostIds,
+          hopConnectHosts: _ignoredHopConnectHosts,
+          blockHttp: _ignoredBlockHttp,
+          blockSocks: _ignoredBlockSocks,
+          blockTls: _ignoredBlockTls,
+          ...data
+        } = input as any;
         const nextPortRangeStart = (data as any).portRangeStart !== undefined ? (data as any).portRangeStart : (tunnel as any).portRangeStart;
         const nextPortRangeEnd = (data as any).portRangeEnd !== undefined ? (data as any).portRangeEnd : (tunnel as any).portRangeEnd;
         if (nextPortRangeStart != null && nextPortRangeEnd != null && nextPortRangeStart > nextPortRangeEnd) {
@@ -398,7 +419,7 @@ export const tunnelsRouter = router({
             JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
             || JSON.stringify(normalizedRequestedHopConnectHosts) !== JSON.stringify(existingHopConnectHosts)
           );
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", "blockHttp", "blockSocks", "blockTls"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged;
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

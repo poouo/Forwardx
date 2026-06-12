@@ -4,17 +4,39 @@ import { nanoid } from "nanoid";
 import * as db from "../db";
 import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
 import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets";
-import { requireHostAccess } from "./helpers";
+import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
 import { refreshHostAddressRuntime } from "../hostAddressRuntime";
+import { createQueryCache } from "../queryCache";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
+const hostQueryCache = createQueryCache(500);
 
 let lastHostUpgradeCleanupAt = 0;
 let hostUpgradeCleanupRunning = false;
+const hostProtocolPolicyFields = ["blockHttp", "blockSocks", "blockTls"] as const;
+
+async function refreshHostProtocolPolicyRuntime(hostId: number) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const rules = await db.getForwardRulesForAgent(id);
+  for (const rule of rules as any[]) {
+    if (Number(rule?.id) > 0) {
+      await db.updateForwardRule(Number(rule.id), { isRunning: false } as any);
+    }
+  }
+  const tunnels = await db.getTunnelsByHost(id);
+  for (const tunnel of tunnels as any[]) {
+    if (Number((tunnel as any).entryHostId) !== id) continue;
+    await db.updateTunnel(Number(tunnel.id), { isRunning: false } as any);
+    await db.resetForwardRulesByTunnel(Number(tunnel.id));
+    await pushTunnelEndpointRefresh(tunnel, "host-protocol-policy-updated");
+  }
+  pushAgentRefresh(id, "host-protocol-policy-updated");
+}
 
 function isValidHostOrIp(value: string) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
@@ -195,6 +217,9 @@ export const hostsRouter = router({
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        blockHttp: z.boolean().optional(),
+        blockSocks: z.boolean().optional(),
+        blockTls: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         // 验证端口区间
@@ -212,6 +237,9 @@ export const hostsRouter = router({
           tunnelEntryIp: input.tunnelEntryIp || null,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
+          blockHttp: ctx.user.role === "admin" ? !!input.blockHttp : false,
+          blockSocks: ctx.user.role === "admin" ? !!input.blockSocks : false,
+          blockTls: ctx.user.role === "admin" ? !!input.blockTls : false,
           userId: ctx.user.id,
         });
         return { id, agentToken };
@@ -227,6 +255,9 @@ export const hostsRouter = router({
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        blockHttp: z.boolean().optional(),
+        blockSocks: z.boolean().optional(),
+        blockTls: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const host = await db.getHostById(input.id);
@@ -242,6 +273,12 @@ export const hostsRouter = router({
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
+        if (ctx.user.role !== "admin") {
+          for (const field of hostProtocolPolicyFields) delete (data as any)[field];
+        }
+        const protocolPolicyChanged = hostProtocolPolicyFields.some((key) =>
+          (data as any)[key] !== undefined && !!(data as any)[key] !== !!(host as any)[key]
+        );
         const entryChanged = ["entryIp", "tunnelEntryIp"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
@@ -259,6 +296,9 @@ export const hostsRouter = router({
         await db.updateHost(id, data as any);
         if (entryChanged) {
           await refreshHostAddressRuntime(id, host, "host-address-updated");
+        }
+        if (protocolPolicyChanged) {
+          await refreshHostProtocolPolicyRuntime(id);
         }
         return { success: true };
       }),
@@ -287,7 +327,11 @@ export const hostsRouter = router({
       .input(z.object({ hostId: z.number(), limit: z.number().default(60) }))
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
-        return db.getLatestHostMetrics(input.hostId, input.limit);
+        return hostQueryCache.get(
+          `metrics:${ctx.user.id}:${input.hostId}:${input.limit}`,
+          { ttlMs: 10_000, staleMs: 60_000 },
+          () => db.getLatestHostMetrics(input.hostId, input.limit),
+        );
       }),
     watchMetrics: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(200) }))

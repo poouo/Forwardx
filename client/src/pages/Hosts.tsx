@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { trpc } from "@/lib/trpc";
@@ -681,6 +682,9 @@ type HostFormData = {
   tunnelEntryIp: string;
   portRangeStart: number | null;
   portRangeEnd: number | null;
+  blockHttp: boolean;
+  blockSocks: boolean;
+  blockTls: boolean;
 };
 
 const defaultFormData: HostFormData = {
@@ -692,6 +696,9 @@ const defaultFormData: HostFormData = {
   tunnelEntryIp: "",
   portRangeStart: null,
   portRangeEnd: null,
+  blockHttp: false,
+  blockSocks: false,
+  blockTls: false,
 };
 
 type HostViewMode = "card" | "table" | "map" | "flat-map";
@@ -1113,6 +1120,9 @@ function HostsContent() {
       tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
+      blockHttp: !!host.blockHttp,
+      blockSocks: !!host.blockSocks,
+      blockTls: !!host.blockTls,
     });
     setEditingId(host.id);
     setShowDialog(true);
@@ -1138,6 +1148,9 @@ function HostsContent() {
     }
 
     const ni = (form.networkInterface || "").trim();
+    const protocolPolicyPayload = user?.role === "admin"
+      ? { blockHttp: form.blockHttp, blockSocks: form.blockSocks, blockTls: form.blockTls }
+      : {};
 
     if (editingId) {
       updateMutation.mutate({
@@ -1149,6 +1162,7 @@ function HostsContent() {
         tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
+        ...protocolPolicyPayload,
       });
     } else {
       const ip = (form.ip || entry || "unknown").trim();
@@ -1161,6 +1175,7 @@ function HostsContent() {
         tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
+        ...protocolPolicyPayload,
       });
     }
   };
@@ -1749,9 +1764,10 @@ function HostsContent() {
             </DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="basic" className="space-y-4">
-            <TabsList className="w-full bg-muted/50">
+            <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-2"} bg-muted/50`}>
               <TabsTrigger value="basic" className="flex-1">基本信息</TabsTrigger>
               <TabsTrigger value="port" className="flex-1">端口限制</TabsTrigger>
+              {user?.role === "admin" && <TabsTrigger value="protocol" className="flex-1">协议管控</TabsTrigger>}
             </TabsList>
             <TabsContent value="basic" className="space-y-4">
               <div className="grid grid-cols-1 gap-4">
@@ -1865,6 +1881,32 @@ function HostsContent() {
                 )}
               </div>
             </TabsContent>
+            {user?.role === "admin" && (
+              <TabsContent value="protocol" className="space-y-4">
+                <div className="space-y-3">
+                  <div>
+                    <Label className="text-sm font-medium">入口协议屏蔽</Label>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      启用后，所有以该主机作为入口的 TCP 转发都会阻断对应协议。
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                      <span className="text-sm font-medium">HTTP</span>
+                      <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                      <span className="text-sm font-medium">SOCKS</span>
+                      <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                      <span className="text-sm font-medium">TLS</span>
+                      <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                    </label>
+                  </div>
+                </div>
+              </TabsContent>
+            )}
           </Tabs>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDialog(false)}>

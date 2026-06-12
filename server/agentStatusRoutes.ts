@@ -14,6 +14,14 @@ function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
 
+function hostBlocksProtocol(host: any, protocol: string) {
+  if (!host) return false;
+  if (protocol === "http") return !!(host as any).blockHttp;
+  if (protocol === "socks") return !!(host as any).blockSocks;
+  if (protocol === "tls") return !!(host as any).blockTls;
+  return false;
+}
+
 async function updateDirectTunnelRunningStatus(tunnel: any, isRunning: boolean) {
   const tunnelId = Number(tunnel.id);
   const exitHostId = Number(tunnel.exitHostId);
@@ -57,12 +65,16 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
       return;
     }
     const tunnel = tunnelId ? await db.getTunnelById(tunnelId) : ((rule as any).tunnelId ? await db.getTunnelById((rule as any).tunnelId) : null);
+    const entryHostId = tunnel ? Number((tunnel as any).entryHostId) : Number((rule as any).hostId);
+    const entryHost = entryHostId === Number(host.id) ? host : await db.getHostById(entryHostId);
+    const policyAllowsBlock = hostBlocksProtocol(entryHost, protocol);
     const isTunnelRule = !!tunnel
       && Number((rule as any).tunnelId) === Number((tunnel as any).id)
-      && (Number((tunnel as any).entryHostId) === Number(host.id) || Number((tunnel as any).exitHostId) === Number(host.id));
+      && (Number((tunnel as any).entryHostId) === Number(host.id) || Number((tunnel as any).exitHostId) === Number(host.id))
+      && policyAllowsBlock;
     const isDirectRule = !tunnel
       && Number((rule as any).hostId) === Number(host.id)
-      && ((rule as any).blockHttp || (rule as any).blockSocks || (rule as any).blockTls);
+      && policyAllowsBlock;
     const allowed = isTunnelRule || isDirectRule;
     if (!allowed) {
       res.status(403).json({ error: "forbidden" });
@@ -70,9 +82,7 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
     }
 
     const label = protocol.toUpperCase();
-    const reason = tunnel
-      ? `检测到该端口使用 ${label} 协议，管理员已禁止在此隧道使用，请勿使用此协议`
-      : `检测到该端口使用 ${label} 协议，管理员已禁止在此规则使用，请勿使用此协议`;
+    const reason = `检测到该端口使用 ${label} 协议，管理员已禁止在此入口主机使用，请勿使用此协议`;
     await db.disableForwardRuleByProtocolBlock(ruleId, reason);
     if (tunnel) {
       await db.updateTunnel((tunnel as any).id, { isRunning: false } as any);

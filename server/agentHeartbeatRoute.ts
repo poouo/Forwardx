@@ -888,28 +888,34 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           protocol: "tcp",
         };
       }))).filter((probe: any) => probe && probe.targetIp && probe.targetPort > 0);
-    const tunnelProtocolPolicy = (tunnel: any) => ({
-      blockHttp: !!(tunnel as any)?.blockHttp,
-      blockSocks: !!(tunnel as any)?.blockSocks,
-      blockTls: !!(tunnel as any)?.blockTls,
+    const emptyProtocolPolicy = { blockHttp: false, blockSocks: false, blockTls: false };
+    const protocolPolicyFromHost = (hostLike: any) => ({
+      blockHttp: !!(hostLike as any)?.blockHttp,
+      blockSocks: !!(hostLike as any)?.blockSocks,
+      blockTls: !!(hostLike as any)?.blockTls,
     });
-    const hasProtocolPolicy = (tunnel: any) => {
-      const policy = tunnelProtocolPolicy(tunnel);
+    const hasProtocolPolicy = (policy: any) => {
       return policy.blockHttp || policy.blockSocks || policy.blockTls;
     };
-    const ruleProtocolPolicy = (rule: any) => ({
-      blockHttp: !!(rule as any)?.blockHttp,
-      blockSocks: !!(rule as any)?.blockSocks,
-      blockTls: !!(rule as any)?.blockTls,
-    });
-    const hasRuleProtocolPolicy = (rule: any) => {
-      const policy = ruleProtocolPolicy(rule);
-      return policy.blockHttp || policy.blockSocks || policy.blockTls;
+    const hostProtocolPolicyById = new Map<number, typeof emptyProtocolPolicy>([
+      [Number(host.id), protocolPolicyFromHost(host)],
+    ]);
+    const getHostProtocolPolicy = async (hostId: number) => {
+      const id = Number(hostId);
+      if (!Number.isFinite(id) || id <= 0) return emptyProtocolPolicy;
+      const cached = hostProtocolPolicyById.get(id);
+      if (cached) return cached;
+      const entryHost = await db.getHostById(id);
+      const policy = entryHost ? protocolPolicyFromHost(entryHost) : emptyProtocolPolicy;
+      hostProtocolPolicyById.set(id, policy);
+      return policy;
     };
-    const shouldUseRuleGuard = (rule: any) => {
-      if (!hasRuleProtocolPolicy(rule)) return false;
+    const ruleProtocolPolicy = (rule: any) => getHostProtocolPolicy(Number((rule as any)?.hostId || 0));
+    const tunnelProtocolPolicy = (tunnel: any) => getHostProtocolPolicy(Number((tunnel as any)?.entryHostId || 0));
+    const shouldUseRuleGuard = async (rule: any) => {
       if (rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0) return false;
-      return rule.protocol === "tcp";
+      if (rule.protocol === "udp") return false;
+      return hasProtocolPolicy(await ruleProtocolPolicy(rule));
     };
     const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
     const tunnelExitRules = agentAllRules
@@ -935,7 +941,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostRelayHandler = () => ({ type: "relay", metadata: { nodelay: true } });
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
-        if (shouldUseRuleGuard(r)) return [];
+        if (await shouldUseRuleGuard(r)) return [];
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && isForwardXTunnel(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
@@ -1095,10 +1101,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             }],
           },
         }));
-      const ruleServices = tunnelExitRules.flatMap((rule: any) => {
+      const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
-        const targetAddr = hasProtocolPolicy(tunnel) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
+        const policy = await tunnelProtocolPolicy(tunnel);
+        const targetAddr = hasProtocolPolicy(policy) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
@@ -1116,7 +1123,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             }],
           },
         }];
-      });
+      }))).flat();
       const multiHopRelayServices = await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
         if (!tunnel || !tunnel.isEnabled || isForwardXTunnel(tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return null;
         const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
@@ -1480,6 +1487,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of rules) {
       const ruleTunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
       const ruleProtocolEnabled = isRuleProtocolEnabled(forwardProtocolSettings, rule, ruleTunnel);
+      const useRuleGuard = await shouldUseRuleGuard(rule);
+      const ruleGuardPolicy = useRuleGuard ? await ruleProtocolPolicy(rule) : emptyProtocolPolicy;
       if (!ruleProtocolEnabled) {
         if (rule.isRunning) {
           const removeAction = await buildDisabledRuleRemovalAction(rule);
@@ -1491,7 +1500,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (rule.isEnabled && rule.isRunning) {
         const trafficPort = ruleTrafficPort(rule);
         if (!trafficPort) continue;
-        if (shouldUseRuleGuard(rule)) {
+        if (useRuleGuard) {
           const guardTarget = failoverTargetEndpoint(rule);
           guardRules.push({
             ruleId: rule.id,
@@ -1499,12 +1508,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: Number(rule.sourcePort),
             targetIp: guardTarget.targetIp,
             targetPort: guardTarget.targetPort,
-            policy: ruleProtocolPolicy(rule),
+            policy: ruleGuardPolicy,
           });
         }
         const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
           ? "forwardx"
-          : shouldUseRuleGuard(rule)
+          : useRuleGuard
           ? "guard"
           : rule.forwardType;
         addRunningRule({
@@ -1528,7 +1537,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         && !isTunnelRuntimeHostReady(Number(ruleTunnel.id), Number(host.id));
       if (rule.isEnabled && (!rule.isRunning || shouldRefreshForwardXMultiHopRule)) {
         const cmds: string[] = [];
-        if (shouldUseRuleGuard(rule)) {
+        if (useRuleGuard) {
           const guardTarget = failoverTargetEndpoint(rule);
           const guardFailover = failoverForCurrentHost(rule, ruleTunnel, { listenPort: failoverProxyPort(rule) });
           guardRules.push({
@@ -1537,7 +1546,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: Number(rule.sourcePort),
             targetIp: guardTarget.targetIp,
             targetPort: guardTarget.targetPort,
-            policy: ruleProtocolPolicy(rule),
+            policy: ruleGuardPolicy,
           });
           actions.push({
             ruleId: rule.id,
@@ -1798,7 +1807,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 ...rateLimits,
                 ...accessLimits,
                 accessScope: accessScopeForRule(rule),
-                ...tunnelProtocolPolicy(tunnel),
+                ...await tunnelProtocolPolicy(tunnel),
               },
               failover: mainBackup,
             });
@@ -1980,7 +1989,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // 取走该主机的 pending 转发自测任务并标为 running
     for (const rule of tunnelExitRules) {
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
-      if (tunnel && hasProtocolPolicy(tunnel)) {
+      const policy = tunnel ? await tunnelProtocolPolicy(tunnel) : emptyProtocolPolicy;
+      if (tunnel && hasProtocolPolicy(policy)) {
         const target = failoverTargetEndpoint(rule);
         guardRules.push({
           ruleId: rule.id,
@@ -1988,7 +1998,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           listenPort: guardListenPort(rule),
           targetIp: target.targetIp,
           targetPort: target.targetPort,
-          policy: tunnelProtocolPolicy(tunnel),
+          policy,
         });
       }
     }

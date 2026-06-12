@@ -6,7 +6,9 @@ import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { getHosts, requestHostAgentUpgrade } from "./db";
 import { pushAgentUpgrade } from "./agentEvents";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
+import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
+import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
 import {
   consumeApprovedMigrationRequest,
   consumeTakeoverToken,
@@ -769,9 +771,17 @@ export async function importMigrationSnapshot(
   await setSetting("lastPanelImportMode", mode);
   if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
 
-  onProgress?.(97, "正在优化 PostgreSQL 查询性能");
+  onProgress?.(96, "正在重建流量汇总缓存");
+  await ensureTrafficStatBucketsBackfilled({ force: true }).catch((error) => {
+    console.warn("[TrafficSummary] Post-migration bucket backfill skipped:", error instanceof Error ? error.message : String(error));
+  });
+
+  onProgress?.(97, "正在优化数据库查询性能");
   await maintainCurrentPostgresqlDatabase({ forceAnalyze: true }).catch((error) => {
     console.warn("[PostgreSQL] Post-migration maintenance skipped:", error instanceof Error ? error.message : String(error));
+  });
+  await maintainCurrentMysqlDatabase({ forceAnalyze: true }).catch((error) => {
+    console.warn("[MySQL] Post-migration maintenance skipped:", error instanceof Error ? error.message : String(error));
   });
 
   return {

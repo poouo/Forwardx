@@ -5,6 +5,9 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
+import { createQueryCache } from "../queryCache";
+
+const selfTestQueryCache = createQueryCache(300);
 
 export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
@@ -19,7 +22,11 @@ export const selfTestRulesRouter = router({
         throw new Error("无权查看此规则");
       }
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
-      return db.getTcpingSeriesByRule(input.ruleId, { since });
+      return selfTestQueryCache.get(
+        `tcpingSeries:${ctx.user.id}:${input.ruleId}:${input.hours}`,
+        { ttlMs: 15_000, staleMs: 2 * 60_000 },
+        () => db.getTcpingSeriesByRule(input.ruleId, { since }),
+      );
     }),
 
   startSelfTest: protectedProcedure

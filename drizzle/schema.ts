@@ -208,6 +208,9 @@ export const hosts = table("hosts", {
   // ===== 端口区间限制 =====
   portRangeStart: int("portRangeStart"),  // 允许转发的起始端口，null = 不限制
   portRangeEnd: int("portRangeEnd"),      // 允许转发的结束端口，null = 不限制
+  blockHttp: boolean("blockHttp").notNull().default(false),
+  blockSocks: boolean("blockSocks").notNull().default(false),
+  blockTls: boolean("blockTls").notNull().default(false),
   isOnline: boolean("isOnline").notNull().default(false),
   lastHeartbeat: epoch("lastHeartbeat"),
   userId: int("userId").notNull(),
@@ -386,6 +389,21 @@ export const trafficStats = table("traffic_stats", {
 });
 export type TrafficStat = typeof trafficStats.$inferSelect;
 export type InsertTrafficStat = typeof trafficStats.$inferInsert;
+
+export const trafficStatBuckets = table("traffic_stat_buckets", {
+  id: serial("id"),
+  bucketStart: epoch("bucketStart").notNull(),
+  bucketMinutes: int("bucketMinutes").notNull().default(30),
+  userId: int("userId").notNull(),
+  ruleId: int("ruleId").notNull(),
+  hostId: int("hostId").notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  connections: int("connections").notNull().default(0),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type TrafficStatBucket = typeof trafficStatBuckets.$inferSelect;
+export type InsertTrafficStatBucket = typeof trafficStatBuckets.$inferInsert;
 
 export const tunnelLatencyStats = table("tunnel_latency_stats", {
   id: serial("id"),

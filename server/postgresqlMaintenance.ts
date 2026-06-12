@@ -10,7 +10,7 @@ type PostgresqlMaintenanceOptions = {
   logger?: Pick<typeof console, "info" | "warn">;
 };
 
-const HEALTH_CHECK_NAME = "pg-health-20260612";
+const HEALTH_CHECK_NAME = "pg-health-20260612-query-cache-v2";
 const HEALTH_CHECK_SETTING_KEY = "postgresqlHealthCheckCompleted";
 
 function quote(id: string) {

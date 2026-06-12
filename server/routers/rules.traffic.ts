@@ -3,13 +3,20 @@ import { z } from "zod";
 import * as db from "../db";
 import { lookupAddressGeo } from "../hostGeo";
 import { requireRuleAccess } from "./helpers";
+import { createQueryCache } from "../queryCache";
+
+const trafficQueryCache = createQueryCache(500);
 
 export const trafficRulesRouter = router({
   traffic: protectedProcedure
     .input(z.object({ ruleId: z.number(), limit: z.number().default(60) }))
     .query(async ({ input, ctx }) => {
       await requireRuleAccess(ctx, input.ruleId);
-      return db.getTrafficStats(input.ruleId, input.limit);
+      return trafficQueryCache.get(
+        `traffic:${ctx.user.id}:${input.ruleId}:${input.limit}`,
+        { ttlMs: 10_000, staleMs: 60_000 },
+        () => db.getTrafficStats(input.ruleId, input.limit),
+      );
     }),
   targetGeoBatch: protectedProcedure
     .input(z.object({ targets: z.array(z.string().trim().min(1).max(253)).max(100) }))
@@ -42,12 +49,21 @@ export const trafficRulesRouter = router({
     .query(async ({ input, ctx }) => {
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
       const isAdmin = ctx.user.role === "admin";
-      return db.getTrafficSummaryByRule({
-        userId: isAdmin ? undefined : ctx.user.id,
-        hostId: input.hostId,
-        since,
-        ruleIds: input.ruleIds,
-      });
+      const ruleIds = Array.from(new Set((input.ruleIds || [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)))
+        .sort((a, b) => a - b);
+      const ruleKey = ruleIds.join(",");
+      return trafficQueryCache.get(
+        `summary:${ctx.user.id}:${input.hours}:${input.hostId || 0}:${ruleKey}`,
+        { ttlMs: 15_000, staleMs: 2 * 60_000 },
+        () => db.getTrafficSummaryByRule({
+          userId: isAdmin ? undefined : ctx.user.id,
+          hostId: input.hostId,
+          since,
+          ruleIds,
+        }),
+      );
     }),
   trafficSeries: protectedProcedure
     .input(
@@ -64,9 +80,13 @@ export const trafficRulesRouter = router({
         throw new Error("无权查看此规则");
       }
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
-      return db.getTrafficSeriesByRule(input.ruleId, {
-        bucketMinutes: input.bucketMinutes,
-        since,
-      });
+      return trafficQueryCache.get(
+        `series:${ctx.user.id}:${input.ruleId}:${input.hours}:${input.bucketMinutes}`,
+        { ttlMs: 15_000, staleMs: 2 * 60_000 },
+        () => db.getTrafficSeriesByRule(input.ruleId, {
+          bucketMinutes: input.bucketMinutes,
+          since,
+        }),
+      );
     })
 });

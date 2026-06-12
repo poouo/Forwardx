@@ -201,6 +201,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
         bytesIn,
         bytesOut,
         connections: stat.connections || 0,
+      }, {
+        userId: Number(rule.userId),
       });
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {

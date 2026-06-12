@@ -1345,9 +1345,9 @@ function TunnelsContent() {
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
-      blockHttp: !!tunnel.blockHttp,
-      blockSocks: !!tunnel.blockSocks,
-      blockTls: !!tunnel.blockTls,
+      blockHttp: false,
+      blockSocks: false,
+      blockTls: false,
     });
     setEditingId(tunnel.id);
     setShowDialog(true);
@@ -1450,9 +1450,6 @@ function TunnelsContent() {
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
       connectHost: isMultiHopTunnel ? null : regularPrivateConnectHost,
-      blockHttp: form.blockHttp,
-      blockSocks: form.blockSocks,
-      blockTls: form.blockTls,
       entryHostId,
       exitHostId,
       hopHostIds: orderedHopHostIds,
@@ -2205,28 +2202,6 @@ function TunnelsContent() {
                     <p className="text-xs text-muted-foreground">留空自动分配。</p>
                   </div>
                 </div>
-                <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                  <div>
-                    <Label className="text-sm">协议屏蔽</Label>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      检测到 HTTP、SOCKS 或 TLS 首包时将阻断连接，并禁用对应规则。
-                    </p>
-                  </div>
-                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">HTTP</span>
-                      <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
-                    </label>
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">SOCKS</span>
-                      <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
-                    </label>
-                    <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                      <span className="text-sm font-medium">TLS</span>
-                      <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
-                    </label>
-                  </div>
-                </div>
               </>
             ) : (
               <>
@@ -2420,28 +2395,6 @@ function TunnelsContent() {
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
                 <p className="text-xs text-muted-foreground">留空自动分配。</p>
-              </div>
-            </div>
-            <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-              <div>
-                <Label className="text-sm">协议屏蔽</Label>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  检测到 HTTP、SOCKS 或 TLS 首包时将阻断连接，并禁用对应规则。
-                </p>
-              </div>
-              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                  <span className="text-sm font-medium">HTTP</span>
-                  <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                  <span className="text-sm font-medium">SOCKS</span>
-                  <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
-                  <span className="text-sm font-medium">TLS</span>
-                  <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
-                </label>
               </div>
             </div>
           </div>
