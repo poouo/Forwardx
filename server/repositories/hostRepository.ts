@@ -1,6 +1,7 @@
 ﻿import { desc, eq, sql } from "drizzle-orm";
 import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, trafficStats } from "../../drizzle/schema";
 import { executeRaw, quoteDbIdentifier, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { sqlBool } from "./repositoryUtils";
 
 // ==================== Host Queries ====================
 
@@ -113,19 +114,19 @@ export async function getHostRuleDeleteBlockers(hostId: number) {
   const [ruleRows, managedRows, pendingRows] = await Promise.all([
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = ${false}
+      AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
       AND ${forwardRules.forwardGroupRuleId} IS NULL
       AND ${forwardRules.id} NOT IN (SELECT ${forwardGroupMembers.ruleId} FROM ${forwardGroupMembers} WHERE ${forwardGroupMembers.ruleId} IS NOT NULL)
     `),
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = ${false}
+      AND ${forwardRules.pendingDelete} = ${sqlBool(false)}
       AND (${managedRuleSql})
     `),
     db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
       ${forwardRules.hostId} = ${hostId}
-      AND ${forwardRules.pendingDelete} = ${true}
-      AND ${forwardRules.isRunning} = ${true}
+      AND ${forwardRules.pendingDelete} = ${sqlBool(true)}
+      AND ${forwardRules.isRunning} = ${sqlBool(true)}
     `),
   ]);
   return {
@@ -140,8 +141,8 @@ export async function releaseHostPendingRuleCleanup(hostId: number) {
   if (!db) return 0;
   const rows = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(sql`
     ${forwardRules.hostId} = ${hostId}
-    AND ${forwardRules.pendingDelete} = ${true}
-    AND ${forwardRules.isRunning} = ${true}
+    AND ${forwardRules.pendingDelete} = ${sqlBool(true)}
+    AND ${forwardRules.isRunning} = ${sqlBool(true)}
   `);
   const count = Number(rows[0]?.count) || 0;
   if (count <= 0) return 0;
@@ -151,8 +152,8 @@ export async function releaseHostPendingRuleCleanup(hostId: number) {
     updatedAt: nowDate(),
   }).where(sql`
     ${forwardRules.hostId} = ${hostId}
-    AND ${forwardRules.pendingDelete} = ${true}
-    AND ${forwardRules.isRunning} = ${true}
+    AND ${forwardRules.pendingDelete} = ${sqlBool(true)}
+    AND ${forwardRules.isRunning} = ${sqlBool(true)}
   `);
   return count;
 }
