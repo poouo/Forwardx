@@ -115,6 +115,8 @@ type RuleFormData = {
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargetsText: string;
@@ -162,6 +164,8 @@ const defaultForm: RuleFormData = {
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
+  proxyProtocolReceive: false,
+  proxyProtocolSend: false,
   failoverEnabled: false,
   failoverStrategy: "fallback",
   failoverTargetsText: "",
@@ -1597,6 +1601,8 @@ function RulesContent() {
       blockHttp: false,
       blockSocks: false,
       blockTls: false,
+      proxyProtocolReceive: !!rule.proxyProtocolReceive,
+      proxyProtocolSend: !!rule.proxyProtocolSend,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
       failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
@@ -1777,6 +1783,18 @@ function RulesContent() {
     : form.protocol !== "tcp"
     ? "出站策略仅支持 TCP 协议。"
     : "";
+  const proxyProtocolForwardType = mainBackupForwardType;
+  const canUseProxyProtocol = !selectedForwardGroupIsChain
+    && form.protocol === "tcp"
+    && proxyProtocolForwardType === "gost";
+  const proxyProtocolDisabledText = selectedForwardGroupIsChain
+    ? "端口转发链不支持 PROXY Protocol。"
+    : form.protocol !== "tcp"
+    ? "PROXY Protocol 仅支持 TCP 协议。"
+    : proxyProtocolForwardType !== "gost"
+    ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持 PROXY Protocol。"
+    : "";
+
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
     return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
@@ -1869,6 +1887,17 @@ function RulesContent() {
     setForm((prev) => ({ ...prev, failoverEnabled: false }));
   }, [canUseMainBackup, form.failoverEnabled]);
 
+  useEffect(() => {
+    if (canUseProxyProtocol) return;
+    if (!form.proxyProtocolReceive && !form.proxyProtocolSend) return;
+    setForm((prev) => ({ ...prev, proxyProtocolReceive: false, proxyProtocolSend: false }));
+  }, [canUseProxyProtocol, form.proxyProtocolReceive, form.proxyProtocolSend]);
+
+  useEffect(() => {
+    if (!form.failoverEnabled || !form.proxyProtocolSend) return;
+    setForm((prev) => ({ ...prev, proxyProtocolSend: false }));
+  }, [form.failoverEnabled, form.proxyProtocolSend]);
+
   // 随机分配端口
   const handleRandomPort = async () => {
     if (form.routeMode === "group") {
@@ -1958,6 +1987,14 @@ function RulesContent() {
       toast.error("目标端口必须在 1-65535 之间");
       return;
     }
+    if ((form.proxyProtocolReceive || form.proxyProtocolSend) && !canUseProxyProtocol) {
+      toast.error(proxyProtocolDisabledText || "当前规则不支持 PROXY Protocol");
+      return;
+    }
+    if (form.proxyProtocolSend && form.failoverEnabled) {
+      toast.error("PROXY Protocol 向目标发送暂不支持与出站策略同时使用");
+      return;
+    }
     const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargetsText);
     if (failoverSubmit.error) {
       toast.error(failoverSubmit.error);
@@ -1994,6 +2031,10 @@ function RulesContent() {
       recoverSeconds: form.recoverSeconds || 120,
       autoFailback: form.autoFailback,
     };
+    const proxyProtocolPayload = {
+      proxyProtocolReceive: canUseProxyProtocol ? form.proxyProtocolReceive : false,
+      proxyProtocolSend: canUseProxyProtocol && !form.failoverEnabled ? form.proxyProtocolSend : false,
+    };
     if (form.routeMode !== "group" && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
       return;
@@ -2018,6 +2059,7 @@ function RulesContent() {
         isEnabled: portStatus === "available" ? true : undefined,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
+        ...proxyProtocolPayload,
         ...failoverPayload,
       });
     } else {
@@ -2034,6 +2076,7 @@ function RulesContent() {
         sourcePort: form.sourcePort,
         targetIp: form.targetIp,
         targetPort: form.targetPort,
+        ...proxyProtocolPayload,
         ...failoverPayload,
       });
     }
@@ -3500,7 +3543,7 @@ function RulesContent() {
                   <Label>转发工具</Label>
                   <Select
                     value={form.forwardType}
-                    onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: "direct", gostRelayHost: "", gostRelayPort: 0, tunnelId: null })}
+                    onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: "direct", gostRelayHost: "", gostRelayPort: 0, tunnelId: null, proxyProtocolReceive: v === "gost" ? form.proxyProtocolReceive : false, proxyProtocolSend: v === "gost" ? form.proxyProtocolSend : false })}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -3519,6 +3562,8 @@ function RulesContent() {
                     ...form,
                     protocol: v as any,
                     failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
+                    proxyProtocolReceive: v === "tcp" ? form.proxyProtocolReceive : false,
+                    proxyProtocolSend: v === "tcp" ? form.proxyProtocolSend : false,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3606,6 +3651,39 @@ function RulesContent() {
               </div>
             </div>
             <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <Label className="text-sm">PROXY Protocol</Label>
+                <p className="mt-1 text-xs text-muted-foreground">用于透传真实客户端 IP，目标服务未启用时不要开启发送。</p>
+                {!canUseProxyProtocol && proxyProtocolDisabledText && (
+                  <p className="mt-1 text-xs text-amber-600">{proxyProtocolDisabledText}</p>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                  <div className="min-w-0">
+                    <Label className="text-sm">接收 PROXY Protocol</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">入口前方有 SLB、HAProxy 或 Nginx 时使用。</p>
+                  </div>
+                  <Switch
+                    checked={form.proxyProtocolReceive}
+                    disabled={!canUseProxyProtocol}
+                    onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                  <div className="min-w-0">
+                    <Label className="text-sm">向目标发送</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">目标服务需要支持 PROXY Protocol。</p>
+                  </div>
+                  <Switch
+                    checked={form.proxyProtocolSend}
+                    disabled={!canUseProxyProtocol || form.failoverEnabled}
+                    onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked, failoverEnabled: checked ? false : form.failoverEnabled })}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <Label className="text-sm">出站策略</Label>
@@ -3626,6 +3704,7 @@ function RulesContent() {
                       failoverEnabled: nextEnabled,
                       failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
                       protocol: nextEnabled ? "tcp" : form.protocol,
+                      proxyProtocolSend: nextEnabled ? false : form.proxyProtocolSend,
                     });
                   }}
                   disabled={!canUseMainBackup}

@@ -37,6 +37,7 @@ import {
   normalizeForwardProtocolSettings,
 } from "../../shared/forwardTypes";
 import { isValidBrandLogoValue } from "../../shared/avatar";
+import { generateSelfSignedPanelSslCertificate, readPanelSslSettings, validatePanelSslConfig } from "../panelSsl";
 import {
   AGENT_VERSION,
   ANDROID_APK_RELEASE_VERSION,
@@ -627,9 +628,9 @@ async function updateEnvFileValue(filePath: string, key: string, value: string) 
   await fs.promises.writeFile(filePath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`, "utf8");
 }
 
-function schedulePanelRestart() {
+function schedulePanelRestart(reason = "settings change") {
   setTimeout(() => {
-    console.info("[Settings] exiting process for systemd restart after web port change");
+    console.info(`[Settings] exiting process for service restart after ${reason}`);
     process.exit(0);
   }, 800);
 }
@@ -666,6 +667,8 @@ export const systemRouter = router({
   /** 获取系统设置（包含开源地址、版本、面板公开 URL 等元信息） */
   getSettings: publicProcedure.query(async ({ ctx }) => {
     const all = await db.getAllSettings();
+    const panelSsl = readPanelSslSettings(all);
+    const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const safeSettings = {
       repoUrl: REPO_URL,
       telegramBotUrl: TELEGRAM_BOT_URL,
@@ -705,6 +708,15 @@ export const systemRouter = router({
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
       panelPublicUrl: all.panelPublicUrl ?? "",
+      panelSsl: {
+        enabled: panelSsl.enabled,
+        mode: panelSsl.mode,
+        certPath: panelSsl.certPath,
+        keyPath: panelSsl.keyPath,
+        certPem: panelSsl.certPem,
+        keyPem: panelSsl.keyPem,
+        activeProtocol,
+      },
       webPort: ENV.port,
       webPortManagement: {
         enabled: canManageWebPort(),
@@ -1079,8 +1091,85 @@ export const systemRouter = router({
       await updateEnvFileValue(webPortConfigPath(), "PORT", String(port));
       await db.setSetting("webPort", String(port));
       console.info(`[Settings] web port updated ${currentPort} -> ${port}; scheduling service restart`);
-      schedulePanelRestart();
+      schedulePanelRestart("web port change");
       return { success: true, port, restartScheduled: true };
+    }),
+
+  updatePanelSsl: adminProcedure
+    .input(z.object({
+      enabled: z.boolean(),
+      mode: z.enum(["path", "pem"]).optional().default("path"),
+      certPath: z.string().max(1024).optional().default(""),
+      keyPath: z.string().max(1024).optional().default(""),
+      certPem: z.string().max(20000).optional().default(""),
+      keyPem: z.string().max(20000).optional().default(""),
+      confirmed: z.literal(true),
+    }))
+    .mutation(async ({ input }) => {
+      const next = {
+        enabled: input.enabled,
+        mode: input.mode,
+        certPath: input.certPath.trim(),
+        keyPath: input.keyPath.trim(),
+        certPem: input.certPem.trim(),
+        keyPem: input.keyPem.trim(),
+      };
+      if (next.enabled || (next.mode === "pem" && (next.certPem || next.keyPem))) {
+        await validatePanelSslConfig({ ...next, enabled: true });
+      }
+
+      const all = await db.getAllSettings();
+      const current = readPanelSslSettings(all);
+      const changed = current.enabled !== next.enabled
+        || current.mode !== next.mode
+        || current.certPath !== next.certPath
+        || current.keyPath !== next.keyPath
+        || current.certPem !== next.certPem
+        || current.keyPem !== next.keyPem;
+      if (!changed) return { success: true, changed: false, restartScheduled: false, enabled: next.enabled };
+      const restartRequired = current.enabled !== next.enabled
+        || (next.enabled && (
+          current.mode !== next.mode
+          || current.certPath !== next.certPath
+          || current.keyPath !== next.keyPath
+          || current.certPem !== next.certPem
+          || current.keyPem !== next.keyPem
+        ));
+
+      await db.setSettings({
+        panelSslEnabled: next.enabled ? "true" : "false",
+        panelSslMode: next.mode,
+        panelSslCertPath: next.certPath || null,
+        panelSslKeyPath: next.keyPath || null,
+        panelSslCertPem: next.certPem || null,
+        panelSslKeyPem: next.keyPem || null,
+      });
+      if (restartRequired) {
+        console.info(`[Settings] panel SSL ${next.enabled ? "enabled" : "disabled"}; scheduling service restart`);
+        schedulePanelRestart("panel SSL change");
+      } else {
+        console.info("[Settings] panel SSL file paths saved without restart");
+      }
+      return { success: true, changed: true, restartScheduled: restartRequired, enabled: next.enabled };
+    }),
+
+  generatePanelSelfSignedCertificate: adminProcedure
+    .input(z.object({
+      hosts: z.array(z.string().max(256)).max(20).optional().default([]),
+      days: z.number().int().min(1).max(3650).optional().default(825),
+    }).optional())
+    .mutation(async ({ input }) => {
+      const all = await db.getAllSettings();
+      const hosts = [...(input?.hosts || [])];
+      if (all.panelPublicUrl) hosts.push(all.panelPublicUrl);
+      const generated = await generateSelfSignedPanelSslCertificate(hosts, input?.days || 825);
+      await db.setSettings({
+        panelSslMode: "path",
+        panelSslCertPath: generated.certPath,
+        panelSslKeyPath: generated.keyPath,
+      });
+      console.info(`[Settings] generated self-signed panel SSL certificate at ${generated.certPath}`);
+      return { success: true, ...generated };
     }),
 
   createMigrationCode: adminProcedure.mutation(() => {

@@ -1,7 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
-import { createServer } from "http";
+import { createServer as createHttpServer } from "http";
+import { createServer as createHttpsServer } from "https";
 import net from "net";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -15,6 +16,7 @@ import { initDatabase } from "./db";
 import { installPanelLogger } from "./_core/panelLogger";
 import { startScheduler } from "./scheduler";
 import { startTelegramBot } from "./telegramBot";
+import { loadPanelSslRuntimeConfig } from "./panelSsl";
 
 installPanelLogger();
 
@@ -75,7 +77,11 @@ async function startServer() {
   await initDatabase();
 
   const app = express();
-  const server = createServer(app);
+  const panelSsl = await loadPanelSslRuntimeConfig();
+  const protocol = panelSsl.enabled ? "https" : "http";
+  const server = panelSsl.enabled && panelSsl.options
+    ? createHttpsServer(panelSsl.options, app)
+    : createHttpServer(app);
 
   // Payment webhooks need the original request body for signature verification.
   app.use(paymentCallbackRouter);
@@ -102,8 +108,8 @@ async function startServer() {
   }
 
   server.listen(port, () => {
-    console.info(`Server running on http://localhost:${port}/`);
-    console.info(`[Server] ForwardX panel started on port ${port}`);
+    console.info(`Server running on ${protocol}://localhost:${port}/`);
+    console.info(`[Server] ForwardX panel started on ${protocol.toUpperCase()} port ${port}`);
   });
 
   startScheduler();

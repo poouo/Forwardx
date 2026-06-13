@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.90"
+var Version = "2.2.91"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -230,29 +230,31 @@ type selfTest struct {
 }
 
 type fxpSpec struct {
-	Role           string `json:"role"`
-	TunnelID       int    `json:"tunnelId"`
-	RuleID         int    `json:"ruleId"`
-	ListenPort     int    `json:"listenPort"`
-	Protocol       string `json:"protocol"`
-	ExitHost       string `json:"exitHost"`
-	ExitPort       int    `json:"exitPort"`
-	TargetIP       string `json:"targetIp"`
-	TargetPort     int    `json:"targetPort"`
-	Key            string `json:"key"`
-	LimitIn        int64  `json:"limitIn"`
-	LimitOut       int64  `json:"limitOut"`
-	MaxConnections int    `json:"maxConnections"`
-	MaxIPs         int    `json:"maxIPs"`
-	AccessScope    string `json:"accessScope"`
-	BlockHTTP      bool   `json:"blockHttp"`
-	BlockSocks     bool   `json:"blockSocks"`
-	BlockTLS       bool   `json:"blockTls"`
-	PanelURL       string `json:"panelUrl,omitempty"`
-	Token          string `json:"token,omitempty"`
-	RelayExitHost  string `json:"relayExitHost,omitempty"`
-	RelayExitPort  int    `json:"relayExitPort,omitempty"`
-	RelayKey       string `json:"relayKey,omitempty"`
+	Role                 string `json:"role"`
+	TunnelID             int    `json:"tunnelId"`
+	RuleID               int    `json:"ruleId"`
+	ListenPort           int    `json:"listenPort"`
+	Protocol             string `json:"protocol"`
+	ExitHost             string `json:"exitHost"`
+	ExitPort             int    `json:"exitPort"`
+	TargetIP             string `json:"targetIp"`
+	TargetPort           int    `json:"targetPort"`
+	Key                  string `json:"key"`
+	LimitIn              int64  `json:"limitIn"`
+	LimitOut             int64  `json:"limitOut"`
+	MaxConnections       int    `json:"maxConnections"`
+	MaxIPs               int    `json:"maxIPs"`
+	AccessScope          string `json:"accessScope"`
+	BlockHTTP            bool   `json:"blockHttp"`
+	BlockSocks           bool   `json:"blockSocks"`
+	BlockTLS             bool   `json:"blockTls"`
+	ProxyProtocolReceive bool   `json:"proxyProtocolReceive"`
+	ProxyProtocolSend    bool   `json:"proxyProtocolSend"`
+	PanelURL             string `json:"panelUrl,omitempty"`
+	Token                string `json:"token,omitempty"`
+	RelayExitHost        string `json:"relayExitHost,omitempty"`
+	RelayExitPort        int    `json:"relayExitPort,omitempty"`
+	RelayKey             string `json:"relayKey,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -2563,6 +2565,8 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.FormatBool(spec.BlockHTTP),
 		strconv.FormatBool(spec.BlockSocks),
 		strconv.FormatBool(spec.BlockTLS),
+		strconv.FormatBool(spec.ProxyProtocolReceive),
+		strconv.FormatBool(spec.ProxyProtocolSend),
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		spec.RelayKey,

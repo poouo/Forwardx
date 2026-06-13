@@ -32,7 +32,7 @@ ENV NODE_ENV=production \
 LABEL org.opencontainers.image.version=$FORWARDX_VERSION \
       org.forwardx.version=$FORWARDX_VERSION
 
-RUN apk add --no-cache tini git curl docker-cli docker-cli-compose && mkdir -p /data
+RUN apk add --no-cache tini git curl openssl docker-cli docker-cli-compose && mkdir -p /data
 VOLUME ["/data"]
 
 COPY --from=prod-deps /app/node_modules ./node_modules

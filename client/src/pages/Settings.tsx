@@ -2157,8 +2157,16 @@ function SystemInfoSection() {
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [webPortInput, setWebPortInput] = useState("");
+  const [panelSslEnabled, setPanelSslEnabled] = useState(false);
+  const [panelSslMode, setPanelSslMode] = useState<"path" | "pem">("path");
+  const [panelSslCertPath, setPanelSslCertPath] = useState("");
+  const [panelSslKeyPath, setPanelSslKeyPath] = useState("");
+  const [panelSslCertPem, setPanelSslCertPem] = useState("");
+  const [panelSslKeyPem, setPanelSslKeyPem] = useState("");
   const [showWebPortConfirm, setShowWebPortConfirm] = useState(false);
   const [webPortCountdown, setWebPortCountdown] = useState(5);
+  const [showPanelSslConfirm, setShowPanelSslConfirm] = useState(false);
+  const [panelSslCountdown, setPanelSslCountdown] = useState(5);
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
@@ -2210,6 +2218,12 @@ function SystemInfoSection() {
       setPanelUrlInput(settings.panelPublicUrl || "");
       setSiteTitleInput(settings.siteTitle || "ForwardX");
       setWebPortInput(String(settings.webPort || 3000));
+      setPanelSslEnabled(!!settings.panelSsl?.enabled);
+      setPanelSslMode(settings.panelSsl?.mode === "pem" ? "pem" : "path");
+      setPanelSslCertPath(settings.panelSsl?.certPath || "");
+      setPanelSslKeyPath(settings.panelSsl?.keyPath || "");
+      setPanelSslCertPem(settings.panelSsl?.certPem || "");
+      setPanelSslKeyPem(settings.panelSsl?.keyPem || "");
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
@@ -2262,6 +2276,21 @@ function SystemInfoSection() {
   }, [showWebPortConfirm]);
 
   useEffect(() => {
+    if (!showPanelSslConfirm) return;
+    setPanelSslCountdown(5);
+    const timer = window.setInterval(() => {
+      setPanelSslCountdown((value) => {
+        if (value <= 1) {
+          window.clearInterval(timer);
+          return 0;
+        }
+        return value - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showPanelSslConfirm]);
+
+  useEffect(() => {
     const status = upgradeStatus?.job?.status;
     if (!status || status === "idle") return;
     const previous = previousUpgradeStatus.current;
@@ -2297,6 +2326,30 @@ function SystemInfoSection() {
       setShowWebPortConfirm(false);
     },
     onError: (err) => toast.error(err.message || "修改 Web 端口失败"),
+  });
+
+  const updatePanelSslMutation = trpc.system.updatePanelSsl.useMutation({
+    onSuccess: (result) => {
+      utils.system.getSettings.invalidate();
+      if (result.restartScheduled) {
+        toast.success(result.enabled ? "面板 SSL 已开启，服务正在重启" : "面板 SSL 已关闭，服务正在重启");
+      } else {
+        toast.info("面板 SSL 配置未变化");
+      }
+      setShowPanelSslConfirm(false);
+    },
+    onError: (err) => toast.error(err.message || "保存面板 SSL 配置失败"),
+  });
+
+  const generatePanelSelfSignedMutation = trpc.system.generatePanelSelfSignedCertificate.useMutation({
+    onSuccess: (result) => {
+      setPanelSslMode("path");
+      setPanelSslCertPath(result.certPath);
+      setPanelSslKeyPath(result.keyPath);
+      utils.system.getSettings.invalidate();
+      toast.success("自签证书已生成并填入路径");
+    },
+    onError: (err) => toast.error(err.message || "生成自签证书失败"),
   });
 
   const saveSystemSettings = (
@@ -2349,6 +2402,70 @@ function SystemInfoSection() {
       return;
     }
     updateWebPortMutation.mutate({ port: Math.floor(Number(webPortInput)), confirmed: true });
+  };
+
+  const openPanelSslConfirm = () => {
+    if (panelSslEnabled && (!panelSslCertPath.trim() || !panelSslKeyPath.trim())) {
+      toast.error("开启面板 SSL 需要填写证书文件和私钥文件路径");
+      return;
+    }
+    setShowPanelSslConfirm(true);
+  };
+
+  const confirmPanelSslChange = () => {
+    if (panelSslEnabled && (!panelSslCertPath.trim() || !panelSslKeyPath.trim())) {
+      toast.error("开启面板 SSL 需要填写证书文件和私钥文件路径");
+      return;
+    }
+    updatePanelSslMutation.mutate({
+      enabled: panelSslEnabled,
+      certPath: panelSslCertPath.trim(),
+      keyPath: panelSslKeyPath.trim(),
+      confirmed: true,
+    });
+  };
+
+  const validatePanelSslDraft = () => {
+    if (!panelSslEnabled) return true;
+    if (panelSslMode === "path") {
+      if (!panelSslCertPath.trim() || !panelSslKeyPath.trim()) {
+        toast.error("开启面板 SSL 需要填写证书文件和私钥文件路径");
+        return false;
+      }
+      return true;
+    }
+    if (!/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.test(panelSslCertPem.trim())) {
+      toast.error("证书内容不是有效的 PEM 证书");
+      return false;
+    }
+    if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----/.test(panelSslKeyPem.trim())) {
+      toast.error("私钥内容不是有效的 PEM 私钥");
+      return false;
+    }
+    return true;
+  };
+
+  const openPanelSslConfirmV2 = () => {
+    if (!validatePanelSslDraft()) return;
+    setShowPanelSslConfirm(true);
+  };
+
+  const confirmPanelSslChangeV2 = () => {
+    if (!validatePanelSslDraft()) return;
+    updatePanelSslMutation.mutate({
+      enabled: panelSslEnabled,
+      mode: panelSslMode,
+      certPath: panelSslCertPath.trim(),
+      keyPath: panelSslKeyPath.trim(),
+      certPem: panelSslCertPem.trim(),
+      keyPem: panelSslKeyPem.trim(),
+      confirmed: true,
+    });
+  };
+
+  const handleGeneratePanelSelfSigned = () => {
+    const hosts = [panelUrlInput].filter(Boolean);
+    generatePanelSelfSignedMutation.mutate({ hosts, days: 825 });
   };
 
   const handleSaveRegistration = () => {
@@ -2728,6 +2845,109 @@ function SystemInfoSection() {
             )}
           </CardContent>
         </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Lock className="h-4 w-4 text-primary" />
+              面板 SSL 访问
+            </CardTitle>
+            <CardDescription>
+              开启后当前 Web 端口将使用 HTTPS 访问。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">启用 HTTPS</p>
+                <p className="text-xs text-muted-foreground">
+                  当前协议：{settings?.panelSsl?.activeProtocol === "https" ? "HTTPS" : "HTTP"}，端口：{settings?.webPort || 3000}
+                </p>
+              </div>
+              <Switch className="shrink-0" checked={panelSslEnabled} onCheckedChange={setPanelSslEnabled} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={panelSslMode === "path" ? "default" : "outline"}
+                onClick={() => setPanelSslMode("path")}
+              >
+                文件路径
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={panelSslMode === "pem" ? "default" : "outline"}
+                onClick={() => setPanelSslMode("pem")}
+              >
+                粘贴证书
+              </Button>
+            </div>
+            <div className={panelSslMode === "path" ? "grid gap-3 md:grid-cols-2" : "hidden"}>
+              <div className="space-y-2">
+                <Label htmlFor="panel-ssl-cert-path">证书文件路径</Label>
+                <Input
+                  id="panel-ssl-cert-path"
+                  value={panelSslCertPath}
+                  onChange={(e) => setPanelSslCertPath(e.target.value)}
+                  placeholder="/data/certs/fullchain.pem"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="panel-ssl-key-path">私钥文件路径</Label>
+                <Input
+                  id="panel-ssl-key-path"
+                  value={panelSslKeyPath}
+                  onChange={(e) => setPanelSslKeyPath(e.target.value)}
+                  placeholder="/data/certs/privkey.pem"
+                />
+              </div>
+            </div>
+            {panelSslMode === "path" && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleGeneratePanelSelfSigned}
+                disabled={generatePanelSelfSignedMutation.isPending}
+              >
+                {generatePanelSelfSignedMutation.isPending ? "生成中..." : "生成自签证书"}
+              </Button>
+            )}
+            {panelSslMode === "pem" && (
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="panel-ssl-cert-pem">证书 PEM</Label>
+                  <Textarea
+                    id="panel-ssl-cert-pem"
+                    value={panelSslCertPem}
+                    onChange={(e) => setPanelSslCertPem(e.target.value)}
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                    className="min-h-40 font-mono text-xs"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="panel-ssl-key-pem">私钥 PEM</Label>
+                  <Textarea
+                    id="panel-ssl-key-pem"
+                    value={panelSslKeyPem}
+                    onChange={(e) => setPanelSslKeyPem(e.target.value)}
+                    placeholder="-----BEGIN PRIVATE KEY-----"
+                    className="min-h-40 font-mono text-xs"
+                  />
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              默认关闭。保存时会校验证书和私钥，配置生效需要重启面板；端口不变。
+            </p>
+            <div className="flex justify-end">
+              <Button onClick={openPanelSslConfirmV2} disabled={updatePanelSslMutation.isPending || generatePanelSelfSignedMutation.isPending}>
+                保存 SSL 配置
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Dialog open={showWebPortConfirm} onOpenChange={setShowWebPortConfirm}>
@@ -2754,6 +2974,35 @@ function SystemInfoSection() {
             </Button>
             <Button onClick={confirmWebPortChange} disabled={webPortCountdown > 0 || updateWebPortMutation.isPending}>
               {webPortCountdown > 0 ? `确认修改（${webPortCountdown}s）` : "确认并重启"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showPanelSslConfirm} onOpenChange={setShowPanelSslConfirm}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              确认修改面板 SSL
+            </DialogTitle>
+            <DialogDescription>
+              确认后面板会重启，当前端口 {settings?.webPort || 3000} 将切换为 {panelSslEnabled ? "HTTPS" : "HTTP"} 访问。
+            </DialogDescription>
+          </DialogHeader>
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>请确认访问地址和证书文件已准备好</AlertTitle>
+            <AlertDescription>
+              开启 SSL 后请使用 https:// 访问当前端口；关闭后请改回 http:// 访问当前端口。
+            </AlertDescription>
+          </Alert>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPanelSslConfirm(false)} disabled={updatePanelSslMutation.isPending}>
+              取消
+            </Button>
+            <Button onClick={confirmPanelSslChangeV2} disabled={panelSslCountdown > 0 || updatePanelSslMutation.isPending}>
+              {panelSslCountdown > 0 ? `确认修改（${panelSslCountdown}s）` : "确认并重启"}
             </Button>
           </DialogFooter>
         </DialogContent>

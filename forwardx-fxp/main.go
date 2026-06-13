@@ -30,37 +30,43 @@ import (
 )
 
 type config struct {
-	Role           string `json:"role"`
-	TunnelID       int    `json:"tunnelId"`
-	RuleID         int    `json:"ruleId"`
-	ListenPort     int    `json:"listenPort"`
-	Protocol       string `json:"protocol"`
-	ExitHost       string `json:"exitHost"`
-	ExitPort       int    `json:"exitPort"`
-	TargetIP       string `json:"targetIp"`
-	TargetPort     int    `json:"targetPort"`
-	Key            string `json:"key"`
-	LimitIn        int64  `json:"limitIn"`
-	LimitOut       int64  `json:"limitOut"`
-	MaxConnections int    `json:"maxConnections"`
-	MaxIPs         int    `json:"maxIPs"`
-	AccessScope    string `json:"accessScope"`
-	BlockHTTP      bool   `json:"blockHttp"`
-	BlockSocks     bool   `json:"blockSocks"`
-	BlockTLS       bool   `json:"blockTls"`
-	PanelURL       string `json:"panelUrl"`
-	Token          string `json:"token"`
-	RelayExitHost  string `json:"relayExitHost,omitempty"`
-	RelayExitPort  int    `json:"relayExitPort,omitempty"`
-	RelayKey       string `json:"relayKey,omitempty"`
+	Role                 string `json:"role"`
+	TunnelID             int    `json:"tunnelId"`
+	RuleID               int    `json:"ruleId"`
+	ListenPort           int    `json:"listenPort"`
+	Protocol             string `json:"protocol"`
+	ExitHost             string `json:"exitHost"`
+	ExitPort             int    `json:"exitPort"`
+	TargetIP             string `json:"targetIp"`
+	TargetPort           int    `json:"targetPort"`
+	Key                  string `json:"key"`
+	LimitIn              int64  `json:"limitIn"`
+	LimitOut             int64  `json:"limitOut"`
+	MaxConnections       int    `json:"maxConnections"`
+	MaxIPs               int    `json:"maxIPs"`
+	AccessScope          string `json:"accessScope"`
+	BlockHTTP            bool   `json:"blockHttp"`
+	BlockSocks           bool   `json:"blockSocks"`
+	BlockTLS             bool   `json:"blockTls"`
+	ProxyProtocolReceive bool   `json:"proxyProtocolReceive"`
+	ProxyProtocolSend    bool   `json:"proxyProtocolSend"`
+	PanelURL             string `json:"panelUrl"`
+	Token                string `json:"token"`
+	RelayExitHost        string `json:"relayExitHost,omitempty"`
+	RelayExitPort        int    `json:"relayExitPort,omitempty"`
+	RelayKey             string `json:"relayKey,omitempty"`
 }
 
 type helloFrame struct {
-	Network    string `json:"network"`
-	TargetIP   string `json:"targetIp"`
-	TargetPort int    `json:"targetPort"`
-	TunnelID   int    `json:"tunnelId"`
-	RuleID     int    `json:"ruleId"`
+	Network         string `json:"network"`
+	TargetIP        string `json:"targetIp"`
+	TargetPort      int    `json:"targetPort"`
+	TunnelID        int    `json:"tunnelId"`
+	RuleID          int    `json:"ruleId"`
+	ProxySourceIP   string `json:"proxySourceIp,omitempty"`
+	ProxySourcePort int    `json:"proxySourcePort,omitempty"`
+	ProxyDestIP     string `json:"proxyDestIp,omitempty"`
+	ProxyDestPort   int    `json:"proxyDestPort,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -129,7 +135,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.87"
+	fxpRuntimeVersion   = "2.2.91"
 )
 
 var (
@@ -294,6 +300,9 @@ func validateConfig(cfg config) error {
 			return errors.New("entry requires target host and port")
 		}
 	}
+	if (cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend) && cfg.Protocol != "tcp" {
+		return errors.New("proxy protocol requires tcp protocol")
+	}
 	if cfg.Role == "relay" {
 		if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayExitPort > 65535 || cfg.RelayKey == "" {
 			return errors.New("relay requires relay exit host, port, and key")
@@ -448,8 +457,9 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate) error {
 func handleEntryTCP(client net.Conn, cfg config) error {
 	defer client.Close()
 	var first []byte
+	proxyInfo := proxyProtocolInfoFromConn(client)
 	initialTimeout := 150 * time.Millisecond
-	if cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
+	if cfg.ProxyProtocolReceive || cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
 		initialTimeout = 5 * time.Second
 	}
 	initial, err := readInitialTCPPayload(client, initialTimeout)
@@ -460,6 +470,20 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 		return err
 	}
 	first = initial
+	if cfg.ProxyProtocolReceive {
+		parsed, remaining, ok, err := consumeProxyProtocolV1FromConn(client, first, initialTimeout)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("missing proxy protocol header")
+		}
+		proxyInfo = parsed
+		first = remaining
+	}
+	if !cfg.ProxyProtocolSend {
+		proxyInfo = proxyProtocolInfo{}
+	}
 	if cfg.BlockHTTP || cfg.BlockSocks || cfg.BlockTLS {
 		if len(first) == 0 {
 			// Keep server-first protocols working when no client payload arrives before the policy sniff timeout.
@@ -474,11 +498,15 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 	}
 	defer exit.Close()
 	hello, _ := json.Marshal(helloFrame{
-		Network:    "tcp",
-		TargetIP:   cfg.TargetIP,
-		TargetPort: cfg.TargetPort,
-		TunnelID:   cfg.TunnelID,
-		RuleID:     cfg.RuleID,
+		Network:         "tcp",
+		TargetIP:        cfg.TargetIP,
+		TargetPort:      cfg.TargetPort,
+		TunnelID:        cfg.TunnelID,
+		RuleID:          cfg.RuleID,
+		ProxySourceIP:   proxyInfo.SourceIP,
+		ProxySourcePort: proxyInfo.SourcePort,
+		ProxyDestIP:     proxyInfo.DestIP,
+		ProxyDestPort:   proxyInfo.DestPort,
 	})
 	if err := sec.writeFrame(hello); err != nil {
 		return err
@@ -513,6 +541,119 @@ func readInitialTCPPayload(conn net.Conn, timeout time.Duration) ([]byte, error)
 		return nil, err
 	}
 	return nil, nil
+}
+
+type proxyProtocolInfo struct {
+	SourceIP   string
+	SourcePort int
+	DestIP     string
+	DestPort   int
+}
+
+func proxyProtocolInfoFromConn(conn net.Conn) proxyProtocolInfo {
+	info := proxyProtocolInfo{}
+	if conn == nil {
+		return info
+	}
+	if host, port := splitAddrHostPort(conn.RemoteAddr()); host != "" {
+		info.SourceIP = host
+		info.SourcePort = port
+	}
+	if host, port := splitAddrHostPort(conn.LocalAddr()); host != "" {
+		info.DestIP = host
+		info.DestPort = port
+	}
+	return info
+}
+
+func splitAddrHostPort(addr net.Addr) (string, int) {
+	if addr == nil {
+		return "", 0
+	}
+	host, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String(), 0
+	}
+	port, _ := strconv.Atoi(portText)
+	return host, port
+}
+
+func consumeProxyProtocolV1(data []byte) (proxyProtocolInfo, []byte, bool, error) {
+	if !bytes.HasPrefix(data, []byte("PROXY ")) {
+		return proxyProtocolInfo{}, data, false, nil
+	}
+	end := bytes.Index(data, []byte("\r\n"))
+	if end < 0 {
+		return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol header")
+	}
+	line := string(data[:end])
+	parts := strings.Fields(line)
+	if len(parts) < 2 || parts[0] != "PROXY" {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol header")
+	}
+	if parts[1] == "UNKNOWN" {
+		return proxyProtocolInfo{}, data[end+2:], true, nil
+	}
+	if len(parts) != 6 || (parts[1] != "TCP4" && parts[1] != "TCP6") {
+		return proxyProtocolInfo{}, nil, false, errors.New("unsupported proxy protocol header")
+	}
+	srcPort, err := strconv.Atoi(parts[4])
+	if err != nil || srcPort <= 0 || srcPort > 65535 {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol source port")
+	}
+	dstPort, err := strconv.Atoi(parts[5])
+	if err != nil || dstPort <= 0 || dstPort > 65535 {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol destination port")
+	}
+	return proxyProtocolInfo{
+		SourceIP:   parts[2],
+		DestIP:     parts[3],
+		SourcePort: srcPort,
+		DestPort:   dstPort,
+	}, data[end+2:], true, nil
+}
+
+func consumeProxyProtocolV1FromConn(conn net.Conn, data []byte, timeout time.Duration) (proxyProtocolInfo, []byte, bool, error) {
+	buf := append([]byte(nil), data...)
+	for len(buf) > 0 && len(buf) < 108 && (bytes.HasPrefix(buf, []byte("PROXY ")) || bytes.HasPrefix([]byte("PROXY "), buf)) && bytes.Index(buf, []byte("\r\n")) < 0 {
+		if timeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		}
+		tmp := make([]byte, 108-len(buf))
+		n, err := conn.Read(tmp)
+		_ = conn.SetReadDeadline(time.Time{})
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			return proxyProtocolInfo{}, nil, false, err
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return consumeProxyProtocolV1(buf)
+}
+
+func formatProxyProtocolV1(hello helloFrame) string {
+	sourceIP := strings.TrimSpace(hello.ProxySourceIP)
+	destIP := strings.TrimSpace(hello.ProxyDestIP)
+	if destIP == "" {
+		destIP = strings.TrimSpace(hello.TargetIP)
+	}
+	sourcePort := hello.ProxySourcePort
+	destPort := hello.ProxyDestPort
+	if destPort <= 0 {
+		destPort = hello.TargetPort
+	}
+	family := "TCP4"
+	if strings.Contains(sourceIP, ":") || strings.Contains(destIP, ":") {
+		family = "TCP6"
+	}
+	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
 }
 
 func serveEntryUDP(conn *net.UDPConn, cfg config) error {
@@ -627,6 +768,11 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		return fmt.Errorf("dial target: %w", err)
 	}
 	defer target.Close()
+	if hello.ProxySourceIP != "" && hello.ProxySourcePort > 0 {
+		if _, err := target.Write([]byte(formatProxyProtocolV1(hello))); err != nil {
+			return fmt.Errorf("write proxy protocol: %w", err)
+		}
+	}
 	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	return proxyPlainSecure(target, sec, 0, 0, nil)
 }

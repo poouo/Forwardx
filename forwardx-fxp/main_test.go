@@ -82,6 +82,92 @@ func TestForwardXTCPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardXProxyProtocolRoundTrip(t *testing.T) {
+	headerCh := make(chan string, 1)
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	go func() {
+		conn, err := targetLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		deadline := time.Now().Add(3 * time.Second)
+		_ = conn.SetReadDeadline(deadline)
+		buf := make([]byte, 256)
+		var got []byte
+		for len(got) < len("PROXY TCP4 203.0.113.10 198.51.100.20 54321 443\r\npayload") {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				got = append(got, buf[:n]...)
+			}
+			if err != nil {
+				break
+			}
+		}
+		headerCh <- string(got)
+	}()
+
+	key := "proxy-protocol-key"
+	targetPort := targetLn.Addr().(*net.TCPAddr).Port
+	exitPort := freeTCPPort(t)
+	entryPort := freeTCPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   11,
+			ListenPort: exitPort,
+			Protocol:   "tcp",
+			Key:        key,
+		})
+	}()
+	waitForTCP(t, exitPort)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:                 "entry",
+			TunnelID:             11,
+			RuleID:               12,
+			ListenPort:           entryPort,
+			Protocol:             "tcp",
+			ExitHost:             "127.0.0.1",
+			ExitPort:             exitPort,
+			TargetIP:             "127.0.0.1",
+			TargetPort:           targetPort,
+			Key:                  key,
+			ProxyProtocolReceive: true,
+			ProxyProtocolSend:    true,
+		})
+	}()
+	waitForTCP(t, entryPort)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("PROXY TCP4 203.0.113.10 198.51.100.20 54321 443\r\npayload")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-headerCh:
+		want := "PROXY TCP4 203.0.113.10 198.51.100.20 54321 443\r\npayload"
+		if got != want {
+			t.Fatalf("unexpected target payload %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for target payload")
+	}
+}
+
 func TestForwardXRelayTCPRoundTrip(t *testing.T) {
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
