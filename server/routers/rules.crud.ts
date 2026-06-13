@@ -98,13 +98,13 @@ function normalizeProxyProtocolInput(input: {
   failoverEnabled?: boolean;
 }, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean }) {
   const clearUnsupported = options?.clearUnsupported ?? false;
-  const protocolSupported = !protocol || protocol === "tcp";
+  const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
   const forwardTypeSupported = forwardType === "gost";
   const receive = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolReceive;
   const send = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolSend;
   if (!receive && !send) {
     if (clearUnsupported) return { proxyProtocolReceive: false, proxyProtocolSend: false };
-    if ((input.proxyProtocolReceive || input.proxyProtocolSend) && protocol && protocol !== "tcp") {
+    if ((input.proxyProtocolReceive || input.proxyProtocolSend) && protocol && protocol !== "tcp" && protocol !== "both") {
       throw new Error("PROXY Protocol 仅支持 TCP 协议");
     }
     if ((input.proxyProtocolReceive || input.proxyProtocolSend) && forwardType !== "gost") {

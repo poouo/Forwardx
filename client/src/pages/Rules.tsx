@@ -1784,12 +1784,13 @@ function RulesContent() {
     ? "出站策略仅支持 TCP 协议。"
     : "";
   const proxyProtocolForwardType = mainBackupForwardType;
+  const proxyProtocolProtocolSupported = form.protocol === "tcp" || form.protocol === "both";
   const canUseProxyProtocol = !selectedForwardGroupIsChain
-    && form.protocol === "tcp"
+    && proxyProtocolProtocolSupported
     && proxyProtocolForwardType === "gost";
   const proxyProtocolDisabledText = selectedForwardGroupIsChain
     ? "端口转发链不支持 PROXY Protocol。"
-    : form.protocol !== "tcp"
+    : !proxyProtocolProtocolSupported
     ? "PROXY Protocol 仅支持 TCP 协议。"
     : proxyProtocolForwardType !== "gost"
     ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持 PROXY Protocol。"
@@ -3562,8 +3563,8 @@ function RulesContent() {
                     ...form,
                     protocol: v as any,
                     failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
-                    proxyProtocolReceive: v === "tcp" ? form.proxyProtocolReceive : false,
-                    proxyProtocolSend: v === "tcp" ? form.proxyProtocolSend : false,
+                    proxyProtocolReceive: v !== "udp" ? form.proxyProtocolReceive : false,
+                    proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>

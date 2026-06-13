@@ -746,7 +746,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : undefined
     );
     const proxyProtocolEnabled = (rule: any, direction: "receive" | "send") => (
-      String(rule?.protocol || "tcp") === "tcp"
+      String(rule?.protocol || "tcp") !== "udp"
       && (direction === "receive" ? !!(rule as any).proxyProtocolReceive : !!(rule as any).proxyProtocolSend)
     );
     const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send") => (

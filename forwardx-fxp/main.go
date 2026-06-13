@@ -300,7 +300,7 @@ func validateConfig(cfg config) error {
 			return errors.New("entry requires target host and port")
 		}
 	}
-	if (cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend) && cfg.Protocol != "tcp" {
+	if (cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend) && cfg.Protocol == "udp" {
 		return errors.New("proxy protocol requires tcp protocol")
 	}
 	if cfg.Role == "relay" {
