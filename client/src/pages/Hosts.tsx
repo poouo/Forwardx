@@ -115,6 +115,50 @@ function writeCachedHostMetrics(hostId: number | string, metrics: any[]) {
   writeJsonCache(`${HOST_METRICS_CACHE_PREFIX}${hostId}`, metrics.slice(0, 2));
 }
 
+function parseCustomPortsInput(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return { ports: [] as number[], invalid: [] as string[], normalized: "" };
+  const tokens = text.split(",").map((item) => item.trim());
+  const invalid: string[] = [];
+  const ports: number[] = [];
+  for (const token of tokens) {
+    if (!token || !/^\d+$/.test(token)) {
+      invalid.push(token || "空值");
+      continue;
+    }
+    const port = Number(token);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      invalid.push(token);
+      continue;
+    }
+    ports.push(port);
+  }
+  const normalizedPorts = Array.from(new Set(ports)).sort((a, b) => a - b);
+  return {
+    ports: normalizedPorts,
+    invalid,
+    normalized: normalizedPorts.join(","),
+  };
+}
+
+function formatHostPortPolicy(host: any) {
+  const parts: string[] = [];
+  if ((host as any).portRangeStart != null && (host as any).portRangeEnd != null) {
+    parts.push(`${(host as any).portRangeStart}-${(host as any).portRangeEnd}`);
+  }
+  const custom = parseCustomPortsInput(String((host as any).portAllowlist || "")).normalized;
+  if (custom) parts.push(custom);
+  return parts.length > 0 ? parts.join(" + ") : "不限制";
+}
+
+function metricUsageProgressClass(value: unknown, isOnline: boolean) {
+  if (!isOnline) return "h-1.5 bg-muted [&>div]:bg-muted-foreground/40";
+  const usage = Number(value || 0);
+  if (usage >= 80) return "h-1.5 bg-muted [&>div]:bg-red-500";
+  if (usage >= 50) return "h-1.5 bg-muted [&>div]:bg-amber-500";
+  return "h-1.5 bg-muted [&>div]:bg-emerald-500";
+}
+
 function usePageVisible() {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   useEffect(() => {
@@ -682,6 +726,7 @@ type HostFormData = {
   tunnelEntryIp: string;
   portRangeStart: number | null;
   portRangeEnd: number | null;
+  portAllowlist: string;
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
@@ -696,6 +741,7 @@ const defaultFormData: HostFormData = {
   tunnelEntryIp: "",
   portRangeStart: null,
   portRangeEnd: null,
+  portAllowlist: "",
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
@@ -791,12 +837,12 @@ function HostCard({
   const infoPanelClass = isOnline
     ? "border-border/40 bg-background/30"
     : "border-muted-foreground/20 bg-muted/25";
-  const metricProgressClass = isOnline
-    ? "h-1.5"
-    : "h-1.5 bg-muted [&>div]:bg-muted-foreground/40";
-  const trafficPanelClass = isOnline
-    ? "border-border/40 bg-muted/20"
-    : "border-muted-foreground/20 bg-muted/25";
+  const uploadTrafficPanelClass = isOnline
+    ? "border-blue-300/70 bg-blue-50 text-blue-700 dark:border-blue-400/35 dark:bg-blue-950/25 dark:text-blue-300"
+    : "border-muted-foreground/20 bg-muted/25 text-muted-foreground";
+  const downloadTrafficPanelClass = isOnline
+    ? "border-emerald-300/70 bg-emerald-50 text-emerald-700 dark:border-emerald-400/35 dark:bg-emerald-950/25 dark:text-emerald-300"
+    : "border-muted-foreground/20 bg-muted/25 text-muted-foreground";
 
   useEffect(() => {
     if (!metrics?.length) return;
@@ -901,7 +947,7 @@ function HostCard({
               <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
                 {host.cpuInfo || "未上报 CPU 型号"}
               </p>
-              <Progress value={latestMetric.cpuUsage ?? 0} className={metricProgressClass} />
+              <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
             </div>
             {/* 内存 - 显示具体数据和百分比 */}
             <div className="space-y-1.5">
@@ -913,7 +959,7 @@ function HostCard({
                     : `${latestMetric.memoryUsage ?? 0}%`}
                 </span>
               </div>
-              <Progress value={latestMetric.memoryUsage ?? 0} className={metricProgressClass} />
+              <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
             </div>
             {/* 磁盘 */}
             <div className="space-y-1.5">
@@ -925,36 +971,32 @@ function HostCard({
                     : `-- / -- (${latestMetric.diskUsage ?? 0}%)`}
                 </span>
               </div>
-              <Progress value={latestMetric.diskUsage ?? 0} className={metricProgressClass} />
+              <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
             </div>
             {/* 流量 */}
-            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowDownToLine className="h-3 w-3" />
-                  <span>入站</span>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <div
+                className={`flex min-h-[74px] min-w-0 flex-col items-center justify-center rounded-md border px-2.5 py-2.5 text-center ${uploadTrafficPanelClass}`}
+                title={networkSpeed.out === null ? undefined : `当前上行 ${formatBytes(networkSpeed.out)}/s`}
+              >
+                <div className="flex min-w-0 items-center justify-center gap-1.5 text-sm font-medium">
+                  <ArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">上行流量</span>
                 </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
+                <div className="mt-1 font-mono text-sm font-semibold tabular-nums">
+                  {totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}
                 </div>
               </div>
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowUpFromLine className="h-3 w-3" />
-                  <span>出站</span>
+              <div
+                className={`flex min-h-[74px] min-w-0 flex-col items-center justify-center rounded-md border px-2.5 py-2.5 text-center ${downloadTrafficPanelClass}`}
+                title={networkSpeed.in === null ? undefined : `当前下行 ${formatBytes(networkSpeed.in)}/s`}
+              >
+                <div className="flex min-w-0 items-center justify-center gap-1.5 text-sm font-medium">
+                  <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">下行流量</span>
                 </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
+                <div className="mt-1 font-mono text-sm font-semibold tabular-nums">
+                  {totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}
                 </div>
               </div>
             </div>
@@ -1056,6 +1098,10 @@ function HostsContent() {
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
       setUpgradeHost(null);
+      if ((data as any)?.alreadyLatest) {
+        toast.info("该 Agent 已经是最新版本");
+        return;
+      }
       toast.success(data?.pushed ? "Agent 升级任务已推送，正在升级" : "Agent 升级任务已记录，等待 Agent 回连后执行");
     },
     onError: (err) => toast.error(err.message || "下发升级任务失败"),
@@ -1064,7 +1110,8 @@ function HostsContent() {
     onSuccess: (data) => {
       utils.hosts.list.invalidate();
       setBulkUpgradeDialogOpen(false);
-      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台`);
+      const skippedLatest = (data as any)?.skippedLatest || 0;
+      toast.success(`已下发 ${data?.requested || 0} 台 Agent 升级任务，实时推送 ${data?.pushed || 0} 台${skippedLatest ? `，跳过 ${skippedLatest} 台最新版本` : ""}`);
     },
     onError: (err) => toast.error(err.message || "批量下发升级任务失败"),
   });
@@ -1119,6 +1166,7 @@ function HostsContent() {
       tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
+      portAllowlist: host.portAllowlist || "",
       blockHttp: !!host.blockHttp,
       blockSocks: !!host.blockSocks,
       blockTls: !!host.blockTls,
@@ -1145,6 +1193,11 @@ function HostsContent() {
       if (ps < 1 || ps > 65535 || pe < 1 || pe > 65535) { toast.error("端口区间必须在 1-65535 之间"); return; }
       if (ps > pe) { toast.error("端口区间起始值不能大于结束值"); return; }
     }
+    const customPorts = parseCustomPortsInput(form.portAllowlist);
+    if (customPorts.invalid.length > 0) {
+      toast.error("自定义端口只能填写 1-65535 的整数，多个端口请使用英文逗号分隔");
+      return;
+    }
 
     const ni = (form.networkInterface || "").trim();
     const protocolPolicyPayload = user?.role === "admin"
@@ -1161,6 +1214,7 @@ function HostsContent() {
         tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
+        portAllowlist: customPorts.normalized || null,
         ...protocolPolicyPayload,
       });
     } else {
@@ -1174,11 +1228,13 @@ function HostsContent() {
         tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
+        portAllowlist: customPorts.normalized || null,
         ...protocolPolicyPayload,
       });
     }
   };
   const isPending = createMutation.isPending || updateMutation.isPending;
+  const customPortInputState = useMemo(() => parseCustomPortsInput(form.portAllowlist), [form.portAllowlist]);
   const onlineCount = useMemo(() => displayHosts.filter((h) => h.isOnline).length, [displayHosts]);
   const updateCount = useMemo(
     () => displayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
@@ -1198,8 +1254,25 @@ function HostsContent() {
     isReady: hasDisplayHosts,
   });
   const pagedHosts = hostPagination.items;
+  const isAgentLatest = (host: any) => {
+    if (!latestAgentVersion || !host?.agentVersion) return false;
+    return compareVersions(host.agentVersion, latestAgentVersion) >= 0;
+  };
   const requestAgentUpgrade = (host: any) => {
+    if (isAgentLatest(host)) {
+      toast.info("该 Agent 已经是最新版本");
+      return;
+    }
     setUpgradeHost(host);
+  };
+  const confirmAgentUpgrade = () => {
+    if (!upgradeHost) return;
+    if (isAgentLatest(upgradeHost)) {
+      toast.info("该 Agent 已经是最新版本");
+      setUpgradeHost(null);
+      return;
+    }
+    upgradeAgentMutation.mutate({ hostId: upgradeHost.id, targetVersion: latestAgentVersion || null });
   };
   const requestAllAgentUpgrades = () => {
     if (bulkUpgradeableHosts.length === 0) {
@@ -1504,7 +1577,6 @@ function HostsContent() {
                       <TableHead className="w-[50px]">状态</TableHead>
                       <TableHead>名称</TableHead>
                       <TableHead className="min-w-[220px]">地址</TableHead>
-                      <TableHead className="hidden md:table-cell">类型</TableHead>
                       <TableHead className="hidden lg:table-cell">端口区间</TableHead>
                       <TableHead className="hidden md:table-cell">系统</TableHead>
                       <TableHead className="hidden lg:table-cell">Agent</TableHead>
@@ -1544,23 +1616,9 @@ function HostsContent() {
                             <HostRegionBadge host={host} compact />
                           </div>
                         </TableCell>
-                        <TableCell className="hidden md:table-cell">
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] ${
-                              host.hostType === "master"
-                                ? "border-amber-500/30 text-amber-400"
-                                : "border-blue-500/30 text-blue-400"
-                            }`}
-                          >
-                            {host.hostType === "master" ? "主控" : "被控"}
-                          </Badge>
-                        </TableCell>
                         <TableCell className="hidden lg:table-cell">
                           <span className="text-xs text-muted-foreground font-mono">
-                            {(host as any).portRangeStart != null && (host as any).portRangeEnd != null
-                              ? `${(host as any).portRangeStart}-${(host as any).portRangeEnd}`
-                              : "不限制"}
+                            {formatHostPortPolicy(host)}
                           </span>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
@@ -1710,7 +1768,7 @@ function HostsContent() {
             <Button
               className="gap-2"
               disabled={!upgradeHost || upgradeAgentMutation.isPending}
-              onClick={() => upgradeHost && upgradeAgentMutation.mutate({ hostId: upgradeHost.id, targetVersion: latestAgentVersion || null })}
+              onClick={confirmAgentUpgrade}
             >
               {upgradeAgentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               {upgradeAgentMutation.isPending ? "下发中..." : "确认升级"}
@@ -1833,7 +1891,7 @@ function HostsContent() {
               <div>
                 <Label className="text-sm font-medium">转发端口区间</Label>
                 <p className="text-xs text-muted-foreground mt-1">
-                  留空表示不限制。
+                  区间和自定义端口都留空表示不限制。
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1867,6 +1925,24 @@ function HostsContent() {
                     }}
                   />
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">自定义端口</Label>
+                <Input
+                  placeholder="例如: 80,443,65095"
+                  value={form.portAllowlist}
+                  onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
+                  className={customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : undefined}
+                />
+                {customPortInputState.invalid.length > 0 ? (
+                  <p className="text-xs text-destructive">
+                    自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔
+                  </p>
+                ) : customPortInputState.ports.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    自定义端口数量: <span className="font-medium">{customPortInputState.ports.length}</span> 个
+                  </p>
+                ) : null}
               </div>
               {form.portRangeStart != null && form.portRangeEnd != null && (
                 <p className="text-xs text-muted-foreground">

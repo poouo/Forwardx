@@ -99,7 +99,7 @@ export const forwardGroupsRouter = router({
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
       return forwardGroupQueryCache.get(
         `latencySeries:${ctx.user.id}:${input.groupId}:${input.hours}`,
-        { ttlMs: 30_000, staleMs: 5 * 60_000 },
+        { ttlMs: 5_000, staleMs: 0 },
         () => db.getForwardGroupLatencySeries(input.groupId, { since }),
       );
     }),

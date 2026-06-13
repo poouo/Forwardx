@@ -10,6 +10,7 @@ import { isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
 import { refreshHostAddressRuntime } from "../hostAddressRuntime";
 import { createQueryCache } from "../queryCache";
+import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -209,12 +210,16 @@ export const hostsRouter = router({
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        portAllowlist: z.string().max(2000).nullable().optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         // 验证端口区间
+        if ((input.portRangeStart != null && input.portRangeEnd == null) || (input.portRangeStart == null && input.portRangeEnd != null)) {
+          throw new Error("请同时填写端口区间的起始和结束值，或同时留空");
+        }
         if (input.portRangeStart != null && input.portRangeEnd != null) {
           if (input.portRangeStart > input.portRangeEnd) {
             throw new Error("端口区间起始值不能大于结束值");
@@ -229,6 +234,7 @@ export const hostsRouter = router({
           tunnelEntryIp: input.tunnelEntryIp || null,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
+          portAllowlist: normalizePortAllowlist(input.portAllowlist) || null,
           blockHttp: ctx.user.role === "admin" ? !!input.blockHttp : false,
           blockSocks: ctx.user.role === "admin" ? !!input.blockSocks : false,
           blockTls: ctx.user.role === "admin" ? !!input.blockTls : false,
@@ -247,6 +253,7 @@ export const hostsRouter = router({
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        portAllowlist: z.string().max(2000).nullable().optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -258,13 +265,20 @@ export const hostsRouter = router({
         // 验证端口区间
         const pStart = input.portRangeStart !== undefined ? input.portRangeStart : (host as any).portRangeStart;
         const pEnd = input.portRangeEnd !== undefined ? input.portRangeEnd : (host as any).portRangeEnd;
+        if ((input.portRangeStart !== undefined || input.portRangeEnd !== undefined) && ((pStart != null && pEnd == null) || (pStart == null && pEnd != null))) {
+          throw new Error("请同时填写端口区间的起始和结束值，或同时留空");
+        }
         if (pStart != null && pEnd != null && pStart > pEnd) {
           throw new Error("端口区间起始值不能大于结束值");
         }
+        const nextPortAllowlist = input.portAllowlist !== undefined
+          ? normalizePortAllowlist(input.portAllowlist)
+          : String((host as any).portAllowlist || "");
         const { id, ...data } = input;
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
+        if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];
         }
@@ -273,7 +287,7 @@ export const hostsRouter = router({
         );
         const portRangeChanged = ["portRangeStart", "portRangeEnd"].some((key) =>
           (data as any)[key] !== undefined && Number((data as any)[key] ?? 0) !== Number((host as any)[key] ?? 0)
-        );
+        ) || ((data as any).portAllowlist !== undefined && nextPortAllowlist !== String((host as any).portAllowlist || ""));
         const entryChanged = ["entryIp", "tunnelEntryIp"].some((key) =>
           (data as any)[key] !== undefined && String((data as any)[key] || "") !== String((host as any)[key] || "")
         );
@@ -293,12 +307,21 @@ export const hostsRouter = router({
           await refreshHostAddressRuntime(id, host, "host-address-updated");
         }
         if (portRangeChanged) {
+          const nextPolicy = portPolicyFrom({
+            portRangeStart: pStart,
+            portRangeEnd: pEnd,
+            portAllowlist: nextPortAllowlist,
+          });
+          const policyText = describePortPolicy(nextPolicy);
           const disabledCount = await db.disableForwardRulesOutsideHostPortRange(
             id,
-            pStart,
-            pEnd,
-            pStart != null && pEnd != null
-              ? `入口端口不在当前主机允许范围 ${pStart}-${pEnd} 内，请修改端口后再启用。`
+            {
+              portRangeStart: pStart,
+              portRangeEnd: pEnd,
+              portAllowlist: nextPortAllowlist,
+            },
+            portPolicyHasRestriction(nextPolicy)
+              ? `入口端口不在当前主机允许范围 ${policyText} 内，请修改端口后再启用。`
               : "主机端口限制已变更，请确认端口后再启用。",
           );
           if (disabledCount > 0) {
@@ -360,6 +383,10 @@ export const hostsRouter = router({
         const host = await db.getHostById(input.hostId);
         if (!host) throw new Error("主机不存在");
         const targetVersion = normalizeVersion(input.targetVersion || AGENT_VERSION);
+        const currentVersion = normalizeVersion((host as any).agentVersion);
+        if (currentVersion && isAgentVersionAtLeast(currentVersion, targetVersion)) {
+          return { success: true, pushed: false, alreadyLatest: true };
+        }
         await assertAgentReleaseAssetsReady(targetVersion);
         await db.requestHostAgentUpgrade(input.hostId, targetVersion);
         const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
@@ -376,6 +403,7 @@ export const hostsRouter = router({
         const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
         let requested = 0;
         let pushed = 0;
+        let skippedLatest = 0;
         const missing: number[] = [];
         const uniqueHostIds = Array.from(new Set(input.hostIds.map((id) => Number(id)).filter((id) => id > 0)));
         for (const hostId of uniqueHostIds) {
@@ -384,10 +412,15 @@ export const hostsRouter = router({
             missing.push(hostId);
             continue;
           }
+          const currentVersion = normalizeVersion((host as any).agentVersion);
+          if (currentVersion && isAgentVersionAtLeast(currentVersion, targetVersion)) {
+            skippedLatest += 1;
+            continue;
+          }
           await db.requestHostAgentUpgrade(hostId, targetVersion);
           requested += 1;
           if (pushAgentUpgrade(hostId, targetVersion, panelUrl)) pushed += 1;
         }
-        return { success: true, requested, pushed, missing };
+        return { success: true, requested, pushed, missing, skippedLatest };
       }),
   });

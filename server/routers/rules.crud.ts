@@ -5,6 +5,7 @@ import { pushAgentRefresh } from "../agentEvents";
 import { forwardTypeSchema } from "./schemas";
 import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
+import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -217,19 +218,23 @@ async function assertRulePortWithinEntryPolicy(options: {
 }) {
   const port = Number(options.sourcePort || 0);
   if (!port) return;
-  let rangeStart: number | null | undefined;
-  let rangeEnd: number | null | undefined;
+  let policy = portPolicyFrom(null);
   if (Number(options.tunnelId || 0) > 0) {
     const tunnel = options.tunnel || await db.getTunnelById(Number(options.tunnelId));
-    rangeStart = (tunnel as any)?.portRangeStart;
-    rangeEnd = (tunnel as any)?.portRangeEnd;
+    const entryHost = await db.getHostById(Number((tunnel as any)?.entryHostId || options.hostId));
+    policy = combinePortPolicies(
+      portPolicyFrom(entryHost as any),
+      portPolicyFrom({
+        portRangeStart: (tunnel as any)?.portRangeStart,
+        portRangeEnd: (tunnel as any)?.portRangeEnd,
+      }),
+    );
   } else {
     const host = await db.getHostById(Number(options.hostId));
-    rangeStart = (host as any)?.portRangeStart;
-    rangeEnd = (host as any)?.portRangeEnd;
+    policy = portPolicyFrom(host as any);
   }
-  if (rangeStart != null && rangeEnd != null && (port < Number(rangeStart) || port > Number(rangeEnd))) {
-    throw new Error(`入口端口必须在 ${rangeStart}-${rangeEnd} 范围内，请修改端口后再启用`);
+  if (!isPortAllowedByPolicy(port, policy)) {
+    throw new Error(portPolicyErrorMessage(policy, "入口端口"));
   }
 }
 
@@ -427,28 +432,37 @@ export const crudRulesRouter = router({
       }
       const host = await db.getHostById(input.hostId);
       if (!host) throw new Error("主机不存在");
-      const entryRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
-      const entryRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
+      const entryPolicy = selectedTunnelForRule
+        ? combinePortPolicies(
+          portPolicyFrom(host as any),
+          portPolicyFrom({
+            portRangeStart: (selectedTunnelForRule as any).portRangeStart,
+            portRangeEnd: (selectedTunnelForRule as any).portRangeEnd,
+          }),
+        )
+        : portPolicyFrom(host as any);
       const planRange = ctx.user.role !== "admin"
         ? await db.getUserPlanPortRange(ctx.user.id, input.hostId, tunnelId ?? undefined)
         : null;
-      const effectiveRangeStart = planRange ? Math.max(Number(entryRangeStart || planRange.start), planRange.start) : entryRangeStart;
-      const effectiveRangeEnd = planRange ? Math.min(Number(entryRangeEnd || planRange.end), planRange.end) : entryRangeEnd;
+      const effectivePolicy = planRange
+        ? combinePortPolicies(entryPolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }))
+        : entryPolicy;
 
       let sourcePort = input.sourcePort;
       // 源端口为 0 时随机分配
       if (sourcePort === 0) {
-        const randomPort = await db.findAvailablePort(input.hostId, effectiveRangeStart, effectiveRangeEnd);
+        let randomRangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : null;
+        let randomRangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : null;
+        if (planRange) {
+          randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
+          randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
+        }
+        const randomPort = await db.findAvailablePort(input.hostId, randomRangeStart, randomRangeEnd);
         if (!randomPort) throw new Error("该主机端口区间内已无可用端口");
         sourcePort = randomPort;
       } else {
-        // 检查端口区间限制
-        const rangeStart = effectiveRangeStart;
-        const rangeEnd = effectiveRangeEnd;
-        if (rangeStart != null && rangeEnd != null) {
-          if (sourcePort < rangeStart || sourcePort > rangeEnd) {
-            throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
-          }
+        if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
+          throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
         }
         // 检查端口是否已被占用
         const used = await db.isPortUsedOnHost(input.hostId, sourcePort);
@@ -692,16 +706,24 @@ export const crudRulesRouter = router({
       if (shouldCheckSourcePort) {
         const host = await db.getHostById(nextHostIdForRule);
         if (host) {
-          const rangeStart = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeStart : (host as any).portRangeStart;
-          const rangeEnd = selectedTunnelForRule ? (selectedTunnelForRule as any).portRangeEnd : (host as any).portRangeEnd;
-          if (rangeStart != null && rangeEnd != null) {
-            if (nextSourcePortForRule < rangeStart || nextSourcePortForRule > rangeEnd) {
-              throw new Error(`源端口必须在 ${rangeStart}-${rangeEnd} 区间内`);
-            }
+          let effectivePolicy = selectedTunnelForRule
+            ? combinePortPolicies(
+              portPolicyFrom(host as any),
+              portPolicyFrom({
+                portRangeStart: (selectedTunnelForRule as any).portRangeStart,
+                portRangeEnd: (selectedTunnelForRule as any).portRangeEnd,
+              }),
+            )
+            : portPolicyFrom(host as any);
+          if (!isPortAllowedByPolicy(nextSourcePortForRule, effectivePolicy)) {
+            throw new Error(portPolicyErrorMessage(effectivePolicy, "源端口"));
           }
           if (ctx.user.role !== "admin") {
             const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostIdForRule, nextTunnelIdForRule || undefined);
-            if (planRange && (nextSourcePortForRule < planRange.start || nextSourcePortForRule > planRange.end)) {
+            if (planRange) {
+              effectivePolicy = combinePortPolicies(effectivePolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
+            }
+            if (planRange && !isPortAllowedByPolicy(nextSourcePortForRule, effectivePolicy)) {
               throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
             }
           }

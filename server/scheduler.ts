@@ -141,7 +141,14 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
         routeLabel,
       });
       if (aggregate) {
-        await settleTunnel(aggregate.tunnelId, aggregate.message, `test=${test.id} aggregate=true`);
+        const aggregateMessage = structuredLinkTestMessage({
+          kind: "tunnel-hop-summary",
+          tunnelId: aggregate.tunnelId,
+          message: aggregate.message,
+          details: aggregate.details,
+          totalLatencyMs: aggregate.latencyMs,
+        });
+        await settleTunnel(aggregate.tunnelId, aggregateMessage, `test=${test.id} aggregate=true`);
       } else {
         await settleTunnel(meta.tunnelId, message, `test=${test.id} host=${test.hostId} hop=${hopLabel}`);
       }

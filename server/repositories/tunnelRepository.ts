@@ -2,6 +2,8 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { tunnels, InsertTunnel, forwardRules, userTunnelPermissions, tunnelHops, InsertTunnelHop } from "../../drizzle/schema";
 import { executeRaw, quoteDbIdentifier, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
+import { getHostById } from "./hostRepository";
 
 // ==================== Tunnel Queries ====================
 
@@ -141,9 +143,12 @@ export async function findAvailableTunnelExitPort(
 ): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
-  const start = preferredStart ?? 20000;
-  const end = preferredEnd ?? 65535;
-  if (start > end) return null;
+  const host = await getHostById(exitHostId) as any;
+  const policy = portPolicyFrom({
+    portRangeStart: preferredStart ?? host?.portRangeStart,
+    portRangeEnd: preferredEnd ?? host?.portRangeEnd,
+    portAllowlist: host?.portAllowlist,
+  });
   const usedRulePorts = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(
     eq(forwardRules.hostId, exitHostId),
     eq(forwardRules.isEnabled, true),
@@ -160,21 +165,7 @@ export async function findAvailableTunnelExitPort(
   usedExitPorts.forEach((r: any) => {
     if (r.port != null) used.add(Number(r.port));
   });
-  const highStart = Math.max(start, end - 9999);
-  const collectAvailable = (from: number, to: number) => {
-    const ports: number[] = [];
-    for (let port = from; port <= to; port++) {
-      if (!used.has(port)) ports.push(port);
-    }
-    return ports;
-  };
-  let available = collectAvailable(highStart, end);
-  if (available.length === 0 && highStart > start) {
-    available = collectAvailable(start, highStart - 1);
-  }
-  if (available.length === 0) return null;
-  const preferred = available.length > 1 ? available.filter((port) => port !== 65535) : available;
-  return preferred[crypto.randomInt(0, preferred.length)];
+  return pickAvailablePort(policy, used, { start: 20000, end: 65535 });
 }
 
 export async function isTunnelListenPortUsed(exitHostId: number, listenPort: number, excludeTunnelId?: number): Promise<boolean> {
@@ -226,8 +217,12 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
 export async function findAvailablePort(hostId: number, rangeStart?: number | null, rangeEnd?: number | null): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
-  const start = rangeStart ?? 10000;
-  const end = rangeEnd ?? 65535;
+  const host = await getHostById(hostId) as any;
+  const hostPolicy = portPolicyFrom(host);
+  const explicitPolicy = rangeStart != null && rangeEnd != null
+    ? portPolicyFrom({ portRangeStart: rangeStart, portRangeEnd: rangeEnd })
+    : null;
+  const policy = explicitPolicy ? combinePortPolicies(hostPolicy, explicitPolicy) : hostPolicy;
   // 获取该主机已占用的端口
   const usedRows = await db.select({ port: forwardRules.sourcePort }).from(forwardRules).where(and(
     eq(forwardRules.hostId, hostId),
@@ -235,25 +230,8 @@ export async function findAvailablePort(hostId: number, rangeStart?: number | nu
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ));
-  const usedPorts = new Set(usedRows.map(r => r.port));
-  // 闅忔満灏濊瘯
-  const range = end - start + 1;
-  if (range <= 0) return null;
-  // 如果区间不大，直接遍历找空闲
-  if (range <= 10000) {
-    const available: number[] = [];
-    for (let p = start; p <= end; p++) {
-      if (!usedPorts.has(p)) available.push(p);
-    }
-    if (available.length === 0) return null;
-    return available[Math.floor(Math.random() * available.length)];
-  }
-  // 区间较大时随机尝试
-  for (let i = 0; i < 100; i++) {
-    const p = start + Math.floor(Math.random() * range);
-    if (!usedPorts.has(p)) return p;
-  }
-  return null;
+  const usedPorts = new Set<number>(usedRows.map((r: any) => Number(r.port)).filter((port: number) => Number.isInteger(port)));
+  return pickAvailablePort(policy, usedPorts, { start: 10000, end: 65535 });
 }
 
 // ==================== Tunnel Hops (Multi-hop) ====================

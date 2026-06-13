@@ -40,7 +40,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -68,6 +68,7 @@ import {
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Area,
   AreaChart,
@@ -82,6 +83,30 @@ import { ForwardGroupsContent } from "@/pages/ForwardGroups";
 
 const loadReactGlobe = () => import("react-globe.gl");
 const ReactGlobe = lazy(loadReactGlobe) as typeof import("react-globe.gl").default;
+
+function TunnelSectionTransition({
+  transitionKey,
+  children,
+}: {
+  transitionKey: string;
+  children: ReactNode;
+}) {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={transitionKey}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
 
 type TunnelForm = {
   name: string;
@@ -335,6 +360,12 @@ function formatGlobeLatency(value: unknown, timeout?: unknown) {
   if (timeout) return "不可达";
   const latency = Number(value);
   return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
+}
+
+function tunnelLatencyIsTimeout(tunnel: any) {
+  const value = tunnel?.lastLatencyMs;
+  const hasLatency = typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return tunnel?.lastTestStatus === "failed" && !hasLatency;
 }
 
 function normalizeLongitude(lng: number) {
@@ -609,7 +640,7 @@ function TunnelWorldGlobe({
         routeText: routeHosts.map((host) => host.name).join(" -> "),
         routeHosts,
         statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnel.lastTestStatus === "failed"),
+        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel)),
         color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
         trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
         glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -713,7 +744,7 @@ function TunnelWorldGlobe({
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
           statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-          latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnel.lastTestStatus === "failed"),
+          latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel)),
           color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
           trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
           glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -931,13 +962,15 @@ function TunnelLatencyDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const { data, isLoading } = trpc.tunnels.latencySeries.useQuery(
+  const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
     { tunnelId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false }
+    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
   );
   const cachedData = tunnelLatencySeriesCache.get(tunnelId);
-  const seriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
-  const showInitialLoading = isLoading && !seriesData;
+  const rawSeriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
+  const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
+  const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
+  const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
 
   useEffect(() => {
     if (data) {
@@ -1515,6 +1548,9 @@ function TunnelsContent() {
     if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
     else handleViewModeChange(nextViewMode);
   };
+  const activeSectionTransitionKey = activeSection === "chains"
+    ? `chains-${chainViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : chainGroups.length > 0 ? "list" : "empty"}`
+    : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
@@ -1652,6 +1688,7 @@ function TunnelsContent() {
         </TabsList>
 
         <TabsContent value="tunnels" className="space-y-4">
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
       {viewMode === "globe" ? (
         (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
           <DataSectionLoading label="正在加载全球链路地图" />
@@ -1948,9 +1985,11 @@ function TunnelsContent() {
           </CardContent>
         </Card>
       )}
+          </TunnelSectionTransition>
         </TabsContent>
 
         <TabsContent value="chains" className="space-y-4">
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
           {chainViewMode === "globe" ? (
             <>
               {(isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
@@ -1987,6 +2026,7 @@ function TunnelsContent() {
               onEditRequestConsumed={() => setChainEditRequest(null)}
             />
           )}
+          </TunnelSectionTransition>
         </TabsContent>
       </Tabs>
 

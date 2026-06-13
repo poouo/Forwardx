@@ -138,7 +138,7 @@ export async function getDashboardTrafficBreakdown(opts: {
   if (!db) return emptyTrafficBreakdown();
 
   const limit = clampPositiveInt(opts.limit, 30, 100);
-  const since = opts.since ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const summaries = await getTrafficSummaryByRule({ userId: opts.userId, since, includeLatency: false }) as TrafficSummaryItem[];
   if (summaries.length === 0) return emptyTrafficBreakdown();
 

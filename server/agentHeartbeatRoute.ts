@@ -872,7 +872,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 tunnelId: Number(tunnel.id),
                 latencyMs: aggregate.success ? aggregate.latencyMs : null,
                 isTimeout: !aggregate.success,
-              }, { message: aggregate.success ? `MULTI_HOP_AUTO_LATENCY_OK hops=${hops.length - 1}` : `MULTI_HOP_AUTO_LATENCY_FAILED hops=${hops.length - 1}` });
+              });
             }
           }
           const nextHop = hops[hostIdx + 1] as any;

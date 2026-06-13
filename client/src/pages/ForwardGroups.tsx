@@ -3,7 +3,7 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -55,7 +55,8 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import {
   Area,
@@ -123,6 +124,30 @@ type ForwardGroupsContentProps = {
 };
 
 const FORWARD_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
+
+function ForwardGroupViewTransition({
+  transitionKey,
+  children,
+}: {
+  transitionKey: string;
+  children: ReactNode;
+}) {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={transitionKey}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
 
 function getStoredForwardGroupViewMode(): ForwardGroupViewMode {
   if (typeof window === "undefined") return "card";
@@ -224,12 +249,14 @@ function ForwardGroupLatencyDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const { data, isLoading } = trpc.forwardGroups.latencySeries.useQuery(
+  const { data, isLoading, isFetching } = trpc.forwardGroups.latencySeries.useQuery(
     { groupId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false }
+    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
   );
   const cachedData = groupLatencySeriesCache.get(groupId);
-  const seriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
+  const rawSeriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
+  const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
+  const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
 
   useEffect(() => {
     if (data) groupLatencySeriesCache.set(groupId, data as GroupLatencySeriesDatum[]);
@@ -264,7 +291,7 @@ function ForwardGroupLatencyDialog({
           <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
         </DialogHeader>
         <div className="h-[260px] rounded-lg border border-border/60 bg-muted/20 p-3">
-          {isLoading && !seriesData ? (
+          {(isLoading || waitForFreshSeries) && !seriesData ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在加载延迟数据
             </div>
@@ -816,6 +843,7 @@ export function ForwardGroupsContent({
   const paginationItemName = isChainMode ? "条转发链" : "个转发组";
   const dialogTitle = editingId ? (isChainMode ? "编辑端口转发链" : "编辑转发组") : (isChainMode ? "添加端口转发链" : "添加转发组");
   const dialogDescription = isChainMode ? "配置端口转发链路。" : "配置高可用入口。";
+  const contentTransitionKey = `${activeGroupMode}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
     <div className="space-y-6">
@@ -869,7 +897,8 @@ export function ForwardGroupsContent({
         </div>}
       </div>
 
-      {isLoading ? (
+      <ForwardGroupViewTransition transitionKey={contentTransitionKey}>
+        {isLoading ? (
         <DataSectionLoading label={loadingLabel} />
       ) : visibleGroups.length > 0 ? (
         <>
@@ -1121,7 +1150,8 @@ export function ForwardGroupsContent({
             </p>
           </CardContent>
         </Card>
-      )}
+        )}
+      </ForwardGroupViewTransition>
 
       <Dialog
         open={showDialog}

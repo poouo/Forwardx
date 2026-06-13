@@ -78,6 +78,7 @@ import {
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
 import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
@@ -96,6 +97,84 @@ function formatBytes(n: number): string {
     i += 1;
   }
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+type PortPolicy = {
+  rangeStart: number | null;
+  rangeEnd: number | null;
+  allowlist: number[];
+  denyAll?: boolean;
+};
+
+function parsePortAllowlist(value: unknown) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  return Array.from(new Set(text
+    .split(",")
+    .map((item) => Number(String(item).trim()))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535)))
+    .sort((a, b) => a - b);
+}
+
+function portPolicyFrom(source: any): PortPolicy {
+  const start = source?.portRangeStart != null ? Number(source.portRangeStart) : null;
+  const end = source?.portRangeEnd != null ? Number(source.portRangeEnd) : null;
+  const hasRange = start != null && end != null && start >= 1 && end <= 65535 && start <= end;
+  return {
+    rangeStart: hasRange ? start : null,
+    rangeEnd: hasRange ? end : null,
+    allowlist: parsePortAllowlist(source?.portAllowlist),
+  };
+}
+
+function hasPortRestriction(policy: PortPolicy) {
+  return !!policy.denyAll || (policy.rangeStart !== null && policy.rangeEnd !== null) || policy.allowlist.length > 0;
+}
+
+function isPortAllowedByPolicy(port: number, policy: PortPolicy) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  if (policy.denyAll) return false;
+  if (!hasPortRestriction(policy)) return true;
+  const inRange = policy.rangeStart !== null && policy.rangeEnd !== null && port >= policy.rangeStart && port <= policy.rangeEnd;
+  return inRange || policy.allowlist.includes(port);
+}
+
+function describePortPolicy(policy: PortPolicy) {
+  if (policy.denyAll) return "无可用端口";
+  const parts: string[] = [];
+  if (policy.rangeStart !== null && policy.rangeEnd !== null) parts.push(`${policy.rangeStart}-${policy.rangeEnd}`);
+  if (policy.allowlist.length > 0) parts.push(policy.allowlist.join(","));
+  return parts.length > 0 ? parts.join(" + ") : "1-65535";
+}
+
+function combinePortPolicies(...policies: PortPolicy[]): PortPolicy {
+  const restricted = policies.filter(hasPortRestriction);
+  if (restricted.length === 0) return portPolicyFrom(null);
+  const allowed: number[] = [];
+  for (let port = 1; port <= 65535; port++) {
+    if (restricted.every((policy) => isPortAllowedByPolicy(port, policy))) allowed.push(port);
+  }
+  if (allowed.length === 0) return { rangeStart: null, rangeEnd: null, allowlist: [], denyAll: true };
+  const ranges: Array<{ start: number; end: number }> = [];
+  let start = allowed[0];
+  let previous = allowed[0];
+  for (let i = 1; i <= allowed.length; i++) {
+    const current = allowed[i];
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+    ranges.push({ start, end: previous });
+    start = current;
+    previous = current;
+  }
+  const best = ranges.reduce((acc, range) => (range.end - range.start > acc.end - acc.start ? range : acc), ranges[0]);
+  const useRange = best.end > best.start;
+  return {
+    rangeStart: useRange ? best.start : null,
+    rangeEnd: useRange ? best.end : null,
+    allowlist: allowed.filter((port) => !useRange || port < best.start || port > best.end),
+  };
 }
 
 type RuleFormData = {
@@ -376,6 +455,49 @@ function RuleGroupItems({
         {children}
       </div>
     </div>
+  );
+}
+
+function RuleContentTransition({
+  transitionKey,
+  className,
+  children,
+}: {
+  transitionKey: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={transitionKey}
+        className={className}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+function RuleCardModeTransition({
+  mode,
+  className,
+  children,
+}: {
+  mode: RuleCardSize;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <RuleContentTransition transitionKey={`card-${mode}`} className={className}>
+      {children}
+    </RuleContentTransition>
   );
 }
 
@@ -1619,6 +1741,7 @@ function RulesContent() {
   const checkPortMutation = trpc.rules.checkPort.useQuery(
     {
       hostId: form.hostId || 0,
+      tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
       sourcePort: form.sourcePort,
       excludeRuleId: editingId || undefined,
     },
@@ -1633,30 +1756,6 @@ function RulesContent() {
     if (!form.hostId || !hosts) return null;
     return hosts.find((h: any) => h.id === form.hostId) || null;
   }, [form.hostId, form.routeMode, hosts]);
-  const selectedHostPortRangeText = useMemo(() => {
-    if (!selectedHost) return null;
-    const start = (selectedHost as any).portRangeStart;
-    const end = (selectedHost as any).portRangeEnd;
-    return start != null && end != null ? `${start}-${end}` : null;
-  }, [selectedHost]);
-  const sourcePortRangeText = selectedHostPortRangeText || "1-65535";
-  const portStatusHint = useMemo(() => {
-    if (portStatus === "used") {
-      return {
-        type: "used" as const,
-        text: portRangeError ? "超范围" : "不可用",
-        title: portRangeError || "端口已被占用",
-      };
-    }
-    if (portStatus === "available") {
-      return {
-        type: "available" as const,
-        text: "可用",
-        title: `允许端口范围: ${sourcePortRangeText}`,
-      };
-    }
-    return null;
-  }, [portRangeError, portStatus, sourcePortRangeText]);
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
@@ -1692,6 +1791,38 @@ function RulesContent() {
     if (!form.tunnelId || !tunnels) return null;
     return tunnels.find((t: any) => t.id === form.tunnelId) || null;
   }, [form.tunnelId, tunnels]);
+  const selectedEntryPortPolicy = useMemo(() => {
+    if (!selectedHost) return portPolicyFrom(null);
+    let policy = portPolicyFrom(selectedHost);
+    if (form.routeMode === "tunnel" && selectedTunnel) {
+      policy = combinePortPolicies(
+        policy,
+        portPolicyFrom({
+          portRangeStart: (selectedTunnel as any).portRangeStart,
+          portRangeEnd: (selectedTunnel as any).portRangeEnd,
+        }),
+      );
+    }
+    return policy;
+  }, [form.routeMode, selectedHost, selectedTunnel]);
+  const sourcePortRangeText = useMemo(() => describePortPolicy(selectedEntryPortPolicy), [selectedEntryPortPolicy]);
+  const portStatusHint = useMemo(() => {
+    if (portStatus === "used") {
+      return {
+        type: "used" as const,
+        text: portRangeError ? "超范围" : "不可用",
+        title: portRangeError || "端口已被占用",
+      };
+    }
+    if (portStatus === "available") {
+      return {
+        type: "available" as const,
+        text: "可用",
+        title: `允许端口范围: ${sourcePortRangeText}`,
+      };
+    }
+    return null;
+  }, [portRangeError, portStatus, sourcePortRangeText]);
   const tunnelById = useMemo(() => {
     const map = new Map<number, any>();
     (tunnels || []).forEach((tunnel: any) => map.set(Number(tunnel.id), tunnel));
@@ -1823,15 +1954,10 @@ function RulesContent() {
       setPortStatus("used");
       return;
     }
-    // 先检查端口范围
-    if (selectedHost) {
-      const pStart = (selectedHost as any).portRangeStart;
-      const pEnd = (selectedHost as any).portRangeEnd;
-      if (pStart != null && pEnd != null && (sourcePort < pStart || sourcePort > pEnd)) {
-        setPortRangeError(`端口必须在 ${pStart}-${pEnd} 区间内`);
-        setPortStatus("used");
-        return;
-      }
+    if (!isPortAllowedByPolicy(sourcePort, selectedEntryPortPolicy)) {
+      setPortRangeError(`端口必须在允许范围 ${describePortPolicy(selectedEntryPortPolicy)} 内`);
+      setPortStatus("used");
+      return;
     }
     setPortRangeError(null);
     setPortStatus("checking");
@@ -1848,7 +1974,7 @@ function RulesContent() {
       if (latestPortCheckRef.current !== checkId) return;
       setPortStatus("idle");
     }
-  }, [form.hostId, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedHost]);
+  }, [form.hostId, form.routeMode, form.sourcePort, form.tunnelId, editingId, utils, selectedEntryPortPolicy]);
 
   // 源端口变化时自动检测
   useEffect(() => {
@@ -2738,6 +2864,7 @@ function RulesContent() {
   const ruleCardGridClass = ruleCardSize === "compact"
     ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5"
     : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3";
+  const ruleContentTransitionKey = `${ruleCategory}-${displayMode}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
   const renderRuleGroupIcon = (type: RuleGroupType, className = "h-4 w-4") => {
     if (type === "chain") return <GitBranch className={`${className} text-amber-600`} />;
@@ -3197,6 +3324,7 @@ function RulesContent() {
         </Card>
       </div>
 
+      <RuleContentTransition transitionKey={ruleContentTransitionKey}>
       {isLoading ? (
         <DataSectionLoading label="正在加载转发规则" />
       ) : filteredRules.length > 0 ? (
@@ -3217,44 +3345,48 @@ function RulesContent() {
               />
             )
           ) : viewMode === "card" ? (
-            shouldGroupRuleCards ? (
-              <AutoAnimateContainer className="space-y-5">
-                {desktopRuleGroups.map((group) => {
-                  const collapsed = !!ruleGroupCollapsed[group.type];
-                  return (
-                    <section key={group.type} className="space-y-2">
-                      {renderRuleGroupHeader(group)}
-                      <RuleGroupItems open={!collapsed} className={ruleCardGridClass}>
-                        {group.rules.map((rule: any) => renderRuleCard(rule))}
-                      </RuleGroupItems>
-                    </section>
-                  );
-                })}
-              </AutoAnimateContainer>
-            ) : (
-              <AutoAnimateContainer className={ruleCardGridClass}>
-                {pagedRules.map((rule: any) => renderRuleCard(rule))}
-              </AutoAnimateContainer>
-            )
-          ) : (
-            <>
-              <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2 sm:hidden" : "grid gap-3 sm:hidden"}>
-                {shouldGroupRuleCards ? (
-                  desktopRuleGroups.map((group) => {
+            <RuleCardModeTransition mode={ruleCardSize}>
+              {shouldGroupRuleCards ? (
+                <AutoAnimateContainer className="space-y-5">
+                  {desktopRuleGroups.map((group) => {
                     const collapsed = !!ruleGroupCollapsed[group.type];
                     return (
                       <section key={group.type} className="space-y-2">
                         {renderRuleGroupHeader(group)}
-                        <RuleGroupItems open={!collapsed} className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                        <RuleGroupItems open={!collapsed} className={ruleCardGridClass}>
                           {group.rules.map((rule: any) => renderRuleCard(rule))}
                         </RuleGroupItems>
                       </section>
                     );
-                  })
-                ) : (
-                  pagedRules.map((rule: any) => renderRuleCard(rule))
-                )}
-              </AutoAnimateContainer>
+                  })}
+                </AutoAnimateContainer>
+              ) : (
+                <AutoAnimateContainer className={ruleCardGridClass}>
+                  {pagedRules.map((rule: any) => renderRuleCard(rule))}
+                </AutoAnimateContainer>
+              )}
+            </RuleCardModeTransition>
+          ) : (
+            <>
+              <RuleCardModeTransition mode={ruleCardSize} className="sm:hidden">
+                <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                  {shouldGroupRuleCards ? (
+                    desktopRuleGroups.map((group) => {
+                      const collapsed = !!ruleGroupCollapsed[group.type];
+                      return (
+                        <section key={group.type} className="space-y-2">
+                          {renderRuleGroupHeader(group)}
+                          <RuleGroupItems open={!collapsed} className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                            {group.rules.map((rule: any) => renderRuleCard(rule))}
+                          </RuleGroupItems>
+                        </section>
+                      );
+                    })
+                  ) : (
+                    pagedRules.map((rule: any) => renderRuleCard(rule))
+                  )}
+                </AutoAnimateContainer>
+              </RuleCardModeTransition>
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
@@ -3331,6 +3463,7 @@ function RulesContent() {
           </CardContent>
         </Card>
       )}
+      </RuleContentTransition>
 
       {trafficDetailRule && (
         <TcpingDetailDialog

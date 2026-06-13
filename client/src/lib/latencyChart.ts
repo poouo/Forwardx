@@ -27,6 +27,19 @@ export type LatencyStabilityStats = {
   rating: LatencyStabilityRating;
 };
 
+export function isLatencySeriesCacheFresh<T extends { recordedAt: string | Date }>(
+  series: T[] | null | undefined,
+  maxLatestAgeMs = 10 * 60 * 1000,
+) {
+  if (!series?.length) return false;
+  const latest = series.reduce((max, item) => {
+    const time = new Date(item.recordedAt).getTime();
+    return Number.isFinite(time) ? Math.max(max, time) : max;
+  }, 0);
+  const now = Date.now();
+  return latest > 0 && latest >= now - maxLatestAgeMs && latest <= now + 60_000;
+}
+
 export function clipLatencyForChart(latency: number) {
   if (!Number.isFinite(latency) || latency <= 0) return 0;
   return Math.min(MAX_LATENCY_CHART_MS, latency);

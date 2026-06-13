@@ -24,6 +24,7 @@ import { getHostById } from "./hostRepository";
 import { findAvailableTunnelExitPort, getTunnelById, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
+import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -405,52 +406,39 @@ async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number,
   return (Number(rows[0]?.count) || 0) > 0;
 }
 
-async function assertEntryPortAllowed(member: any, sourcePort: number) {
+async function entryPortPolicyForMember(member: any): Promise<{ hostId: number; policy: PortPolicy }> {
   if (member.memberType === "tunnel") {
     const tunnel = await getTunnelById(Number(member.tunnelId));
     if (!tunnel) throw new Error("Tunnel does not exist");
-    const start = (tunnel as any).portRangeStart;
-    const end = (tunnel as any).portRangeEnd;
-    if (start != null && end != null && (sourcePort < Number(start) || sourcePort > Number(end))) {
-      throw new Error(`Entry port must be within tunnel range ${start}-${end}`);
-    }
-    return;
-  }
-  const host = await getHostById(Number(member.hostId));
-  if (!host) throw new Error("Host does not exist");
-  const start = (host as any).portRangeStart;
-  const end = (host as any).portRangeEnd;
-  if (start != null && end != null && (sourcePort < Number(start) || sourcePort > Number(end))) {
-    throw new Error(`Entry port must be within host range ${start}-${end}`);
-  }
-}
-
-async function entryPortRangeForMember(member: any) {
-  if (member.memberType === "tunnel") {
-    const tunnel = await getTunnelById(Number(member.tunnelId));
-    if (!tunnel) throw new Error("Tunnel does not exist");
+    const entryHost = await getHostById(Number((tunnel as any).entryHostId || 0));
+    if (!entryHost) throw new Error("Tunnel entry host does not exist");
     return {
-      hostId: Number(tunnel.entryHostId || 0),
-      start: (tunnel as any).portRangeStart,
-      end: (tunnel as any).portRangeEnd,
+      hostId: Number((tunnel as any).entryHostId || 0),
+      policy: combinePortPolicies(
+        portPolicyFrom(entryHost as any),
+        portPolicyFrom({
+          portRangeStart: (tunnel as any).portRangeStart,
+          portRangeEnd: (tunnel as any).portRangeEnd,
+        }),
+      ),
     };
   }
   const host = await getHostById(Number(member.hostId));
   if (!host) throw new Error("Host does not exist");
   return {
     hostId: Number(host.id || 0),
-    start: (host as any).portRangeStart,
-    end: (host as any).portRangeEnd,
+    policy: portPolicyFrom(host as any),
   };
 }
 
-function optionalPort(value: unknown) {
-  if (value == null) return null;
-  const port = Number(value);
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+async function assertEntryPortAllowed(member: any, sourcePort: number) {
+  const entry = await entryPortPolicyForMember(member);
+  if (!isPortAllowedByPolicy(sourcePort, entry.policy)) {
+    throw new Error(portPolicyErrorMessage(entry.policy, "Entry port"));
+  }
 }
 
-async function usedPortsOnEntryHost(hostId: number, start: number, end: number, ignoreRuleIds: number[]) {
+async function usedPortsOnEntryHost(hostId: number, ignoreRuleIds: number[], range?: { start: number; end: number } | null) {
   const table = quoteId("forward_rules");
   const idCol = quoteId("id");
   const hostCol = quoteId("hostId");
@@ -459,11 +447,64 @@ async function usedPortsOnEntryHost(hostId: number, start: number, end: number, 
   const enabledCol = quoteId("isEnabled");
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
   const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN (${ignore.map(() => "?").join(",")})` : "";
+  const rangeSql = range ? ` AND ${portCol} BETWEEN ? AND ?` : "";
   const rows = await queryRaw<{ port: number }>(
-    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ? AND ${portCol} BETWEEN ? AND ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    [hostId, start, end, false, true, ...ignore],
+    `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ?${rangeSql} AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
+    range ? [hostId, range.start, range.end, false, true, ...ignore] : [hostId, false, true, ...ignore],
   );
   return new Set(rows.map((row) => Number(row.port)).filter((port) => Number.isInteger(port)));
+}
+
+function policyHasRestrictionForGroup(policy: PortPolicy) {
+  return !!policy.denyAll || (policy.rangeStart !== null && policy.rangeEnd !== null) || policy.allowlist.length > 0;
+}
+
+function longestContiguousRange(ports: number[]) {
+  const sorted = Array.from(new Set(ports)).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  let bestStart = sorted[0];
+  let bestEnd = sorted[0];
+  let runStart = sorted[0];
+  let previous = sorted[0];
+  for (let i = 1; i <= sorted.length; i++) {
+    const current = sorted[i];
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+    if (previous - runStart > bestEnd - bestStart) {
+      bestStart = runStart;
+      bestEnd = previous;
+    }
+    runStart = current;
+    previous = current;
+  }
+  return { start: bestStart, end: bestEnd };
+}
+
+function policyRangeForGroup(policy: PortPolicy) {
+  if (policy.denyAll) return null;
+  if (!policyHasRestrictionForGroup(policy)) return { start: 10000, end: 65535 };
+  if (policy.rangeStart !== null && policy.rangeEnd !== null) {
+    return { start: policy.rangeStart, end: policy.rangeEnd };
+  }
+  return longestContiguousRange(policy.allowlist);
+}
+
+function candidatePortsForGroup(policy: PortPolicy) {
+  if (policy.denyAll) return [];
+  const ports: number[] = [];
+  if (!policyHasRestrictionForGroup(policy)) {
+    for (let port = 10000; port <= 65535; port++) ports.push(port);
+    return ports;
+  }
+  if (policy.rangeStart !== null && policy.rangeEnd !== null) {
+    for (let port = policy.rangeStart; port <= policy.rangeEnd; port++) ports.push(port);
+  }
+  for (const port of policy.allowlist) {
+    if (!ports.includes(port)) ports.push(port);
+  }
+  return ports.filter((port) => isPortAllowedByPolicy(port, policy));
 }
 
 export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ start: number; end: number } | null> {
@@ -475,19 +516,13 @@ export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ 
     throw new Error("Port forwarding chain requires at least two enabled hosts");
   }
 
-  let rangeStart: number | null = null;
-  let rangeEnd: number | null = null;
+  let policy = portPolicyFrom(null);
   for (const member of members) {
-    const range = await entryPortRangeForMember(member);
-    if (!range.hostId) throw new Error("Forward group member has no valid entry agent");
-    const start = optionalPort(range.start);
-    const end = optionalPort(range.end);
-    if (start != null) rangeStart = Math.max(rangeStart ?? 1, start);
-    if (end != null) rangeEnd = Math.min(rangeEnd ?? 65535, end);
+    const entry = await entryPortPolicyForMember(member);
+    if (!entry.hostId) throw new Error("Forward group member has no valid entry agent");
+    policy = combinePortPolicies(policy, entry.policy);
   }
-  const start = rangeStart ?? (rangeEnd != null && rangeEnd < 10000 ? 1 : 10000);
-  const end = rangeEnd ?? 65535;
-  return start <= end ? { start, end } : null;
+  return policyRangeForGroup(policy);
 }
 
 export async function findAvailableForwardGroupPort(
@@ -504,39 +539,40 @@ export async function findAvailableForwardGroupPort(
   }
 
   const entries: Array<{ hostId: number; ignoreRuleIds: number[] }> = [];
-  const baseRange = await getForwardGroupEntryPortRange(groupId);
-  if (!baseRange) return null;
-  const start = Math.max(baseRange.start, Number(allowedRange?.start || baseRange.start));
-  const end = Math.min(baseRange.end, Number(allowedRange?.end || baseRange.end));
-  if (start > end) return null;
+  let policy = portPolicyFrom(null);
 
   for (const member of members) {
-    const range = await entryPortRangeForMember(member);
-    if (!range.hostId) throw new Error("Forward group member has no valid entry agent");
+    const entry = await entryPortPolicyForMember(member);
+    if (!entry.hostId) throw new Error("Forward group member has no valid entry agent");
     const existing = excludeTemplateRuleId
       ? await existingChildRule(Number(excludeTemplateRuleId), Number(member.id))
       : null;
     entries.push({
-      hostId: range.hostId,
+      hostId: entry.hostId,
       ignoreRuleIds: [Number(excludeTemplateRuleId || 0), Number(existing?.id || 0)].filter(Boolean),
     });
+    policy = combinePortPolicies(policy, entry.policy);
   }
+  if (allowedRange) {
+    policy = combinePortPolicies(policy, portPolicyFrom({ portRangeStart: allowedRange.start, portRangeEnd: allowedRange.end }));
+  }
+  const candidates = candidatePortsForGroup(policy);
+  if (candidates.length === 0) return null;
 
   const usedPortSets = await Promise.all(
-    entries.map((entry) => usedPortsOnEntryHost(entry.hostId, start, end, entry.ignoreRuleIds)),
+    entries.map((entry) => usedPortsOnEntryHost(entry.hostId, entry.ignoreRuleIds)),
   );
   const isAvailable = (port: number) => usedPortSets.every((usedPorts) => !usedPorts.has(port));
 
-  const rangeSize = end - start + 1;
-  const randomAttempts = Math.min(120, rangeSize);
+  const randomAttempts = Math.min(120, candidates.length);
   for (let i = 0; i < randomAttempts; i++) {
-    const port = start + Math.floor(Math.random() * rangeSize);
+    const port = candidates[Math.floor(Math.random() * candidates.length)];
     if (isAvailable(port)) {
       return port;
     }
   }
 
-  for (let port = start; port <= end; port++) {
+  for (const port of candidates) {
     if (isAvailable(port)) {
       return port;
     }

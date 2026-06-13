@@ -7,6 +7,7 @@ import { pushTunnelEndpointRefresh } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
+import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "./portPolicy";
 
 type TelegramUser = {
   id: number;
@@ -891,20 +892,24 @@ async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
       excludeTemplateRuleId: Number(rule.id),
     });
   } else {
-    let rangeStart: number | null | undefined;
-    let rangeEnd: number | null | undefined;
+    let policy = portPolicyFrom(null);
     if (Number((rule as any).tunnelId || 0) > 0) {
       const tunnel = await db.getTunnelById(Number((rule as any).tunnelId));
-      rangeStart = (tunnel as any)?.portRangeStart;
-      rangeEnd = (tunnel as any)?.portRangeEnd;
+      const entryHost = await db.getHostById(Number((tunnel as any)?.entryHostId || rule.hostId));
+      policy = combinePortPolicies(
+        portPolicyFrom(entryHost as any),
+        portPolicyFrom({
+          portRangeStart: (tunnel as any)?.portRangeStart,
+          portRangeEnd: (tunnel as any)?.portRangeEnd,
+        }),
+      );
     } else {
       const host = await db.getHostById(Number(rule.hostId));
-      rangeStart = (host as any)?.portRangeStart;
-      rangeEnd = (host as any)?.portRangeEnd;
+      policy = portPolicyFrom(host as any);
     }
     const sourcePort = Number(rule.sourcePort);
-    if (rangeStart != null && rangeEnd != null && (sourcePort < Number(rangeStart) || sourcePort > Number(rangeEnd))) {
-      throw new Error(`入口端口必须在 ${rangeStart}-${rangeEnd} 范围内，请修改端口后再启用`);
+    if (!isPortAllowedByPolicy(sourcePort, policy)) {
+      throw new Error(`${portPolicyErrorMessage(policy, "入口端口")}，请修改端口后再启用`);
     }
   }
   requireMainBackupAllowed({

@@ -208,6 +208,7 @@ export const hosts = table("hosts", {
   // ===== 端口区间限制 =====
   portRangeStart: int("portRangeStart"),  // 允许转发的起始端口，null = 不限制
   portRangeEnd: int("portRangeEnd"),      // 允许转发的结束端口，null = 不限制
+  portAllowlist: text("portAllowlist"),    // 逗号分隔的额外允许端口
   blockHttp: boolean("blockHttp").notNull().default(false),
   blockSocks: boolean("blockSocks").notNull().default(false),
   blockTls: boolean("blockTls").notNull().default(false),

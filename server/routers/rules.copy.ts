@@ -6,6 +6,7 @@ import { requireHostUseAccess, requireRuleAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { FORWARD_TYPES } from "../../shared/forwardTypes";
 import { requireMainBackupAllowed } from "./rules.crud";
+import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const conflictStrategySchema = z.enum(["skip", "auto", "error"]);
 
@@ -108,33 +109,30 @@ export const copyRulesRouter = router({
           }
 
           let sourcePort = Number(rule.sourcePort);
-          const hostRangeStart = (host as any).portRangeStart != null ? Number((host as any).portRangeStart) : null;
-          const hostRangeEnd = (host as any).portRangeEnd != null ? Number((host as any).portRangeEnd) : null;
+          let effectivePolicy = portPolicyFrom(host as any);
           const planRange = ctx.user.role !== "admin"
             ? await db.getUserPlanPortRange(ctx.user.id, Number(host.id))
             : null;
-          const effectiveRangeStart = planRange ? Math.max(hostRangeStart ?? planRange.start, planRange.start) : hostRangeStart;
-          const effectiveRangeEnd = planRange ? Math.min(hostRangeEnd ?? planRange.end, planRange.end) : hostRangeEnd;
-          const outOfRange =
-            effectiveRangeStart != null &&
-            effectiveRangeEnd != null &&
-            (sourcePort < effectiveRangeStart || sourcePort > effectiveRangeEnd);
+          if (planRange) {
+            effectivePolicy = combinePortPolicies(effectivePolicy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
+          }
+          const outOfRange = !isPortAllowedByPolicy(sourcePort, effectivePolicy);
           const used = await db.isPortUsedOnHost(Number(host.id), sourcePort);
           if (used || outOfRange) {
             if (input.conflictStrategy === "skip") {
               skipped.push({
                 sourceRuleId: rule.id,
                 targetHostId: host.id,
-                reason: outOfRange ? `端口 ${sourcePort} 不在允许范围内` : `端口 ${sourcePort} 已被占用`,
+                reason: outOfRange ? portPolicyErrorMessage(effectivePolicy, `端口 ${sourcePort}`) : `端口 ${sourcePort} 已被占用`,
               });
               continue;
             }
             if (input.conflictStrategy === "error") {
               throw new Error(outOfRange
-                ? `${host.name} 的端口 ${sourcePort} 不在允许范围内`
+                ? `${host.name} ${portPolicyErrorMessage(effectivePolicy, `端口 ${sourcePort}`)}`
                 : `${host.name} 的端口 ${sourcePort} 已被占用`);
             }
-            const nextPort = await db.findAvailablePort(Number(host.id), effectiveRangeStart, effectiveRangeEnd);
+            const nextPort = await db.findAvailablePort(Number(host.id), planRange?.start ?? null, planRange?.end ?? null);
             if (!nextPort) {
               skipped.push({ sourceRuleId: rule.id, targetHostId: host.id, reason: "目标主机无可用端口" });
               continue;

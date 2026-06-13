@@ -96,7 +96,7 @@ const tables: TableDef[] = [
       c("agentUpgradeTargetVersion", "text"), c("agentUpgradeRequestedAt", "epoch"), c("networkInterface", "text"),
       c("geoCountryCode", "varchar", { length: 8 }), c("geoCountryName", "text"), c("geoRegion", "text"), c("geoEmoji", "varchar", { length: 16 }),
       c("geoLatitudeMicro", "int"), c("geoLongitudeMicro", "int"), c("geoUpdatedAt", "epoch"),
-      c("portRangeStart", "int"), c("portRangeEnd", "int"),
+      c("portRangeStart", "int"), c("portRangeEnd", "int"), c("portAllowlist", "text"),
       c("blockHttp", "bool", { notNull: true, default: false }), c("blockSocks", "bool", { notNull: true, default: false }),
       c("blockTls", "bool", { notNull: true, default: false }), c("isOnline", "bool", { notNull: true, default: false }),
       c("lastHeartbeat", "epoch"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),

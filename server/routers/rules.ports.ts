@@ -2,6 +2,7 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import * as db from "../db";
 import { requireHostUseAccess, requireRuleAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
+import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const randomPortInputSchema = z.object({
   hostId: z.number().optional(),
@@ -19,23 +20,32 @@ export const portsRulesRouter = router({
       excludeRuleId: z.number().optional(),
     }))
     .query(async ({ input, ctx }) => {
-      let rangeStart: number | null | undefined;
-      let rangeEnd: number | null | undefined;
+      let policy = portPolicyFrom(null);
       if (input.tunnelId) {
         const { tunnel } = await requireTunnelUseOrTrafficBillingAccess(ctx, input.tunnelId);
         if (tunnel.entryHostId !== input.hostId) throw new Error("隧道入口主机与规则主机不一致");
-        rangeStart = (tunnel as any).portRangeStart;
-        rangeEnd = (tunnel as any).portRangeEnd;
+        const host = await db.getHostById(input.hostId);
+        policy = combinePortPolicies(
+          portPolicyFrom(host as any),
+          portPolicyFrom({
+            portRangeStart: (tunnel as any).portRangeStart,
+            portRangeEnd: (tunnel as any).portRangeEnd,
+          }),
+        );
       } else {
-        await requireHostUseAccess(ctx, input.hostId);
+        const { host } = await requireHostUseAccess(ctx, input.hostId);
+        policy = portPolicyFrom(host as any);
       }
-      if (rangeStart != null && rangeEnd != null && (input.sourcePort < rangeStart || input.sourcePort > rangeEnd)) {
-        return { used: true, reason: `端口必须在允许范围 ${rangeStart}-${rangeEnd} 内` };
+      if (!isPortAllowedByPolicy(input.sourcePort, policy)) {
+        return { used: true, reason: portPolicyErrorMessage(policy) };
       }
       if (ctx.user.role !== "admin") {
         const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);
-        if (planRange && (input.sourcePort < planRange.start || input.sourcePort > planRange.end)) {
-          return { used: true, reason: `套餐端口必须在 ${planRange.start}-${planRange.end} 内` };
+        if (planRange) {
+          policy = combinePortPolicies(policy, portPolicyFrom({ portRangeStart: planRange.start, portRangeEnd: planRange.end }));
+        }
+        if (planRange && !isPortAllowedByPolicy(input.sourcePort, policy)) {
+          return { used: true, reason: portPolicyErrorMessage(policy, "套餐端口") };
         }
       }
       if (input.excludeRuleId) {
@@ -70,9 +80,7 @@ export const portsRulesRouter = router({
         rangeStart = (tunnel as any).portRangeStart;
         rangeEnd = (tunnel as any).portRangeEnd;
       } else {
-        const { host } = await requireHostUseAccess(ctx, input.hostId);
-        rangeStart = (host as any).portRangeStart;
-        rangeEnd = (host as any).portRangeEnd;
+        await requireHostUseAccess(ctx, input.hostId);
       }
       if (ctx.user.role !== "admin") {
         const planRange = await db.getUserPlanPortRange(ctx.user.id, input.hostId, input.tunnelId ?? undefined);

@@ -12,6 +12,7 @@ import { createTunnelHopBatch, registerTunnelHopTest } from "../tunnelHopTestSta
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
 import { createQueryCache } from "../queryCache";
+import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
@@ -119,18 +120,14 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     if (!aggregate) return;
     const currentLatency = typeof (tunnel as any).lastLatencyMs === "number" ? Number((tunnel as any).lastLatencyMs) : null;
     const nextLatency = aggregate.success ? aggregate.latencyMs : null;
-    const shouldUpdate =
-      String((tunnel as any).lastTestStatus || "") === "pending" ||
-      String((tunnel as any).lastTestStatus || "") === "running" ||
-      currentLatency !== nextLatency;
+    const shouldUpdate = currentLatency !== nextLatency;
     if (!shouldUpdate) return;
     await db.insertTunnelLatencyStat({
       tunnelId: Number(tunnel.id),
       latencyMs: aggregate.success ? aggregate.latencyMs : null,
       isTimeout: !aggregate.success,
-    }, { message: aggregate.success ? `MULTI_HOP_AUTO_LATENCY_OK hops=${hopIds.length - 1}` : `MULTI_HOP_AUTO_LATENCY_FAILED hops=${hopIds.length - 1}` });
+    });
     (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
-    (tunnel as any).lastTestStatus = aggregate.success ? "success" : "failed";
   }));
   await Promise.all(Array.from(hostIds).map(async (hostId) => {
     const host = await db.getHostById(hostId);
@@ -146,6 +143,7 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     tunnelEntryIp: (host as any).tunnelEntryIp,
     portRangeStart: (host as any).portRangeStart,
     portRangeEnd: (host as any).portRangeEnd,
+    portAllowlist: (host as any).portAllowlist,
   } : null;
   return tunnels.map((tunnel) => ({
     ...tunnel,
@@ -198,7 +196,7 @@ export const tunnelsRouter = router({
         const since = new Date(Date.now() - input.hours * 3600 * 1000);
         return tunnelQueryCache.get(
           `latencySeries:${ctx.user.id}:${input.tunnelId}:${input.hours}`,
-          { ttlMs: 30_000, staleMs: 5 * 60_000 },
+          { ttlMs: 5_000, staleMs: 0 },
           () => db.getTunnelLatencySeries(input.tunnelId, { since }),
         );
       }),
@@ -247,10 +245,9 @@ export const tunnelsRouter = router({
         {
           const exit = await db.getHostById(exitHostId) as any;
           if (listenPort > 0) {
-            const start = exit?.portRangeStart;
-            const end = exit?.portRangeEnd;
-            if (start != null && end != null && (listenPort < start || listenPort > end)) {
-              throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
+            const policy = portPolicyFrom(exit);
+            if (!isPortAllowedByPolicy(listenPort, policy)) {
+              throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
             }
             const used = await db.isPortUsedOnHost(exitHostId, listenPort);
             if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);
@@ -388,10 +385,9 @@ export const tunnelsRouter = router({
             );
             if (!(data as any).listenPort) throw new Error("出口 Agent 已无可用隧道端口");
           } else {
-            const start = (exit as any).portRangeStart;
-            const end = (exit as any).portRangeEnd;
-            if (start != null && end != null && (listenPort < start || listenPort > end)) {
-              throw new Error(`出口监听端口必须在 ${start}-${end} 区间内`);
+            const policy = portPolicyFrom(exit as any);
+            if (!isPortAllowedByPolicy(listenPort, policy)) {
+              throw new Error(portPolicyErrorMessage(policy, "出口监听端口"));
             }
             const used = await db.isPortUsedOnHost(exitHostId, listenPort);
             if (used) throw new Error(`出口 Agent 端口 ${listenPort} 已被转发规则占用`);

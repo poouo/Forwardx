@@ -24,7 +24,7 @@ export const selfTestRulesRouter = router({
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
       return selfTestQueryCache.get(
         `tcpingSeries:${ctx.user.id}:${input.ruleId}:${input.hours}`,
-        { ttlMs: 15_000, staleMs: 2 * 60_000 },
+        { ttlMs: 5_000, staleMs: 0 },
         () => db.getTcpingSeriesByRule(input.ruleId, { since }),
       );
     }),

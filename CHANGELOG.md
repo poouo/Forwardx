@@ -1,5 +1,73 @@
 # Changelog
 
+## [2.3.137] - 2026-06-14
+
+### Added
+
+- Added host port policy support for combined port ranges and comma-separated custom allowed ports, with panel-side validation for invalid custom port input.
+- Added transition animations when switching rule card density, tunnel views, forwarding-chain views, and forwarding-group empty/list states.
+
+### Fixed
+
+- Fixed multi-hop tunnel, forwarding-chain, and TCPing latency charts when 24-hour samples exceed the display cap; the chart now keeps the newest samples instead of truncating at the oldest 2880 records.
+- Reduced stale caching for latency detail dialogs and avoided showing obviously old cached latency series while fresh data is loading.
+- Existing forwarding rules, tunnels, forwarding groups, Telegram actions, and scheduled refresh paths now re-check host port policies so edited host limits are enforced consistently.
+- Agent upgrade actions now skip hosts that already report the latest target version instead of pushing a redundant upgrade event.
+
+### Changed
+
+- Dashboard recent traffic trend now shows the last 24 hours with hourly totals, and the traffic doughnut charts use the same 24-hour window.
+- Host cards now present upload/download traffic as clearer colored tiles and color CPU, memory, and disk usage by utilization thresholds.
+- PROXY Protocol can now remain enabled for TCP+UDP rules while still being disabled for UDP-only rules.
+- Bumped panel version to 2.3.137. Agent target version remains 2.2.91.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.137.
+
+## [2.3.136] - 2026-06-13
+
+### Added
+
+- Added panel HTTPS/SSL configuration support and runtime status handling.
+- Added Agent/FXP runtime updates for the 2.2.91 target line.
+- Added PROXY Protocol support improvements for GOST and ForwardX encrypted tunnel paths.
+
+### Fixed
+
+- Improved panel update checks, Docker/runtime version reporting, and release asset readiness checks.
+- Improved forwarding-rule handling around PROXY Protocol and tunnel routes.
+
+### Changed
+
+- Bumped panel version to 2.3.136 and Agent target version to 2.2.91.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.136.
+
+## [2.3.135] - 2026-06-13
+
+### Fixed
+
+- Adjusted the add-link dialog layout so tunnel and forwarding-chain creation forms scroll and size more predictably across viewports.
+
+### Changed
+
+- Bumped panel version to 2.3.135. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.135.
+
+## [2.3.134] - 2026-06-13
+
+### Added
+
+- Added reusable host status labels and clearer online/offline indicators in link creation flows.
+- Added link creation selector and setup flow refinements for tunnel and forwarding-chain creation.
+
+### Fixed
+
+- Improved multi-hop tunnel editor layout and tunnel list presentation.
+- Improved dashboard traffic breakdown handling and setup-page database guidance.
+
+### Changed
+
+- Bumped panel version to 2.3.134. Agent target version remains 2.2.90.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.134.
+
 ## [2.3.133] - 2026-06-13
 
 ### Fixed

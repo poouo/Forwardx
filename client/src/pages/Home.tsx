@@ -305,7 +305,7 @@ function TrafficPieCard({
             <BarChart3 className="h-4 w-4" />
             {title}
           </CardTitle>
-          <span className="text-[10px] text-muted-foreground/70">最近 7 天</span>
+          <span className="text-[10px] text-muted-foreground/70">近 24H</span>
         </div>
       </CardHeader>
       <CardContent>
@@ -404,11 +404,11 @@ function DashboardContent() {
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.mySubscriptions.useQuery(undefined, { enabled: !isAdmin });
   const { data: userTraffic = [], isLoading: userTrafficLoading } = trpc.dashboard.userTraffic.useQuery(undefined, { refetchInterval: 30000 });
   const { data: trafficBreakdown, isLoading: breakdownLoading } = trpc.dashboard.trafficBreakdown.useQuery(
-    { hours: 168, limit: 30 },
+    { hours: 24, limit: 30 },
     { refetchInterval: 30000, staleTime: 25000 },
   );
   const { data: trafficSeries, isLoading: trendLoading } = trpc.dashboard.trafficSeries.useQuery(
-    { hours: 168, bucketMinutes: 30 },
+    { hours: 24, bucketMinutes: 60 },
     { refetchInterval: 30000, staleTime: 25000 },
   );
 
@@ -825,8 +825,8 @@ function DashboardContent() {
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <BarChart3 className="h-4 w-4" />
-              近期流量走势
-              <span className="text-[10px] font-normal text-muted-foreground/60">最近 7 天 / 每 30 分钟</span>
+              近 24H 流量展示
+              <span className="text-[10px] font-normal text-muted-foreground/60">每小时汇总</span>
             </CardTitle>
             <div className="flex items-center gap-3 text-[10px]">
               <span className="flex items-center gap-1">
@@ -841,7 +841,7 @@ function DashboardContent() {
           </div>
           <p className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground/60">
             <Info className="h-3 w-3" />
-            每 30 分钟汇总一次可见规则流量。
+            每小时汇总一次可见规则流量。
           </p>
         </CardHeader>
         <CardContent>

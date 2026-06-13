@@ -31,11 +31,11 @@ export const dashboardRouter = router({
     trafficSeries: protectedProcedure
       .input(z.object({
         hours: z.number().min(1).max(24 * 30).default(24),
-        bucketMinutes: z.number().min(1).max(60).default(5),
+        bucketMinutes: z.number().min(1).max(60).default(60),
       }).optional())
       .query(async ({ input, ctx }) => {
         const hours = input?.hours ?? 24;
-        const bucketMinutes = input?.bucketMinutes ?? 5;
+        const bucketMinutes = input?.bucketMinutes ?? 60;
         const since = new Date(Date.now() - hours * 3600 * 1000);
         return cachedDashboardQuery(
           `trafficSeries:${ctx.user.id}:${hours}:${bucketMinutes}`,
@@ -51,11 +51,11 @@ export const dashboardRouter = router({
     /** 当前用户按转发类型划分的规则流量消耗分布 */
     trafficBreakdown: protectedProcedure
       .input(z.object({
-        hours: z.number().min(1).max(24 * 30).default(168),
+        hours: z.number().min(1).max(24 * 30).default(24),
         limit: z.number().min(1).max(100).default(30),
       }).optional())
       .query(async ({ input, ctx }) => {
-        const hours = input?.hours ?? 168;
+        const hours = input?.hours ?? 24;
         const limit = input?.limit ?? 30;
         const since = new Date(Date.now() - hours * 3600 * 1000);
         return cachedDashboardQuery(

@@ -907,7 +907,7 @@ export async function getTunnelLatencySeries(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("tunnel_latency_stats")}
       WHERE ${q("tunnelId")} = ? AND ${q("recordedAt")} >= ?
-      ORDER BY ${q("recordedAt")} ASC
+      ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
       LIMIT ?`,
     [tunnelId, epochSeconds(since), limit],
   );
@@ -915,7 +915,7 @@ export async function getTunnelLatencySeries(
   if (elapsedMs > 800) {
     console.warn(`[TunnelLatency] slow tunnel=${tunnelId} rows=${rows.length} elapsedMs=${elapsedMs}`);
   }
-  return rows.map((row) => ({
+  return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
     isTimeout: rowBool(row.isTimeout),
     recordedAt: rowDate(row.recordedAt),
@@ -942,7 +942,7 @@ export async function getForwardGroupLatencySeries(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("forward_group_latency_stats")}
       WHERE ${q("groupId")} = ? AND ${q("recordedAt")} >= ?
-      ORDER BY ${q("recordedAt")} ASC
+      ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
       LIMIT ?`,
     [groupId, epochSeconds(since), limit],
   );
@@ -950,7 +950,7 @@ export async function getForwardGroupLatencySeries(
   if (elapsedMs > 800) {
     console.warn(`[ForwardGroupLatency] slow group=${groupId} rows=${rows.length} elapsedMs=${elapsedMs}`);
   }
-  return rows.map((row) => ({
+  return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
     isTimeout: rowBool(row.isTimeout),
     recordedAt: rowDate(row.recordedAt),
@@ -983,15 +983,15 @@ export async function getTcpingSeriesByRule(
       const rawRows = await queryRaw<any>(
         `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
            FROM ${q("tcping_stats")}
-          WHERE ${q("ruleId")} IN (${childIds.map(() => "?").join(",")})
-            AND ${q("recordedAt")} >= ?
-          ORDER BY ${q("recordedAt")} ASC
+         WHERE ${q("ruleId")} IN (${childIds.map(() => "?").join(",")})
+           AND ${q("recordedAt")} >= ?
+          ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
           LIMIT ?`,
         [...childIds, epochSeconds(since), Math.max(limit * childIds.length, limit)],
       );
       const bucketMs = 30_000;
       const byBucket = new Map<number, { latencyMs: number; timeoutCount: number; count: number; recordedAt: Date }>();
-      for (const row of rawRows as any[]) {
+      for (const row of (rawRows as any[]).reverse()) {
         const at = rowDate(row.recordedAt);
         const key = Math.floor(at.getTime() / bucketMs) * bucketMs;
         const prev = byBucket.get(key) || { latencyMs: 0, timeoutCount: 0, count: 0, recordedAt: at };
@@ -1018,11 +1018,11 @@ export async function getTcpingSeriesByRule(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("tcping_stats")}
       WHERE ${q("ruleId")} = ? AND ${q("recordedAt")} >= ?
-      ORDER BY ${q("recordedAt")} ASC
+      ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
       LIMIT ?`,
     [ruleId, epochSeconds(since), limit],
   );
-  return rows.map((row) => ({
+  return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
     isTimeout: rowBool(row.isTimeout),
     recordedAt: rowDate(row.recordedAt),

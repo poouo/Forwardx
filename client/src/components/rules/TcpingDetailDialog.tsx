@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -70,13 +70,15 @@ function TcpingDetailDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
-  const { data, isLoading } = trpc.rules.tcpingSeries.useQuery(
+  const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false }
+    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
   );
   const cachedData = tcpingSeriesCache.get(ruleId);
-  const seriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
-  const showInitialLoading = isLoading && !seriesData;
+  const rawSeriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
+  const waitForFreshSeries = open && isFetching && !isLatencySeriesCacheFresh(rawSeriesData);
+  const seriesData = waitForFreshSeries ? undefined : rawSeriesData;
+  const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
 
   useEffect(() => {
     if (data) {

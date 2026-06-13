@@ -313,7 +313,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
-        }, { message: aggregate.success ? `MULTI_HOP_AUTO_LATENCY_OK hops=${hopCount}` : `MULTI_HOP_AUTO_LATENCY_FAILED hops=${hopCount}` });
+        });
         continue;
       }
       if (tunnel.entryHostId !== host.id) continue;
