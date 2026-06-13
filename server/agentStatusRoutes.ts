@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { appendPanelLog } from "./_core/panelLogger";
-import { pushAgentRefresh } from "./agentEvents";
+import { pushAgentRefresh, requestHostTcping } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
 import {
   getTunnelRuntimeHostStatus,
@@ -29,6 +29,16 @@ async function updateDirectTunnelRunningStatus(tunnel: any, isRunning: boolean) 
   const nextRunning = !!isRunning;
   await db.updateTunnelRunningStatus(tunnelId, nextRunning);
   return nextRunning;
+}
+
+function requestTunnelTcpingRefresh(hostIds: number[], reason: string) {
+  const uniqueHostIds = Array.from(new Set(hostIds
+    .map((hostId) => Number(hostId))
+    .filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
+  for (const hostId of uniqueHostIds) {
+    requestHostTcping(hostId);
+    pushAgentRefresh(hostId, reason);
+  }
 }
 
 async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
@@ -129,7 +139,18 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       if (hopHostIds.length >= 3) {
         recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
         const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
-        await db.updateTunnelRunningStatus(tunnelId, !!isRunning && readyCount >= hopHostIds.length);
+        const nextRunning = !!isRunning && readyCount >= hopHostIds.length;
+        await db.updateTunnelRunningStatus(tunnelId, nextRunning);
+        if (isRunning) {
+          requestTunnelTcpingRefresh(hopHostIds.slice(0, -1), nextRunning ? "tunnel-tcping-refresh" : "tunnel-runtime-probe-refresh");
+        }
+        if (!nextRunning && isRunning) {
+          for (const hostId of hopHostIds) {
+            if (Number(hostId) !== Number(host.id) && getTunnelRuntimeHostStatus(tunnelId, hostId) !== true) {
+              pushAgentRefresh(hostId, "tunnel-runtime-sync");
+            }
+          }
+        }
         appendPanelLog(
           !!isRunning ? "info" : "warn",
           `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
@@ -143,6 +164,9 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         return;
       }
       const nextRunning = await updateDirectTunnelRunningStatus(tunnel, !!isRunning);
+      if (nextRunning) {
+        requestTunnelTcpingRefresh([Number((tunnel as any).entryHostId)], "tunnel-tcping-refresh");
+      }
       appendPanelLog(
         nextRunning ? "info" : "warn",
         `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,

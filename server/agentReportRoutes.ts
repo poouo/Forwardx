@@ -314,6 +314,9 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
         });
+        if (aggregate.success && !(tunnel as any).isRunning) {
+          await db.updateTunnelRunningStatus(tunnelId, true);
+        }
         continue;
       }
       if (tunnel.entryHostId !== host.id) continue;

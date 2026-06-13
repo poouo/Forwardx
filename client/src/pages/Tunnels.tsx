@@ -356,9 +356,10 @@ function escapeTooltipHtml(value: unknown) {
   });
 }
 
-function formatGlobeLatency(value: unknown, timeout?: unknown) {
+function formatGlobeLatency(value: unknown, timeout?: unknown, pending?: unknown) {
   if (timeout) return "不可达";
   const latency = Number(value);
+  if (!Number.isFinite(latency) && pending) return "检测中";
   return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
 }
 
@@ -640,7 +641,7 @@ function TunnelWorldGlobe({
         routeText: routeHosts.map((host) => host.name).join(" -> "),
         routeHosts,
         statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel)),
+        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel), tunnel.isEnabled && tunnel.isRunning),
         color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
         trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
         glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -744,7 +745,7 @@ function TunnelWorldGlobe({
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
           statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-          latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel)),
+          latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel), tunnel.isEnabled && tunnel.isRunning),
           color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
           trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
           glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -1250,7 +1251,7 @@ function TunnelSelfTestDialog({
 
 function TunnelsContent() {
   const utils = trpc.useUtils();
-  const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 10000 });
+  const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 3000 });
   const { data: hosts } = trpc.hosts.list.useQuery();
   const { data: forwardGroups, isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
@@ -1611,6 +1612,14 @@ function TunnelsContent() {
     }
     if (tunnel.lastTestStatus === "failed") {
       return <LatencyRating isTimeout timeoutText="不可达" className={compact ? "text-xs" : undefined} />;
+    }
+    if (tunnel.isEnabled && tunnel.isRunning) {
+      return (
+        <span className={`inline-flex items-center gap-1.5 text-amber-600 ${compact ? "text-xs" : ""}`}>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          检测中
+        </span>
+      );
     }
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };

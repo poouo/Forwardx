@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
-import { isHostMetricsWatching } from "./agentEvents";
+import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching } from "./agentEvents";
 import { isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
 import { resolvePanelUrl } from "./agentPanelUrl";
 import * as hopRepo from "./repositories/tunnelRepository";
@@ -873,6 +873,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 latencyMs: aggregate.success ? aggregate.latencyMs : null,
                 isTimeout: !aggregate.success,
               });
+              if (aggregate.success && !(tunnel as any).isRunning) {
+                await db.updateTunnelRunningStatus(Number(tunnel.id), true);
+              }
             }
           }
           const nextHop = hops[hostIdx + 1] as any;
@@ -2220,11 +2223,29 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       action.op === "remove" ? 0 : action.statusType === "runtime" ? 1 : 2
     );
     const orderedActions = normalizedActions.slice().sort((a: any, b: any) => actionRank(a) - actionRank(b));
+    const hasTunnelApplyActions = orderedActions.some((action: any) => action.op === "apply" && (action.statusType === "tunnel" || Number(action.tunnelId) > 0));
+    const hasPendingMultiHopRuntime = (hostTunnels as any[]).some((tunnel: any) => {
+      const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+      return !!tunnel?.isEnabled
+        && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
+        && Array.isArray(hops)
+        && hops.length >= 3
+        && hops.some((hop: any) => Number(hop.hostId) === Number(host.id))
+        && !isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
+    });
+    const tcpingRequested = hasHostTcpingRequest(host.id);
+    const forceTcping = tcpingRequested && !hasTunnelApplyActions;
+    if (forceTcping) clearHostTcpingRequest(host.id);
 
     const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, nextInterval: isHostMetricsWatching(host.id) || lookingGlassTests.length > 0 || iperf3Tasks.length > 0 ? 2 : 30 });
+    const fastNextHeartbeat = isHostMetricsWatching(host.id)
+      || lookingGlassTests.length > 0
+      || iperf3Tasks.length > 0
+      || forceTcping
+      || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, forceTcping, nextInterval: fastNextHeartbeat ? 2 : 30 });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

@@ -10,6 +10,7 @@ type AgentEventClient = {
 
 const agentEventClients = new Map<number, AgentEventClient>();
 const hostMetricsWatchUntil = new Map<number, number>();
+const hostTcpingRequestUntil = new Map<number, number>();
 
 export function registerAgentEventClient(hostId: number, token: string, res: Response) {
   const previous = agentEventClients.get(hostId);
@@ -63,4 +64,25 @@ export function isHostMetricsWatching(hostId: number) {
     return false;
   }
   return true;
+}
+
+export function requestHostTcping(hostId: number, ttlMs = 60_000) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  hostTcpingRequestUntil.set(id, Date.now() + ttlMs);
+  return true;
+}
+
+export function hasHostTcpingRequest(hostId: number) {
+  const id = Number(hostId);
+  const until = hostTcpingRequestUntil.get(id) || 0;
+  if (until <= Date.now()) {
+    hostTcpingRequestUntil.delete(id);
+    return false;
+  }
+  return true;
+}
+
+export function clearHostTcpingRequest(hostId: number) {
+  hostTcpingRequestUntil.delete(Number(hostId));
 }

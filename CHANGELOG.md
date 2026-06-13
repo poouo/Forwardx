@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.3.138] - 2026-06-14
+
+### Added
+
+- Added host port policy support for combined port ranges and comma-separated custom allowed ports, with panel-side validation for invalid custom port input.
+- Added transition animations when switching rule card density, tunnel views, forwarding-chain views, and forwarding-group empty/list states.
+
+### Fixed
+
+- Fixed multi-hop tunnel, forwarding-chain, and TCPing latency charts when 24-hour samples exceed the display cap; the chart now keeps the newest samples instead of truncating at the oldest 2880 records.
+- Reduced stale caching for latency detail dialogs and avoided showing obviously old cached latency series while fresh data is loading.
+- Existing forwarding rules, tunnels, forwarding groups, Telegram actions, and scheduled refresh paths now re-check host port policies so edited host limits are enforced consistently.
+- Agent upgrade actions now skip hosts that already report the latest target version instead of pushing a redundant upgrade event.
+- Multi-hop tunnel runtime sync now wakes pending hop Agents faster and asks Agents to refresh tunnel latency immediately after tunnel services report running.
+- Panel SSL settings now use a full-width layout with file-path inputs and PEM paste fields arranged side by side.
+
+### Changed
+
+- Dashboard recent traffic trend now shows the last 24 hours with hourly totals, and the traffic doughnut charts use the same 24-hour window.
+- Host cards now present upload/download traffic as clearer colored tiles and color CPU, memory, and disk usage by utilization thresholds.
+- PROXY Protocol can now remain enabled for TCP+UDP rules while still being disabled for UDP-only rules.
+- Bumped panel version to 2.3.138. Agent target version is now 2.2.92.
+- Android APP version remains 2.3.42 and the APK release pointer is updated to 2.3.138.
+
 ## [2.3.137] - 2026-06-14
 
 ### Added

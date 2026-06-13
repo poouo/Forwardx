@@ -837,12 +837,9 @@ function HostCard({
   const infoPanelClass = isOnline
     ? "border-border/40 bg-background/30"
     : "border-muted-foreground/20 bg-muted/25";
-  const uploadTrafficPanelClass = isOnline
-    ? "border-blue-300/70 bg-blue-50 text-blue-700 dark:border-blue-400/35 dark:bg-blue-950/25 dark:text-blue-300"
-    : "border-muted-foreground/20 bg-muted/25 text-muted-foreground";
-  const downloadTrafficPanelClass = isOnline
-    ? "border-emerald-300/70 bg-emerald-50 text-emerald-700 dark:border-emerald-400/35 dark:bg-emerald-950/25 dark:text-emerald-300"
-    : "border-muted-foreground/20 bg-muted/25 text-muted-foreground";
+  const trafficPanelClass = isOnline
+    ? "border-border/40 bg-muted/20"
+    : "border-muted-foreground/20 bg-muted/25";
 
   useEffect(() => {
     if (!metrics?.length) return;
@@ -974,29 +971,33 @@ function HostCard({
               <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
             </div>
             {/* 流量 */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <div
-                className={`flex min-h-[74px] min-w-0 flex-col items-center justify-center rounded-md border px-2.5 py-2.5 text-center ${uploadTrafficPanelClass}`}
-                title={networkSpeed.out === null ? undefined : `当前上行 ${formatBytes(networkSpeed.out)}/s`}
-              >
-                <div className="flex min-w-0 items-center justify-center gap-1.5 text-sm font-medium">
-                  <ArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">上行流量</span>
+            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
+                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <ArrowDownToLine className="h-3 w-3" />
+                  <span>入站</span>
                 </div>
-                <div className="mt-1 font-mono text-sm font-semibold tabular-nums">
-                  {totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">累计</span>
+                  <span className="font-medium tabular-nums">{totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">当前</span>
+                  <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
                 </div>
               </div>
-              <div
-                className={`flex min-h-[74px] min-w-0 flex-col items-center justify-center rounded-md border px-2.5 py-2.5 text-center ${downloadTrafficPanelClass}`}
-                title={networkSpeed.in === null ? undefined : `当前下行 ${formatBytes(networkSpeed.in)}/s`}
-              >
-                <div className="flex min-w-0 items-center justify-center gap-1.5 text-sm font-medium">
-                  <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">下行流量</span>
+              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
+                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <ArrowUpFromLine className="h-3 w-3" />
+                  <span>出站</span>
                 </div>
-                <div className="mt-1 font-mono text-sm font-semibold tabular-nums">
-                  {totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">累计</span>
+                  <span className="font-medium tabular-nums">{totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-muted-foreground">当前</span>
+                  <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
                 </div>
               </div>
             </div>
@@ -1821,83 +1822,72 @@ function HostsContent() {
 
       {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-xl">
+          <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="sr-only">
               {editingId ? "修改主机信息" : "添加 Agent 主机"}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-5">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>主机名称</Label>
-                <Input
-                  placeholder="例如: 香港节点-01"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                />
-              </div>
-              {editingId && (
-                <div className="space-y-2">
-                  <Label>Agent 自动检测 IP</Label>
-                  <Input value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
-                  <p className="text-xs text-muted-foreground">
-                    由 Agent 心跳自动上报，用于面板展示和地理位置识别。
-                  </p>
+              <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
+                <div className="space-y-1.5">
+                  <Label className="text-sm">主机名称</Label>
+                  <Input
+                    className="h-9"
+                    placeholder="例如: 香港节点-01"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  />
                 </div>
-              )}
-              <div className="space-y-2">
-                <Label>入口 IP / 域名</Label>
+                {editingId && (
+                  <div className="space-y-1.5">
+                    <Label className="text-sm">Agent 检测 IP</Label>
+                    <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                  </div>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">入口 IP / 域名</Label>
                 <Input
+                  className="h-9"
                   placeholder="例如: example.com 或 1.2.3.4"
                   value={form.entryIp}
                   onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                 />
-                <p className="text-xs text-muted-foreground">
-                  留空时使用 Agent 自动检测 IP；填写域名时由 Agent 监控解析变化并刷新转发。
-                </p>
               </div>
-              <div className="space-y-2">
-                <Label>
-                  内网地址
-                  <span className="ml-1 text-xs text-muted-foreground">(可选，供隧道链路使用)</span>
-                </Label>
-                <Input
-                  placeholder="例如: 10.0.0.8 或 node-a.internal"
-                  value={form.tunnelEntryIp}
-                  onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  留空则默认使用上方“入口 IP / 域名”。
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label>
-                  网卡名称
-                  <span className="ml-1 text-xs text-muted-foreground">(可选，留空自动检测)</span>
-                </Label>
-                <Input
-                  placeholder="例如: eth0, ens33, bond0"
-                  value={form.networkInterface}
-                  onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  留空自动检测默认出口网卡。
-                </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
+                  <Input
+                    className="h-9"
+                    placeholder="10.0.0.8 或 node-a.internal"
+                    value={form.tunnelEntryIp}
+                    onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
+                  <Input
+                    className="h-9"
+                    placeholder="eth0, ens33, bond0"
+                    value={form.networkInterface}
+                    onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
+                  />
+                </div>
               </div>
             </div>
-            <div className="space-y-3 border-t border-border/50 pt-4">
-              <div>
-                <Label className="text-sm font-medium">转发端口区间</Label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  区间和自定义端口都留空表示不限制。
-                </p>
+            <div className="space-y-3 border-t border-border/50 pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <Label className="text-sm font-medium">端口限制</Label>
+                <span className="text-xs text-muted-foreground">留空不限</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">起始端口</Label>
                   <Input
+                    className="h-9"
                     type="number"
                     min={1}
                     max={65535}
@@ -1910,9 +1900,10 @@ function HostsContent() {
                     }}
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">结束端口</Label>
                   <Input
+                    className="h-9"
                     type="number"
                     min={1}
                     max={65535}
@@ -1926,29 +1917,25 @@ function HostsContent() {
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">自定义端口</Label>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-xs text-muted-foreground">自定义端口</Label>
+                  {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
+                    <span className="text-xs text-muted-foreground">{customPortInputState.ports.length} 个</span>
+                  ) : null}
+                </div>
                 <Input
                   placeholder="例如: 80,443,65095"
                   value={form.portAllowlist}
                   onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
-                  className={customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : undefined}
+                  className={`h-9 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
                 />
                 {customPortInputState.invalid.length > 0 ? (
                   <p className="text-xs text-destructive">
                     自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔
                   </p>
-                ) : customPortInputState.ports.length > 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    自定义端口数量: <span className="font-medium">{customPortInputState.ports.length}</span> 个
-                  </p>
                 ) : null}
               </div>
-              {form.portRangeStart != null && form.portRangeEnd != null && (
-                <p className="text-xs text-muted-foreground">
-                  可用端口数量: <span className="font-medium">{Math.max(0, form.portRangeEnd - form.portRangeStart + 1)}</span> 个
-                </p>
-              )}
               {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
                 <p className="text-xs text-destructive">
                   起始端口不能大于结束端口
@@ -1956,23 +1943,18 @@ function HostsContent() {
               )}
             </div>
             {user?.role === "admin" && (
-              <div className="space-y-3 border-t border-border/50 pt-4">
-                <div>
-                  <Label className="text-sm font-medium">入口协议屏蔽</Label>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    启用后，所有以该主机作为入口的 TCP 转发都会阻断对应协议。
-                  </p>
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+              <div className="space-y-3 border-t border-border/50 pt-3">
+                <Label className="text-sm font-medium">协议屏蔽</Label>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
                     <span className="text-sm font-medium">HTTP</span>
                     <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
                   </label>
-                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
                     <span className="text-sm font-medium">SOCKS</span>
                     <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
                   </label>
-                  <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2">
+                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
                     <span className="text-sm font-medium">TLS</span>
                     <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
                   </label>
@@ -1980,7 +1962,7 @@ function HostsContent() {
               </div>
             )}
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowDialog(false)}>
               取消
             </Button>

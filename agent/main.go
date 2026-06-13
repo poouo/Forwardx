@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.91"
+var Version = "2.2.92"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -114,6 +114,7 @@ type heartbeatResp struct {
 	Iperf3Tasks        []iperf3Task        `json:"iperf3Tasks"`
 	AgentUpgrade       *agentUpgrade       `json:"agentUpgrade"`
 	LogUpload          bool                `json:"agentLogUploadEnabled"`
+	ForceTCPing        bool                `json:"forceTcping"`
 	NextInterval       int                 `json:"nextInterval"`
 }
 
@@ -423,7 +424,7 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	syncProtocolGuards(cfg, resp.GuardRules)
 	collectTraffic(cfg)
-	if lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
+	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
 		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes)
 		lastTCPingAt = time.Now()
 	}

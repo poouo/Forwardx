@@ -121,13 +121,20 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     const currentLatency = typeof (tunnel as any).lastLatencyMs === "number" ? Number((tunnel as any).lastLatencyMs) : null;
     const nextLatency = aggregate.success ? aggregate.latencyMs : null;
     const shouldUpdate = currentLatency !== nextLatency;
-    if (!shouldUpdate) return;
-    await db.insertTunnelLatencyStat({
-      tunnelId: Number(tunnel.id),
-      latencyMs: aggregate.success ? aggregate.latencyMs : null,
-      isTimeout: !aggregate.success,
-    });
-    (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
+    const shouldMarkRunning = aggregate.success && !(tunnel as any).isRunning;
+    if (!shouldUpdate && !shouldMarkRunning) return;
+    if (shouldUpdate) {
+      await db.insertTunnelLatencyStat({
+        tunnelId: Number(tunnel.id),
+        latencyMs: aggregate.success ? aggregate.latencyMs : null,
+        isTimeout: !aggregate.success,
+      });
+      (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
+    }
+    if (shouldMarkRunning) {
+      await db.updateTunnelRunningStatus(Number(tunnel.id), true);
+      (tunnel as any).isRunning = true;
+    }
   }));
   await Promise.all(Array.from(hostIds).map(async (hostId) => {
     const host = await db.getHostById(hostId);

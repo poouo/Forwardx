@@ -2846,7 +2846,7 @@ function SystemInfoSection() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md xl:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Lock className="h-4 w-4 text-primary" />
@@ -2866,31 +2866,33 @@ function SystemInfoSection() {
               </div>
               <Switch className="shrink-0" checked={panelSslEnabled} onCheckedChange={setPanelSslEnabled} />
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant={panelSslMode === "path" ? "default" : "outline"}
-                onClick={() => setPanelSslMode("path")}
-              >
-                文件路径
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={panelSslMode === "pem" ? "default" : "outline"}
-                onClick={() => setPanelSslMode("pem")}
-              >
-                粘贴证书
-              </Button>
-            </div>
-            <div className={panelSslMode === "path" ? "grid gap-3 md:grid-cols-2" : "hidden"}>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslMode === "path" ? "border-primary/30 bg-primary/5" : "border-border/40 bg-muted/10"}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">文件路径</p>
+                    <p className="text-xs text-muted-foreground">使用服务器上的证书和私钥文件。</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={panelSslMode === "path" ? "default" : "outline"}
+                    onClick={() => setPanelSslMode("path")}
+                  >
+                    文件路径
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="panel-ssl-cert-path">证书文件路径</Label>
                 <Input
                   id="panel-ssl-cert-path"
                   value={panelSslCertPath}
-                  onChange={(e) => setPanelSslCertPath(e.target.value)}
+                  onFocus={() => setPanelSslMode("path")}
+                  onChange={(e) => {
+                    setPanelSslMode("path");
+                    setPanelSslCertPath(e.target.value);
+                  }}
                   placeholder="/data/certs/fullchain.pem"
                 />
               </div>
@@ -2899,31 +2901,56 @@ function SystemInfoSection() {
                 <Input
                   id="panel-ssl-key-path"
                   value={panelSslKeyPath}
-                  onChange={(e) => setPanelSslKeyPath(e.target.value)}
+                  onFocus={() => setPanelSslMode("path")}
+                  onChange={(e) => {
+                    setPanelSslMode("path");
+                    setPanelSslKeyPath(e.target.value);
+                  }}
                   placeholder="/data/certs/privkey.pem"
                 />
               </div>
-            </div>
-            {panelSslMode === "path" && (
+                </div>
               <Button
                 type="button"
                 variant="outline"
-                onClick={handleGeneratePanelSelfSigned}
+                onClick={() => {
+                  setPanelSslMode("path");
+                  handleGeneratePanelSelfSigned();
+                }}
                 disabled={generatePanelSelfSignedMutation.isPending}
               >
                 {generatePanelSelfSignedMutation.isPending ? "生成中..." : "生成自签证书"}
               </Button>
-            )}
-            {panelSslMode === "pem" && (
-              <div className="grid gap-3 md:grid-cols-2">
+              </div>
+
+              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslMode === "pem" ? "border-primary/30 bg-primary/5" : "border-border/40 bg-muted/10"}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">粘贴证书</p>
+                    <p className="text-xs text-muted-foreground">直接保存证书和私钥 PEM 内容。</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={panelSslMode === "pem" ? "default" : "outline"}
+                    onClick={() => setPanelSslMode("pem")}
+                  >
+                    粘贴证书
+                  </Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="panel-ssl-cert-pem">证书 PEM</Label>
                   <Textarea
                     id="panel-ssl-cert-pem"
                     value={panelSslCertPem}
-                    onChange={(e) => setPanelSslCertPem(e.target.value)}
+                    onFocus={() => setPanelSslMode("pem")}
+                    onChange={(e) => {
+                      setPanelSslMode("pem");
+                      setPanelSslCertPem(e.target.value);
+                    }}
                     placeholder="-----BEGIN CERTIFICATE-----"
-                    className="min-h-40 font-mono text-xs"
+                    className="min-h-44 resize-y font-mono text-xs leading-5"
                   />
                 </div>
                 <div className="space-y-2">
@@ -2931,13 +2958,18 @@ function SystemInfoSection() {
                   <Textarea
                     id="panel-ssl-key-pem"
                     value={panelSslKeyPem}
-                    onChange={(e) => setPanelSslKeyPem(e.target.value)}
+                    onFocus={() => setPanelSslMode("pem")}
+                    onChange={(e) => {
+                      setPanelSslMode("pem");
+                      setPanelSslKeyPem(e.target.value);
+                    }}
                     placeholder="-----BEGIN PRIVATE KEY-----"
-                    className="min-h-40 font-mono text-xs"
+                    className="min-h-44 resize-y font-mono text-xs leading-5"
                   />
                 </div>
+                </div>
               </div>
-            )}
+            </div>
             <p className="text-xs text-muted-foreground">
               默认关闭。保存时会校验证书和私钥，配置生效需要重启面板；端口不变。
             </p>
