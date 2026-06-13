@@ -2057,12 +2057,12 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl sm:p-0 sm:pr-0">
-          <DialogHeader className="shrink-0 px-4 pb-3 pt-4 sm:px-6 sm:pt-6">
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-4 sm:max-w-2xl sm:p-6">
+          <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
             <DialogDescription>选择链路类型后直接填写创建信息。</DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 sm:px-6">
+          <div className="max-h-[calc(92svh-8.5rem)] space-y-4 overflow-y-auto pr-1 sm:pr-2">
             <div className="space-y-3">
               <LinkCreateTypeSelector
                 value={selectedCreateType}
@@ -2262,7 +2262,7 @@ function TunnelsContent() {
               </div>
             </div>
           </div>
-          <DialogFooter className="shrink-0 border-t border-border/50 bg-background/80 px-4 py-3 sm:px-6">
+          <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>取消</Button>
             <Button
               disabled={selectedCreateDisabled || isCreateTypePending || (selectedCreateType === "tunnel" && !isTunnelSupported(form))}
