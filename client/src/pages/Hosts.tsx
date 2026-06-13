@@ -1106,7 +1106,6 @@ function HostsContent() {
   };
 
   const openCreate = () => {
-    setActiveManageTab("tokens");
     setTokenCreateSignal((value) => value + 1);
   };
 
@@ -1657,16 +1656,24 @@ function HostsContent() {
         {user?.role === "admin" && (
           <TabsContent value="tokens" className="space-y-4">
             <AgentTokenManager
-              createSignal={tokenCreateSignal}
               showCreateButton={false}
               hideViewModeToggle
               viewMode={tokenViewMode}
               onViewModeChange={handleTokenViewModeChange}
-              onCreateSignalHandled={() => setTokenCreateSignal(0)}
             />
           </TabsContent>
         )}
       </Tabs>
+
+      {user?.role === "admin" && (
+        <AgentTokenManager
+          createSignal={tokenCreateSignal}
+          dialogOnly
+          showCreateButton={false}
+          hideViewModeToggle
+          onCreateSignalHandled={() => setTokenCreateSignal(0)}
+        />
+      )}
 
       {/* Agent Upgrade Dialog */}
       <Dialog open={!!upgradeHost} onOpenChange={(open) => !open && setUpgradeHost(null)}>

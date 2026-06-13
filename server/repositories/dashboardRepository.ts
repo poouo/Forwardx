@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { forwardRules, hosts } from "../../drizzle/schema";
-import { getDb, quoteDbIdentifier } from "../dbRuntime";
+import { getDb } from "../dbRuntime";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 
@@ -79,10 +79,6 @@ function getRuleTrafficBucket(rule: RuleTrafficMeta | undefined): RuleTrafficBuc
   return "portRules";
 }
 
-function qualified(alias: string, column: string) {
-  return sql.raw(`${alias}.${quoteDbIdentifier(column)}`);
-}
-
 // ==================== Dashboard Stats ====================
 
 export async function getDashboardStats(userId?: number, opts: { includeTraffic?: boolean } = {}) {
@@ -108,7 +104,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
   const ruleStatsQuery = db
     .select({
       totalRules: sql<number>`COUNT(*)`,
-      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${sqlBool(true)} AND (${forwardRules.isRunning} = ${sqlBool(true)} OR (${forwardRules.isForwardGroupTemplate} = ${sqlBool(true)} AND EXISTS (SELECT 1 FROM ${sql.raw(quoteDbIdentifier("forward_rules"))} child WHERE ${qualified("child", "forwardGroupRuleId")} = ${forwardRules.id} AND ${qualified("child", "pendingDelete")} = ${sqlBool(false)} AND ${qualified("child", "isEnabled")} = ${sqlBool(true)} AND ${qualified("child", "isRunning")} = ${sqlBool(true)}))) THEN 1 ELSE 0 END)`,
+      activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${sqlBool(true)} THEN 1 ELSE 0 END)`,
     })
     .from(forwardRules)
     .where(and(...ruleConditions));

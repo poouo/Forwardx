@@ -1547,12 +1547,9 @@ function TunnelsContent() {
   };
   const selectedCreateDisabled = selectedCreateType === "tunnel" ? !canCreateTunnel : !canCreateChain;
   const selectedCreateTitle = selectedCreateType === "tunnel" ? "隧道链路" : "端口转发链";
-  const selectedCreateDescription = selectedCreateType === "tunnel"
-    ? "创建 Agent 之间的隧道转发链路，支持 ForwardX 自定义加密或 GOST 协议。"
-    : "按主机顺序串联端口转发链路，用于多节点端口转发场景。";
-  const selectedCreateRequirement = selectedCreateType === "tunnel"
-    ? "需要至少 2 台主机，并启用至少一种可用隧道协议。"
-    : "需要至少 2 台主机。";
+  const selectedCreateSummary = selectedCreateType === "tunnel"
+    ? "至少 2 台主机，支持 ForwardX / GOST。"
+    : "至少 2 台主机，按顺序串联。";
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
       <Tooltip>
@@ -2060,211 +2057,212 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-3xl sm:p-6">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl sm:p-0 sm:pr-0">
+          <DialogHeader className="shrink-0 px-4 pb-3 pt-4 sm:px-6 sm:pt-6">
             <DialogTitle>新增链路</DialogTitle>
             <DialogDescription>选择链路类型后直接填写创建信息。</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <LinkCreateTypeSelector
-              value={selectedCreateType}
-              canCreateTunnel={canCreateTunnel}
-              canCreateChain={canCreateChain}
-              onValueChange={setSelectedCreateType}
-            />
-            <div className="rounded-lg border border-border/50 bg-background/60 p-3">
-              <div className="flex items-start gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                  {selectedCreateType === "tunnel" ? <Network className="h-5 w-5" /> : <Route className="h-5 w-5" />}
-                </span>
-                <div className="min-w-0">
-                  <p className="font-medium">{selectedCreateTitle}</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground sm:text-sm">{selectedCreateDescription}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{selectedCreateRequirement}</p>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 sm:px-6">
+            <div className="space-y-3">
+              <LinkCreateTypeSelector
+                value={selectedCreateType}
+                canCreateTunnel={canCreateTunnel}
+                canCreateChain={canCreateChain}
+                onValueChange={setSelectedCreateType}
+              />
+              <div className="rounded-md border border-border/50 bg-background/60 px-3 py-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    {selectedCreateType === "tunnel" ? <Network className="h-4 w-4" /> : <Route className="h-4 w-4" />}
+                  </span>
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                    <span className="font-medium">{selectedCreateTitle}</span>
+                    <span className="text-xs text-muted-foreground">{selectedCreateSummary}</span>
+                  </div>
                 </div>
+              </div>
+              <div className="space-y-4">
+                {selectedCreateType === "tunnel" ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label>隧道名称</Label>
+                      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>主机链路</Label>
+                      <MultiHopEditor
+                        hosts={hosts || []}
+                        initialHopIds={form.hopHostIds}
+                        initialHopConnectHosts={form.hopConnectHosts}
+                        maxHops={MAX_TUNNEL_HOPS}
+                        onChange={(ids) => {
+                          setForm((prev) => {
+                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
+                            const nextEntry = ids[0] ?? null;
+                            const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
+                            if (
+                              sameNumberArray(prev.hopHostIds, ids)
+                              && prev.entryHostId === nextEntry
+                              && prev.exitHostId === nextExit
+                              && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
+                            ) {
+                              return prev;
+                            }
+                            return {
+                              ...prev,
+                              hopHostIds: ids,
+                              entryHostId: nextEntry,
+                              exitHostId: nextExit,
+                              hopConnectHosts: normalizedConnectHosts,
+                            };
+                          });
+                        }}
+                        onConnectHostsChange={(hopConnectHosts) => {
+                          setForm((prev) => {
+                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
+                            if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
+                            return { ...prev, hopConnectHosts: normalizedConnectHosts };
+                          });
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>隧道类型</Label>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextMode = enabledGostTunnelModes.includes(form.mode) ? form.mode : enabledGostTunnelModes[0];
+                            if (nextMode) setForm({ ...form, mode: nextMode });
+                          }}
+                          disabled={gostRuntimeDisabled}
+                          title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
+                          className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            gostTunnelModes.includes(form.mode)
+                              ? "border-primary bg-primary/5 text-foreground"
+                              : "border-border bg-background hover:border-primary/40"
+                          } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                        >
+                          <Network className="h-4 w-4 shrink-0 text-primary" />
+                          <span className="min-w-0">
+                            <span className="block text-sm font-semibold">GOST 隧道</span>
+                            <span className="block truncate text-xs text-muted-foreground">协议转发</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((prev) => ({
+                              ...prev,
+                              mode: "forwardx",
+                            }))
+                          }
+                          disabled={forwardxRuntimeDisabled}
+                          title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
+                          className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            form.mode === "forwardx"
+                              ? "border-primary bg-primary/5 text-foreground"
+                              : "border-border bg-background hover:border-primary/40"
+                          } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                        >
+                          <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-semibold">ForwardX 加密</span>
+                            <span className="block truncate text-xs text-muted-foreground">统计 / 限速</span>
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                    {form.mode !== "forwardx" && enabledGostTunnelModes.length === 0 && (
+                      <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
+                        {unsupportedProtocolTitle}
+                      </p>
+                    )}
+                    <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
+                      {form.mode !== "forwardx" && (
+                        <div className="space-y-2">
+                          <Label>GOST 协议</Label>
+                          <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {enabledGostTunnelModes.map((mode) => (
+                                <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        <Label>出口监听端口</Label>
+                        <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                        <p className="text-xs text-muted-foreground">留空自动分配。</p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+                      <div className="space-y-2">
+                        <Label>链名称</Label>
+                        <Input
+                          value={chainCreateForm.name}
+                          onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
+                          placeholder="例如: 华东-香港转发链"
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <label className="flex h-10 w-full items-center justify-between rounded-md border border-border/60 px-3">
+                          <span className="text-sm">启用</span>
+                          <Switch
+                            checked={chainCreateForm.isEnabled}
+                            onCheckedChange={(isEnabled) => setChainCreateForm({ ...chainCreateForm, isEnabled })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="space-y-3 rounded-lg border border-border/60 p-3">
+                      <div>
+                        <Label>链路主机顺序</Label>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          按入口到出口顺序保存链路流程，最多 5 台主机。
+                        </p>
+                      </div>
+                      <MultiHopEditor
+                        hosts={hosts || []}
+                        initialHopIds={chainCreateForm.hopHostIds}
+                        initialHopConnectHosts={chainCreateForm.hopConnectHosts}
+                        maxHops={5}
+                        onChange={(ids) => {
+                          setChainCreateForm((prev) => {
+                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
+                            if (
+                              sameNumberArray(prev.hopHostIds, ids)
+                              && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
+                            ) {
+                              return prev;
+                            }
+                            return {
+                              ...prev,
+                              hopHostIds: ids,
+                              hopConnectHosts: normalizedConnectHosts,
+                            };
+                          });
+                        }}
+                        onConnectHostsChange={(hopConnectHosts) => {
+                          setChainCreateForm((prev) => {
+                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
+                            if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
+                            return { ...prev, hopConnectHosts: normalizedConnectHosts };
+                          });
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 sm:pr-2">
-            {selectedCreateType === "tunnel" ? (
-              <>
-                <div className="space-y-2">
-                  <Label>隧道名称</Label>
-                  <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
-                </div>
-                <div className="space-y-2">
-                  <Label>主机链路</Label>
-                  <MultiHopEditor
-                    hosts={hosts || []}
-                    initialHopIds={form.hopHostIds}
-                    initialHopConnectHosts={form.hopConnectHosts}
-                    maxHops={MAX_TUNNEL_HOPS}
-                    onChange={(ids) => {
-                      setForm((prev) => {
-                        const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
-                        const nextEntry = ids[0] ?? null;
-                        const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
-                        if (
-                          sameNumberArray(prev.hopHostIds, ids)
-                          && prev.entryHostId === nextEntry
-                          && prev.exitHostId === nextExit
-                          && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
-                        ) {
-                          return prev;
-                        }
-                        return {
-                          ...prev,
-                          hopHostIds: ids,
-                          entryHostId: nextEntry,
-                          exitHostId: nextExit,
-                          hopConnectHosts: normalizedConnectHosts,
-                        };
-                      });
-                    }}
-                    onConnectHostsChange={(hopConnectHosts) => {
-                      setForm((prev) => {
-                        const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
-                        if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
-                        return { ...prev, hopConnectHosts: normalizedConnectHosts };
-                      });
-                    }}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>隧道类型</Label>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const nextMode = enabledGostTunnelModes.includes(form.mode) ? form.mode : enabledGostTunnelModes[0];
-                        if (nextMode) setForm({ ...form, mode: nextMode });
-                      }}
-                      disabled={gostRuntimeDisabled}
-                      title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                      className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
-                        gostTunnelModes.includes(form.mode)
-                          ? "border-primary bg-primary/5 text-foreground"
-                          : "border-border bg-background hover:border-primary/40"
-                      } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-                    >
-                      <Network className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                      <span className="space-y-1">
-                        <span className="block text-sm font-semibold">GOST 隧道</span>
-                        <span className="block text-xs leading-5 text-muted-foreground">使用 GOST 协议。</span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm((prev) => ({
-                          ...prev,
-                          mode: "forwardx",
-                        }))
-                      }
-                      disabled={forwardxRuntimeDisabled}
-                      title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                      className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
-                        form.mode === "forwardx"
-                          ? "border-primary bg-primary/5 text-foreground"
-                          : "border-border bg-background hover:border-primary/40"
-                      } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-                    >
-                      <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                      <span className="space-y-1">
-                        <span className="block text-sm font-semibold">ForwardX 自定义加密</span>
-                        <span className="block text-xs leading-5 text-muted-foreground">加密传输，支持统计和限速。</span>
-                      </span>
-                    </button>
-                  </div>
-                </div>
-                {form.mode !== "forwardx" && enabledGostTunnelModes.length === 0 && (
-                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
-                    {unsupportedProtocolTitle}
-                  </p>
-                )}
-                <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
-                  {form.mode !== "forwardx" && (
-                  <div className="space-y-2">
-                    <Label>GOST 协议</Label>
-                        <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                        {enabledGostTunnelModes.map((mode) => (
-                          <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  )}
-                  <div className="space-y-2">
-                    <Label>出口监听端口</Label>
-                    <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
-                    <p className="text-xs text-muted-foreground">留空自动分配。</p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
-                  <div className="space-y-2">
-                    <Label>链名称</Label>
-                    <Input
-                      value={chainCreateForm.name}
-                      onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
-                      placeholder="例如: 华东-香港转发链"
-                    />
-                  </div>
-                  <div className="flex items-end">
-                    <label className="flex h-10 w-full items-center justify-between rounded-md border border-border/60 px-3">
-                      <span className="text-sm">启用</span>
-                      <Switch
-                        checked={chainCreateForm.isEnabled}
-                        onCheckedChange={(isEnabled) => setChainCreateForm({ ...chainCreateForm, isEnabled })}
-                      />
-                    </label>
-                  </div>
-                </div>
-                <div className="space-y-3 rounded-lg border border-border/60 p-3">
-                  <div>
-                    <Label>链路主机顺序</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      按入口到出口顺序保存链路流程，最多 5 台主机。
-                    </p>
-                  </div>
-                  <MultiHopEditor
-                    hosts={hosts || []}
-                    initialHopIds={chainCreateForm.hopHostIds}
-                    initialHopConnectHosts={chainCreateForm.hopConnectHosts}
-                    maxHops={5}
-                    onChange={(ids) => {
-                      setChainCreateForm((prev) => {
-                        const normalizedConnectHosts = normalizeChainConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
-                        if (
-                          sameNumberArray(prev.hopHostIds, ids)
-                          && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
-                        ) {
-                          return prev;
-                        }
-                        return {
-                          ...prev,
-                          hopHostIds: ids,
-                          hopConnectHosts: normalizedConnectHosts,
-                        };
-                      });
-                    }}
-                    onConnectHostsChange={(hopConnectHosts) => {
-                      setChainCreateForm((prev) => {
-                        const normalizedConnectHosts = normalizeChainConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
-                        if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
-                        return { ...prev, hopConnectHosts: normalizedConnectHosts };
-                      });
-                    }}
-                  />
-                </div>
-              </>
-            )}
-          </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border/50 bg-background/80 px-4 py-3 sm:px-6">
             <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>取消</Button>
             <Button
               disabled={selectedCreateDisabled || isCreateTypePending || (selectedCreateType === "tunnel" && !isTunnelSupported(form))}
@@ -2327,7 +2325,7 @@ function TunnelsContent() {
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                 <button
                   type="button"
                   onClick={() => {
@@ -2336,16 +2334,16 @@ function TunnelsContent() {
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
+                  className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
                     gostTunnelModes.includes(form.mode)
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
                   } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
-                  <Network className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                  <span className="space-y-1">
+                  <Network className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="min-w-0">
                     <span className="block text-sm font-semibold">GOST 隧道</span>
-                    <span className="block text-xs leading-5 text-muted-foreground">使用 GOST 协议。</span>
+                    <span className="block truncate text-xs text-muted-foreground">协议转发</span>
                   </span>
                 </button>
                 <button
@@ -2358,16 +2356,16 @@ function TunnelsContent() {
                   }
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[92px] items-start gap-3 rounded-lg border p-4 text-left transition-colors ${
+                  className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
                     form.mode === "forwardx"
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
                   } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
-                  <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                  <span className="space-y-1">
-                    <span className="block text-sm font-semibold">ForwardX 自定义加密</span>
-                    <span className="block text-xs leading-5 text-muted-foreground">加密传输，支持统计和限速。</span>
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">ForwardX 加密</span>
+                    <span className="block truncate text-xs text-muted-foreground">统计 / 限速</span>
                   </span>
                 </button>
               </div>

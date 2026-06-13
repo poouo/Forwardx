@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import HostStatusLabel from "@/components/HostStatusLabel";
 import {
   Select,
   SelectContent,
@@ -10,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowDown, GripVertical, Server, Trash2 } from "lucide-react";
+import { ArrowDown, GripVertical, Trash2 } from "lucide-react";
 
 interface Host {
   id: number;
@@ -284,11 +285,8 @@ export default function MultiHopEditor({
               <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
             )}
             {availableHosts.map((host) => (
-              <SelectItem key={host.id} value={String(host.id)}>
-                <span className="inline-flex items-center gap-2">
-                  <Server className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span>{host.name}</span>
-                </span>
+              <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
+                <HostStatusLabel host={host} label={host.name} />
               </SelectItem>
             ))}
           </SelectContent>
@@ -341,7 +339,12 @@ export default function MultiHopEditor({
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                   {idx + 1}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{hop.hostName}</span>
+                <HostStatusLabel
+                  host={host}
+                  label={hop.hostName}
+                  className="min-w-0 flex-1 text-sm font-medium"
+                  labelClassName="truncate"
+                />
 
                 <div className="order-last flex h-8 w-full items-center justify-start gap-2 sm:order-none sm:ml-2 sm:w-[190px] sm:shrink-0 sm:justify-end">
                   {!isFirst ? (

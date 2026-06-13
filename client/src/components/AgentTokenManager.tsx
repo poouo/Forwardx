@@ -46,6 +46,7 @@ type AgentTokenManagerProps = {
   className?: string;
   showCreateButton?: boolean;
   hideViewModeToggle?: boolean;
+  dialogOnly?: boolean;
   viewMode?: AgentTokenViewMode;
   onViewModeChange?: (viewMode: AgentTokenViewMode) => void;
   onCreateSignalHandled?: () => void;
@@ -308,6 +309,7 @@ export default function AgentTokenManager({
   className,
   showCreateButton = true,
   hideViewModeToggle = false,
+  dialogOnly = false,
   viewMode: controlledViewMode,
   onViewModeChange,
   onCreateSignalHandled,
@@ -354,8 +356,8 @@ export default function AgentTokenManager({
   const { data: tokens, isLoading } = trpc.agentTokens.list.useQuery(
     undefined,
     {
-      enabled: user?.role === "admin",
-      refetchInterval: pageVisible ? 2000 : false,
+      enabled: user?.role === "admin" && !dialogOnly,
+      refetchInterval: !dialogOnly && pageVisible ? 2000 : false,
       refetchOnWindowFocus: true,
     }
   );
@@ -496,7 +498,9 @@ export default function AgentTokenManager({
   if (user?.role !== "admin") return null;
 
   return (
-    <div className={`space-y-4 ${className || ""}`}>
+    <div className={dialogOnly ? "contents" : `space-y-4 ${className || ""}`}>
+      {!dialogOnly && (
+      <>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">
           通过 Agent Token 生成安装命令，主机上线后会自动绑定到面板。
@@ -647,6 +651,8 @@ export default function AgentTokenManager({
           )}
         </CardContent>
       </Card>
+      </>
+      )}
 
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent>

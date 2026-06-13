@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import HostStatusLabel from "@/components/HostStatusLabel";
 import MultiHopEditor from "@/components/MultiHopEditor";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -50,7 +51,6 @@ import {
   Plus,
   RefreshCw,
   Route,
-  Server,
   Stethoscope,
   Trash2,
   XCircle,
@@ -598,7 +598,7 @@ export function ForwardGroupsContent({
 
   const effectiveGroupType = form.groupMode === "chain" ? "host" : form.groupType;
   const availableMemberOptions = effectiveGroupType === "host"
-    ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "" }))
+    ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "", host: h }))
     : (tunnels || []).map((t: any) => ({
       id: Number(t.id),
       label: t.name,
@@ -1253,8 +1253,20 @@ export function ForwardGroupsContent({
                       </SelectTrigger>
                       <SelectContent>
                         {availableMemberOptions.map((item: any) => (
-                          <SelectItem key={item.id} value={String(item.id)}>
-                            {item.label} {item.meta ? `/ ${item.meta}` : ""}
+                          <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
+                            {form.groupType === "host" ? (
+                              <HostStatusLabel
+                                host={item.host}
+                                label={(
+                                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                                    <span className="truncate">{item.label}</span>
+                                    {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
+                                  </span>
+                                )}
+                              />
+                            ) : (
+                              <span>{item.label} {item.meta ? `/ ${item.meta}` : ""}</span>
+                            )}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1275,10 +1287,21 @@ export function ForwardGroupsContent({
                       >
                         <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
                         <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
-                        {member.memberType === "host" ? <Server className="h-4 w-4 text-primary" /> : <Route className="h-4 w-4 text-primary" />}
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
-                        </div>
+                        {member.memberType === "host" ? (
+                          <HostStatusLabel
+                            host={hostById.get(Number(member.hostId))}
+                            label={memberLabel(member)}
+                            className="min-w-0 flex-1 text-sm font-medium"
+                            labelClassName="truncate"
+                          />
+                        ) : (
+                          <>
+                            <Route className="h-4 w-4 text-primary" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
+                            </div>
+                          </>
+                        )}
                         <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
                           setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
                         }} />

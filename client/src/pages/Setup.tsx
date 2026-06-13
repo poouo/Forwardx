@@ -35,11 +35,33 @@ const steps = [
   { id: 3, title: "创建管理员", icon: ShieldCheck },
 ] as const;
 
+function databaseTypeLabel(type: string | null | undefined) {
+  if (type === "postgresql") return "PostgreSQL";
+  if (type === "mysql") return "MySQL";
+  if (type === "sqlite") return "SQLite";
+  return "未配置";
+}
+
+function databaseConfigSummary(config: any) {
+  if (!config?.type) return "";
+  if (config.type === "sqlite") return config.sqlite?.path || "";
+  const external = config.type === "postgresql" ? config.postgresql : config.mysql;
+  if (!external) return "";
+  return `${external.user || "-"}@${external.host || "-"}:${external.port || "-"} / ${external.database || "-"}`;
+}
+
+function visibleSavedPassword(value: unknown) {
+  const text = String(value || "");
+  return text === "********" ? "" : text;
+}
+
 export default function Setup() {
   const utils = trpc.useUtils();
   const status = trpc.setup.status.useQuery(undefined, { refetchOnWindowFocus: false, retry: false, refetchInterval: 3000 });
   const defaultSqlitePath = status.data?.defaultSqlitePath || "/data/forwardx.db";
   const [step, setStep] = useState(1);
+  const [databaseStepReviewed, setDatabaseStepReviewed] = useState(false);
+  const [loadedDatabaseConfigKey, setLoadedDatabaseConfigKey] = useState("");
   const [databaseType, setDatabaseType] = useState<DatabaseType>("sqlite");
   const [mode, setMode] = useState<SetupMode>(null);
   const [mysql, setMysql] = useState({
@@ -81,14 +103,68 @@ export default function Setup() {
   const externalDefaultPort = databaseType === "postgresql" ? 5432 : 3306;
 
   const data = status.data;
+  const configuredDatabase = data?.config as any;
+  const configuredDatabaseKey = useMemo(() => JSON.stringify(configuredDatabase || null), [configuredDatabase]);
+  const configuredDatabaseType = String(configuredDatabase?.type || data?.databaseType || data?.activeDatabaseType || "");
+  const configuredDatabaseLabel = databaseTypeLabel(configuredDatabaseType);
+  const configuredDatabaseText = databaseConfigSummary(configuredDatabase);
   const dbReady = !!data?.databaseConnected && !!data?.schemaReady;
   const hasAdmin = !!data?.hasAdmin;
   const hasExistingData = !!data?.hasExistingData;
   const existingData = data?.existingData;
 
   useEffect(() => {
-    if (dbReady && step === 1 && status.data?.databaseConfigured) setStep(2);
-  }, [dbReady, status.data?.databaseConfigured, step]);
+    if (!configuredDatabase?.type || configuredDatabaseKey === loadedDatabaseConfigKey) return;
+    if (configuredDatabase.type === "postgresql" && configuredDatabase.postgresql) {
+      setDatabaseType("postgresql");
+      setPostgresql({
+        host: configuredDatabase.postgresql.host || "127.0.0.1",
+        port: Number(configuredDatabase.postgresql.port || 5432),
+        user: configuredDatabase.postgresql.user || "forwardx",
+        password: visibleSavedPassword(configuredDatabase.postgresql.password),
+        database: configuredDatabase.postgresql.database || "forwardx",
+        ssl: !!configuredDatabase.postgresql.ssl,
+      });
+    } else if (configuredDatabase.type === "mysql" && configuredDatabase.mysql) {
+      setDatabaseType("mysql");
+      setMysql({
+        host: configuredDatabase.mysql.host || "127.0.0.1",
+        port: Number(configuredDatabase.mysql.port || 3306),
+        user: configuredDatabase.mysql.user || "forwardx",
+        password: visibleSavedPassword(configuredDatabase.mysql.password),
+        database: configuredDatabase.mysql.database || "forwardx",
+        ssl: !!configuredDatabase.mysql.ssl,
+      });
+    } else if (configuredDatabase.type === "sqlite") {
+      setDatabaseType("sqlite");
+      setSqlitePath(configuredDatabase.sqlite?.path || defaultSqlitePath);
+    }
+    setLoadedDatabaseConfigKey(configuredDatabaseKey);
+  }, [configuredDatabase, configuredDatabaseKey, defaultSqlitePath, loadedDatabaseConfigKey]);
+
+  const databaseConfigMatchesSaved = useMemo(() => {
+    if (!configuredDatabase?.type || configuredDatabase.type !== databaseType) return false;
+    if (databaseType === "sqlite") {
+      return String(configuredDatabase.sqlite?.path || defaultSqlitePath) === String(sqlitePath || defaultSqlitePath);
+    }
+    const saved = configuredDatabase.type === "postgresql" ? configuredDatabase.postgresql : configuredDatabase.mysql;
+    const current = databaseType === "postgresql" ? postgresql : mysql;
+    if (!saved) return false;
+    return String(saved.host || "") === current.host.trim()
+      && Number(saved.port || (databaseType === "postgresql" ? 5432 : 3306)) === Number(current.port || (databaseType === "postgresql" ? 5432 : 3306))
+      && String(saved.user || "") === current.user.trim()
+      && String(saved.database || "") === current.database.trim()
+      && !!saved.ssl === !!current.ssl;
+  }, [configuredDatabase, databaseType, defaultSqlitePath, mysql, postgresql, sqlitePath]);
+
+  const canContinueWithSavedDatabase = dbReady
+    && !!data?.databaseConfigured
+    && databaseConfigMatchesSaved
+    && (databaseType === "sqlite" || !externalDatabase.password.trim());
+
+  useEffect(() => {
+    if (!databaseStepReviewed && dbReady && step === 1 && status.data?.databaseConfigured) setStep(2);
+  }, [databaseStepReviewed, dbReady, status.data?.databaseConfigured, step]);
 
   const saveDatabase = trpc.setup.saveDatabase.useMutation({
     onSuccess: async (next) => {
@@ -166,7 +242,17 @@ export default function Setup() {
   }, [migrationStatus.data?.status, migrationStatus.data?.error]);
 
   const handleDatabaseNext = () => {
+    if (canContinueWithSavedDatabase) {
+      setDatabaseStepReviewed(false);
+      setStep(2);
+      return;
+    }
     saveDatabase.mutate(databaseConfig);
+  };
+
+  const handleReviewDatabaseStep = () => {
+    setDatabaseStepReviewed(true);
+    setStep(1);
   };
 
   const handleModeNext = () => {
@@ -289,6 +375,16 @@ export default function Setup() {
                     ))}
                   </div>
 
+                  {dbReady && data?.databaseConfigured && (
+                    <Alert className="border-emerald-500/25 bg-emerald-50/80 text-emerald-950">
+                      <Database className="h-4 w-4 text-emerald-700" />
+                      <AlertTitle>当前已连接 {configuredDatabaseLabel} 数据库</AlertTitle>
+                      <AlertDescription>
+                        {configuredDatabaseText || "数据库连接正常。"} 如需修改数据库配置，请选择新的数据库类型并重新保存。
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                   {databaseType === "sqlite" ? (
                     <div className="space-y-2">
                       <Label>SQLite 数据文件</Label>
@@ -333,7 +429,7 @@ export default function Setup() {
                   <div className="flex justify-end">
                     <Button disabled={saveDatabase.isPending} onClick={handleDatabaseNext}>
                       {saveDatabase.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      下一步
+                      {canContinueWithSavedDatabase ? "继续下一步" : "保存并连接"}
                       {!saveDatabase.isPending && <ArrowRight className="ml-2 h-4 w-4" />}
                     </Button>
                   </div>
@@ -351,6 +447,25 @@ export default function Setup() {
                   <CardDescription>新建面板或导入旧数据。</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-5">
+                  {dbReady && data?.databaseConfigured && (
+                    <div className="flex flex-col gap-3 rounded-lg border border-emerald-500/25 bg-emerald-50/80 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 font-medium text-emerald-800">
+                          <CheckCircle2 className="h-4 w-4 shrink-0" />
+                          已连接 {configuredDatabaseLabel} 数据库
+                        </div>
+                        {configuredDatabaseText && (
+                          <p className="mt-1 truncate text-xs text-emerald-700/80" title={configuredDatabaseText}>
+                            {configuredDatabaseText}
+                          </p>
+                        )}
+                      </div>
+                      <Button variant="outline" size="sm" className="shrink-0 bg-white/70" onClick={handleReviewDatabaseStep}>
+                        查看或修改数据库
+                      </Button>
+                    </div>
+                  )}
+
                   {hasExistingData && hasAdmin && data?.setupDataChoice !== "new-panel" && (
                     <div className="grid gap-4 rounded-lg border border-amber-500/30 bg-amber-50/80 p-4">
                       <Alert className="border-amber-500/30 bg-white/70">
@@ -458,7 +573,7 @@ export default function Setup() {
                   )}
 
                   <div className="flex justify-between">
-                    <Button variant="outline" onClick={() => setStep(1)}>
+                    <Button variant="outline" onClick={handleReviewDatabaseStep}>
                       <ArrowLeft className="mr-2 h-4 w-4" />
                       上一步
                     </Button>

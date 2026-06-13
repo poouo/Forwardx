@@ -1633,6 +1633,7 @@ function RulesContent() {
     const end = (selectedHost as any).portRangeEnd;
     return start != null && end != null ? `${start}-${end}` : null;
   }, [selectedHost]);
+  const sourcePortRangeText = selectedHostPortRangeText || "1-65535";
   const portStatusHint = useMemo(() => {
     if (portStatus === "used") {
       return {
@@ -1645,11 +1646,11 @@ function RulesContent() {
       return {
         type: "available" as const,
         text: "可用",
-        title: selectedHostPortRangeText ? `允许端口范围: ${selectedHostPortRangeText}` : "端口可用",
+        title: `允许端口范围: ${sourcePortRangeText}`,
       };
     }
     return null;
-  }, [portRangeError, portStatus, selectedHostPortRangeText]);
+  }, [portRangeError, portStatus, sourcePortRangeText]);
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
@@ -2377,7 +2378,7 @@ function RulesContent() {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
       if (isForwardChainGroup(group)) {
-        if (rule.isEnabled && rule.isRunning) {
+        if (rule.isEnabled && group?.isEnabled !== false) {
           return <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />;
         }
         if (rule.isEnabled) {
@@ -3531,8 +3532,8 @@ function RulesContent() {
             </div>
             <div className="space-y-2">
               <Label>{form.routeMode === "local" ? "源端口" : "入口端口"}</Label>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                <div className="relative flex-1">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="relative w-full sm:w-[18rem]">
                   <Input
                     type="text"
                     pattern="[0-9]*"
@@ -3562,6 +3563,12 @@ function RulesContent() {
                       <span className="truncate">{portStatusHint?.text || "可用"}</span>
                     </div>
                   )}
+                </div>
+                <div
+                  className="inline-flex h-10 shrink-0 items-center rounded-md border border-dashed border-border/70 bg-muted/30 px-3 text-xs text-muted-foreground"
+                  title={`允许端口范围: ${sourcePortRangeText}`}
+                >
+                  可用范围 {sourcePortRangeText}
                 </div>
                 <Button
                   type="button"
