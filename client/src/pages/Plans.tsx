@@ -1,5 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,7 +18,7 @@ import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManage
 import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
-import { CheckCircle2, Coins, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
+import { CheckCircle2, Coins, LayoutGrid, List, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -52,7 +53,9 @@ type TrafficAddonForm = {
 
 type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
 type PlanManageTab = "plans" | "billing";
+type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
+const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
 
 const emptyForm: PlanForm = {
   name: "",
@@ -74,6 +77,25 @@ const emptyForm: PlanForm = {
   forwardGroupIds: [],
   trafficAddons: [],
 };
+
+function getStoredPlanListViewMode(): PlanListViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(PLAN_LIST_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storePlanListViewMode(viewMode: PlanListViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PLAN_LIST_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // View preference is optional.
+  }
+}
 
 function money(cents?: number, currency = "CNY") {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((cents || 0) / 100);
@@ -121,6 +143,54 @@ function MobileInfoRow({
     <div className="grid grid-cols-[4.75rem_1fr] gap-2 text-sm">
       <span className="text-muted-foreground">{label}</span>
       <div className={`min-w-0 text-right break-words ${valueClassName}`}>{children}</div>
+    </div>
+  );
+}
+
+function PlanCard({
+  plan,
+  onEdit,
+  onDelete,
+}: {
+  plan: any;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-sm font-medium">{plan.name}</p>
+          <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || "无描述"}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={onEdit}>编辑</Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+        <MobileInfoRow label="价格">{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
+        <MobileInfoRow label="资源">
+          <div className="flex flex-wrap justify-end gap-1">
+            {planResourceParts(plan).map((item) => (
+              <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
+            ))}
+          </div>
+        </MobileInfoRow>
+        <MobileInfoRow label="端口">{plan.portCount} 个端口</MobileInfoRow>
+        <MobileInfoRow label="规则/流量">规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</MobileInfoRow>
+        <MobileInfoRow label="连接/IP">连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"}</MobileInfoRow>
+        <MobileInfoRow label="限速">{speed(plan.rateLimitMbps)}</MobileInfoRow>
+        <MobileInfoRow label="附加流量">{plan.trafficAddons?.length || 0} 档</MobileInfoRow>
+        <MobileInfoRow label="状态">
+          <div className="flex flex-wrap justify-end gap-1">
+            <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
+            <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
+          </div>
+        </MobileInfoRow>
+      </div>
     </div>
   );
 }
@@ -310,7 +380,6 @@ export default function Plans() {
   const { data: tunnels = [], isLoading: tunnelsLoading } = trpc.tunnels.list.useQuery();
   const { data: forwardGroups = [], isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery();
   const { data: users = [] } = trpc.users.list.useQuery();
-  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
   const { data: trafficBillingData, isLoading: trafficBillingLoading } = trpc.trafficBilling.configs.useQuery();
   const { data: trafficBillingSummary, isLoading: trafficBillingSummaryLoading } = trpc.trafficBilling.status.useQuery();
 
@@ -320,6 +389,7 @@ export default function Plans() {
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
   const [activeTab, setActiveTab] = useState<PlanManageTab>("plans");
+  const [planViewMode, setPlanViewMode] = useState<PlanListViewMode>(() => getStoredPlanListViewMode());
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
 
   const createPlan = trpc.plans.create.useMutation({
@@ -446,6 +516,11 @@ export default function Plans() {
     openPlanCreate();
   };
 
+  const handlePlanViewModeChange = (viewMode: PlanListViewMode) => {
+    setPlanViewMode(viewMode);
+    storePlanListViewMode(viewMode);
+  };
+
   const save = () => {
     if (!form.name.trim()) return toast.error("请填写套餐名称");
     if (form.hostIds.length === 0 && form.tunnelIds.length === 0 && form.forwardGroupIds.length === 0) return toast.error("至少选择一个主机、隧道或转发组");
@@ -559,15 +634,6 @@ export default function Plans() {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardDescription>订阅记录</CardDescription>
-              <CardTitle>
-                <AnimatedStatValue value={subscriptions.length} loading={subscriptionsLoading} cacheKey="plans.subscriptionsCount" fallbackValue={0} />
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">包含购买和分配记录。</CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
               <CardDescription>套餐资源</CardDescription>
               <CardTitle>
                 <AnimatedStatValue
@@ -637,174 +703,111 @@ export default function Plans() {
           </TabsList>
 
           <TabsContent value="plans" className="mt-0 space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 套餐列表</CardTitle>
-            <CardDescription>订阅后分配连续端口段。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <DataSectionLoading label="正在加载套餐数据" />
-            ) : (
-              <>
-            <div className="grid gap-3 md:hidden">
-              {plans.map((plan: any) => (
-                <div key={plan.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{plan.name}</p>
-                      <p className="mt-1 break-words text-xs text-muted-foreground">{plan.description || "无描述"}</p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button variant="ghost" size="sm" className="h-8 px-2" onClick={() => { setForm(toForm(plan)); setEditing(true); }}>编辑</Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                    <MobileInfoRow label="价格">{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
-                    <MobileInfoRow label="资源">
-                      <div className="flex flex-wrap justify-end gap-1">
-                        {planResourceParts(plan).map((item) => (
-                          <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
-                        ))}
-                      </div>
-                    </MobileInfoRow>
-                    <MobileInfoRow label="端口">{plan.portCount} 个端口</MobileInfoRow>
-                    <MobileInfoRow label="规则/流量">规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</MobileInfoRow>
-                    <MobileInfoRow label="连接/IP">连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"}</MobileInfoRow>
-                    <MobileInfoRow label="限速">{speed(plan.rateLimitMbps)}</MobileInfoRow>
-                    <MobileInfoRow label="附加流量">{plan.trafficAddons?.length || 0} 档</MobileInfoRow>
-                    <MobileInfoRow label="状态">
-                      <div className="flex flex-wrap justify-end gap-1">
-                        <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-                        <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
-                      </div>
-                    </MobileInfoRow>
-                  </div>
+            <Card>
+              <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 套餐列表</CardTitle>
+                  <CardDescription>订阅后分配连续端口段。</CardDescription>
                 </div>
-              ))}
-              {!isLoading && plans.length === 0 && (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">还没有套餐</div>
-              )}
-            </div>
-            <div className="hidden overflow-x-auto md:block">
-              <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>套餐</TableHead>
-                  <TableHead>价格</TableHead>
-                  <TableHead>资源</TableHead>
-                  <TableHead>限制</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {plans.map((plan: any) => (
-                  <TableRow key={plan.id}>
-                    <TableCell>
-                      <div className="font-medium">{plan.name}</div>
-                      <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || "无描述"}</div>
-                    </TableCell>
-                    <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        {planResourceParts(plan).map((item) => (
-                          <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
+                <div className="flex items-center overflow-hidden rounded-md border border-border/40">
+                  <Button
+                    variant={planViewMode === "card" ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-8 w-8 rounded-none"
+                    title="卡片视图"
+                    onClick={() => handlePlanViewModeChange("card")}
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={planViewMode === "table" ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-8 w-8 rounded-none"
+                    title="列表视图"
+                    onClick={() => handlePlanViewModeChange("table")}
+                  >
+                    <List className="h-4 w-4" />
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <DataSectionLoading label="正在加载套餐数据" />
+                ) : (
+                  <AutoAnimateContainer duration={220}>
+                    {planViewMode === "card" ? (
+                      <AutoAnimateContainer key="plan-card-view" className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" duration={220}>
+                        {plans.map((plan: any) => (
+                          <PlanCard
+                            key={plan.id}
+                            plan={plan}
+                            onEdit={() => { setForm(toForm(plan)); setEditing(true); }}
+                            onDelete={() => deletePlan.mutate({ id: plan.id })}
+                          />
                         ))}
+                        {plans.length === 0 && (
+                          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">还没有套餐</div>
+                        )}
+                      </AutoAnimateContainer>
+                    ) : (
+                      <div key="plan-table-view" className="overflow-x-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>套餐</TableHead>
+                              <TableHead>价格</TableHead>
+                              <TableHead>资源</TableHead>
+                              <TableHead>限制</TableHead>
+                              <TableHead>状态</TableHead>
+                              <TableHead className="text-right">操作</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <AutoAnimateContainer as={TableBody} duration={220}>
+                            {plans.map((plan: any) => (
+                              <TableRow key={plan.id}>
+                                <TableCell>
+                                  <div className="font-medium">{plan.name}</div>
+                                  <div className="max-w-md truncate text-xs text-muted-foreground">{plan.description || "无描述"}</div>
+                                </TableCell>
+                                <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
+                                <TableCell>
+                                  <div className="flex flex-wrap gap-1">
+                                    {planResourceParts(plan).map((item) => (
+                                      <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
+                                    ))}
+                                  </div>
+                                </TableCell>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  <div>{plan.portCount} 个端口</div>
+                                  <div>规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</div>
+                                  <div>附加流量 {plan.trafficAddons?.length || 0} 档</div>
+                                  <div>连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"} · 限速 {speed(plan.rateLimitMbps)}</div>
+                                </TableCell>
+                                <TableCell>
+                                  <div className="flex flex-wrap gap-1">
+                                    <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
+                                    <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
+                                  </div>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="ghost" size="sm" onClick={() => { setForm(toForm(plan)); setEditing(true); }}>编辑</Button>
+                                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                            {plans.length === 0 && (
+                              <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">还没有套餐</TableCell></TableRow>
+                            )}
+                          </AutoAnimateContainer>
+                        </Table>
                       </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      <div>{plan.portCount} 个端口</div>
-                      <div>规则 {plan.maxRules || "不限"} · 流量 {bytes(plan.trafficLimit)}</div>
-                      <div>附加流量 {plan.trafficAddons?.length || 0} 档</div>
-                      <div>连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"} · 限速 {speed(plan.rateLimitMbps)}</div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1">
-                        <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-                        <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" onClick={() => { setForm(toForm(plan)); setEditing(true); }}>编辑</Button>
-                      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!isLoading && plans.length === 0 && (
-                  <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">还没有套餐</TableCell></TableRow>
+                    )}
+                  </AutoAnimateContainer>
                 )}
-              </TableBody>
-            </Table>
-            </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>订阅记录</CardTitle>
-            <CardDescription>订阅记录。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {subscriptionsLoading ? (
-              <DataSectionLoading label="正在加载订阅记录" />
-            ) : (
-              <>
-            <div className="grid gap-3 md:hidden">
-              {subscriptions.slice(0, 20).map((sub: any) => (
-                <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-medium">{sub.name || sub.username || `用户 #${sub.userId}`}</p>
-                      <p className="mt-1 break-words text-xs text-muted-foreground">{sub.planName || `套餐 #${sub.planId}`}</p>
-                    </div>
-                    <Badge variant="outline" className="shrink-0">{sub.source === "payment" ? "购买" : "后台分配"}</Badge>
-                  </div>
-                  <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                    <MobileInfoRow label="端口段">{sub.portRangeStart}-{sub.portRangeEnd}</MobileInfoRow>
-                    <MobileInfoRow label="到期时间">{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString() : "永久"}</MobileInfoRow>
-                  </div>
-                </div>
-              ))}
-              {subscriptions.length === 0 && (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无订阅记录</div>
-              )}
-            </div>
-            <div className="hidden overflow-x-auto md:block">
-              <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>用户</TableHead>
-                  <TableHead>套餐</TableHead>
-                  <TableHead>端口段</TableHead>
-                  <TableHead>来源</TableHead>
-                  <TableHead>到期时间</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {subscriptions.slice(0, 20).map((sub: any) => (
-                  <TableRow key={sub.id}>
-                    <TableCell>{sub.name || sub.username || `用户 #${sub.userId}`}</TableCell>
-                    <TableCell>{sub.planName || `套餐 #${sub.planId}`}</TableCell>
-                    <TableCell>{sub.portRangeStart}-{sub.portRangeEnd}</TableCell>
-                    <TableCell><Badge variant="outline">{sub.source === "payment" ? "购买" : "后台分配"}</Badge></TableCell>
-                    <TableCell>{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString() : "永久"}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="billing" className="mt-0">

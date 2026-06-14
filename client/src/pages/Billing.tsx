@@ -202,6 +202,7 @@ export default function Billing() {
   const utils = trpc.useUtils();
   const { data: users = [], isLoading: usersLoading } = trpc.users.list.useQuery();
   const { data: plans = [] } = trpc.plans.list.useQuery();
+  const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
   const { data: transactions = [], isLoading: transactionsLoading } = trpc.billing.listTransactions.useQuery({ limit: 100 });
   const [ledgerUserId, setLedgerUserId] = useState("all");
   const { data: ledger = [], isLoading: ledgerLoading } = trpc.billing.ledger.useQuery({
@@ -480,6 +481,7 @@ export default function Billing() {
         <Tabs defaultValue="balance">
           <TabsList className="flex h-auto flex-wrap">
             <TabsTrigger value="ledger">账单流水</TabsTrigger>
+            <TabsTrigger value="subscriptions">订阅记录</TabsTrigger>
             <TabsTrigger value="balance">余额流水</TabsTrigger>
             <TabsTrigger value="redeem">兑换码</TabsTrigger>
             <TabsTrigger value="discount">折扣码</TabsTrigger>
@@ -594,6 +596,72 @@ export default function Billing() {
                     )}
                   </TableBody>
                 </Table>
+                </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="subscriptions" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><Package className="h-5 w-5" /> 订阅记录</CardTitle>
+                <CardDescription>套餐购买和后台分配记录。</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {subscriptionsLoading ? (
+                  <DataSectionLoading label="正在加载订阅记录" />
+                ) : (
+                  <>
+                <div className="grid gap-3 md:hidden">
+                  {subscriptions.slice(0, 20).map((sub: any) => (
+                    <div key={sub.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="break-words text-sm font-medium">{sub.name || sub.username || `用户 #${sub.userId}`}</p>
+                          <p className="mt-1 break-words text-xs text-muted-foreground">{sub.planName || `套餐 #${sub.planId}`}</p>
+                        </div>
+                        <Badge variant="outline" className="shrink-0">{sub.source === "payment" ? "购买" : "后台分配"}</Badge>
+                      </div>
+                      <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+                        <MobileInfoRow label="端口段">{sub.portRangeStart}-{sub.portRangeEnd}</MobileInfoRow>
+                        <MobileInfoRow label="到期时间">{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString() : "永久"}</MobileInfoRow>
+                      </div>
+                    </div>
+                  ))}
+                  {subscriptions.length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无订阅记录</div>
+                  )}
+                </div>
+                <div className="hidden overflow-x-auto md:block">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>用户</TableHead>
+                        <TableHead>套餐</TableHead>
+                        <TableHead>端口段</TableHead>
+                        <TableHead>来源</TableHead>
+                        <TableHead>到期时间</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {subscriptions.slice(0, 20).map((sub: any) => (
+                        <TableRow key={sub.id}>
+                          <TableCell>{sub.name || sub.username || `用户 #${sub.userId}`}</TableCell>
+                          <TableCell>{sub.planName || `套餐 #${sub.planId}`}</TableCell>
+                          <TableCell>{sub.portRangeStart}-{sub.portRangeEnd}</TableCell>
+                          <TableCell><Badge variant="outline">{sub.source === "payment" ? "购买" : "后台分配"}</Badge></TableCell>
+                          <TableCell>{sub.expiresAt ? new Date(sub.expiresAt).toLocaleString() : "永久"}</TableCell>
+                        </TableRow>
+                      ))}
+                      {subscriptions.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">暂无订阅记录</TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
                 </div>
                   </>
                 )}

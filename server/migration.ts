@@ -162,29 +162,94 @@ function incrementCounter(target: Record<string, number>, table: string) {
   target[table] = (target[table] || 0) + 1;
 }
 
+const PANEL_DATA_SUMMARY_CACHE_TTL_MS = 10_000;
+const PANEL_DATA_SUMMARY_TABLES = ["users", "hosts", "forward_rules", "tunnels", "forward_groups"] as const;
+const PANEL_DATA_EXTRA_BUSINESS_TABLES = MIGRATION_TABLES.filter(
+  (table) => table !== "system_settings" && !(PANEL_DATA_SUMMARY_TABLES as readonly string[]).includes(table),
+);
+
+let panelDataSummaryCache: { kind: string | null; expiresAt: number; data: any } | null = null;
+
+export function invalidatePanelDataSummaryCache() {
+  panelDataSummaryCache = null;
+}
+
 async function getTableCount(table: string) {
   const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as "count" FROM ${quote(table)}`).catch(() => []);
   return Number(rows[0]?.count || 0);
 }
 
-export async function getPanelDataSummary() {
+async function getPanelCoreCounts() {
+  const [row] = await queryRaw<{
+    user_count: number | string;
+    host_count: number | string;
+    rule_count: number | string;
+    tunnel_count: number | string;
+    forward_group_count: number | string;
+  }>(
+    `SELECT
+      (SELECT COUNT(*) FROM ${quote("users")}) AS user_count,
+      (SELECT COUNT(*) FROM ${quote("hosts")}) AS host_count,
+      (SELECT COUNT(*) FROM ${quote("forward_rules")}) AS rule_count,
+      (SELECT COUNT(*) FROM ${quote("tunnels")}) AS tunnel_count,
+      (SELECT COUNT(*) FROM ${quote("forward_groups")}) AS forward_group_count`,
+  );
+  return {
+    userCount: Number(row?.user_count || 0),
+    hostCount: Number(row?.host_count || 0),
+    ruleCount: Number(row?.rule_count || 0),
+    tunnelCount: Number(row?.tunnel_count || 0),
+    forwardGroupCount: Number(row?.forward_group_count || 0),
+  };
+}
+
+async function hasAnyRows(table: string) {
+  const rows = await queryRaw(`SELECT 1 AS present FROM ${quote(table)} LIMIT 1`).catch(() => []);
+  return rows.length > 0;
+}
+
+async function hasExtraBusinessData() {
+  if (PANEL_DATA_EXTRA_BUSINESS_TABLES.length === 0) return false;
+  const sql = PANEL_DATA_EXTRA_BUSINESS_TABLES
+    .map((table) => `SELECT '${table}' AS table_name, CASE WHEN EXISTS (SELECT 1 FROM ${quote(table)} LIMIT 1) THEN 1 ELSE 0 END AS has_rows`)
+    .join(" UNION ALL ");
+  const rows = await queryRaw<{ table_name: string; has_rows: number | string | boolean }>(sql).catch(() => []);
+  if (rows.length > 0) {
+    return rows.some((row) => row.has_rows === true || Number(row.has_rows || 0) > 0);
+  }
+  const flags = await Promise.all(PANEL_DATA_EXTRA_BUSINESS_TABLES.map((table) => hasAnyRows(table)));
+  return flags.some(Boolean);
+}
+
+export async function getPanelDataSummary(options: { useCache?: boolean } = {}) {
   await connectDatabase();
   await ensureDatabaseSchema();
-  const counts: Record<string, number> = {};
-  for (const table of MIGRATION_TABLES) {
-    counts[table] = await getTableCount(table);
+  const useCache = options.useCache !== false;
+  const cacheKind = getDatabaseKind();
+  const now = Date.now();
+  if (useCache && panelDataSummaryCache && panelDataSummaryCache.kind === cacheKind && panelDataSummaryCache.expiresAt > now) {
+    return panelDataSummaryCache.data;
   }
-  const userCount = counts.users || 0;
-  const hostCount = counts.hosts || 0;
-  const ruleCount = counts.forward_rules || 0;
-  const tunnelCount = counts.tunnels || 0;
-  const forwardGroupCount = counts.forward_groups || 0;
-  const businessDataCount = Object.entries(counts).reduce((sum, [table, count]) => {
-    if (table === "system_settings") return sum;
-    if (table === "users") return sum + Math.max(0, count - 1);
-    return sum + count;
-  }, 0);
-  return {
+
+  const coreCounts = await getPanelCoreCounts().catch(async () => ({
+    userCount: await getTableCount("users"),
+    hostCount: await getTableCount("hosts"),
+    ruleCount: await getTableCount("forward_rules"),
+    tunnelCount: await getTableCount("tunnels"),
+    forwardGroupCount: await getTableCount("forward_groups"),
+  }));
+  const { userCount, hostCount, ruleCount, tunnelCount, forwardGroupCount } = coreCounts;
+  const coreBusinessDataCount = Math.max(0, userCount - 1) + hostCount + ruleCount + tunnelCount + forwardGroupCount;
+  const extraBusinessData = coreBusinessDataCount > 0 ? false : await hasExtraBusinessData();
+  const businessDataCount = coreBusinessDataCount + (extraBusinessData ? 1 : 0);
+  const counts: Record<string, number> = Object.fromEntries(MIGRATION_TABLES.map((table) => [table, 0]));
+  counts.users = userCount;
+  counts.hosts = hostCount;
+  counts.forward_rules = ruleCount;
+  counts.tunnels = tunnelCount;
+  counts.forward_groups = forwardGroupCount;
+
+  const data = {
     hasExistingData: businessDataCount > 0,
     businessDataCount,
     userCount,
@@ -194,6 +259,10 @@ export async function getPanelDataSummary() {
     forwardGroupCount,
     tableCounts: counts,
   };
+  if (useCache) {
+    panelDataSummaryCache = { kind: cacheKind, expiresAt: now + PANEL_DATA_SUMMARY_CACHE_TTL_MS, data };
+  }
+  return data;
 }
 
 export function summarizeMigrationSnapshot(snapshot: MigrationSnapshot): MigrationSnapshotSummary {
@@ -706,7 +775,7 @@ export async function importMigrationSnapshot(
     throw new Error("迁移数据格式无效");
   }
 
-  const existingData = await getPanelDataSummary();
+  const existingData = await getPanelDataSummary({ useCache: false });
   const mode = existingData.hasExistingData ? "incremental" : "restore";
   const summary = summarizeMigrationSnapshot(snapshot);
   const maps: ImportMaps = {};
@@ -770,6 +839,7 @@ export async function importMigrationSnapshot(
   await setSetting("lastPanelImportAt", String(Math.floor(Date.now() / 1000)));
   await setSetting("lastPanelImportMode", mode);
   if (targetPanelUrl) await setSetting("panelPublicUrl", normalizePanelUrl(targetPanelUrl));
+  invalidatePanelDataSummaryCache();
 
   onProgress?.(96, "正在重建流量汇总缓存");
   await ensureTrafficStatBucketsBackfilled({ force: true }).catch((error) => {

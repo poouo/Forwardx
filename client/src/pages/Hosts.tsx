@@ -33,6 +33,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -822,8 +823,13 @@ function HostCard({
   const previousMetric = displayMetrics?.[1];
   const totalNetworkIn = latestMetric?.networkIn == null ? null : Number(latestMetric.networkIn);
   const totalNetworkOut = latestMetric?.networkOut == null ? null : Number(latestMetric.networkOut);
+  const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
+  const memoryTotal = host.memoryTotal == null ? null : Number(host.memoryTotal);
   const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
   const diskTotal = latestMetric?.diskTotal == null ? null : Number(latestMetric.diskTotal);
+  const cpuUsage = Number(latestMetric?.cpuUsage ?? 0);
+  const memoryUsage = Number(latestMetric?.memoryUsage ?? 0);
+  const diskUsage = Number(latestMetric?.diskUsage ?? 0);
   const networkSpeed = useMemo(() => {
     if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
     const latestAt = new Date(latestMetric.recordedAt).getTime();
@@ -844,7 +850,34 @@ function HostCard({
     ? "border-border/40 bg-muted/20"
     : "border-muted-foreground/20 bg-muted/25";
   const cardMinHeightClass = compact ? "min-h-[260px]" : "min-h-[420px]";
-  const compactMetricItemClass = "min-w-0 rounded-md border border-border/40 bg-background/35 px-2.5 py-2";
+  const compactMetricItemClass = "flex h-16 min-w-0 flex-col justify-between rounded-md border border-border/40 bg-background/35 px-2.5 py-2 transition-colors hover:bg-background/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+  const compactMetricItems = [
+    {
+      key: "cpu",
+      label: "CPU",
+      icon: Cpu,
+      value: cpuUsage,
+      tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : `CPU 使用率 ${cpuUsage}%`,
+    },
+    {
+      key: "memory",
+      label: "内存",
+      icon: MemoryStick,
+      value: memoryUsage,
+      tooltip: memoryUsed !== null && memoryTotal
+        ? `内存使用率 ${memoryUsage}%\n${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)}`
+        : `内存使用率 ${memoryUsage}%`,
+    },
+    {
+      key: "disk",
+      label: "磁盘",
+      icon: HardDrive,
+      value: diskUsage,
+      tooltip: diskUsed !== null && diskTotal
+        ? `磁盘使用率 ${diskUsage}%\n${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`
+        : `磁盘使用率 ${diskUsage}%`,
+    },
+  ];
 
   useEffect(() => {
     if (!metrics?.length) return;
@@ -852,7 +885,7 @@ function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`${cardMinHeightClass} backdrop-blur-md transition-colors ${
+    <Card className={`${cardMinHeightClass} animate-in fade-in-0 zoom-in-95 backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
@@ -941,29 +974,29 @@ function HostCard({
         {latestMetric ? (
           compact ? (
             <div className="space-y-2 border-t border-border/30 pt-2">
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div className={compactMetricItemClass}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><Cpu className="h-3 w-3 shrink-0" /> CPU</span>
-                    <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
-                  </div>
-                  <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
+              <TooltipProvider delayDuration={120}>
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  {compactMetricItems.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <Tooltip key={item.key}>
+                        <TooltipTrigger asChild>
+                          <div className={compactMetricItemClass} aria-label={item.tooltip} tabIndex={0}>
+                            <div className="flex h-5 items-center justify-between gap-1">
+                              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="shrink-0 text-right font-semibold leading-none tabular-nums">{item.value}%</span>
+                            </div>
+                            <Progress value={item.value} className={metricUsageProgressClass(item.value, isOnline)} />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-[240px] whitespace-pre-line text-xs">
+                          {item.tooltip}
+                        </TooltipContent>
+                      </Tooltip>
+                    );
+                  })}
                 </div>
-                <div className={compactMetricItemClass}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><MemoryStick className="h-3 w-3 shrink-0" /> 内存</span>
-                    <span className="font-medium tabular-nums">{latestMetric.memoryUsage ?? 0}%</span>
-                  </div>
-                  <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
-                </div>
-                <div className={compactMetricItemClass}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><HardDrive className="h-3 w-3 shrink-0" /> 磁盘</span>
-                    <span className="font-medium tabular-nums">{latestMetric.diskUsage ?? 0}%</span>
-                  </div>
-                  <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
-                </div>
-              </div>
+              </TooltipProvider>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
                   <div className="flex items-center justify-between gap-2">
@@ -1002,8 +1035,8 @@ function HostCard({
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
                 <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
-                  {latestMetric.memoryUsed && host.memoryTotal
-                    ? `${formatBytes(latestMetric.memoryUsed)} / ${formatBytes(host.memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
+                  {memoryUsed && memoryTotal
+                    ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
                     : `${latestMetric.memoryUsage ?? 0}%`}
                 </span>
               </div>
@@ -1423,15 +1456,6 @@ function HostsContent() {
               )}
               <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
                 <Button
-                  variant={viewMode === "card" ? "secondary" : "ghost"}
-                  size="icon"
-                  className="h-8 w-8 rounded-none"
-                  title="卡片视图"
-                  onClick={() => handleViewModeChange("card")}
-                >
-                  <LayoutGrid className="h-4 w-4" />
-                </Button>
-                <Button
                   variant={viewMode === "compact-card" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
@@ -1439,6 +1463,15 @@ function HostsContent() {
                   onClick={() => handleViewModeChange("compact-card")}
                 >
                   <Rows3 className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === "card" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-8 w-8 rounded-none"
+                  title="标准卡片"
+                  onClick={() => handleViewModeChange("card")}
+                >
+                  <LayoutGrid className="h-4 w-4" />
                 </Button>
                 <Button
                   variant={viewMode === "table" ? "secondary" : "ghost"}
@@ -1599,10 +1632,13 @@ function HostsContent() {
           </>
         ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
-          <AutoAnimateContainer className={viewMode === "compact-card" ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4" : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"}>
+          <AutoAnimateContainer
+            duration={240}
+            className={viewMode === "compact-card" ? "grid grid-cols-1 gap-3 transition-[gap] duration-200 md:grid-cols-2 xl:grid-cols-4" : "grid grid-cols-1 gap-4 transition-[gap] duration-200 md:grid-cols-2 xl:grid-cols-3"}
+          >
             {pagedHosts.map((host) => (
               <HostCard
-                key={host.id}
+                key={`${viewMode}-${host.id}`}
                 host={host}
                 onEdit={openEdit}
                 onDelete={(id) => deleteMutation.mutate({ id })}
