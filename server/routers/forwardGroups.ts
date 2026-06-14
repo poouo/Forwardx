@@ -128,7 +128,7 @@ export const forwardGroupsRouter = router({
       }
       await db.syncForwardGroupRules(input.groupId, { validatePorts: false, createMissing: false });
       const template = await db.getForwardGroupPrimaryTemplateRule(input.groupId) as any;
-      const probes = await db.getForwardGroupChainProbes(input.groupId, { includeFinalTarget: true });
+      const probes = await db.getForwardGroupChainProbes(input.groupId);
       if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
       const batchId = createHopTestBatch("fg", input.groupId);
       let queued = 0;

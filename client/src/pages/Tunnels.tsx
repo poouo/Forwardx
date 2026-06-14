@@ -356,17 +356,27 @@ function escapeTooltipHtml(value: unknown) {
   });
 }
 
-function formatGlobeLatency(value: unknown, timeout?: unknown, pending?: unknown) {
+function formatGlobeLatency(value: unknown, timeout?: unknown) {
   if (timeout) return "不可达";
   const latency = Number(value);
-  if (!Number.isFinite(latency) && pending) return "检测中";
   return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "未测试";
 }
 
+function hasLatestTunnelLatency(tunnel: any) {
+  return tunnel?.latestLatencyAt != null
+    || tunnel?.latestLatencyMs != null
+    || tunnel?.latestLatencyIsTimeout === true;
+}
+
+function tunnelDisplayLatencyMs(tunnel: any) {
+  return hasLatestTunnelLatency(tunnel) ? tunnel?.latestLatencyMs : tunnel?.lastLatencyMs;
+}
+
 function tunnelLatencyIsTimeout(tunnel: any) {
-  const value = tunnel?.lastLatencyMs;
+  const value = tunnelDisplayLatencyMs(tunnel);
   const hasLatency = typeof value === "number" && Number.isFinite(value) && value >= 0;
-  return tunnel?.lastTestStatus === "failed" && !hasLatency;
+  if (hasLatestTunnelLatency(tunnel)) return !!tunnel?.latestLatencyIsTimeout && !hasLatency;
+  return !!tunnel?.latestLatencyIsTimeout || (tunnel?.lastTestStatus === "failed" && !hasLatency);
 }
 
 function normalizeLongitude(lng: number) {
@@ -641,7 +651,7 @@ function TunnelWorldGlobe({
         routeText: routeHosts.map((host) => host.name).join(" -> "),
         routeHosts,
         statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-        latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel), tunnel.isEnabled && tunnel.isRunning),
+        latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
         color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
         trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
         glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -745,7 +755,7 @@ function TunnelWorldGlobe({
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
           statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
-          latencyText: formatGlobeLatency(tunnel.lastLatencyMs, tunnelLatencyIsTimeout(tunnel), tunnel.isEnabled && tunnel.isRunning),
+          latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
           color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
           trackColor: active ? "#15803d" : enabled ? "#92400e" : "#475569",
           glowColor: active ? "rgba(74,222,128,.85)" : enabled ? "rgba(251,191,36,.78)" : "rgba(148,163,184,.6)",
@@ -1583,10 +1593,6 @@ function TunnelsContent() {
     setShowCreateTypeDialog(true);
   };
   const selectedCreateDisabled = selectedCreateType === "tunnel" ? !canCreateTunnel : !canCreateChain;
-  const selectedCreateTitle = selectedCreateType === "tunnel" ? "隧道链路" : "端口转发链";
-  const selectedCreateSummary = selectedCreateType === "tunnel"
-    ? "至少 2 台主机，支持 ForwardX / GOST。"
-    : "至少 2 台主机，按顺序串联。";
   const renderUnsupportedHint = (children: ReactNode) => (
     <TooltipProvider>
       <Tooltip>
@@ -1596,30 +1602,15 @@ function TunnelsContent() {
     </TooltipProvider>
   );
   const renderTunnelLatencyLabel = (tunnel: any, compact = false) => {
-    if (tunnel.lastTestStatus === "pending" || tunnel.lastTestStatus === "running") {
-      return (
-        <span className={`inline-flex items-center gap-1.5 text-amber-600 ${compact ? "text-xs" : ""}`}>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          测试中
-        </span>
-      );
-    }
-    const latency = typeof tunnel.lastLatencyMs === "number" && Number.isFinite(tunnel.lastLatencyMs)
-      ? tunnel.lastLatencyMs
+    const latencyValue = tunnelDisplayLatencyMs(tunnel);
+    const latency = typeof latencyValue === "number" && Number.isFinite(latencyValue)
+      ? latencyValue
       : null;
     if (latency !== null) {
       return <LatencyRating latencyMs={latency} className={compact ? "text-xs" : undefined} />;
     }
-    if (tunnel.lastTestStatus === "failed") {
+    if (tunnelLatencyIsTimeout(tunnel)) {
       return <LatencyRating isTimeout timeoutText="不可达" className={compact ? "text-xs" : undefined} />;
-    }
-    if (tunnel.isEnabled && tunnel.isRunning) {
-      return (
-        <span className={`inline-flex items-center gap-1.5 text-amber-600 ${compact ? "text-xs" : ""}`}>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          检测中
-        </span>
-      );
     }
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };
@@ -2106,31 +2097,19 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-4 sm:max-w-2xl sm:p-6">
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-lg sm:p-4">
           <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
-            <DialogDescription>选择链路类型后直接填写创建信息。</DialogDescription>
           </DialogHeader>
-          <div className="max-h-[calc(92svh-8.5rem)] space-y-4 overflow-y-auto pr-1 sm:pr-2">
-            <div className="space-y-3">
+          <div className="max-h-[calc(92svh-7rem)] space-y-2.5 overflow-y-auto pr-1">
+            <div className="space-y-2.5">
               <LinkCreateTypeSelector
                 value={selectedCreateType}
                 canCreateTunnel={canCreateTunnel}
                 canCreateChain={canCreateChain}
                 onValueChange={setSelectedCreateType}
               />
-              <div className="rounded-md border border-border/50 bg-background/60 px-3 py-2">
-                <div className="flex items-center gap-2.5">
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                    {selectedCreateType === "tunnel" ? <Network className="h-4 w-4" /> : <Route className="h-4 w-4" />}
-                  </span>
-                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                    <span className="font-medium">{selectedCreateTitle}</span>
-                    <span className="text-xs text-muted-foreground">{selectedCreateSummary}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-4">
+              <div className="space-y-2.5">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
@@ -2186,7 +2165,7 @@ function TunnelsContent() {
                           }}
                           disabled={gostRuntimeDisabled}
                           title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                          className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                          className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
                             gostTunnelModes.includes(form.mode)
                               ? "border-primary bg-primary/5 text-foreground"
                               : "border-border bg-background hover:border-primary/40"
@@ -2208,7 +2187,7 @@ function TunnelsContent() {
                           }
                           disabled={forwardxRuntimeDisabled}
                           title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                          className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                          className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
                             form.mode === "forwardx"
                               ? "border-primary bg-primary/5 text-foreground"
                               : "border-border bg-background hover:border-primary/40"
@@ -2227,7 +2206,7 @@ function TunnelsContent() {
                         {unsupportedProtocolTitle}
                       </p>
                     )}
-                    <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
+                    <div className={`grid grid-cols-1 gap-3 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
                       {form.mode !== "forwardx" && (
                         <div className="space-y-2">
                           <Label>GOST 协议</Label>
@@ -2244,13 +2223,12 @@ function TunnelsContent() {
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
                         <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
-                        <p className="text-xs text-muted-foreground">留空自动分配。</p>
                       </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
                       <div className="space-y-2">
                         <Label>链名称</Label>
                         <Input
@@ -2269,13 +2247,8 @@ function TunnelsContent() {
                         </label>
                       </div>
                     </div>
-                    <div className="space-y-3 rounded-lg border border-border/60 p-3">
-                      <div>
-                        <Label>链路主机顺序</Label>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          按入口到出口顺序保存链路流程，最多 5 台主机。
-                        </p>
-                      </div>
+                    <div className="space-y-2">
+                      <Label>链路主机顺序</Label>
                       <MultiHopEditor
                         hosts={hosts || []}
                         initialHopIds={chainCreateForm.hopHostIds}
@@ -2324,12 +2297,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-6">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-lg sm:p-4">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
-            <DialogDescription>填写隧道链路配置。</DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 sm:pr-2">
+          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
             <div className="space-y-2">
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
@@ -2383,7 +2355,7 @@ function TunnelsContent() {
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                  className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
                     gostTunnelModes.includes(form.mode)
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
@@ -2405,7 +2377,7 @@ function TunnelsContent() {
                   }
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[58px] items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors ${
+                  className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
                     form.mode === "forwardx"
                       ? "border-primary bg-primary/5 text-foreground"
                       : "border-border bg-background hover:border-primary/40"
@@ -2424,7 +2396,7 @@ function TunnelsContent() {
                 {unsupportedProtocolTitle}
               </p>
             )}
-            <div className={`grid grid-cols-1 gap-4 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
+            <div className={`grid grid-cols-1 gap-3 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
               {form.mode !== "forwardx" && (
               <div className="space-y-2">
                 <Label>GOST 协议</Label>
@@ -2441,7 +2413,6 @@ function TunnelsContent() {
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
-                <p className="text-xs text-muted-foreground">留空自动分配。</p>
               </div>
             </div>
           </div>

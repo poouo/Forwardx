@@ -188,13 +188,16 @@ export async function updateTunnelTestResult(id: number, data: {
 }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(tunnels).set({
+  const updates: any = {
     lastTestStatus: data.status,
-    lastLatencyMs: data.latencyMs ?? null,
     lastTestMessage: data.message ?? null,
     lastTestAt: nowDate(),
     updatedAt: nowDate(),
-  }).where(eq(tunnels.id, id));
+  };
+  if (data.status !== "pending" && data.status !== "running") {
+    updates.lastLatencyMs = data.latencyMs ?? null;
+  }
+  await db.update(tunnels).set(updates).where(eq(tunnels.id, id));
 }
 
 /** 检查某主机上的某端口是否已被占用 */

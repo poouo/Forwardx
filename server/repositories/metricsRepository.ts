@@ -893,6 +893,40 @@ export async function insertTunnelLatencyStat(
   await db.update(tunnels).set(updates).where(eq(tunnels.id, stat.tunnelId));
 }
 
+export async function getLatestTunnelLatencies(tunnelIds: number[]) {
+  const db = await getDb();
+  const ids = Array.from(new Set(tunnelIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0)));
+  if (!db || ids.length === 0) {
+    return new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
+  }
+  const q = quoteDbIdentifier;
+  const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+    `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
+            s.${q("latencyMs")} AS ${q("latencyMs")},
+            s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("recordedAt")} AS ${q("recordedAt")}
+       FROM ${q("tunnel_latency_stats")} s
+       INNER JOIN (
+         SELECT ${q("tunnelId")}, MAX(${q("id")}) AS ${q("id")}
+           FROM ${q("tunnel_latency_stats")}
+          WHERE ${q("tunnelId")} IN (${ids.map(() => "?").join(",")})
+          GROUP BY ${q("tunnelId")}
+       ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}`,
+    ids,
+  );
+  const latest = new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
+  for (const row of rows) {
+    latest.set(Number(row.tunnelId), {
+      latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
+      isTimeout: rowBool(row.isTimeout),
+      recordedAt: rowDate(row.recordedAt),
+    });
+  }
+  return latest;
+}
+
 export async function getTunnelLatencySeries(
   tunnelId: number,
   opts: { since?: Date; limit?: number } = {}

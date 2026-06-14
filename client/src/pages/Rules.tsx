@@ -1377,7 +1377,7 @@ function RuleTrafficGlobe({
 
 function routeModeOptionClass(active: boolean, disabled = false) {
   return [
-    "flex min-h-11 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+    "flex min-h-9 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
     active ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
     disabled ? "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-muted-foreground" : "cursor-pointer",
   ].join(" ");
@@ -2378,6 +2378,7 @@ function RulesContent() {
     () => filteredRules.filter((r: any) => r.isEnabled && isRuleSupported(r)).length,
     [filteredRules, isRuleSupported]
   );
+  const filteredRuleTotal = filteredRules.length;
   const rulePagination = usePersistentPagination(sortedFilteredRules, {
     storageKey: "forwardx.rules.page",
     pageSize: rulePageSize,
@@ -3107,9 +3108,9 @@ function RulesContent() {
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Zap className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
-              value={`${activeCount} / ${filteredRules.length || rules?.length || 0} 活跃`}
+              value={`${activeCount} / ${filteredRuleTotal} 活跃`}
               loading={rulesHeaderLoading}
-              cacheKey="rules.header.active"
+              cacheKey={`rules.header.active.${trafficTotalsCacheScope}`}
               fallbackValue="0 / 0 活跃"
             />
           </Badge>
@@ -3492,15 +3493,12 @@ function RulesContent() {
           setShowDialog(open);
         }}
       >
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-3xl sm:p-5">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑规则" : "添加转发规则"}</DialogTitle>
-            <DialogDescription>
-              {editingId ? "修改规则配置" : "创建转发规则"}
-            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg border border-border/60 bg-muted/25 p-1">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            <div className="rounded-md border border-border/60 bg-muted/25 p-1">
               <div className={`grid gap-1 ${canUseForwardGroup ? "grid-cols-3" : "grid-cols-2"}`}>
                 <button
                   type="button"
@@ -3535,16 +3533,11 @@ function RulesContent() {
                   </button>
                 )}
               </div>
-              <div className="mt-2 rounded-md bg-background/55 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                {form.routeMode === "local" && "主机直接转发到目标地址。"}
-                {form.routeMode === "tunnel" && "通过隧道出口连接目标地址。"}
-                {form.routeMode === "group" && (selectedForwardGroupIsChain ? "按端口转发链顺序生成每一跳转发规则。" : "使用转发组作为入口。")}
-              </div>
             </div>
 
             {form.routeMode === "tunnel" && (
-              <div className="space-y-3 rounded-lg border border-chart-4/20 bg-chart-4/5 p-3">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <div className="space-y-2 rounded-md border border-chart-4/20 bg-chart-4/5 p-2.5">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                   <div className="space-y-2">
                     <Label>使用隧道</Label>
                     <Select
@@ -3572,9 +3565,6 @@ function RulesContent() {
                     {selectedTunnelDisplay.shortLabel}
                   </Badge>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  主机由隧道入口自动决定。
-                </p>
                 {availableTunnels.length === 0 && (
                   <p className="text-xs text-amber-600">暂无可用隧道，请先在隧道管理中创建隧道。</p>
                 )}
@@ -3588,8 +3578,8 @@ function RulesContent() {
             )}
 
             {form.routeMode === "group" && (
-              <div className="space-y-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                   <div className="space-y-2">
                     <Label>使用转发组</Label>
                     <Select
@@ -3637,7 +3627,7 @@ function RulesContent() {
               </div>
             )}
 
-            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" ? "sm:grid-cols-2" : ""}`}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>规则名称</Label>
                 <Input
@@ -3645,6 +3635,26 @@ function RulesContent() {
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>协议</Label>
+                <Select
+                  value={form.protocol}
+                  onValueChange={(v) => setForm({
+                    ...form,
+                    protocol: v as any,
+                    failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
+                    proxyProtocolReceive: v !== "udp" ? form.proxyProtocolReceive : false,
+                    proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
+                  })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="tcp">TCP</SelectItem>
+                    <SelectItem value="udp">UDP</SelectItem>
+                    <SelectItem value="both">TCP+UDP</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               {form.routeMode === "local" && (
                 <div className="space-y-2">
@@ -3669,9 +3679,6 @@ function RulesContent() {
                   </Select>
                 </div>
               )}
-            </div>
-
-            <div className={`grid grid-cols-1 gap-4 ${form.routeMode === "local" || (form.routeMode === "group" && (selectedForwardGroupIsChain || selectedForwardGroup?.groupType === "host")) ? "sm:grid-cols-2" : ""}`}>
               {(form.routeMode === "local" || (form.routeMode === "group" && (selectedForwardGroupIsChain || selectedForwardGroup?.groupType === "host"))) && (
                 <div className="space-y-2">
                   <Label>转发工具</Label>
@@ -3688,81 +3695,60 @@ function RulesContent() {
                   </Select>
                 </div>
               )}
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,0.75fr)]">
               <div className="space-y-2">
-                <Label>协议</Label>
-                <Select
-                  value={form.protocol}
-                  onValueChange={(v) => setForm({
-                    ...form,
-                    protocol: v as any,
-                    failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
-                    proxyProtocolReceive: v !== "udp" ? form.proxyProtocolReceive : false,
-                    proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
-                  })}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="tcp">TCP</SelectItem>
-                    <SelectItem value="udp">UDP</SelectItem>
-                    <SelectItem value="both">TCP+UDP</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>{form.routeMode === "local" ? "源端口" : "入口端口"}</Label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="relative w-full sm:w-[18rem]">
-                  <Input
-                    type="text"
-                    pattern="[0-9]*"
-                    placeholder={form.routeMode === "group" ? "例如 8080" : "0=随机"}
-                    value={form.sourcePort || ""}
-                    inputMode="numeric"
-                    onChange={(e) => {
-                      latestPortCheckRef.current += 1;
-                      setPortRangeError(null);
-                      setPortStatus("idle");
-                      setForm({ ...form, sourcePort: parseInt(e.target.value) || 0 });
-                    }}
-                    className={`pr-24 ${
-                      portStatus === "used" ? "border-destructive" :
-                      portStatus === "available" ? "border-emerald-500" : ""
-                    }`}
-                  />
-                  {portStatus === "used" && (
-                    <div className="absolute right-2.5 top-1/2 inline-flex max-w-[5.5rem] -translate-y-1/2 items-center gap-1 text-[11px] font-medium text-destructive" title={portStatusHint?.title}>
-                      <XCircle className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{portStatusHint?.text || "不可用"}</span>
-                    </div>
-                  )}
-                  {portStatus === "available" && (
-                    <div className="absolute right-2.5 top-1/2 inline-flex max-w-[5.5rem] -translate-y-1/2 items-center gap-1 text-[11px] font-medium text-emerald-600" title={portStatusHint?.title}>
-                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{portStatusHint?.text || "可用"}</span>
-                    </div>
-                  )}
+                <div className="flex items-center justify-between gap-2">
+                  <Label>{form.routeMode === "local" ? "源端口" : "入口端口"}</Label>
+                  <span className="truncate text-xs text-muted-foreground" title={`允许端口范围: ${sourcePortRangeText}`}>
+                    {sourcePortRangeText}
+                  </span>
                 </div>
-                <div
-                  className="inline-flex h-10 shrink-0 items-center rounded-md border border-dashed border-border/70 bg-muted/30 px-3 text-xs text-muted-foreground"
-                  title={`允许端口范围: ${sourcePortRangeText}`}
-                >
-                  可用范围 {sourcePortRangeText}
+                <div className="flex gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <Input
+                      type="text"
+                      pattern="[0-9]*"
+                      placeholder={form.routeMode === "group" ? "例如 8080" : "0=随机"}
+                      value={form.sourcePort || ""}
+                      inputMode="numeric"
+                      onChange={(e) => {
+                        latestPortCheckRef.current += 1;
+                        setPortRangeError(null);
+                        setPortStatus("idle");
+                        setForm({ ...form, sourcePort: parseInt(e.target.value) || 0 });
+                      }}
+                      className={`pr-24 ${
+                        portStatus === "used" ? "border-destructive" :
+                        portStatus === "available" ? "border-emerald-500" : ""
+                      }`}
+                    />
+                    {portStatus === "used" && (
+                      <div className="absolute right-2.5 top-1/2 inline-flex max-w-[5.5rem] -translate-y-1/2 items-center gap-1 text-[11px] font-medium text-destructive" title={portStatusHint?.title}>
+                        <XCircle className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{portStatusHint?.text || "不可用"}</span>
+                      </div>
+                    )}
+                    {portStatus === "available" && (
+                      <div className="absolute right-2.5 top-1/2 inline-flex max-w-[5.5rem] -translate-y-1/2 items-center gap-1 text-[11px] font-medium text-emerald-600" title={portStatusHint?.title}>
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{portStatusHint?.text || "可用"}</span>
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-10 w-10 shrink-0"
+                    onClick={handleRandomPort}
+                    title="随机分配端口"
+                    disabled={form.routeMode === "group" ? !form.forwardGroupId : !form.hostId}
+                  >
+                    <Shuffle className="h-4 w-4" />
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-10 shrink-0 gap-2 whitespace-nowrap px-3"
-                  onClick={handleRandomPort}
-                  title="随机分配端口"
-                  disabled={form.routeMode === "group" ? !form.forwardGroupId : !form.hostId}
-                >
-                  <Shuffle className="h-4 w-4" />
-                  随机端口
-                </Button>
               </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>{form.routeMode === "local" ? "目标地址" : "最终目标地址"}</Label>
                 <Input
@@ -3778,25 +3764,23 @@ function RulesContent() {
                   min={1}
                   max={65535}
                   step={1}
-                  placeholder="必填，例如: 80"
+                  placeholder="例如: 80"
                   value={form.targetPort || ""}
                   onChange={(e) => setForm({ ...form, targetPort: parseInt(e.target.value) || 0 })}
                 />
               </div>
             </div>
-            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-              <div className="min-w-0">
+            <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
                 <Label className="text-sm">PROXY Protocol</Label>
-                <p className="mt-1 text-xs text-muted-foreground">用于透传真实客户端 IP，目标服务未启用时不要开启发送。</p>
                 {!canUseProxyProtocol && proxyProtocolDisabledText && (
-                  <p className="mt-1 text-xs text-amber-600">{proxyProtocolDisabledText}</p>
+                  <span className="text-xs text-amber-600">{proxyProtocolDisabledText}</span>
                 )}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
                   <div className="min-w-0">
                     <Label className="text-sm">接收 PROXY Protocol</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">入口前方有 SLB、HAProxy 或 Nginx 时使用。</p>
                   </div>
                   <Switch
                     checked={form.proxyProtocolReceive}
@@ -3804,10 +3788,9 @@ function RulesContent() {
                     onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })}
                   />
                 </div>
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
                   <div className="min-w-0">
                     <Label className="text-sm">向目标发送</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">目标服务需要支持 PROXY Protocol。</p>
                   </div>
                   <Switch
                     checked={form.proxyProtocolSend}
@@ -3817,13 +3800,10 @@ function RulesContent() {
                 </div>
               </div>
             </div>
-            <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-              <div className="flex items-center justify-between gap-3">
+            <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <Label className="text-sm">出站策略</Label>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    默认不使用；启用后主出站和备用出站按所选策略分配连接。
-                  </p>
                   {!canUseMainBackup && mainBackupDisabledText && (
                     <p className="mt-1 text-xs text-amber-600">{mainBackupDisabledText}</p>
                   )}
@@ -3843,7 +3823,7 @@ function RulesContent() {
                   }}
                   disabled={!canUseMainBackup}
                 >
-                  <SelectTrigger className="h-9 w-[220px] max-w-[46vw]">
+                  <SelectTrigger className="h-9 w-full sm:w-[220px]">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -3854,21 +3834,20 @@ function RulesContent() {
                 </Select>
               </div>
               {form.failoverEnabled && (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <div className="space-y-2">
                     <Label>备用出站（每行一个，最多 10 个）</Label>
                     <Textarea
                       value={form.failoverTargetsText}
                       onChange={(event) => setForm({ ...form, failoverTargetsText: event.target.value })}
                       placeholder={"10.0.0.1:80\nexample.com:443"}
-                      className="min-h-28 font-mono text-sm"
+                      className="min-h-24 font-mono text-sm"
                       spellCheck={false}
                     />
-                    <p className="text-xs text-muted-foreground">支持 IPv4、域名、IPv6；例如 10.0.0.1:80、example.com:443、[2001:db8::1]:80。</p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-2 sm:grid-cols-3">
                     <div className="space-y-2">
-                      <Label>健康切换时间（秒）</Label>
+                      <Label>切换时间（秒）</Label>
                       <Input
                         type="number"
                         min={10}
@@ -3879,7 +3858,7 @@ function RulesContent() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>恢复观察时间（秒）</Label>
+                      <Label>恢复观察（秒）</Label>
                       <Input
                         type="number"
                         min={10}
@@ -3890,10 +3869,9 @@ function RulesContent() {
                       />
                     </div>
                     {form.failoverStrategy === "fallback" && (
-                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-3 py-2">
+                      <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
                         <div>
                           <Label className="text-sm">恢复后切回</Label>
-                          <p className="mt-1 text-xs text-muted-foreground">主目标稳定后自动回切。</p>
                         </div>
                         <Switch
                           checked={form.autoFailback}

@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.139] - 2026-06-14
+
+### Added
+
+- Added a compact host card layout for host management, with lighter CPU, memory, disk, and traffic display.
+
+### Fixed
+
+- Fixed forwarding-rule active counts so empty filtered views no longer show totals from other categories.
+- Fixed the host table status column wrapping issue.
+
+### Changed
+
+- Tightened the forwarding-rule add/edit dialog layout and reduced non-essential helper text.
+- Clarified panel SSL certificate source selection between file paths and pasted PEM certificates.
+- Bumped panel version to 2.3.139. Agent target version remains 2.2.92.
+- Bumped Android APP version to 2.3.43 and updated the APK release pointer to 2.3.139.
+
 ## [2.3.138] - 2026-06-14
 
 ### Added

@@ -2694,6 +2694,11 @@ function SystemInfoSection() {
   const tunnelProtocolEnabledCount = tunnelForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
   const totalProtocolEnabledCount = directProtocolEnabledCount + tunnelProtocolEnabledCount;
   const totalProtocolCount = directForwardProtocolKeys.length + tunnelForwardProtocolKeys.length;
+  const panelSslSourceLabel = panelSslMode === "pem" ? "粘贴 PEM 内容" : "服务器文件路径";
+  const panelSslPathActive = panelSslMode === "path";
+  const panelSslPemActive = panelSslMode === "pem";
+  const panelSslPathConfigured = !!panelSslCertPath.trim() && !!panelSslKeyPath.trim();
+  const panelSslPemConfigured = !!panelSslCertPem.trim() && !!panelSslKeyPem.trim();
 
   useEffect(() => {
     if (!canShowDockerUpgradeScript || !updateInfo?.latestVersion) return;
@@ -2866,20 +2871,42 @@ function SystemInfoSection() {
               </div>
               <Switch className="shrink-0" checked={panelSslEnabled} onCheckedChange={setPanelSslEnabled} />
             </div>
+            <div className="flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-2">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <div className="min-w-0">
+                  <p className="font-medium">当前证书来源：{panelSslSourceLabel}</p>
+                  <p className="text-xs text-muted-foreground">
+                    文件路径和 PEM 内容可以同时保存，但保存并重启后只会使用当前选中的来源。
+                  </p>
+                </div>
+              </div>
+              <Badge variant="outline" className="w-fit shrink-0 border-primary/30 bg-background/70 text-primary">
+                {panelSslEnabled ? "HTTPS 将按此来源启动" : "启用后按此来源启动"}
+              </Badge>
+            </div>
             <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslMode === "path" ? "border-primary/30 bg-primary/5" : "border-border/40 bg-muted/10"}`}>
+              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslPathActive ? "border-primary/40 bg-primary/5 shadow-sm" : "border-border/40 bg-muted/10 opacity-80"}`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium">文件路径</p>
-                    <p className="text-xs text-muted-foreground">使用服务器上的证书和私钥文件。</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-medium">服务器文件路径</p>
+                      <Badge variant={panelSslPathActive ? "default" : "outline"} className="text-[10px]">
+                        {panelSslPathActive ? "当前使用" : panelSslPathConfigured ? "已保存备用" : "未配置"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      读取服务器上的证书和私钥文件。{panelSslPathActive ? "当前保存后会使用这一组证书。" : "未选中时不会作为 HTTPS 证书生效。"}
+                    </p>
                   </div>
                   <Button
                     type="button"
                     size="sm"
-                    variant={panelSslMode === "path" ? "default" : "outline"}
+                    variant={panelSslPathActive ? "default" : "outline"}
                     onClick={() => setPanelSslMode("path")}
+                    disabled={panelSslPathActive}
                   >
-                    文件路径
+                    {panelSslPathActive ? "正在使用" : "使用此来源"}
                   </Button>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -2888,11 +2915,7 @@ function SystemInfoSection() {
                 <Input
                   id="panel-ssl-cert-path"
                   value={panelSslCertPath}
-                  onFocus={() => setPanelSslMode("path")}
-                  onChange={(e) => {
-                    setPanelSslMode("path");
-                    setPanelSslCertPath(e.target.value);
-                  }}
+                  onChange={(e) => setPanelSslCertPath(e.target.value)}
                   placeholder="/data/certs/fullchain.pem"
                 />
               </div>
@@ -2901,11 +2924,7 @@ function SystemInfoSection() {
                 <Input
                   id="panel-ssl-key-path"
                   value={panelSslKeyPath}
-                  onFocus={() => setPanelSslMode("path")}
-                  onChange={(e) => {
-                    setPanelSslMode("path");
-                    setPanelSslKeyPath(e.target.value);
-                  }}
+                  onChange={(e) => setPanelSslKeyPath(e.target.value)}
                   placeholder="/data/certs/privkey.pem"
                 />
               </div>
@@ -2923,19 +2942,27 @@ function SystemInfoSection() {
               </Button>
               </div>
 
-              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslMode === "pem" ? "border-primary/30 bg-primary/5" : "border-border/40 bg-muted/10"}`}>
+              <div className={`space-y-3 rounded-lg border p-3 transition-colors ${panelSslPemActive ? "border-primary/40 bg-primary/5 shadow-sm" : "border-border/40 bg-muted/10 opacity-80"}`}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium">粘贴证书</p>
-                    <p className="text-xs text-muted-foreground">直接保存证书和私钥 PEM 内容。</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-medium">粘贴 PEM 内容</p>
+                      <Badge variant={panelSslPemActive ? "default" : "outline"} className="text-[10px]">
+                        {panelSslPemActive ? "当前使用" : panelSslPemConfigured ? "已保存备用" : "未配置"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      直接保存证书和私钥 PEM 内容。{panelSslPemActive ? "当前保存后会使用这一组证书。" : "未选中时不会作为 HTTPS 证书生效。"}
+                    </p>
                   </div>
                   <Button
                     type="button"
                     size="sm"
-                    variant={panelSslMode === "pem" ? "default" : "outline"}
+                    variant={panelSslPemActive ? "default" : "outline"}
                     onClick={() => setPanelSslMode("pem")}
+                    disabled={panelSslPemActive}
                   >
-                    粘贴证书
+                    {panelSslPemActive ? "正在使用" : "使用此来源"}
                   </Button>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2944,11 +2971,7 @@ function SystemInfoSection() {
                   <Textarea
                     id="panel-ssl-cert-pem"
                     value={panelSslCertPem}
-                    onFocus={() => setPanelSslMode("pem")}
-                    onChange={(e) => {
-                      setPanelSslMode("pem");
-                      setPanelSslCertPem(e.target.value);
-                    }}
+                    onChange={(e) => setPanelSslCertPem(e.target.value)}
                     placeholder="-----BEGIN CERTIFICATE-----"
                     className="min-h-44 resize-y font-mono text-xs leading-5"
                   />
@@ -2958,11 +2981,7 @@ function SystemInfoSection() {
                   <Textarea
                     id="panel-ssl-key-pem"
                     value={panelSslKeyPem}
-                    onFocus={() => setPanelSslMode("pem")}
-                    onChange={(e) => {
-                      setPanelSslMode("pem");
-                      setPanelSslKeyPem(e.target.value);
-                    }}
+                    onChange={(e) => setPanelSslKeyPem(e.target.value)}
                     placeholder="-----BEGIN PRIVATE KEY-----"
                     className="min-h-44 resize-y font-mono text-xs leading-5"
                   />
