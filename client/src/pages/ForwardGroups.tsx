@@ -842,7 +842,6 @@ export function ForwardGroupsContent({
   const emptyDescription = isChainMode ? "创建后可在端口转发规则中作为链路使用" : "创建后可在转发规则中作为高可用入口使用";
   const paginationItemName = isChainMode ? "条转发链" : "个转发组";
   const dialogTitle = editingId ? (isChainMode ? "编辑端口转发链" : "编辑转发组") : (isChainMode ? "添加端口转发链" : "添加转发组");
-  const dialogDescription = isChainMode ? "配置端口转发链路。" : "配置高可用入口。";
   const contentTransitionKey = `${activeGroupMode}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
@@ -1160,15 +1159,12 @@ export function ForwardGroupsContent({
           setShowDialog(open);
         }}
       >
-        <DialogContent className="sm:max-w-3xl">
+        <DialogContent className={isChainMode ? "sm:max-w-xl" : "sm:max-w-3xl"}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
-            <DialogDescription>
-              {dialogDescription}
-            </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-            <div className={`grid gap-4 ${isChainMode ? "" : "sm:grid-cols-2"}`}>
+          <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+            <div className={`grid gap-3 ${isChainMode ? "" : "sm:grid-cols-2"}`}>
               <div className="space-y-2">
                 <Label>{isChainMode ? "链名称" : "组名称"}</Label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"} />
@@ -1258,13 +1254,8 @@ export function ForwardGroupsContent({
             </>
             )}
 
-            <div className="space-y-3 rounded-lg border border-border/60 p-3">
-              <div>
-                <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {form.groupMode === "chain" ? "按入口到出口顺序保存链路流程。" : "越靠上优先级越高。"}
-                </p>
-              </div>
+            <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
+              <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
               {form.groupMode === "chain" ? (
                 <MultiHopEditor
                   hosts={hosts || []}

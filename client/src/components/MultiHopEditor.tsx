@@ -268,14 +268,10 @@ export default function MultiHopEditor({
   const onDragEnd = () => clearDragState();
 
   return (
-    <div className="space-y-3" onDragOver={onDragOverContainer} onDrop={(e) => e.preventDefault()}>
-      <div className="flex items-center justify-end">
-        <span className="text-right text-xs leading-5 text-muted-foreground">上到下为链路顺序，拖动时卡片会跟随鼠标移动</span>
-      </div>
-
+    <div className="space-y-2" onDragOver={onDragOverContainer} onDrop={(e) => e.preventDefault()}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Select value="" onValueChange={addHop} disabled={reachedMaxHops}>
-          <SelectTrigger className="h-9 text-sm">
+          <SelectTrigger className="h-8 text-sm">
             <SelectValue placeholder={reachedMaxHops ? `最多 ${maxHops} 级` : "添加主机到链路..."} />
           </SelectTrigger>
           <SelectContent>
@@ -297,11 +293,11 @@ export default function MultiHopEditor({
       </div>
 
       {hops.length === 0 ? (
-        <div className="flex items-center justify-center rounded-lg border border-dashed border-border py-8 text-sm text-muted-foreground">
+        <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
           从上方选择主机来创建链路
         </div>
       ) : (
-        <div className="space-y-2 rounded-lg border border-border bg-card p-2">
+        <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
           {hops.map((hop, idx) => {
             const role = getRole(idx, hops.length);
             const isFirst = role === "entry";
@@ -322,7 +318,7 @@ export default function MultiHopEditor({
             return (
               <div
                 key={hop.hostId}
-                className={`flex flex-wrap items-center gap-2 rounded-md border border-border/50 bg-background px-3 py-2 transition-colors duration-150 sm:flex-nowrap ${
+                className={`flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:flex-nowrap ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable
@@ -346,7 +342,7 @@ export default function MultiHopEditor({
                   labelClassName="truncate"
                 />
 
-                <div className="order-last flex h-8 w-full items-center justify-start gap-2 sm:order-none sm:ml-2 sm:w-[190px] sm:shrink-0 sm:justify-end">
+                <div className="order-last flex h-7 w-full items-center justify-start gap-1.5 sm:order-none sm:ml-2 sm:w-[160px] sm:shrink-0 sm:justify-end">
                   {!isFirst ? (
                     <>
                       <span className="whitespace-nowrap text-xs text-muted-foreground">使用内网IP</span>

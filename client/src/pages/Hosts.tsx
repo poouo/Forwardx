@@ -60,6 +60,7 @@ import {
   RefreshCw,
   Activity,
   Key,
+  Rows3,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -747,7 +748,7 @@ const defaultFormData: HostFormData = {
   blockTls: false,
 };
 
-type HostViewMode = "card" | "table" | "map" | "flat-map";
+type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
@@ -757,7 +758,7 @@ function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(HOST_VIEW_MODE_STORAGE_KEY);
-    return value === "table" || value === "map" || value === "flat-map" ? value : "card";
+    return value === "compact-card" || value === "table" || value === "map" || value === "flat-map" ? value : "card";
   } catch {
     return "card";
   }
@@ -800,6 +801,7 @@ function HostCard({
   canUpgrade,
   latestAgentVersion,
   refreshInterval,
+  compact = false,
 }: {
   host: any;
   onEdit: (host: any) => void;
@@ -808,6 +810,7 @@ function HostCard({
   canUpgrade: boolean;
   latestAgentVersion?: string;
   refreshInterval: number | false;
+  compact?: boolean;
 }) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 2 },
@@ -840,6 +843,8 @@ function HostCard({
   const trafficPanelClass = isOnline
     ? "border-border/40 bg-muted/20"
     : "border-muted-foreground/20 bg-muted/25";
+  const cardMinHeightClass = compact ? "min-h-[260px]" : "min-h-[420px]";
+  const compactMetricItemClass = "min-w-0 rounded-md border border-border/40 bg-background/35 px-2.5 py-2";
 
   useEffect(() => {
     if (!metrics?.length) return;
@@ -847,12 +852,12 @@ function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`min-h-[420px] backdrop-blur-md transition-colors ${
+    <Card className={`${cardMinHeightClass} backdrop-blur-md transition-colors ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
     }`}>
-      <CardHeader className="pb-2">
+      <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
             <span className="flex min-w-0 flex-wrap items-center gap-2">
@@ -907,10 +912,10 @@ function HostCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className={`space-y-3 ${isOnline ? "" : "text-muted-foreground"}`}>
+      <CardContent className={`${compact ? "space-y-2 px-3.5 pb-3.5" : "space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
         {/* 基本信息 */}
-        <div className="space-y-2">
-          <div className={`min-w-0 rounded-md border px-2.5 py-2 ${infoPanelClass}`}>
+        <div className={compact ? "space-y-1.5" : "space-y-2"}>
+          <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
             <p className="truncate font-mono text-xs leading-5" title={hostAddressText(host)}>
               <span className="mr-1.5 text-muted-foreground">地址</span>
               {hostAddressText(host)}
@@ -919,22 +924,68 @@ function HostCard({
               <HostRegionBadge host={host} />
             </div>
           </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <div className={`flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 ${compact ? "text-xs" : "text-sm"}`}>
             <div className="flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-muted-foreground" />
               <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
               <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
             </div>
-            <div className="flex min-w-0 items-center gap-1.5">
+            {!compact && <div className="flex min-w-0 items-center gap-1.5">
               <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate" title={host.osInfo || ""}>{host.osInfo || "-"}</span>
-            </div>
+            </div>}
           </div>
         </div>
 
         {/* 监控数据 */}
         {latestMetric ? (
-          <div className="space-y-3 pt-2 border-t border-border/30">
+          compact ? (
+            <div className="space-y-2 border-t border-border/30 pt-2">
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className={compactMetricItemClass}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><Cpu className="h-3 w-3 shrink-0" /> CPU</span>
+                    <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
+                  </div>
+                  <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
+                </div>
+                <div className={compactMetricItemClass}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><MemoryStick className="h-3 w-3 shrink-0" /> 内存</span>
+                    <span className="font-medium tabular-nums">{latestMetric.memoryUsage ?? 0}%</span>
+                  </div>
+                  <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
+                </div>
+                <div className={compactMetricItemClass}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="flex min-w-0 items-center gap-1 text-muted-foreground"><HardDrive className="h-3 w-3 shrink-0" /> 磁盘</span>
+                    <span className="font-medium tabular-nums">{latestMetric.diskUsage ?? 0}%</span>
+                  </div>
+                  <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入</span>
+                    <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
+                  </div>
+                </div>
+                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出</span>
+                    <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <Clock className="h-3 w-3 text-muted-foreground" />
+                <span className="text-muted-foreground">运行</span>
+                <span className="ml-auto font-medium">{formatUptime(latestMetric.uptime)}</span>
+              </div>
+            </div>
+          ) : (
+          <div className="space-y-3 border-t border-border/30 pt-2">
             {/* CPU */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
@@ -1008,8 +1059,9 @@ function HostCard({
               <span className="font-medium ml-auto">{formatUptime(latestMetric.uptime)}</span>
             </div>
           </div>
+          )
         ) : (
-          <div className="text-center py-4 text-muted-foreground/60 border-t border-border/30">
+          <div className={`border-t border-border/30 text-center text-muted-foreground/60 ${compact ? "py-3" : "py-4"}`}>
             <p className="text-xs">暂无监控数据</p>
           </div>
         )}
@@ -1380,6 +1432,15 @@ function HostsContent() {
                   <LayoutGrid className="h-4 w-4" />
                 </Button>
                 <Button
+                  variant={viewMode === "compact-card" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-8 w-8 rounded-none"
+                  title="精简卡片"
+                  onClick={() => handleViewModeChange("compact-card")}
+                >
+                  <Rows3 className="h-4 w-4" />
+                </Button>
+                <Button
                   variant={viewMode === "table" ? "secondary" : "ghost"}
                   size="icon"
                   className="h-8 w-8 rounded-none"
@@ -1536,9 +1597,9 @@ function HostsContent() {
               <PersistentPagination pagination={hostPagination} itemName="台主机" />
             </div>
           </>
-        ) : viewMode === "card" ? (
+        ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
-          <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <AutoAnimateContainer className={viewMode === "compact-card" ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4" : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"}>
             {pagedHosts.map((host) => (
               <HostCard
                 key={host.id}
@@ -1549,6 +1610,7 @@ function HostsContent() {
                 canUpgrade={user?.role === "admin"}
                 latestAgentVersion={latestAgentVersion}
                 refreshInterval={hostRefreshInterval}
+                compact={viewMode === "compact-card"}
               />
             ))}
           </AutoAnimateContainer>
@@ -1575,7 +1637,7 @@ function HostsContent() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-[50px]">状态</TableHead>
+                      <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
                       <TableHead>名称</TableHead>
                       <TableHead className="min-w-[220px]">地址</TableHead>
                       <TableHead className="hidden lg:table-cell">端口区间</TableHead>
@@ -1591,7 +1653,7 @@ function HostsContent() {
                       const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
                       return (
                       <TableRow key={host.id}>
-                        <TableCell>
+                        <TableCell className="w-[72px] text-center">
                           <div className="flex items-center justify-center">
                             {host.isOnline ? (
                               <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />

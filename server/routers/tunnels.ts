@@ -136,6 +136,7 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
       (tunnel as any).isRunning = true;
     }
   }));
+  const latestLatencyByTunnel = await db.getLatestTunnelLatencies(tunnels.map((tunnel) => Number(tunnel.id)));
   await Promise.all(Array.from(hostIds).map(async (hostId) => {
     const host = await db.getHostById(hostId);
     if (host) hostMap.set(hostId, host);
@@ -152,16 +153,28 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
     portRangeEnd: (host as any).portRangeEnd,
     portAllowlist: (host as any).portAllowlist,
   } : null;
-  return tunnels.map((tunnel) => ({
-    ...tunnel,
-    hopHostIds: hopHostIdsByTunnel.get(Number(tunnel.id)) || [],
-    hopConnectHosts: hopConnectHostsByTunnel.get(Number(tunnel.id)) || [],
-    hopHosts: (hopHostIdsByTunnel.get(Number(tunnel.id)) || [])
-      .map((hostId) => hostSummary(hostMap.get(Number(hostId))))
-      .filter(Boolean),
-    entryHost: hostSummary(hostMap.get(Number(tunnel.entryHostId || 0))),
-    exitHost: hostSummary(hostMap.get(Number(tunnel.exitHostId || 0))),
-  }));
+  return tunnels.map((tunnel) => {
+    const latestLatency = latestLatencyByTunnel.get(Number(tunnel.id));
+    const fallbackLatency = typeof (tunnel as any).lastLatencyMs === "number" && Number.isFinite((tunnel as any).lastLatencyMs)
+      ? Number((tunnel as any).lastLatencyMs)
+      : null;
+    const fallbackTimeout = !latestLatency && (tunnel as any).lastTestStatus === "failed" && fallbackLatency === null;
+    return {
+      ...tunnel,
+      latestLatencyMs: latestLatency
+        ? (latestLatency.isTimeout ? null : latestLatency.latencyMs)
+        : fallbackLatency,
+      latestLatencyIsTimeout: latestLatency ? latestLatency.isTimeout : fallbackTimeout,
+      latestLatencyAt: latestLatency?.recordedAt ?? (tunnel as any).lastTestAt ?? null,
+      hopHostIds: hopHostIdsByTunnel.get(Number(tunnel.id)) || [],
+      hopConnectHosts: hopConnectHostsByTunnel.get(Number(tunnel.id)) || [],
+      hopHosts: (hopHostIdsByTunnel.get(Number(tunnel.id)) || [])
+        .map((hostId) => hostSummary(hostMap.get(Number(hostId))))
+        .filter(Boolean),
+      entryHost: hostSummary(hostMap.get(Number(tunnel.entryHostId || 0))),
+      exitHost: hostSummary(hostMap.get(Number(tunnel.exitHostId || 0))),
+    };
+  });
 }
 
 async function getTunnelDeleteImpact(tunnelId: number) {

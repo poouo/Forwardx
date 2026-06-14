@@ -2080,7 +2080,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const chainGroupsForHost = (await db.getForwardGroups() as any[])
       .filter((group: any) => group && group.isEnabled && String(group.groupMode || "failover") === "chain");
     for (const group of chainGroupsForHost as any[]) {
-      const probes = await db.getForwardGroupChainProbes(Number(group.id), { includeFinalTarget: true });
+      const probes = await db.getForwardGroupChainProbes(Number(group.id));
       for (const probe of probes) {
         if (Number(probe.fromHostId) !== Number(host.id)) continue;
         const key = `${probe.groupId}:${probe.hopIndex}:${probe.targetIp}:${probe.targetPort}:${probe.method}`;
