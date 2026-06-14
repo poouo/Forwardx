@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.140] - 2026-06-15
+
+### Added
+
+- Added card/list layout switching for subscription plans and traffic-billing resources, defaulting to card view with animated transitions.
+- Added the subscription records tab to Billing & Redemption so plan subscriptions are managed with billing and redemption records.
+
+### Fixed
+
+- Fixed the garbled `package.json` description text.
+
+### Changed
+
+- Moved subscription records out of Plan Management.
+- Improved host compact-card metric alignment and tooltips for CPU, memory, and disk usage.
+- Tightened the forwarding-rule add/edit dialog width and field density.
+- Reduced repeated backup-summary polling and optimized panel migration data-summary checks.
+- Bumped panel version to 2.3.140. Agent target version remains 2.2.92.
+- Bumped Android APP version to 2.3.44 and updated the APK release pointer to 2.3.140.
+
 ## [2.3.139] - 2026-06-14
 
 ### Added

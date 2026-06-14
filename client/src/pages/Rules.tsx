@@ -3493,7 +3493,7 @@ function RulesContent() {
           setShowDialog(open);
         }}
       >
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:max-w-3xl sm:p-5">
+        <DialogContent className="flex max-h-[96svh] w-[calc(100vw-1rem)] flex-col gap-3 overflow-hidden p-4 sm:max-w-2xl sm:p-5">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑规则" : "添加转发规则"}</DialogTitle>
           </DialogHeader>
@@ -3696,7 +3696,7 @@ function RulesContent() {
                 </div>
               )}
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,0.75fr)]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <Label>{form.routeMode === "local" ? "源端口" : "入口端口"}</Label>

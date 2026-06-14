@@ -1039,7 +1039,9 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     refetchInterval: 15000,
   });
   const { data: backupSummary, isLoading: backupSummaryLoading } = trpc.system.backupSummary.useQuery(undefined, {
-    refetchInterval: 15000,
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
   const { data: migrationJob } = trpc.system.panelMigrationStatus.useQuery(
     { jobId: migrationJobId || "" },

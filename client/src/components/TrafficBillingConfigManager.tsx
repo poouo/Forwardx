@@ -1,4 +1,5 @@
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
-import { Coins, Gauge, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
+import { Coins, Gauge, LayoutGrid, List, Pencil, Plus, ReceiptText, Route, Server, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -117,6 +118,27 @@ function MobileInfoRow({
 }
 
 type BillingResourceType = "host" | "tunnel";
+type BillingConfigViewMode = "card" | "table";
+const BILLING_CONFIG_VIEW_MODE_STORAGE_KEY = "forwardx.trafficBilling.configs.viewMode";
+
+function getStoredBillingConfigViewMode(): BillingConfigViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(BILLING_CONFIG_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeBillingConfigViewMode(viewMode: BillingConfigViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(BILLING_CONFIG_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // View preference is optional.
+  }
+}
 
 type BillingConfigForm = {
   id?: number;
@@ -139,6 +161,46 @@ const defaultBillingConfigForm = (): BillingConfigForm => ({
   requiresPermission: false,
 });
 
+function BillingConfigCard({
+  config,
+  onEdit,
+  onDelete,
+}: {
+  config: any;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {config.resourceType === "host" ? <Server className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Route className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
+        </div>
+        <div className="-mr-2 -mt-2 flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}>
+            <Pencil className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
+        <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
+        <MobileInfoRow label="单价">{formatPricePerGb(config)} / GB</MobileInfoRow>
+        <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
+        <MobileInfoRow label="权限">
+          <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
+            {config.requiresPermission ? "需要授权" : "公开可用"}
+          </Badge>
+        </MobileInfoRow>
+        <MobileInfoRow label="状态"><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></MobileInfoRow>
+      </div>
+    </div>
+  );
+}
+
 export default function TrafficBillingConfigManager({
   showHeader = true,
   showEmbeddedHeader = true,
@@ -159,6 +221,7 @@ export default function TrafficBillingConfigManager({
   const { data: summary, isLoading: summaryLoading } = trpc.trafficBilling.status.useQuery();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configForm, setConfigForm] = useState<BillingConfigForm>(() => defaultBillingConfigForm());
+  const [configViewMode, setConfigViewMode] = useState<BillingConfigViewMode>(() => getStoredBillingConfigViewMode());
   const lastCreateRequestKey = useRef(createRequestKey);
 
   const resources = configForm.resourceType === "host" ? hosts : tunnels;
@@ -202,6 +265,11 @@ export default function TrafficBillingConfigManager({
   const openCreate = () => {
     setConfigForm(defaultBillingConfigForm());
     setDialogOpen(true);
+  };
+
+  const handleConfigViewModeChange = (viewMode: BillingConfigViewMode) => {
+    setConfigViewMode(viewMode);
+    storeBillingConfigViewMode(viewMode);
   };
 
   useEffect(() => {
@@ -321,81 +389,90 @@ export default function TrafficBillingConfigManager({
       )}
 
       <Card>
-        <CardHeader>
-          <CardTitle>计费配置</CardTitle>
-          <CardDescription>按 GB 扣费，可设置是否需要额外授权。</CardDescription>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle>计费配置</CardTitle>
+            <CardDescription>按 GB 扣费，可设置是否需要额外授权。</CardDescription>
+          </div>
+          <div className="flex items-center overflow-hidden rounded-md border border-border/40">
+            <Button
+              variant={configViewMode === "card" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              title="卡片视图"
+              onClick={() => handleConfigViewModeChange("card")}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={configViewMode === "table" ? "secondary" : "ghost"}
+              size="icon"
+              className="h-8 w-8 rounded-none"
+              title="列表视图"
+              onClick={() => handleConfigViewModeChange("table")}
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {configsLoading ? (
             <DataSectionLoading label="正在加载计费配置" />
           ) : (
-            <>
-              <div className="grid gap-3 md:hidden">
-                {(data?.configs || []).map((config: any) => (
-                  <div key={config.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-2">
-                        {config.resourceType === "host" ? <Server className="h-4 w-4 shrink-0 text-muted-foreground" /> : <Route className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                        <span className="min-w-0 break-words text-sm font-medium">{config.resourceName}</span>
-                      </div>
-                      <div className="-mr-2 -mt-2 flex shrink-0 items-center gap-1">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(config)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="mt-3 space-y-2 border-t border-border/40 pt-3">
-                      <MobileInfoRow label="类型">{config.resourceType === "host" ? "主机" : "隧道"} #{config.resourceId}</MobileInfoRow>
-                      <MobileInfoRow label="单价">{formatPricePerGb(config)} / GB</MobileInfoRow>
-                      <MobileInfoRow label="倍率">{(Number(config.multiplier || 100) / 100).toFixed(2)}x</MobileInfoRow>
-                      <MobileInfoRow label="权限">
-                        <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
-                          {config.requiresPermission ? "需要授权" : "公开可用"}
-                        </Badge>
-                      </MobileInfoRow>
-                      <MobileInfoRow label="状态"><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></MobileInfoRow>
-                    </div>
-                  </div>
-                ))}
-                {(data?.configs || []).length === 0 && (
-                  <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无计费配置</div>
-                )}
-              </div>
-              <div className="hidden overflow-x-auto md:block">
-                <Table>
-                  <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>权限</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
-                  <TableBody>
-                    {(data?.configs || []).map((config: any) => (
-                      <TableRow key={config.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
-                            <span>{config.resourceName}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell>{formatPricePerGb(config)} / GB</TableCell>
-                        <TableCell>{(Number(config.multiplier || 100) / 100).toFixed(2)}x</TableCell>
-                        <TableCell>
-                          <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
-                            {config.requiresPermission ? "需要授权" : "公开可用"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button variant="ghost" size="icon" onClick={() => openEdit(config)}><Pencil className="h-4 w-4" /></Button>
-                            <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}><Trash2 className="h-4 w-4" /></Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </>
+            <AutoAnimateContainer duration={220}>
+              {configViewMode === "card" ? (
+                <AutoAnimateContainer key="billing-config-card-view" className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" duration={220}>
+                  {(data?.configs || []).map((config: any) => (
+                    <BillingConfigCard
+                      key={config.id}
+                      config={config}
+                      onEdit={() => openEdit(config)}
+                      onDelete={() => deleteConfig.mutate({ id: config.id })}
+                    />
+                  ))}
+                  {(data?.configs || []).length === 0 && (
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">暂无计费配置</div>
+                  )}
+                </AutoAnimateContainer>
+              ) : (
+                <div key="billing-config-table-view" className="overflow-x-auto">
+                  <Table>
+                    <TableHeader><TableRow><TableHead>资源</TableHead><TableHead>单价</TableHead><TableHead>倍率</TableHead><TableHead>权限</TableHead><TableHead>状态</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                    <AutoAnimateContainer as={TableBody} duration={220}>
+                      {(data?.configs || []).map((config: any) => (
+                        <TableRow key={config.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {config.resourceType === "host" ? <Server className="h-4 w-4 text-muted-foreground" /> : <Route className="h-4 w-4 text-muted-foreground" />}
+                              <span>{config.resourceName}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>{formatPricePerGb(config)} / GB</TableCell>
+                          <TableCell>{(Number(config.multiplier || 100) / 100).toFixed(2)}x</TableCell>
+                          <TableCell>
+                            <Badge variant={config.requiresPermission ? "outline" : "secondary"}>
+                              {config.requiresPermission ? "需要授权" : "公开可用"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell><Badge variant={config.enabled ? "outline" : "secondary"}>{config.enabled ? "启用" : "停用"}</Badge></TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button variant="ghost" size="icon" onClick={() => openEdit(config)}><Pencil className="h-4 w-4" /></Button>
+                              <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteConfig.mutate({ id: config.id })}><Trash2 className="h-4 w-4" /></Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {(data?.configs || []).length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">暂无计费配置</TableCell>
+                        </TableRow>
+                      )}
+                    </AutoAnimateContainer>
+                  </Table>
+                </div>
+              )}
+            </AutoAnimateContainer>
           )}
         </CardContent>
       </Card>
