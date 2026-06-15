@@ -1,5 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -192,7 +193,7 @@ export default function Store() {
               {isLoading ? (
                 <DataSectionLoading label="正在加载商店套餐" />
               ) : (
-                <div className="standard-card-grid gap-4">
+                <AutoAnimateContainer className="standard-card-grid gap-4">
                   {plans.map((plan: any) => (
                     <Card key={plan.id} className="flex flex-col">
                       <CardHeader>
@@ -240,7 +241,7 @@ export default function Store() {
                       </CardHeader>
                     </Card>
                   )}
-                </div>
+                </AutoAnimateContainer>
               )}
             </TabsContent>
 
@@ -248,7 +249,7 @@ export default function Store() {
               {trafficBillingLoading ? (
                 <DataSectionLoading label="正在加载按量计费资源" />
               ) : (
-                <div className="standard-card-grid gap-4">
+                <AutoAnimateContainer className="standard-card-grid gap-4">
                   {(trafficBillingStore?.configs || []).map((config: any) => (
                     <Card key={`${config.resourceType}-${config.resourceId}`} className="flex flex-col">
                       <CardHeader>
@@ -293,7 +294,7 @@ export default function Store() {
                       </CardHeader>
                     </Card>
                   )}
-                </div>
+                </AutoAnimateContainer>
               )}
             </TabsContent>
           </Tabs>

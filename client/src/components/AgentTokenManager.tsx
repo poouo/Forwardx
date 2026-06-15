@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -549,7 +550,7 @@ export default function AgentTokenManager({
           ) : tokens && tokens.length > 0 ? (
             <>
               {viewMode === "card" ? (
-                <div className="standard-card-grid gap-4 p-3">
+                <AutoAnimateContainer className="standard-card-grid gap-4 p-3">
                   {(tokens as any[]).map((tokenItem: any) => (
                     <AgentTokenCard
                       key={tokenItem.id}
@@ -560,7 +561,7 @@ export default function AgentTokenManager({
                       onDelete={setTokenToDelete}
                     />
                   ))}
-                </div>
+                </AutoAnimateContainer>
               ) : (
               <>
               <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">

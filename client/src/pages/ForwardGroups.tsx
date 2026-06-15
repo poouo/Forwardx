@@ -1,5 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
@@ -902,7 +903,7 @@ export function ForwardGroupsContent({
       ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <div className="standard-card-grid gap-4">
+          <AutoAnimateContainer className="standard-card-grid gap-4">
             {pagedGroups.map((group: any) => (
               <Card key={group.id} className="border-border/40 bg-card/60">
                 <CardContent className="space-y-3 p-4">
@@ -976,7 +977,7 @@ export function ForwardGroupsContent({
                 </CardContent>
               </Card>
             ))}
-          </div>
+          </AutoAnimateContainer>
         ) : (
           <>
           <div className="grid gap-3 sm:hidden">
