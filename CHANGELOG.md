@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.141] - 2026-06-15
+
+### Fixed
+
+- Fixed PROXY Protocol availability when adding forwarding rules, so port forwarding and host forward groups can enable it without first switching through tunnel forwarding.
+
+### Changed
+
+- Bumped panel version to 2.3.141. Agent target version remains 2.2.92.
+- Updated the Android APK release pointer to 2.3.141.
+
 ## [2.3.140] - 2026-06-15
 
 ### Added

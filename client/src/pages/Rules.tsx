@@ -1916,14 +1916,19 @@ function RulesContent() {
     : "";
   const proxyProtocolForwardType = mainBackupForwardType;
   const proxyProtocolProtocolSupported = form.protocol === "tcp" || form.protocol === "both";
+  const canAutoSwitchProxyProtocolToGost = !selectedForwardGroupIsChain
+    && proxyProtocolProtocolSupported
+    && proxyProtocolForwardType !== "gost"
+    && usableForwardTypes.includes("gost")
+    && (form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host"));
   const canUseProxyProtocol = !selectedForwardGroupIsChain
     && proxyProtocolProtocolSupported
-    && proxyProtocolForwardType === "gost";
+    && (proxyProtocolForwardType === "gost" || canAutoSwitchProxyProtocolToGost);
   const proxyProtocolDisabledText = selectedForwardGroupIsChain
     ? "端口转发链不支持 PROXY Protocol。"
     : !proxyProtocolProtocolSupported
     ? "PROXY Protocol 仅支持 TCP 协议。"
-    : proxyProtocolForwardType !== "gost"
+    : proxyProtocolForwardType !== "gost" && !canAutoSwitchProxyProtocolToGost
     ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持 PROXY Protocol。"
     : "";
 
@@ -2074,6 +2079,11 @@ function RulesContent() {
   };
 
   const handleSubmit = () => {
+    const submitForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel")
+      ? "gost"
+      : (form.proxyProtocolReceive || form.proxyProtocolSend) && canAutoSwitchProxyProtocolToGost
+      ? "gost"
+      : form.forwardType;
     if (!form.name || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && !form.hostId)) {
       toast.error("请填写所有必填字段（目标端口必须填写）");
       return;
@@ -2175,7 +2185,7 @@ function RulesContent() {
         id: editingId,
         hostId: form.routeMode === "group" ? undefined : form.hostId!,
         name: form.name,
-        forwardType: form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType,
+        forwardType: submitForwardType,
         protocol: form.protocol,
         gostMode: "direct",
         gostRelayHost: null,
@@ -2193,7 +2203,7 @@ function RulesContent() {
       createMutation.mutate({
         hostId: form.routeMode === "group" ? undefined : form.hostId!,
         name: form.name,
-        forwardType: form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType,
+        forwardType: submitForwardType,
         protocol: form.protocol,
         gostMode: "direct",
         gostRelayHost: null,
@@ -3785,7 +3795,11 @@ function RulesContent() {
                   <Switch
                     checked={form.proxyProtocolReceive}
                     disabled={!canUseProxyProtocol}
-                    onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })}
+                    onCheckedChange={(checked) => setForm({
+                      ...form,
+                      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : form.forwardType,
+                      proxyProtocolReceive: checked,
+                    })}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
@@ -3795,7 +3809,12 @@ function RulesContent() {
                   <Switch
                     checked={form.proxyProtocolSend}
                     disabled={!canUseProxyProtocol || form.failoverEnabled}
-                    onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked, failoverEnabled: checked ? false : form.failoverEnabled })}
+                    onCheckedChange={(checked) => setForm({
+                      ...form,
+                      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : form.forwardType,
+                      proxyProtocolSend: checked,
+                      failoverEnabled: checked ? false : form.failoverEnabled,
+                    })}
                   />
                 </div>
               </div>
