@@ -769,8 +769,8 @@ function PanelLogsSection() {
   const panelLogEnd = (panelLogs?.offset || 0) + panelLogEntries.length;
   const agentLogStart = agentLogEntries.length > 0 ? (agentLogs?.offset || 0) + 1 : 0;
   const agentLogEnd = (agentLogs?.offset || 0) + agentLogEntries.length;
-  const summary = panelLogs?.summary || {};
-  const agentSummary = agentLogs?.summary || {};
+  const summary = (panelLogs?.summary || {}) as Record<"all" | "info" | "warn" | "error" | "log", number>;
+  const agentSummary = (agentLogs?.summary || {}) as Record<"all" | "info" | "warn" | "error", number>;
   const levelTabs = [
     { value: "all", label: "全部", count: summary.all || 0 },
     { value: "info", label: "Info", count: summary.info || 0 },

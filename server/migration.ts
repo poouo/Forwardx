@@ -1,7 +1,8 @@
 import { Request, Response, Router } from "express";
 import nodeCrypto from "crypto";
 import { MIGRATION_TABLES, ensureDatabaseSchema } from "./dbSchema";
-import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
+import { countAll, quoteIdentifier } from "./dbCompat";
 import { getAllSettings, setSetting } from "./repositories/settingsRepository";
 import { getHosts, requestHostAgentUpgrade } from "./db";
 import { pushAgentUpgrade } from "./agentEvents";
@@ -119,7 +120,7 @@ export async function exportMigrationSnapshot(sourcePanelUrl?: string): Promise<
 }
 
 function quote(name: string) {
-  return quoteDbIdentifier(name);
+  return quoteIdentifier(name);
 }
 
 function normalizeValue(value: any) {
@@ -175,7 +176,7 @@ export function invalidatePanelDataSummaryCache() {
 }
 
 async function getTableCount(table: string) {
-  const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as "count" FROM ${quote(table)}`).catch(() => []);
+  const rows = await queryRaw<{ count: number }>(`SELECT ${countAll()} FROM ${quote(table)}`).catch(() => []);
   return Number(rows[0]?.count || 0);
 }
 
@@ -285,7 +286,7 @@ export function summarizeMigrationSnapshot(snapshot: MigrationSnapshot): Migrati
 
 const BACKUP_FORMAT = "forwardx-panel-backup" as const;
 const BACKUP_CIPHER = "aes-256-gcm" as const;
-const BACKUP_KDF = { name: "scrypt" as const, keyLength: 32, cost: 16384, blockSize: 8, parallelization: 1 };
+const BACKUP_KDF = { name: "scrypt" as const, keyLength: 32 as const, cost: 16384, blockSize: 8, parallelization: 1 };
 
 function deriveBackupKey(password: string, salt: Buffer) {
   return nodeCrypto.scryptSync(password, salt, BACKUP_KDF.keyLength, {

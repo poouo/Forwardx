@@ -1707,7 +1707,7 @@ function TunnelsContent() {
       ) : tunnels && tunnels.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <AutoAnimateContainer className="standard-card-grid gap-4">
             {pagedTunnels.map((tunnel: any) => {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);

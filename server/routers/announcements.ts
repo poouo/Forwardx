@@ -3,6 +3,7 @@ import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
+import { sanitizeHtml } from "../../shared/htmlSanitizer";
 
 const announcementInput = z.object({
   title: z.string().trim().min(1).max(120),
@@ -12,11 +13,7 @@ const announcementInput = z.object({
 });
 
 function sanitizeAnnouncementContent(content: string) {
-  return content
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
-    .replace(/\son\w+="[^"]*"/gi, "")
-    .replace(/\son\w+='[^']*'/gi, "")
-    .replace(/\s(?:href|src)=["']\s*javascript:[^"']*["']/gi, "");
+  return sanitizeHtml(content);
 }
 
 function escapeTelegramHtml(value: string) {

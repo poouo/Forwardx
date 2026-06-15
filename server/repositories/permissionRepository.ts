@@ -8,6 +8,7 @@ import {
   userTunnelPermissions,
 } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
+import { sqlCountAll, sqlCountDistinct } from "../dbCompat";
 import { getActiveUserSubscriptions } from "./billingRepository";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
 
@@ -19,7 +20,7 @@ export async function getUserAllowedHostIds(userId: number): Promise<number[]> {
   if (!db) return [];
   const rows = await db.select({ hostId: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId));
   const planRows = await _getActiveSubscriptionHostIds(userId);
-  return Array.from(new Set([...rows.map(r => r.hostId), ...planRows]));
+  return Array.from(new Set([...rows.map((r: any) => r.hostId), ...planRows]));
 }
 
 async function _getActiveSubscriptionHostIds(userId: number): Promise<number[]> {
@@ -56,7 +57,7 @@ export async function getUserAllowedHosts(userId: number) {
   const hostIds = await getUserAllowedHostIds(userId);
   if (hostIds.length === 0) return [];
   const allHosts = await db.select().from(hosts);
-  return allHosts.filter(h => hostIds.includes(h.id));
+  return allHosts.filter((h: any) => hostIds.includes(h.id));
 }
 
 /** 设置某用户的主机权限（全量替换） */
@@ -76,7 +77,7 @@ export async function getHostAllowedUserIds(hostId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ userId: userHostPermissions.userId }).from(userHostPermissions).where(eq(userHostPermissions.hostId, hostId));
-  return rows.map(r => r.userId);
+  return rows.map((r: any) => r.userId);
 }
 
 /** 检查用户是否有某主机的使用权限 */
@@ -113,7 +114,7 @@ export async function deleteUserPermissions(userId: number) {
 export async function getUserRuleCount(userId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
-  const r = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(and(
+  const r = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(
     eq(forwardRules.userId, userId),
     eq(forwardRules.pendingDelete, false),
     sql`${forwardRules.forwardGroupRuleId} IS NULL`,
@@ -125,7 +126,7 @@ export async function getUserRuleCount(userId: number): Promise<number> {
 export async function getUserPortCount(userId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
-  const r = await db.select({ count: sql<number>`COUNT(DISTINCT sourcePort)` }).from(forwardRules).where(and(
+  const r = await db.select({ count: sqlCountDistinct(forwardRules.sourcePort) }).from(forwardRules).where(and(
     eq(forwardRules.userId, userId),
     eq(forwardRules.pendingDelete, false),
     sql`${forwardRules.forwardGroupRuleId} IS NULL`,
@@ -157,7 +158,7 @@ export async function getUserAllowedTunnelIds(userId: number): Promise<number[]>
   if (!db) return [];
   const rows = await db.select({ tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
   const planRows = await _getActiveSubscriptionTunnelIds(userId);
-  return Array.from(new Set([...rows.map(r => r.tunnelId), ...planRows]));
+  return Array.from(new Set([...rows.map((r: any) => r.tunnelId), ...planRows]));
 }
 
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
@@ -178,7 +179,7 @@ export async function getTunnelsForUser(userId: number) {
     getUserUsableTrafficBillingResourceIds(userId),
   ]);
   const allAllowedTunnelIds = Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds]));
-  if (allAllowedTunnelIds.length === 0) return owned.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+  if (allAllowedTunnelIds.length === 0) return owned.sort((a: any, b: any) => Number(b.createdAt) - Number(a.createdAt));
   const ids = new Set(allAllowedTunnelIds);
   const all = await db.select().from(tunnels);
   const merged = new Map<number, any>();
@@ -186,7 +187,7 @@ export async function getTunnelsForUser(userId: number) {
   for (const tunnel of all) {
     if (ids.has(tunnel.id)) merged.set(tunnel.id, tunnel);
   }
-  return Array.from(merged.values()).sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+  return Array.from(merged.values()).sort((a: any, b: any) => Number(b.createdAt) - Number(a.createdAt));
 }
 
 export async function setUserTunnelPermissions(userId: number, tunnelIds: number[]) {

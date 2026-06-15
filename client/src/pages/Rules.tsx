@@ -2863,8 +2863,8 @@ function RulesContent() {
   };
 
   const ruleCardGridClass = ruleCardSize === "compact"
-    ? "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5"
-    : "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3";
+    ? "standard-card-grid-compact gap-3"
+    : "standard-card-grid gap-4";
   const ruleContentTransitionKey = `${ruleCategory}-${displayMode}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
   const renderRuleGroupIcon = (type: RuleGroupType, className = "h-4 w-4") => {

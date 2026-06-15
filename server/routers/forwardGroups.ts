@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import * as db from "../db";
-import { appendPanelLog } from "../_core/panelLogger";
-import { pushAgentRefresh } from "../agentEvents";
-import { createHopTestBatch, registerHopTest } from "../hopTestState";
 import { createQueryCache } from "../queryCache";
+import {
+  createForwardGroupFromInput,
+  deleteForwardGroupWithImpact,
+  getForwardGroupDeleteImpact,
+  runForwardGroupChainSelfTest,
+  updateForwardGroupFromInput,
+} from "../services/forwardGroupService";
 
 const memberSchema = z.object({
   memberType: z.enum(["host", "tunnel"]),
@@ -14,6 +18,7 @@ const memberSchema = z.object({
   priority: z.number().int().min(0).optional(),
   isEnabled: z.boolean().optional(),
 });
+
 const forwardGroupQueryCache = createQueryCache(300);
 
 const baseSchema = z.object({
@@ -29,48 +34,22 @@ const baseSchema = z.object({
   members: z.array(memberSchema).min(1),
 });
 
-function normalizeMembers(groupMode: "failover" | "chain", groupType: "host" | "tunnel", members: z.infer<typeof memberSchema>[]) {
-  const effectiveGroupType = groupMode === "chain" ? "host" : groupType;
-  if (groupMode === "chain" && (members.length < 2 || members.length > 5)) {
-    throw new Error("端口转发链需要配置 2-5 台主机");
+async function assertForwardGroupAccess(
+  groupId: number,
+  user: { id: number; role: string },
+  options: { allowNull?: boolean; silentUnauthorized?: boolean } = {},
+) {
+  const group = await db.getForwardGroupById(groupId) as any;
+  if (!group) {
+    if (options.allowNull) return null;
+    throw new Error("转发组不存在");
   }
-  const seen = new Set<string>();
-  return members.map((member, index) => {
-    if (member.memberType !== effectiveGroupType) throw new Error(groupMode === "chain" ? "端口转发链仅支持主机成员" : "成员类型必须与转发组类型一致");
-    const id = effectiveGroupType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0);
-    if (!id) throw new Error(effectiveGroupType === "host" ? "请选择成员主机" : "请选择成员隧道");
-    const key = `${effectiveGroupType}:${id}`;
-    if (seen.has(key)) throw new Error("成员不能重复");
-    seen.add(key);
-    return {
-      memberType: effectiveGroupType,
-      hostId: effectiveGroupType === "host" ? id : null,
-      tunnelId: effectiveGroupType === "tunnel" ? id : null,
-      connectHost: groupMode === "chain" ? String(member.connectHost || "").trim() || null : null,
-      priority: member.priority ?? index,
-      isEnabled: groupMode === "chain" ? true : member.isEnabled ?? true,
-    };
-  });
-}
-
-async function getForwardGroupDeleteImpact(groupId: number) {
-  const templateRules = ((await db.getForwardGroupTemplateRules(groupId)) as any[])
-    .filter((rule) => !rule.pendingDelete);
-  const childRules = ((await db.getForwardGroupChildRules(groupId)) as any[])
-    .filter((rule) => !rule.pendingDelete);
-  return {
-    templateRuleCount: templateRules.length,
-    childRuleCount: childRules.length,
-    forwardRuleCount: templateRules.length + childRules.length,
-    forwardRules: [...templateRules, ...childRules].slice(0, 8).map((rule) => ({
-      id: Number(rule.id),
-      name: String(rule.name || `规则 #${rule.id}`),
-      sourcePort: Number(rule.sourcePort || 0),
-      targetIp: String(rule.targetIp || ""),
-      targetPort: Number(rule.targetPort || 0),
-      managed: !rule.isForwardGroupTemplate,
-    })),
-  };
+  if (user.role !== "admin" && Number(group.userId) !== Number(user.id)) {
+    const allowed = await db.checkUserForwardGroupPermission(user.id, groupId);
+    if (!allowed && options.silentUnauthorized) return null;
+    if (!allowed) throw new Error("无权访问此转发组");
+  }
+  return group;
 }
 
 export const forwardGroupsRouter = router({
@@ -89,13 +68,8 @@ export const forwardGroupsRouter = router({
       hours: z.number().min(1).max(48).default(24),
     }))
     .query(async ({ input, ctx }) => {
-      const group = await db.getForwardGroupById(input.groupId) as any;
-      if (!group) throw new Error("转发链不存在");
+      const group = await assertForwardGroupAccess(input.groupId, ctx.user);
       if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路延迟图表");
-      if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) {
-        const allowed = await db.checkUserForwardGroupPermission(ctx.user.id, input.groupId);
-        if (!allowed) throw new Error("无权查看此转发链");
-      }
       const since = new Date(Date.now() - input.hours * 3600 * 1000);
       return forwardGroupQueryCache.get(
         `latencySeries:${ctx.user.id}:${input.groupId}:${input.hours}`,
@@ -107,60 +81,17 @@ export const forwardGroupsRouter = router({
   latestTest: protectedProcedure
     .input(z.object({ groupId: z.number() }))
     .query(async ({ input, ctx }) => {
-      const group = await db.getForwardGroupById(input.groupId) as any;
+      const group = await assertForwardGroupAccess(input.groupId, ctx.user, { allowNull: true, silentUnauthorized: true });
       if (!group) return null;
-      if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) {
-        const allowed = await db.checkUserForwardGroupPermission(ctx.user.id, input.groupId);
-        if (!allowed) return null;
-      }
       return await db.getLatestForwardGroupTest(input.groupId) || null;
     }),
 
   test: protectedProcedure
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const group = await db.getForwardGroupById(input.groupId) as any;
-      if (!group) throw new Error("转发链不存在");
+      const group = await assertForwardGroupAccess(input.groupId, ctx.user);
       if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路自测");
-      if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) {
-        const allowed = await db.checkUserForwardGroupPermission(ctx.user.id, input.groupId);
-        if (!allowed) throw new Error("无权测试此转发链");
-      }
-      await db.syncForwardGroupRules(input.groupId, { validatePorts: false, createMissing: false });
-      const template = await db.getForwardGroupPrimaryTemplateRule(input.groupId) as any;
-      const probes = await db.getForwardGroupChainProbes(input.groupId);
-      if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
-      const batchId = createHopTestBatch("fg", input.groupId);
-      let queued = 0;
-      for (const probe of probes) {
-        const message = JSON.stringify({
-          kind: "forward-chain",
-          groupId: input.groupId,
-          entryIp: probe.targetIp,
-          entrySourcePort: probe.targetPort,
-          targetIp: probe.targetIp,
-          targetPort: probe.targetPort,
-          method: probe.method,
-          hopLabel: probe.hopLabel,
-          routeLabel: probe.routeLabel,
-          batchId,
-        });
-        const testId = await db.createForwardTest({
-          ruleId: Number(template?.id || 0),
-          hostId: probe.fromHostId,
-          userId: Number(group.userId),
-          status: "pending",
-          listenOk: false,
-          targetReachable: false,
-          forwardOk: false,
-          message,
-        } as any);
-        registerHopTest(batchId, Number(testId));
-        pushAgentRefresh(probe.fromHostId, "forward-chain-selftest");
-        queued += 1;
-        appendPanelLog("info", `[SelfTest] forward-chain=${input.groupId} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}:${probe.targetPort}`);
-      }
-      return { success: false, pending: true, queued };
+      return runForwardGroupChainSelfTest(input.groupId);
     }),
 
   events: adminProcedure
@@ -172,48 +103,14 @@ export const forwardGroupsRouter = router({
   create: adminProcedure
     .input(baseSchema)
     .mutation(async ({ input, ctx }) => {
-      const groupMode = input.groupMode === "chain" ? "chain" : "failover";
-      const groupType = groupMode === "chain" ? "host" : input.groupType;
-      const members = normalizeMembers(groupMode, groupType, input.members);
-      const id = await db.createForwardGroup({
-        name: input.name,
-        groupMode,
-        groupType,
-        forwardType: groupType === "tunnel" ? "gost" : "iptables",
-        domain: groupMode === "chain" ? null : input.domain?.trim() || null,
-        recordType: groupMode === "chain" ? "A" : input.recordType,
-        sourcePort: 1,
-        protocol: "both",
-        targetIp: "0.0.0.0",
-        targetPort: 1,
-        failoverSeconds: input.failoverSeconds,
-        recoverSeconds: input.recoverSeconds,
-        autoFailback: input.autoFailback,
-        isEnabled: input.isEnabled,
-        userId: ctx.user.id,
-      } as any, members);
+      const id = await createForwardGroupFromInput(input, ctx.user.id);
       return { id };
     }),
 
   update: adminProcedure
     .input(baseSchema.extend({ id: z.number() }))
     .mutation(async ({ input }) => {
-      const groupMode = input.groupMode === "chain" ? "chain" : "failover";
-      const groupType = groupMode === "chain" ? "host" : input.groupType;
-      const members = normalizeMembers(groupMode, groupType, input.members);
-      await db.updateForwardGroup(input.id, {
-        name: input.name,
-        groupMode,
-        groupType,
-        forwardType: groupType === "tunnel" ? "gost" : "iptables",
-        domain: groupMode === "chain" ? null : input.domain?.trim() || null,
-        recordType: groupMode === "chain" ? "A" : input.recordType,
-        failoverSeconds: input.failoverSeconds,
-        recoverSeconds: input.recoverSeconds,
-        autoFailback: input.autoFailback,
-        isEnabled: input.isEnabled,
-      } as any, { skipSync: true });
-      await db.replaceForwardGroupMembers(input.id, members);
+      await updateForwardGroupFromInput(input.id, input);
       return { success: true };
     }),
 
@@ -228,14 +125,7 @@ export const forwardGroupsRouter = router({
   delete: adminProcedure
     .input(z.object({ id: z.number(), confirmRules: z.boolean().optional() }))
     .mutation(async ({ input }) => {
-      const group = await db.getForwardGroupById(input.id);
-      if (!group) throw new Error("转发组不存在");
-      const impact = await getForwardGroupDeleteImpact(input.id);
-      if (impact.forwardRuleCount > 0 && !input.confirmRules) {
-        throw new Error(`此转发组仍有关联转发规则 ${impact.forwardRuleCount} 条，请确认后再删除`);
-      }
-      await db.deleteForwardGroup(input.id);
-      return { success: true };
+      return deleteForwardGroupWithImpact(input.id, input.confirmRules);
     }),
 
   reorder: adminProcedure

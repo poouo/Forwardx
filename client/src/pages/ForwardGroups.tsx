@@ -902,7 +902,7 @@ export function ForwardGroupsContent({
       ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="standard-card-grid gap-4">
             {pagedGroups.map((group: any) => (
               <Card key={group.id} className="border-border/40 bg-card/60">
                 <CardContent className="space-y-3 p-4">

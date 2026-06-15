@@ -1,21 +1,9 @@
-import { sql } from "drizzle-orm";
-import { getDatabaseKind } from "../dbRuntime";
+export { epochSeconds, sqlBool } from "../dbCompat";
 
 export function clampPositiveInt(value: unknown, fallback: number, max: number) {
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.min(n, max);
-}
-
-export function epochSeconds(value: Date) {
-  return Math.floor(value.getTime() / 1000);
-}
-
-export function sqlBool(value: boolean) {
-  const literal = getDatabaseKind() === "postgresql"
-    ? (value ? "TRUE" : "FALSE")
-    : (value ? "1" : "0");
-  return sql.raw(literal);
 }
 
 export function addMonthsClamped(date: Date, months: number): Date {

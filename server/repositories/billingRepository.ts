@@ -70,14 +70,14 @@ async function getPlanHostIds(planId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ hostId: subscriptionPlanHosts.hostId }).from(subscriptionPlanHosts).where(eq(subscriptionPlanHosts.planId, planId));
-  return rows.map(r => r.hostId);
+  return rows.map((r: any) => r.hostId);
 }
 
 async function getPlanTunnelIds(planId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ tunnelId: subscriptionPlanTunnels.tunnelId }).from(subscriptionPlanTunnels).where(eq(subscriptionPlanTunnels.planId, planId));
-  return rows.map(r => r.tunnelId);
+  return rows.map((r: any) => r.tunnelId);
 }
 
 async function getPlanForwardGroupIds(planId: number): Promise<number[]> {
@@ -87,7 +87,7 @@ async function getPlanForwardGroupIds(planId: number): Promise<number[]> {
     .select({ forwardGroupId: subscriptionPlanForwardGroups.forwardGroupId })
     .from(subscriptionPlanForwardGroups)
     .where(eq(subscriptionPlanForwardGroups.planId, planId));
-  return rows.map(r => Number(r.forwardGroupId)).filter(Boolean);
+  return rows.map((r: any) => Number(r.forwardGroupId)).filter(Boolean);
 }
 
 async function getPlanTrafficAddons(planId: number, includeInactive = true) {
@@ -320,7 +320,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
     .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
     .where(and(...conds))
     .orderBy(desc(userSubscriptions.createdAt));
-  return Promise.all(rows.map(async (row) => ({
+  return Promise.all(rows.map(async (row: any) => ({
     ...row,
     hostIds: await getPlanHostIds(row.planId),
     tunnelIds: await getPlanTunnelIds(row.planId),
@@ -708,13 +708,13 @@ export async function syncUserSubscriptionEntitlements(userId: number) {
     ...limits,
     canAddRules: limits.canAddRules && !manualPaused && !trafficExceeded,
     allowForwardXTunnel: limits.allowForwardXTunnel && !manualPaused && !trafficExceeded,
-    forwardAccessPauseReason: limits.canAddRules && !manualPaused && !trafficExceeded
+    forwardAccessPauseReason: (limits.canAddRules && !manualPaused && !trafficExceeded
       ? null
       : manualPaused
       ? "manual"
       : trafficExceeded
       ? "traffic_limit"
-      : pauseReason,
+      : pauseReason) as ForwardAccessPauseReason,
   };
   await updateUserTrafficSettings(userId, nextLimits);
   if (!nextLimits.canAddRules) {
@@ -1461,7 +1461,7 @@ export async function redeemCode(userId: number, code: string) {
   if (item.usedAt || item.usedByUserId) throw new Error("兑换码已被使用");
   const now = new Date();
   if (item.startsAt && new Date(item.startsAt).getTime() > now.getTime()) throw new Error("兑换码尚未生效");
-  if (item.expiresAt && new Date(item.expiresAt).getTime() <= now.getTime()) throw new Error("鍏戞崲鐮佸凡杩囨湡");
+  if (item.expiresAt && new Date(item.expiresAt).getTime() <= now.getTime()) throw new Error("兑换码已过期");
   if (item.type === "balance") {
     if (Number(item.amountCents) <= 0) throw new Error("兑换码金额无效");
     const balance = await addUserBalance(userId, Number(item.amountCents), {
@@ -1509,7 +1509,7 @@ async function getDiscountPlanIds(discountCodeId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ planId: discountCodePlans.planId }).from(discountCodePlans).where(eq(discountCodePlans.discountCodeId, discountCodeId));
-  return rows.map(row => Number(row.planId)).filter(Boolean);
+  return rows.map((row: any) => Number(row.planId)).filter(Boolean);
 }
 
 async function attachDiscountPlans<T extends { id: number }>(codes: T[]) {

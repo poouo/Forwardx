@@ -919,7 +919,7 @@ export const paymentRouter = router({
       if (config.maxAmount > 0 && amount > config.maxAmount) throw new Error(`最高支付金额为 ${config.maxAmount}`);
 
       const userOrders = await db.listPaymentOrders(200, ctx.user.id);
-      const pendingCount = userOrders.filter((order) => order.status === "pending" && (!order.expiresAt || new Date(order.expiresAt).getTime() > Date.now())).length;
+      const pendingCount = userOrders.filter((order: any) => order.status === "pending" && (!order.expiresAt || new Date(order.expiresAt).getTime() > Date.now())).length;
       if (config.maxPendingOrders > 0 && pendingCount >= config.maxPendingOrders) {
         throw new Error("待支付订单过多，请先完成或等待旧订单过期");
       }

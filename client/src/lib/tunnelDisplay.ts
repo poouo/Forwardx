@@ -26,5 +26,5 @@ export function getTunnelHopIds(tunnel: any | null | undefined) {
 }
 
 export function getTunnelRouteText(tunnel: any | null | undefined, hosts: any[] | undefined) {
-  return getTunnelHopIds(tunnel).map((hostId) => tunnelHopHostName(tunnel, hostId, hosts)).join(" -> ");
+  return getTunnelHopIds(tunnel).map((hostId: number) => tunnelHopHostName(tunnel, hostId, hosts)).join(" -> ");
 }

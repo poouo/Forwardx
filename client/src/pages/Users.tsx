@@ -520,7 +520,7 @@ function UsersContent() {
     onError: (err) => toast.error(err.message || "取消订阅失败"),
   });
 
-  const adminCount = useMemo(() => users?.filter((u) => u.role === "admin").length ?? 0, [users]);
+  const adminCount = useMemo(() => users?.filter((u: any) => u.role === "admin").length ?? 0, [users]);
   const activeSubscriptionCount = useMemo(() => (allSubscriptions as any[]).filter(isSubscriptionActive).length, [allSubscriptions]);
   const userPagination = usePersistentPagination(users || [], {
     storageKey: "forwardx.users.page",
@@ -1382,7 +1382,7 @@ function UsersContent() {
             </div>
           ) : (
             <>
-              <AutoAnimateContainer className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <AutoAnimateContainer className="standard-card-grid gap-3">
                 {pagedSubscriptions.map((sub: any) => {
                   const active = isSubscriptionActive(sub);
                   const trafficLimit = Number(sub.trafficLimit || 0);

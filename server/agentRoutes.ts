@@ -128,7 +128,7 @@ agentRouter.post("/api/sync", agentEncryptionMiddleware, (req: Request, res: Res
     return;
   }
   req.url = tunneledPath;
-  agentApiRouter.handle(req, res, next);
+  (agentApiRouter as any).handle(req, res, next);
 });
 
 agentApiRouter.use(rejectAgentWhenPanelMigrated);

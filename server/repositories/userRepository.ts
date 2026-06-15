@@ -261,7 +261,7 @@ export async function createUser(data: { username: string; password: string; nam
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
+    avatar: randomMultiavatarValue(String(`user-${data.username}-${Date.now()}`)),
     role: data.role ?? "user",
     accountEnabled: true,
     canAddRules: data.canAddRules ?? false,
@@ -279,7 +279,7 @@ export async function registerUser(data: { username: string; password: string; n
     email: data.email ?? null,
     emailVerified: data.emailVerified ?? false,
     emailVerifiedAt: data.emailVerifiedAt ?? null,
-    avatar: randomMultiavatarValue(`user-${data.username}-${Date.now()}`),
+    avatar: randomMultiavatarValue(String(`user-${data.username}-${Date.now()}`)),
     role: "user",
     accountEnabled: true,
     canAddRules: false,
@@ -310,7 +310,7 @@ export async function updateUserAccount(userId: number, data: { username?: strin
   const password = data.password?.trim();
   if (password) patch.password = hashPassword(password);
   if (data.avatar !== undefined) {
-    patch.avatar = normalizeAvatarValue(data.avatar) || randomMultiavatarValue(`user-${userId}`);
+    patch.avatar = normalizeAvatarValue(data.avatar) || randomMultiavatarValue(String(`user-${userId}`));
   }
   if (Object.keys(patch).length > 1) {
     await db.update(users).set(patch).where(eq(users.id, userId));
@@ -338,7 +338,7 @@ export async function getUserAvatarQuota(userId: number) {
 export async function updateUserAvatarWithQuota(userId: number, avatar: string, options: { actorRole?: string; countQuota?: boolean } = {}) {
   const db = await getDb();
   if (!db) return getUserAvatarQuota(userId);
-  const normalized = normalizeAvatarValue(avatar) || randomMultiavatarValue(`user-${userId}`);
+  const normalized = normalizeAvatarValue(avatar) || randomMultiavatarValue(String(`user-${userId}`));
   const current = await getUserById(userId);
   if (!current) throw new Error("用户不存在");
   const isSelfServiceLimited = options.countQuota && options.actorRole !== "admin" && current.role !== "admin";
@@ -389,7 +389,7 @@ export function checkAvatarRandomRateLimit(userId: number) {
 
 export async function updateUserAvatarRandomWithQuota(userId: number, options: { actorRole?: string; countQuota?: boolean } = {}) {
   const rateLimit = checkAvatarRandomRateLimit(userId);
-  const avatar = randomMultiavatarValue(`user-${userId}-${Date.now()}-${rateLimit.remaining}`);
+  const avatar = randomMultiavatarValue(String(`user-${userId}-${Date.now()}-${rateLimit.remaining}`));
   const quota = await updateUserAvatarWithQuota(userId, avatar, options);
   return { avatar, quota, rateLimit };
 }

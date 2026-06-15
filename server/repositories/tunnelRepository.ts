@@ -1,7 +1,8 @@
 ﻿import crypto from "crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { tunnels, InsertTunnel, forwardRules, userTunnelPermissions, tunnelHops, InsertTunnelHop } from "../../drizzle/schema";
-import { executeRaw, quoteDbIdentifier, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { getHostById } from "./hostRepository";
 
@@ -70,40 +71,40 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
   const now = Math.floor(Date.now() / 1000);
 
   await executeRaw(
-    `UPDATE ${quoteDbIdentifier("tunnels")}
-     SET ${quoteDbIdentifier("isRunning")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
-     WHERE ${quoteDbIdentifier("isRunning")} = ?
+    `UPDATE ${quoteIdentifier("tunnels")}
+     SET ${quoteIdentifier("isRunning")} = ?, ${quoteIdentifier("updatedAt")} = ?
+     WHERE ${quoteIdentifier("isRunning")} = ?
        AND (
-         ${quoteDbIdentifier("entryHostId")} = ?
-         OR ${quoteDbIdentifier("exitHostId")} = ?
-         OR ${quoteDbIdentifier("id")} IN (
-           SELECT ${quoteDbIdentifier("tunnelId")}
-           FROM ${quoteDbIdentifier("tunnel_hops")}
-           WHERE ${quoteDbIdentifier("hostId")} = ?
+         ${quoteIdentifier("entryHostId")} = ?
+         OR ${quoteIdentifier("exitHostId")} = ?
+         OR ${quoteIdentifier("id")} IN (
+           SELECT ${quoteIdentifier("tunnelId")}
+           FROM ${quoteIdentifier("tunnel_hops")}
+           WHERE ${quoteIdentifier("hostId")} = ?
          )
        )`,
-    [false, now, true, id, id, id],
+    [boolValue(false), now, boolValue(true), id, id, id],
   );
 
   await executeRaw(
-    `UPDATE ${quoteDbIdentifier("forward_rules")}
-     SET ${quoteDbIdentifier("isRunning")} = ?, ${quoteDbIdentifier("updatedAt")} = ?
-     WHERE ${quoteDbIdentifier("isRunning")} = ?
+    `UPDATE ${quoteIdentifier("forward_rules")}
+     SET ${quoteIdentifier("isRunning")} = ?, ${quoteIdentifier("updatedAt")} = ?
+     WHERE ${quoteIdentifier("isRunning")} = ?
        AND (
-         ${quoteDbIdentifier("hostId")} = ?
-         OR ${quoteDbIdentifier("tunnelId")} IN (
-           SELECT ${quoteDbIdentifier("id")}
-           FROM ${quoteDbIdentifier("tunnels")}
-            WHERE ${quoteDbIdentifier("entryHostId")} = ?
-              OR ${quoteDbIdentifier("exitHostId")} = ?
-              OR ${quoteDbIdentifier("id")} IN (
-                SELECT ${quoteDbIdentifier("tunnelId")}
-                FROM ${quoteDbIdentifier("tunnel_hops")}
-                WHERE ${quoteDbIdentifier("hostId")} = ?
+         ${quoteIdentifier("hostId")} = ?
+         OR ${quoteIdentifier("tunnelId")} IN (
+           SELECT ${quoteIdentifier("id")}
+           FROM ${quoteIdentifier("tunnels")}
+            WHERE ${quoteIdentifier("entryHostId")} = ?
+              OR ${quoteIdentifier("exitHostId")} = ?
+              OR ${quoteIdentifier("id")} IN (
+                SELECT ${quoteIdentifier("tunnelId")}
+                FROM ${quoteIdentifier("tunnel_hops")}
+                WHERE ${quoteIdentifier("hostId")} = ?
               )
           )
         )`,
-    [false, now, true, id, id, id, id],
+    [boolValue(false), now, boolValue(true), id, id, id, id],
   );
 }
 
@@ -172,7 +173,7 @@ export async function isTunnelListenPortUsed(exitHostId: number, listenPort: num
   const db = await getDb();
   if (!db) return false;
   const rows = await db.select({ id: tunnels.id }).from(tunnels).where(and(eq(tunnels.exitHostId, exitHostId), eq(tunnels.listenPort, listenPort)));
-  return rows.some((row) => row.id !== excludeTunnelId);
+  return rows.some((row: any) => row.id !== excludeTunnelId);
 }
 
 export async function updateTunnelRunningStatus(id: number, isRunning: boolean) {
@@ -212,7 +213,7 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
     eq(forwardRules.pendingDelete, false),
   ];
   if (excludeRuleId) conds.push(sql`${forwardRules.id} != ${excludeRuleId}`);
-  const r = await db.select({ count: sql<number>`COUNT(*)` }).from(forwardRules).where(and(...conds));
+  const r = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(...conds));
   return (Number(r[0]?.count) || 0) > 0;
 }
 

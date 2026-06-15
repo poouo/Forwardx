@@ -728,7 +728,7 @@ export default function Payments() {
             ) : (
               <>
             <div className="grid gap-3 md:hidden">
-              {(orders || []).map((order) => (
+              {(orders || []).map((order: any) => (
                 <div key={order.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -776,7 +776,7 @@ export default function Payments() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(orders || []).map((order) => (
+                  {(orders || []).map((order: any) => (
                     <TableRow key={order.id}>
                       <TableCell className="font-mono text-xs">{order.outTradeNo}</TableCell>
                       <TableCell>{order.name || order.username || `#${order.userId}`}</TableCell>

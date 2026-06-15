@@ -902,7 +902,7 @@ export default function Billing() {
                 <div className="grid gap-3 md:hidden">
                   {discountCodes.map((code: any) => {
                     const status = discountStatus(code);
-                    const planNames = code.planIds?.length ? code.planIds.map((id: number) => plans.find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐";
+                    const planNames = code.planIds?.length ? code.planIds.map((id: number) => (plans as any[]).find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐";
                     return (
                       <div key={code.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                         <div className="flex items-start justify-between gap-2">
@@ -935,7 +935,7 @@ export default function Billing() {
                         <TableRow key={code.id}>
                           <TableCell className="font-mono">{code.code}</TableCell>
                           <TableCell>{code.discountType === "percent" ? `${code.discountValue}%` : money(code.discountValue)}</TableCell>
-                          <TableCell>{code.planIds?.length ? code.planIds.map((id: number) => plans.find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐"}</TableCell>
+                          <TableCell>{code.planIds?.length ? code.planIds.map((id: number) => (plans as any[]).find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐"}</TableCell>
                           <TableCell><Badge variant={status === "生效中" ? "default" : "secondary"}>{status}</Badge></TableCell>
                           <TableCell>{code.usedCount || 0} / {code.maxUses || "不限"}</TableCell>
                           <TableCell>{dateText(code.startsAt)} - {dateText(code.expiresAt)}</TableCell>

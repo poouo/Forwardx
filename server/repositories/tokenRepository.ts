@@ -35,8 +35,8 @@ export async function getAgentAuthTokenCandidates() {
   const tokenRows = await db.select({ token: agentTokens.token }).from(agentTokens);
   const hostRows = await db.select({ token: hosts.agentToken }).from(hosts);
   return Array.from(new Set([
-    ...tokenRows.map((row) => row.token),
-    ...hostRows.map((row) => row.token),
+    ...tokenRows.map((row: any) => row.token),
+    ...hostRows.map((row: any) => row.token),
   ].map((token) => String(token || "").trim()).filter(Boolean)));
 }
 

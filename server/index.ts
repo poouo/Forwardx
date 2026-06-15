@@ -101,7 +101,12 @@ async function startServer() {
   serveStatic(app);
 
   const preferredPort = Number.parseInt(process.env.PORT || "3000", 10);
-  const port = await findAvailablePort(preferredPort);
+  const isProduction = process.env.NODE_ENV === "production";
+  const port = isProduction ? preferredPort : await findAvailablePort(preferredPort);
+
+  if (isProduction && !(await isPortAvailable(preferredPort))) {
+    throw new Error(`Port ${preferredPort} is already in use`);
+  }
 
   if (port !== preferredPort) {
     console.warn(`[Server] Port ${preferredPort} is busy, using port ${port} instead`);

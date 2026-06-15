@@ -1,3 +1,5 @@
+import { escapeHtml, sanitizeHtml } from "@shared/htmlSanitizer";
+
 export function looksLikeHtml(content: string) {
   return /<\/?[a-z][\s\S]*>/i.test(content.trim());
 }
@@ -16,13 +18,7 @@ export function looksLikeMarkdown(content: string) {
 }
 
 export function textToHtml(content: string) {
-  return String(content || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-    .replace(/\r?\n/g, "<br>");
+  return escapeHtml(String(content || "")).replace(/\r?\n/g, "<br>");
 }
 
 function escapeAttribute(content: string) {
@@ -135,8 +131,8 @@ export function markdownToHtml(content: string) {
 
 export function renderMixedHtml(content: string) {
   const value = String(content || "");
-  if (looksLikeHtml(value)) return value;
-  if (looksLikeMarkdown(value)) return markdownToHtml(value);
+  if (looksLikeHtml(value)) return sanitizeHtml(value);
+  if (looksLikeMarkdown(value)) return sanitizeHtml(markdownToHtml(value));
   return textToHtml(value);
 }
 

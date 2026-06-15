@@ -3,10 +3,21 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
+import HostCard from "@/components/hosts/HostCard";
+import {
+  agentDetectedIpText,
+  compareVersions,
+  hostAddressLines,
+  hostAddressText,
+  HostRegionBadge,
+  hostRegionText,
+  isAgentUpgradeTimedOut,
+  isAgentVersionBehind,
+} from "@/components/hosts/hostDisplay";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -33,8 +44,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
@@ -44,13 +53,6 @@ import {
   Trash2,
   Pencil,
   Server,
-  Monitor,
-  Cpu,
-  HardDrive,
-  MemoryStick,
-  Clock,
-  ArrowDownToLine,
-  ArrowUpFromLine,
   LayoutGrid,
   List,
   Globe,
@@ -59,7 +61,6 @@ import {
   AlertTriangle,
   Loader2,
   RefreshCw,
-  Activity,
   Key,
   Rows3,
 } from "lucide-react";
@@ -68,9 +69,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
-const AGENT_UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 const HOSTS_LIST_CACHE_KEY = "forwardx.hosts.list.snapshot";
-const HOST_METRICS_CACHE_PREFIX = "forwardx.hosts.metrics.";
 const GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const GLOBE_BUMP_IMAGE_URL = "/globe/earth-topology.png";
 const GLOBE_BACKGROUND_IMAGE_URL = "/globe/night-sky.png";
@@ -106,15 +105,6 @@ function readCachedHosts() {
 
 function writeCachedHosts(hosts: any[]) {
   writeJsonCache(HOSTS_LIST_CACHE_KEY, hosts);
-}
-
-function readCachedHostMetrics(hostId: number | string) {
-  const metrics = readJsonCache<any[]>(`${HOST_METRICS_CACHE_PREFIX}${hostId}`, []);
-  return Array.isArray(metrics) ? metrics : [];
-}
-
-function writeCachedHostMetrics(hostId: number | string, metrics: any[]) {
-  writeJsonCache(`${HOST_METRICS_CACHE_PREFIX}${hostId}`, metrics.slice(0, 2));
 }
 
 function parseCustomPortsInput(value: string) {
@@ -153,14 +143,6 @@ function formatHostPortPolicy(host: any) {
   return parts.length > 0 ? parts.join(" + ") : "不限制";
 }
 
-function metricUsageProgressClass(value: unknown, isOnline: boolean) {
-  if (!isOnline) return "h-1.5 bg-muted [&>div]:bg-muted-foreground/40";
-  const usage = Number(value || 0);
-  if (usage >= 80) return "h-1.5 bg-muted [&>div]:bg-red-500";
-  if (usage >= 50) return "h-1.5 bg-muted [&>div]:bg-amber-500";
-  return "h-1.5 bg-muted [&>div]:bg-emerald-500";
-}
-
 function usePageVisible() {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState === "visible");
   useEffect(() => {
@@ -169,120 +151,6 @@ function usePageVisible() {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
   return visible;
-}
-
-function formatBytes(bytes: number | null | undefined): string {
-  const num = Number(bytes);
-  if (!num || isNaN(num) || num === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(Math.abs(num)) / Math.log(k));
-  return parseFloat((num / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-}
-
-function formatUptime(seconds: number | null | undefined): string {
-  if (!seconds) return "-";
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}天 ${h}小时`;
-  if (h > 0) return `${h}小时 ${m}分`;
-  return `${m}分钟`;
-}
-
-function normalizeVersion(version: string | null | undefined) {
-  return String(version || "").trim().replace(/^v/i, "");
-}
-
-function compareVersions(a: string | null | undefined, b: string | null | undefined) {
-  const pa = normalizeVersion(a).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const pb = normalizeVersion(b).split(/[.-]/).map((x) => Number.parseInt(x, 10) || 0);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-function pickLatestVersion(...versions: Array<string | null | undefined>) {
-  return versions
-    .map(normalizeVersion)
-    .filter(Boolean)
-    .reduce((latest, version) => (compareVersions(version, latest) > 0 ? version : latest), "");
-}
-
-function isAgentVersionBehind(version: string | null | undefined, target: string | null | undefined) {
-  if (!version || !target) return false;
-  return compareVersions(version, target) < 0;
-}
-
-function isAgentUpgradeTimedOut(host: any) {
-  if (!host?.agentUpgradeRequested || !host.agentUpgradeRequestedAt) return false;
-  const requestedAt = new Date(host.agentUpgradeRequestedAt).getTime();
-  return Number.isFinite(requestedAt) && Date.now() - requestedAt > AGENT_UPGRADE_TIMEOUT_MS;
-}
-
-function hostAddressLines(host: any) {
-  const rows: Array<{ label: string; value: string }> = [];
-  if (host.ipv4) rows.push({ label: "IPv4", value: host.ipv4 });
-  if (host.ipv6) rows.push({ label: "IPv6", value: host.ipv6 });
-  if (rows.length === 0 && host.ip && host.ip !== "unknown") rows.push({ label: "IP", value: host.ip });
-  if (rows.length === 0) rows.push({ label: "IP", value: "-" });
-  return rows;
-}
-
-function agentDetectedIpText(host: any) {
-  return hostAddressText(host);
-}
-
-function hostAddressText(host: any) {
-  const parts: string[] = [];
-  if (host.ipv4) parts.push(`IPv4 ${host.ipv4}`);
-  if (host.ipv6) parts.push(`IPv6 ${host.ipv6}`);
-  if (parts.length === 0 && host.ip && host.ip !== "unknown") parts.push(`IP ${host.ip}`);
-  return parts.join("  /  ") || "-";
-}
-
-function hostRegionText(host: any) {
-  const parts = [host.geoCountryName || host.geoCountryCode, host.geoRegion]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-  return parts.join(" / ");
-}
-
-function HostRegionBadge({ host, compact = false }: { host: any; compact?: boolean }) {
-  const countryCode = String(host.geoCountryCode || "").trim().toLowerCase();
-  const flagUrl = /^[a-z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode}.png` : "";
-  const fallbackCode = countryCode.toUpperCase();
-  const regionText = hostRegionText(host);
-  const hasGeo = !!(flagUrl || regionText);
-  const title = hasGeo ? [fallbackCode, regionText].filter(Boolean).join(" ") : "地区获取中";
-  return (
-    <span
-      className={`inline-flex min-w-0 items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
-      title={title}
-    >
-      {flagUrl && (
-        <>
-          <img
-            src={flagUrl}
-            alt={fallbackCode}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            className={`${compact ? "h-3 w-4" : "h-3.5 w-5"} shrink-0 rounded-[2px] object-cover shadow-sm`}
-            onError={(event) => {
-              event.currentTarget.style.display = "none";
-              const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
-              if (fallback) fallback.style.display = "inline";
-            }}
-          />
-          <span className="hidden shrink-0 font-mono leading-none">{fallbackCode}</span>
-        </>
-      )}
-      <span className="min-w-0 truncate">{regionText || "地区获取中"}</span>
-    </span>
-  );
 }
 
 function hostGeoCoordinate(host: any) {
@@ -791,316 +659,6 @@ function storeAgentTokenViewMode(viewMode: AgentTokenViewMode) {
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
-}
-
-/** 单个主机卡片组件 */
-function HostCard({
-  host,
-  onEdit,
-  onDelete,
-  onUpgrade,
-  canUpgrade,
-  latestAgentVersion,
-  refreshInterval,
-  compact = false,
-}: {
-  host: any;
-  onEdit: (host: any) => void;
-  onDelete: (id: number) => void;
-  onUpgrade: (host: any) => void;
-  canUpgrade: boolean;
-  latestAgentVersion?: string;
-  refreshInterval: number | false;
-  compact?: boolean;
-}) {
-  const { data: metrics } = trpc.hosts.metrics.useQuery(
-    { hostId: host.id, limit: 2 },
-    { refetchInterval: refreshInterval }
-  );
-  const cachedMetrics = useMemo(() => readCachedHostMetrics(host.id), [host.id]);
-  const displayMetrics = metrics === undefined ? cachedMetrics : metrics;
-  const latestMetric = displayMetrics?.[0];
-  const previousMetric = displayMetrics?.[1];
-  const totalNetworkIn = latestMetric?.networkIn == null ? null : Number(latestMetric.networkIn);
-  const totalNetworkOut = latestMetric?.networkOut == null ? null : Number(latestMetric.networkOut);
-  const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
-  const memoryTotal = host.memoryTotal == null ? null : Number(host.memoryTotal);
-  const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
-  const diskTotal = latestMetric?.diskTotal == null ? null : Number(latestMetric.diskTotal);
-  const cpuUsage = Number(latestMetric?.cpuUsage ?? 0);
-  const memoryUsage = Number(latestMetric?.memoryUsage ?? 0);
-  const diskUsage = Number(latestMetric?.diskUsage ?? 0);
-  const networkSpeed = useMemo(() => {
-    if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
-    const latestAt = new Date(latestMetric.recordedAt).getTime();
-    const previousAt = new Date(previousMetric.recordedAt).getTime();
-    const seconds = Math.max(1, (latestAt - previousAt) / 1000);
-    const inDelta = Math.max(0, Number(latestMetric.networkIn || 0) - Number(previousMetric.networkIn || 0));
-    const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
-    return { in: inDelta / seconds, out: outDelta / seconds };
-  }, [latestMetric, previousMetric]);
-  const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
-  const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
-  const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
-  const isOnline = !!host.isOnline;
-  const infoPanelClass = isOnline
-    ? "border-border/40 bg-background/30"
-    : "border-muted-foreground/20 bg-muted/25";
-  const trafficPanelClass = isOnline
-    ? "border-border/40 bg-muted/20"
-    : "border-muted-foreground/20 bg-muted/25";
-  const cardMinHeightClass = compact ? "min-h-[260px]" : "min-h-[420px]";
-  const compactMetricItemClass = "flex h-16 min-w-0 flex-col justify-between rounded-md border border-border/40 bg-background/35 px-2.5 py-2 transition-colors hover:bg-background/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
-  const compactMetricItems = [
-    {
-      key: "cpu",
-      label: "CPU",
-      icon: Cpu,
-      value: cpuUsage,
-      tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : `CPU 使用率 ${cpuUsage}%`,
-    },
-    {
-      key: "memory",
-      label: "内存",
-      icon: MemoryStick,
-      value: memoryUsage,
-      tooltip: memoryUsed !== null && memoryTotal
-        ? `内存使用率 ${memoryUsage}%\n${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)}`
-        : `内存使用率 ${memoryUsage}%`,
-    },
-    {
-      key: "disk",
-      label: "磁盘",
-      icon: HardDrive,
-      value: diskUsage,
-      tooltip: diskUsed !== null && diskTotal
-        ? `磁盘使用率 ${diskUsage}%\n${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`
-        : `磁盘使用率 ${diskUsage}%`,
-    },
-  ];
-
-  useEffect(() => {
-    if (!metrics?.length) return;
-    writeCachedHostMetrics(host.id, metrics);
-  }, [host.id, metrics]);
-
-  return (
-    <Card className={`${cardMinHeightClass} animate-in fade-in-0 zoom-in-95 backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out ${
-      isOnline
-        ? "border-border/40 bg-card/60 hover:border-border/60"
-        : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
-    }`}>
-      <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
-            <span className="flex min-w-0 flex-wrap items-center gap-2">
-              <Monitor className="h-4 w-4 shrink-0" />
-              <span className="min-w-0 max-w-full truncate">{host.name}</span>
-              <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground ${
-                isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
-              }`}>
-                {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
-              </span>
-              {agentNeedsUpdate && (
-                <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                  新版
-                </Badge>
-              )}
-              {host.agentUpgradeRequested && (
-                <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
-                  {agentUpgradeTimedOut ? "升级失败" : "升级中"}
-                </Badge>
-              )}
-            </span>
-          </CardTitle>
-          <div className="flex shrink-0 items-center justify-end gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              disabled={!canUpgrade}
-              title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
-              onClick={() => onUpgrade(host)}
-            >
-              {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => onEdit(host)}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-destructive hover:text-destructive"
-              onClick={() => {
-                if (confirm("确定要删除此主机吗？")) onDelete(host.id);
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className={`${compact ? "space-y-2 px-3.5 pb-3.5" : "space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
-        {/* 基本信息 */}
-        <div className={compact ? "space-y-1.5" : "space-y-2"}>
-          <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
-            <p className="truncate font-mono text-xs leading-5" title={hostAddressText(host)}>
-              <span className="mr-1.5 text-muted-foreground">地址</span>
-              {hostAddressText(host)}
-            </p>
-            <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
-              <HostRegionBadge host={host} />
-            </div>
-          </div>
-          <div className={`flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 ${compact ? "text-xs" : "text-sm"}`}>
-            <div className="flex items-center gap-1.5">
-              <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
-              <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
-            </div>
-            {!compact && <div className="flex min-w-0 items-center gap-1.5">
-              <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate" title={host.osInfo || ""}>{host.osInfo || "-"}</span>
-            </div>}
-          </div>
-        </div>
-
-        {/* 监控数据 */}
-        {latestMetric ? (
-          compact ? (
-            <div className="space-y-2 border-t border-border/30 pt-2">
-              <TooltipProvider delayDuration={120}>
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  {compactMetricItems.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <Tooltip key={item.key}>
-                        <TooltipTrigger asChild>
-                          <div className={compactMetricItemClass} aria-label={item.tooltip} tabIndex={0}>
-                            <div className="flex h-5 items-center justify-between gap-1">
-                              <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              <span className="shrink-0 text-right font-semibold leading-none tabular-nums">{item.value}%</span>
-                            </div>
-                            <Progress value={item.value} className={metricUsageProgressClass(item.value, isOnline)} />
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-[240px] whitespace-pre-line text-xs">
-                          {item.tooltip}
-                        </TooltipContent>
-                      </Tooltip>
-                    );
-                  })}
-                </div>
-              </TooltipProvider>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入</span>
-                    <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
-                  </div>
-                </div>
-                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出</span>
-                    <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <Clock className="h-3 w-3 text-muted-foreground" />
-                <span className="text-muted-foreground">运行</span>
-                <span className="ml-auto font-medium">{formatUptime(latestMetric.uptime)}</span>
-              </div>
-            </div>
-          ) : (
-          <div className="space-y-3 border-t border-border/30 pt-2">
-            {/* CPU */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
-                <span className="font-medium tabular-nums">{latestMetric.cpuUsage ?? 0}%</span>
-              </div>
-              <p className="truncate text-[11px] text-muted-foreground" title={host.cpuInfo || ""}>
-                {host.cpuInfo || "未上报 CPU 型号"}
-              </p>
-              <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
-            </div>
-            {/* 内存 - 显示具体数据和百分比 */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
-                <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
-                  {memoryUsed && memoryTotal
-                    ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
-                    : `${latestMetric.memoryUsage ?? 0}%`}
-                </span>
-              </div>
-              <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
-            </div>
-            {/* 磁盘 */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>
-                <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
-                  {diskUsed !== null && diskTotal
-                    ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)} (${latestMetric.diskUsage ?? 0}%)`
-                    : `-- / -- (${latestMetric.diskUsage ?? 0}%)`}
-                </span>
-              </div>
-              <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
-            </div>
-            {/* 流量 */}
-            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowDownToLine className="h-3 w-3" />
-                  <span>入站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
-                </div>
-              </div>
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowUpFromLine className="h-3 w-3" />
-                  <span>出站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
-                </div>
-              </div>
-            </div>
-            {/* 运行时间 */}
-            <div className="flex items-center gap-2 text-xs pt-1">
-              <Clock className="h-3 w-3 text-muted-foreground" />
-              <span className="text-muted-foreground">运行时间</span>
-              <span className="font-medium ml-auto">{formatUptime(latestMetric.uptime)}</span>
-            </div>
-          </div>
-          )
-        ) : (
-          <div className={`border-t border-border/30 text-center text-muted-foreground/60 ${compact ? "py-3" : "py-4"}`}>
-            <p className="text-xs">暂无监控数据</p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
 }
 
 function HostsContent() {
@@ -1634,7 +1192,7 @@ function HostsContent() {
           /* ========== 卡片式布局 ========== */
           <AutoAnimateContainer
             duration={240}
-            className={viewMode === "compact-card" ? "grid grid-cols-1 gap-3 transition-[gap] duration-200 md:grid-cols-2 xl:grid-cols-4" : "grid grid-cols-1 gap-4 transition-[gap] duration-200 md:grid-cols-2 xl:grid-cols-3"}
+            className={viewMode === "compact-card" ? "standard-card-grid-compact gap-3 transition-[gap] duration-200" : "standard-card-grid gap-4 transition-[gap] duration-200"}
           >
             {pagedHosts.map((host) => (
               <HostCard

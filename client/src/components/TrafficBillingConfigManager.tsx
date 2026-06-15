@@ -421,7 +421,7 @@ export default function TrafficBillingConfigManager({
           ) : (
             <AutoAnimateContainer duration={220}>
               {configViewMode === "card" ? (
-                <AutoAnimateContainer key="billing-config-card-view" className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" duration={220}>
+                <AutoAnimateContainer key="billing-config-card-view" className="standard-card-grid gap-3" duration={220}>
                   {(data?.configs || []).map((config: any) => (
                     <BillingConfigCard
                       key={config.id}
@@ -431,7 +431,7 @@ export default function TrafficBillingConfigManager({
                     />
                   ))}
                   {(data?.configs || []).length === 0 && (
-                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">暂无计费配置</div>
+                    <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">暂无计费配置</div>
                   )}
                 </AutoAnimateContainer>
               ) : (

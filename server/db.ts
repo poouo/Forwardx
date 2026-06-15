@@ -91,7 +91,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     password: hashPassword(input.password),
     name: input.name?.trim() || input.email,
     email: input.email,
-    avatar: randomMultiavatarValue(`admin-${input.email}-${Date.now()}`),
+    avatar: randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`)),
     role: "admin",
     accountEnabled: true,
     canAddRules: true,
@@ -113,8 +113,8 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     email: input.email,
     name: input.name?.trim() || input.email,
     avatar: (admin as any).avatar?.startsWith?.("preset:")
-      ? randomMultiavatarValue(`admin-${input.email}-${Date.now()}`)
-      : (admin as any).avatar || randomMultiavatarValue(`admin-${input.email}-${Date.now()}`),
+      ? randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`))
+      : (admin as any).avatar || randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`)),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

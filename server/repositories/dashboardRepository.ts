@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { forwardRules, hosts } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
+import { sqlCountAll } from "../dbCompat";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 
@@ -95,7 +96,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
 
   const hostStatsQuery = db
     .select({
-      totalHosts: sql<number>`COUNT(*)`,
+      totalHosts: sqlCountAll(),
       onlineHosts: sql<number>`COALESCE(SUM(CASE WHEN ${hosts.isOnline} = ${sqlBool(true)} AND ${hosts.lastHeartbeat} >= ${heartbeatFreshSince} THEN 1 ELSE 0 END), 0)`,
     })
     .from(hosts)
@@ -103,7 +104,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
 
   const ruleStatsQuery = db
     .select({
-      totalRules: sql<number>`COUNT(*)`,
+      totalRules: sqlCountAll(),
       activeRules: sql<number>`SUM(CASE WHEN ${forwardRules.isEnabled} = ${sqlBool(true)} THEN 1 ELSE 0 END)`,
     })
     .from(forwardRules)

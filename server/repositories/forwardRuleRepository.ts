@@ -1,6 +1,7 @@
 ﻿import { and, desc, eq, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardRules, InsertForwardRule } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate, quoteDbIdentifier } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
 import { sqlBool } from "./repositoryUtils";
 
@@ -191,16 +192,16 @@ export async function disableForwardRulesOutsideHostPortRange(
   if (affected.length === 0) return 0;
   const message = String(reason || `入口端口不在当前主机允许范围 ${describePortPolicy(policy)} 内，请修改端口后再启用。`).slice(0, 300);
   const now = Math.floor(Date.now() / 1000);
-  const ids = affected.map((rule: any) => Number(rule.id)).filter((ruleId) => Number.isInteger(ruleId) && ruleId > 0);
+  const ids = affected.map((rule: any) => Number(rule.id)).filter((ruleId: number) => Number.isInteger(ruleId) && ruleId > 0);
   if (ids.length === 0) return 0;
   await executeRaw(
-    `UPDATE ${quoteDbIdentifier("forward_rules")}
-     SET ${quoteDbIdentifier("isEnabled")} = ?,
-         ${quoteDbIdentifier("isRunning")} = ?,
-         ${quoteDbIdentifier("protocolBlockReason")} = ?,
-         ${quoteDbIdentifier("updatedAt")} = ?
-     WHERE ${quoteDbIdentifier("id")} IN (${ids.map(() => "?").join(",")})`,
-    [false, false, message, now, ...ids],
+    `UPDATE ${quoteIdentifier("forward_rules")}
+     SET ${quoteIdentifier("isEnabled")} = ?,
+         ${quoteIdentifier("isRunning")} = ?,
+         ${quoteIdentifier("protocolBlockReason")} = ?,
+         ${quoteIdentifier("updatedAt")} = ?
+     WHERE ${quoteIdentifier("id")} IN ${inList(ids).sql}`,
+    [boolValue(false), boolValue(false), message, now, ...ids],
   );
   return affected.length;
 }

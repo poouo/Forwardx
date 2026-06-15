@@ -643,6 +643,147 @@ function normalizeOptionalHttpUrl(value: string) {
   return trimmed.replace(/\/+$/, "");
 }
 
+function databaseSettingsSummary(all: Record<string, string | null>, exposeDetails = true) {
+  const type = all.databaseType || (all.postgresqlConfigured === "true" ? "postgresql" : all.mysqlConfigured === "true" ? "mysql" : "sqlite");
+  const configured = all.databaseConfigured === "true" || all.mysqlConfigured === "true" || all.postgresqlConfigured === "true";
+  if (!exposeDetails) {
+    return {
+      type: "sqlite",
+      configured: false,
+      mysqlHost: "",
+      mysqlDatabase: "",
+      postgresqlHost: "",
+      postgresqlDatabase: "",
+      sqlitePath: "",
+    };
+  }
+  return {
+    type,
+    configured,
+    mysqlHost: all.mysqlHost ?? "",
+    mysqlDatabase: all.mysqlDatabase ?? "",
+    postgresqlHost: all.postgresqlHost ?? "",
+    postgresqlDatabase: all.postgresqlDatabase ?? "",
+    sqlitePath: all.sqlitePath ?? "",
+  };
+}
+
+function publicSystemSettings(all: Record<string, string | null>, activeProtocol: string) {
+  return {
+    repoUrl: REPO_URL,
+    telegramBotUrl: TELEGRAM_BOT_URL,
+    version: APP_VERSION,
+    androidAppVersion: ANDROID_APP_VERSION,
+    androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
+    agentVersion: AGENT_VERSION,
+    siteTitle: all.siteTitle || "ForwardX",
+    siteLogoDataUrl: all.siteLogoDataUrl || "",
+    panelPublicUrl: all.panelPublicUrl ?? "",
+    panelSsl: {
+      enabled: false,
+      mode: "path" as const,
+      certPath: "",
+      keyPath: "",
+      certPem: "",
+      keyPem: "",
+      activeProtocol,
+    },
+    webPort: ENV.port,
+    webPortManagement: {
+      enabled: false,
+      docker: isDockerRuntime(),
+    },
+    registrationEnabled: all.registrationEnabled !== "false",
+    twoFactorEnabled: all.twoFactorEnabled === "true",
+    lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+    homepageEnabled: all.homepageEnabled !== "false",
+    homepageCustomEnabled: all.homepageCustomEnabled === "true",
+    homepageHtml: all.homepageHtml ?? "",
+    forwardProtocols: normalizeForwardProtocolSettings(
+      parseForwardProtocolSettings(all.forwardProtocols),
+    ),
+    tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
+    agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
+    githubAccelerator: {
+      enabled: all.githubAcceleratorEnabled === "true",
+      url: all.githubAcceleratorUrl ?? "",
+    },
+    agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
+    database: databaseSettingsSummary(all, false),
+    mysql: {
+      configured: false,
+      host: "",
+      database: "",
+    },
+    postgresql: {
+      configured: false,
+      host: "",
+      database: "",
+    },
+    email: {
+      enabled: false,
+      host: "",
+      port: 587,
+      secure: false,
+      user: "",
+      from: "",
+      verifyRegistration: false,
+      whitelistEnabled: false,
+      whitelist: "",
+      expiryReminder: false,
+      trafficReminder: false,
+      trafficReminderThreshold: 20,
+    },
+    ddns: {
+      enabled: false,
+      provider: "disabled",
+      cloudflareZoneId: "",
+      cloudflareTokenMasked: "",
+      huaweicloudAccessKeyId: "",
+      huaweicloudSecretKeyMasked: "",
+      huaweicloudRegion: "cn-north-4",
+      huaweicloudEndpoint: "",
+      huaweicloudZoneId: "",
+      huaweicloudTtl: 300,
+      huaweicloudLine: "default_view",
+      aliyunAccessKeyId: "",
+      aliyunAccessKeySecretMasked: "",
+      aliyunDomainName: "",
+      aliyunEndpoint: "https://alidns.aliyuncs.com",
+      aliyunTtl: 600,
+      aliyunLine: "default",
+      tencentcloudSecretId: "",
+      tencentcloudSecretKeyMasked: "",
+      tencentcloudDomainName: "",
+      tencentcloudTtl: 600,
+      tencentcloudRecordLine: "默认",
+      tencentcloudRecordLineId: "",
+      webhookUrl: "",
+      webhookMethod: "POST",
+      webhookHeaders: "",
+    },
+    agentEncryption: "aes-256-ctr+hmac-sha256",
+    upgrade: {
+      enabled: false,
+      docker: false,
+      dockerSocket: false,
+      commandConfigured: false,
+      manualUpgradeCommand: "",
+    },
+    telegram: {
+      enabled: false,
+      configured: false,
+      botUsername: "",
+      tokenMasked: "",
+      tokenSource: "none" as const,
+      polling: false,
+      expiryReminder: false,
+      trafficReminder: false,
+      trafficReminderThreshold: 20,
+    },
+  };
+}
+
 export const systemRouter = router({
   health: publicProcedure.query(() => {
     return { status: "ok", timestamp: new Date().toISOString() };
@@ -669,45 +810,10 @@ export const systemRouter = router({
     const all = await db.getAllSettings();
     const panelSsl = readPanelSslSettings(all);
     const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    const safeSettings = {
-      repoUrl: REPO_URL,
-      telegramBotUrl: TELEGRAM_BOT_URL,
-      version: APP_VERSION,
-      androidAppVersion: ANDROID_APP_VERSION,
-      androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
-      agentVersion: AGENT_VERSION,
-      siteTitle: all.siteTitle || "ForwardX",
-      siteLogoDataUrl: all.siteLogoDataUrl || "",
-      panelPublicUrl: all.panelPublicUrl ?? "",
-      registrationEnabled: all.registrationEnabled !== "false",
-      twoFactorEnabled: all.twoFactorEnabled === "true",
-      lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
-      homepageEnabled: all.homepageEnabled !== "false",
-      homepageCustomEnabled: all.homepageCustomEnabled === "true",
-      homepageHtml: all.homepageHtml ?? "",
-      forwardProtocols: normalizeForwardProtocolSettings(
-        parseForwardProtocolSettings(all.forwardProtocols),
-      ),
-      tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
-      agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
-      githubAccelerator: {
-        enabled: all.githubAcceleratorEnabled === "true",
-        url: all.githubAcceleratorUrl ?? "",
-      },
-      agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
-      agentEncryption: "aes-256-ctr+hmac-sha256",
-    };
+    const safeSettings = publicSystemSettings(all, activeProtocol);
     if (!ctx.user || ctx.user.role !== "admin") return safeSettings;
     return {
-      repoUrl: REPO_URL,
-      telegramBotUrl: TELEGRAM_BOT_URL,
-      version: APP_VERSION,
-      androidAppVersion: ANDROID_APP_VERSION,
-      androidApkDownloadUrl: ANDROID_APK_DOWNLOAD_URL,
-      agentVersion: AGENT_VERSION,
-      siteTitle: all.siteTitle || "ForwardX",
-      siteLogoDataUrl: all.siteLogoDataUrl || "",
-      panelPublicUrl: all.panelPublicUrl ?? "",
+      ...safeSettings,
       panelSsl: {
         enabled: panelSsl.enabled,
         mode: panelSsl.mode,
@@ -731,24 +837,23 @@ export const systemRouter = router({
       forwardProtocols: normalizeForwardProtocolSettings(
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
-        tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
-        agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
-        githubAccelerator: {
-          enabled: all.githubAcceleratorEnabled === "true",
-          url: all.githubAcceleratorUrl ?? "",
-        },
-        agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
-      database: {
-        type: all.databaseType || (all.mysqlConfigured === "true" ? "mysql" : "sqlite"),
-        configured: Boolean(all.databaseConfigured || all.mysqlConfigured),
-        mysqlHost: all.mysqlHost ?? "",
-        mysqlDatabase: all.mysqlDatabase ?? "",
-        sqlitePath: all.sqlitePath ?? "",
+      tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
+      agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
+      githubAccelerator: {
+        enabled: all.githubAcceleratorEnabled === "true",
+        url: all.githubAcceleratorUrl ?? "",
       },
+      agentPreferPanelInstall: all.agentPreferPanelInstall === "true",
+      database: databaseSettingsSummary(all),
       mysql: {
-        configured: Boolean(all.mysqlConfigured ?? ""),
+        configured: all.mysqlConfigured === "true",
         host: all.mysqlHost ?? "",
         database: all.mysqlDatabase ?? "",
+      },
+      postgresql: {
+        configured: all.postgresqlConfigured === "true",
+        host: all.postgresqlHost ?? "",
+        database: all.postgresqlDatabase ?? "",
       },
       email: {
         enabled: all.emailEnabled === "true",

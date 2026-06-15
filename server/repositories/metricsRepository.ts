@@ -12,7 +12,8 @@ import {
   tunnelLatencyStats, InsertTunnelLatencyStat,
   forwardGroupLatencyStats, InsertForwardGroupLatencyStat,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows, quoteDbIdentifier } from "../dbRuntime";
+import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
+import { boolLiteral, bucketExpression, limitOffset, quoteIdentifier } from "../dbCompat";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 import { getSetting, setSetting } from "./settingsRepository";
 
@@ -44,20 +45,12 @@ function bucketStartFor(seconds: number) {
   return trafficBucketFor(seconds, TRAFFIC_BUCKET_SECONDS);
 }
 
-function intCastSql(expr: string) {
-  return getDatabaseKind() === "mysql" ? `CAST(${expr} AS SIGNED)` : `CAST(${expr} AS INTEGER)`;
-}
-
 function bucketExprSql(alias: string, bucketSec: number) {
-  const q = quoteDbIdentifier;
-  const divided = getDatabaseKind() === "sqlite"
-    ? `(${alias}.${q("recordedAt")} / ${bucketSec})`
-    : `FLOOR(${alias}.${q("recordedAt")} / ${bucketSec})`;
-  return `${intCastSql(divided)} * ${bucketSec}`;
+  return bucketExpression(alias, "recordedAt", bucketSec);
 }
 
 function rawBoolSql(value: boolean) {
-  return getDatabaseKind() === "postgresql" ? (value ? "TRUE" : "FALSE") : (value ? "1" : "0");
+  return boolLiteral(value);
 }
 
 function warnTrafficBucketOnce(error: unknown) {
@@ -114,21 +107,21 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   const db = await getDb();
   if (!db) return [];
   const rule = await getRuleWithCreatedAt(ruleId);
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const conditions = [`${q("ruleId")} = ?`];
   const params: any[] = [ruleId];
   if (rule?.createdAt) {
     conditions.push(`${q("recordedAt")} >= ?`);
     params.push(epochSeconds(rule.createdAt));
   }
-  params.push(clampPositiveInt(limit, 60, 500));
+  const limitSql = limitOffset(clampPositiveInt(limit, 60, 500));
   const rows = await queryRaw<any>(
     `SELECT ${q("id")}, ${q("ruleId")}, ${q("hostId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("connections")}, ${q("recordedAt")}
        FROM ${q("traffic_stats")}
       WHERE ${conditions.join(" AND ")}
       ORDER BY ${q("recordedAt")} DESC
-      LIMIT ?`,
-    params,
+      ${limitSql.sql}`,
+    [...params, ...limitSql.params],
   );
   return rows.map((row) => ({
     ...row,
@@ -184,7 +177,7 @@ async function upsertTrafficStatBucket(input: {
   recordedAt: Date;
 }) {
   const kind = getDatabaseKind();
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const table = q("traffic_stat_buckets");
   const cols = ["bucketStart", "bucketMinutes", "userId", "ruleId", "hostId", "bytesIn", "bytesOut", "connections", "updatedAt"];
   const recordedSec = epochSeconds(input.recordedAt);
@@ -238,7 +231,7 @@ export async function ensureTrafficStatBucketsBackfilled(options: { force?: bool
     return { skipped: true, rows: 0 };
   }
   const startedAt = Date.now();
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const bucketSql = bucketExprSql("ts", TRAFFIC_BUCKET_SECONDS);
   await executeRaw(`DELETE FROM ${q("traffic_stat_buckets")}`);
   const result = await executeRaw(
@@ -298,7 +291,7 @@ async function getTrafficSummaryRowsFromBuckets(opts: {
   ruleIds?: number[];
 }) {
   if (!await trafficBucketsReady()) return null;
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const conditions = [`b.${q("bucketMinutes")} = ?`];
   const params: any[] = [TRAFFIC_BUCKET_MINUTES];
   if (opts.hostId) {
@@ -339,7 +332,7 @@ async function getTrafficSummaryRowsFromStats(opts: {
   since?: Date;
   ruleIds?: number[];
 }) {
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const conditions: string[] = [];
   const params: any[] = [];
   if (opts.hostId) {
@@ -416,7 +409,7 @@ async function getForwardGroupModeMap(groupIds: number[]) {
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   if (await trafficBucketsReady()) {
     const where = userId ? `WHERE ${q("userId")} = ?` : "";
     const rows = await queryRaw<{ totalIn: number; totalOut: number }>(
@@ -459,7 +452,7 @@ export async function getTotalTraffic(userId?: number) {
   };
 }
 
-/** 鎸夎鍒欐眹鎬绘祦閲?*/
+/** 按规则汇总流量 */
 export async function getTrafficSummaryByRule(opts: {
   userId?: number;
   hostId?: number;
@@ -661,7 +654,7 @@ export async function getTrafficSummaryByRule(opts: {
     ...Array.from(parentByChildRule.keys()),
     ...Array.from(parentChainChildren.values()).flat(),
   ]));
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const latestRows = latencyRuleIds.length > 0
     ? await queryRaw<any>(
       `SELECT s.${q("ruleId")} AS ${q("ruleId")},
@@ -745,7 +738,7 @@ export async function getTrafficSeriesByRule(
   const sinceSec = Math.floor(effectiveSince.getTime() / 1000);
   const bucketSec = bucket * 60;
 
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const useBuckets = bucket === TRAFFIC_BUCKET_MINUTES && await trafficBucketsReady();
   const rows = useBuckets
     ? await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number; connections: number }>(
@@ -782,7 +775,7 @@ export async function getTrafficSeriesByRule(
   })).filter((r: { bucket: Date }) => r.bucket.getTime() / 1000 >= sinceSec);
 }
 
-/** 鑾峰彇鍏ㄥ眬娴侀噺璧板娍锛堟寜鏃堕棿鍒嗘《锛岀敤浜庝华琛ㄧ洏锛?*/
+/** 获取全局流量走势（按时间分桶，用于仪表盘） */
 export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; since?: Date; userId?: number } = {}) {
   const db = await getDb();
   if (!db) return [] as Array<{ bucket: Date; bytesIn: number; bytesOut: number }>;
@@ -793,7 +786,7 @@ export async function getGlobalTrafficSeries(opts: { bucketMinutes?: number; sin
   const nowSec = epochSeconds(nowDate());
   const startBucketSec = Math.floor(sinceSec / bucketSec) * bucketSec;
   const endBucketSec = Math.floor(nowSec / bucketSec) * bucketSec;
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const trafficTable = q("traffic_stats");
   const rulesTable = q("forward_rules");
   const canUseBuckets = bucket === TRAFFIC_BUCKET_MINUTES && await trafficBucketsReady();
@@ -901,7 +894,7 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
   if (!db || ids.length === 0) {
     return new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
   }
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
     `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
@@ -935,15 +928,16 @@ export async function getTunnelLatencySeries(
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000);
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const startedAt = Date.now();
+  const page = limitOffset(limit);
   const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("tunnel_latency_stats")}
       WHERE ${q("tunnelId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
-      LIMIT ?`,
-    [tunnelId, epochSeconds(since), limit],
+      ${page.sql}`,
+    [tunnelId, epochSeconds(since), ...page.params],
   );
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs > 800) {
@@ -970,15 +964,16 @@ export async function getForwardGroupLatencySeries(
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000);
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const startedAt = Date.now();
+  const page = limitOffset(limit);
   const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("forward_group_latency_stats")}
       WHERE ${q("groupId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
-      LIMIT ?`,
-    [groupId, epochSeconds(since), limit],
+      ${page.sql}`,
+    [groupId, epochSeconds(since), ...page.params],
   );
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs > 800) {
@@ -999,7 +994,7 @@ export async function getTcpingSeriesByRule(
   if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000); // 24h * 120 per hour max
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const childRows = await db
     .select({
       id: forwardRules.id,
@@ -1014,14 +1009,15 @@ export async function getTcpingSeriesByRule(
     const chainChildren = (childRows as any[]).filter((row: any) => groupModeById.get(Number(row.groupId || 0)) === "chain");
     if (chainChildren.length > 0) {
       const childIds = chainChildren.map((row: any) => Number(row.id)).filter((id: number) => id > 0);
+      const page = limitOffset(Math.max(limit * childIds.length, limit));
       const rawRows = await queryRaw<any>(
         `SELECT ${q("ruleId")}, ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
            FROM ${q("tcping_stats")}
          WHERE ${q("ruleId")} IN (${childIds.map(() => "?").join(",")})
            AND ${q("recordedAt")} >= ?
           ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
-          LIMIT ?`,
-        [...childIds, epochSeconds(since), Math.max(limit * childIds.length, limit)],
+          ${page.sql}`,
+        [...childIds, epochSeconds(since), ...page.params],
       );
       const bucketMs = 30_000;
       const byBucket = new Map<number, { latencyMs: number; timeoutCount: number; count: number; recordedAt: Date }>();
@@ -1048,13 +1044,14 @@ export async function getTcpingSeriesByRule(
         }));
     }
   }
+  const page = limitOffset(limit);
   const rows = await queryRaw<any>(
     `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
        FROM ${q("tcping_stats")}
       WHERE ${q("ruleId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
-      LIMIT ?`,
-    [ruleId, epochSeconds(since), limit],
+      ${page.sql}`,
+    [ruleId, epochSeconds(since), ...page.params],
   );
   return rows.reverse().map((row) => ({
     latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
@@ -1070,7 +1067,7 @@ export async function getGlobalTcpingSeries(opts: { bucketMinutes?: number; sinc
   const bucket = clampPositiveInt(opts.bucketMinutes, 1, 60);
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const bucketSec = bucket * 60;
-  const q = quoteDbIdentifier;
+  const q = quoteIdentifier;
   const conditions = [`s.${q("recordedAt")} >= ?`];
   const params: any[] = [epochSeconds(since)];
   if (opts.userId) {
@@ -1126,10 +1123,10 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
   const cutoffSec = Math.floor((Date.now() - ttlSeconds * 1000) / 1000);
   const nowSec = Math.floor(Date.now() / 1000);
   const staleTests = await queryRaw<TimedOutForwardTest>(
-    `SELECT ${quoteDbIdentifier("id")}, ${quoteDbIdentifier("ruleId")}, ${quoteDbIdentifier("hostId")}, ${quoteDbIdentifier("message")}
-     FROM ${quoteDbIdentifier("forward_tests")}
-     WHERE ${quoteDbIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteDbIdentifier("updatedAt")} < ?`,
+    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
+     FROM ${quoteIdentifier("forward_tests")}
+     WHERE ${quoteIdentifier("status")} IN ('pending', 'running')
+       AND ${quoteIdentifier("updatedAt")} < ?`,
     [cutoffSec],
   );
   if (staleTests.length === 0) return [];
@@ -1141,23 +1138,23 @@ export async function timeoutStaleForwardTests(ttlSeconds: number = 60): Promise
   if (ids.length === 0) return [];
   const placeholders = ids.map(() => "?").join(", ");
   const info: any = await executeRaw(
-    `UPDATE ${quoteDbIdentifier("forward_tests")}
-     SET ${quoteDbIdentifier("status")} = 'timeout',
-         ${quoteDbIdentifier("message")} = COALESCE(NULLIF(${quoteDbIdentifier("message")}, ''), ${messageExpr}),
-         ${quoteDbIdentifier("updatedAt")} = ?
-     WHERE ${quoteDbIdentifier("id")} IN (${placeholders})
-       AND ${quoteDbIdentifier("status")} IN ('pending', 'running')
-       AND ${quoteDbIdentifier("updatedAt")} < ?`,
+    `UPDATE ${quoteIdentifier("forward_tests")}
+     SET ${quoteIdentifier("status")} = 'timeout',
+         ${quoteIdentifier("message")} = COALESCE(NULLIF(${quoteIdentifier("message")}, ''), ${messageExpr}),
+         ${quoteIdentifier("updatedAt")} = ?
+     WHERE ${quoteIdentifier("id")} IN (${placeholders})
+       AND ${quoteIdentifier("status")} IN ('pending', 'running')
+       AND ${quoteIdentifier("updatedAt")} < ?`,
     [ttlSeconds, nowSec, ...ids, cutoffSec],
   );
   const changed = rawAffectedRows(info);
   if (changed <= 0) return [];
   return queryRaw<TimedOutForwardTest>(
-    `SELECT ${quoteDbIdentifier("id")}, ${quoteDbIdentifier("ruleId")}, ${quoteDbIdentifier("hostId")}, ${quoteDbIdentifier("message")}
-     FROM ${quoteDbIdentifier("forward_tests")}
-     WHERE ${quoteDbIdentifier("id")} IN (${placeholders})
-       AND ${quoteDbIdentifier("status")} = 'timeout'
-       AND ${quoteDbIdentifier("updatedAt")} = ?`,
+    `SELECT ${quoteIdentifier("id")}, ${quoteIdentifier("ruleId")}, ${quoteIdentifier("hostId")}, ${quoteIdentifier("message")}
+     FROM ${quoteIdentifier("forward_tests")}
+     WHERE ${quoteIdentifier("id")} IN (${placeholders})
+       AND ${quoteIdentifier("status")} = 'timeout'
+       AND ${quoteIdentifier("updatedAt")} = ?`,
     [...ids, nowSec],
   );
 }

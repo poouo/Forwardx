@@ -549,8 +549,8 @@ export default function AgentTokenManager({
           ) : tokens && tokens.length > 0 ? (
             <>
               {viewMode === "card" ? (
-                <div className="grid grid-cols-1 gap-4 p-3 md:grid-cols-2 xl:grid-cols-3">
-                  {tokens.map((tokenItem) => (
+                <div className="standard-card-grid gap-4 p-3">
+                  {(tokens as any[]).map((tokenItem: any) => (
                     <AgentTokenCard
                       key={tokenItem.id}
                       tokenItem={tokenItem}
@@ -564,7 +564,7 @@ export default function AgentTokenManager({
               ) : (
               <>
               <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
-                {tokens.map((tokenItem) => (
+                {(tokens as any[]).map((tokenItem: any) => (
                   <AgentTokenCard
                     key={tokenItem.id}
                     tokenItem={tokenItem}
@@ -588,7 +588,7 @@ export default function AgentTokenManager({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {tokens.map((tokenItem) => (
+                    {(tokens as any[]).map((tokenItem: any) => (
                       <TableRow key={tokenItem.id}>
                         <TableCell>
                           <div className="flex items-center gap-2">

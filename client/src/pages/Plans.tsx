@@ -736,7 +736,7 @@ export default function Plans() {
                 ) : (
                   <AutoAnimateContainer duration={220}>
                     {planViewMode === "card" ? (
-                      <AutoAnimateContainer key="plan-card-view" className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" duration={220}>
+                      <AutoAnimateContainer key="plan-card-view" className="standard-card-grid gap-3" duration={220}>
                         {plans.map((plan: any) => (
                           <PlanCard
                             key={plan.id}
@@ -746,7 +746,7 @@ export default function Plans() {
                           />
                         ))}
                         {plans.length === 0 && (
-                          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">还没有套餐</div>
+                          <div className="col-span-full rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">还没有套餐</div>
                         )}
                       </AutoAnimateContainer>
                     ) : (

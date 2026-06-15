@@ -29,34 +29,6 @@ import (
 	"lukechampine.com/blake3"
 )
 
-type config struct {
-	Role                 string `json:"role"`
-	TunnelID             int    `json:"tunnelId"`
-	RuleID               int    `json:"ruleId"`
-	ListenPort           int    `json:"listenPort"`
-	Protocol             string `json:"protocol"`
-	ExitHost             string `json:"exitHost"`
-	ExitPort             int    `json:"exitPort"`
-	TargetIP             string `json:"targetIp"`
-	TargetPort           int    `json:"targetPort"`
-	Key                  string `json:"key"`
-	LimitIn              int64  `json:"limitIn"`
-	LimitOut             int64  `json:"limitOut"`
-	MaxConnections       int    `json:"maxConnections"`
-	MaxIPs               int    `json:"maxIPs"`
-	AccessScope          string `json:"accessScope"`
-	BlockHTTP            bool   `json:"blockHttp"`
-	BlockSocks           bool   `json:"blockSocks"`
-	BlockTLS             bool   `json:"blockTls"`
-	ProxyProtocolReceive bool   `json:"proxyProtocolReceive"`
-	ProxyProtocolSend    bool   `json:"proxyProtocolSend"`
-	PanelURL             string `json:"panelUrl"`
-	Token                string `json:"token"`
-	RelayExitHost        string `json:"relayExitHost,omitempty"`
-	RelayExitPort        int    `json:"relayExitPort,omitempty"`
-	RelayKey             string `json:"relayKey,omitempty"`
-}
-
 type helloFrame struct {
 	Network         string `json:"network"`
 	TargetIP        string `json:"targetIp"`
@@ -81,11 +53,6 @@ type envelope struct {
 	CT  string `json:"ct"`
 	MAC string `json:"mac"`
 	TS  int64  `json:"ts"`
-}
-
-type trafficCounter struct {
-	in  atomic.Uint64
-	out atomic.Uint64
 }
 
 type fxpHandshake struct {
@@ -266,49 +233,6 @@ func shutdownContext() signalContext {
 		close(done)
 	}()
 	return signalContext{done: done}
-}
-
-func readConfig(path string) (config, error) {
-	var cfg config
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, err
-	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return cfg, err
-	}
-	cfg.Role = strings.ToLower(strings.TrimSpace(cfg.Role))
-	cfg.Protocol = normalizeProtocol(cfg.Protocol)
-	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
-	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
-	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
-	return cfg, nil
-}
-
-func validateConfig(cfg config) error {
-	if cfg.Key == "" {
-		return errors.New("empty key")
-	}
-	if cfg.ListenPort <= 0 || cfg.ListenPort > 65535 {
-		return fmt.Errorf("bad listen port %d", cfg.ListenPort)
-	}
-	if cfg.Role == "entry" {
-		if cfg.ExitHost == "" || cfg.ExitPort <= 0 || cfg.ExitPort > 65535 {
-			return errors.New("entry requires exit host and port")
-		}
-		if cfg.TargetIP == "" || cfg.TargetPort <= 0 || cfg.TargetPort > 65535 {
-			return errors.New("entry requires target host and port")
-		}
-	}
-	if (cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend) && cfg.Protocol == "udp" {
-		return errors.New("proxy protocol requires tcp protocol")
-	}
-	if cfg.Role == "relay" {
-		if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayExitPort > 65535 || cfg.RelayKey == "" {
-			return errors.New("relay requires relay exit host, port, and key")
-		}
-	}
-	return nil
 }
 
 func normalizeProtocol(protocol string) string {
@@ -1393,79 +1317,6 @@ func reportProtocolBlock(cfg config, proto string) {
 	}
 	_ = resp.Body.Close()
 	log.Printf("protocol block reported rule=%d tunnel=%d protocol=%s status=%s", cfg.RuleID, cfg.TunnelID, proto, resp.Status)
-}
-
-func reportTraffic(cfg config, bytesIn, bytesOut uint64) {
-	if cfg.PanelURL == "" || cfg.Token == "" || cfg.RuleID <= 0 || (bytesIn == 0 && bytesOut == 0) {
-		return
-	}
-	payload := map[string]any{
-		"stats": []map[string]any{{
-			"ruleId":      cfg.RuleID,
-			"bytesIn":     bytesIn,
-			"bytesOut":    bytesOut,
-			"connections": 0,
-		}},
-	}
-	env, err := encryptEnvelope(payload, cfg.Token)
-	if err != nil {
-		log.Printf("traffic encrypt failed rule=%d: %v", cfg.RuleID, err)
-		return
-	}
-	body, _ := json.Marshal(env)
-	req, err := http.NewRequest("POST", strings.TrimRight(cfg.PanelURL, "/")+"/api/agent/traffic", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("traffic request failed rule=%d: %v", cfg.RuleID, err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-Encrypted", "1")
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("traffic report failed rule=%d in=%d out=%d: %v", cfg.RuleID, bytesIn, bytesOut, err)
-		return
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		log.Printf("traffic report status rule=%d in=%d out=%d status=%s", cfg.RuleID, bytesIn, bytesOut, resp.Status)
-	}
-}
-
-func startTrafficReporter(cfg config, counter *trafficCounter) func() {
-	done := make(chan struct{})
-	var lastIn, lastOut uint64
-	reportDelta := func() {
-		curIn := counter.in.Load()
-		curOut := counter.out.Load()
-		deltaIn := curIn - lastIn
-		deltaOut := curOut - lastOut
-		if deltaIn > 0 || deltaOut > 0 {
-			reportTraffic(cfg, deltaIn, deltaOut)
-			lastIn = curIn
-			lastOut = curOut
-		}
-	}
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				reportDelta()
-			case <-done:
-				return
-			}
-		}
-	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			close(done)
-			reportDelta()
-		})
-	}
 }
 
 func encryptEnvelope(payload any, token string) (envelope, error) {

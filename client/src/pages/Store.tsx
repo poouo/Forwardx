@@ -192,7 +192,7 @@ export default function Store() {
               {isLoading ? (
                 <DataSectionLoading label="正在加载商店套餐" />
               ) : (
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="standard-card-grid gap-4">
                   {plans.map((plan: any) => (
                     <Card key={plan.id} className="flex flex-col">
                       <CardHeader>
@@ -233,7 +233,7 @@ export default function Store() {
                     </Card>
                   ))}
                   {!isLoading && plans.length === 0 && (
-                    <Card className="md:col-span-2 xl:col-span-3">
+                    <Card className="col-span-full">
                       <CardHeader>
                         <CardTitle>暂无可购买套餐</CardTitle>
                         <CardDescription>暂无可用套餐。</CardDescription>
@@ -248,7 +248,7 @@ export default function Store() {
               {trafficBillingLoading ? (
                 <DataSectionLoading label="正在加载按量计费资源" />
               ) : (
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="standard-card-grid gap-4">
                   {(trafficBillingStore?.configs || []).map((config: any) => (
                     <Card key={`${config.resourceType}-${config.resourceId}`} className="flex flex-col">
                       <CardHeader>
@@ -286,7 +286,7 @@ export default function Store() {
                     </Card>
                   ))}
                   {(trafficBillingStore?.configs || []).length === 0 && (
-                    <Card className="md:col-span-2 xl:col-span-3">
+                    <Card className="col-span-full">
                       <CardHeader>
                         <CardTitle>暂无公开按量计费资源</CardTitle>
                         <CardDescription>管理员公开资源后会在这里展示倍率和单价。</CardDescription>

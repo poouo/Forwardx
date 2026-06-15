@@ -10,7 +10,8 @@ import {
 import { pushAgentRefresh } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
 import { getDdnsSettings, updateDdnsRecord } from "../ddns";
-import { getDb, insertAndGetId, nowDate, queryRaw, quoteDbIdentifier } from "../dbRuntime";
+import { getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { boolValue, countAll, inList, quoteIdentifier } from "../dbCompat";
 import {
   createForwardRule,
   getForwardGroupChildRules,
@@ -46,10 +47,6 @@ type SyncForwardGroupRulesOptions = {
 };
 
 type ForwardGroupMode = "failover" | "chain";
-
-function quoteId(id: string) {
-  return quoteDbIdentifier(id);
-}
 
 function toDate(value: unknown): Date | null {
   if (!value) return null;
@@ -148,14 +145,14 @@ export async function getForwardGroups(userId?: number) {
     templateCountByGroup.set(groupId, (templateCountByGroup.get(groupId) || 0) + 1);
   }
   const latencyRows = await queryRaw<any>(
-    `SELECT s.${quoteId("groupId")}, s.${quoteId("latencyMs")}, s.${quoteId("isTimeout")}, s.${quoteId("recordedAt")}
-     FROM ${quoteId("forward_group_latency_stats")} s
+    `SELECT s.${quoteIdentifier("groupId")}, s.${quoteIdentifier("latencyMs")}, s.${quoteIdentifier("isTimeout")}, s.${quoteIdentifier("recordedAt")}
+     FROM ${quoteIdentifier("forward_group_latency_stats")} s
      INNER JOIN (
-       SELECT ${quoteId("groupId")}, MAX(${quoteId("recordedAt")}) AS ${quoteId("recordedAt")}
-       FROM ${quoteId("forward_group_latency_stats")}
-       WHERE ${quoteId("groupId")} IN (${ids.map(() => "?").join(",")})
-       GROUP BY ${quoteId("groupId")}
-     ) latest ON latest.${quoteId("groupId")} = s.${quoteId("groupId")} AND latest.${quoteId("recordedAt")} = s.${quoteId("recordedAt")}`,
+       SELECT ${quoteIdentifier("groupId")}, MAX(${quoteIdentifier("recordedAt")}) AS ${quoteIdentifier("recordedAt")}
+       FROM ${quoteIdentifier("forward_group_latency_stats")}
+       WHERE ${quoteIdentifier("groupId")} IN ${inList(ids).sql}
+       GROUP BY ${quoteIdentifier("groupId")}
+     ) latest ON latest.${quoteIdentifier("groupId")} = s.${quoteIdentifier("groupId")} AND latest.${quoteIdentifier("recordedAt")} = s.${quoteIdentifier("recordedAt")}`,
     ids,
   ).catch(() => []);
   const latestLatencyByGroup = new Map<number, any>();
@@ -214,19 +211,19 @@ export async function getForwardGroupEvents(groupId: number, limit = 50) {
 export async function getLatestForwardGroupTest(groupId: number) {
   const templates = await getForwardGroupTemplateRules(groupId);
   const templateIds = (templates as any[]).map((rule: any) => Number(rule.id)).filter((id: number) => id > 0);
-  const table = quoteId("forward_tests");
-  const ruleCol = quoteId("ruleId");
-  const updatedCol = quoteId("updatedAt");
-  const createdCol = quoteId("createdAt");
-  const messageCol = quoteId("message");
+  const table = quoteIdentifier("forward_tests");
+  const ruleCol = quoteIdentifier("ruleId");
+  const updatedCol = quoteIdentifier("updatedAt");
+  const createdCol = quoteIdentifier("createdAt");
+  const messageCol = quoteIdentifier("message");
   const groupNeedle = `"groupId":${Number(groupId)}`;
   const ruleFilter = templateIds.length > 0
-    ? `${ruleCol} IN (${templateIds.map(() => "?").join(",")}) OR `
+    ? `${ruleCol} IN ${inList(templateIds).sql} OR `
     : "";
   const filterSql = `(${ruleFilter}${messageCol} LIKE ?)`;
   const filterArgs: any[] = [...templateIds, `%${groupNeedle}%`];
   const pendingRows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteId("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
     filterArgs,
   );
   if (pendingRows[0]) return pendingRows[0];
@@ -391,17 +388,17 @@ async function existingChildRule(templateRuleId: number, memberId: number) {
 }
 
 async function isPortUsedOnHostForGroupChild(hostId: number, sourcePort: number, ignoreRuleIds: number[]) {
-  const table = quoteId("forward_rules");
-  const idCol = quoteId("id");
-  const hostCol = quoteId("hostId");
-  const portCol = quoteId("sourcePort");
-  const pendingCol = quoteId("pendingDelete");
-  const enabledCol = quoteId("isEnabled");
+  const table = quoteIdentifier("forward_rules");
+  const idCol = quoteIdentifier("id");
+  const hostCol = quoteIdentifier("hostId");
+  const portCol = quoteIdentifier("sourcePort");
+  const pendingCol = quoteIdentifier("pendingDelete");
+  const enabledCol = quoteIdentifier("isEnabled");
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
-  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN (${ignore.map(() => "?").join(",")})` : "";
+  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
   const rows = await queryRaw<{ count: number }>(
-    `SELECT COUNT(*) AS "count" FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    [hostId, sourcePort, false, true, ...ignore],
+    `SELECT ${countAll()} FROM ${table} WHERE ${hostCol} = ? AND ${portCol} = ? AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
+    [hostId, sourcePort, boolValue(false), boolValue(true), ...ignore],
   );
   return (Number(rows[0]?.count) || 0) > 0;
 }
@@ -439,18 +436,20 @@ async function assertEntryPortAllowed(member: any, sourcePort: number) {
 }
 
 async function usedPortsOnEntryHost(hostId: number, ignoreRuleIds: number[], range?: { start: number; end: number } | null) {
-  const table = quoteId("forward_rules");
-  const idCol = quoteId("id");
-  const hostCol = quoteId("hostId");
-  const portCol = quoteId("sourcePort");
-  const pendingCol = quoteId("pendingDelete");
-  const enabledCol = quoteId("isEnabled");
+  const table = quoteIdentifier("forward_rules");
+  const idCol = quoteIdentifier("id");
+  const hostCol = quoteIdentifier("hostId");
+  const portCol = quoteIdentifier("sourcePort");
+  const pendingCol = quoteIdentifier("pendingDelete");
+  const enabledCol = quoteIdentifier("isEnabled");
   const ignore = ignoreRuleIds.filter((id) => Number(id) > 0);
-  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN (${ignore.map(() => "?").join(",")})` : "";
+  const ignoreSql = ignore.length > 0 ? ` AND ${idCol} NOT IN ${inList(ignore).sql}` : "";
   const rangeSql = range ? ` AND ${portCol} BETWEEN ? AND ?` : "";
   const rows = await queryRaw<{ port: number }>(
     `SELECT ${portCol} AS "port" FROM ${table} WHERE ${hostCol} = ?${rangeSql} AND ${pendingCol} = ? AND ${enabledCol} = ?${ignoreSql}`,
-    range ? [hostId, range.start, range.end, false, true, ...ignore] : [hostId, false, true, ...ignore],
+    range
+      ? [hostId, range.start, range.end, boolValue(false), boolValue(true), ...ignore]
+      : [hostId, boolValue(false), boolValue(true), ...ignore],
   );
   return new Set(rows.map((row) => Number(row.port)).filter((port) => Number.isInteger(port)));
 }
@@ -1103,9 +1102,9 @@ export async function syncForwardChainsForHost(hostId: number, previousHost?: an
 }
 
 async function latestTcping(ruleId: number) {
-  const table = quoteId("tcping_stats");
+  const table = quoteIdentifier("tcping_stats");
   const result = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${quoteId("ruleId")} = ? ORDER BY ${quoteId("recordedAt")} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${quoteIdentifier("ruleId")} = ? ORDER BY ${quoteIdentifier("recordedAt")} DESC LIMIT 1`,
     [ruleId],
   );
   return result[0];

@@ -23,12 +23,12 @@ export function multiavatarValue(seed: string) {
   return `${MULTIAVATAR_PREFIX}${normalizeSeed(seed) || "forwardx"}`;
 }
 
-function randomSeed() {
+function randomSeed(): string {
   const uuid = globalThis.crypto?.randomUUID?.();
   return uuid || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-export function randomMultiavatarValue(seed = randomSeed()) {
+export function randomMultiavatarValue(seed: string = randomSeed()) {
   return multiavatarValue(seed);
 }
 

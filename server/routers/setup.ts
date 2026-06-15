@@ -19,6 +19,7 @@ import {
   testDatabaseConnection,
   writeDatabaseConfig,
 } from "../dbRuntime";
+import { countAll, quoteIdentifier } from "../dbCompat";
 import { createInitialAdmin, hasAdminUser, updateInitialAdmin } from "../db";
 import { getAllSettings, setSettings } from "../repositories/settingsRepository";
 import { getMigrationJob, startPanelMigration } from "../migration";
@@ -155,13 +156,9 @@ function redactSetupStatusForPublic(status: Awaited<ReturnType<typeof setupStatu
   };
 }
 
-function quote(name: string) {
-  return getDatabaseKind() === "mysql" ? `\`${name}\`` : `"${name}"`;
-}
-
 async function countTableRows(table: string) {
   try {
-    const rows = await queryRaw<{ count: number }>(`SELECT COUNT(*) as "count" FROM ${quote(table)}`);
+    const rows = await queryRaw<{ count: number }>(`SELECT ${countAll()} FROM ${quoteIdentifier(table)}`);
     return Number(rows[0]?.count || 0);
   } catch {
     return 0;
@@ -191,7 +188,7 @@ async function clearExistingPanelData() {
   await ensureDatabaseSchema();
   const settings = await getAllSettings();
   for (const table of [...MIGRATION_TABLES].reverse()) {
-    await executeRaw(`DELETE FROM ${quote(table)}`);
+    await executeRaw(`DELETE FROM ${quoteIdentifier(table)}`);
   }
   await setSettings({
     storeEnabled: settings.storeEnabled ?? "false",

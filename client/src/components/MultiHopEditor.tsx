@@ -16,6 +16,8 @@ import { ArrowDown, GripVertical, Trash2 } from "lucide-react";
 interface Host {
   id: number;
   name: string;
+  isOnline?: boolean | null;
+  lastHeartbeat?: Date | string | number | null;
   ip?: string | null;
   ipv4?: string | null;
   ipv6?: string | null;

@@ -316,7 +316,7 @@ export const tunnelsRouter = router({
             } else {
               const host = await db.getHostById(hopHostIds[i]) as any;
               port = await db.findAvailableTunnelExitPort(hopHostIds[i], host?.portRangeStart, host?.portRangeEnd) ?? 0;
-              if (!port) throw new Error(`涓绘満 ${host?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
+              if (!port) throw new Error(`主机 ${host?.name || hopHostIds[i]} 已无可用端口`);
             }
             const rawConnectHost = i > 0 ? (hopConnectHosts[i] ?? null) : null;
             const hopHost = await db.getHostById(hopHostIds[i]) as any;
@@ -458,7 +458,7 @@ export const tunnelsRouter = router({
               if (!port) {
                 const hopHost = await db.getHostById(hopHostIds[i]) as any;
                 port = await db.findAvailableTunnelExitPort(hopHostIds[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
-                if (!port) throw new Error(`涓绘満 ${hopHost?.name || hopHostIds[i]} 宸叉棤鍙敤绔彛`);
+                if (!port) throw new Error(`主机 ${hopHost?.name || hopHostIds[i]} 已无可用端口`);
               }
             }
             const normalizedHopConnectHost = i > 0 ? normalizedRequestedHopConnectHosts[i] : null;
