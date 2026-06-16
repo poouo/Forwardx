@@ -7,7 +7,6 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import { clearPanelLogs, formatPanelLogsForExport, getPanelLogPage } from "./panelLogger";
-import { clearAgentLogs, getAgentLogPage } from "../agentLogStore";
 import { approveMigrationRequest, createMigrationCode, getCurrentMigrationCode, rejectMigrationRequest } from "../migrationCodes";
 import {
   decryptMigrationSnapshotBackup,
@@ -703,7 +702,6 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       parseForwardProtocolSettings(all.forwardProtocols),
     ),
     tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
-    agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
     githubAccelerator: {
       enabled: all.githubAcceleratorEnabled === "true",
       url: all.githubAcceleratorUrl ?? "",
@@ -838,7 +836,6 @@ export const systemRouter = router({
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
       tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
-      agentLogUploadEnabled: all.agentLogUploadEnabled === "true",
       githubAccelerator: {
         enabled: all.githubAcceleratorEnabled === "true",
         url: all.githubAcceleratorUrl ?? "",
@@ -939,7 +936,6 @@ export const systemRouter = router({
         homepageHtml: z.string().max(60000).optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
-        agentLogUploadEnabled: z.boolean().optional(),
         githubAccelerator: z.object({
           enabled: z.boolean().optional(),
           url: githubAcceleratorUrlSchema.optional(),
@@ -1063,14 +1059,6 @@ export const systemRouter = router({
         const runtime = input.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
         await db.setSetting("tunnelRuntimeDefault", runtime);
         console.info(`[Settings] tunnel runtime default set to ${runtime}`);
-      }
-      if (input.agentLogUploadEnabled !== undefined) {
-        await db.setSetting("agentLogUploadEnabled", input.agentLogUploadEnabled ? "true" : "false");
-        if (input.agentLogUploadEnabled) {
-          const hosts = await db.getHosts();
-          for (const host of hosts as any[]) pushAgentRefresh(host.id, "agent-log-upload-enabled");
-        }
-        console.info(`[Settings] Agent log upload ${input.agentLogUploadEnabled ? "enabled" : "disabled"}`);
       }
       if (input.githubAccelerator) {
         const next: Record<string, string | null> = {};
@@ -1461,30 +1449,6 @@ export const systemRouter = router({
     console.info("[PanelLogs] Cleared panel logs");
     return { success: true };
   }),
-  agentLogs: adminProcedure
-    .input(z.object({
-      hostId: z.number().nullable().optional(),
-      level: panelLogLevelSchema.default("all"),
-      limit: z.number().int().min(1).max(500).default(200),
-      offset: z.number().int().min(0).default(0),
-    }).optional())
-    .query(async ({ input }) => ({
-      ...await getAgentLogPage({
-        hostId: input?.hostId,
-        level: input?.level || "all",
-        limit: input?.limit,
-        offset: input?.offset,
-      }),
-      checkedAt: new Date().toISOString(),
-    })),
-
-  clearAgentLogs: adminProcedure
-    .input(z.object({ hostId: z.number().nullable().optional() }).optional())
-    .mutation(({ input }) => {
-      clearAgentLogs(input?.hostId);
-      console.info(`[AgentLogs] Cleared logs host=${input?.hostId || "all"}`);
-      return { success: true };
-    }),
   startUpgrade: adminProcedure
     .input(z.object({ targetVersion: z.string().min(1).max(64).optional() }).optional())
     .mutation(async ({ input }) => {

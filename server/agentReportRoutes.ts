@@ -13,7 +13,6 @@ import {
 } from "../shared/agentDtos";
 import { recordForwardGroupAutoHopLatency } from "./forwardGroupAutoLatencyState";
 import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
-import { appendAgentLog } from "./agentLogStore";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest } from "./agentAuth";
@@ -389,36 +388,6 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent TCPing] Error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-agentRouter.post("/api/agent/logs", async (req: Request, res: Response) => {
-  try {
-    const host = await getAgentHostFromRequest(req);
-    if (!host) {
-      res.status(401).json({ error: "Invalid token" });
-      return;
-    }
-    const enabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
-    if (!enabled) {
-      res.json({ success: true, accepted: 0, disabled: true });
-      return;
-    }
-    const entries = Array.isArray(req.body?.logs) ? req.body.logs.slice(0, 100) : [];
-    let accepted = 0;
-    for (const item of entries) {
-      const levelRaw = String(item?.level || "info").toLowerCase();
-      const level = levelRaw === "error" ? "error" : (levelRaw === "warn" ? "warn" : "info");
-      const message = String(item?.message || "").trim();
-      if (!message) continue;
-      const createdAt = typeof item?.createdAt === "string" ? item.createdAt : undefined;
-      appendAgentLog(host, level, message, createdAt);
-      accepted += 1;
-    }
-    res.json({ success: true, accepted });
-  } catch (error) {
-    console.error("[Agent Logs] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

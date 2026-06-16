@@ -39,7 +39,9 @@ import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
+const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
 const resolvedIpCache = new Map<number, string>();
+const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
 
 type AgentDnsWatch = {
@@ -100,6 +102,18 @@ async function resolveTargetIp(raw: string): Promise<string> {
     if (ips.length > 0) return ips[0];
   } catch { /* fall through */ }
   return trimmed; // 解析失败返回原值
+}
+
+async function resolveTargetIpCached(ruleId: number, raw: string, force = false): Promise<string> {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || isIP(trimmed)) return trimmed;
+  const now = Date.now();
+  const cachedIp = resolvedIpCache.get(ruleId);
+  const checkedAt = resolvedIpCheckedAt.get(ruleId) || 0;
+  if (!force && cachedIp && now - checkedAt < AGENT_DNS_RESOLVE_TTL_MS) return cachedIp;
+  const resolved = await resolveTargetIp(trimmed);
+  resolvedIpCheckedAt.set(ruleId, now);
+  return resolved;
 }
 
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
@@ -214,7 +228,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       "WantedBy=multi-user.target",
       "",
     ].join("\n");
-    const agentHostRules = await db.getForwardRulesForAgent(host.id);
+    const agentHostRules = rules as any[];
     // DNS 预解析：将域名转换为 IP，缓存中比较检测变更
     const dnsChangedRuleIds = new Set<number>();
     const dnsPreviousIpByRuleId = new Map<number, string>();
@@ -222,7 +236,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!rule.targetIp) continue;
       addDnsWatch(dnsWatches, rule.targetIp, "forward-rule-target", Number(rule.id));
       const rawTargetIp = String(rule.targetIp || "").trim();
-      const resolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase()) || await resolveTargetIp(rawTargetIp);
+      const forcedResolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase());
+      const resolved = forcedResolved || await resolveTargetIpCached(Number(rule.id), rawTargetIp);
+      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
       const cachedIp = resolvedIpCache.get(rule.id);
       if (cachedIp && cachedIp !== resolved) {
         // IP 变更：标记为需要重新下发
@@ -1021,13 +1037,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Number(rule.sourcePort) || 0;
     };
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
+    const runningRuleSeen = new Set<string>();
     const guardRules: any[] = [];
     const addRunningRule = (rule: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
       if (!rule.ruleId || !rule.sourcePort) return;
-      const exists = runningRules.some((item) =>
-        Number(item.ruleId) === Number(rule.ruleId) && Number(item.sourcePort) === Number(rule.sourcePort)
-      );
-      if (!exists) runningRules.push(rule);
+      const key = `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`;
+      if (runningRuleSeen.has(key)) return;
+      runningRuleSeen.add(key);
+      runningRules.push(rule);
     };
 
     const buildDisabledRuleRemovalAction = async (rule: any) => {
@@ -2029,15 +2046,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const forceTcping = tcpingRequested && !hasTunnelApplyActions;
     if (forceTcping) clearHostTcpingRequest(host.id);
 
-    const agentLogUploadEnabled = (await db.getSetting("agentLogUploadEnabled")) === "true";
     const lookingGlassTests = takeLookingGlassAgentTasks(host.id);
     const iperf3Tasks = takeIperf3AgentTasks(host.id);
-    const fastNextHeartbeat = isHostMetricsWatching(host.id)
-      || lookingGlassTests.length > 0
+    const hasInteractiveTasks = lookingGlassTests.length > 0
       || iperf3Tasks.length > 0
       || forceTcping
       || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, agentLogUploadEnabled, forceTcping, nextInterval: fastNextHeartbeat ? 2 : 30 });
+    const nextInterval = hasInteractiveTasks ? 2 : (isHostMetricsWatching(host.id) ? 10 : 30);
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, forceTcping, nextInterval });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

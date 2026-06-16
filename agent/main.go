@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.92"
+var Version = "2.2.93"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -43,6 +43,13 @@ const selfTestActivePollInterval = 3 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute
+const trafficCollectInterval = 15 * time.Second
+const countingChainRefreshInterval = 6 * time.Hour
+const runtimeActionRefreshInterval = 5 * time.Minute
+const agentLogRetention = 72 * time.Hour
+
+const agentLogDir = "/var/log/forwardx-agent"
+const agentLogPath = agentLogDir + "/agent-go.log"
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -55,7 +62,6 @@ var protocolGuards = map[string]*protocolGuardServer{}
 var failoverMu sync.Mutex
 var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
-var agentLogUploadEnabled atomic.Bool
 var agentLogMu sync.Mutex
 var agentLogPrunedAt time.Time
 var actionQueue = make(chan actionJob, 128)
@@ -70,6 +76,12 @@ var publicIPMu sync.Mutex
 var publicIPv4Cache string
 var publicIPv6Cache string
 var publicIPCheckedAt time.Time
+var lastTrafficCollectAt time.Time
+var countingChainMu sync.Mutex
+var countingChainSignatures = map[string]string{}
+var countingChainCheckedAt = map[string]time.Time{}
+var runtimeActionMu sync.Mutex
+var runtimeActionCache = map[string]runtimeActionState{}
 var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
 
 type actionJob struct {
@@ -77,15 +89,9 @@ type actionJob struct {
 	action action
 }
 
-type agentLogEntry struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	CreatedAt string `json:"createdAt"`
-}
-
-type agentLogUploadResp struct {
-	Accepted int  `json:"accepted"`
-	Disabled bool `json:"disabled"`
+type runtimeActionState struct {
+	Signature string
+	CheckedAt time.Time
 }
 
 type Config struct {
@@ -113,7 +119,6 @@ type heartbeatResp struct {
 	LookingGlassTests  []lookingGlassTask  `json:"lookingGlassTests"`
 	Iperf3Tasks        []iperf3Task        `json:"iperf3Tasks"`
 	AgentUpgrade       *agentUpgrade       `json:"agentUpgrade"`
-	LogUpload          bool                `json:"agentLogUploadEnabled"`
 	ForceTCPing        bool                `json:"forceTcping"`
 	NextInterval       int                 `json:"nextInterval"`
 }
@@ -398,7 +403,6 @@ func heartbeat(cfg Config) (int, error) {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
 	dnsWatchChanged := updateDNSWatch(resp.DNSWatch)
-	agentLogUploadEnabled.Store(resp.LogUpload)
 	pendingActionPorts := map[string]bool{}
 	for _, a := range resp.Actions {
 		if a.SourcePort > 0 {
@@ -418,17 +422,17 @@ func heartbeat(cfg Config) (int, error) {
 	syncRunningRuleState(resp.RunningRules, pendingActionPorts)
 	for _, r := range resp.RunningRules {
 		writeRunningRuleState(r)
-		if r.ForwardType != "nftables" {
-			ensureCountingChains(r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)
-		}
+		ensureCountingChainsIfNeeded(r)
 	}
 	syncProtocolGuards(cfg, resp.GuardRules)
-	collectTraffic(cfg)
+	if lastTrafficCollectAt.IsZero() || time.Since(lastTrafficCollectAt) >= trafficCollectInterval {
+		collectTraffic(cfg)
+		lastTrafficCollectAt = time.Now()
+	}
 	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
-		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes)
+		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes, resp.ForceTCPing)
 		lastTCPingAt = time.Now()
 	}
-	flushAgentLogs(cfg)
 	if dnsWatchChanged && resp.NextInterval > 2 {
 		return 2, nil
 	}
@@ -971,14 +975,18 @@ func decodeEventData(raw string, token string, out any) error {
 func handleAction(cfg Config, a action) {
 	ok := true
 	actionMessage := &actionMessage{}
-	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	if strings.TrimSpace(a.StatusType) == "runtime" {
+		if shouldSkipRuntimeAction(a) {
+			return
+		}
+		logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 		for _, cmd := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
 			ok = runShell(cmd) && ok
 		}
 		logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		return
 	}
+	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
 		preserveRunningFXP := cleanupStaleRuntimeBeforeApply(a)
@@ -1032,6 +1040,43 @@ func handleAction(cfg Config, a action) {
 	} else {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
+}
+
+func shouldSkipRuntimeAction(a action) bool {
+	key := strings.TrimSpace(a.ForwardType)
+	if key == "" {
+		key = "runtime"
+	}
+	signature := actionCommandSignature(a)
+	now := time.Now()
+	runtimeActionMu.Lock()
+	defer runtimeActionMu.Unlock()
+	state := runtimeActionCache[key]
+	if state.Signature == signature && !state.CheckedAt.IsZero() && now.Sub(state.CheckedAt) < runtimeActionRefreshInterval {
+		return true
+	}
+	runtimeActionCache[key] = runtimeActionState{Signature: signature, CheckedAt: now}
+	return false
+}
+
+func actionCommandSignature(a action) string {
+	h := fnv.New64a()
+	write := func(value string) {
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	write(a.Op)
+	write(a.ForwardType)
+	for _, cmd := range a.PreCommands {
+		write(cmd)
+	}
+	for _, cmd := range a.Commands {
+		write(cmd)
+	}
+	for _, cmd := range a.PostCommands {
+		write(cmd)
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 func logActionPortHandoff(a action) {
@@ -1885,6 +1930,26 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 	for _, cmd := range commands {
 		_ = runShell(cmd)
 	}
+}
+
+func ensureCountingChainsIfNeeded(r runningRule) {
+	if r.ForwardType == "nftables" || r.ForwardType == "forwardx" || r.SourcePort <= 0 {
+		return
+	}
+	signature := fmt.Sprintf("%d|%s|%d|%s", r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)
+	key := strconv.Itoa(r.SourcePort)
+	now := time.Now()
+	countingChainMu.Lock()
+	lastSig := countingChainSignatures[key]
+	lastChecked := countingChainCheckedAt[key]
+	if lastSig == signature && !lastChecked.IsZero() && now.Sub(lastChecked) < countingChainRefreshInterval {
+		countingChainMu.Unlock()
+		return
+	}
+	countingChainSignatures[key] = signature
+	countingChainCheckedAt[key] = now
+	countingChainMu.Unlock()
+	ensureCountingChains(r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)
 }
 
 func removeState(port int) {
@@ -3599,197 +3664,68 @@ func shellQuote(s string) string {
 }
 
 func logf(format string, args ...any) {
-	_ = os.MkdirAll("/var/log/forwardx-agent", 0755)
 	message := fmt.Sprintf(format, args...)
 	createdAt := time.Now().Format(time.RFC3339)
 	line := createdAt + " " + message + "\n"
 	fmt.Print(line)
-	path := "/var/log/forwardx-agent/agent-go.log"
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	_ = os.MkdirAll(agentLogDir, 0755)
+	agentLogMu.Lock()
+	defer agentLogMu.Unlock()
+	f, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err == nil {
-		defer f.Close()
 		_, _ = f.WriteString(line)
+		_ = f.Close()
 	}
-	pruneAgentLocalLog(path)
-	rememberAgentLog(message, createdAt)
+	pruneAgentLocalLogsLocked()
 }
 
-func pruneAgentLocalLog(path string) {
-	agentLogMu.Lock()
+func pruneAgentLocalLogsLocked() {
 	if time.Since(agentLogPrunedAt) < time.Hour {
-		agentLogMu.Unlock()
 		return
 	}
 	agentLogPrunedAt = time.Now()
-	agentLogMu.Unlock()
+	paths, err := filepath.Glob(filepath.Join(agentLogDir, "*.log"))
+	if err != nil || len(paths) == 0 {
+		paths = []string{agentLogPath}
+	}
+	for _, path := range paths {
+		pruneAgentLocalLogFile(path)
+	}
+}
+
+func pruneAgentLocalLogFile(path string) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-24 * time.Hour)
+	cutoff := time.Now().Add(-agentLogRetention)
 	lines := strings.Split(string(raw), "\n")
 	retained := make([]string, 0, len(lines))
+	changed := false
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		parts := strings.SplitN(line, " ", 2)
 		t, err := time.Parse(time.RFC3339, parts[0])
-		if err != nil || t.After(cutoff) {
+		if err != nil {
 			retained = append(retained, line)
+			continue
 		}
+		if t.After(cutoff) {
+			retained = append(retained, line)
+			continue
+		}
+		changed = true
+	}
+	if !changed {
+		return
 	}
 	if len(retained) == 0 {
 		_ = os.WriteFile(path, nil, 0644)
 		return
 	}
 	_ = os.WriteFile(path, []byte(strings.Join(retained, "\n")+"\n"), 0644)
-}
-
-func rememberAgentLog(message, createdAt string) {
-	if !isImportantAgentLog(message) {
-		return
-	}
-	level := "info"
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "panic") {
-		level = "error"
-	} else if strings.Contains(lower, "warn") || strings.Contains(lower, "timeout") {
-		level = "warn"
-	}
-	agentLogMu.Lock()
-	defer agentLogMu.Unlock()
-	appendAgentLogQueueLocked(agentLogEntry{Level: level, Message: message, CreatedAt: createdAt})
-	pruneAgentLogQueueLocked()
-}
-
-func isImportantAgentLog(message string) bool {
-	lower := strings.ToLower(message)
-	keywords := []string{"error", "failed", "warn", "timeout", "upgrade", "selftest", "protocol", "fxp", "migrated", "runtime", "handoff"}
-	for _, keyword := range keywords {
-		if strings.Contains(lower, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-func agentLogQueuePath() string {
-	return "/var/lib/forwardx-agent/agent-log-queue.jsonl"
-}
-
-func appendAgentLogQueueLocked(entry agentLogEntry) {
-	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile(agentLogQueuePath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
-}
-
-func readAgentLogQueueLocked(limit int) []agentLogEntry {
-	raw, err := os.ReadFile(agentLogQueuePath())
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(string(raw), "\n")
-	logs := []agentLogEntry{}
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var entry agentLogEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if !isRecentAgentLog(entry.CreatedAt) {
-			continue
-		}
-		logs = append(logs, entry)
-		if limit > 0 && len(logs) >= limit {
-			break
-		}
-	}
-	return logs
-}
-
-func rewriteAgentLogQueueLocked(logs []agentLogEntry) {
-	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
-	var builder strings.Builder
-	for _, entry := range logs {
-		if !isRecentAgentLog(entry.CreatedAt) {
-			continue
-		}
-		b, err := json.Marshal(entry)
-		if err != nil {
-			continue
-		}
-		builder.Write(b)
-		builder.WriteByte('\n')
-	}
-	_ = os.WriteFile(agentLogQueuePath(), []byte(builder.String()), 0644)
-}
-
-func pruneAgentLogQueueLocked() {
-	rewriteAgentLogQueueLocked(readAgentLogQueueLocked(0))
-}
-
-func removeUploadedAgentLogsLocked(count int) {
-	if count <= 0 {
-		return
-	}
-	logs := readAgentLogQueueLocked(0)
-	if count >= len(logs) {
-		rewriteAgentLogQueueLocked(nil)
-		return
-	}
-	rewriteAgentLogQueueLocked(logs[count:])
-}
-
-func isRecentAgentLog(createdAt string) bool {
-	t, err := time.Parse(time.RFC3339, createdAt)
-	if err != nil {
-		return false
-	}
-	return time.Since(t) <= 24*time.Hour
-}
-
-func flushAgentLogs(cfg Config) {
-	if !agentLogUploadEnabled.Load() {
-		return
-	}
-	agentLogMu.Lock()
-	logs := readAgentLogQueueLocked(100)
-	if len(logs) == 0 {
-		agentLogMu.Unlock()
-		return
-	}
-	agentLogMu.Unlock()
-	var resp agentLogUploadResp
-	if err := post(cfg, "/api/agent/logs", map[string]any{"logs": logs}, &resp); err != nil {
-		return
-	}
-	if resp.Disabled {
-		agentLogUploadEnabled.Store(false)
-		return
-	}
-	if resp.Accepted <= 0 {
-		return
-	}
-	accepted := resp.Accepted
-	if accepted > len(logs) {
-		accepted = len(logs)
-	}
-	agentLogMu.Lock()
-	removeUploadedAgentLogsLocked(accepted)
-	pruneAgentLogQueueLocked()
-	agentLogMu.Unlock()
 }
 
 func fatal(format string, args ...any) {

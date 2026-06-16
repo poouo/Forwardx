@@ -12,7 +12,6 @@ export const AGENT_TUNNEL_PATHS = new Set([
   "/api/agent/iperf3-result",
   "/api/agent/traffic",
   "/api/agent/tcping",
-  "/api/agent/logs",
   "/api/agent/protocol-block",
   "/api/agent/rule-status",
 ]);
