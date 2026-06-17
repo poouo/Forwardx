@@ -834,12 +834,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             && !!firstHop
             && Number(firstHop.hostId) === Number(host.id);
           const tunnelExitHost = tunnel ? tunnelExitEndpointById.get(tunnel.id)?.host : "";
+          // The tcp handler writes the inner PROXY header through the tunnel.
+          const handlerProxyMetadata = proto === "tcp" ? maybeProxyProtocolMetadata(r, "send") : undefined;
           const service: any = {
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
             handler: tunnel
-              ? { type: proto, chain: `chain-tunnel-${r.id}` }
-              : { type: proto, ...(proto === "tcp" && maybeProxyProtocolMetadata(r, "send") ? { metadata: maybeProxyProtocolMetadata(r, "send") } : {}) },
+              ? { type: proto, chain: `chain-tunnel-${r.id}`, ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}) }
+              : { type: proto, ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}) },
             listener: { type: proto },
           };
           if (proto === "tcp" && proxyProtocolEnabled(r, "receive")) {
@@ -999,7 +1001,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: gostRelayHandler(maybeProxyProtocolMetadata(rule, "send")),
+          // relay ignores proxyProtocol metadata. Service metadata below accepts
+          // the outer hop header; the entry tcp handler injects the inner header
+          // that reaches the final target.
+          handler: gostRelayHandler(),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -1027,7 +1032,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
-          handler: gostRelayHandler(proxyEnabled ? { proxyProtocol: 1 } : undefined),
+          // relay ignores proxyProtocol metadata. Service metadata below accepts
+          // the outer hop header for the next relay connection.
+          handler: gostRelayHandler(),
           listener: {
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
