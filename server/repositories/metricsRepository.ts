@@ -874,14 +874,17 @@ export async function insertTunnelLatencyStat(
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
   const status = stat.isTimeout ? "failed" : "success";
+  const now = nowDate();
   const updates: any = {
     lastLatencyMs: stat.isTimeout ? null : (stat.latencyMs ?? null),
-    updatedAt: nowDate(),
+    lastTestStatus: status,
+    lastTestAt: now,
+    updatedAt: now,
   };
   if (options.message !== undefined) {
-    updates.lastTestStatus = status;
     updates.lastTestMessage = options.message;
-    updates.lastTestAt = nowDate();
+  } else {
+    updates.lastTestMessage = null;
   }
   await db.update(tunnels).set(updates).where(eq(tunnels.id, stat.tunnelId));
 }

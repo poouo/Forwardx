@@ -324,6 +324,9 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
         isTimeout: !!r.isTimeout,
       });
+      if (!r.isTimeout && !(tunnel as any).isRunning) {
+        await db.updateTunnelRunningStatus(tunnelId, true);
+      }
     }
 
     for (const r of forwardGroupResults) {
