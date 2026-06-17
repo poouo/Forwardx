@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.94"
+var Version = "2.2.95"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -90,6 +90,8 @@ var countingChainSignatures = map[string]string{}
 var countingChainCheckedAt = map[string]time.Time{}
 var runtimeActionMu sync.Mutex
 var runtimeActionCache = map[string]runtimeActionState{}
+var runtimeProxyLogMu sync.Mutex
+var runtimeProxyLogSignatures = map[string]string{}
 var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
 
 type actionJob struct {
@@ -991,6 +993,8 @@ func handleAction(cfg Config, a action) {
 		for _, cmd := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
 			ok = runShell(cmd) && ok
 		}
+		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
+		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
 		logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		return
 	}
@@ -1016,7 +1020,7 @@ func handleAction(cfg Config, a action) {
 		}
 		if a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
-			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, fxpOK)
+			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
 			ok = fxpOK && ok
 		}
 		if a.Failover != nil && a.Failover.Enabled {
@@ -1065,6 +1069,118 @@ func shouldSkipRuntimeAction(a action) bool {
 	}
 	runtimeActionCache[key] = runtimeActionState{Signature: signature, CheckedAt: now}
 	return false
+}
+
+func logGostRuntimeProxySummary(path string, label string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var cfg struct {
+		Services []struct {
+			Name     string         `json:"name"`
+			Addr     string         `json:"addr"`
+			Metadata map[string]any `json:"metadata"`
+			Handler  struct {
+				Type     string         `json:"type"`
+				Chain    string         `json:"chain"`
+				Metadata map[string]any `json:"metadata"`
+			} `json:"handler"`
+			Listener struct {
+				Type string `json:"type"`
+			} `json:"listener"`
+		} `json:"services"`
+		Chains []struct {
+			Name string `json:"name"`
+			Hops []struct {
+				Name     string         `json:"name"`
+				Metadata map[string]any `json:"metadata"`
+				Nodes    []struct {
+					Name string `json:"name"`
+					Addr string `json:"addr"`
+				} `json:"nodes"`
+			} `json:"hops"`
+		} `json:"chains"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		logf("proxy-debug %s config parse failed path=%s: %v", label, path, err)
+		return
+	}
+	lines := make([]string, 0)
+	for _, svc := range cfg.Services {
+		receive := hasProxyProtocolMetadata(svc.Metadata)
+		send := hasProxyProtocolMetadata(svc.Handler.Metadata)
+		if receive || send || strings.TrimSpace(svc.Handler.Chain) != "" {
+			lines = append(lines, fmt.Sprintf(
+				"service=%s addr=%s listener=%s handler=%s chain=%s acceptProxy=%v sendProxy=%v",
+				emptyDash(svc.Name),
+				emptyDash(svc.Addr),
+				emptyDash(svc.Listener.Type),
+				emptyDash(svc.Handler.Type),
+				emptyDash(svc.Handler.Chain),
+				receive,
+				send,
+			))
+		}
+	}
+	for _, chain := range cfg.Chains {
+		for _, hop := range chain.Hops {
+			if !hasProxyProtocolMetadata(hop.Metadata) {
+				continue
+			}
+			targets := make([]string, 0, len(hop.Nodes))
+			for _, node := range hop.Nodes {
+				targets = append(targets, fmt.Sprintf("%s@%s", emptyDash(node.Name), emptyDash(node.Addr)))
+			}
+			lines = append(lines, fmt.Sprintf("chain=%s hop=%s sendProxy=true nodes=%s", emptyDash(chain.Name), emptyDash(hop.Name), strings.Join(targets, ",")))
+		}
+	}
+	sort.Strings(lines)
+	signature := strings.Join(lines, "\n")
+	runtimeProxyLogMu.Lock()
+	if runtimeProxyLogSignatures[label] == signature {
+		runtimeProxyLogMu.Unlock()
+		return
+	}
+	runtimeProxyLogSignatures[label] = signature
+	runtimeProxyLogMu.Unlock()
+	if len(lines) == 0 {
+		logf("proxy-debug %s no proxyProtocol entries services=%d chains=%d path=%s", label, len(cfg.Services), len(cfg.Chains), path)
+		return
+	}
+	logf("proxy-debug %s proxyProtocol summary entries=%d path=%s", label, len(lines), path)
+	for _, line := range lines {
+		logf("proxy-debug %s %s", label, line)
+	}
+}
+
+func hasProxyProtocolMetadata(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	value, ok := metadata["proxyProtocol"]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case string:
+		text := strings.ToLower(strings.TrimSpace(v))
+		return text != "" && text != "0" && text != "false"
+	default:
+		return value != nil
+	}
+}
+
+func emptyDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func actionCommandSignature(a action) string {
@@ -2193,6 +2309,22 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
 		spec.Token = cfg.Token
 	}
+	logf(
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
+		spec.Role,
+		spec.TunnelID,
+		spec.RuleID,
+		spec.ListenPort,
+		spec.Protocol,
+		spec.ProxyProtocolReceive,
+		spec.ProxyProtocolSend,
+		spec.ExitHost,
+		spec.ExitPort,
+		spec.RelayExitHost,
+		spec.RelayExitPort,
+		spec.TargetIP,
+		spec.TargetPort,
+	)
 	cfgBytes, err := json.Marshal(spec)
 	if err != nil {
 		actionMessage.set("fxp marshal config failed: %v", err)

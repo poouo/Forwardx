@@ -3807,7 +3807,7 @@ function RulesContent() {
               <div className="grid gap-2 sm:grid-cols-2">
                 <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
                   <div className="min-w-0">
-                    <Label className="text-sm">接收 PROXY Protocol</Label>
+                    <Label className="text-sm">接收上游 PROXY</Label>
                   </div>
                   <Switch
                     checked={form.proxyProtocolReceive}
@@ -3821,7 +3821,7 @@ function RulesContent() {
                 </div>
                 <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
                   <div className="min-w-0">
-                    <Label className="text-sm">向目标发送</Label>
+                    <Label className="text-sm">发送到目标</Label>
                   </div>
                   <Switch
                     checked={form.proxyProtocolSend}
@@ -3835,6 +3835,11 @@ function RulesContent() {
                   />
                 </div>
               </div>
+              {form.proxyProtocolSend && (
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  目标服务需启用 PROXY Protocol 解析；TCP 来源地址本身不会被改写。
+                </p>
+              )}
             </div>
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

@@ -102,7 +102,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.91"
+	fxpRuntimeVersion   = "2.2.92"
 )
 
 var (
@@ -188,7 +188,7 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 	log.Printf(
-		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d limits=maxConnections:%d,maxIPs:%d",
+		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v limits=maxConnections:%d,maxIPs:%d",
 		fxpRuntimeVersion,
 		cfg.Role,
 		cfg.TunnelID,
@@ -201,6 +201,8 @@ func main() {
 		cfg.RelayExitPort,
 		cfg.TargetIP,
 		cfg.TargetPort,
+		cfg.ProxyProtocolReceive,
+		cfg.ProxyProtocolSend,
 		cfg.MaxConnections,
 		cfg.MaxIPs,
 	)
@@ -404,6 +406,21 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 		}
 		proxyInfo = parsed
 		first = remaining
+	}
+	if cfg.ProxyProtocolReceive || cfg.ProxyProtocolSend {
+		log.Printf(
+			"entry proxy protocol tunnel=%d rule=%d receive=%v send=%v client=%s parsed=%v proxySource=%s:%d proxyDest=%s:%d",
+			cfg.TunnelID,
+			cfg.RuleID,
+			cfg.ProxyProtocolReceive,
+			cfg.ProxyProtocolSend,
+			client.RemoteAddr(),
+			proxyInfo.SourceIP != "",
+			proxyInfo.SourceIP,
+			proxyInfo.SourcePort,
+			proxyInfo.DestIP,
+			proxyInfo.DestPort,
+		)
 	}
 	if !cfg.ProxyProtocolSend {
 		proxyInfo = proxyProtocolInfo{}
@@ -693,9 +710,22 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 	}
 	defer target.Close()
 	if hello.ProxySourceIP != "" && hello.ProxySourcePort > 0 {
+		log.Printf(
+			"exit proxy protocol send tunnel=%d rule=%d source=%s:%d dest=%s:%d target=%s:%d",
+			hello.TunnelID,
+			hello.RuleID,
+			hello.ProxySourceIP,
+			hello.ProxySourcePort,
+			hello.ProxyDestIP,
+			hello.ProxyDestPort,
+			hello.TargetIP,
+			hello.TargetPort,
+		)
 		if _, err := target.Write([]byte(formatProxyProtocolV1(hello))); err != nil {
 			return fmt.Errorf("write proxy protocol: %w", err)
 		}
+	} else {
+		log.Printf("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
 	}
 	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	return proxyPlainSecure(target, sec, 0, 0, nil)
@@ -779,6 +809,19 @@ func handleRelaySession(upConn net.Conn, cfg config) error {
 		probeDelay()
 		return err
 	}
+	log.Printf(
+		"relay proxy protocol tunnel=%d rule=%d upstream=%s downstream=%s:%d hasProxy=%v source=%s:%d dest=%s:%d",
+		cfg.TunnelID,
+		hello.RuleID,
+		upConn.RemoteAddr(),
+		cfg.RelayExitHost,
+		cfg.RelayExitPort,
+		hello.ProxySourceIP != "" && hello.ProxySourcePort > 0,
+		hello.ProxySourceIP,
+		hello.ProxySourcePort,
+		hello.ProxyDestIP,
+		hello.ProxyDestPort,
+	)
 	// Connect to downstream (like entry)
 	downCfg := cfg
 	downCfg.Key = cfg.RelayKey

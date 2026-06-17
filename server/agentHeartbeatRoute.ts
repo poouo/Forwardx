@@ -807,7 +807,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
       },
     });
-    const gostRelayHandler = () => ({ type: "relay", metadata: { nodelay: true } });
+    const gostRelayHandler = (metadata?: Record<string, unknown>) => ({
+      type: "relay",
+      metadata: { nodelay: true, ...(metadata || {}) },
+    });
+    const tunnelProxyProtocolEnabled = (tunnelId: number) => agentAllRules.some((rule: any) =>
+      rule
+      && !rule.pendingDelete
+      && rule.isEnabled
+      && rule.forwardType === "gost"
+      && Number((rule as any).tunnelId || 0) === Number(tunnelId)
+      && proxyProtocolEnabled(rule, "send")
+    );
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
         if (await shouldUseRuleGuard(r)) return [];
@@ -827,7 +838,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
             handler: tunnel
-              ? { type: proto, chain: `chain-tunnel-${r.id}`, ...(proto === "tcp" && maybeProxyProtocolMetadata(r, "send") ? { metadata: maybeProxyProtocolMetadata(r, "send") } : {}) }
+              ? { type: proto, chain: `chain-tunnel-${r.id}` }
               : { type: proto, ...(proto === "tcp" && maybeProxyProtocolMetadata(r, "send") ? { metadata: maybeProxyProtocolMetadata(r, "send") } : {}) },
             listener: { type: proto },
           };
@@ -883,6 +894,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
           const chainHops: any[] = [];
+          const proxyHopMetadata = maybeProxyProtocolMetadata(r, "send");
           const routeParts: string[] = [`entry#${Number(firstHop.hostId)}:${Number((r as any).sourcePort)}`];
           for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
@@ -892,6 +904,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
             chainHops.push({
               name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
+              ...(proxyHopMetadata ? { metadata: proxyHopMetadata } : {}),
               nodes: [gostTunnelNode(
                 `mhop-${r.id}-${Number(hop.seq)}`,
                 hopAddr,
@@ -906,6 +919,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
           chainHops.push({
             name: `hop-tunnel-${r.id}-exit`,
+            ...(proxyHopMetadata ? { metadata: proxyHopMetadata } : {}),
             nodes: [gostTunnelNode(
               `exit-${r.id}`,
               exitAddr,
@@ -918,7 +932,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           tunnelRouteLogCache.set(routeKey, route);
-          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} route=${route}`);
+          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxy=${proxyProtocolEnabled(r, "send") ? "auto-chain" : "off"} route=${route}`);
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry
@@ -929,6 +943,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           name: `chain-tunnel-${r.id}`,
           hops: [{
             name: `hop-tunnel-${r.id}`,
+            ...(maybeProxyProtocolMetadata(r, "send") ? { metadata: maybeProxyProtocolMetadata(r, "send") } : {}),
             nodes: [gostTunnelNode(
               chainNodeName,
               chainTargetAddr,
@@ -984,11 +999,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: gostRelayHandler(),
+          handler: gostRelayHandler(maybeProxyProtocolMetadata(rule, "send")),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
           },
+          ...(proxyProtocolEnabled(rule, "send") ? { metadata: maybeProxyProtocolMetadata(rule, "send") } : {}),
           forwarder: {
             nodes: [{
               name: `target-${rule.id}`,
@@ -1006,15 +1022,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
         if (hostIdx < 0 || hostIdx >= hops.length - 1) return null; // not in chain or exit hop
         const currentHop = hops[hostIdx] as any;
+        const proxyEnabled = tunnelProxyProtocolEnabled(Number(tunnel.id));
+        const isFirstHop = hostIdx === 0;
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
-          handler: gostRelayHandler(),
+          handler: gostRelayHandler(proxyEnabled ? { proxyProtocol: 1 } : undefined),
           listener: {
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
             ...(Number(currentHop.seq) === 0 ? {} : (tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {})),
           },
+          ...(proxyEnabled && !isFirstHop ? { metadata: { proxyProtocol: 1 } } : {}),
         };
       }));
       const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
