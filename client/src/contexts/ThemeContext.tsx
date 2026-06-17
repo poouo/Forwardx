@@ -1,4 +1,5 @@
-import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 type Theme = "dark" | "light" | "system";
 
@@ -20,8 +21,14 @@ const ThemeProviderContext = createContext<ThemeProviderState>({
   setTheme: () => null,
 });
 
-const THEME_TRANSITION_CLASS = "theme-transitioning";
-const THEME_TRANSITION_MS = 760;
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (updateCallback: () => void) => {
+    finished: Promise<void>;
+    ready: Promise<void>;
+    updateCallbackDone: Promise<void>;
+    skipTransition: () => void;
+  };
+};
 
 function getResolvedTheme(theme: Theme): "dark" | "light" {
   if (theme === "system") {
@@ -32,12 +39,16 @@ function getResolvedTheme(theme: Theme): "dark" | "light" {
   return theme;
 }
 
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 export function ThemeProvider({
   children,
   defaultTheme = "light",
   storageKey = "forwardx-theme",
 }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(
+  const [theme, setThemeState] = useState<Theme>(
     () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
   );
 
@@ -45,43 +56,32 @@ export function ThemeProvider({
 
   useLayoutEffect(() => {
     const root = window.document.documentElement;
-    const appliedTheme = root.classList.contains("dark")
-      ? "dark"
-      : root.classList.contains("light")
-        ? "light"
-        : null;
-    const shouldAnimate =
-      appliedTheme !== null &&
-      appliedTheme !== resolvedTheme &&
-      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let transitionTimer: number | undefined;
-
-    if (shouldAnimate) {
-      root.classList.add(THEME_TRANSITION_CLASS);
-      transitionTimer = window.setTimeout(() => {
-        root.classList.remove(THEME_TRANSITION_CLASS);
-      }, THEME_TRANSITION_MS);
-    }
-
     root.classList.remove("light", "dark");
     root.classList.add(resolvedTheme);
-
-    return () => {
-      if (transitionTimer !== undefined) {
-        window.clearTimeout(transitionTimer);
-      }
-      root.classList.remove(THEME_TRANSITION_CLASS);
-    };
   }, [resolvedTheme]);
 
-  const value = {
+  const setTheme = useCallback((newTheme: Theme) => {
+    if (newTheme === theme) return;
+    localStorage.setItem(storageKey, newTheme);
+
+    const transitionDocument = document as ViewTransitionDocument;
+    if (!transitionDocument.startViewTransition || prefersReducedMotion()) {
+      setThemeState(newTheme);
+      return;
+    }
+
+    transitionDocument.startViewTransition(() => {
+      flushSync(() => {
+        setThemeState(newTheme);
+      });
+    });
+  }, [storageKey, theme]);
+
+  const value = useMemo(() => ({
     theme,
     resolvedTheme,
-    setTheme: (newTheme: Theme) => {
-      localStorage.setItem(storageKey, newTheme);
-      setTheme(newTheme);
-    },
-  };
+    setTheme,
+  }), [resolvedTheme, setTheme, theme]);
 
   return (
     <ThemeProviderContext.Provider value={value}>

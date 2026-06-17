@@ -18,6 +18,7 @@ type AutoAnimateContainerProps<T extends ElementType = "div"> = {
 } & Omit<ComponentPropsWithoutRef<T>, "as" | "children" | "className">;
 
 const standardCardGridClassPattern = /\bstandard-card-grid(?:-compact)?\b/;
+const LAYOUT_ANIMATION_CHILD_LIMIT = 36;
 
 function measureChildren(container: Element) {
   const rects = new Map<Element, DOMRect>();
@@ -27,6 +28,16 @@ function measureChildren(container: Element) {
     rects.set(child, child.getBoundingClientRect());
   });
   return rects;
+}
+
+function getVisibleChildCount(container: Element) {
+  let count = 0;
+  Array.from(container.children).forEach((child) => {
+    if (!(child instanceof HTMLElement)) return;
+    if (window.getComputedStyle(child).display === "none") return;
+    count += 1;
+  });
+  return count;
 }
 
 function shouldSkipMotion() {
@@ -65,6 +76,11 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
     }
 
     const animateFromPreviousLayout = () => {
+      if (getVisibleChildCount(container) > LAYOUT_ANIMATION_CHILD_LIMIT) {
+        previousRectsRef.current = new Map();
+        return;
+      }
+
       const previousRects = previousRectsRef.current;
       const visibleRects = measureChildren(container);
       const animatedChildren = new Set<Element>();

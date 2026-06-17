@@ -126,7 +126,7 @@ export default function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`${cardMinHeightClass} animate-in fade-in-0 zoom-in-95 backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,transform,opacity] duration-200 ease-out ${
+    <Card className={`${cardMinHeightClass} backdrop-blur-md transition-[border-color,background-color,box-shadow,opacity] duration-150 ease-out ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"

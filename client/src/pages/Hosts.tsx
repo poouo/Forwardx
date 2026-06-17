@@ -1191,12 +1191,12 @@ function HostsContent() {
         ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
           <AutoAnimateContainer
-            duration={240}
-            className={viewMode === "compact-card" ? "standard-card-grid-compact gap-3 transition-[gap] duration-200" : "standard-card-grid gap-4 transition-[gap] duration-200"}
+            duration={160}
+            className={viewMode === "compact-card" ? "standard-card-grid-compact card-mode-transition gap-3" : "standard-card-grid card-mode-transition gap-4"}
           >
             {pagedHosts.map((host) => (
               <HostCard
-                key={`${viewMode}-${host.id}`}
+                key={host.id}
                 host={host}
                 onEdit={openEdit}
                 onDelete={(id) => deleteMutation.mutate({ id })}

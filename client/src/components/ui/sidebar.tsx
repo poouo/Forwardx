@@ -26,6 +26,18 @@ type SidebarContext = {
 
 const SidebarContext = React.createContext<SidebarContext | null>(null)
 
+function getInitialSidebarOpen(defaultOpen: boolean) {
+  if (typeof document === "undefined") return defaultOpen
+
+  const cookie = document.cookie
+    .split("; ")
+    .find((row) => row.startsWith(`${SIDEBAR_COOKIE_NAME}=`))
+  const value = cookie?.slice(SIDEBAR_COOKIE_NAME.length + 1)
+  if (value === "true") return true
+  if (value === "false") return false
+  return defaultOpen
+}
+
 function useSidebar() {
   const context = React.useContext(SidebarContext)
   if (!context) {
@@ -41,7 +53,7 @@ const SidebarProvider = React.forwardRef<HTMLDivElement, React.ComponentProps<"d
 }>(({ defaultOpen = true, open: openProp, onOpenChange: setOpenProp, className, style, children, ...props }, ref) => {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
-  const [_open, _setOpen] = React.useState(defaultOpen)
+  const [_open, _setOpen] = React.useState(() => getInitialSidebarOpen(defaultOpen))
   const open = openProp ?? _open
   const setOpen = React.useCallback((value: boolean | ((value: boolean) => boolean)) => {
     const openState = typeof value === "function" ? value(open) : value

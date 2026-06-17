@@ -474,6 +474,11 @@
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr));
   }
 
+  .card-mode-transition {
+    animation: card-mode-transition-in 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    will-change: opacity, transform;
+  }
+
   .glass-panel {
     @apply border text-card-foreground shadow-sm;
     background:
@@ -658,33 +663,50 @@
   }
 }
 
-html.theme-transitioning,
-html.theme-transitioning body,
-html.theme-transitioning #root,
-html.theme-transitioning #root * {
-  transition-property: background, background-color, border-color, color, fill, stroke, box-shadow, outline-color, text-decoration-color;
-  transition-duration: 680ms;
-  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+@keyframes card-mode-transition-in {
+  from {
+    opacity: 0.88;
+    transform: translate3d(0, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
-html.theme-transitioning body {
-  transition-duration: 760ms;
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 140ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-html.theme-transitioning [data-radix-popper-content-wrapper],
-html.theme-transitioning [data-radix-popper-content-wrapper] * {
-  transition-property: background, background-color, border-color, color, fill, stroke, box-shadow, outline-color, text-decoration-color;
-  transition-duration: 680ms;
-  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+::view-transition-old(root) {
+  animation-name: theme-fade-out;
+}
+
+::view-transition-new(root) {
+  animation-name: theme-fade-in;
+}
+
+@keyframes theme-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0.92; }
+}
+
+@keyframes theme-fade-in {
+  from { opacity: 0.92; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html.theme-transitioning,
-  html.theme-transitioning body,
-  html.theme-transitioning #root,
-  html.theme-transitioning #root *,
-  html.theme-transitioning [data-radix-popper-content-wrapper],
-  html.theme-transitioning [data-radix-popper-content-wrapper] * {
-    transition: none;
+  .card-mode-transition {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
   }
 }

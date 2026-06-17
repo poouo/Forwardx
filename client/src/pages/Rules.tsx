@@ -496,10 +496,27 @@ function RuleCardModeTransition({
   className?: string;
   children: ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const reduceMotion = useReducedMotion();
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || reduceMotion || typeof element.animate !== "function") return;
+
+    const animation = element.animate(
+      [
+        { opacity: 0.9, transform: "translate3d(0, 4px, 0)" },
+        { opacity: 1, transform: "translate3d(0, 0, 0)" },
+      ],
+      { duration: 140, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+    );
+    return () => animation.cancel();
+  }, [mode, reduceMotion]);
+
   return (
-    <RuleContentTransition transitionKey={`card-${mode}`} className={className}>
+    <div ref={ref} className={className}>
       {children}
-    </RuleContentTransition>
+    </div>
   );
 }
 
@@ -2878,7 +2895,8 @@ function RulesContent() {
   const ruleCardGridClass = ruleCardSize === "compact"
     ? "standard-card-grid-compact gap-3"
     : "standard-card-grid gap-4";
-  const ruleContentTransitionKey = `${ruleCategory}-${displayMode}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
+  const ruleContentModeKey = viewMode === "card" ? "card" : displayMode;
+  const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
   const renderRuleGroupIcon = (type: RuleGroupType, className = "h-4 w-4") => {
     if (type === "chain") return <GitBranch className={`${className} text-amber-600`} />;
