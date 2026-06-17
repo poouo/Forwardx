@@ -6,7 +6,6 @@ import { forwardTypeSchema } from "./schemas";
 import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
-import { isTunnelExitTargetAlias } from "../tunnelTargetAlias";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -120,12 +119,8 @@ function normalizeProxyProtocolInput(input: {
   return { proxyProtocolReceive: receive, proxyProtocolSend: send };
 }
 
-function normalizeRuleTargetIp(input: string, options: { tunnelId?: number | null }) {
-  const value = String(input || "").trim();
-  if (isTunnelExitTargetAlias(value) && !Number(options.tunnelId || 0)) {
-    throw new Error("出口主机地址仅支持隧道转发规则");
-  }
-  return value;
+function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
+  return String(input || "").trim();
 }
 
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {

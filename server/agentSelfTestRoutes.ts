@@ -5,16 +5,9 @@ import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
 import { appendPanelLog } from "./_core/panelLogger";
 import { getAgentHostFromRequest } from "./agentAuth";
-import { isTunnelExitTargetAlias, tunnelExitTargetAddress } from "./tunnelTargetAlias";
 
 async function resolveSelfTestTarget(rule: any) {
-  if (!isTunnelExitTargetAlias(rule?.targetIp)) return rule?.targetIp;
-  const tunnelId = Number(rule?.tunnelId || 0);
-  if (!tunnelId) return rule?.targetIp;
-  const tunnel = await db.getTunnelById(tunnelId);
-  const exitHostId = Number((tunnel as any)?.exitHostId || 0);
-  const exitHost = exitHostId > 0 ? await db.getHostById(exitHostId) : null;
-  return tunnelExitTargetAddress(exitHost) || rule?.targetIp;
+  return rule?.targetIp;
 }
 
 function structuredLinkTestMessage(input: {

@@ -280,12 +280,14 @@ type protocolPolicy struct {
 }
 
 type guardRule struct {
-	RuleID     int            `json:"ruleId"`
-	TunnelID   int            `json:"tunnelId"`
-	ListenPort int            `json:"listenPort"`
-	TargetIP   string         `json:"targetIp"`
-	TargetPort int            `json:"targetPort"`
-	Policy     protocolPolicy `json:"policy"`
+	RuleID               int            `json:"ruleId"`
+	TunnelID             int            `json:"tunnelId"`
+	ListenPort           int            `json:"listenPort"`
+	TargetIP             string         `json:"targetIp"`
+	TargetPort           int            `json:"targetPort"`
+	Policy               protocolPolicy `json:"policy"`
+	ProxyProtocolReceive bool           `json:"proxyProtocolReceive"`
+	ProxyProtocolSend    bool           `json:"proxyProtocolSend"`
 }
 
 func main() {
@@ -3154,6 +3156,8 @@ func guardSignature(rule guardRule) string {
 		strconv.FormatBool(rule.Policy.BlockHTTP),
 		strconv.FormatBool(rule.Policy.BlockSocks),
 		strconv.FormatBool(rule.Policy.BlockTLS),
+		strconv.FormatBool(rule.ProxyProtocolReceive),
+		strconv.FormatBool(rule.ProxyProtocolSend),
 	}, "|")
 }
 
@@ -3200,7 +3204,7 @@ func startProtocolGuard(cfg Config, rule guardRule) {
 	protocolGuards[guardID(rule)] = server
 	protocolGuardMu.Unlock()
 	go server.serve(cfg)
-	logf("protocol guard started rule=%d tunnel=%d listen=:%d target=%s:%d", rule.RuleID, rule.TunnelID, rule.ListenPort, rule.TargetIP, rule.TargetPort)
+	logf("protocol guard started rule=%d tunnel=%d listen=:%d target=%s:%d proxyReceive=%v proxySend=%v", rule.RuleID, rule.TunnelID, rule.ListenPort, rule.TargetIP, rule.TargetPort, rule.ProxyProtocolReceive, rule.ProxyProtocolSend)
 }
 
 func stopProtocolGuard(id string) {
@@ -3243,7 +3247,20 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 	if err != nil {
 		return
 	}
-	if proto := detectBlockedProtocol(buf[:n], s.rule.Policy); proto != "" {
+	first := buf[:n]
+	proxyInfo := proxyProtocolInfoFromConn(client)
+	if s.rule.ProxyProtocolReceive {
+		parsed, remaining, ok, err := consumeProxyProtocolV1FromConn(client, first, 5*time.Second)
+		if err != nil {
+			logf("protocol guard proxy receive failed rule=%d: %v", s.rule.RuleID, err)
+			return
+		}
+		if ok {
+			proxyInfo = parsed
+			first = remaining
+		}
+	}
+	if proto := detectBlockedProtocol(first, s.rule.Policy); proto != "" {
 		reportProtocolBlock(cfg, s.rule, proto)
 		return
 	}
@@ -3253,8 +3270,18 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 		return
 	}
 	defer target.Close()
-	if _, err := target.Write(buf[:n]); err != nil {
-		return
+	if s.rule.ProxyProtocolSend {
+		header := buildProxyProtocolV1(proxyInfo, client.RemoteAddr(), target.LocalAddr(), target.RemoteAddr())
+		if header != "" {
+			if _, err := target.Write([]byte(header)); err != nil {
+				return
+			}
+		}
+	}
+	if len(first) > 0 {
+		if _, err := target.Write(first); err != nil {
+			return
+		}
 	}
 	errCh := make(chan error, 2)
 	go func() { _, err := io.Copy(target, client); errCh <- err }()
@@ -3262,7 +3289,131 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 	<-errCh
 }
 
+type proxyProtocolInfo struct {
+	SourceIP   string
+	DestIP     string
+	SourcePort int
+	DestPort   int
+}
+
+func proxyProtocolInfoFromConn(conn net.Conn) proxyProtocolInfo {
+	info := proxyProtocolInfo{}
+	if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		info.SourceIP = addr.IP.String()
+		info.SourcePort = addr.Port
+	}
+	if addr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+		info.DestIP = addr.IP.String()
+		info.DestPort = addr.Port
+	}
+	return info
+}
+
+func consumeProxyProtocolV1(data []byte) (proxyProtocolInfo, []byte, bool, error) {
+	if !bytes.HasPrefix(data, []byte("PROXY ")) {
+		return proxyProtocolInfo{}, data, false, nil
+	}
+	end := bytes.Index(data, []byte("\r\n"))
+	if end < 0 {
+		return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol header")
+	}
+	line := string(data[:end])
+	parts := strings.Fields(line)
+	if len(parts) < 2 || parts[0] != "PROXY" {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol header")
+	}
+	if parts[1] == "UNKNOWN" {
+		return proxyProtocolInfo{}, data[end+2:], true, nil
+	}
+	if len(parts) != 6 || (parts[1] != "TCP4" && parts[1] != "TCP6") {
+		return proxyProtocolInfo{}, nil, false, errors.New("unsupported proxy protocol header")
+	}
+	sourcePort, err := strconv.Atoi(parts[4])
+	if err != nil || sourcePort < 0 || sourcePort > 65535 {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol source port")
+	}
+	destPort, err := strconv.Atoi(parts[5])
+	if err != nil || destPort < 0 || destPort > 65535 {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol destination port")
+	}
+	return proxyProtocolInfo{
+		SourceIP:   parts[2],
+		DestIP:     parts[3],
+		SourcePort: sourcePort,
+		DestPort:   destPort,
+	}, data[end+2:], true, nil
+}
+
+func consumeProxyProtocolV1FromConn(conn net.Conn, data []byte, timeout time.Duration) (proxyProtocolInfo, []byte, bool, error) {
+	buf := append([]byte(nil), data...)
+	for len(buf) > 0 && len(buf) < 108 && (bytes.HasPrefix(buf, []byte("PROXY ")) || bytes.HasPrefix([]byte("PROXY "), buf)) && bytes.Index(buf, []byte("\r\n")) < 0 {
+		if timeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		}
+		tmp := make([]byte, 108-len(buf))
+		n, err := conn.Read(tmp)
+		if timeout > 0 {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if len(buf) > 0 && bytes.HasPrefix([]byte("PROXY "), buf) {
+				return proxyProtocolInfo{}, nil, false, err
+			}
+			break
+		}
+	}
+	return consumeProxyProtocolV1(buf)
+}
+
+func buildProxyProtocolV1(info proxyProtocolInfo, fallbackSource net.Addr, targetLocal net.Addr, targetRemote net.Addr) string {
+	sourceIP := strings.TrimSpace(info.SourceIP)
+	destIP := strings.TrimSpace(info.DestIP)
+	sourcePort := info.SourcePort
+	destPort := info.DestPort
+	if sourceIP == "" {
+		if addr, ok := fallbackSource.(*net.TCPAddr); ok {
+			sourceIP = addr.IP.String()
+			sourcePort = addr.Port
+		}
+	}
+	if destIP == "" {
+		if addr, ok := targetRemote.(*net.TCPAddr); ok {
+			destIP = addr.IP.String()
+			destPort = addr.Port
+		}
+	}
+	if destPort <= 0 {
+		if addr, ok := targetRemote.(*net.TCPAddr); ok {
+			destPort = addr.Port
+		}
+	}
+	if sourcePort <= 0 {
+		if addr, ok := fallbackSource.(*net.TCPAddr); ok {
+			sourcePort = addr.Port
+		}
+	}
+	if destIP == "" {
+		if addr, ok := targetLocal.(*net.TCPAddr); ok {
+			destIP = addr.IP.String()
+		}
+	}
+	family := "TCP4"
+	if ip := net.ParseIP(sourceIP); ip != nil && ip.To4() == nil {
+		family = "TCP6"
+	}
+	if sourceIP == "" || destIP == "" || sourcePort <= 0 || destPort <= 0 {
+		return "PROXY UNKNOWN\r\n"
+	}
+	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
+}
+
 func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
+	if len(data) == 0 {
+		return ""
+	}
 	if policy.BlockHTTP && detectHTTPProtocol(data) {
 		return "http"
 	}
