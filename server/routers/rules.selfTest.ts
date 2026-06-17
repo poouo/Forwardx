@@ -6,6 +6,7 @@ import { pushAgentRefresh } from "../agentEvents";
 import { pushTunnelEndpointRefresh } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { createQueryCache } from "../queryCache";
+import { isTunnelExitTargetAlias, tunnelExitTargetAddress } from "../tunnelTargetAlias";
 
 const selfTestQueryCache = createQueryCache(300);
 
@@ -67,17 +68,22 @@ export const selfTestRulesRouter = router({
         const tunnel = await db.getTunnelById((rule as any).tunnelId);
         if (!tunnel) throw new Error("隧道不存在");
         hostId = tunnel.exitHostId;
+        const exitHost = await db.getHostById(Number(tunnel.exitHostId));
+        const targetIp = isTunnelExitTargetAlias(rule.targetIp)
+          ? tunnelExitTargetAddress(exitHost)
+          : rule.targetIp;
+        if (!targetIp) throw new Error("出口主机地址不可用，请检查隧道出口主机入口地址");
         const pushed = await pushTunnelEndpointRefresh(tunnel, "forward-selftest-via-tunnel");
         message = JSON.stringify({
           kind: "forward-via-tunnel",
           tunnelId: tunnel.id,
           entryHostId: tunnel.entryHostId,
           exitHostId: tunnel.exitHostId,
-          targetIp: rule.targetIp,
+          targetIp,
           targetPort: rule.targetPort,
           refreshPushed: pushed,
         });
-        appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${rule.targetIp}:${rule.targetPort}`);
+        appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${targetIp}:${rule.targetPort}`);
       }
       const id = await db.createForwardTest({
         ruleId: rule.id,

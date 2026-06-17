@@ -3,13 +3,13 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 RUN npm install -g pnpm@10
 
-RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache bash python3 make g++ go
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --prod=false
 
 COPY . .
-RUN pnpm build
+RUN pnpm build && bash scripts/build-agent-release.sh
 
 # ---------- 2. Production dependencies ----------
 FROM node:22-alpine AS prod-deps

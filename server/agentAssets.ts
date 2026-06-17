@@ -1,7 +1,12 @@
 import fs from "fs";
+import fsp from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
+
+const REPO_URL = "https://github.com/poouo/Forwardx";
+const MAX_AGENT_ASSET_BYTES = 80 * 1024 * 1024;
+const fetchLocks = new Map<string, Promise<string | null>>();
 
 export const AGENT_ASSET_NAMES = [
   "forwardx-agent-linux-amd64",
@@ -20,6 +25,28 @@ function normalizeVersion(version: string | null | undefined) {
 
 function isSemver(version: string) {
   return /^\d+\.\d+\.\d+$/.test(version);
+}
+
+function githubAssetUrl(version: string, asset: string) {
+  return `${REPO_URL}/releases/download/v${normalizeVersion(version)}/${encodeURIComponent(asset)}`;
+}
+
+function agentAssetCachePath(version: string, asset: string) {
+  return path.resolve(process.cwd(), "data", "agent-assets", `v${normalizeVersion(version)}`, asset);
+}
+
+function getAgentAssetReleaseCandidates(version: string) {
+  const normalized = normalizeVersion(version);
+  const agentVersion = normalizeVersion(AGENT_VERSION);
+  const appVersion = normalizeVersion(APP_VERSION);
+  const candidates = [normalized];
+  if ((normalized === agentVersion || normalized === appVersion) && appVersion !== normalized) {
+    candidates.unshift(appVersion);
+  }
+  if ((normalized === agentVersion || normalized === appVersion) && agentVersion !== normalized) {
+    candidates.push(agentVersion);
+  }
+  return Array.from(new Set(candidates.filter(isSemver)));
 }
 
 function getAgentAssetCandidates(version: string, asset: string) {
@@ -66,6 +93,75 @@ export function getBundledAgentAssetPath(version: string, asset: string) {
     }
   }
   return null;
+}
+
+async function downloadAgentAssetToCache(version: string, asset: string) {
+  const normalized = normalizeVersion(version);
+  if (!isSemver(normalized) || !AGENT_ASSET_NAME_SET.has(asset)) return null;
+
+  for (const releaseVersion of getAgentAssetReleaseCandidates(normalized)) {
+    const cachePath = agentAssetCachePath(releaseVersion, asset);
+    await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+    const tmpPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      const res = await fetch(githubAssetUrl(releaseVersion, asset), {
+        cache: "no-store",
+        redirect: "follow",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+          "User-Agent": `ForwardX/${APP_VERSION}`,
+        },
+      });
+      if (!res.ok || !res.body) {
+        console.warn(`[AgentAssets] Release asset unavailable ${asset} v${releaseVersion}: ${res.status} ${res.statusText}`);
+        continue;
+      }
+
+      const contentLength = Number(res.headers.get("content-length") || 0);
+      if (contentLength > MAX_AGENT_ASSET_BYTES) {
+        console.warn(`[AgentAssets] Release asset too large ${asset} v${releaseVersion}: ${contentLength}`);
+        continue;
+      }
+
+      const file = await fsp.open(tmpPath, "w");
+      let written = 0;
+      try {
+        for await (const chunk of res.body as any as AsyncIterable<Uint8Array>) {
+          written += chunk.length;
+          if (written > MAX_AGENT_ASSET_BYTES) throw new Error("Agent asset is too large");
+          await file.write(chunk);
+        }
+      } finally {
+        await file.close();
+      }
+      if (written <= 0) continue;
+      await fsp.chmod(tmpPath, 0o755).catch(() => undefined);
+      await fsp.rename(tmpPath, cachePath);
+      return cachePath;
+    } catch (error) {
+      console.warn(`[AgentAssets] Failed to cache ${asset} v${releaseVersion}:`, error);
+    } finally {
+      await fsp.rm(tmpPath, { force: true }).catch(() => undefined);
+    }
+  }
+  return null;
+}
+
+export async function getOrFetchAgentAssetPath(version: string, asset: string) {
+  const bundled = getBundledAgentAssetPath(version, asset);
+  if (bundled) return bundled;
+
+  const normalized = normalizeVersion(version);
+  if (!isSemver(normalized) || !AGENT_ASSET_NAME_SET.has(asset)) return null;
+
+  const key = `${normalized}:${asset}`;
+  let lock = fetchLocks.get(key);
+  if (!lock) {
+    lock = downloadAgentAssetToCache(normalized, asset).finally(() => fetchLocks.delete(key));
+    fetchLocks.set(key, lock);
+  }
+  return await lock;
 }
 
 export function getMissingBundledAgentAssets(version = APP_VERSION) {

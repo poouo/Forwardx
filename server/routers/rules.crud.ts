@@ -6,6 +6,7 @@ import { forwardTypeSchema } from "./schemas";
 import { pushTunnelEndpointRefresh, refreshUserForwardEndpoints, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./helpers";
 import { requireRuleProtocolEnabled } from "../forwardProtocolSettings";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
+import { isTunnelExitTargetAlias } from "../tunnelTargetAlias";
 
 const targetHostSchema = z.string().min(1).max(253).refine(
   (v) => /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(v.trim()),
@@ -117,6 +118,14 @@ function normalizeProxyProtocolInput(input: {
     throw new Error("PROXY Protocol 向目标发送暂不支持与出站策略同时使用");
   }
   return { proxyProtocolReceive: receive, proxyProtocolSend: send };
+}
+
+function normalizeRuleTargetIp(input: string, options: { tunnelId?: number | null }) {
+  const value = String(input || "").trim();
+  if (isTunnelExitTargetAlias(value) && !Number(options.tunnelId || 0)) {
+    throw new Error("出口主机地址仅支持隧道转发规则");
+  }
+  return value;
 }
 
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
@@ -358,7 +367,7 @@ export const crudRulesRouter = router({
           forwardGroupMemberId: null,
           isForwardGroupTemplate: true,
           sourcePort,
-          targetIp: input.targetIp.trim(),
+          targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId: forwardType === "gost" && !isForwardChain && (group as any).groupType === "tunnel" ? 1 : null }),
           targetPort: input.targetPort,
           blockHttp: false,
           blockSocks: false,
@@ -498,7 +507,7 @@ export const crudRulesRouter = router({
         blockSocks: false,
         blockTls: false,
         sourcePort,
-        targetIp: input.targetIp.trim(),
+        targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId }),
         gostMode: "direct",
         gostRelayHost,
         gostRelayPort,
@@ -600,7 +609,7 @@ export const crudRulesRouter = router({
                 autoFailback: input.autoFailback ?? (rule as any).autoFailback,
               }, input.protocol ?? (rule as any).protocol)
             : {}),
-          ...(input.targetIp !== undefined ? { targetIp: input.targetIp.trim() } : {}),
+          ...(input.targetIp !== undefined ? { targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId: !isForwardChain && (group as any).groupType === "tunnel" ? 1 : null }) } : {}),
           forwardType: nextForwardType,
           ...(
             input.proxyProtocolReceive !== undefined ||
@@ -739,7 +748,7 @@ export const crudRulesRouter = router({
       delete (data as any).blockSocks;
       delete (data as any).blockTls;
       (data as any).hostId = nextHostIdForRule;
-      if (input.targetIp !== undefined) (data as any).targetIp = input.targetIp.trim();
+      if (input.targetIp !== undefined) (data as any).targetIp = normalizeRuleTargetIp(input.targetIp, { tunnelId: nextTunnelIdForRule });
       if (
         input.failoverEnabled !== undefined ||
         input.failoverStrategy !== undefined ||

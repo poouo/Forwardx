@@ -66,6 +66,7 @@ import {
   Rows3,
   GitBranch,
   Globe,
+  Server,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import {
@@ -206,6 +207,7 @@ type RuleFormData = {
 
 type FailoverStrategy = "fallback" | "round_robin" | "random" | "ip_hash";
 type FailoverMode = "disabled" | FailoverStrategy;
+const TUNNEL_EXIT_TARGET_ALIAS = "forwardx_exit_host";
 
 const failoverModeOptions: Array<{ value: FailoverMode; label: string }> = [
   { value: "disabled", label: "不使用" },
@@ -1895,6 +1897,7 @@ function RulesContent() {
   const selectedForwardGroupIsChain = isForwardChainGroup(selectedForwardGroup);
   const mainBackupForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType;
   const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
+  const canUseTunnelExitTargetAlias = mainBackupIsTunnelRoute;
   const canAutoSwitchMainBackupToGost = !selectedForwardGroupIsChain
     && mainBackupForwardType !== "gost"
     && usableForwardTypes.includes("gost")
@@ -3761,11 +3764,25 @@ function RulesContent() {
               </div>
               <div className="space-y-2">
                 <Label>{form.routeMode === "local" ? "目标地址" : "最终目标地址"}</Label>
-                <Input
-                  placeholder="例如: 10.0.0.1 或 example.com"
-                  value={form.targetIp}
-                  onChange={(e) => setForm({ ...form, targetIp: e.target.value })}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    placeholder={canUseTunnelExitTargetAlias ? "例如: 10.0.0.1、example.com 或出口主机" : "例如: 10.0.0.1 或 example.com"}
+                    value={form.targetIp === TUNNEL_EXIT_TARGET_ALIAS ? "出口主机" : form.targetIp}
+                    onChange={(e) => setForm({ ...form, targetIp: e.target.value === "出口主机" ? TUNNEL_EXIT_TARGET_ALIAS : e.target.value })}
+                  />
+                  {canUseTunnelExitTargetAlias && (
+                    <Button
+                      type="button"
+                      variant={form.targetIp === TUNNEL_EXIT_TARGET_ALIAS ? "default" : "outline"}
+                      className="h-10 shrink-0 gap-1.5 px-3"
+                      onClick={() => setForm({ ...form, targetIp: TUNNEL_EXIT_TARGET_ALIAS })}
+                      title="随当前隧道出口主机地址变化"
+                    >
+                      <Server className="h-4 w-4" />
+                      <span className="hidden sm:inline">出口主机</span>
+                    </Button>
+                  )}
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>{form.routeMode === "local" ? "目标端口" : "最终目标端口"} <span className="text-destructive">*</span></Label>

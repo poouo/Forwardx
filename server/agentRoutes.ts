@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
-import { AGENT_ASSET_NAME_SET, getBundledAgentAssetPath } from "./agentAssets";
+import { AGENT_ASSET_NAME_SET, getOrFetchAgentAssetPath } from "./agentAssets";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
@@ -298,9 +298,9 @@ agentRouter.get("/api/agent/assets/:version/:asset", async (req: Request, res: R
     return;
   }
 
-  const filePath = getBundledAgentAssetPath(version, asset);
+  const filePath = await getOrFetchAgentAssetPath(version, asset);
   if (!filePath) {
-    res.status(503).send("Bundled agent asset not available");
+    res.status(503).send("Agent asset not available");
     return;
   }
   res.setHeader("Content-Type", "application/octet-stream");

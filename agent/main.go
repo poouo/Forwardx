@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.93"
+var Version = "2.2.94"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -50,6 +50,14 @@ const agentLogRetention = 72 * time.Hour
 
 const agentLogDir = "/var/log/forwardx-agent"
 const agentLogPath = agentLogDir + "/agent-go.log"
+const runtimeServiceName = "forwardx-runtime"
+const tunnelRuntimeServiceName = "forwardx-tunnel-runtime"
+const runtimeConfigPath = "/etc/forwardx-runtime/config.json"
+const tunnelRuntimeConfigPath = "/etc/forwardx-tunnel-runtime/config.json"
+const legacyGostServiceName = "forwardx-gost"
+const legacyTunnelServiceName = "forwardx-tunnels"
+const legacyGostConfigPath = "/etc/forwardx-gost/config.json"
+const legacyTunnelConfigPath = "/etc/forwardx-tunnels/config.json"
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -1248,15 +1256,12 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 		return
 	}
 	stopped := false
-	if gostRuntimeConfigUsesPort("/etc/forwardx-gost/config.json", port) {
-		logf("runtime cleanup stopping forwardx-gost for busy port=%d: %v", port, err)
-		cleanupManagedService("forwardx-gost")
-		stopped = true
-	}
-	if gostRuntimeConfigUsesPort("/etc/forwardx-tunnels/config.json", port) {
-		logf("runtime cleanup stopping forwardx-tunnels for busy port=%d: %v", port, err)
-		cleanupManagedService("forwardx-tunnels")
-		stopped = true
+	for _, item := range managedRuntimeConfigs() {
+		if gostRuntimeConfigUsesPort(item.path, port) {
+			logf("runtime cleanup stopping %s for busy port=%d: %v", item.service, port, err)
+			cleanupManagedService(item.service)
+			stopped = true
+		}
 	}
 	for _, configPath := range managedGostConfigPathsForListenPort(port) {
 		svcName := managedGostServiceNameForConfig(configPath)
@@ -1340,9 +1345,9 @@ func managedGostConfigPathsForListenPort(port int) []string {
 			continue
 		}
 		cmd := strings.ReplaceAll(string(cmdline), "\x00", " ")
-		for _, path := range []string{"/etc/forwardx-gost/config.json", "/etc/forwardx-tunnels/config.json"} {
-			if strings.Contains(cmd, path) {
-				paths[path] = true
+		for _, item := range managedRuntimeConfigs() {
+			if strings.Contains(cmd, item.path) {
+				paths[item.path] = true
 			}
 		}
 	}
@@ -1355,13 +1360,26 @@ func managedGostConfigPathsForListenPort(port int) []string {
 }
 
 func managedGostServiceNameForConfig(path string) string {
-	switch path {
-	case "/etc/forwardx-gost/config.json":
-		return "forwardx-gost"
-	case "/etc/forwardx-tunnels/config.json":
-		return "forwardx-tunnels"
-	default:
-		return ""
+	for _, item := range managedRuntimeConfigs() {
+		if path == item.path {
+			return item.service
+		}
+	}
+	return ""
+}
+
+func managedRuntimeConfigs() []struct {
+	path    string
+	service string
+} {
+	return []struct {
+		path    string
+		service string
+	}{
+		{runtimeConfigPath, runtimeServiceName},
+		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName},
+		{legacyGostConfigPath, legacyGostServiceName},
+		{legacyTunnelConfigPath, legacyTunnelServiceName},
 	}
 }
 

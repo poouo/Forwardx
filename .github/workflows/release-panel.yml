@@ -34,6 +34,11 @@ jobs:
           node-version: "22"
           cache: pnpm
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
       - name: Resolve release version
         id: release
         shell: bash
@@ -54,6 +59,9 @@ jobs:
 
       - name: Build panel assets
         run: pnpm build
+
+      - name: Build bundled Agent assets
+        run: bash scripts/build-agent-release.sh
 
       - name: Package panel runtime bundle
         shell: bash

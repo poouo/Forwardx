@@ -15,6 +15,7 @@ FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-false}"
 SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
+RUNTIME_BIN="/usr/local/bin/forwardx-runtime"
 CONFIG_DIR="/etc/forwardx-agent"
 LOG_DIR="/var/log/forwardx-agent"
 STATE_DIR="/var/lib/forwardx-agent"
@@ -206,6 +207,10 @@ do_uninstall() {
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
     kill "$pid" 2>/dev/null || true
   done
+  for pid in $(pgrep -f "[/]usr/local/bin/forwardx-runtime" 2>/dev/null || true); do
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
+    kill "$pid" 2>/dev/null || true
+  done
   for pid in $(pgrep -f "[r]ealm -l" 2>/dev/null || true); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
     kill "$pid" 2>/dev/null || true
@@ -215,20 +220,20 @@ do_uninstall() {
     kill "$pid" 2>/dev/null || true
   done
 
-  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service; do
+  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service /etc/systemd/system/forwardx-runtime.service /etc/systemd/system/forwardx-tunnel-runtime.service /etc/systemd/system/forwardx-gost.service /etc/systemd/system/forwardx-tunnels.service; do
     if [ -f "$SVC" ]; then
       SVCNAME="$(basename "$SVC" .service)"
       remove_service_by_name "$SVCNAME"
     fi
   done
-  for SVC in /etc/init.d/forwardx-socat-* /etc/init.d/forwardx-realm-* /etc/init.d/forwardx-gost-* /etc/init.d/forwardx-tunnels; do
+  for SVC in /etc/init.d/forwardx-socat-* /etc/init.d/forwardx-realm-* /etc/init.d/forwardx-gost-* /etc/init.d/forwardx-runtime /etc/init.d/forwardx-tunnel-runtime /etc/init.d/forwardx-gost /etc/init.d/forwardx-tunnels; do
     if [ -f "$SVC" ]; then
       SVCNAME="$(basename "$SVC")"
       remove_service_by_name "$SVCNAME"
     fi
   done
 
-  rm -f "$GO_AGENT_BIN" "$FXP_BIN"
+  rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN"
   rm -rf "$CONFIG_DIR" "$LOG_DIR" "$STATE_DIR"
 
   echo "[完成] Agent 已卸载"

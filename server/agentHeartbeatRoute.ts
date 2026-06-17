@@ -31,11 +31,13 @@ import {
   killByPatternCmd,
   removeManagedServiceCmd,
   restartManagedServiceIfConfigChangedCmd,
+  shQuote,
   stopManagedServiceCmd,
   writeManagedServiceCmd,
 } from "./agentActionCommands";
 import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
+import { isTunnelExitTargetAlias, tunnelExitTargetAddress } from "./tunnelTargetAlias";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -43,6 +45,13 @@ const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
 const resolvedIpCache = new Map<number, string>();
 const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
+const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
+const RUNTIME_SERVICE_NAME = "forwardx-runtime";
+const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
+const RUNTIME_CONFIG_PATH = "/etc/forwardx-runtime/config.json";
+const TUNNEL_RUNTIME_CONFIG_PATH = "/etc/forwardx-tunnel-runtime/config.json";
+const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
+const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 
 type AgentDnsWatch = {
   host: string;
@@ -114,6 +123,11 @@ async function resolveTargetIpCached(ruleId: number, raw: string, force = false)
   const resolved = await resolveTargetIp(trimmed);
   resolvedIpCheckedAt.set(ruleId, now);
   return resolved;
+}
+
+function ensureRuntimeBinaryCmd() {
+  const runtime = shQuote(RUNTIME_BIN);
+  return `if [ -e ${runtime} ]; then chmod 0755 ${runtime} 2>/dev/null || true; else for bin in /usr/local/bin/gost $(command -v gost 2>/dev/null || true); do [ -n "$bin" ] || continue; [ -x "$bin" ] || continue; install -m 0755 "$bin" ${runtime} && break; done; fi; [ -x ${runtime} ]`;
 }
 
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
@@ -211,15 +225,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
      * - FWX_OUT_<port>：匹配 sport=<port> 的出站包（Agent→客户端响应）
      * 不设 RETURN，所以只作计数不影响路由。三种转发方式都会经过 mangle 表，覆盖 100% 路径。
      */
-    const gostServiceName = "forwardx-gost";
+    const gostServiceName = RUNTIME_SERVICE_NAME;
     const gostServiceUnit = [
       "[Unit]",
-      "Description=ForwardX unified gost forwarder",
+      "Description=ForwardX unified runtime forwarder",
       "After=network.target",
       "",
       "[Service]",
       "Type=simple",
-      "ExecStart=/usr/local/bin/gost -C /etc/forwardx-gost/config.json",
+      `ExecStart=${RUNTIME_BIN} -C ${RUNTIME_CONFIG_PATH}`,
       "Restart=always",
       "RestartSec=5",
       "LimitNOFILE=65535",
@@ -234,6 +248,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const dnsPreviousIpByRuleId = new Map<number, string>();
     for (const rule of agentHostRules as any[]) {
       if (!rule.targetIp) continue;
+      if (isTunnelExitTargetAlias(rule.targetIp)) {
+        (rule as any)._originalTargetIp = rule.targetIp;
+        continue;
+      }
       addDnsWatch(dnsWatches, rule.targetIp, "forward-rule-target", Number(rule.id));
       const rawTargetIp = String(rule.targetIp || "").trim();
       const forcedResolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase());
@@ -417,11 +435,44 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
     // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
-    const processTarget = (rule: any) => (rule as any)._originalTargetIp || rule.targetIp;
+    const tunnelExitAddressByTunnelId = new Map<number, string>();
+    const resolveTunnelExitTarget = async (rule: any, tunnel?: any | null) => {
+      const tunnelId = Number((tunnel as any)?.id || (rule as any)?.tunnelId || 0);
+      if (!tunnelId) return "";
+      const cached = tunnelExitAddressByTunnelId.get(tunnelId);
+      if (cached !== undefined) return cached;
+      const currentTunnel = tunnel || tunnelById.get(tunnelId) as any;
+      const exitHostId = Number((currentTunnel as any)?.exitHostId || 0);
+      const exitHost = exitHostId > 0 ? await db.getHostById(exitHostId) : null;
+      const address = exitHost ? tunnelExitTargetAddress(exitHost) : "";
+      if (address) addDnsWatch(dnsWatches, address, "tunnel-exit-target", exitHostId);
+      tunnelExitAddressByTunnelId.set(tunnelId, address);
+      return address;
+    };
+    const processTarget = (rule: any) => (rule as any)._resolvedTargetIp || (rule as any)._originalTargetIp || rule.targetIp;
 
+    const skipRuntimeRuleIds = new Set<number>();
+    for (const rule of agentHostRules as any[]) {
+      if (!isTunnelExitTargetAlias((rule as any)._originalTargetIp || rule.targetIp)) continue;
+      const tunnel = Number((rule as any).tunnelId || 0) > 0 ? tunnelById.get(Number((rule as any).tunnelId)) as any : null;
+      const resolvedTarget = await resolveTunnelExitTarget(rule, tunnel);
+      if (!resolvedTarget) {
+        skipRuntimeRuleIds.add(Number(rule.id));
+        (rule as any)._skipRuntimeApply = true;
+        appendPanelLog("warn", `[TunnelTarget] rule=${rule.id} uses exit-host target alias but tunnel exit address is unavailable`);
+        continue;
+      }
+      const previousResolvedTarget = String((rule as any)._resolvedTargetIp || "").trim();
+      (rule as any)._resolvedTargetIp = resolvedTarget;
+      if (previousResolvedTarget && previousResolvedTarget !== resolvedTarget && rule.isEnabled && rule.isRunning) {
+        rule.isRunning = false;
+        await db.updateForwardRule(Number(rule.id), { isRunning: false } as any);
+        appendPanelLog("info", `[TunnelTarget] rule=${rule.id} exit target changed ${previousResolvedTarget}->${resolvedTarget}; re-applying`);
+      }
+    }
     const gostRules = agentHostRules
       .filter((r: any) => {
-        if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost") return false;
+        if ((r as any)._skipRuntimeApply || r.pendingDelete || !r.isEnabled || r.forwardType !== "gost") return false;
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         return isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel);
       });
@@ -891,14 +942,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
       const cmds = [
-        `mkdir -p /etc/forwardx-gost`,
-        `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-gost/config.json`,
-        `echo "[gost-config] forwardx-gost services=${gostServiceConfig.length} chains=${gostChains.length}"`,
+        `mkdir -p ${shQuote(RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
+        `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(RUNTIME_CONFIG_PATH)}`,
+        `echo "[runtime-config] ${RUNTIME_SERVICE_NAME} services=${gostServiceConfig.length} chains=${gostChains.length}"`,
         writeManagedServiceCmd(gostServiceName, gostServiceUnit),
+        stopManagedServiceCmd(LEGACY_GOST_SERVICE_NAME),
       ];
       if (gostServiceConfig.length > 0) {
-        cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(restartManagedServiceIfConfigChangedCmd(gostServiceName, "/etc/forwardx-gost/config.json"));
+        cmds.unshift(ensureRuntimeBinaryCmd());
+        cmds.push(restartManagedServiceIfConfigChangedCmd(gostServiceName, RUNTIME_CONFIG_PATH));
       } else {
         cmds.push(stopManagedServiceCmd(gostServiceName));
       }
@@ -932,13 +984,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: {
-            ...gostRelayHandler(),
-            metadata: {
-              ...gostRelayHandler().metadata,
-              ...(maybeProxyProtocolMetadata(rule, "send") || {}),
-            },
-          },
+          handler: gostRelayHandler(),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
@@ -979,17 +1025,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       });
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       const cmds = [
-        `mkdir -p /etc/forwardx-tunnels`,
-        `printf '%s' '${encodedConfig}' | base64 -d > /etc/forwardx-tunnels/config.json`,
-        `echo "[gost-config] forwardx-tunnels services=${services.length}"`,
-        writeManagedServiceCmd("forwardx-tunnels", [
+        `mkdir -p ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
+        `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH)}`,
+        `echo "[runtime-config] ${TUNNEL_RUNTIME_SERVICE_NAME} services=${services.length}"`,
+        writeManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME, [
           "[Unit]",
-          "Description=ForwardX managed gost tunnels",
+          "Description=ForwardX managed tunnel runtime",
           "After=network.target",
           "",
           "[Service]",
           "Type=simple",
-          "ExecStart=/usr/local/bin/gost -C /etc/forwardx-tunnels/config.json",
+          `ExecStart=${RUNTIME_BIN} -C ${TUNNEL_RUNTIME_CONFIG_PATH}`,
           "Restart=always",
           "RestartSec=5",
           "LimitNOFILE=65535",
@@ -998,12 +1044,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           "WantedBy=multi-user.target",
           "",
         ].join("\n")),
+        stopManagedServiceCmd(LEGACY_TUNNEL_SERVICE_NAME),
       ];
       if (services.length > 0) {
-        cmds.unshift(`command -v /usr/local/bin/gost >/dev/null 2>&1 || command -v gost >/dev/null 2>&1`);
-        cmds.push(restartManagedServiceIfConfigChangedCmd("forwardx-tunnels", "/etc/forwardx-tunnels/config.json"));
+        cmds.unshift(ensureRuntimeBinaryCmd());
+        cmds.push(restartManagedServiceIfConfigChangedCmd(TUNNEL_RUNTIME_SERVICE_NAME, TUNNEL_RUNTIME_CONFIG_PATH));
       } else {
-        cmds.push(stopManagedServiceCmd("forwardx-tunnels"));
+        cmds.push(stopManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME));
       }
       cmds.push(...countingCmds);
       return cmds;
@@ -1315,6 +1362,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     for (const rule of rules) {
+      if ((rule as any)._skipRuntimeApply || skipRuntimeRuleIds.has(Number((rule as any).id))) continue;
       const ruleTunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
       const ruleProtocolEnabled = isRuleProtocolEnabled(forwardProtocolSettings, rule, ruleTunnel);
       const useRuleGuard = await shouldUseRuleGuard(rule);
@@ -1631,7 +1679,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 protocol: rule.protocol,
                 exitHost: entryRoute.host,
                 exitPort: entryRoute.port,
-                targetIp: mainBackup ? "127.0.0.1" : rule.targetIp,
+                targetIp: mainBackup ? "127.0.0.1" : processTarget(rule),
                 targetPort: mainBackup ? failoverProxyPort(rule) : rule.targetPort,
                 key: entryRoute.key,
                 ...rateLimits,
@@ -1984,13 +2032,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
+      const selfTestTunnel = Number((rule as any).tunnelId || 0) > 0 ? await db.getTunnelById(Number((rule as any).tunnelId)) : null;
+      const selfTestTargetIp = isTunnelExitTargetAlias((rule as any).targetIp)
+        ? await resolveTunnelExitTarget(rule, selfTestTunnel as any)
+        : rule.targetIp;
       selfTests.push({
         testId: t.id,
         ruleId: rule.id,
         forwardType: rule.forwardType,
         protocol: rule.protocol,
         sourcePort: rule.sourcePort,
-        targetIp: rule.targetIp,
+        targetIp: selfTestTargetIp,
         targetPort: rule.targetPort,
       });
     }
