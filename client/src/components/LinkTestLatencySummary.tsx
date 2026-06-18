@@ -259,6 +259,7 @@ export function LinkTestProbeView({
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
   const totalLatency = isTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const failedSegments = segments.filter((segment) => !segment.pending && !segment.success);
+  const hasSegments = segments.length > 0;
   const hasResult = isTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
@@ -301,7 +302,7 @@ export function LinkTestProbeView({
   return (
     <div className={cn("space-y-3", className)}>
       <div className="overflow-x-auto pb-1">
-        <div className="flex min-w-[360px] items-center justify-center px-2 py-8">
+        <div className="flex min-w-[360px] items-start justify-center px-2 py-8">
           {segments.map((segment, index) => {
             const firstNode = index === 0;
             const segmentOk = isTesting || segment.success;
@@ -321,7 +322,7 @@ export function LinkTestProbeView({
                 {firstNode ? (
                   renderNode(segment.from, segment.fromMeta)
                 ) : null}
-                <div className="relative h-px min-w-[96px] flex-1 bg-border">
+                <div className="relative mt-[45px] h-px min-w-[96px] flex-1 bg-border">
                   <div
                     className={cn(
                       "absolute inset-x-0 top-0 h-px",
@@ -345,7 +346,7 @@ export function LinkTestProbeView({
         </div>
       </div>
 
-      {!hasResult ? (
+      {!hasSegments && !hasResult ? (
         <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">
           尚未运行探测
         </div>
