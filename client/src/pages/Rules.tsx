@@ -4356,7 +4356,8 @@ function SelfTestDialog({
   const isTimeout = status === "timeout";
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
-  const useWideProbeDialog = (plannedSegments?.length || 0) >= 3;
+  const plannedSegmentCount = plannedSegments?.length || 0;
+  const probeDialogSizeClass = plannedSegmentCount >= 3 ? "sm:max-w-2xl" : "sm:max-w-xl";
   const lastFailureToastKey = useRef("");
   useEffect(() => {
     if (!open) {
@@ -4374,7 +4375,7 @@ function SelfTestDialog({
   }, [open, isTesting, isSuccess, isTimeout, latest, latest?.updatedAt, parsedMessage.message, ruleId, status]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={useWideProbeDialog ? "sm:max-w-4xl" : "sm:max-w-xl"}>
+      <DialogContent className={probeDialogSizeClass}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
@@ -4395,6 +4396,7 @@ function SelfTestDialog({
           compactFrom={3}
           roomyNodes
           mobileStacked
+          wrapDesktopRows
         />
 
         <DialogFooter className="gap-2">

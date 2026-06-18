@@ -295,6 +295,7 @@ export function LinkTestProbeView({
   compactFrom = 4,
   roomyNodes = false,
   mobileStacked = false,
+  wrapDesktopRows = false,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -308,6 +309,7 @@ export function LinkTestProbeView({
   compactFrom?: number;
   roomyNodes?: boolean;
   mobileStacked?: boolean;
+  wrapDesktopRows?: boolean;
   className?: string;
 }) {
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
@@ -317,6 +319,11 @@ export function LinkTestProbeView({
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
+  const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 5;
+  const segmentsPerDesktopRow = shouldWrapDesktopRows ? 3 : segments.length;
+  const desktopRows = shouldWrapDesktopRows
+    ? Array.from({ length: Math.ceil(segments.length / segmentsPerDesktopRow) }, (_, index) => segments.slice(index * segmentsPerDesktopRow, (index + 1) * segmentsPerDesktopRow))
+    : [segments];
   const getSegmentState = (segment: ProbeSegment) => {
     const testing = effectiveTesting && (isTesting || segment.pending);
     const ok = testing || segment.success;
@@ -360,7 +367,7 @@ export function LinkTestProbeView({
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
     const nodeWidthClass = roomyNodes
-      ? densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
+      ? shouldWrapDesktopRows ? "max-w-[128px]" : densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
       : densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
@@ -369,7 +376,7 @@ export function LinkTestProbeView({
         </div>
         <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
-            {shortNodeLabel(label, roomyNodes ? 18 : 14)}
+            {shortNodeLabel(label, shouldWrapDesktopRows ? 15 : roomyNodes ? 18 : 14)}
           </span>
         </div>
       </div>
@@ -425,39 +432,65 @@ export function LinkTestProbeView({
       ) : null}
 
       <div className={cn("overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
-        <div className={cn(
-          "flex min-w-full items-start px-2 py-8",
-          compactPath ? "w-max justify-start" : "justify-center",
-        )}>
-          {segments.map((segment, index) => {
-            const firstNode = index === 0;
-            const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
+        <div className={cn(shouldWrapDesktopRows ? "space-y-0" : "")}>
+          {desktopRows.map((rowSegments, rowIndex) => {
+            const nextRow = desktopRows[rowIndex + 1];
             return (
-              <div key={`${segment.from}-${segment.to}-${index}`} className="contents">
-                {firstNode ? (
-                  renderNode(segment.from, segment.fromMeta)
-                ) : null}
-                <div className={cn(
-                  "relative mt-[45px] h-px bg-border",
-                  densePath ? "w-[42px] shrink-0 flex-none" : compactPath ? "w-[56px] shrink-0 flex-none" : "min-w-[96px] flex-1",
-                )}>
-                  <div
-                    className={cn(
-                      "absolute inset-x-0 top-0 h-px",
-                      segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
-                      segmentTesting ? "animate-pulse" : "",
-                    )}
-                  />
-                  <span
-                    className={cn(
-                      "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
-                      segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
-                    )}
-                  >
-                    {label || "\u00a0"}
-                  </span>
+              <div key={`desktop-row-wrap-${rowIndex}`}>
+                <div
+                  className={cn(
+                    "flex items-start px-2",
+                    shouldWrapDesktopRows
+                      ? "mx-auto w-max justify-center py-5"
+                      : compactPath
+                        ? "w-max justify-start py-8"
+                        : "min-w-full justify-center py-8",
+                  )}
+                >
+                  {rowSegments.map((segment, index) => {
+                    const firstNode = index === 0;
+                    const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
+                    return (
+                      <div key={`${segment.from}-${segment.to}-${rowIndex}-${index}`} className="contents">
+                        {firstNode ? (
+                          renderNode(segment.from, segment.fromMeta)
+                        ) : null}
+                        <div className={cn(
+                          "relative mt-[45px] h-px bg-border",
+                          shouldWrapDesktopRows ? "w-[42px] shrink-0 flex-none" : densePath ? "w-[42px] shrink-0 flex-none" : compactPath ? "w-[56px] shrink-0 flex-none" : "min-w-[96px] flex-1",
+                        )}>
+                          <div
+                            className={cn(
+                              "absolute inset-x-0 top-0 h-px",
+                              segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
+                              segmentTesting ? "animate-pulse" : "",
+                            )}
+                          />
+                          <span
+                            className={cn(
+                              "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
+                              segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                            )}
+                          >
+                            {label || "\u00a0"}
+                          </span>
+                        </div>
+                        {renderNode(segment.to, segment.toMeta)}
+                      </div>
+                    );
+                  })}
                 </div>
-                {renderNode(segment.to, segment.toMeta)}
+                {shouldWrapDesktopRows && nextRow ? (
+                  <div className="mx-auto -my-2 flex w-full max-w-[32rem] flex-col items-center px-6" aria-hidden="true">
+                    <div className="h-4 w-px bg-border" />
+                    <div className="flex w-full items-center">
+                      <div className="h-px flex-1 bg-border" />
+                      <span className="h-2.5 w-2.5 rounded-full border border-border bg-background shadow-sm" />
+                      <div className="h-px flex-1 bg-border" />
+                    </div>
+                    <div className="h-4 w-px bg-border" />
+                  </div>
+                ) : null}
               </div>
             );
           })}
