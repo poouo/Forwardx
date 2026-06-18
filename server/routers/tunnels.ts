@@ -64,6 +64,22 @@ const getTunnelDialHost = (tunnel: any, exit: any) => {
 const getHostPublicAddress = (host: any) =>
   String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
+function structuredLinkTestMessage(input: {
+  kind: string;
+  message: string;
+  details?: any[];
+  totalLatencyMs?: number | null;
+  tunnelId?: number | null;
+}) {
+  return JSON.stringify({
+    kind: input.kind,
+    ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
+    message: input.message,
+    details: input.details || [],
+    totalLatencyMs: input.totalLatencyMs ?? null,
+  });
+}
+
 function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, host: any) {
   const raw = String(rawConnectHost || "").trim();
   const publicAddr = getHostPublicAddress(host);
@@ -587,6 +603,7 @@ export const tunnelsRouter = router({
         }
         if (Array.isArray(tunnelHops) && tunnelHops.length >= 3) {
           const batchId = createTunnelHopBatch(Number(tunnel.id));
+          const pendingDetails: any[] = [];
           let queued = 0;
           for (let i = 0; i < tunnelHops.length - 1; i++) {
             const currentHop = tunnelHops[i] as any;
@@ -605,6 +622,15 @@ export const tunnelsRouter = router({
             const hopLabel = `${i + 1}/${tunnelHops.length - 1} ${fromHostId}->${Number(nextHop.hostId)}`;
             const currentHost = await db.getHostById(fromHostId);
             const routeLabel = `第 ${i + 1} 跳 ${(currentHost as any)?.name || `主机${fromHostId}`} -> ${(nextHost as any)?.name || `主机${Number(nextHop.hostId)}`}`;
+            pendingDetails.push({
+              success: false,
+              latencyMs: null,
+              message: null,
+              hopLabel,
+              routeLabel,
+              method: "tcp",
+              pending: true,
+            });
             const payload = {
               kind: "tunnel-hop",
               tunnelId: tunnel.id,
@@ -625,7 +651,13 @@ export const tunnelsRouter = router({
             queued += 1;
             appendPanelLog("info", `[TunnelTest] tunnel=${tunnel.id} queued hop tcping ${hopLabel} target=${nextAddr}:${nextPort}`);
           }
-          const message = `TUNNEL_HOP_TEST_PENDING hops=${queued}`;
+          const message = structuredLinkTestMessage({
+            kind: "tunnel-hop-pending",
+            tunnelId: tunnel.id,
+            message: `多级隧道逐跳探测中：${queued} 段`,
+            details: pendingDetails,
+            totalLatencyMs: null,
+          });
           await db.updateTunnelTestResult(tunnel.id, { status: "pending", latencyMs: null, message });
           return { success: false, latencyMs: null, message, pending: true };
         }

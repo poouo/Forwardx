@@ -1,4 +1,5 @@
 import { LatencyRating } from "@/components/LatencyRating";
+import type { LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 import { cn } from "@/lib/utils";
 
 export type LinkTestDetail = {
@@ -8,6 +9,7 @@ export type LinkTestDetail = {
   hopLabel?: string | null;
   routeLabel?: string | null;
   method?: string | null;
+  pending?: boolean | null;
 };
 
 export type ParsedLinkTestMessage = {
@@ -20,6 +22,8 @@ export type ParsedLinkTestMessage = {
 type ProbeSegment = {
   from: string;
   to: string;
+  fromMeta?: LinkTestNodeMeta;
+  toMeta?: LinkTestNodeMeta;
   success: boolean;
   latencyMs: number | null;
   message?: string | null;
@@ -42,6 +46,7 @@ export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
           hopLabel: typeof item?.hopLabel === "string" ? item.hopLabel : null,
           routeLabel: typeof item?.routeLabel === "string" ? item.routeLabel : null,
           method: typeof item?.method === "string" ? item.method : null,
+          pending: item?.pending === true,
         }))
         : [];
       return {
@@ -85,13 +90,20 @@ function shortNodeLabel(value: string) {
   return text.length > 14 ? `${text.slice(0, 13)}...` : text;
 }
 
+function cleanNodeLabel(value: string) {
+  return String(value || "")
+    .replace(/^第\s*\d+\s*跳\s*/i, "")
+    .replace(/^\d+\s*\/\s*\d+\s*/, "")
+    .trim();
+}
+
 function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   const route = formatLinkTestRoute(detail).replace(/\s+/g, " ").trim();
   const arrowParts = route.split(/\s*(?:->|→|=>|至|到)\s*/).map((item) => item.trim()).filter(Boolean);
   if (arrowParts.length >= 2) {
     return {
-      from: arrowParts[0],
-      to: arrowParts.slice(1).join(" -> "),
+      from: cleanNodeLabel(arrowParts[0]),
+      to: arrowParts.slice(1).map(cleanNodeLabel).join(" -> "),
     };
   }
 
@@ -99,8 +111,8 @@ function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   const hopMatch = hopLabel.match(/(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
   if (hopMatch) {
     return {
-      from: hopMatch[1].trim(),
-      to: hopMatch[2].trim(),
+      from: cleanNodeLabel(hopMatch[1]),
+      to: cleanNodeLabel(hopMatch[2]),
     };
   }
 
@@ -110,6 +122,17 @@ function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   };
 }
 
+function lookupNodeMeta(meta: Record<string, LinkTestNodeMeta | undefined> | undefined, label: string) {
+  if (!meta) return undefined;
+  const clean = cleanNodeLabel(label);
+  return meta[label] || meta[clean] || meta[clean.toLowerCase()];
+}
+
+function withNodeLabel(meta: LinkTestNodeMeta | undefined, fallback: string) {
+  const label = String(meta?.label || "").trim();
+  return label || fallback;
+}
+
 function buildProbeSegments(input: {
   parsed: ParsedLinkTestMessage;
   fallbackLatencyMs?: number | null;
@@ -117,25 +140,38 @@ function buildProbeSegments(input: {
   isTesting: boolean;
   sourceLabel?: string;
   targetLabel?: string;
+  nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
 }) {
-  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.success || detail.message || hasLatencyValue(detail));
+  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
 
   if (visibleDetails.length > 0) {
     return visibleDetails.map((detail, index): ProbeSegment => {
       const endpoints = parseRouteEndpoints(detail, index);
+      const fromMeta = lookupNodeMeta(input.nodeMeta, endpoints.from);
+      const toMeta = lookupNodeMeta(input.nodeMeta, endpoints.to);
       return {
-        ...endpoints,
+        from: withNodeLabel(fromMeta, endpoints.from),
+        to: withNodeLabel(toMeta, endpoints.to),
+        fromMeta,
+        toMeta,
         success: !!detail.success,
         latencyMs: detail.success && hasLatencyValue(detail) ? detail.latencyMs : null,
         message: detail.message || null,
         method: detail.method || null,
+        pending: detail.pending === true,
       };
     });
   }
 
+  const sourceFallback = input.sourceLabel || "源节点";
+  const targetFallback = input.targetLabel || "目的节点";
+  const sourceMeta = lookupNodeMeta(input.nodeMeta, sourceFallback);
+  const targetMeta = lookupNodeMeta(input.nodeMeta, targetFallback);
   return [{
-    from: input.sourceLabel || "入口",
-    to: input.targetLabel || "目标",
+    from: withNodeLabel(sourceMeta, sourceFallback),
+    to: withNodeLabel(targetMeta, targetFallback),
+    fromMeta: sourceMeta,
+    toMeta: targetMeta,
     success: input.isTesting ? true : input.isSuccess,
     latencyMs: !input.isTesting && input.isSuccess && hasUsableLatencyValue(input.fallbackLatencyMs) ? Number(input.fallbackLatencyMs) : null,
     message: !input.isTesting && !input.isSuccess ? input.parsed.message || null : null,
@@ -150,7 +186,7 @@ export function getLinkTestTotalLatency(input: {
   isSuccess: boolean;
 }) {
   if (hasUsableLatencyValue(input.parsed.totalLatencyMs)) return Number(input.parsed.totalLatencyMs);
-  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.success || detail.message || hasLatencyValue(detail));
+  const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   if (visibleDetails.length > 0) {
     const successfulLatencyDetails = visibleDetails.filter((detail) => detail.success && hasLatencyValue(detail));
     if (successfulLatencyDetails.length === visibleDetails.length) {
@@ -169,6 +205,7 @@ export function LinkTestProbeView({
   isTesting,
   sourceLabel = "入口",
   targetLabel = "目标",
+  nodeMeta,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -177,12 +214,29 @@ export function LinkTestProbeView({
   isTesting: boolean;
   sourceLabel?: string;
   targetLabel?: string;
+  nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
   className?: string;
 }) {
-  const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel });
+  const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta });
   const totalLatency = isTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const failedSegments = segments.filter((segment) => !segment.pending && !segment.success);
   const hasResult = isTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
+  const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
+    const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
+    const emoji = String(meta?.emoji || "").trim();
+    const region = String(meta?.region || "").trim();
+    const address = String(meta?.address || "").trim();
+    return (
+      <div className="flex shrink-0 flex-col items-center gap-1">
+        <div className="h-5 text-sm leading-5" title={region || undefined}>{emoji || "\u00a0"}</div>
+        <div className="relative z-10 max-w-[128px] rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm">
+          <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
+            {shortNodeLabel(label)}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={cn("space-y-3", className)}>
@@ -191,19 +245,17 @@ export function LinkTestProbeView({
           {segments.map((segment, index) => {
             const firstNode = index === 0;
             const segmentOk = isTesting || segment.success;
-            const label = segment.pending
-              ? "待探测"
-              : isTesting
+            const label = isTesting
                 ? "探测中"
+                : segment.pending
+                  ? "待探测"
                 : segmentOk && hasUsableLatencyValue(segment.latencyMs)
                   ? formatLatencyMs(segment.latencyMs)
                   : "失败";
             return (
               <div key={`${segment.from}-${segment.to}-${index}`} className="contents">
                 {firstNode ? (
-                  <div className="relative z-10 max-w-[116px] shrink-0 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm">
-                    <span className="block truncate" title={segment.from}>{shortNodeLabel(segment.from)}</span>
-                  </div>
+                  renderNode(segment.from, segment.fromMeta)
                 ) : null}
                 <div className="relative h-px min-w-[96px] flex-1 bg-border">
                   <div
@@ -222,9 +274,7 @@ export function LinkTestProbeView({
                     {label}
                   </span>
                 </div>
-                <div className="relative z-10 max-w-[116px] shrink-0 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm">
-                  <span className="block truncate" title={segment.to}>{shortNodeLabel(segment.to)}</span>
-                </div>
+                {renderNode(segment.to, segment.toMeta)}
               </div>
             );
           })}
@@ -282,7 +332,7 @@ export function LinkTestLatencySummary({
   if (isTesting) return <span className="text-sm font-semibold tabular-nums">正在测试中</span>;
 
   const details = parsed.details || [];
-  const visibleDetails = details.filter((detail) => detail.success || detail.message || hasLatencyValue(detail));
+  const visibleDetails = details.filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   const successfulLatencyDetails = visibleDetails.filter((detail) => detail.success && hasLatencyValue(detail));
 
   if (visibleDetails.length > 0) {
@@ -303,7 +353,9 @@ export function LinkTestLatencySummary({
                 : "flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 break-words text-destructive"}
             >
               <span className="min-w-0 break-words">{formatLinkTestRoute(detail)}</span>
-              {detail.success && hasLatencyValue(detail) ? (
+              {detail.pending ? (
+                <span className="font-normal text-muted-foreground">待探测</span>
+              ) : detail.success && hasLatencyValue(detail) ? (
                 renderLatencyValue(detail.latencyMs)
               ) : (
                 <>

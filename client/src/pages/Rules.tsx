@@ -83,6 +83,13 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
+import {
+  addHostNodeMeta,
+  addNodeMetaAliases,
+  findHostByAddress,
+  hostDisplayName,
+  targetGeoNodeMeta,
+} from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 
 const loadReactGlobe = () => import("react-globe.gl");
@@ -2279,6 +2286,15 @@ function RulesContent() {
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
   ), [filteredRules]);
+  const selfTestRuleDetail = useMemo(() => {
+    if (!selfTestRule) return null;
+    return [...(rules || []), ...(selectedScopedRules || [])]
+      .find((rule: any) => Number(rule.id) === Number(selfTestRule.id)) || null;
+  }, [rules, selectedScopedRules, selfTestRule?.id]);
+  const selfTestTargetAddress = useMemo(() => {
+    const target = String(selfTestRuleDetail?.targetIp || "").trim();
+    return target ? normalizeAddressKey(target) : "";
+  }, [selfTestRuleDetail?.targetIp]);
   const ruleGlobeTargetAddresses = useMemo(() => (
     Array.from(new Set(
       filteredRules
@@ -2287,10 +2303,16 @@ function RulesContent() {
         .map((address: string) => normalizeAddressKey(address))
     )).slice(0, 100)
   ), [filteredRules]);
+  const ruleTargetGeoAddresses = useMemo(() => (
+    Array.from(new Set([
+      ...(viewMode === "globe" ? ruleGlobeTargetAddresses : []),
+      selfTestTargetAddress,
+    ].filter(Boolean))).slice(0, 100)
+  ), [ruleGlobeTargetAddresses, selfTestTargetAddress, viewMode]);
   const { data: ruleTargetGeoRows, isFetched: ruleTargetGeoFetched, isError: ruleTargetGeoError } = trpc.rules.targetGeoBatch.useQuery(
-    { targets: ruleGlobeTargetAddresses },
+    { targets: ruleTargetGeoAddresses },
     {
-      enabled: viewMode === "globe" && ruleGlobeTargetAddresses.length > 0,
+      enabled: ruleTargetGeoAddresses.length > 0,
       staleTime: 24 * 60 * 60 * 1000,
       refetchOnWindowFocus: false,
     }
@@ -2483,6 +2505,64 @@ function RulesContent() {
     const entryHost = getRuleEntryHost(rule);
     return entryHost?.name || getHostName(Number(rule.hostId));
   };
+
+  const selfTestLinkTestNodeData = useMemo(() => {
+    const meta: Record<string, any> = {};
+    const rule = selfTestRuleDetail;
+    if (!rule) {
+      return { nodeMeta: meta, sourceLabel: selfTestRule?.name || "源节点", targetLabel: "目标" };
+    }
+
+    const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
+    const routeHostIds = ruleGlobeRouteHostIds(rule, tunnelById, forwardGroupById);
+    const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    routeHostIds.forEach((hostId: number, index: number) => {
+      const host = hostById.get(Number(hostId));
+      addHostNodeMeta(meta, host, [
+        index === 0 ? "入口" : "",
+        index === routeHostIds.length - 1 ? "出口" : "",
+        tunnel ? tunnelHopHostName(tunnel, hostId, hosts) : "",
+        `主机${hostId}`,
+        `主机 #${hostId}`,
+      ]);
+    });
+
+    const sourceHost = hostById.get(Number(routeHostIds[0] || rule.hostId || 0)) || getRuleEntryHost(rule);
+    const exitHost = hostById.get(Number(routeHostIds[routeHostIds.length - 1] || 0));
+    if (sourceHost) addHostNodeMeta(meta, sourceHost, ["入口", "源节点"]);
+    if (exitHost) addHostNodeMeta(meta, exitHost, ["出口"]);
+
+    const targetIp = String(rule.targetIp || "").trim();
+    const targetText = formatAddressWithPort(targetIp || "-", Number(rule.targetPort || 0) || "-") || "目标";
+    const targetHost = findHostByAddress(hosts, targetIp);
+    if (targetHost) {
+      addHostNodeMeta(meta, targetHost, [
+        targetIp,
+        targetText,
+        `目标 ${targetText}`,
+        `目标 ${targetIp}:${rule.targetPort || "-"}`,
+        "目标",
+        "目的节点",
+      ]);
+    } else {
+      const targetGeo = targetGeoByAddress.get(normalizeAddressKey(targetIp));
+      const targetMeta = targetGeoNodeMeta(targetText, targetIp || targetText, targetGeo);
+      addNodeMetaAliases(meta, [
+        targetIp,
+        targetText,
+        `目标 ${targetText}`,
+        `目标 ${targetIp}:${rule.targetPort || "-"}`,
+        "目标",
+        "目的节点",
+      ], targetMeta);
+    }
+
+    return {
+      nodeMeta: meta,
+      sourceLabel: hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
+      targetLabel: targetHost ? hostDisplayName(targetHost) || targetText : targetText,
+    };
+  }, [forwardGroupById, getRuleEntryHost, hosts, selfTestRule?.name, selfTestRuleDetail, targetGeoByAddress, tunnelById]);
 
   const getRuleOwnerName = (rule: any) => {
     const owner = userById.get(Number(rule.userId));
@@ -3510,6 +3590,9 @@ function RulesContent() {
         <SelfTestDialog
           ruleId={selfTestRule.id}
           ruleName={selfTestRule.name}
+          sourceLabel={selfTestLinkTestNodeData.sourceLabel}
+          targetLabel={selfTestLinkTestNodeData.targetLabel}
+          nodeMeta={selfTestLinkTestNodeData.nodeMeta}
           open={!!selfTestRule}
           onOpenChange={(v) => { if (!v) setSelfTestRule(null); }}
         />
@@ -4098,11 +4181,17 @@ function RulesContent() {
 function SelfTestDialog({
   ruleId,
   ruleName,
+  sourceLabel,
+  targetLabel,
+  nodeMeta,
   open,
   onOpenChange,
 }: {
   ruleId: number;
   ruleName: string;
+  sourceLabel?: string;
+  targetLabel?: string;
+  nodeMeta?: Record<string, any>;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -4196,12 +4285,12 @@ function SelfTestDialog({
           fallbackLatencyMs={typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
           isSuccess={isSuccess}
           isTesting={isTesting}
-          sourceLabel="入口"
-          targetLabel="目标"
+          sourceLabel={sourceLabel}
+          targetLabel={targetLabel}
+          nodeMeta={nodeMeta}
         />
 
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        <DialogFooter>
           <Button
             className="min-w-[112px] gap-2"
             disabled={isTesting}
@@ -4214,7 +4303,7 @@ function SelfTestDialog({
             <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
               {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
             </span>
-            {isTesting ? "探测中..." : "重新探测"}
+            {isTesting ? "探测中..." : "链路测试"}
           </Button>
         </DialogFooter>
       </DialogContent>

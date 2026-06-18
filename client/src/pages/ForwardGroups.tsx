@@ -69,6 +69,7 @@ import {
   YAxis,
 } from "recharts";
 import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "failover" | "chain";
@@ -341,11 +342,15 @@ function ForwardGroupLatencyDialog({
 function ForwardGroupSelfTestDialog({
   groupId,
   groupName,
+  group,
+  hostById,
   open,
   onOpenChange,
 }: {
   groupId: number;
   groupName: string;
+  group?: any | null;
+  hostById?: Map<number, any>;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -375,6 +380,28 @@ function ForwardGroupSelfTestDialog({
   const isFailed = !!latest && !isTesting && !isSuccess;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
   const hasFreshResult = !baselineUpdatedAt || (latest?.updatedAt && String(latest.updatedAt) !== baselineUpdatedAt);
+  const linkTestNodeData = useMemo(() => {
+    const meta: Record<string, any> = {};
+    const members = [...(group?.members || [])]
+      .filter((member: any) => member.isEnabled !== false)
+      .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
+    members.forEach((member: any) => {
+      const hostId = Number(member.hostId || 0);
+      const host = hostById?.get(hostId);
+      addHostNodeMeta(meta, host, [
+        member.entryAddress,
+        hostId ? `主机${hostId}` : "",
+        hostId ? `主机 #${hostId}` : "",
+      ]);
+    });
+    const firstHost = hostById?.get(Number(members[0]?.hostId || 0));
+    const lastHost = hostById?.get(Number(members[members.length - 1]?.hostId || 0));
+    return {
+      nodeMeta: meta,
+      sourceLabel: hostDisplayName(firstHost) || groupName,
+      targetLabel: hostDisplayName(lastHost) || groupName,
+    };
+  }, [group?.members, groupName, hostById]);
 
   useEffect(() => {
     if (!open) {
@@ -422,12 +449,12 @@ function ForwardGroupSelfTestDialog({
           fallbackLatencyMs={latest?.latencyMs}
           isSuccess={isSuccess}
           isTesting={isTesting}
-          sourceLabel="入口"
-          targetLabel="目标"
+          sourceLabel={linkTestNodeData.sourceLabel}
+          targetLabel={linkTestNodeData.targetLabel}
+          nodeMeta={linkTestNodeData.nodeMeta}
         />
 
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        <DialogFooter>
           <Button
             onClick={() => {
               manualTestRef.current = true;
@@ -439,7 +466,7 @@ function ForwardGroupSelfTestDialog({
             className="gap-2"
           >
             {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            {isTesting ? "探测中..." : "重新探测"}
+            {isTesting ? "探测中..." : "链路测试"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -492,6 +519,10 @@ export function ForwardGroupsContent({
     isReady: !isLoading && !!groups,
   });
   const pagedGroups = groupPagination.items;
+  const testGroupDetail = useMemo(
+    () => testGroup ? (groups || []).find((group: any) => Number(group.id) === Number(testGroup.id)) || null : null,
+    [groups, testGroup?.id]
+  );
 
   const resetForm = () => {
     setForm(makeDefaultForm());
@@ -1338,6 +1369,8 @@ export function ForwardGroupsContent({
         <ForwardGroupSelfTestDialog
           groupId={testGroup.id}
           groupName={testGroup.name}
+          group={testGroupDetail}
+          hostById={hostById}
           open={!!testGroup}
           onOpenChange={(open) => !open && setTestGroup(null)}
         />

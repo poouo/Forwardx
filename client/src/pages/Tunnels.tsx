@@ -41,6 +41,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -1080,11 +1081,13 @@ function TunnelLatencyDialog({
 function TunnelSelfTestDialog({
   tunnelId,
   tunnelName,
+  hosts,
   open,
   onOpenChange,
 }: {
   tunnelId: number;
   tunnelName: string;
+  hosts?: any[];
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -1121,6 +1124,33 @@ function TunnelSelfTestDialog({
   const manualTestRef = useRef(false);
   const manualTestBaselineAtRef = useRef("");
   const parsedMessage = useMemo(() => parseLinkTestMessage(tunnel?.lastTestMessage), [tunnel?.lastTestMessage]);
+  const linkTestNodeData = useMemo(() => {
+    const meta: Record<string, any> = {};
+    const fullHostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
+    const tunnelHostById = new Map<number, any>();
+    [...(tunnel?.hopHosts || []), tunnel?.entryHost, tunnel?.exitHost].forEach((host: any) => {
+      const id = Number(host?.id || 0);
+      if (id > 0) tunnelHostById.set(id, host);
+    });
+    const hopIds = getTunnelHopIds(tunnel);
+    hopIds.forEach((hostId: number) => {
+      const host = fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
+      addHostNodeMeta(meta, host, [
+        tunnelHopHostName(tunnel, hostId, hosts),
+        `主机${hostId}`,
+        `主机 #${hostId}`,
+      ]);
+    });
+    const firstHostId = Number(hopIds[0] || 0);
+    const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
+    const firstHost = fullHostById.get(firstHostId) || tunnelHostById.get(firstHostId);
+    const lastHost = fullHostById.get(lastHostId) || tunnelHostById.get(lastHostId);
+    return {
+      nodeMeta: meta,
+      sourceLabel: hostDisplayName(firstHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName),
+      targetLabel: hostDisplayName(lastHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
+    };
+  }, [hosts, tunnel, tunnelName]);
 
   useEffect(() => {
     if (!open) {
@@ -1189,12 +1219,12 @@ function TunnelSelfTestDialog({
           fallbackLatencyMs={latencyMs}
           isSuccess={isSuccess}
           isTesting={isTesting}
-          sourceLabel="入口"
-          targetLabel="出口"
+          sourceLabel={linkTestNodeData.sourceLabel}
+          targetLabel={linkTestNodeData.targetLabel}
+          nodeMeta={linkTestNodeData.nodeMeta}
         />
 
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+        <DialogFooter>
           <Button
             onClick={() => {
               manualTestRef.current = true;
@@ -1208,7 +1238,7 @@ function TunnelSelfTestDialog({
             className="gap-2"
           >
             {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            {isTesting ? "探测中..." : "重新探测"}
+            {isTesting ? "探测中..." : "链路测试"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1999,6 +2029,7 @@ function TunnelsContent() {
         <TunnelSelfTestDialog
           tunnelId={testTunnel.id}
           tunnelName={testTunnel.name}
+          hosts={hosts || []}
           open={!!testTunnel}
           onOpenChange={(open) => !open && setTestTunnel(null)}
         />
