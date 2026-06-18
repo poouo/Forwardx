@@ -479,6 +479,36 @@
     will-change: opacity, transform;
   }
 
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"],
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
+    transform-origin: center;
+    transition:
+      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"]:hover,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"]:focus-visible,
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:hover,
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:focus-visible {
+    transform: translate3d(0, -1px, 0) scale(1.13);
+    box-shadow:
+      0 10px 24px color-mix(in oklch, var(--foreground) 10%, transparent),
+      0 0 0 1px color-mix(in oklch, var(--sidebar-border) 55%, transparent);
+  }
+
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"] {
+    transform: scale(1.04);
+  }
+
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:hover,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:focus-visible {
+    transform: translate3d(0, -1px, 0) scale(1.13);
+  }
+
   .glass-panel {
     @apply border text-card-foreground shadow-sm;
     background:
@@ -702,6 +732,19 @@
   .card-mode-transition {
     animation: none;
     opacity: 1;
+    transform: none;
+  }
+
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"],
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"]:hover,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"]:focus-visible,
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:hover,
+  .group[data-collapsible="icon"] .collapsed-sidebar-logo-button:focus-visible,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"],
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:hover,
+  .group[data-collapsible="icon"] [data-sidebar="menu-button"][data-active="true"]:focus-visible {
+    transition: none;
     transform: none;
   }
 

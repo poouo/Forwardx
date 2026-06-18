@@ -1759,6 +1759,7 @@ function TelegramBotSettingsCard() {
   const [telegramBotTokenInput, setTelegramBotTokenInput] = useState("");
   const [telegramExpiryReminder, setTelegramExpiryReminder] = useState(false);
   const [telegramTrafficReminder, setTelegramTrafficReminder] = useState(false);
+  const [telegramHostStatusNotify, setTelegramHostStatusNotify] = useState(false);
   const [telegramTrafficThreshold, setTelegramTrafficThreshold] = useState(20);
   const [showDeleteTelegramBot, setShowDeleteTelegramBot] = useState(false);
 
@@ -1767,6 +1768,7 @@ function TelegramBotSettingsCard() {
       setTelegramEnabled(!!settings.telegram?.enabled);
       setTelegramExpiryReminder(!!settings.telegram?.expiryReminder);
       setTelegramTrafficReminder(!!settings.telegram?.trafficReminder);
+      setTelegramHostStatusNotify(!!settings.telegram?.hostStatusNotify);
       setTelegramTrafficThreshold(Number(settings.telegram?.trafficReminderThreshold || 20));
     }
   }, [settings]);
@@ -1791,6 +1793,7 @@ function TelegramBotSettingsCard() {
         botToken: canSubmitToken ? telegramBotTokenInput.trim() || undefined : undefined,
         expiryReminder: telegramExpiryReminder,
         trafficReminder: telegramTrafficReminder,
+        hostStatusNotify: telegramHostStatusNotify,
         trafficReminderThreshold: telegramTrafficThreshold,
       },
     });
@@ -1888,7 +1891,7 @@ function TelegramBotSettingsCard() {
                 在系统配置填写公开地址，并在 @BotFather 绑定同一域名。
               </AlertDescription>
             </Alert>
-            <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid gap-3 lg:grid-cols-3">
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -1896,6 +1899,15 @@ function TelegramBotSettingsCard() {
                     <p className="mt-1 text-xs text-muted-foreground">到期前 3 天提醒。</p>
                   </div>
                   <Switch checked={telegramExpiryReminder} onCheckedChange={setTelegramExpiryReminder} />
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">主机上线/离线通知</p>
+                    <p className="mt-1 text-xs text-muted-foreground">仅发送给已绑定 Telegram 的管理员。</p>
+                  </div>
+                  <Switch checked={telegramHostStatusNotify} onCheckedChange={setTelegramHostStatusNotify} />
                 </div>
               </div>
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">

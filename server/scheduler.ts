@@ -6,6 +6,7 @@ import { getEmailConfig, sendMail } from "./email";
 import { sendTelegramMessage } from "./telegramBot";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
+import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
 
 type TimedOutForwardTest = {
   id: number;
@@ -13,6 +14,8 @@ type TimedOutForwardTest = {
   hostId: number;
   message: string | null;
 };
+
+let hostStatusPrimePromise: Promise<void> | null = null;
 
 function structuredLinkTestMessage(input: {
   kind: string;
@@ -348,6 +351,15 @@ async function runForwardGroupFailover() {
   }
 }
 
+async function runHostStatusSweep() {
+  try {
+    if (hostStatusPrimePromise) await hostStatusPrimePromise;
+    await sweepOfflineHostsAndNotify();
+  } catch (error) {
+    console.error("[Scheduler] Host status sweep error:", error);
+  }
+}
+
 function formatBytesLocal(bytes: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -356,6 +368,10 @@ function formatBytesLocal(bytes: number) {
 }
 
 export function startScheduler() {
+  hostStatusPrimePromise = primeHostStatusNotifier().finally(() => {
+    hostStatusPrimePromise = null;
+  });
+
   setInterval(async () => {
     const now = new Date();
     await runMonthlyTrafficReset();
@@ -379,6 +395,10 @@ export function startScheduler() {
   }, 30 * 1000);
 
   setInterval(async () => {
+    await runHostStatusSweep();
+  }, 30 * 1000);
+
+  setInterval(async () => {
     await runEmailReminders();
     await runTelegramReminders();
   }, 6 * 60 * 60 * 1000);
@@ -390,9 +410,10 @@ export function startScheduler() {
     await runSelfTestTimeoutSweep();
     await runTcpingCleanup();
     await runForwardGroupFailover();
+    await runHostStatusSweep();
     await runEmailReminders();
     await runTelegramReminders();
   }, 5000);
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + email/telegram reminders)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host status + email/telegram reminders)");
 }

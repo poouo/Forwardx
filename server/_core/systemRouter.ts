@@ -778,6 +778,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       expiryReminder: false,
       trafficReminder: false,
       trafficReminderThreshold: 20,
+      hostStatusNotify: false,
     },
   };
 }
@@ -917,6 +918,7 @@ export const systemRouter = router({
         expiryReminder: all.telegramExpiryReminder === "true",
         trafficReminder: all.telegramTrafficReminder === "true",
         trafficReminderThreshold: Number(all.telegramTrafficReminderThreshold || 20),
+        hostStatusNotify: all.telegramHostStatusNotify === "true",
       },
     };
   }),
@@ -963,6 +965,7 @@ export const systemRouter = router({
           expiryReminder: z.boolean().optional(),
           trafficReminder: z.boolean().optional(),
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
+          hostStatusNotify: z.boolean().optional(),
         }).optional(),
         ddns: z.object({
           enabled: z.boolean().optional(),
@@ -1100,6 +1103,7 @@ export const systemRouter = router({
         if (input.telegram.expiryReminder !== undefined) next.telegramExpiryReminder = input.telegram.expiryReminder ? "true" : "false";
         if (input.telegram.trafficReminder !== undefined) next.telegramTrafficReminder = input.telegram.trafficReminder ? "true" : "false";
         if (input.telegram.trafficReminderThreshold !== undefined) next.telegramTrafficReminderThreshold = String(input.telegram.trafficReminderThreshold);
+        if (input.telegram.hostStatusNotify !== undefined) next.telegramHostStatusNotify = input.telegram.hostStatusNotify ? "true" : "false";
         let tokenChanged = false;
         if (input.telegram.clearToken) {
           next.telegramBotToken = null;

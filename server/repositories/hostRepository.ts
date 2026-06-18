@@ -1,21 +1,21 @@
 ﻿import { desc, eq, sql } from "drizzle-orm";
 import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, trafficStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
-import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
+import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { sqlBool } from "./repositoryUtils";
 
 // ==================== Host Queries ====================
 
-const HOST_ONLINE_TTL_MS = 90 * 1000;
+export const HOST_ONLINE_TTL_MS = 90 * 1000;
 
-function isFreshHeartbeat(lastHeartbeat: unknown) {
+export function isFreshHostHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;
   const time = new Date(lastHeartbeat as any).getTime();
   return Number.isFinite(time) && Date.now() - time <= HOST_ONLINE_TTL_MS;
 }
 
 function withComputedOnline<T extends { isOnline?: boolean; lastHeartbeat?: unknown }>(host: T): T {
-  return { ...host, isOnline: !!host.isOnline && isFreshHeartbeat(host.lastHeartbeat) };
+  return { ...host, isOnline: !!host.isOnline && isFreshHostHeartbeat(host.lastHeartbeat) };
 }
 
 export async function getHosts(userId?: number) {
@@ -61,6 +61,36 @@ export async function updateHostHeartbeat(id: number, metrics?: Partial<InsertHo
   const db = await getDb();
   if (!db) return;
   await db.update(hosts).set({ isOnline: true, lastHeartbeat: nowDate(), updatedAt: nowDate(), ...(metrics ?? {}) }).where(eq(hosts.id, id));
+}
+
+export async function getStaleOnlineHosts(timeoutMs = HOST_ONLINE_TTL_MS) {
+  const db = await getDb();
+  if (!db) return [];
+  const cutoffSec = Math.floor((Date.now() - timeoutMs) / 1000);
+  return db.select().from(hosts).where(sql`
+    ${hosts.isOnline} = ${sqlBool(true)}
+    AND ${hosts.lastHeartbeat} IS NOT NULL
+    AND ${hosts.lastHeartbeat} < ${cutoffSec}
+  `);
+}
+
+export async function markHostsOffline(hostIds: number[]) {
+  const ids = Array.from(new Set(hostIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const idList = inList(ids);
+  await executeRaw(
+    `UPDATE ${quoteIdentifier("hosts")}
+     SET ${quoteIdentifier("isOnline")} = ?,
+         ${quoteIdentifier("updatedAt")} = ?
+     WHERE ${quoteIdentifier("id")} IN ${idList.sql}`,
+    [boolValue(false), nowSec, ...idList.params],
+  );
+  return ids.length;
+}
+
+export async function markHostOffline(hostId: number) {
+  return markHostsOffline([hostId]);
 }
 
 export async function requestHostAgentUpgrade(hostId: number, targetVersion: string | null) {

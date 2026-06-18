@@ -936,7 +936,7 @@ function DashboardLayoutContent({
             ) : (
               <button
                 onClick={toggleSidebar}
-                className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="collapsed-sidebar-logo-button flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="Toggle navigation"
                 title={siteTitle}
               >

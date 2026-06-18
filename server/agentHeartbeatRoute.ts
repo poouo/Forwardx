@@ -37,6 +37,7 @@ import {
 } from "./agentActionCommands";
 import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
+import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -152,6 +153,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
     const previousHost = { ...(host as any) };
+    const wasOnline = isHostStatusOnline(host);
     const reportedAddress = agentReportedAddress(req.body, host);
     const dnsChangedReports = Array.isArray(req.body?.dnsChanged) ? req.body.dnsChanged : [];
     const dnsChangedIpByHost = new Map<string, string>();
@@ -184,6 +186,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
+    if (!wasOnline) {
+      void notifyHostOnlineIfNeeded(host).catch((error) => {
+        console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     if (addressChanged && hostUsesAutomaticIngress(previousHost)) {
       await refreshHostAddressRuntime(host.id, previousHost, "agent-address-changed");
     }

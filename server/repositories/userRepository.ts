@@ -102,6 +102,25 @@ export async function getTelegramAnnouncementSubscribers() {
     ));
 }
 
+export async function getTelegramAdminRecipients() {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      telegramId: users.telegramId,
+      telegramUsername: users.telegramUsername,
+    })
+    .from(users)
+    .where(and(
+      eq(users.accountEnabled, true),
+      eq(users.role, "admin"),
+      sql`${users.telegramId} IS NOT NULL`,
+    ));
+}
+
 export async function enableUserTwoFactor(userId: number, secret: string) {
   const db = await getDb();
   if (!db) return;

@@ -16,6 +16,7 @@ import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
 import { registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
 import { hostUsesAutomaticIngress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -79,6 +80,7 @@ async function openAgentEventStream(input: {
     return;
   }
   const agentVersion = normalizeAgentText(input.agentVersion, 64);
+  const wasOnline = isHostStatusOnline(host);
   if (agentVersion) {
     await db.updateHostHeartbeat(host.id, { agentVersion } as any);
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
@@ -86,6 +88,11 @@ async function openAgentEventStream(input: {
       && isAgentVersionAtLeast(agentVersion, requestedTargetVersion);
     if (agentUpgradeCompleted) {
       await db.clearHostAgentUpgradeRequest(host.id);
+    }
+    if (!wasOnline) {
+      void notifyHostOnlineIfNeeded(host).catch((error) => {
+        console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
   }
 
@@ -206,6 +213,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
 
     const existingHost = await db.getHostByAgentToken(token);
     if (existingHost) {
+      const wasOnline = isHostStatusOnline(existingHost);
       const hasIpv4Report = Object.prototype.hasOwnProperty.call(req.body, "ipv4");
       const hasIpv6Report = Object.prototype.hasOwnProperty.call(req.body, "ipv6");
       const nextIpv4 = hasIpv4Report ? (safeIpv4 || null) : ((existingHost as any).ipv4 || null);
@@ -237,6 +245,11 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
       });
       if (entryChanged && hostUsesAutomaticIngress(existingHost)) {
         await refreshHostAddressRuntime(existingHost.id, existingHost, "agent-address-changed");
+      }
+      if (!wasOnline) {
+        void notifyHostOnlineIfNeeded({ ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 }).catch((error) => {
+          console.warn(`[HostStatus] Online notify failed host=${existingHost.id}: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
       await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-registered");
       res.json({ success: true, hostId: existingHost.id, message: "Host updated" });
