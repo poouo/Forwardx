@@ -31,6 +31,13 @@ type ProbeSegment = {
   pending?: boolean;
 };
 
+export type LinkTestPlannedSegment = {
+  from: string;
+  to: string;
+  fromMeta?: LinkTestNodeMeta;
+  toMeta?: LinkTestNodeMeta;
+};
+
 export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
   const text = typeof raw === "string" ? raw.trim() : "";
   if (!text) return { message: "", details: [], totalLatencyMs: null };
@@ -141,6 +148,7 @@ function buildProbeSegments(input: {
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
+  plannedSegments?: LinkTestPlannedSegment[];
 }) {
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
 
@@ -159,6 +167,35 @@ function buildProbeSegments(input: {
         message: detail.message || null,
         method: detail.method || null,
         pending: detail.pending === true,
+      };
+    });
+  }
+
+  const plannedSegments = (input.plannedSegments || [])
+    .map((segment) => ({
+      from: cleanNodeLabel(segment.from),
+      to: cleanNodeLabel(segment.to),
+      fromMeta: segment.fromMeta,
+      toMeta: segment.toMeta,
+    }))
+    .filter((segment) => segment.from && segment.to);
+  if (plannedSegments.length > 0) {
+    return plannedSegments.map((segment, index): ProbeSegment => {
+      const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
+      const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
+      const pending = input.isTesting || (!input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs));
+      return {
+        from: withNodeLabel(fromMeta, segment.from),
+        to: withNodeLabel(toMeta, segment.to),
+        fromMeta,
+        toMeta,
+        success: input.isTesting ? true : input.isSuccess,
+        latencyMs: !input.isTesting && input.isSuccess && plannedSegments.length === 1 && hasUsableLatencyValue(input.fallbackLatencyMs)
+          ? Number(input.fallbackLatencyMs)
+          : null,
+        message: !input.isTesting && !input.isSuccess && index === 0 ? input.parsed.message || null : null,
+        method: null,
+        pending,
       };
     });
   }
@@ -206,6 +243,7 @@ export function LinkTestProbeView({
   sourceLabel = "入口",
   targetLabel = "目标",
   nodeMeta,
+  plannedSegments,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -215,20 +253,42 @@ export function LinkTestProbeView({
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
+  plannedSegments?: LinkTestPlannedSegment[];
   className?: string;
 }) {
-  const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta });
+  const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
   const totalLatency = isTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const failedSegments = segments.filter((segment) => !segment.pending && !segment.success);
   const hasResult = isTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
-    const emoji = String(meta?.emoji || "").trim();
+    const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
+    const flagUrl = /^[A-Z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode.toLowerCase()}.png` : "";
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
-        <div className="h-5 text-sm leading-5" title={region || undefined}>{emoji || "\u00a0"}</div>
+        <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
+          {flagUrl ? (
+            <>
+              <img
+                src={flagUrl}
+                alt={countryCode}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="h-3.5 w-5 rounded-[2px] object-cover shadow-sm"
+                onError={(event) => {
+                  event.currentTarget.style.display = "none";
+                  const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
+                  if (fallback) fallback.style.display = "inline";
+                }}
+              />
+              <span className="hidden font-mono leading-none">{countryCode}</span>
+            </>
+          ) : (
+            "\u00a0"
+          )}
+        </div>
         <div className="relative z-10 max-w-[128px] rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm">
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
             {shortNodeLabel(label)}
@@ -251,6 +311,10 @@ export function LinkTestProbeView({
                   ? "待探测"
                 : segmentOk && hasUsableLatencyValue(segment.latencyMs)
                   ? formatLatencyMs(segment.latencyMs)
+                  : segmentOk && segments.length === 1
+                    ? "成功"
+                  : segmentOk
+                    ? ""
                   : "失败";
             return (
               <div key={`${segment.from}-${segment.to}-${index}`} className="contents">
@@ -271,7 +335,7 @@ export function LinkTestProbeView({
                       segment.pending ? "text-muted-foreground" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
                     )}
                   >
-                    {label}
+                    {label || "\u00a0"}
                   </span>
                 </div>
                 {renderNode(segment.to, segment.toMeta)}

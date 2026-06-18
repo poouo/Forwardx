@@ -312,7 +312,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
-        });
+        }, { preserveMessage: true });
         if (aggregate.success && !(tunnel as any).isRunning) {
           await db.updateTunnelRunningStatus(tunnelId, true);
         }
@@ -323,7 +323,7 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         tunnelId,
         latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
         isTimeout: !!r.isTimeout,
-      });
+      }, { preserveMessage: true });
       if (!r.isTimeout && !(tunnel as any).isRunning) {
         await db.updateTunnelRunningStatus(tunnelId, true);
       }

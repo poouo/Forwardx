@@ -3,6 +3,7 @@ import { normalizeCountryCode } from "@/lib/countryFeatures";
 export type LinkTestNodeMeta = {
   label?: string | null;
   emoji?: string | null;
+  countryCode?: string | null;
   region?: string | null;
   address?: string | null;
 };
@@ -42,9 +43,11 @@ export function hostRegionText(host: any | null | undefined) {
 export function hostNodeMeta(host: any | null | undefined, fallbackLabel?: string): LinkTestNodeMeta | undefined {
   const label = hostDisplayName(host) || String(fallbackLabel || "").trim();
   if (!label) return undefined;
+  const countryCode = normalizeCountryCode(host?.geoCountryCode);
   return {
     label,
     emoji: String(host?.geoEmoji || "").trim() || countryCodeToEmoji(host?.geoCountryCode) || null,
+    countryCode: countryCode || null,
     region: hostRegionText(host) || null,
     address: hostAddressCandidates(host).join(" / ") || null,
   };
@@ -61,6 +64,7 @@ export function targetGeoNodeMeta(
     resolvedAddress?: string | null;
   } | null | undefined,
 ): LinkTestNodeMeta {
+  const countryCode = normalizeCountryCode(geo?.geoCountryCode);
   const region = [geo?.geoCountryName || geo?.geoCountryCode, geo?.geoRegion]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
@@ -69,6 +73,7 @@ export function targetGeoNodeMeta(
   return {
     label: String(label || address || "目标").trim(),
     emoji: String(geo?.geoEmoji || "").trim() || countryCodeToEmoji(geo?.geoCountryCode) || null,
+    countryCode: countryCode || null,
     region: region || null,
     address: [address, resolvedAddress && resolvedAddress !== address ? resolvedAddress : ""].filter(Boolean).join(" / ") || null,
   };

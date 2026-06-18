@@ -699,7 +699,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 tunnelId: Number(tunnel.id),
                 latencyMs: aggregate.success ? aggregate.latencyMs : null,
                 isTimeout: !aggregate.success,
-              });
+              }, { preserveMessage: true });
               if (aggregate.success && !(tunnel as any).isRunning) {
                 await db.updateTunnelRunningStatus(Number(tunnel.id), true);
               }

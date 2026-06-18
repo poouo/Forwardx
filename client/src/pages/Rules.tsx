@@ -3,7 +3,7 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
-import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -88,6 +88,7 @@ import {
   addNodeMetaAliases,
   findHostByAddress,
   hostDisplayName,
+  hostNodeMeta,
   targetGeoNodeMeta,
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
@@ -2510,7 +2511,7 @@ function RulesContent() {
     const meta: Record<string, any> = {};
     const rule = selfTestRuleDetail;
     if (!rule) {
-      return { nodeMeta: meta, sourceLabel: selfTestRule?.name || "源节点", targetLabel: "目标" };
+      return { nodeMeta: meta, sourceLabel: selfTestRule?.name || "源节点", targetLabel: selfTestRule?.name || "目标", plannedSegments: [] as LinkTestPlannedSegment[] };
     }
 
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
@@ -2534,20 +2535,28 @@ function RulesContent() {
 
     const targetIp = String(rule.targetIp || "").trim();
     const targetText = formatAddressWithPort(targetIp || "-", Number(rule.targetPort || 0) || "-") || "目标";
+    const ruleLabel = String(rule.name || selfTestRule?.name || `规则 #${rule.id || "-"}`).trim();
     const targetHost = findHostByAddress(hosts, targetIp);
     if (targetHost) {
-      addHostNodeMeta(meta, targetHost, [
+      addHostNodeMeta(meta, targetHost);
+      const hostMeta = {
+        ...hostNodeMeta(targetHost),
+        label: ruleLabel,
+      };
+      addNodeMetaAliases(meta, [
+        ruleLabel,
         targetIp,
         targetText,
         `目标 ${targetText}`,
         `目标 ${targetIp}:${rule.targetPort || "-"}`,
         "目标",
         "目的节点",
-      ]);
+      ], hostMeta);
     } else {
       const targetGeo = targetGeoByAddress.get(normalizeAddressKey(targetIp));
-      const targetMeta = targetGeoNodeMeta(targetText, targetIp || targetText, targetGeo);
+      const targetMeta = targetGeoNodeMeta(ruleLabel, targetIp || targetText, targetGeo);
       addNodeMetaAliases(meta, [
+        ruleLabel,
         targetIp,
         targetText,
         `目标 ${targetText}`,
@@ -2557,10 +2566,35 @@ function RulesContent() {
       ], targetMeta);
     }
 
+    const routeHosts = routeHostIds
+      .map((hostId: number) => hostById.get(Number(hostId)))
+      .filter(Boolean);
+    const plannedSegments: LinkTestPlannedSegment[] = [];
+    for (let index = 0; index < routeHosts.length - 1; index += 1) {
+      const fromHost = routeHosts[index];
+      const toHost = routeHosts[index + 1];
+      plannedSegments.push({
+        from: hostDisplayName(fromHost),
+        to: hostDisplayName(toHost),
+        fromMeta: meta[hostDisplayName(fromHost)],
+        toMeta: meta[hostDisplayName(toHost)],
+      });
+    }
+    const exitHostForTarget = routeHosts[routeHosts.length - 1] || sourceHost;
+    if (exitHostForTarget) {
+      plannedSegments.push({
+        from: hostDisplayName(exitHostForTarget),
+        to: ruleLabel,
+        fromMeta: meta[hostDisplayName(exitHostForTarget)],
+        toMeta: meta[ruleLabel] || meta[targetText] || meta[targetIp],
+      });
+    }
+
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
-      targetLabel: targetHost ? hostDisplayName(targetHost) || targetText : targetText,
+      targetLabel: ruleLabel,
+      plannedSegments,
     };
   }, [forwardGroupById, getRuleEntryHost, hosts, selfTestRule?.name, selfTestRuleDetail, targetGeoByAddress, tunnelById]);
 
@@ -3593,6 +3627,7 @@ function RulesContent() {
           sourceLabel={selfTestLinkTestNodeData.sourceLabel}
           targetLabel={selfTestLinkTestNodeData.targetLabel}
           nodeMeta={selfTestLinkTestNodeData.nodeMeta}
+          plannedSegments={selfTestLinkTestNodeData.plannedSegments}
           open={!!selfTestRule}
           onOpenChange={(v) => { if (!v) setSelfTestRule(null); }}
         />
@@ -4184,6 +4219,7 @@ function SelfTestDialog({
   sourceLabel,
   targetLabel,
   nodeMeta,
+  plannedSegments,
   open,
   onOpenChange,
 }: {
@@ -4192,6 +4228,7 @@ function SelfTestDialog({
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, any>;
+  plannedSegments?: LinkTestPlannedSegment[];
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -4288,6 +4325,7 @@ function SelfTestDialog({
           sourceLabel={sourceLabel}
           targetLabel={targetLabel}
           nodeMeta={nodeMeta}
+          plannedSegments={plannedSegments}
         />
 
         <DialogFooter>

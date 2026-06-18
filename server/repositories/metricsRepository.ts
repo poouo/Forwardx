@@ -868,7 +868,7 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
 /** 获取某条规则的 TCPing 延迟序列（按时间升序） */
 export async function insertTunnelLatencyStat(
   stat: InsertTunnelLatencyStat,
-  options: { message?: string | null } = {},
+  options: { message?: string | null; preserveMessage?: boolean } = {},
 ) {
   const db = await getDb();
   if (!db) return;
@@ -883,7 +883,7 @@ export async function insertTunnelLatencyStat(
   };
   if (options.message !== undefined) {
     updates.lastTestMessage = options.message;
-  } else {
+  } else if (!options.preserveMessage) {
     updates.lastTestMessage = null;
   }
   await db.update(tunnels).set(updates).where(eq(tunnels.id, stat.tunnelId));

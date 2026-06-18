@@ -68,7 +68,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
 
 type GroupType = "host" | "tunnel";
@@ -396,10 +396,21 @@ function ForwardGroupSelfTestDialog({
     });
     const firstHost = hostById?.get(Number(members[0]?.hostId || 0));
     const lastHost = hostById?.get(Number(members[members.length - 1]?.hostId || 0));
+    const plannedSegments: LinkTestPlannedSegment[] = members.slice(0, -1).map((member: any, index: number) => {
+      const fromHost = hostById?.get(Number(member.hostId || 0));
+      const toHost = hostById?.get(Number(members[index + 1]?.hostId || 0));
+      return {
+        from: hostDisplayName(fromHost) || `主机 #${member.hostId || "-"}`,
+        to: hostDisplayName(toHost) || `主机 #${members[index + 1]?.hostId || "-"}`,
+        fromMeta: meta[hostDisplayName(fromHost)] || meta[String(member.hostId || "")],
+        toMeta: meta[hostDisplayName(toHost)] || meta[String(members[index + 1]?.hostId || "")],
+      };
+    }).filter((segment) => segment.from && segment.to);
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstHost) || groupName,
       targetLabel: hostDisplayName(lastHost) || groupName,
+      plannedSegments,
     };
   }, [group?.members, groupName, hostById]);
 
@@ -452,6 +463,7 @@ function ForwardGroupSelfTestDialog({
           sourceLabel={linkTestNodeData.sourceLabel}
           targetLabel={linkTestNodeData.targetLabel}
           nodeMeta={linkTestNodeData.nodeMeta}
+          plannedSegments={linkTestNodeData.plannedSegments}
         />
 
         <DialogFooter>

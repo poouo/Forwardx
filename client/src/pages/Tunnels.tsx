@@ -4,7 +4,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
-import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1133,8 +1133,9 @@ function TunnelSelfTestDialog({
       if (id > 0) tunnelHostById.set(id, host);
     });
     const hopIds = getTunnelHopIds(tunnel);
+    const hostForId = (hostId: number) => fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
     hopIds.forEach((hostId: number) => {
-      const host = fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
+      const host = hostForId(hostId);
       addHostNodeMeta(meta, host, [
         tunnelHopHostName(tunnel, hostId, hosts),
         `主机${hostId}`,
@@ -1143,12 +1144,24 @@ function TunnelSelfTestDialog({
     });
     const firstHostId = Number(hopIds[0] || 0);
     const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
-    const firstHost = fullHostById.get(firstHostId) || tunnelHostById.get(firstHostId);
-    const lastHost = fullHostById.get(lastHostId) || tunnelHostById.get(lastHostId);
+    const firstHost = hostForId(firstHostId);
+    const lastHost = hostForId(lastHostId);
+    const plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
+      const nextHostId = Number(hopIds[index + 1] || 0);
+      const fromHost = hostForId(Number(hostId));
+      const toHost = hostForId(nextHostId);
+      return {
+        from: hostDisplayName(fromHost) || tunnelHopHostName(tunnel, Number(hostId), hosts),
+        to: hostDisplayName(toHost) || tunnelHopHostName(tunnel, nextHostId, hosts),
+        fromMeta: meta[hostDisplayName(fromHost)] || meta[String(hostId)] || undefined,
+        toMeta: meta[hostDisplayName(toHost)] || meta[String(nextHostId)] || undefined,
+      };
+    }).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName),
       targetLabel: hostDisplayName(lastHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
+      plannedSegments,
     };
   }, [hosts, tunnel, tunnelName]);
 
@@ -1222,6 +1235,7 @@ function TunnelSelfTestDialog({
           sourceLabel={linkTestNodeData.sourceLabel}
           targetLabel={linkTestNodeData.targetLabel}
           nodeMeta={linkTestNodeData.nodeMeta}
+          plannedSegments={linkTestNodeData.plannedSegments}
         />
 
         <DialogFooter>
