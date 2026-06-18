@@ -2127,13 +2127,29 @@ function RulesContent() {
   };
 
   const renderProxyProtocolSwitch = (label: string, field: ProxyProtocolField) => (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-      <Label className="min-w-0 truncate text-sm" title={label}>{label}</Label>
+    <div className="flex min-h-9 items-center justify-between gap-3 rounded-md bg-background/65 px-3 py-1.5 ring-1 ring-border/40">
+      <Label className="min-w-0 text-sm" title={label}>{label}</Label>
       <Switch
         checked={form[field]}
         disabled={!canUseProxyProtocol}
         onCheckedChange={(checked) => setProxyProtocolFlag(field, checked)}
       />
+    </div>
+  );
+
+  const renderProxyProtocolRow = (
+    title: string,
+    firstLabel: string,
+    firstField: ProxyProtocolField,
+    secondLabel: string,
+    secondField: ProxyProtocolField,
+  ) => (
+    <div className="grid gap-2 rounded-md border border-border/45 bg-background/35 p-2 sm:grid-cols-[3.75rem_minmax(0,1fr)_minmax(0,1fr)] sm:items-center">
+      <div className="flex h-9 items-center rounded-md bg-muted/60 px-3 text-sm font-medium text-muted-foreground sm:justify-center sm:px-2">
+        {title}
+      </div>
+      {renderProxyProtocolSwitch(firstLabel, firstField)}
+      {renderProxyProtocolSwitch(secondLabel, secondField)}
     </div>
   );
 
@@ -2601,14 +2617,40 @@ function RulesContent() {
       .map((hostId: number) => hostById.get(Number(hostId)))
       .filter(Boolean);
     const plannedSegments: LinkTestPlannedSegment[] = [];
+    const tunnelParsedMessage = tunnel ? parseLinkTestMessage((tunnel as any).lastTestMessage) : null;
+    const tunnelDetails = (tunnelParsedMessage?.details || [])
+      .filter((detail) => detail.pending || detail.success || detail.message || typeof detail.latencyMs === "number");
+    const tunnelLatencyMs = typeof (tunnel as any)?.latestLatencyMs === "number" && Number.isFinite((tunnel as any).latestLatencyMs)
+      ? Number((tunnel as any).latestLatencyMs)
+      : typeof (tunnel as any)?.lastLatencyMs === "number" && Number.isFinite((tunnel as any).lastLatencyMs)
+        ? Number((tunnel as any).lastLatencyMs)
+        : null;
+    const tunnelLatencyIsTimeout = !!(tunnel as any)?.latestLatencyIsTimeout || ((tunnel as any)?.lastTestStatus === "failed" && tunnelLatencyMs === null);
     for (let index = 0; index < routeHosts.length - 1; index += 1) {
       const fromHost = routeHosts[index];
       const toHost = routeHosts[index + 1];
+      const tunnelDetail = tunnelDetails[index];
+      const singleTunnelSegment = routeHosts.length - 1 === 1;
       plannedSegments.push({
         from: hostDisplayName(fromHost),
         to: hostDisplayName(toHost),
         fromMeta: meta[hostDisplayName(fromHost)],
         toMeta: meta[hostDisplayName(toHost)],
+        success: tunnelDetail
+          ? !!tunnelDetail.success
+          : tunnelLatencyMs !== null && (singleTunnelSegment || index === 0)
+            ? true
+            : tunnelLatencyIsTimeout
+              ? false
+              : undefined,
+        latencyMs: tunnelDetail && tunnelDetail.success && typeof tunnelDetail.latencyMs === "number"
+          ? tunnelDetail.latencyMs
+          : tunnelLatencyMs !== null && (singleTunnelSegment || index === 0)
+            ? tunnelLatencyMs
+            : null,
+        message: tunnelDetail?.message || (tunnelLatencyIsTimeout ? "隧道段失败" : null),
+        method: tunnelDetail?.method || null,
+        pending: tunnelDetail?.pending || false,
       });
     }
     const exitHostForTarget = routeHosts[routeHosts.length - 1] || sourceHost;
@@ -3972,21 +4014,9 @@ function RulesContent() {
                 )}
               </div>
               {isTunnelProxyProtocolMode ? (
-                <div className="grid gap-2 lg:grid-cols-2">
-                  <div className="space-y-2 rounded-md border border-border/50 bg-background/40 p-2">
-                    <div className="text-xs font-medium text-muted-foreground">入口</div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                      {renderProxyProtocolSwitch("接收上游", "proxyProtocolReceive")}
-                      {renderProxyProtocolSwitch("发送到出口", "proxyProtocolSend")}
-                    </div>
-                  </div>
-                  <div className="space-y-2 rounded-md border border-border/50 bg-background/40 p-2">
-                    <div className="text-xs font-medium text-muted-foreground">出口</div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                      {renderProxyProtocolSwitch("接收入口", "proxyProtocolExitReceive")}
-                      {renderProxyProtocolSwitch("发送到目标", "proxyProtocolExitSend")}
-                    </div>
-                  </div>
+                <div className="space-y-2">
+                  {renderProxyProtocolRow("入口", "接收上游", "proxyProtocolReceive", "发送到出口", "proxyProtocolSend")}
+                  {renderProxyProtocolRow("出口", "接收入口", "proxyProtocolExitReceive", "发送到目标", "proxyProtocolExitSend")}
                 </div>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-2">

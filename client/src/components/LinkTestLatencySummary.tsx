@@ -36,6 +36,11 @@ export type LinkTestPlannedSegment = {
   to: string;
   fromMeta?: LinkTestNodeMeta;
   toMeta?: LinkTestNodeMeta;
+  success?: boolean;
+  latencyMs?: number | null;
+  message?: string | null;
+  method?: string | null;
+  pending?: boolean | null;
 };
 
 export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
@@ -156,7 +161,28 @@ function buildProbeSegments(input: {
 }) {
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
 
-  if (visibleDetails.length > 0) {
+  const plannedSegments = (input.plannedSegments || [])
+    .map((segment) => ({
+      from: cleanNodeLabel(segment.from),
+      to: cleanNodeLabel(segment.to),
+      fromMeta: segment.fromMeta,
+      toMeta: segment.toMeta,
+      success: segment.success,
+      latencyMs: segment.latencyMs,
+      message: segment.message,
+      method: segment.method,
+      pending: segment.pending,
+    }))
+    .filter((segment) => segment.from && segment.to);
+
+  const usePlannedSegments = plannedSegments.length > 0
+    && (
+      visibleDetails.length === 0
+      || visibleDetails.length < plannedSegments.length
+      || (visibleDetails.length === 1 && plannedSegments.length > 1)
+    );
+
+  if (visibleDetails.length > 0 && !usePlannedSegments) {
     return visibleDetails.map((detail, index): ProbeSegment => {
       const endpoints = parseRouteEndpoints(detail, index);
       const fromMeta = lookupNodeMeta(input.nodeMeta, endpoints.from);
@@ -175,30 +201,48 @@ function buildProbeSegments(input: {
     });
   }
 
-  const plannedSegments = (input.plannedSegments || [])
-    .map((segment) => ({
-      from: cleanNodeLabel(segment.from),
-      to: cleanNodeLabel(segment.to),
-      fromMeta: segment.fromMeta,
-      toMeta: segment.toMeta,
-    }))
-    .filter((segment) => segment.from && segment.to);
   if (plannedSegments.length > 0) {
     return plannedSegments.map((segment, index): ProbeSegment => {
+      const detail = visibleDetails[index] || (index === plannedSegments.length - 1 ? visibleDetails[visibleDetails.length - 1] : null);
       const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
       const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
-      const pending = input.isTesting || (!input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs));
+      const detailApplies = !!detail && (visibleDetails.length >= plannedSegments.length || index === plannedSegments.length - 1);
+      const detailSuccess = detailApplies && typeof detail?.success === "boolean" ? !!detail.success : undefined;
+      const detailLatency = detailApplies && detail?.success && hasLatencyValue(detail) ? detail.latencyMs : null;
+      const detailMessage = detailApplies ? detail?.message || null : null;
+      const hasExplicitSuccess = typeof segment.success === "boolean" || typeof detailSuccess === "boolean";
+      const hasExplicitLatency = hasUsableLatencyValue(segment.latencyMs) || hasUsableLatencyValue(detailLatency);
+      const hasExplicitState = hasExplicitSuccess || hasExplicitLatency || !!segment.message || !!detailMessage || segment.pending === true || detail?.pending === true;
+      const isLastSegment = index === plannedSegments.length - 1;
+      const pending = segment.pending === true || detail?.pending === true
+        || input.isTesting
+        || (!hasExplicitState && !input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs));
+      const success = pending
+        ? true
+        : typeof detailSuccess === "boolean"
+          ? detailSuccess
+        : hasExplicitSuccess
+          ? !!segment.success
+        : hasExplicitLatency
+          ? true
+          : !input.isSuccess && input.parsed.message && !isLastSegment
+            ? true
+            : input.isSuccess;
       return {
         from: withNodeLabel(fromMeta, segment.from),
         to: withNodeLabel(toMeta, segment.to),
         fromMeta,
         toMeta,
-        success: input.isTesting ? true : input.isSuccess,
-        latencyMs: !input.isTesting && input.isSuccess && plannedSegments.length === 1 && hasUsableLatencyValue(input.fallbackLatencyMs)
-          ? Number(input.fallbackLatencyMs)
-          : null,
-        message: !input.isTesting && !input.isSuccess && index === 0 ? input.parsed.message || null : null,
-        method: null,
+        success,
+        latencyMs: success && hasUsableLatencyValue(detailLatency)
+          ? Number(detailLatency)
+          : success && hasUsableLatencyValue(segment.latencyMs)
+            ? Number(segment.latencyMs)
+            : !input.isTesting && input.isSuccess && plannedSegments.length === 1 && hasUsableLatencyValue(input.fallbackLatencyMs)
+              ? Number(input.fallbackLatencyMs)
+              : null,
+        message: !pending && !success ? detailMessage || segment.message || (isLastSegment ? input.parsed.message || null : null) : null,
+        method: detail?.method || segment.method || null,
         pending,
       };
     });
@@ -263,15 +307,17 @@ export function LinkTestProbeView({
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
   const effectiveTesting = isTesting || segments.some((segment) => segment.pending);
   const totalLatency = effectiveTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
-  const failedSegments = segments.filter((segment) => !effectiveTesting && !segment.pending && !segment.success);
   const hasSegments = segments.length > 0;
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
+  const compactPath = segments.length >= 4;
+  const densePath = segments.length >= 6;
   const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
     const flagUrl = /^[A-Z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode.toLowerCase()}.png` : "";
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
+    const nodeWidthClass = densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
         <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
@@ -295,7 +341,7 @@ export function LinkTestProbeView({
             "\u00a0"
           )}
         </div>
-        <div className="relative z-10 max-w-[128px] rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm">
+        <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
             {shortNodeLabel(label)}
           </span>
@@ -307,7 +353,10 @@ export function LinkTestProbeView({
   return (
     <div className={cn("space-y-3", className)}>
       <div className="overflow-x-auto pb-1">
-        <div className="flex min-w-[360px] items-start justify-center px-2 py-8">
+        <div className={cn(
+          "flex min-w-full items-start px-2 py-8",
+          compactPath ? "w-max justify-start" : "justify-center",
+        )}>
           {segments.map((segment, index) => {
             const firstNode = index === 0;
             const segmentTesting = effectiveTesting && (isTesting || segment.pending);
@@ -328,7 +377,10 @@ export function LinkTestProbeView({
                 {firstNode ? (
                   renderNode(segment.from, segment.fromMeta)
                 ) : null}
-                <div className="relative mt-[45px] h-px min-w-[96px] flex-1 bg-border">
+                <div className={cn(
+                  "relative mt-[45px] h-px bg-border",
+                  densePath ? "w-[42px] shrink-0 flex-none" : compactPath ? "w-[56px] shrink-0 flex-none" : "min-w-[96px] flex-1",
+                )}>
                   <div
                     className={cn(
                       "absolute inset-x-0 top-0 h-px",
@@ -355,20 +407,6 @@ export function LinkTestProbeView({
       {!hasSegments && !hasResult ? (
         <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">
           尚未运行探测
-        </div>
-      ) : null}
-
-      {failedSegments.length > 0 ? (
-        <div className="space-y-1 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          {failedSegments.map((segment, index) => (
-            <p key={`${segment.from}-${segment.to}-error-${index}`} className="break-words">
-              {segment.from} {"->"} {segment.to}: {segment.message || parsed.message || "探测失败"}
-            </p>
-          ))}
-        </div>
-      ) : !effectiveTesting && !isSuccess && parsed.message ? (
-        <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          {parsed.message}
         </div>
       ) : null}
 

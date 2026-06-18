@@ -135,13 +135,28 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       ];
       if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
       if (cleanMessage && !success) messageParts.push(cleanMessage);
+      const detailMessage = cleanMessage || messageParts.join("; ");
+      const structuredMessage = structuredLinkTestMessage({
+        kind: "forward-via-tunnel",
+        tunnelId: meta.tunnelId,
+        message: messageParts.join("; "),
+        details: [{
+          success,
+          latencyMs: success ? cleanLatency : null,
+          message: success ? null : detailMessage,
+          hopLabel: `出口 -> 目标 ${target}`,
+          routeLabel: `出口 -> 目标 ${target}`,
+          method: "tcp",
+        }],
+        totalLatencyMs: totalLatency,
+      });
       await db.updateForwardTestResult(testId, {
         status: success ? "success" : "failed",
         listenOk: true,
         targetReachable: success,
         forwardOk: success,
         latencyMs: totalLatency,
-        message: messageParts.join("; "),
+        message: structuredMessage,
       });
       console.log(`[SelfTest] tunnel rule overall test=${testId} tunnel=${meta.tunnelId} success=${success} targetLatency=${cleanLatency ?? "-"}ms tunnelLatency=${tunnelLatencyMs || "-"}ms total=${totalLatency ?? "-"}ms`);
     }
