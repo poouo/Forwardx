@@ -294,8 +294,8 @@ export function LinkTestProbeView({
   plannedSegments,
   compactFrom = 4,
   roomyNodes = false,
-  mobileStacked = false,
-  wrapDesktopRows = false,
+  mobileStacked = true,
+  wrapDesktopRows = true,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -320,6 +320,7 @@ export function LinkTestProbeView({
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
   const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 5;
+  const shouldStretchDesktopPath = !shouldWrapDesktopRows && segments.length <= Math.max(3, compactFrom);
   const segmentsPerDesktopRow = shouldWrapDesktopRows ? 3 : segments.length;
   const desktopRows = shouldWrapDesktopRows
     ? Array.from({ length: Math.ceil(segments.length / segmentsPerDesktopRow) }, (_, index) => segments.slice(index * segmentsPerDesktopRow, (index + 1) * segmentsPerDesktopRow))
@@ -442,6 +443,8 @@ export function LinkTestProbeView({
                     "flex items-start px-2",
                     shouldWrapDesktopRows
                       ? "mx-auto w-max justify-center py-5"
+                      : shouldStretchDesktopPath
+                        ? "min-w-full justify-center py-8"
                       : compactPath
                         ? "w-max justify-start py-8"
                         : "min-w-full justify-center py-8",
@@ -457,7 +460,17 @@ export function LinkTestProbeView({
                         ) : null}
                         <div className={cn(
                           "relative mt-[45px] h-px bg-border",
-                          shouldWrapDesktopRows ? "w-[42px] shrink-0 flex-none" : densePath ? "w-[42px] shrink-0 flex-none" : compactPath ? "w-[56px] shrink-0 flex-none" : "min-w-[96px] flex-1",
+                          shouldWrapDesktopRows
+                            ? "w-[42px] shrink-0 flex-none"
+                            : shouldStretchDesktopPath
+                              ? compactPath
+                                ? "min-w-[56px] flex-1"
+                                : "min-w-[96px] flex-1"
+                              : densePath
+                                ? "w-[42px] shrink-0 flex-none"
+                                : compactPath
+                                  ? "w-[56px] shrink-0 flex-none"
+                                  : "min-w-[96px] flex-1",
                         )}>
                           <div
                             className={cn(

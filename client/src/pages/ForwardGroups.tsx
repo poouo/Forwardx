@@ -466,7 +466,7 @@ function ForwardGroupSelfTestDialog({
           plannedSegments={linkTestNodeData.plannedSegments}
         />
 
-        <DialogFooter>
+        <DialogFooter className="gap-2">
           <Button
             onClick={() => {
               manualTestRef.current = true;
@@ -475,7 +475,7 @@ function ForwardGroupSelfTestDialog({
               testMutation.mutate({ groupId });
             }}
             disabled={isTesting}
-            className="gap-2"
+            className="w-full min-w-0 gap-2 sm:w-auto sm:min-w-[112px]"
           >
             {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
             {isTesting ? "探测中..." : "链路测试"}
