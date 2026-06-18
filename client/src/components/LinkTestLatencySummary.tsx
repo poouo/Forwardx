@@ -319,9 +319,9 @@ export function LinkTestProbeView({
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
-  const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 5;
+  const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 4;
   const shouldStretchDesktopPath = !shouldWrapDesktopRows && segments.length <= Math.max(3, compactFrom);
-  const segmentsPerDesktopRow = shouldWrapDesktopRows ? 3 : segments.length;
+  const segmentsPerDesktopRow = shouldWrapDesktopRows ? 2 : segments.length;
   const desktopRows = shouldWrapDesktopRows
     ? Array.from({ length: Math.ceil(segments.length / segmentsPerDesktopRow) }, (_, index) => segments.slice(index * segmentsPerDesktopRow, (index + 1) * segmentsPerDesktopRow))
     : [segments];
@@ -367,9 +367,20 @@ export function LinkTestProbeView({
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
-    const nodeWidthClass = roomyNodes
-      ? shouldWrapDesktopRows ? "max-w-[128px]" : densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
-      : densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
+    const nodeWidthClass = shouldStretchDesktopPath
+      ? segments.length >= 3
+        ? "max-w-[104px]"
+        : segments.length >= 2
+          ? "max-w-[144px]"
+          : roomyNodes
+            ? "max-w-[176px]"
+            : "max-w-[128px]"
+      : roomyNodes
+        ? shouldWrapDesktopRows ? "max-w-[128px]" : densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
+        : densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
+    const labelMaxLength = shouldStretchDesktopPath
+      ? segments.length >= 3 ? 11 : segments.length >= 2 ? 14 : roomyNodes ? 18 : 14
+      : shouldWrapDesktopRows ? 15 : roomyNodes ? 18 : 14;
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
         <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
@@ -377,7 +388,7 @@ export function LinkTestProbeView({
         </div>
         <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
-            {shortNodeLabel(label, shouldWrapDesktopRows ? 15 : roomyNodes ? 18 : 14)}
+            {shortNodeLabel(label, labelMaxLength)}
           </span>
         </div>
       </div>
@@ -432,7 +443,7 @@ export function LinkTestProbeView({
         </div>
       ) : null}
 
-      <div className={cn("overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+      <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
         <div className={cn(shouldWrapDesktopRows ? "space-y-0" : "")}>
           {desktopRows.map((rowSegments, rowIndex) => {
             const nextRow = desktopRows[rowIndex + 1];
@@ -464,8 +475,8 @@ export function LinkTestProbeView({
                             ? "w-[42px] shrink-0 flex-none"
                             : shouldStretchDesktopPath
                               ? compactPath
-                                ? "min-w-[56px] flex-1"
-                                : "min-w-[96px] flex-1"
+                                ? "min-w-[32px] flex-1"
+                                : "min-w-[40px] flex-1"
                               : densePath
                                 ? "w-[42px] shrink-0 flex-none"
                                 : compactPath
