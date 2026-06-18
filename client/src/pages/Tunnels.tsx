@@ -4,7 +4,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
-import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1173,70 +1173,27 @@ function TunnelSelfTestDialog({
     }
   }, [open, isTesting, isFailed, isSuccess, status, tunnel?.lastTestAt, parsedMessage.message, tunnelId]);
 
-  const statusView = (() => {
-    if (isTesting) {
-      return (
-        <span className="flex items-center gap-2 text-amber-600">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          正在测试中
-        </span>
-      );
-    }
-    if (isSuccess) {
-      return (
-        <span className="flex items-center gap-2 text-emerald-600">
-          <CheckCircle2 className="h-4 w-4" />
-          正常
-        </span>
-      );
-    }
-    if (isFailed) {
-      return (
-        <span className="flex items-center gap-2 text-destructive">
-          <XCircle className="h-4 w-4" />
-          异常
-        </span>
-      );
-    }
-    return <span className="text-muted-foreground">尚未运行</span>;
-  })();
-
-  const reachableView = (() => {
-    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
-    if (isSuccess) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
-    if (isFailed) return <XCircle className="h-4 w-4 text-destructive" />;
-    return <span className="text-muted-foreground">--</span>;
-  })();
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>隧道链路自测 - {tunnelName}</DialogTitle>
-          <DialogDescription>检测隧道链路可达性。多级隧道显示逐跳 TCPing 估算值。</DialogDescription>
+          <DialogTitle className="flex items-center gap-2">
+            <Activity className="h-5 w-5" />
+            延迟探测
+          </DialogTitle>
+          <DialogDescription>{tunnelName}</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">状态</span>
-            <span className="text-sm font-medium">{statusView}</span>
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">链路可达</span>
-            <span className="text-sm font-medium">{reachableView}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">链路估算延迟</span>
-            <LinkTestLatencySummary
-              parsed={parsedMessage}
-              fallbackLatencyMs={latencyMs}
-              isSuccess={isSuccess}
-              isTesting={isTesting}
-            />
-          </div>
-        </div>
+        <LinkTestProbeView
+          parsed={parsedMessage}
+          fallbackLatencyMs={latencyMs}
+          isSuccess={isSuccess}
+          isTesting={isTesting}
+          sourceLabel="入口"
+          targetLabel="出口"
+        />
 
-        <DialogFooter>
+        <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             onClick={() => {
@@ -1250,8 +1207,8 @@ function TunnelSelfTestDialog({
             disabled={isTesting}
             className="gap-2"
           >
-            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
-            {isTesting ? "测试中..." : "运行测试"}
+            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            {isTesting ? "探测中..." : "重新探测"}
           </Button>
         </DialogFooter>
       </DialogContent>

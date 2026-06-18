@@ -3,6 +3,7 @@ import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
+import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -4160,6 +4161,7 @@ function SelfTestDialog({
   const isSuccess = status === "success";
   const isTimeout = status === "timeout";
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
+  const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
   const lastFailureToastKey = useRef("");
   useEffect(() => {
     if (!open) {
@@ -4178,71 +4180,26 @@ function SelfTestDialog({
       }
     }
   }, [open, isTesting, isSuccess, isTimeout, latest, latest?.message, latest?.updatedAt, ruleId, status]);
-  const statusView = (() => {
-    if (isTesting) {
-      return (
-        <span className="flex items-center gap-2 text-amber-600">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          正在测试中
-        </span>
-      );
-    }
-    if (!latest) return <span className="text-muted-foreground">尚未运行</span>;
-    if (isSuccess) {
-      return (
-        <span className="flex items-center gap-2 text-emerald-600">
-          <CheckCircle2 className="h-4 w-4" />
-          正常
-        </span>
-      );
-    }
-    if (isTimeout) {
-      return (
-        <span className="flex items-center gap-2 text-amber-600">
-          <AlertCircle className="h-4 w-4" />
-          超时
-        </span>
-      );
-    }
-    return (
-      <span className="flex items-center gap-2 text-destructive">
-        <XCircle className="h-4 w-4" />
-        异常
-      </span>
-    );
-  })();
-  const reachableView = (() => {
-    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
-    if (latest?.targetReachable) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
-    if (latest || isFailed || isTimeout) return <XCircle className="h-4 w-4 text-destructive" />;
-    return <span className="text-muted-foreground">--</span>;
-  })();
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>转发链路自测 - {ruleName}</DialogTitle>
-          <DialogDescription>检测目标端口连通性。</DialogDescription>
+          <DialogTitle className="flex items-center gap-2">
+            <Activity className="h-5 w-5" />
+            延迟探测
+          </DialogTitle>
+          <DialogDescription>{ruleName}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">状态</span>
-            <span className="text-sm font-medium">{statusView}</span>
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">端口可达</span>
-            <span className="text-sm font-medium">{reachableView}</span>
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">TCP 延迟</span>
-            {isTesting ? (
-              <span className="text-sm font-semibold tabular-nums">正在测试中</span>
-            ) : (
-              <LatencyRating latencyMs={typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null} emptyText="--" />
-            )}
-          </div>
-        </div>
+
+        <LinkTestProbeView
+          parsed={parsedMessage}
+          fallbackLatencyMs={typeof latest?.latencyMs === "number" && latest.latencyMs > 0 ? latest.latencyMs : null}
+          isSuccess={isSuccess}
+          isTesting={isTesting}
+          sourceLabel="入口"
+          targetLabel="目标"
+        />
+
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
@@ -4255,9 +4212,9 @@ function SelfTestDialog({
             }}
           >
             <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-              {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+              {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
             </span>
-            {isTesting ? "测试中..." : "运行测试"}
+            {isTesting ? "探测中..." : "重新探测"}
           </Button>
         </DialogFooter>
       </DialogContent>

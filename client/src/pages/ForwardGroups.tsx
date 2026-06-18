@@ -68,7 +68,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { LinkTestLatencySummary, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, parseLinkTestMessage } from "@/components/LinkTestLatencySummary";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "failover" | "chain";
@@ -406,47 +406,27 @@ function ForwardGroupSelfTestDialog({
     if (!isTesting && isSuccess) manualTestRef.current = false;
   }, [isSuccess, isTesting]);
 
-  const statusView = (() => {
-    if (isTesting) return <span className="flex items-center gap-2 text-amber-600"><Loader2 className="h-4 w-4 animate-spin" />正在测试中</span>;
-    if (!latest) return <span className="text-muted-foreground">尚未运行</span>;
-    if (isSuccess) return <span className="flex items-center gap-2 text-emerald-600"><CheckCircle2 className="h-4 w-4" />正常</span>;
-    if (status === "timeout") return <span className="flex items-center gap-2 text-amber-600"><AlertCircle className="h-4 w-4" />超时</span>;
-    return <span className="flex items-center gap-2 text-destructive"><XCircle className="h-4 w-4" />异常</span>;
-  })();
-  const reachableView = (() => {
-    if (isTesting) return <Loader2 className="h-4 w-4 animate-spin text-amber-600" />;
-    if (isSuccess) return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
-    if (latest) return <XCircle className="h-4 w-4 text-destructive" />;
-    return <span className="text-muted-foreground">--</span>;
-  })();
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>转发链链路自测 - {groupName}</DialogTitle>
-          <DialogDescription>多级链路按每一跳分别测试，并汇总总延迟。</DialogDescription>
+          <DialogTitle className="flex items-center gap-2">
+            <Activity className="h-5 w-5" />
+            延迟探测
+          </DialogTitle>
+          <DialogDescription>{groupName}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">状态</span>
-            <span className="text-sm font-medium">{statusView}</span>
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">链路可达</span>
-            <span className="text-sm font-medium">{reachableView}</span>
-          </div>
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/20 px-4 py-3">
-            <span className="text-sm text-muted-foreground">链路估算延迟</span>
-            <LinkTestLatencySummary
-              parsed={parsedMessage}
-              fallbackLatencyMs={latest?.latencyMs}
-              isSuccess={isSuccess}
-              isTesting={isTesting}
-            />
-          </div>
-        </div>
-        <DialogFooter>
+
+        <LinkTestProbeView
+          parsed={parsedMessage}
+          fallbackLatencyMs={latest?.latencyMs}
+          isSuccess={isSuccess}
+          isTesting={isTesting}
+          sourceLabel="入口"
+          targetLabel="目标"
+        />
+
+        <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
           <Button
             onClick={() => {
@@ -458,8 +438,8 @@ function ForwardGroupSelfTestDialog({
             disabled={isTesting}
             className="gap-2"
           >
-            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
-            {isTesting ? "测试中..." : "运行测试"}
+            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            {isTesting ? "探测中..." : "重新探测"}
           </Button>
         </DialogFooter>
       </DialogContent>
