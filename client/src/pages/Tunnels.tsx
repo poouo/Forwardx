@@ -2099,7 +2099,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-lg sm:p-4">
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-2xl sm:p-4 lg:max-w-3xl">
           <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
@@ -2299,7 +2299,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-lg sm:p-4">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-2xl sm:p-4 lg:max-w-3xl">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
           </DialogHeader>

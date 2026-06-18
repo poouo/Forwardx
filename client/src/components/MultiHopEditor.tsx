@@ -320,7 +320,7 @@ export default function MultiHopEditor({
             return (
               <div
                 key={hop.hostId}
-                className={`flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:flex-nowrap ${
+                className={`grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:grid-cols-[auto_auto_minmax(14rem,1fr)_auto_auto_auto_auto_auto] ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable
@@ -340,27 +340,22 @@ export default function MultiHopEditor({
                 <HostStatusLabel
                   host={host}
                   label={hop.hostName}
-                  className="min-w-0 flex-1 text-sm font-medium"
+                  className="min-w-0 text-sm font-medium"
                   labelClassName="truncate"
                 />
 
-                <div className="order-last flex h-7 w-full items-center justify-start gap-1.5 sm:order-none sm:ml-2 sm:w-[160px] sm:shrink-0 sm:justify-end">
+                <div className="col-span-full flex h-7 items-center justify-start gap-1.5 sm:col-span-1 sm:w-[54px] sm:justify-end">
                   {!isFirst ? (
-                    <>
-                      <span className="whitespace-nowrap text-xs text-muted-foreground">使用内网IP</span>
-                      {hasTunnelEntryIp ? (
-                        tunnelEntrySwitch
-                      ) : (
-                        <TooltipProvider delayDuration={120}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="inline-flex cursor-not-allowed">{tunnelEntrySwitch}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>{missingTunnelEntryIpTip}</TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      )}
-                    </>
+                    <TooltipProvider delayDuration={120}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className={hasTunnelEntryIp ? "inline-flex" : "inline-flex cursor-not-allowed"}>
+                            {tunnelEntrySwitch}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>{hasTunnelEntryIp ? "使用内网IP" : missingTunnelEntryIpTip}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   ) : (
                     <span className="hidden text-xs sm:invisible sm:block">占位</span>
                   )}
