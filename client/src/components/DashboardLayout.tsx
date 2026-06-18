@@ -246,7 +246,7 @@ function DashboardLayoutContent({
   const openMobileRef = useRef(openMobile);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuOpenRef = useRef(accountMenuOpen);
-  const isCollapsed = state === "collapsed";
+  const isDesktopCollapsed = !isMobile && state === "collapsed";
   const isAdmin = user?.role === "admin";
   const utils = trpc.useUtils();
   const { resolvedTheme, setTheme } = useTheme();
@@ -846,10 +846,10 @@ function DashboardLayoutContent({
           isActive={isActive}
           onClick={() => navigateFromSidebar(item.path)}
           tooltip={item.label}
-          className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
+          className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
           <item.icon className={`h-4 w-4 ${isActive ? "text-primary" : ""}`} />
-          <span className={cn(isCollapsed && "sr-only")}>{item.label}</span>
+          <span className={cn(isDesktopCollapsed && "sr-only")}>{item.label}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
     );
@@ -902,8 +902,8 @@ function DashboardLayoutContent({
     <>
       <Sidebar collapsible="icon" className="border-r border-sidebar-border/60 bg-sidebar/75 backdrop-blur-2xl">
         <SidebarHeader className="h-16 justify-center mobile-sidebar-header">
-          <div className={cn("flex w-full items-center gap-3 transition-all", isCollapsed ? "justify-center px-0" : "px-2")}>
-            {!isCollapsed ? (
+          <div className={cn("flex w-full items-center gap-3 transition-all", isDesktopCollapsed ? "justify-center px-0" : "px-2")}>
+            {!isDesktopCollapsed ? (
               <div className="flex items-center justify-between flex-1 min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
                   {logoMark}
@@ -951,7 +951,7 @@ function DashboardLayoutContent({
             <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
               主菜单
             </SidebarGroupLabel>
-            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isCollapsed ? "items-center px-0" : "px-2")}>
+            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
               {renderSidebarItems([...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem])}
             </SidebarMenu>
           </SidebarGroup>
@@ -960,13 +960,13 @@ function DashboardLayoutContent({
             <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
               管理
             </SidebarGroupLabel>
-            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isCollapsed ? "items-center px-0" : "px-2")}>
+            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
               {renderSidebarItems(managementMenuItems)}
             </SidebarMenu>
           </SidebarGroup>
 
           {/* Theme toggle for collapsed sidebar */}
-          {isCollapsed && (
+          {isDesktopCollapsed && (
             <SidebarGroup>
               <SidebarMenu className="items-center px-0">
                 <SidebarMenuItem>
@@ -988,7 +988,7 @@ function DashboardLayoutContent({
           )}
         </SidebarContent>
 
-        <SidebarFooter className={cn("mobile-sidebar-footer", isCollapsed ? "items-center p-1.5" : "p-3")}>
+        <SidebarFooter className={cn("mobile-sidebar-footer", isDesktopCollapsed ? "items-center p-1.5" : "p-3")}>
           {showUpgradeNotice && (
             <button
               type="button"
@@ -1073,7 +1073,7 @@ function DashboardLayoutContent({
                 className="flex items-center gap-2 rounded-lg border border-border/40 bg-background/35 px-2 py-2.5 text-left transition-colors hover:bg-accent/50 w-full group-data-[collapsible=icon]:h-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:px-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 title={accountDisplayName}
               >
-                <UserAvatar user={user as any} className={cn("shrink-0", isCollapsed ? "h-8 w-8" : "h-9 w-9")} />
+                <UserAvatar user={user as any} className={cn("shrink-0", isDesktopCollapsed ? "h-8 w-8" : "h-9 w-9")} />
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-sm font-medium leading-5">{accountDisplayName}</p>
                   <p className="mt-1 truncate text-xs leading-4 text-muted-foreground">
