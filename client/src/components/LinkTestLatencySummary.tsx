@@ -294,6 +294,7 @@ export function LinkTestProbeView({
   plannedSegments,
   compactFrom = 4,
   roomyNodes = false,
+  mobileStacked = false,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -306,6 +307,7 @@ export function LinkTestProbeView({
   plannedSegments?: LinkTestPlannedSegment[];
   compactFrom?: number;
   roomyNodes?: boolean;
+  mobileStacked?: boolean;
   className?: string;
 }) {
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
@@ -315,10 +317,46 @@ export function LinkTestProbeView({
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
-  const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
-    const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
+  const getSegmentState = (segment: ProbeSegment) => {
+    const testing = effectiveTesting && (isTesting || segment.pending);
+    const ok = testing || segment.success;
+    const label = testing
+      ? "探测中"
+      : segment.pending
+        ? "探测中"
+        : ok && hasUsableLatencyValue(segment.latencyMs)
+          ? formatLatencyMs(segment.latencyMs)
+          : ok && segments.length === 1
+            ? "成功"
+            : ok
+              ? ""
+              : "失败";
+    return { testing, ok, label };
+  };
+  const renderFlag = (meta?: LinkTestNodeMeta) => {
     const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
     const flagUrl = /^[A-Z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode.toLowerCase()}.png` : "";
+    if (!flagUrl) return <span className="inline-block h-3.5 w-5" aria-hidden="true" />;
+    return (
+      <>
+        <img
+          src={flagUrl}
+          alt={countryCode}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="h-3.5 w-5 rounded-[2px] object-cover shadow-sm"
+          onError={(event) => {
+            event.currentTarget.style.display = "none";
+            const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
+            if (fallback) fallback.style.display = "inline";
+          }}
+        />
+        <span className="hidden font-mono leading-none">{countryCode}</span>
+      </>
+    );
+  };
+  const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
+    const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
     const nodeWidthClass = roomyNodes
@@ -327,25 +365,7 @@ export function LinkTestProbeView({
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
         <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
-          {flagUrl ? (
-            <>
-              <img
-                src={flagUrl}
-                alt={countryCode}
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                className="h-3.5 w-5 rounded-[2px] object-cover shadow-sm"
-                onError={(event) => {
-                  event.currentTarget.style.display = "none";
-                  const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;
-                  if (fallback) fallback.style.display = "inline";
-                }}
-              />
-              <span className="hidden font-mono leading-none">{countryCode}</span>
-            </>
-          ) : (
-            "\u00a0"
-          )}
+          {renderFlag(meta)}
         </div>
         <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
@@ -355,29 +375,63 @@ export function LinkTestProbeView({
       </div>
     );
   };
+  const renderMobileNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
+    const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
+    const region = String(meta?.region || "").trim();
+    const address = String(meta?.address || "").trim();
+    return (
+      <div
+        className="mx-auto flex w-full max-w-[18rem] items-center justify-center gap-2 rounded-md border border-border/70 bg-background px-3 py-2 text-sm font-medium shadow-sm"
+        title={[label, address, region].filter(Boolean).join(" / ") || label}
+      >
+        <span className="flex h-4 w-6 shrink-0 items-center justify-center">{renderFlag(meta)}</span>
+        <span className="min-w-0 truncate">{shortNodeLabel(label, 22)}</span>
+      </div>
+    );
+  };
 
   return (
     <div className={cn("space-y-3", className)}>
-      <div className="overflow-x-auto pb-1">
+      {mobileStacked ? (
+        <div className="space-y-0 py-2 sm:hidden">
+          {segments.map((segment, index) => {
+            const firstNode = index === 0;
+            const { testing, ok, label } = getSegmentState(segment);
+            return (
+              <div key={`mobile-${segment.from}-${segment.to}-${index}`}>
+                {firstNode ? renderMobileNode(segment.from, segment.fromMeta) : null}
+                <div className="relative mx-auto flex h-12 max-w-[18rem] items-center justify-center">
+                  <div
+                    className={cn(
+                      "absolute bottom-1 top-1 w-px",
+                      testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+                      testing ? "animate-pulse" : "",
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm",
+                      testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+                    )}
+                  >
+                    {label || "通过"}
+                  </span>
+                </div>
+                {renderMobileNode(segment.to, segment.toMeta)}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className={cn("overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
         <div className={cn(
           "flex min-w-full items-start px-2 py-8",
           compactPath ? "w-max justify-start" : "justify-center",
         )}>
           {segments.map((segment, index) => {
             const firstNode = index === 0;
-            const segmentTesting = effectiveTesting && (isTesting || segment.pending);
-            const segmentOk = segmentTesting || segment.success;
-            const label = segmentTesting
-                ? "探测中"
-                : segment.pending
-                  ? "探测中"
-                : segmentOk && hasUsableLatencyValue(segment.latencyMs)
-                  ? formatLatencyMs(segment.latencyMs)
-                  : segmentOk && segments.length === 1
-                    ? "成功"
-                  : segmentOk
-                    ? ""
-                  : "失败";
+            const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
             return (
               <div key={`${segment.from}-${segment.to}-${index}`} className="contents">
                 {firstNode ? (

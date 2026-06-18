@@ -4394,11 +4394,12 @@ function SelfTestDialog({
           plannedSegments={plannedSegments}
           compactFrom={3}
           roomyNodes
+          mobileStacked
         />
 
-        <DialogFooter>
+        <DialogFooter className="gap-2">
           <Button
-            className="min-w-[112px] gap-2"
+            className="w-full min-w-0 gap-2 sm:w-auto sm:min-w-[112px]"
             disabled={isTesting}
             onClick={() => {
               setOptimisticTesting(true);
