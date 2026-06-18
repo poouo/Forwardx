@@ -4356,27 +4356,25 @@ function SelfTestDialog({
   const isTimeout = status === "timeout";
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
+  const useWideProbeDialog = (plannedSegments?.length || 0) >= 3;
   const lastFailureToastKey = useRef("");
   useEffect(() => {
     if (!open) {
       lastFailureToastKey.current = "";
       return;
     }
-    const message = typeof latest?.message === "string" ? latest.message.trim() : "";
-    if (!isTesting && latest && !isSuccess && message) {
+    const message = parsedMessage.message.trim();
+    if (!isTesting && latest && !isSuccess && (message || isTimeout)) {
       const key = `${ruleId}:${status}:${latest?.updatedAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;
-        toast.error(isTimeout ? "转发链路自测超时" : "转发链路自测失败", {
-          description: message,
-          duration: 12000,
-        });
+        toast.error(isTimeout ? "转发链路自测超时" : "转发链路自测失败", { duration: 5000 });
       }
     }
-  }, [open, isTesting, isSuccess, isTimeout, latest, latest?.message, latest?.updatedAt, ruleId, status]);
+  }, [open, isTesting, isSuccess, isTimeout, latest, latest?.updatedAt, parsedMessage.message, ruleId, status]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className={useWideProbeDialog ? "sm:max-w-4xl" : "sm:max-w-xl"}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
@@ -4394,6 +4392,8 @@ function SelfTestDialog({
           targetLabel={targetLabel}
           nodeMeta={nodeMeta}
           plannedSegments={plannedSegments}
+          compactFrom={3}
+          roomyNodes
         />
 
         <DialogFooter>

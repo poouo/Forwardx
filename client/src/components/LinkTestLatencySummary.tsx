@@ -101,9 +101,9 @@ function formatLatencyMs(value: number | null | undefined) {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} ms`;
 }
 
-function shortNodeLabel(value: string) {
+function shortNodeLabel(value: string, maxLength = 14) {
   const text = String(value || "").trim() || "-";
-  return text.length > 14 ? `${text.slice(0, 13)}...` : text;
+  return text.length > maxLength ? `${text.slice(0, Math.max(1, maxLength - 1))}...` : text;
 }
 
 function cleanNodeLabel(value: string) {
@@ -292,6 +292,8 @@ export function LinkTestProbeView({
   targetLabel = "目标",
   nodeMeta,
   plannedSegments,
+  compactFrom = 4,
+  roomyNodes = false,
   className,
 }: {
   parsed: ParsedLinkTestMessage;
@@ -302,6 +304,8 @@ export function LinkTestProbeView({
   targetLabel?: string;
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
   plannedSegments?: LinkTestPlannedSegment[];
+  compactFrom?: number;
+  roomyNodes?: boolean;
   className?: string;
 }) {
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
@@ -309,7 +313,7 @@ export function LinkTestProbeView({
   const totalLatency = effectiveTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const hasSegments = segments.length > 0;
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
-  const compactPath = segments.length >= 4;
+  const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
   const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
@@ -317,7 +321,9 @@ export function LinkTestProbeView({
     const flagUrl = /^[A-Z]{2}$/.test(countryCode) ? `https://flagcdn.com/24x18/${countryCode.toLowerCase()}.png` : "";
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
-    const nodeWidthClass = densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
+    const nodeWidthClass = roomyNodes
+      ? densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
+      : densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
         <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
@@ -343,7 +349,7 @@ export function LinkTestProbeView({
         </div>
         <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
           <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
-            {shortNodeLabel(label)}
+            {shortNodeLabel(label, roomyNodes ? 18 : 14)}
           </span>
         </div>
       </div>
