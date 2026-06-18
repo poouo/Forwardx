@@ -30,15 +30,17 @@ import (
 )
 
 type helloFrame struct {
-	Network         string `json:"network"`
-	TargetIP        string `json:"targetIp"`
-	TargetPort      int    `json:"targetPort"`
-	TunnelID        int    `json:"tunnelId"`
-	RuleID          int    `json:"ruleId"`
-	ProxySourceIP   string `json:"proxySourceIp,omitempty"`
-	ProxySourcePort int    `json:"proxySourcePort,omitempty"`
-	ProxyDestIP     string `json:"proxyDestIp,omitempty"`
-	ProxyDestPort   int    `json:"proxyDestPort,omitempty"`
+	Network                  string `json:"network"`
+	TargetIP                 string `json:"targetIp"`
+	TargetPort               int    `json:"targetPort"`
+	TunnelID                 int    `json:"tunnelId"`
+	RuleID                   int    `json:"ruleId"`
+	ProxySourceIP            string `json:"proxySourceIp,omitempty"`
+	ProxySourcePort          int    `json:"proxySourcePort,omitempty"`
+	ProxyDestIP              string `json:"proxyDestIp,omitempty"`
+	ProxyDestPort            int    `json:"proxyDestPort,omitempty"`
+	ProxyProtocolExitReceive bool   `json:"proxyProtocolExitReceive,omitempty"`
+	ProxyProtocolExitSend    bool   `json:"proxyProtocolExitSend,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -188,7 +190,7 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 	log.Printf(
-		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v limits=maxConnections:%d,maxIPs:%d",
+		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v limits=maxConnections:%d,maxIPs:%d",
 		fxpRuntimeVersion,
 		cfg.Role,
 		cfg.TunnelID,
@@ -203,6 +205,8 @@ func main() {
 		cfg.TargetPort,
 		cfg.ProxyProtocolReceive,
 		cfg.ProxyProtocolSend,
+		cfg.ProxyProtocolExitReceive,
+		cfg.ProxyProtocolExitSend,
 		cfg.MaxConnections,
 		cfg.MaxIPs,
 	)
@@ -439,15 +443,17 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 	}
 	defer exit.Close()
 	hello, _ := json.Marshal(helloFrame{
-		Network:         "tcp",
-		TargetIP:        cfg.TargetIP,
-		TargetPort:      cfg.TargetPort,
-		TunnelID:        cfg.TunnelID,
-		RuleID:          cfg.RuleID,
-		ProxySourceIP:   proxyInfo.SourceIP,
-		ProxySourcePort: proxyInfo.SourcePort,
-		ProxyDestIP:     proxyInfo.DestIP,
-		ProxyDestPort:   proxyInfo.DestPort,
+		Network:                  "tcp",
+		TargetIP:                 cfg.TargetIP,
+		TargetPort:               cfg.TargetPort,
+		TunnelID:                 cfg.TunnelID,
+		RuleID:                   cfg.RuleID,
+		ProxySourceIP:            proxyInfo.SourceIP,
+		ProxySourcePort:          proxyInfo.SourcePort,
+		ProxyDestIP:              proxyInfo.DestIP,
+		ProxyDestPort:            proxyInfo.DestPort,
+		ProxyProtocolExitReceive: cfg.ProxyProtocolExitReceive,
+		ProxyProtocolExitSend:    cfg.ProxyProtocolExitSend,
 	})
 	if err := sec.writeFrame(hello); err != nil {
 		return err
@@ -695,6 +701,12 @@ func handleExitSession(conn net.Conn, cfg config) error {
 	if hello.TargetPort <= 0 {
 		hello.TargetPort = cfg.TargetPort
 	}
+	if !hello.ProxyProtocolExitReceive {
+		hello.ProxySourceIP = ""
+		hello.ProxySourcePort = 0
+		hello.ProxyDestIP = ""
+		hello.ProxyDestPort = 0
+	}
 	switch strings.ToLower(hello.Network) {
 	case "udp":
 		return handleExitUDP(sec, hello)
@@ -709,7 +721,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		return fmt.Errorf("dial target: %w", err)
 	}
 	defer target.Close()
-	if hello.ProxySourceIP != "" && hello.ProxySourcePort > 0 {
+	if hello.ProxyProtocolExitSend && hello.ProxySourceIP != "" && hello.ProxySourcePort > 0 {
 		log.Printf(
 			"exit proxy protocol send tunnel=%d rule=%d source=%s:%d dest=%s:%d target=%s:%d",
 			hello.TunnelID,
@@ -724,7 +736,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		if _, err := target.Write([]byte(formatProxyProtocolV1(hello))); err != nil {
 			return fmt.Errorf("write proxy protocol: %w", err)
 		}
-	} else {
+	} else if hello.ProxyProtocolExitSend {
 		log.Printf("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
 	}
 	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)

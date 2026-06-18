@@ -244,6 +244,8 @@ export const forwardRules = table("forward_rules", {
   blockTls: boolean("blockTls").notNull().default(false),
   proxyProtocolReceive: boolean("proxyProtocolReceive").notNull().default(false),
   proxyProtocolSend: boolean("proxyProtocolSend").notNull().default(false),
+  proxyProtocolExitReceive: boolean("proxyProtocolExitReceive").notNull().default(false),
+  proxyProtocolExitSend: boolean("proxyProtocolExitSend").notNull().default(false),
   protocolBlockReason: text("protocolBlockReason"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   failoverEnabled: boolean("failoverEnabled").notNull().default(false),

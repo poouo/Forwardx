@@ -4,7 +4,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
-import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1124,6 +1124,8 @@ function TunnelSelfTestDialog({
   const manualTestRef = useRef(false);
   const manualTestBaselineAtRef = useRef("");
   const parsedMessage = useMemo(() => parseLinkTestMessage(tunnel?.lastTestMessage), [tunnel?.lastTestMessage]);
+  const hasPendingDetails = hasPendingLinkTestDetails(parsedMessage);
+  const displayTesting = isTesting || hasPendingDetails;
   const linkTestNodeData = useMemo(() => {
     const meta: Record<string, any> = {};
     const fullHostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
@@ -1200,7 +1202,7 @@ function TunnelSelfTestDialog({
     const messageLooksSuccessful = /测试成功|检测成功/.test(message) && !/失败|超时|不可达|异常/.test(message);
     const baselineAt = manualTestBaselineAtRef.current;
     const hasFreshResult = !baselineAt || (tunnel?.lastTestAt && String(tunnel.lastTestAt) !== baselineAt);
-    if (!isTesting && isFailed && message && !messageLooksSuccessful && manualTestRef.current && hasFreshResult) {
+    if (!displayTesting && isFailed && message && !messageLooksSuccessful && manualTestRef.current && hasFreshResult) {
       const key = `${tunnelId}:${status}:${tunnel?.lastTestAt || ""}:${message}`;
       if (lastFailureToastKey.current !== key) {
         lastFailureToastKey.current = key;
@@ -1211,10 +1213,10 @@ function TunnelSelfTestDialog({
         });
       }
     }
-    if (!isTesting && isSuccess) {
+    if (!displayTesting && isSuccess) {
       manualTestRef.current = false;
     }
-  }, [open, isTesting, isFailed, isSuccess, status, tunnel?.lastTestAt, parsedMessage.message, tunnelId]);
+  }, [open, displayTesting, isFailed, isSuccess, status, tunnel?.lastTestAt, parsedMessage.message, tunnelId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1231,7 +1233,7 @@ function TunnelSelfTestDialog({
           parsed={parsedMessage}
           fallbackLatencyMs={latencyMs}
           isSuccess={isSuccess}
-          isTesting={isTesting}
+          isTesting={displayTesting}
           sourceLabel={linkTestNodeData.sourceLabel}
           targetLabel={linkTestNodeData.targetLabel}
           nodeMeta={linkTestNodeData.nodeMeta}
@@ -1248,11 +1250,11 @@ function TunnelSelfTestDialog({
               setOptimisticTesting(true);
               testMutation.mutate({ id: tunnelId });
             }}
-            disabled={isTesting}
+            disabled={displayTesting}
             className="gap-2"
           >
-            {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            {isTesting ? "探测中..." : "链路测试"}
+            {displayTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+            {displayTesting ? "探测中..." : "链路测试"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -2099,7 +2101,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-2xl sm:p-4 lg:max-w-3xl">
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-2xl sm:p-4">
           <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
@@ -2299,7 +2301,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-2xl sm:p-4 lg:max-w-3xl">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-2xl sm:p-4">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
           </DialogHeader>

@@ -9,13 +9,15 @@
 import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
-import { connectDatabase, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
+import { boolLiteral, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomMultiavatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
+import { getSetting, setSetting } from "./repositories/settingsRepository";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -35,6 +37,23 @@ export * from "./repositories/forwardGroupRepository";
 
 // ==================== Initialization ====================
 
+async function backfillTunnelProxyProtocolSplit() {
+  const marker = "proxy-protocol-split-v1";
+  if (await getSetting(marker)) return;
+  const db = await getDb();
+  if (!db) return;
+  const q = quoteIdentifier;
+  await executeRaw(
+    `UPDATE ${q("forward_rules")}
+       SET ${q("proxyProtocolExitReceive")} = ${boolLiteral(true)},
+           ${q("proxyProtocolExitSend")} = ${boolLiteral(true)}
+     WHERE ${q("tunnelId")} IS NOT NULL
+       AND ${q("proxyProtocolSend")} = ${boolLiteral(true)}`,
+  );
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  console.log("[Database] Backfilled split PROXY Protocol settings for tunnel rules");
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -45,6 +64,9 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await backfillTunnelProxyProtocolSplit().catch((error) => {
+      console.warn("[Database] PROXY Protocol split backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
     await ensureTrafficStatBucketsBackfilled().catch((error) => {
       console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
     });

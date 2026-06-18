@@ -205,6 +205,8 @@ type RuleFormData = {
   blockTls: boolean;
   proxyProtocolReceive: boolean;
   proxyProtocolSend: boolean;
+  proxyProtocolExitReceive: boolean;
+  proxyProtocolExitSend: boolean;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargetsText: string;
@@ -212,6 +214,12 @@ type RuleFormData = {
   recoverSeconds: number;
   autoFailback: boolean;
 };
+
+type ProxyProtocolField =
+  | "proxyProtocolReceive"
+  | "proxyProtocolSend"
+  | "proxyProtocolExitReceive"
+  | "proxyProtocolExitSend";
 
 type FailoverStrategy = "fallback" | "round_robin" | "random" | "ip_hash";
 type FailoverMode = "disabled" | FailoverStrategy;
@@ -254,6 +262,8 @@ const defaultForm: RuleFormData = {
   blockTls: false,
   proxyProtocolReceive: false,
   proxyProtocolSend: false,
+  proxyProtocolExitReceive: false,
+  proxyProtocolExitSend: false,
   failoverEnabled: false,
   failoverStrategy: "fallback",
   failoverTargetsText: "",
@@ -1751,6 +1761,8 @@ function RulesContent() {
       blockTls: false,
       proxyProtocolReceive: !!rule.proxyProtocolReceive,
       proxyProtocolSend: !!rule.proxyProtocolSend,
+      proxyProtocolExitReceive: !!rule.proxyProtocolExitReceive,
+      proxyProtocolExitSend: !!rule.proxyProtocolExitSend,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
       failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
@@ -1942,6 +1954,7 @@ function RulesContent() {
     : "";
   const proxyProtocolForwardType = mainBackupForwardType;
   const proxyProtocolProtocolSupported = form.protocol === "tcp" || form.protocol === "both";
+  const isTunnelProxyProtocolMode = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
   const canAutoSwitchProxyProtocolToGost = !selectedForwardGroupIsChain
     && proxyProtocolProtocolSupported
     && proxyProtocolForwardType !== "gost"
@@ -2047,14 +2060,15 @@ function RulesContent() {
 
   useEffect(() => {
     if (canUseProxyProtocol) return;
-    if (!form.proxyProtocolReceive && !form.proxyProtocolSend) return;
-    setForm((prev) => ({ ...prev, proxyProtocolReceive: false, proxyProtocolSend: false }));
-  }, [canUseProxyProtocol, form.proxyProtocolReceive, form.proxyProtocolSend]);
-
-  useEffect(() => {
-    if (!form.failoverEnabled || !form.proxyProtocolSend) return;
-    setForm((prev) => ({ ...prev, proxyProtocolSend: false }));
-  }, [form.failoverEnabled, form.proxyProtocolSend]);
+    if (!form.proxyProtocolReceive && !form.proxyProtocolSend && !form.proxyProtocolExitReceive && !form.proxyProtocolExitSend) return;
+    setForm((prev) => ({
+      ...prev,
+      proxyProtocolReceive: false,
+      proxyProtocolSend: false,
+      proxyProtocolExitReceive: false,
+      proxyProtocolExitSend: false,
+    }));
+  }, [canUseProxyProtocol, form.proxyProtocolExitReceive, form.proxyProtocolExitSend, form.proxyProtocolReceive, form.proxyProtocolSend]);
 
   // 随机分配端口
   const handleRandomPort = async () => {
@@ -2104,10 +2118,29 @@ function RulesContent() {
     });
   };
 
+  const setProxyProtocolFlag = (field: ProxyProtocolField, checked: boolean) => {
+    setForm((prev) => ({
+      ...prev,
+      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : prev.forwardType,
+      [field]: checked,
+    }));
+  };
+
+  const renderProxyProtocolSwitch = (label: string, field: ProxyProtocolField) => (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+      <Label className="min-w-0 truncate text-sm" title={label}>{label}</Label>
+      <Switch
+        checked={form[field]}
+        disabled={!canUseProxyProtocol}
+        onCheckedChange={(checked) => setProxyProtocolFlag(field, checked)}
+      />
+    </div>
+  );
+
   const handleSubmit = () => {
     const submitForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel")
       ? "gost"
-      : (form.proxyProtocolReceive || form.proxyProtocolSend) && canAutoSwitchProxyProtocolToGost
+      : (form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend) && canAutoSwitchProxyProtocolToGost
       ? "gost"
       : form.forwardType;
     if (!form.name || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && !form.hostId)) {
@@ -2150,12 +2183,8 @@ function RulesContent() {
       toast.error("目标端口必须在 1-65535 之间");
       return;
     }
-    if ((form.proxyProtocolReceive || form.proxyProtocolSend) && !canUseProxyProtocol) {
+    if ((form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend) && !canUseProxyProtocol) {
       toast.error(proxyProtocolDisabledText || "当前规则不支持 PROXY Protocol");
-      return;
-    }
-    if (form.proxyProtocolSend && form.failoverEnabled) {
-      toast.error("PROXY Protocol 向目标发送暂不支持与出站策略同时使用");
       return;
     }
     const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargetsText);
@@ -2196,7 +2225,9 @@ function RulesContent() {
     };
     const proxyProtocolPayload = {
       proxyProtocolReceive: canUseProxyProtocol ? form.proxyProtocolReceive : false,
-      proxyProtocolSend: canUseProxyProtocol && !form.failoverEnabled ? form.proxyProtocolSend : false,
+      proxyProtocolSend: canUseProxyProtocol ? form.proxyProtocolSend : false,
+      proxyProtocolExitReceive: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
+      proxyProtocolExitSend: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
     };
     if (form.routeMode !== "group" && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
@@ -3793,6 +3824,8 @@ function RulesContent() {
                     failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
                     proxyProtocolReceive: v !== "udp" ? form.proxyProtocolReceive : false,
                     proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
+                    proxyProtocolExitReceive: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
+                    proxyProtocolExitSend: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3831,7 +3864,18 @@ function RulesContent() {
                   <Label>转发工具</Label>
                   <Select
                     value={form.forwardType}
-                    onValueChange={(v) => setForm({ ...form, forwardType: v as any, gostMode: "direct", gostRelayHost: "", gostRelayPort: 0, tunnelId: null, proxyProtocolReceive: v === "gost" ? form.proxyProtocolReceive : false, proxyProtocolSend: v === "gost" ? form.proxyProtocolSend : false })}
+                    onValueChange={(v) => setForm({
+                      ...form,
+                      forwardType: v as any,
+                      gostMode: "direct",
+                      gostRelayHost: "",
+                      gostRelayPort: 0,
+                      tunnelId: null,
+                      proxyProtocolReceive: v === "gost" ? form.proxyProtocolReceive : false,
+                      proxyProtocolSend: v === "gost" ? form.proxyProtocolSend : false,
+                      proxyProtocolExitReceive: false,
+                      proxyProtocolExitSend: false,
+                    })}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -3923,41 +3967,36 @@ function RulesContent() {
                 {!canUseProxyProtocol && proxyProtocolDisabledText && (
                   <span className="text-xs text-amber-600">{proxyProtocolDisabledText}</span>
                 )}
+                {canUseProxyProtocol && isTunnelProxyProtocolMode && (
+                  <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
+                )}
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                  <div className="min-w-0">
-                    <Label className="text-sm">接收上游 PROXY</Label>
+              {isTunnelProxyProtocolMode ? (
+                <div className="grid gap-2 lg:grid-cols-2">
+                  <div className="space-y-2 rounded-md border border-border/50 bg-background/40 p-2">
+                    <div className="text-xs font-medium text-muted-foreground">入口</div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                      {renderProxyProtocolSwitch("接收上游", "proxyProtocolReceive")}
+                      {renderProxyProtocolSwitch("发送到出口", "proxyProtocolSend")}
+                    </div>
                   </div>
-                  <Switch
-                    checked={form.proxyProtocolReceive}
-                    disabled={!canUseProxyProtocol}
-                    onCheckedChange={(checked) => setForm({
-                      ...form,
-                      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : form.forwardType,
-                      proxyProtocolReceive: checked,
-                    })}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                  <div className="min-w-0">
-                    <Label className="text-sm">发送到目标</Label>
+                  <div className="space-y-2 rounded-md border border-border/50 bg-background/40 p-2">
+                    <div className="text-xs font-medium text-muted-foreground">出口</div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                      {renderProxyProtocolSwitch("接收入口", "proxyProtocolExitReceive")}
+                      {renderProxyProtocolSwitch("发送到目标", "proxyProtocolExitSend")}
+                    </div>
                   </div>
-                  <Switch
-                    checked={form.proxyProtocolSend}
-                    disabled={!canUseProxyProtocol || form.failoverEnabled}
-                    onCheckedChange={(checked) => setForm({
-                      ...form,
-                      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : form.forwardType,
-                      proxyProtocolSend: checked,
-                      failoverEnabled: checked ? false : form.failoverEnabled,
-                    })}
-                  />
                 </div>
-              </div>
-              {form.proxyProtocolSend && (
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {renderProxyProtocolSwitch("接收上游 PROXY", "proxyProtocolReceive")}
+                  {renderProxyProtocolSwitch("发送到目标", "proxyProtocolSend")}
+                </div>
+              )}
+              {(form.proxyProtocolSend || form.proxyProtocolExitSend) && (
                 <p className="text-[11px] leading-4 text-muted-foreground">
-                  目标服务需启用 PROXY Protocol 解析；TCP 来源地址本身不会被改写。
+                  发送到下游时，对端服务需启用 PROXY Protocol 解析。
                 </p>
               )}
             </div>
@@ -3979,7 +4018,6 @@ function RulesContent() {
                       failoverEnabled: nextEnabled,
                       failoverStrategy: value === "disabled" ? form.failoverStrategy : value,
                       protocol: nextEnabled ? "tcp" : form.protocol,
-                      proxyProtocolSend: nextEnabled ? false : form.proxyProtocolSend,
                     });
                   }}
                   disabled={!canUseMainBackup}

@@ -133,18 +133,20 @@ func TestForwardXProxyProtocolRoundTrip(t *testing.T) {
 
 	go func() {
 		_ = runEntry(entryDone, config{
-			Role:                 "entry",
-			TunnelID:             11,
-			RuleID:               12,
-			ListenPort:           entryPort,
-			Protocol:             "tcp",
-			ExitHost:             "127.0.0.1",
-			ExitPort:             exitPort,
-			TargetIP:             "127.0.0.1",
-			TargetPort:           targetPort,
-			Key:                  key,
-			ProxyProtocolReceive: true,
-			ProxyProtocolSend:    true,
+			Role:                     "entry",
+			TunnelID:                 11,
+			RuleID:                   12,
+			ListenPort:               entryPort,
+			Protocol:                 "tcp",
+			ExitHost:                 "127.0.0.1",
+			ExitPort:                 exitPort,
+			TargetIP:                 "127.0.0.1",
+			TargetPort:               targetPort,
+			Key:                      key,
+			ProxyProtocolReceive:     true,
+			ProxyProtocolSend:        true,
+			ProxyProtocolExitReceive: true,
+			ProxyProtocolExitSend:    true,
 		})
 	}()
 	waitForTCP(t, entryPort)

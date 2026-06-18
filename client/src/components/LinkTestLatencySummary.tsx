@@ -73,6 +73,10 @@ export function hasLinkTestDetails(parsed: ParsedLinkTestMessage | null | undefi
   return !!parsed?.details?.length;
 }
 
+export function hasPendingLinkTestDetails(parsed: ParsedLinkTestMessage | null | undefined) {
+  return (parsed?.details || []).some((detail) => detail.pending === true);
+}
+
 export function formatLinkTestRoute(detail: LinkTestDetail) {
   const route = String(detail.routeLabel || detail.hopLabel || "链路").trim();
   return route.replace(/^第\s*\d+\s*跳\s*/, "");
@@ -257,10 +261,11 @@ export function LinkTestProbeView({
   className?: string;
 }) {
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
-  const totalLatency = isTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
-  const failedSegments = segments.filter((segment) => !segment.pending && !segment.success);
+  const effectiveTesting = isTesting || segments.some((segment) => segment.pending);
+  const totalLatency = effectiveTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
+  const failedSegments = segments.filter((segment) => !effectiveTesting && !segment.pending && !segment.success);
   const hasSegments = segments.length > 0;
-  const hasResult = isTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
+  const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const countryCode = String(meta?.countryCode || "").trim().toUpperCase();
@@ -305,11 +310,12 @@ export function LinkTestProbeView({
         <div className="flex min-w-[360px] items-start justify-center px-2 py-8">
           {segments.map((segment, index) => {
             const firstNode = index === 0;
-            const segmentOk = isTesting || segment.success;
-            const label = isTesting
+            const segmentTesting = effectiveTesting && (isTesting || segment.pending);
+            const segmentOk = segmentTesting || segment.success;
+            const label = segmentTesting
                 ? "探测中"
                 : segment.pending
-                  ? "待探测"
+                  ? "探测中"
                 : segmentOk && hasUsableLatencyValue(segment.latencyMs)
                   ? formatLatencyMs(segment.latencyMs)
                   : segmentOk && segments.length === 1
@@ -326,14 +332,14 @@ export function LinkTestProbeView({
                   <div
                     className={cn(
                       "absolute inset-x-0 top-0 h-px",
-                      segment.pending ? "bg-border" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
-                      isTesting ? "animate-pulse" : "",
+                      segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
+                      segmentTesting ? "animate-pulse" : "",
                     )}
                   />
                   <span
                     className={cn(
                       "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
-                      segment.pending ? "text-muted-foreground" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                      segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
                     )}
                   >
                     {label || "\u00a0"}
@@ -360,7 +366,7 @@ export function LinkTestProbeView({
             </p>
           ))}
         </div>
-      ) : !isTesting && !isSuccess && parsed.message ? (
+      ) : !effectiveTesting && !isSuccess && parsed.message ? (
         <div className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {parsed.message}
         </div>
@@ -372,7 +378,7 @@ export function LinkTestProbeView({
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
         )}>
-          {isTesting ? "探测中" : formatLatencyMs(totalLatency)}
+          {effectiveTesting ? "探测中" : formatLatencyMs(totalLatency)}
         </span>
       </div>
     </div>
@@ -394,7 +400,7 @@ export function LinkTestLatencySummary({
   isSuccess: boolean;
   isTesting: boolean;
 }) {
-  if (isTesting) return <span className="text-sm font-semibold tabular-nums">正在测试中</span>;
+  if (isTesting || hasPendingLinkTestDetails(parsed)) return <span className="text-sm font-semibold tabular-nums">正在测试中</span>;
 
   const details = parsed.details || [];
   const visibleDetails = details.filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
@@ -419,7 +425,7 @@ export function LinkTestLatencySummary({
             >
               <span className="min-w-0 break-words">{formatLinkTestRoute(detail)}</span>
               {detail.pending ? (
-                <span className="font-normal text-muted-foreground">待探测</span>
+                <span className="font-normal text-primary">探测中</span>
               ) : detail.success && hasLatencyValue(detail) ? (
                 renderLatencyValue(detail.latencyMs)
               ) : (

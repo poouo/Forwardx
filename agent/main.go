@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.96"
+var Version = "2.2.97"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -246,31 +246,33 @@ type selfTest struct {
 }
 
 type fxpSpec struct {
-	Role                 string `json:"role"`
-	TunnelID             int    `json:"tunnelId"`
-	RuleID               int    `json:"ruleId"`
-	ListenPort           int    `json:"listenPort"`
-	Protocol             string `json:"protocol"`
-	ExitHost             string `json:"exitHost"`
-	ExitPort             int    `json:"exitPort"`
-	TargetIP             string `json:"targetIp"`
-	TargetPort           int    `json:"targetPort"`
-	Key                  string `json:"key"`
-	LimitIn              int64  `json:"limitIn"`
-	LimitOut             int64  `json:"limitOut"`
-	MaxConnections       int    `json:"maxConnections"`
-	MaxIPs               int    `json:"maxIPs"`
-	AccessScope          string `json:"accessScope"`
-	BlockHTTP            bool   `json:"blockHttp"`
-	BlockSocks           bool   `json:"blockSocks"`
-	BlockTLS             bool   `json:"blockTls"`
-	ProxyProtocolReceive bool   `json:"proxyProtocolReceive"`
-	ProxyProtocolSend    bool   `json:"proxyProtocolSend"`
-	PanelURL             string `json:"panelUrl,omitempty"`
-	Token                string `json:"token,omitempty"`
-	RelayExitHost        string `json:"relayExitHost,omitempty"`
-	RelayExitPort        int    `json:"relayExitPort,omitempty"`
-	RelayKey             string `json:"relayKey,omitempty"`
+	Role                     string `json:"role"`
+	TunnelID                 int    `json:"tunnelId"`
+	RuleID                   int    `json:"ruleId"`
+	ListenPort               int    `json:"listenPort"`
+	Protocol                 string `json:"protocol"`
+	ExitHost                 string `json:"exitHost"`
+	ExitPort                 int    `json:"exitPort"`
+	TargetIP                 string `json:"targetIp"`
+	TargetPort               int    `json:"targetPort"`
+	Key                      string `json:"key"`
+	LimitIn                  int64  `json:"limitIn"`
+	LimitOut                 int64  `json:"limitOut"`
+	MaxConnections           int    `json:"maxConnections"`
+	MaxIPs                   int    `json:"maxIPs"`
+	AccessScope              string `json:"accessScope"`
+	BlockHTTP                bool   `json:"blockHttp"`
+	BlockSocks               bool   `json:"blockSocks"`
+	BlockTLS                 bool   `json:"blockTls"`
+	ProxyProtocolReceive     bool   `json:"proxyProtocolReceive"`
+	ProxyProtocolSend        bool   `json:"proxyProtocolSend"`
+	ProxyProtocolExitReceive bool   `json:"proxyProtocolExitReceive"`
+	ProxyProtocolExitSend    bool   `json:"proxyProtocolExitSend"`
+	PanelURL                 string `json:"panelUrl,omitempty"`
+	Token                    string `json:"token,omitempty"`
+	RelayExitHost            string `json:"relayExitHost,omitempty"`
+	RelayExitPort            int    `json:"relayExitPort,omitempty"`
+	RelayKey                 string `json:"relayKey,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -2164,6 +2166,8 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.FormatBool(spec.BlockTLS),
 		strconv.FormatBool(spec.ProxyProtocolReceive),
 		strconv.FormatBool(spec.ProxyProtocolSend),
+		strconv.FormatBool(spec.ProxyProtocolExitReceive),
+		strconv.FormatBool(spec.ProxyProtocolExitSend),
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		spec.RelayKey,
@@ -2312,7 +2316,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Token = cfg.Token
 	}
 	logf(
-		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
 		spec.Role,
 		spec.TunnelID,
 		spec.RuleID,
@@ -2320,6 +2324,8 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Protocol,
 		spec.ProxyProtocolReceive,
 		spec.ProxyProtocolSend,
+		spec.ProxyProtocolExitReceive,
+		spec.ProxyProtocolExitSend,
 		spec.ExitHost,
 		spec.ExitPort,
 		spec.RelayExitHost,

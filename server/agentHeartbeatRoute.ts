@@ -572,11 +572,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
-    const proxyProtocolEnabled = (rule: any, direction: "receive" | "send") => (
-      String(rule?.protocol || "tcp") !== "udp"
-      && (direction === "receive" ? !!(rule as any).proxyProtocolReceive : !!(rule as any).proxyProtocolSend)
-    );
-    const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send") => (
+    const proxyProtocolEnabled = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => {
+      if (String(rule?.protocol || "tcp") === "udp") return false;
+      if (direction === "receive" || direction === "entryReceive") return !!(rule as any).proxyProtocolReceive;
+      if (direction === "send" || direction === "entrySend") return !!(rule as any).proxyProtocolSend;
+      if (direction === "exitReceive") return !!(rule as any).proxyProtocolExitReceive;
+      return !!(rule as any).proxyProtocolExitSend;
+    };
+    const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => (
       proxyProtocolEnabled(rule, direction) ? { proxyProtocol: 1 } : undefined
     );
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
@@ -855,7 +858,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         if (isMultiHopTunnel && useMultiHopEntry) {
           const chainHops: any[] = [];
-          const exitProxyMetadata = maybeProxyProtocolMetadata(r, "send");
+          const entrySendProxyMetadata = maybeProxyProtocolMetadata(r, "entrySend");
           const routeParts: string[] = [`entry#${Number(firstHop.hostId)}:${Number((r as any).sourcePort)}`];
           for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
@@ -879,7 +882,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
           chainHops.push({
             name: `hop-tunnel-${r.id}-exit`,
-            ...(exitProxyMetadata ? { metadata: exitProxyMetadata } : {}),
+            ...(entrySendProxyMetadata ? { metadata: entrySendProxyMetadata } : {}),
             nodes: [gostTunnelNode(
               `exit-${r.id}`,
               exitAddr,
@@ -892,7 +895,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           tunnelRouteLogCache.set(routeKey, route);
-          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxy=${proxyProtocolEnabled(r, "send") ? "entry-exit" : "off"} route=${route}`);
+          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxyEntrySend=${proxyProtocolEnabled(r, "entrySend")} route=${route}`);
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const chainTargetAddr = useMultiHopEntry
@@ -903,7 +906,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           name: `chain-tunnel-${r.id}`,
           hops: [{
             name: `hop-tunnel-${r.id}`,
-            ...(maybeProxyProtocolMetadata(r, "send") ? { metadata: maybeProxyProtocolMetadata(r, "send") } : {}),
+            ...(maybeProxyProtocolMetadata(r, "entrySend") ? { metadata: maybeProxyProtocolMetadata(r, "entrySend") } : {}),
             nodes: [gostTunnelNode(
               chainNodeName,
               chainTargetAddr,
@@ -959,12 +962,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return [{
           name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
           addr: `:${rule.tunnelExitPort}`,
-          handler: gostRelayHandler(maybeProxyProtocolMetadata(rule, "send")),
+          handler: gostRelayHandler(maybeProxyProtocolMetadata(rule, "exitSend")),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
             ...(tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
           },
-          ...(proxyProtocolEnabled(rule, "send") ? { metadata: maybeProxyProtocolMetadata(rule, "send") } : {}),
+          ...(proxyProtocolEnabled(rule, "exitReceive") ? { metadata: maybeProxyProtocolMetadata(rule, "exitReceive") } : {}),
           forwarder: {
             nodes: [{
               name: `target-${rule.id}`,
@@ -1666,8 +1669,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 ...accessLimits,
                 accessScope: accessScopeForRule(rule),
                 ...await tunnelProtocolPolicy(tunnel),
-                proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
-                proxyProtocolSend: proxyProtocolEnabled(rule, "send"),
+                proxyProtocolReceive: proxyProtocolEnabled(rule, "entryReceive"),
+                proxyProtocolSend: proxyProtocolEnabled(rule, "entrySend"),
+                proxyProtocolExitReceive: proxyProtocolEnabled(rule, "exitReceive"),
+                proxyProtocolExitSend: proxyProtocolEnabled(rule, "exitSend"),
               },
               failover: mainBackup,
             });
@@ -1859,8 +1864,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetIp: target.targetIp,
           targetPort: target.targetPort,
           policy,
-          proxyProtocolReceive: proxyProtocolEnabled(rule, "send"),
-          proxyProtocolSend: proxyProtocolEnabled(rule, "send"),
+          proxyProtocolReceive: proxyProtocolEnabled(rule, "exitReceive"),
+          proxyProtocolSend: proxyProtocolEnabled(rule, "exitSend"),
         });
       }
     }

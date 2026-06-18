@@ -118,6 +118,7 @@ const tables: TableDef[] = [
       c("blockHttp", "bool", { notNull: true, default: false }), c("blockSocks", "bool", { notNull: true, default: false }),
       c("blockTls", "bool", { notNull: true, default: false }),
       c("proxyProtocolReceive", "bool", { notNull: true, default: false }), c("proxyProtocolSend", "bool", { notNull: true, default: false }),
+      c("proxyProtocolExitReceive", "bool", { notNull: true, default: false }), c("proxyProtocolExitSend", "bool", { notNull: true, default: false }),
       c("protocolBlockReason", "text"), c("isEnabled", "bool", { notNull: true, default: true }),
       c("failoverEnabled", "bool", { notNull: true, default: false }), c("failoverTargets", "text"),
       c("failoverStrategy", "varchar", { length: 32, notNull: true, default: "fallback" }),

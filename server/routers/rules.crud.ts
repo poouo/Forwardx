@@ -35,6 +35,8 @@ const failoverInputShape = {
 const proxyProtocolInputShape = {
   proxyProtocolReceive: z.boolean().optional(),
   proxyProtocolSend: z.boolean().optional(),
+  proxyProtocolExitReceive: z.boolean().optional(),
+  proxyProtocolExitSend: z.boolean().optional(),
 } as const;
 
 type FailoverInput = {
@@ -96,27 +98,44 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
 function normalizeProxyProtocolInput(input: {
   proxyProtocolReceive?: boolean;
   proxyProtocolSend?: boolean;
+  proxyProtocolExitReceive?: boolean;
+  proxyProtocolExitSend?: boolean;
   failoverEnabled?: boolean;
-}, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean }) {
+}, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean; tunnelRoute?: boolean }) {
   const clearUnsupported = options?.clearUnsupported ?? false;
   const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
   const forwardTypeSupported = forwardType === "gost";
+  const tunnelRoute = !!options?.tunnelRoute;
   const receive = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolReceive;
   const send = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolSend;
-  if (!receive && !send) {
-    if (clearUnsupported) return { proxyProtocolReceive: false, proxyProtocolSend: false };
-    if ((input.proxyProtocolReceive || input.proxyProtocolSend) && protocol && protocol !== "tcp" && protocol !== "both") {
+  const exitReceive = tunnelRoute && !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolExitReceive;
+  const exitSend = tunnelRoute && !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolExitSend;
+  if (!receive && !send && !exitReceive && !exitSend) {
+    if (clearUnsupported) return {
+      proxyProtocolReceive: false,
+      proxyProtocolSend: false,
+      proxyProtocolExitReceive: false,
+      proxyProtocolExitSend: false,
+    };
+    if ((input.proxyProtocolReceive || input.proxyProtocolSend || input.proxyProtocolExitReceive || input.proxyProtocolExitSend) && protocol && protocol !== "tcp" && protocol !== "both") {
       throw new Error("PROXY Protocol 仅支持 TCP 协议");
     }
-    if ((input.proxyProtocolReceive || input.proxyProtocolSend) && forwardType !== "gost") {
+    if ((input.proxyProtocolReceive || input.proxyProtocolSend || input.proxyProtocolExitReceive || input.proxyProtocolExitSend) && forwardType !== "gost") {
       throw new Error("PROXY Protocol 仅支持 GOST 端口转发、GOST 隧道和自定义加密隧道");
     }
-    return { proxyProtocolReceive: false, proxyProtocolSend: false };
+    return {
+      proxyProtocolReceive: false,
+      proxyProtocolSend: false,
+      proxyProtocolExitReceive: false,
+      proxyProtocolExitSend: false,
+    };
   }
-  if (input.failoverEnabled && send) {
-    throw new Error("PROXY Protocol 向目标发送暂不支持与出站策略同时使用");
-  }
-  return { proxyProtocolReceive: receive, proxyProtocolSend: send };
+  return {
+    proxyProtocolReceive: receive,
+    proxyProtocolSend: send,
+    proxyProtocolExitReceive: exitReceive,
+    proxyProtocolExitSend: exitSend,
+  };
 }
 
 function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
@@ -372,6 +391,7 @@ export const crudRulesRouter = router({
             input.protocol,
             forwardType,
             isForwardChain,
+            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" },
           ),
           ...normalizeFailoverInput(isForwardChain ? { failoverEnabled: false, failoverTargets: [] } : input, input.protocol),
           isRunning: false,
@@ -497,7 +517,7 @@ export const crudRulesRouter = router({
       const id = await db.createForwardRule({
         ...input,
         ...normalizeFailoverInput(input, input.protocol),
-        ...normalizeProxyProtocolInput(input, input.protocol, input.forwardType, false),
+        ...normalizeProxyProtocolInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId }),
         blockHttp: false,
         blockSocks: false,
         blockTls: false,
@@ -609,14 +629,18 @@ export const crudRulesRouter = router({
           ...(
             input.proxyProtocolReceive !== undefined ||
             input.proxyProtocolSend !== undefined ||
+            input.proxyProtocolExitReceive !== undefined ||
+            input.proxyProtocolExitSend !== undefined ||
             input.protocol !== undefined ||
             input.forwardType !== undefined ||
             input.failoverEnabled !== undefined
               ? normalizeProxyProtocolInput({
                   proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
                   proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
+                  proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
+                  proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
                   failoverEnabled: nextMainBackupEnabled,
-                }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, { clearUnsupported: true })
+                }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" })
               : {}
           ),
           gostMode: "direct",
@@ -634,7 +658,7 @@ export const crudRulesRouter = router({
         delete data.blockHttp;
         delete data.blockSocks;
         delete data.blockTls;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -764,6 +788,8 @@ export const crudRulesRouter = router({
       if (
         input.proxyProtocolReceive !== undefined ||
         input.proxyProtocolSend !== undefined ||
+        input.proxyProtocolExitReceive !== undefined ||
+        input.proxyProtocolExitSend !== undefined ||
         input.protocol !== undefined ||
         input.forwardType !== undefined ||
         input.failoverEnabled !== undefined
@@ -771,8 +797,10 @@ export const crudRulesRouter = router({
         Object.assign(data as any, normalizeProxyProtocolInput({
           proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
           proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
+          proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
+          proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
           failoverEnabled: nextMainBackupEnabled,
-        }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, { clearUnsupported: true }));
+        }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, { clearUnsupported: true, tunnelRoute: !!nextTunnelIdForRule }));
       }
       if ((data.forwardType ?? rule.forwardType) !== "gost") {
         (data as any).gostMode = "direct";
@@ -782,6 +810,8 @@ export const crudRulesRouter = router({
         (data as any).tunnelExitPort = null;
         (data as any).proxyProtocolReceive = false;
         (data as any).proxyProtocolSend = false;
+        (data as any).proxyProtocolExitReceive = false;
+        (data as any).proxyProtocolExitSend = false;
       } else {
         (data as any).gostMode = "direct";
         (data as any).gostRelayHost = null;
@@ -835,6 +865,8 @@ export const crudRulesRouter = router({
         "hostId",
         "proxyProtocolReceive",
         "proxyProtocolSend",
+        "proxyProtocolExitReceive",
+        "proxyProtocolExitSend",
         "failoverEnabled",
         "failoverStrategy",
         "failoverTargets",
