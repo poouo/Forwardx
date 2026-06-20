@@ -7,7 +7,7 @@ import {
   type InsertForwardGroup,
   type InsertForwardGroupMember,
 } from "../../drizzle/schema";
-import { pushAgentRefresh } from "../agentEvents";
+import { pushAgentRefresh, requestHostTcping } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
 import { getDdnsSettings, updateDdnsRecord } from "../ddns";
 import { getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
@@ -47,6 +47,39 @@ type SyncForwardGroupRulesOptions = {
 };
 
 type ForwardGroupMode = "failover" | "chain";
+
+const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
+
+export function normalizeChinaHealthTarget(raw: unknown) {
+  const source = String(raw || "").trim() || DEFAULT_CHINA_HEALTH_TARGET;
+  const withoutScheme = source.replace(/^tcp:\/\//i, "").replace(/：/g, ":").trim();
+  let host = withoutScheme;
+  let port = 80;
+
+  const bracketMatch = withoutScheme.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracketMatch) {
+    host = bracketMatch[1];
+    port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
+  } else {
+    const lastColon = withoutScheme.lastIndexOf(":");
+    if (lastColon > 0 && withoutScheme.indexOf(":") === lastColon) {
+      const maybePort = Number(withoutScheme.slice(lastColon + 1));
+      if (Number.isInteger(maybePort) && maybePort >= 1 && maybePort <= 65535) {
+        host = withoutScheme.slice(0, lastColon);
+        port = maybePort;
+      }
+    }
+  }
+
+  host = host.trim();
+  if (!host || host.length > 253 || /[\s'"<>/]/.test(host)) {
+    throw new Error("China health target format is invalid");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("China health target port must be 1-65535");
+  }
+  return { host, port, text: `${host}:${port}` };
+}
 
 function toDate(value: unknown): Date | null {
   if (!value) return null;
@@ -251,6 +284,16 @@ export type ForwardGroupChainProbe = {
   routeLabel: string;
 };
 
+export type ForwardGroupChinaHealthProbe = {
+  groupId: number;
+  memberId: number;
+  fromHostId: number;
+  targetIp: string;
+  targetPort: number;
+  method: "tcp";
+  probeType: "china";
+};
+
 export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean } = {}) {
   const group = await getForwardGroupById(groupId) as any;
   if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
@@ -315,6 +358,67 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     }
   }
   return probes;
+}
+
+export async function getForwardGroupChinaHealthProbesForHost(hostId: number) {
+  const groups = await getForwardGroups() as any[];
+  const probes: ForwardGroupChinaHealthProbe[] = [];
+  for (const group of groups) {
+    if (!group?.isEnabled || groupModeOf(group) === "chain" || !group.chinaHealthCheckEnabled) continue;
+    let target;
+    try {
+      target = normalizeChinaHealthTarget(group.chinaHealthCheckTarget);
+    } catch {
+      target = normalizeChinaHealthTarget(null);
+    }
+    for (const member of sortedMembers(group, true) as any[]) {
+      const entryHostId = await memberEntryHostId(member).catch(() => 0);
+      if (Number(entryHostId) !== Number(hostId)) continue;
+      probes.push({
+        groupId: Number(group.id),
+        memberId: Number(member.id),
+        fromHostId: Number(entryHostId),
+        targetIp: target.host,
+        targetPort: target.port,
+        method: "tcp",
+        probeType: "china",
+      });
+    }
+  }
+  return probes;
+}
+
+export async function updateForwardGroupMemberChinaHealth(input: {
+  groupId: number;
+  memberId: number;
+  hostId: number;
+  latencyMs: number | null;
+  isTimeout: boolean;
+}) {
+  const group = await getForwardGroupById(Number(input.groupId)) as any;
+  if (!group || !group.chinaHealthCheckEnabled || groupModeOf(group) === "chain") return false;
+  const member = (group.members || []).find((item: any) => Number(item.id) === Number(input.memberId));
+  if (!member) return false;
+  const entryHostId = await memberEntryHostId(member);
+  if (Number(entryHostId) !== Number(input.hostId)) return false;
+  const db = await getDb();
+  await db.update(forwardGroupMembers).set({
+    chinaHealthStatus: input.isTimeout ? "unhealthy" : "healthy",
+    chinaHealthLatencyMs: input.isTimeout ? null : input.latencyMs,
+    chinaHealthCheckedAt: nowDate(),
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardGroupMembers.id, Number(input.memberId)));
+  return true;
+}
+
+export async function resetForwardGroupChinaHealth(groupId: number) {
+  const db = await getDb();
+  await db.update(forwardGroupMembers).set({
+    chinaHealthStatus: "unknown",
+    chinaHealthLatencyMs: null,
+    chinaHealthCheckedAt: null,
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardGroupMembers.groupId, Number(groupId)));
 }
 
 async function insertForwardGroupEvent(groupId: number, memberId: number | null, type: string, message: string) {
@@ -638,6 +742,8 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     recordType: group.recordType,
     failoverSeconds: group.failoverSeconds,
     recoverSeconds: group.recoverSeconds,
+    chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+    chinaHealthCheckTarget: group.chinaHealthCheckTarget || null,
     autoFailback: group.autoFailback,
     isEnabled: group.isEnabled,
     lastStatus: group.lastStatus,
@@ -653,6 +759,11 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
       tunnelId: member.tunnelId ?? null,
       connectHost: member.connectHost ?? null,
       entryAddress: member.entryAddress ?? null,
+      healthStatus: member.healthStatus,
+      lastLatencyMs: member.lastLatencyMs,
+      chinaHealthStatus: member.chinaHealthStatus,
+      chinaHealthLatencyMs: member.chinaHealthLatencyMs,
+      chinaHealthCheckedAt: member.chinaHealthCheckedAt,
       priority: member.priority,
       isEnabled: member.isEnabled,
     })),
@@ -1157,6 +1268,18 @@ async function evaluateMemberHealth(member: any, group: any) {
         latencies.push(Number(stat.latencyMs));
       }
     }
+    if (healthy && group.chinaHealthCheckEnabled) {
+      const chinaStatus = String(member.chinaHealthStatus || "unknown");
+      if (chinaStatus === "unhealthy") {
+        healthy = false;
+        message = "China health TCPing timeout";
+      } else if (chinaStatus !== "healthy") {
+        healthy = false;
+        message = "Waiting for China health TCPing data";
+      } else if (typeof member.chinaHealthLatencyMs === "number") {
+        latencies.push(Number(member.chinaHealthLatencyMs));
+      }
+    }
     if (healthy) {
       latencyMs = latencies.length > 0 ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length) : null;
       message = latencies.length > 0 ? "TCPing healthy" : "Rules running; waiting for TCPing data";
@@ -1199,6 +1322,15 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
     }
 
     await syncForwardGroupRules(Number(group.id));
+    if (group.chinaHealthCheckEnabled) {
+      for (const member of sortedMembers(group, true) as any[]) {
+        const entryHostId = await memberEntryHostId(member).catch(() => 0);
+        if (entryHostId > 0) {
+          const requested = requestHostTcping(entryHostId);
+          if (requested) pushAgentRefresh(entryHostId, "forward-group-china-health");
+        }
+      }
+    }
     const members = [...(group.members || [])].sort((a, b) => Number(a.priority) - Number(b.priority));
     if (members.length === 0) continue;
 

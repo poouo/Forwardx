@@ -5,6 +5,8 @@ export type HopTestResult = {
   hopLabel: string;
   routeLabel?: string | null;
   method?: "tcp" | "ping" | string | null;
+  groupKey?: string | null;
+  groupLabel?: string | null;
 };
 
 type HopTestBatch = {
@@ -64,6 +66,7 @@ export function recordHopTestResult(
     successPrefix: string;
     failurePrefix: string;
     totalLabel?: string;
+    latencyMode?: "sum" | "max";
   },
 ): HopTestAggregate | null {
   const batchId = testToBatch.get(testId);
@@ -83,8 +86,11 @@ export function recordHopTestResult(
 
   const details = values.filter((value): value is HopTestResult => value !== null);
   const allSuccess = details.every((value) => value.success);
+  const successfulLatencies = details.map((value) => Number(value.latencyMs) || 0);
   const totalLatency = allSuccess
-    ? details.reduce((sum, value) => sum + (Number(value.latencyMs) || 0), 0)
+    ? options.latencyMode === "max"
+      ? successfulLatencies.reduce((max, value) => Math.max(max, value), 0)
+      : successfulLatencies.reduce((sum, value) => sum + value, 0)
     : null;
   const detailLines = details.map((value) => {
     const route = String(value.routeLabel || value.hopLabel || "未知链路").trim();

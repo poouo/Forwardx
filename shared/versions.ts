@@ -1,4 +1,4 @@
-export const APP_VERSION = "2.3.157";
-export const ANDROID_APP_VERSION = "2.3.45";
-export const ANDROID_APK_RELEASE_VERSION = "2.3.157";
-export const AGENT_VERSION = "2.2.99";
+export const APP_VERSION = "2.3.159";
+export const ANDROID_APP_VERSION = "2.3.47";
+export const ANDROID_APK_RELEASE_VERSION = "2.3.159";
+export const AGENT_VERSION = "2.2.100";

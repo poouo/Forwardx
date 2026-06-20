@@ -78,12 +78,22 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     if (meta?.kind === "tunnel-hop" && typeof meta.tunnelId === "number") {
       const hopLabel = String((meta as any).hopLabel || "hop");
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
+      const groupKey = typeof (meta as any).groupKey === "string" ? (meta as any).groupKey : null;
+      const groupLabel = typeof (meta as any).groupLabel === "string" ? (meta as any).groupLabel : null;
+      const latencyMode = (meta as any).latencyMode === "max" ? "max" : "sum";
       const aggregate = recordTunnelHopTestResult(testId, {
         success,
         latencyMs: success ? cleanLatency : null,
         message: cleanMessage,
         hopLabel,
         routeLabel,
+        groupKey,
+        groupLabel,
+      }, {
+        latencyMode,
+        successPrefix: latencyMode === "max" ? "多出口负载探测成功" : undefined,
+        failurePrefix: latencyMode === "max" ? "多出口负载探测失败" : undefined,
+        totalLabel: latencyMode === "max" ? "最大延迟" : undefined,
       });
       if (success) {
         console.log(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} success latency=${cleanLatency ?? "-"}ms`);
@@ -92,7 +102,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
       if (aggregate) {
         const aggregateMessage = structuredLinkTestMessage({
-          kind: "tunnel-hop-summary",
+          kind: latencyMode === "max" ? "tunnel-load-balance-summary" : "tunnel-hop-summary",
           tunnelId: aggregate.tunnelId,
           message: aggregate.message,
           details: aggregate.details,

@@ -25,13 +25,41 @@ import {
   formatBytes,
   formatUptime,
   HostRegionBadge,
-  hostAddressText,
+  hostPrimaryAddressText,
   isAgentUpgradeTimedOut,
   isAgentVersionBehind,
   metricUsageProgressClass,
   readCachedHostMetrics,
   writeCachedHostMetrics,
 } from "./hostDisplay";
+
+function formatNetworkSpeed(value: number | null) {
+  if (value === null) return "--/s";
+  const formatted = formatBytes(value);
+  return `${formatted.replace(" ", "\u00a0")}/s`;
+}
+
+const dayMs = 24 * 60 * 60 * 1000;
+
+function parseHostDateTime(value: unknown) {
+  if (!value) return null;
+  const ms = value instanceof Date
+    ? value.getTime()
+    : typeof value === "number"
+      ? value
+      : Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatRemainingTime(purchasedAt: unknown, stoppedAt: unknown) {
+  const purchasedMs = parseHostDateTime(purchasedAt);
+  const stoppedMs = parseHostDateTime(stoppedAt);
+  if (purchasedMs === null || stoppedMs === null || stoppedMs <= purchasedMs) return null;
+  const remainingMs = stoppedMs - Date.now();
+  if (remainingMs <= 0) return "已到期";
+  if (remainingMs < dayMs) return "不足1天";
+  return `剩余${Math.ceil(remainingMs / dayMs)}天`;
+}
 
 type HostCardProps = {
   host: any;
@@ -88,6 +116,12 @@ export default function HostCard({
     const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
     return { in: inDelta / seconds, out: outDelta / seconds };
   }, [latestMetric, previousMetric]);
+  const remainingTimeLabel = formatRemainingTime(host.purchasedAt, host.stoppedAt);
+  const remainingTimeClass = remainingTimeLabel === "已到期"
+    ? "border-destructive/30 bg-destructive/10 text-destructive"
+    : remainingTimeLabel === "不足1天"
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
@@ -101,6 +135,9 @@ export default function HostCard({
   const cardMinHeightClass = compact ? "min-h-[260px]" : "min-h-[420px]";
   const compactMetricPanelClass = `rounded-md border px-2.5 py-2 ${trafficPanelClass}`;
   const compactMetricItemClass = "grid min-w-0 grid-cols-[18px_minmax(0,1fr)_42px] items-center gap-2 rounded px-1 py-0.5 transition-colors hover:bg-background/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+  const compactTrafficItemClass = `grid h-9 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5 rounded-md border px-2 ${trafficPanelClass}`;
+  const compactTrafficLabelClass = "flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground";
+  const compactTrafficValueClass = "min-w-0 justify-self-end whitespace-nowrap text-right font-medium leading-none tabular-nums text-[clamp(10px,0.66vw,12px)]";
   const compactMetricItems = [
     {
       key: "cpu",
@@ -221,9 +258,9 @@ export default function HostCard({
       <CardContent className={`${compact ? "space-y-2 px-3.5 pb-3.5" : "space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
         <div className={compact ? "space-y-1.5" : "space-y-2"}>
           <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
-            <p className="truncate font-mono text-xs leading-5" title={hostAddressText(host)}>
+            <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
               <span className="mr-1.5 text-muted-foreground">地址</span>
-              {hostAddressText(host)}
+              {hostPrimaryAddressText(host)}
             </p>
             <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
               <HostRegionBadge host={host} />
@@ -266,24 +303,25 @@ export default function HostCard({
                   })}
                 </div>
               </TooltipProvider>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入</span>
-                    <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
-                  </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 text-xs">
+                <div className={compactTrafficItemClass}>
+                  <span className={compactTrafficLabelClass}><ArrowDownToLine className="h-3 w-3 shrink-0" /> 入</span>
+                  <span className={compactTrafficValueClass}>{formatNetworkSpeed(networkSpeed.in)}</span>
                 </div>
-                <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出</span>
-                    <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
-                  </div>
+                <div className={compactTrafficItemClass}>
+                  <span className={compactTrafficLabelClass}><ArrowUpFromLine className="h-3 w-3 shrink-0" /> 出</span>
+                  <span className={compactTrafficValueClass}>{formatNetworkSpeed(networkSpeed.out)}</span>
                 </div>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <Clock className="h-3 w-3 text-muted-foreground" />
                 <span className="text-muted-foreground">运行</span>
-                <span className="ml-auto font-medium">{formatUptime(latestMetric.uptime)}</span>
+                {remainingTimeLabel && (
+                  <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
+                    {remainingTimeLabel}
+                  </span>
+                )}
+                <span className="ml-auto shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatUptime(latestMetric.uptime)}</span>
               </div>
             </div>
           ) : (
@@ -332,7 +370,7 @@ export default function HostCard({
                 </div>
                 <div className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.in === null ? "--/s" : `${formatBytes(networkSpeed.in)}/s`}</span>
+                  <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.in)}</span>
                 </div>
               </div>
               <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
@@ -346,14 +384,19 @@ export default function HostCard({
                 </div>
                 <div className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="text-muted-foreground">当前</span>
-                  <span className="font-medium tabular-nums">{networkSpeed.out === null ? "--/s" : `${formatBytes(networkSpeed.out)}/s`}</span>
+                  <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.out)}</span>
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 text-xs pt-1">
               <Clock className="h-3 w-3 text-muted-foreground" />
               <span className="text-muted-foreground">运行时间</span>
-              <span className="font-medium ml-auto">{formatUptime(latestMetric.uptime)}</span>
+              {remainingTimeLabel && (
+                <span className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${remainingTimeClass}`}>
+                  {remainingTimeLabel}
+                </span>
+              )}
+              <span className="ml-auto shrink-0 whitespace-nowrap text-right font-medium tabular-nums">{formatUptime(latestMetric.uptime)}</span>
             </div>
           </div>
           )

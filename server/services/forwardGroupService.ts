@@ -23,6 +23,8 @@ export type ForwardGroupInput = {
   recordType?: "A" | "AAAA" | "CNAME";
   failoverSeconds: number;
   recoverSeconds: number;
+  chinaHealthCheckEnabled?: boolean;
+  chinaHealthCheckTarget?: string | null;
   autoFailback: boolean;
   isEnabled: boolean;
   members: ForwardGroupMemberRequest[];
@@ -62,6 +64,11 @@ function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
   const groupMode: ForwardGroupMode = input.groupMode === "chain" ? "chain" : "failover";
   const groupType: ForwardGroupType = groupMode === "chain" ? "host" : input.groupType;
   const members = normalizeForwardGroupMembers(groupMode, groupType, input.members);
+  const chinaHealthCheckEnabled = groupMode !== "chain" && !!input.chinaHealthCheckEnabled;
+  const chinaHealthCheckTarget = chinaHealthCheckEnabled
+    ? String(input.chinaHealthCheckTarget || "").trim() || null
+    : null;
+  if (chinaHealthCheckTarget) db.normalizeChinaHealthTarget(chinaHealthCheckTarget);
   return {
     data: {
       name: input.name,
@@ -72,6 +79,8 @@ function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
       recordType: groupMode === "chain" ? "A" : input.recordType || "A",
       failoverSeconds: input.failoverSeconds,
       recoverSeconds: input.recoverSeconds,
+      chinaHealthCheckEnabled,
+      chinaHealthCheckTarget,
       autoFailback: input.autoFailback,
       isEnabled: input.isEnabled,
       ...(userId ? { userId } : {}),
@@ -89,6 +98,8 @@ function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
       targetPort: 1,
       failoverSeconds: input.failoverSeconds,
       recoverSeconds: input.recoverSeconds,
+      chinaHealthCheckEnabled,
+      chinaHealthCheckTarget,
       autoFailback: input.autoFailback,
       isEnabled: input.isEnabled,
       userId,
@@ -105,9 +116,14 @@ export async function createForwardGroupFromInput(input: ForwardGroupInput, user
 }
 
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
+  const existing = await db.getForwardGroupById(id) as any;
   const normalized = normalizeForwardGroupInput(input);
+  const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
+    || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
+    || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
   await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
   await db.replaceForwardGroupMembers(id, normalized.members as any);
+  if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
   if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
 }
 

@@ -19,10 +19,18 @@ export function registerTunnelHopTest(batchId: string, testId: number) {
 export function recordTunnelHopTestResult(
   testId: number,
   result: TunnelHopResult,
+  options?: {
+    successPrefix?: string;
+    failurePrefix?: string;
+    totalLabel?: string;
+    latencyMode?: "sum" | "max";
+  },
 ): null | (Omit<HopTestAggregate, "ownerId"> & { tunnelId: number }) {
   const aggregate = recordHopTestResult(testId, result, {
-    successPrefix: "多级隧道逐跳测试成功",
-    failurePrefix: "多级隧道逐跳测试失败",
+    successPrefix: options?.successPrefix || "多级隧道逐跳测试成功",
+    failurePrefix: options?.failurePrefix || "多级隧道逐跳测试失败",
+    totalLabel: options?.totalLabel,
+    latencyMode: options?.latencyMode,
   });
   if (!aggregate) return null;
   return {

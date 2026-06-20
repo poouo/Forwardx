@@ -145,17 +145,27 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
     if (meta.kind === "tunnel-hop") {
       const hopLabel = String((meta as any).hopLabel || "hop");
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
-      const message = `多级隧道逐跳测试超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const groupKey = typeof (meta as any).groupKey === "string" ? (meta as any).groupKey : null;
+      const groupLabel = typeof (meta as any).groupLabel === "string" ? (meta as any).groupLabel : null;
+      const latencyMode = (meta as any).latencyMode === "max" ? "max" : "sum";
+      const message = `${latencyMode === "max" ? "多出口负载探测" : "多级隧道逐跳测试"}超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
       const aggregate = recordTunnelHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
         message,
         hopLabel,
         routeLabel,
+        groupKey,
+        groupLabel,
+      }, {
+        latencyMode,
+        successPrefix: latencyMode === "max" ? "多出口负载探测成功" : undefined,
+        failurePrefix: latencyMode === "max" ? "多出口负载探测失败" : undefined,
+        totalLabel: latencyMode === "max" ? "最大延迟" : undefined,
       });
       if (aggregate) {
         const aggregateMessage = structuredLinkTestMessage({
-          kind: "tunnel-hop-summary",
+          kind: latencyMode === "max" ? "tunnel-load-balance-summary" : "tunnel-hop-summary",
           tunnelId: aggregate.tunnelId,
           message: aggregate.message,
           details: aggregate.details,
@@ -366,8 +376,9 @@ async function runTelegramReminders() {
         const traffic = trafficByHostId.get(Number(host.id));
         const used = hostTrafficUsageBytes(traffic, host.trafficMeasureMode);
         const leftPercent = Math.max(0, Math.round(((limit - used) / limit) * 100));
+        const hostTrafficReminderThreshold = Math.min(99, Math.max(1, Math.floor(Number(host.trafficAlertThresholdPercent || 20))));
         const key = dayKey(`telegramReminder:hostTraffic:${host.id}`, owner.id);
-        if (leftPercent <= trafficReminderThreshold && !(await db.getSetting(key))) {
+        if (leftPercent <= hostTrafficReminderThreshold && !(await db.getSetting(key))) {
           await sendTelegramMessage(
             owner.telegramId,
             [

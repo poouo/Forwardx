@@ -31,6 +31,8 @@ export type AgentHostProbeServiceResult = {
 };
 export type AgentForwardGroupLatencyResult = {
   groupId: number;
+  memberId?: number;
+  probeType?: "chain" | "china" | string;
   latencyMs?: number | null;
   isTimeout?: boolean;
   hopIndex?: number;
@@ -79,6 +81,9 @@ export type SelfTestMeta =
       hopLabel?: string;
       routeLabel?: string;
       batchId?: string;
+      groupKey?: string;
+      groupLabel?: string;
+      latencyMode?: "sum" | "max";
     };
 
 export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {

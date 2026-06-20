@@ -9,6 +9,7 @@ PORT="${PORT:-3000}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
+EXPLICIT_FORWARDX_IMAGE="${FORWARDX_IMAGE:-}"
 
 require_root() {
   if [ "$(id -u)" != "0" ]; then
@@ -219,7 +220,7 @@ load_existing_env() {
   value="$(get_env_value FORWARDX_CONTAINER_NAME || true)"
   if [ -n "$value" ]; then CONTAINER_NAME="$value"; fi
   value="$(get_env_value FORWARDX_IMAGE || true)"
-  if [ -n "$value" ] && [ -z "${FORWARDX_IMAGE:-}" ]; then FORWARDX_IMAGE="$value"; fi
+  if [ -n "$value" ] && [ -z "${FORWARDX_IMAGE:-}" ] && [ "$ACTION" = "install" ]; then FORWARDX_IMAGE="$value"; fi
 }
 
 latest_release_version() {
@@ -255,8 +256,8 @@ resolve_release_version() {
 
 resolve_image_ref() {
   local version=""
-  if [ -n "${FORWARDX_IMAGE:-}" ]; then
-    printf "%s\n" "$FORWARDX_IMAGE"
+  if [ -n "$EXPLICIT_FORWARDX_IMAGE" ]; then
+    printf "%s\n" "$EXPLICIT_FORWARDX_IMAGE"
     return
   fi
   version="$(resolve_release_version)"

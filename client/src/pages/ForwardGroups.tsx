@@ -91,6 +91,8 @@ type GroupForm = {
   recordType: "A" | "AAAA" | "CNAME";
   failoverSeconds: string;
   recoverSeconds: string;
+  chinaHealthCheckEnabled: boolean;
+  chinaHealthCheckTarget: string;
   autoFailback: boolean;
   isEnabled: boolean;
   members: MemberForm[];
@@ -104,6 +106,8 @@ const makeDefaultForm = (): GroupForm => ({
   recordType: "A",
   failoverSeconds: "60",
   recoverSeconds: "120",
+  chinaHealthCheckEnabled: false,
+  chinaHealthCheckTarget: "",
   autoFailback: true,
   isEnabled: true,
   members: [],
@@ -111,6 +115,23 @@ const makeDefaultForm = (): GroupForm => ({
 
 function memberKey(memberType: GroupType, id: number) {
   return `${memberType}-${id}`;
+}
+
+function isChinaHealthTargetValid(value: string) {
+  const target = value.trim().replace(/^tcp:\/\//i, "").replace(/：/g, ":");
+  if (!target) return true;
+  if (target.length > 253 || /[\s'"<>/]/.test(target)) return false;
+  const bracketMatch = target.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracketMatch) {
+    const port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
+    return !!bracketMatch[1]?.trim() && Number.isInteger(port) && port >= 1 && port <= 65535;
+  }
+  const lastColon = target.lastIndexOf(":");
+  if (lastColon > 0 && target.indexOf(":") === lastColon) {
+    const port = Number(target.slice(lastColon + 1));
+    return !!target.slice(0, lastColon).trim() && Number.isInteger(port) && port >= 1 && port <= 65535;
+  }
+  return true;
 }
 
 type ForwardGroupViewMode = "card" | "table";
@@ -573,6 +594,8 @@ export function ForwardGroupsContent({
       recordType: group.recordType || "A",
       failoverSeconds: String(Number(group.failoverSeconds || 60)),
       recoverSeconds: String(Number(group.recoverSeconds || 120)),
+      chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
+      chinaHealthCheckTarget: group.chinaHealthCheckTarget || "",
       autoFailback: !!group.autoFailback,
       isEnabled: !!group.isEnabled,
       members: (group.members || []).map((member: any) => ({
@@ -770,6 +793,10 @@ export function ForwardGroupsContent({
     if (!Number.isInteger(recoverSeconds) || recoverSeconds < 10 || recoverSeconds > 3600) {
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
+    const chinaHealthTarget = form.chinaHealthCheckTarget.trim();
+    if (form.groupMode === "failover" && form.chinaHealthCheckEnabled && !isChinaHealthTargetValid(chinaHealthTarget)) {
+      return toast.error("国内健康检测目标格式不正确");
+    }
     const payload = {
       ...form,
       name: form.name.trim(),
@@ -777,6 +804,8 @@ export function ForwardGroupsContent({
       domain: form.groupMode === "chain" ? null : form.domain.trim() || null,
       failoverSeconds,
       recoverSeconds,
+      chinaHealthCheckEnabled: form.groupMode === "failover" && form.chinaHealthCheckEnabled,
+      chinaHealthCheckTarget: form.groupMode === "failover" && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
       members: form.members.map((member, index) => ({
         memberType: member.memberType,
         hostId: member.hostId,
@@ -806,6 +835,14 @@ export function ForwardGroupsContent({
     if (member.memberType === "host") return hostById.get(Number(member.hostId))?.name || `主机 #${member.hostId}`;
     const tunnel = tunnelById.get(Number(member.tunnelId));
     return tunnel ? `${tunnel.name} / ${getTunnelRouteText(tunnel, hosts)}` : `隧道 #${member.tunnelId}`;
+  };
+
+  const memberHealthTitle = (member: any) => {
+    const parts = [`链路 ${member.healthStatus || "unknown"}${member.lastLatencyMs ? ` / ${member.lastLatencyMs}ms` : ""}`];
+    if (member.chinaHealthStatus && member.chinaHealthStatus !== "unknown") {
+      parts.push(`国内 ${member.chinaHealthStatus}${member.chinaHealthLatencyMs ? ` / ${member.chinaHealthLatencyMs}ms` : ""}`);
+    }
+    return parts.join(" / ");
   };
 
   const groupKindBadge = (group: any) => {
@@ -952,7 +989,7 @@ export function ForwardGroupsContent({
                               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                               : "border-border bg-muted/20 text-muted-foreground"
                           }`}
-                          title={`${member.healthStatus || "unknown"}${member.lastLatencyMs ? ` / ${member.lastLatencyMs}ms` : ""}`}
+                          title={memberHealthTitle(member)}
                         >
                           {member.healthStatus === "healthy" ? (
                             <CheckCircle2 className="h-3 w-3 shrink-0" />
@@ -1029,7 +1066,7 @@ export function ForwardGroupsContent({
                               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                               : "border-border bg-muted/20 text-muted-foreground"
                           }`}
-                          title={`${member.healthStatus || "unknown"}${member.lastLatencyMs ? ` / ${member.lastLatencyMs}ms` : ""}`}
+                          title={memberHealthTitle(member)}
                         >
                           {member.healthStatus === "healthy" ? (
                             <CheckCircle2 className="h-3 w-3 shrink-0" />
@@ -1114,7 +1151,7 @@ export function ForwardGroupsContent({
                                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                                   : "border-border bg-muted/20 text-muted-foreground"
                               }`}
-                              title={`${member.healthStatus || "unknown"}${member.lastLatencyMs ? ` / ${member.lastLatencyMs}ms` : ""}`}
+                              title={memberHealthTitle(member)}
                             >
                               {member.healthStatus === "healthy" ? (
                                 <CheckCircle2 className="h-3 w-3" />
@@ -1274,6 +1311,23 @@ export function ForwardGroupsContent({
                   </label>
                 </div>
               </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+              <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                <span className="text-sm">国内健康性检测</span>
+                <Switch
+                  checked={form.chinaHealthCheckEnabled}
+                  onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
+                />
+              </label>
+              <Input
+                aria-label="国内健康检测目标"
+                disabled={!form.chinaHealthCheckEnabled}
+                value={form.chinaHealthCheckTarget}
+                onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
+                placeholder="www.189.cn"
+              />
             </div>
             </>
             )}

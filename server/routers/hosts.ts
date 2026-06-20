@@ -103,12 +103,17 @@ function normalizeHostTrafficMeasureMode(value: unknown) {
   return value === "outbound" ? "outbound" : "both";
 }
 
+function normalizeTrafficAlertThresholdPercent(value: unknown) {
+  return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
+}
+
 function hostTrafficConfigPayload(input: {
   purchasedAt?: string | null;
   stoppedAt?: string | null;
   trafficLimit?: number;
   trafficMeasureMode?: "outbound" | "both";
   telegramTrafficAlertEnabled?: boolean;
+  trafficAlertThresholdPercent?: number;
   trafficAutoReset?: boolean;
   trafficResetDay?: number;
 }) {
@@ -121,6 +126,7 @@ function hostTrafficConfigPayload(input: {
     trafficLimit: Math.max(0, Math.floor(Number(input.trafficLimit || 0))),
     trafficMeasureMode: normalizeHostTrafficMeasureMode(input.trafficMeasureMode),
     telegramTrafficAlertEnabled: !!input.telegramTrafficAlertEnabled,
+    trafficAlertThresholdPercent: normalizeTrafficAlertThresholdPercent(input.trafficAlertThresholdPercent),
     trafficAutoReset: !!input.trafficAutoReset,
     trafficResetDay: input.trafficResetDay ?? 1,
   };
@@ -340,6 +346,7 @@ export const hostsRouter = router({
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
+        trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         blockHttp: z.boolean().optional(),
@@ -359,7 +366,7 @@ export const hostsRouter = router({
         const agentToken = nanoid(32);
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
-          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAutoReset: false, trafficResetDay: 1 };
+          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, trafficAutoReset: false, trafficResetDay: 1 };
         const id = await db.createHost({
           ...input,
           ...trafficConfig,
@@ -394,6 +401,7 @@ export const hostsRouter = router({
         trafficLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
+        trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         blockHttp: z.boolean().optional(),
@@ -422,7 +430,7 @@ export const hostsRouter = router({
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;
         if (ctx.user.role === "admin") {
-          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
+          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
           if (hasTrafficConfigInput) {
             const purchasedAt = (data as any).purchasedAt !== undefined
               ? parseOptionalDateInput((data as any).purchasedAt, "机器购买时间")
@@ -436,11 +444,12 @@ export const hostsRouter = router({
             if ((data as any).trafficLimit !== undefined) (data as any).trafficLimit = Math.max(0, Math.floor(Number((data as any).trafficLimit) || 0));
             if ((data as any).trafficMeasureMode !== undefined) (data as any).trafficMeasureMode = normalizeHostTrafficMeasureMode((data as any).trafficMeasureMode);
             if ((data as any).telegramTrafficAlertEnabled !== undefined) (data as any).telegramTrafficAlertEnabled = !!(data as any).telegramTrafficAlertEnabled;
+            if ((data as any).trafficAlertThresholdPercent !== undefined) (data as any).trafficAlertThresholdPercent = normalizeTrafficAlertThresholdPercent((data as any).trafficAlertThresholdPercent);
             if ((data as any).trafficAutoReset !== undefined) (data as any).trafficAutoReset = !!(data as any).trafficAutoReset;
             if ((data as any).trafficResetDay !== undefined) (data as any).trafficResetDay = Math.min(31, Math.max(1, Number((data as any).trafficResetDay) || 1));
           }
         } else {
-          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAutoReset", "trafficResetDay"] as const) delete (data as any)[field];
+          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay"] as const) delete (data as any)[field];
         }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];

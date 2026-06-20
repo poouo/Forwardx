@@ -1266,7 +1266,13 @@ function TunnelSelfTestDialog({
     const meta: Record<string, any> = {};
     const fullHostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
     const tunnelHostById = new Map<number, any>();
-    [...(tunnel?.hopHosts || []), tunnel?.entryHost, tunnel?.exitHost].forEach((host: any) => {
+    [
+      ...(tunnel?.hopHosts || []),
+      tunnel?.entryHost,
+      tunnel?.exitHost,
+      ...(tunnel?.loadBalanceExitHosts || []),
+      ...(Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits.map((exit: any) => exit?.host) : []),
+    ].forEach((host: any) => {
       const id = Number(host?.id || 0);
       if (id > 0) tunnelHostById.set(id, host);
     });
@@ -1284,7 +1290,7 @@ function TunnelSelfTestDialog({
     const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
     const firstHost = hostForId(firstHostId);
     const lastHost = hostForId(lastHostId);
-    const plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
+    let plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
       const nextHostId = Number(hopIds[index + 1] || 0);
       const fromHost = hostForId(Number(hostId));
       const toHost = hostForId(nextHostId);
@@ -1295,6 +1301,39 @@ function TunnelSelfTestDialog({
         toMeta: meta[hostDisplayName(toHost)] || meta[String(nextHostId)] || undefined,
       };
     }).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
+    const extraExits = Array.isArray(tunnel?.loadBalanceExits)
+      ? tunnel.loadBalanceExits
+        .filter((exit: any) => Number(exit?.hostId || 0) > 0)
+        .sort((a: any, b: any) => Number(a?.seq || 0) - Number(b?.seq || 0))
+      : [];
+    if (hopIds.length === 2 && tunnel?.loadBalanceEnabled && extraExits.length > 0) {
+      const entryHost = hostForId(firstHostId);
+      const entryLabel = hostDisplayName(entryHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName);
+      const branchGroupKey = `tunnel-${tunnel?.id || tunnelName}-load-balance`;
+      const primaryExitHost = hostForId(lastHostId);
+      const branchSegments: LinkTestPlannedSegment[] = [{
+        from: entryLabel,
+        to: hostDisplayName(primaryExitHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
+        fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
+        toMeta: meta[hostDisplayName(primaryExitHost)] || meta[String(lastHostId)] || undefined,
+        groupKey: branchGroupKey,
+        groupLabel: "多出口负载",
+      }];
+      for (const exit of extraExits) {
+        const exitHostId = Number(exit?.hostId || 0);
+        const exitHost = hostForId(exitHostId);
+        addHostNodeMeta(meta, exitHost, [hostDisplayName(exitHost), `主机${exitHostId}`, `主机 #${exitHostId}`]);
+        branchSegments.push({
+          from: entryLabel,
+          to: hostDisplayName(exitHost) || `主机${exitHostId}`,
+          fromMeta: meta[hostDisplayName(entryHost)] || meta[String(firstHostId)] || undefined,
+          toMeta: meta[hostDisplayName(exitHost)] || meta[String(exitHostId)] || undefined,
+          groupKey: branchGroupKey,
+          groupLabel: "多出口负载",
+        });
+      }
+      plannedSegments = branchSegments.filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
+    }
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName),

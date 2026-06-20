@@ -2081,6 +2081,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         });
       }
     }
+    const chinaHealthProbes = await db.getForwardGroupChinaHealthProbesForHost(Number(host.id));
+    for (const probe of chinaHealthProbes as any[]) {
+      const key = `china:${probe.groupId}:${probe.memberId}:${probe.targetIp}:${probe.targetPort}`;
+      forwardGroupProbeMap.set(key, {
+        groupId: probe.groupId,
+        memberId: probe.memberId,
+        probeType: "china",
+        targetIp: probe.targetIp,
+        targetPort: probe.targetPort,
+        method: "tcp",
+        hopIndex: 0,
+        hopCount: 1,
+      });
+    }
     const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
     const hostProbeServices = await db.getHostProbeTasksForHost(host.id);
 
@@ -2235,7 +2249,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const seconds = Number(service?.intervalSeconds || 30);
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
-    const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 10 : 30, serviceProbeInterval);
+    const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
     res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, forceTcping, nextInterval });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);

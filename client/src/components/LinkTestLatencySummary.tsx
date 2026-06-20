@@ -10,6 +10,8 @@ export type LinkTestDetail = {
   routeLabel?: string | null;
   method?: string | null;
   pending?: boolean | null;
+  groupKey?: string | null;
+  groupLabel?: string | null;
 };
 
 export type ParsedLinkTestMessage = {
@@ -29,6 +31,8 @@ type ProbeSegment = {
   message?: string | null;
   method?: string | null;
   pending?: boolean;
+  groupKey?: string | null;
+  groupLabel?: string | null;
 };
 
 export type LinkTestPlannedSegment = {
@@ -41,6 +45,8 @@ export type LinkTestPlannedSegment = {
   message?: string | null;
   method?: string | null;
   pending?: boolean | null;
+  groupKey?: string | null;
+  groupLabel?: string | null;
 };
 
 export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
@@ -59,6 +65,8 @@ export function parseLinkTestMessage(raw: unknown): ParsedLinkTestMessage {
           routeLabel: typeof item?.routeLabel === "string" ? item.routeLabel : null,
           method: typeof item?.method === "string" ? item.method : null,
           pending: item?.pending === true,
+          groupKey: typeof item?.groupKey === "string" ? item.groupKey : null,
+          groupLabel: typeof item?.groupLabel === "string" ? item.groupLabel : null,
         }))
         : [];
       return {
@@ -172,12 +180,16 @@ function buildProbeSegments(input: {
       message: segment.message,
       method: segment.method,
       pending: segment.pending,
+      groupKey: segment.groupKey || null,
+      groupLabel: segment.groupLabel || null,
     }))
     .filter((segment) => segment.from && segment.to);
 
+  const hasGroupedPlannedSegments = plannedSegments.some((segment) => !!segment.groupKey);
   const usePlannedSegments = plannedSegments.length > 0
     && (
-      visibleDetails.length === 0
+      hasGroupedPlannedSegments
+      || visibleDetails.length === 0
       || visibleDetails.length < plannedSegments.length
       || (visibleDetails.length === 1 && plannedSegments.length > 1)
     );
@@ -197,6 +209,8 @@ function buildProbeSegments(input: {
         message: detail.message || null,
         method: detail.method || null,
         pending: detail.pending === true,
+        groupKey: detail.groupKey || null,
+        groupLabel: detail.groupLabel || null,
       };
     });
   }
@@ -244,6 +258,8 @@ function buildProbeSegments(input: {
         message: !pending && !success ? detailMessage || segment.message || (isLastSegment ? input.parsed.message || null : null) : null,
         method: detail?.method || segment.method || null,
         pending,
+        groupKey: segment.groupKey || null,
+        groupLabel: segment.groupLabel || null,
       };
     });
   }
@@ -262,6 +278,8 @@ function buildProbeSegments(input: {
     message: !input.isTesting && !input.isSuccess ? input.parsed.message || null : null,
     method: null,
     pending: !input.isTesting && !input.isSuccess && !input.parsed.message && !hasUsableLatencyValue(input.fallbackLatencyMs),
+    groupKey: null,
+    groupLabel: null,
   }];
 }
 
@@ -314,12 +332,22 @@ export function LinkTestProbeView({
 }) {
   const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
   const effectiveTesting = isTesting || segments.some((segment) => segment.pending);
-  const totalLatency = effectiveTesting ? null : getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
+  const branchKey = segments.length > 1 ? segments[0]?.groupKey || null : null;
+  const branchSegments = branchKey && segments.every((segment) => segment.groupKey === branchKey) ? segments : [];
+  const branchLabel = branchSegments[0]?.groupLabel || "同级出口";
+  const isBranchView = branchSegments.length > 1;
+  const branchLatencyValues = branchSegments
+    .filter((segment) => segment.success && hasUsableLatencyValue(segment.latencyMs))
+    .map((segment) => Number(segment.latencyMs));
+  const branchTotalLatency = isBranchView && !effectiveTesting && branchLatencyValues.length === branchSegments.length
+    ? Math.max(...branchLatencyValues)
+    : null;
+  const totalLatency = effectiveTesting ? null : branchTotalLatency ?? getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
   const hasSegments = segments.length > 0;
   const hasResult = effectiveTesting || segments.some((segment) => segment.success || segment.message || hasUsableLatencyValue(segment.latencyMs));
   const compactPath = segments.length >= compactFrom;
   const densePath = segments.length >= 6;
-  const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 4;
+  const shouldWrapDesktopRows = wrapDesktopRows && segments.length >= 4 && !isBranchView;
   const shouldStretchDesktopPath = !shouldWrapDesktopRows && segments.length <= Math.max(3, compactFrom);
   const segmentsPerDesktopRow = shouldWrapDesktopRows ? 2 : segments.length;
   const desktopRows = shouldWrapDesktopRows
@@ -408,118 +436,167 @@ export function LinkTestProbeView({
       </div>
     );
   };
+  const renderBranchLine = (segment: ProbeSegment, index: number, mobile = false) => {
+    const { testing, ok, label } = getSegmentState(segment);
+    return (
+      <div key={`${mobile ? "mobile" : "desktop"}-branch-${segment.from}-${segment.to}-${index}`} className={cn(mobile ? "space-y-2" : "flex min-w-[22rem] items-start justify-center px-2 py-3")}>
+        {mobile ? renderMobileNode(segment.from, segment.fromMeta) : renderNode(segment.from, segment.fromMeta)}
+        <div className={cn(
+          mobile ? "relative mx-auto flex h-10 max-w-[18rem] items-center justify-center" : "relative mt-[45px] h-px min-w-[80px] flex-1 bg-border",
+        )}>
+          <div
+            className={cn(
+              mobile ? "absolute bottom-1 top-1 w-px" : "absolute inset-x-0 top-0 h-px",
+              testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+              testing ? "animate-pulse" : "",
+            )}
+          />
+          <span
+            className={cn(
+              mobile
+                ? "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm"
+                : "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
+              testing ? "text-primary" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+              mobile && (testing ? "border-primary/20" : ok ? "border-emerald-500/20" : "border-destructive/20"),
+            )}
+          >
+            {label || (ok ? "通过" : "失败")}
+          </span>
+        </div>
+        {mobile ? renderMobileNode(segment.to, segment.toMeta) : renderNode(segment.to, segment.toMeta)}
+      </div>
+    );
+  };
 
   return (
     <div className={cn("space-y-3", className)}>
       {mobileStacked ? (
-        <div className="space-y-0 py-2 sm:hidden">
-          {segments.map((segment, index) => {
-            const firstNode = index === 0;
-            const { testing, ok, label } = getSegmentState(segment);
-            return (
-              <div key={`mobile-${segment.from}-${segment.to}-${index}`}>
-                {firstNode ? renderMobileNode(segment.from, segment.fromMeta) : null}
-                <div className="relative mx-auto flex h-12 max-w-[18rem] items-center justify-center">
-                  <div
-                    className={cn(
-                      "absolute bottom-1 top-1 w-px",
-                      testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
-                      testing ? "animate-pulse" : "",
-                    )}
-                  />
-                  <span
-                    className={cn(
-                      "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm",
-                      testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
-                    )}
-                  >
-                    {label || "通过"}
-                  </span>
+        isBranchView ? (
+          <div className="space-y-3 py-2 sm:hidden">
+            <div className="text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
+            {branchSegments.map((segment, index) => renderBranchLine(segment, index, true))}
+          </div>
+        ) : (
+          <div className="space-y-0 py-2 sm:hidden">
+            {segments.map((segment, index) => {
+              const firstNode = index === 0;
+              const { testing, ok, label } = getSegmentState(segment);
+              return (
+                <div key={`mobile-${segment.from}-${segment.to}-${index}`}>
+                  {firstNode ? renderMobileNode(segment.from, segment.fromMeta) : null}
+                  <div className="relative mx-auto flex h-12 max-w-[18rem] items-center justify-center">
+                    <div
+                      className={cn(
+                        "absolute bottom-1 top-1 w-px",
+                        testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+                        testing ? "animate-pulse" : "",
+                      )}
+                    />
+                    <span
+                      className={cn(
+                        "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm",
+                        testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+                      )}
+                    >
+                      {label || "通过"}
+                    </span>
+                  </div>
+                  {renderMobileNode(segment.to, segment.toMeta)}
                 </div>
-                {renderMobileNode(segment.to, segment.toMeta)}
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )
       ) : null}
 
-      <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
-        <div className={cn(shouldWrapDesktopRows ? "space-y-0" : "")}>
-          {desktopRows.map((rowSegments, rowIndex) => {
-            const nextRow = desktopRows[rowIndex + 1];
-            return (
-              <div key={`desktop-row-wrap-${rowIndex}`}>
-                <div
-                  className={cn(
-                    "flex items-start px-2",
-                    shouldWrapDesktopRows
-                      ? "mx-auto w-max justify-center py-5"
-                      : shouldStretchDesktopPath
-                        ? "min-w-full justify-center py-8"
-                      : compactPath
-                        ? "w-max justify-start py-8"
-                        : "min-w-full justify-center py-8",
-                  )}
-                >
-                  {rowSegments.map((segment, index) => {
-                    const firstNode = index === 0;
-                    const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
-                    return (
-                      <div key={`${segment.from}-${segment.to}-${rowIndex}-${index}`} className="contents">
-                        {firstNode ? (
-                          renderNode(segment.from, segment.fromMeta)
-                        ) : null}
-                        <div className={cn(
-                          "relative mt-[45px] h-px bg-border",
-                          shouldWrapDesktopRows
-                            ? "w-[42px] shrink-0 flex-none"
-                            : shouldStretchDesktopPath
-                              ? compactPath
-                                ? "min-w-[32px] flex-1"
-                                : "min-w-[40px] flex-1"
-                              : densePath
-                                ? "w-[42px] shrink-0 flex-none"
-                                : compactPath
-                                  ? "w-[56px] shrink-0 flex-none"
-                                  : "min-w-[96px] flex-1",
-                        )}>
-                          <div
-                            className={cn(
-                              "absolute inset-x-0 top-0 h-px",
-                              segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
-                              segmentTesting ? "animate-pulse" : "",
-                            )}
-                          />
-                          <span
-                            className={cn(
-                              "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
-                              segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
-                            )}
-                          >
-                            {label || "\u00a0"}
-                          </span>
-                        </div>
-                        {renderNode(segment.to, segment.toMeta)}
-                      </div>
-                    );
-                  })}
-                </div>
-                {shouldWrapDesktopRows && nextRow ? (
-                  <div className="mx-auto -my-2 flex w-full max-w-[32rem] flex-col items-center px-6" aria-hidden="true">
-                    <div className="h-4 w-px bg-border" />
-                    <div className="flex w-full items-center">
-                      <div className="h-px flex-1 bg-border" />
-                      <span className="h-2.5 w-2.5 rounded-full border border-border bg-background shadow-sm" />
-                      <div className="h-px flex-1 bg-border" />
-                    </div>
-                    <div className="h-4 w-px bg-border" />
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
+      {isBranchView ? (
+        <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+          <div className="mx-auto w-full max-w-[36rem] py-3">
+            <div className="mb-1 text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
+            <div className="space-y-0">
+              {branchSegments.map((segment, index) => renderBranchLine(segment, index))}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+          <div className={cn(shouldWrapDesktopRows ? "space-y-0" : "")}>
+            {desktopRows.map((rowSegments, rowIndex) => {
+              const nextRow = desktopRows[rowIndex + 1];
+              return (
+                <div key={`desktop-row-wrap-${rowIndex}`}>
+                  <div
+                    className={cn(
+                      "flex items-start px-2",
+                      shouldWrapDesktopRows
+                        ? "mx-auto w-max justify-center py-5"
+                        : shouldStretchDesktopPath
+                          ? "min-w-full justify-center py-8"
+                        : compactPath
+                          ? "w-max justify-start py-8"
+                          : "min-w-full justify-center py-8",
+                    )}
+                  >
+                    {rowSegments.map((segment, index) => {
+                      const firstNode = index === 0;
+                      const { testing: segmentTesting, ok: segmentOk, label } = getSegmentState(segment);
+                      return (
+                        <div key={`${segment.from}-${segment.to}-${rowIndex}-${index}`} className="contents">
+                          {firstNode ? (
+                            renderNode(segment.from, segment.fromMeta)
+                          ) : null}
+                          <div className={cn(
+                            "relative mt-[45px] h-px bg-border",
+                            shouldWrapDesktopRows
+                              ? "w-[42px] shrink-0 flex-none"
+                              : shouldStretchDesktopPath
+                                ? compactPath
+                                  ? "min-w-[32px] flex-1"
+                                  : "min-w-[40px] flex-1"
+                                : densePath
+                                  ? "w-[42px] shrink-0 flex-none"
+                                  : compactPath
+                                    ? "w-[56px] shrink-0 flex-none"
+                                    : "min-w-[96px] flex-1",
+                          )}>
+                            <div
+                              className={cn(
+                                "absolute inset-x-0 top-0 h-px",
+                                segmentTesting ? "bg-primary/70" : segmentOk ? "bg-emerald-500/70" : "bg-destructive/70",
+                                segmentTesting ? "animate-pulse" : "",
+                              )}
+                            />
+                            <span
+                              className={cn(
+                                "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
+                                segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                              )}
+                            >
+                              {label || "\u00a0"}
+                            </span>
+                          </div>
+                          {renderNode(segment.to, segment.toMeta)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {shouldWrapDesktopRows && nextRow ? (
+                    <div className="mx-auto -my-2 flex w-full max-w-[32rem] flex-col items-center px-6" aria-hidden="true">
+                      <div className="h-4 w-px bg-border" />
+                      <div className="flex w-full items-center">
+                        <div className="h-px flex-1 bg-border" />
+                        <span className="h-2.5 w-2.5 rounded-full border border-border bg-background shadow-sm" />
+                        <div className="h-px flex-1 bg-border" />
+                      </div>
+                      <div className="h-4 w-px bg-border" />
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {!hasSegments && !hasResult ? (
         <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">
@@ -528,7 +605,7 @@ export function LinkTestProbeView({
       ) : null}
 
       <div className="flex items-center justify-between border-t border-border/70 pt-3 text-sm">
-        <span className="text-muted-foreground">合计</span>
+        <span className="text-muted-foreground">{isBranchView ? "最大延迟" : "合计"}</span>
         <span className={cn(
           "font-semibold tabular-nums",
           totalLatency !== null ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
@@ -539,7 +616,6 @@ export function LinkTestProbeView({
     </div>
   );
 }
-
 function renderLatencyValue(latencyMs: number | null | undefined) {
   return <LatencyRating latencyMs={latencyMs} emptyText="--" icon="none" className="text-sm" />;
 }
@@ -563,6 +639,7 @@ export function LinkTestLatencySummary({
 
   if (visibleDetails.length > 0) {
     const totalLatency = getLinkTestTotalLatency({ parsed, fallbackLatencyMs, isSuccess });
+    const totalLabel = parsed.kind === "tunnel-load-balance-summary" ? "最大延迟" : "总延迟";
 
     if (visibleDetails.length === 1 && successfulLatencyDetails.length === 1) {
       return <span className="text-sm font-semibold">{renderLatencyValue(visibleDetails[0].latencyMs)}</span>;
@@ -594,7 +671,7 @@ export function LinkTestLatencySummary({
         </div>
         {totalLatency !== null ? (
           <span className="inline-flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5">
-            <span>总延迟</span>
+            <span>{totalLabel}</span>
             {renderLatencyValue(totalLatency)}
           </span>
         ) : null}

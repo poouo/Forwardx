@@ -100,8 +100,8 @@ const tables: TableDef[] = [
       c("memoryTotal", "bigint"), c("agentVersion", "text"), c("agentUpgradeRequested", "bool", { notNull: true, default: false }),
       c("agentUpgradeTargetVersion", "text"), c("agentUpgradeRequestedAt", "epoch"), c("purchasedAt", "epoch"), c("stoppedAt", "epoch"),
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficMeasureMode", "varchar", { length: 16, notNull: true, default: "both" }),
-      c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAutoReset", "bool", { notNull: true, default: false }),
-      c("trafficResetDay", "int", { notNull: true, default: 1 }),
+      c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAlertThresholdPercent", "int", { notNull: true, default: 20 }),
+      c("trafficAutoReset", "bool", { notNull: true, default: false }), c("trafficResetDay", "int", { notNull: true, default: 1 }),
       c("lastTrafficReset", "epoch"), c("networkInterface", "text"),
       c("geoCountryCode", "varchar", { length: 8 }), c("geoCountryName", "text"), c("geoRegion", "text"), c("geoEmoji", "varchar", { length: 16 }),
       c("geoLatitudeMicro", "int"), c("geoLongitudeMicro", "int"), c("geoUpdatedAt", "epoch"),
@@ -147,9 +147,10 @@ const tables: TableDef[] = [
       c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }),
       c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
       c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true, default: 1 }),
-      c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true, default: "0.0.0.0" }),
+      c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true }),
       c("targetPort", "int", { notNull: true, default: 1 }), c("failoverSeconds", "int", { notNull: true, default: 60 }),
-      c("recoverSeconds", "int", { notNull: true, default: 120 }), c("autoFailback", "bool", { notNull: true, default: true }),
+      c("recoverSeconds", "int", { notNull: true, default: 120 }), c("chinaHealthCheckEnabled", "bool", { notNull: true, default: false }), c("chinaHealthCheckTarget", "text"),
+      c("autoFailback", "bool", { notNull: true, default: true }),
       c("isEnabled", "bool", { notNull: true, default: true }), c("activeMemberId", "int"), c("lastDdnsValue", "text"),
       c("lastDdnsAt", "epoch"), c("lastFailoverAt", "epoch"), c("lastStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
       c("lastMessage", "text"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
@@ -163,7 +164,7 @@ const tables: TableDef[] = [
       c("id", "id"), c("groupId", "int", { notNull: true }), c("memberType", "varchar", { length: 32, notNull: true }),
       c("hostId", "int"), c("tunnelId", "int"), c("connectHost", "text"), c("priority", "int", { notNull: true, default: 0 }), c("ruleId", "int"),
       c("isEnabled", "bool", { notNull: true, default: true }), c("healthStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
-      c("lastLatencyMs", "int"), c("failureSince", "epoch"), c("healthySince", "epoch"), c("lastCheckedAt", "epoch"),
+      c("lastLatencyMs", "int"), c("chinaHealthStatus", "varchar", { length: 32, notNull: true, default: "unknown" }), c("chinaHealthLatencyMs", "int"), c("chinaHealthCheckedAt", "epoch"), c("failureSince", "epoch"), c("healthySince", "epoch"), c("lastCheckedAt", "epoch"),
       c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
     indexes: [["groupId", "priority"], ["ruleId"], ["hostId"], ["tunnelId"]],
@@ -254,8 +255,9 @@ function quote(kind: SchemaKind, id: string) {
   return `"${id.replace(/"/g, "\"\"")}"`;
 }
 
-function defaultSql(kind: SchemaKind, value: ColumnDef["default"]) {
+function defaultSql(kind: SchemaKind, value: ColumnDef["default"], columnType?: ColumnType) {
   if (value === undefined || value === null) return "";
+  if (kind === "mysql" && columnType === "text") return "";
   if (value === "now") {
     if (kind === "mysql") return " DEFAULT (UNIX_TIMESTAMP())";
     if (kind === "postgresql") return " DEFAULT (EXTRACT(EPOCH FROM NOW())::INT)";
@@ -295,7 +297,7 @@ function columnSql(kind: SchemaKind, column: ColumnDef, forAlter = false) {
       bool: "BOOLEAN",
       epoch: "INT",
     } as Record<ColumnType, string>)[column.type];
-  return `${name} ${type}${column.notNull ? " NOT NULL" : ""}${defaultSql(kind, column.default)}`;
+  return `${name} ${type}${column.notNull ? " NOT NULL" : ""}${defaultSql(kind, column.default, column.type)}`;
 }
 
 function mysqlKey(table: string, prefix: string, cols: string[]) {

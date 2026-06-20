@@ -61,6 +61,7 @@ import {
   Copy,
   Download,
   Upload,
+  Search,
   Network,
   ClipboardCopy,
   Layers3,
@@ -1729,8 +1730,10 @@ function RulesContent() {
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [exportScopeType, setExportScopeType] = useState<RuleTransferScopeType>("local");
   const [exportResourceId, setExportResourceId] = useState("");
+  const [exportResourceSearch, setExportResourceSearch] = useState("");
   const [importScopeType, setImportScopeType] = useState<RuleTransferScopeType>("local");
   const [importResourceId, setImportResourceId] = useState("");
+  const [importResourceSearch, setImportResourceSearch] = useState("");
   const [importFile, setImportFile] = useState<RuleTransferFile | null>(null);
   const [importFileName, setImportFileName] = useState("");
   const [importFileError, setImportFileError] = useState("");
@@ -2922,16 +2925,89 @@ function RulesContent() {
   const getTransferResourceLabel = (type: RuleTransferScopeType, resource: any) => {
     if (!resource) return "";
     if (type === "local") return getHostOptionText(resource);
-    if (type === "tunnel") return `${resource.name || `#${resource.id}`} · ${getTunnelRouteText(resource, hosts || [])}`;
+    if (type === "tunnel") return `${resource.name || `#${resource.id}`} / ${getTunnelRouteText(resource, hosts || [])}`;
     return resource.name || `#${resource.id}`;
   };
 
+  const getTransferResourceSearchText = useCallback((type: RuleTransferScopeType, resource: any) => {
+    const values: any[] = [resource?.id];
+    if (type === "local") {
+      values.push(
+        getHostOptionName(resource),
+        resource?.name,
+        resource?.ip,
+        resource?.entryIp,
+        resource?.internalIp,
+        resource?.tunnelEntryIp,
+        resource?.networkInterface,
+        resource?.isOnline ? "online 在线" : "offline 离线",
+      );
+    } else if (type === "tunnel") {
+      values.push(
+        resource?.name,
+        getTunnelRouteText(resource, hosts || []),
+        resource?.mode,
+        resource?.type,
+        resource?.listenPort,
+        resource?.entryHostId,
+        resource?.exitHostId,
+      );
+    } else {
+      values.push(
+        resource?.name,
+        resource?.description,
+        resource?.domain,
+        resource?.groupType,
+        resource?.type,
+        resource?.mode,
+      );
+    }
+    return values.filter((value) => value !== undefined && value !== null && String(value).trim()).join(" ");
+  }, [hosts]);
+
+  const filterTransferResources = useCallback((resources: any[], type: RuleTransferScopeType, search: string) => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) return resources;
+    return resources.filter((resource: any) => getTransferResourceSearchText(type, resource).toLowerCase().includes(keyword));
+  }, [getTransferResourceSearchText]);
+
+  const filteredExportResources = useMemo(
+    () => filterTransferResources(exportResources, exportScopeType, exportResourceSearch),
+    [exportResourceSearch, exportResources, exportScopeType, filterTransferResources]
+  );
+
+  const filteredImportResources = useMemo(
+    () => filterTransferResources(importResources, importScopeType, importResourceSearch),
+    [filterTransferResources, importResourceSearch, importResources, importScopeType]
+  );
+
+  const selectedExportResource = useMemo(
+    () => exportResources.find((resource: any) => String(resource.id) === exportResourceId) || null,
+    [exportResourceId, exportResources]
+  );
+
+  const selectedImportResource = useMemo(
+    () => importResources.find((resource: any) => String(resource.id) === importResourceId) || null,
+    [importResourceId, importResources]
+  );
+
   const renderTransferResourceOption = (type: RuleTransferScopeType, resource: any) => {
     if (type === "local") {
+      const online = !!resource?.isOnline;
       return (
-        <div className="flex min-w-0 items-center justify-between gap-3">
-          <span className="truncate">{getHostOptionName(resource)}</span>
-          {renderHostStatusLabel(resource)}
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+              online
+                ? "bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)]"
+                : "bg-rose-500 shadow-[0_0_0_3px_rgba(244,63,94,0.14)]"
+            }`}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate">{getHostOptionName(resource)}</span>
+          <span className="min-w-0 truncate text-xs text-muted-foreground">
+            {resource?.entryIp || resource?.ip || resource?.tunnelEntryIp || resource?.internalIp || ""}
+          </span>
         </div>
       );
     }
@@ -2946,6 +3022,84 @@ function RulesContent() {
     return <span className="truncate">{resource.name || `#${resource.id}`}</span>;
   };
 
+  const renderTransferResourcePicker = ({
+    type,
+    resources,
+    filteredResources,
+    selectedResource,
+    selectedId,
+    search,
+    onSearch,
+    onSelect,
+  }: {
+    type: RuleTransferScopeType;
+    resources: any[];
+    filteredResources: any[];
+    selectedResource: any;
+    selectedId: string;
+    search: string;
+    onSearch: (value: string) => void;
+    onSelect: (value: string) => void;
+  }) => {
+    const label = ruleTransferScopeLabels[type];
+    const selectedVisible = filteredResources.some((resource: any) => String(resource.id) === selectedId);
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <Label>{label}</Label>
+          <span className="text-xs text-muted-foreground">{filteredResources.length}/{resources.length}</span>
+        </div>
+        <div className="overflow-hidden rounded-md border border-border/70 bg-background">
+          <div className="relative border-b border-border/60">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) => onSearch(event.target.value)}
+              disabled={resources.length === 0}
+              placeholder={`搜索${label}`}
+              className="h-9 border-0 pl-9 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto p-1">
+            {filteredResources.length > 0 ? (
+              filteredResources.map((resource: any) => {
+                const id = String(resource.id);
+                const selected = id === selectedId;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    title={getTransferResourceLabel(type, resource)}
+                    aria-pressed={selected}
+                    onClick={() => onSelect(id)}
+                    className={`flex h-10 w-full min-w-0 items-center gap-2 rounded-sm px-3 text-left text-sm transition-colors hover:bg-muted ${
+                      selected ? "bg-muted text-foreground" : "text-foreground"
+                    }`}
+                  >
+                    {selected ? (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+                    ) : (
+                      <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    )}
+                    <div className="min-w-0 flex-1">{renderTransferResourceOption(type, resource)}</div>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                {resources.length === 0 ? `暂无可选择的${label}` : `没有匹配的${label}`}
+              </div>
+            )}
+          </div>
+        </div>
+        {selectedResource && !selectedVisible ? (
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {"已选择："}{getTransferResourceLabel(type, selectedResource)}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
   const getRulesForTransferScope = useCallback((type: RuleTransferScopeType, resourceId: string) => {
     const id = Number(resourceId);
     if (!Number.isFinite(id) || id <= 0) return [];
@@ -3390,8 +3544,8 @@ function RulesContent() {
     const Icon = direction === "in" ? ArrowDownToLine : ArrowUpFromLine;
     const color = direction === "in" ? "text-chart-2" : "text-chart-4";
     return (
-      <span className={`flex items-center gap-1 text-xs ${color}`}>
-        <Icon className="h-3 w-3" /> {formatBytes(value)}
+      <span className={`flex items-center gap-1 whitespace-nowrap text-xs tabular-nums ${color}`}>
+        <Icon className="h-3 w-3 shrink-0" /> {formatBytes(value)}
       </span>
     );
   };
@@ -3402,7 +3556,7 @@ function RulesContent() {
       return <span className="text-xs text-muted-foreground">—</span>;
     }
     return (
-      <div className="flex flex-col gap-0.5 text-xs">
+      <div className="flex flex-col gap-0.5 text-xs leading-5">
         {renderRuleTrafficValue(rule, "in")}
         {renderRuleTrafficValue(rule, "out")}
       </div>
@@ -3418,10 +3572,10 @@ function RulesContent() {
     const total = Number(t.bytesIn || 0) + Number(t.bytesOut || 0);
     return (
       <span
-        className="flex items-center gap-1 text-xs font-medium text-foreground"
+        className="flex items-center gap-1 whitespace-nowrap text-xs font-medium tabular-nums text-foreground"
         title={`累计入向 ${formatBytes(t.bytesIn)} / 出向 ${formatBytes(t.bytesOut)}`}
       >
-        <ArrowRightLeft className="h-3 w-3 text-muted-foreground" />
+        <ArrowRightLeft className="h-3 w-3 shrink-0 text-muted-foreground" />
         总 {formatBytes(total)}
       </span>
     );
@@ -3429,21 +3583,21 @@ function RulesContent() {
 
   const renderLatestLatency = (rule: any) => {
     const t = trafficByRule.get(rule.id);
-    if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">未测试</span>;
+    if (!t?.latestLatencyAt) return <span className="whitespace-nowrap text-xs text-muted-foreground">未测试</span>;
     if (t.latestLatencyIsTimeout) {
-      return <LatencyRating isTimeout timeoutText="超时" />;
+      return <LatencyRating isTimeout timeoutText="超时" className="whitespace-nowrap" />;
     }
     if (typeof t.latestLatencyMs === "number" && Number.isFinite(t.latestLatencyMs)) {
-      return <LatencyRating latencyMs={t.latestLatencyMs} />;
+      return <LatencyRating latencyMs={t.latestLatencyMs} className="whitespace-nowrap" />;
     }
-    return <span className="text-xs text-muted-foreground">未测试</span>;
+    return <span className="whitespace-nowrap text-xs text-muted-foreground">未测试</span>;
   };
 
   const renderRuleActions = (rule: any) => {
     const supported = isRuleSupported(rule);
     if (!supported) {
       return (
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex items-center justify-end gap-1 whitespace-nowrap">
           {renderUnsupportedHint(
             <span className="inline-flex">
               <Button
@@ -3461,7 +3615,7 @@ function RulesContent() {
       );
     }
     return (
-      <div className="flex items-center justify-end gap-1">
+      <div className="flex items-center justify-end gap-1 whitespace-nowrap">
         <Button
           variant="ghost"
           size="icon"
@@ -3619,13 +3773,13 @@ function RulesContent() {
             {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
           </span>
         </TableCell>
-        <TableCell>{renderTransfer(rule)}</TableCell>
-        <TableCell>{renderRouteBadge(rule)}</TableCell>
-        <TableCell>
+        <TableCell className="pr-5">{renderTransfer(rule)}</TableCell>
+        <TableCell className="pr-5">{renderRouteBadge(rule)}</TableCell>
+        <TableCell className="text-center">
           <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
         </TableCell>
-        <TableCell>
-          <div className="space-y-1">
+        <TableCell className="pr-5">
+          <div className="space-y-0.5 whitespace-nowrap">
             {renderRuleTotalTraffic(rule)}
             {renderRuleTraffic(rule)}
             {renderLatestLatency(rule)}
@@ -3642,7 +3796,7 @@ function RulesContent() {
             renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
           )}
         </TableCell>
-        <TableCell className="text-right">{renderRuleActions(rule)}</TableCell>
+        <TableCell className="py-4 pl-2 pr-4 text-right">{renderRuleActions(rule)}</TableCell>
       </TableRow>
     );
   };
@@ -4125,19 +4279,31 @@ function RulesContent() {
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
-                    <Table className={user?.role === "admin" ? "min-w-[1100px] table-fixed" : "min-w-[980px] table-fixed"}>
+                    <Table className={user?.role === "admin" ? "min-w-[1380px] table-fixed" : "min-w-[1270px] table-fixed"}>
+                      <colgroup>
+                        <col className="w-[56px]" />
+                        <col className="w-[110px]" />
+                        {user?.role === "admin" && <col className="w-[110px]" />}
+                        <col className="w-[100px]" />
+                        <col className="w-[300px]" />
+                        <col className="w-[170px]" />
+                        <col className="w-[96px]" />
+                        <col className="w-[214px]" />
+                        <col className="w-[70px]" />
+                        <col className="w-[154px]" />
+                      </colgroup>
                       <TableHeader>
                         <TableRow className="hover:bg-transparent">
-                          <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
-                          <TableHead className="w-[120px]">规则</TableHead>
-                          {user?.role === "admin" && <TableHead className="w-[120px]">用户</TableHead>}
-                          <TableHead className="w-[120px]">主机</TableHead>
+                          <TableHead className="whitespace-nowrap text-center">状态</TableHead>
+                          <TableHead>规则</TableHead>
+                          {user?.role === "admin" && <TableHead>用户</TableHead>}
+                          <TableHead>主机</TableHead>
                           <TableHead>转发配置</TableHead>
-                          <TableHead className="w-[150px]">链路</TableHead>
-                          <TableHead className="w-[86px]">协议</TableHead>
-                          <TableHead className="w-[164px] whitespace-nowrap">{trafficMetricHeaderLabel}</TableHead>
-                          <TableHead className="w-[76px] text-center">开关</TableHead>
-                          <TableHead className="w-[164px] text-right">操作</TableHead>
+                          <TableHead>链路</TableHead>
+                          <TableHead className="text-center">协议</TableHead>
+                          <TableHead className="whitespace-nowrap">{trafficMetricHeaderLabel}</TableHead>
+                          <TableHead className="text-center">开关</TableHead>
+                          <TableHead className="text-right">操作</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -4646,23 +4812,24 @@ function RulesContent() {
       </Dialog>
 
       <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Download className="h-5 w-5" />
-              导出规则
+              {"导出规则"}
             </DialogTitle>
-            <DialogDescription>选择范围后导出对应的转发规则</DialogDescription>
+            <DialogDescription>{"选择范围后导出对应的转发规则"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)]">
               <div className="space-y-2">
-                <Label>类型</Label>
+                <Label>{"类型"}</Label>
                 <Select
                   value={exportScopeType}
                   onValueChange={(value) => {
                     setExportScopeType(value as RuleTransferScopeType);
                     setExportResourceId("");
+                    setExportResourceSearch("");
                   }}
                 >
                   <SelectTrigger>
@@ -4677,25 +4844,16 @@ function RulesContent() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>{ruleTransferScopeLabels[exportScopeType]}</Label>
-                <Select value={exportResourceId} onValueChange={setExportResourceId} disabled={exportResources.length === 0}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={`请选择${ruleTransferScopeLabels[exportScopeType]}`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {exportResources.map((resource: any) => (
-                      <SelectItem
-                        key={resource.id}
-                        value={String(resource.id)}
-                        textValue={getTransferResourceLabel(exportScopeType, resource)}
-                      >
-                        {renderTransferResourceOption(exportScopeType, resource)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {renderTransferResourcePicker({
+                type: exportScopeType,
+                resources: exportResources,
+                filteredResources: filteredExportResources,
+                selectedResource: selectedExportResource,
+                selectedId: exportResourceId,
+                search: exportResourceSearch,
+                onSearch: setExportResourceSearch,
+                onSelect: setExportResourceId,
+              })}
             </div>
             <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
               {exportResourceId
@@ -4705,10 +4863,10 @@ function RulesContent() {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShowExportDialog(false)}>
-              取消
+              {"取消"}
             </Button>
             <Button type="button" onClick={handleExportRules} disabled={!exportResourceId || exportableRules.length === 0}>
-              确定导出
+              {"确定导出"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4721,23 +4879,24 @@ function RulesContent() {
           if (!open) resetImportDialog();
         }}
       >
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Upload className="h-5 w-5" />
-              导入规则
+              {"导入规则"}
             </DialogTitle>
-            <DialogDescription>选择范围与规则文件后导入</DialogDescription>
+            <DialogDescription>{"选择范围与规则文件后导入"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)]">
               <div className="space-y-2">
-                <Label>类型</Label>
+                <Label>{"类型"}</Label>
                 <Select
                   value={importScopeType}
                   onValueChange={(value) => {
                     setImportScopeType(value as RuleTransferScopeType);
                     setImportResourceId("");
+                    setImportResourceSearch("");
                     resetImportDialog();
                   }}
                 >
@@ -4753,28 +4912,19 @@ function RulesContent() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>{ruleTransferScopeLabels[importScopeType]}</Label>
-                <Select value={importResourceId} onValueChange={setImportResourceId} disabled={importResources.length === 0}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={`请选择${ruleTransferScopeLabels[importScopeType]}`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {importResources.map((resource: any) => (
-                      <SelectItem
-                        key={resource.id}
-                        value={String(resource.id)}
-                        textValue={getTransferResourceLabel(importScopeType, resource)}
-                      >
-                        {renderTransferResourceOption(importScopeType, resource)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {renderTransferResourcePicker({
+                type: importScopeType,
+                resources: importResources,
+                filteredResources: filteredImportResources,
+                selectedResource: selectedImportResource,
+                selectedId: importResourceId,
+                search: importResourceSearch,
+                onSearch: setImportResourceSearch,
+                onSelect: setImportResourceId,
+              })}
             </div>
             <div className="space-y-2">
-              <Label>规则文件</Label>
+              <Label>{"规则文件"}</Label>
               <Input key={importFileInputKey} type="file" accept=".json,application/json" onChange={handleImportFileChange} />
             </div>
             <div
@@ -4791,11 +4941,11 @@ function RulesContent() {
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShowImportDialog(false)} disabled={importingRules}>
-              取消
+              {"取消"}
             </Button>
             <Button type="button" onClick={handleImportRules} disabled={!importValidation.ok || importingRules}>
               {importingRules && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              导入
+              {"导入"}
             </Button>
           </DialogFooter>
         </DialogContent>

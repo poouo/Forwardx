@@ -82,11 +82,24 @@ export function isAgentUpgradeTimedOut(host: any) {
   return Number.isFinite(requestedAt) && Date.now() - requestedAt > AGENT_UPGRADE_TIMEOUT_MS;
 }
 
+function isPrimaryAddressFallbackVisible(value: unknown) {
+  const text = String(value || "").trim();
+  return !!text && text !== "unknown" && !text.includes(":");
+}
+
 export function hostAddressLines(host: any) {
   const rows: Array<{ label: string; value: string }> = [];
   if (host.ipv4) rows.push({ label: "IPv4", value: host.ipv4 });
   if (host.ipv6) rows.push({ label: "IPv6", value: host.ipv6 });
   if (rows.length === 0 && host.ip && host.ip !== "unknown") rows.push({ label: "IP", value: host.ip });
+  if (rows.length === 0) rows.push({ label: "IP", value: "-" });
+  return rows;
+}
+
+export function hostPrimaryAddressLines(host: any) {
+  const rows: Array<{ label: string; value: string }> = [];
+  if (host.ipv4) rows.push({ label: "IPv4", value: host.ipv4 });
+  if (rows.length === 0 && isPrimaryAddressFallbackVisible(host.ip)) rows.push({ label: "IP", value: host.ip });
   if (rows.length === 0) rows.push({ label: "IP", value: "-" });
   return rows;
 }
@@ -101,6 +114,11 @@ export function hostAddressText(host: any) {
   if (host.ipv6) parts.push(`IPv6 ${host.ipv6}`);
   if (parts.length === 0 && host.ip && host.ip !== "unknown") parts.push(`IP ${host.ip}`);
   return parts.join("  /  ") || "-";
+}
+
+export function hostPrimaryAddressText(host: any) {
+  const rows = hostPrimaryAddressLines(host);
+  return rows.map((row) => `${row.label} ${row.value}`).join("  /  ") || "-";
 }
 
 export function hostRegionText(host: any) {

@@ -48,6 +48,8 @@ type tcpingTask struct {
 	RuleID     int
 	TunnelID   int
 	GroupID    int
+	MemberID   int
+	ProbeType  string
 	ServiceID  int
 	Method     string
 	TargetIP   string
@@ -182,6 +184,8 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 		forwardGroupTasks = append(forwardGroupTasks, tcpingTask{
 			Kind:       "forwardGroup",
 			GroupID:    probe.GroupID,
+			MemberID:   probe.MemberID,
+			ProbeType:  probe.ProbeType,
 			Method:     method,
 			TargetIP:   probe.TargetIP,
 			TargetPort: probe.TargetPort,
@@ -320,6 +324,12 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 		}
 	case "forwardGroup":
 		payload["groupId"] = task.GroupID
+		if task.MemberID > 0 {
+			payload["memberId"] = task.MemberID
+		}
+		if task.ProbeType != "" {
+			payload["probeType"] = task.ProbeType
+		}
 		payload["method"] = task.Method
 		payload["hopIndex"] = task.HopIndex
 		payload["hopCount"] = task.HopCount

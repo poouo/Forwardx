@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.99"
+var Version = "2.2.100"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -43,7 +43,7 @@ const selfTestActivePollInterval = 3 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute
-const trafficCollectInterval = 15 * time.Second
+const trafficCollectInterval = 3 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
 const runtimeActionRefreshInterval = 5 * time.Minute
 const agentLogRetention = 72 * time.Hour
@@ -205,6 +205,8 @@ type hostProbeServiceProbe struct {
 }
 type forwardGroupProbe struct {
 	GroupID    int    `json:"groupId"`
+	MemberID   int    `json:"memberId"`
+	ProbeType  string `json:"probeType"`
 	TargetIP   string `json:"targetIp"`
 	TargetPort int    `json:"targetPort"`
 	Method     string `json:"method"`

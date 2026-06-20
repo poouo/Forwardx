@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.159] - 2026-06-21
+
+### Added
+
+- Added optional mainland China health checks for failover forwarding groups, with custom tcping targets and member-level result tracking.
+- Added remaining-time badges on host cards when both purchase and stop dates are configured.
+
+### Changed
+
+- Improved host management card and list address display so IPv6 is hidden outside the host edit Agent detection field.
+- Increased live host traffic refresh while the host management tab is active and reduced refresh pressure when it is not visible.
+- Refined forwarding-rule traffic layout, import/export dialogs, host edit density, date picker visuals, and modal backdrop motion.
+- Bumped panel version to 2.3.159 and Agent target version to 2.2.100.
+- Bumped Android APP version to 2.3.47 and updated the APK release pointer to 2.3.159.
+
 ## [2.3.157] - 2026-06-20
 
 ### Added

@@ -351,6 +351,16 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
     for (const r of forwardGroupResults) {
       const groupId = Number(r.groupId);
       if (!groupId) continue;
+      if (String((r as any).probeType || "") === "china") {
+        await db.updateForwardGroupMemberChinaHealth({
+          groupId,
+          memberId: Number((r as any).memberId || 0),
+          hostId: Number(host.id),
+          latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+          isTimeout: !!r.isTimeout,
+        });
+        continue;
+      }
       const group = await db.getForwardGroupById(groupId) as any;
       if (!group || String(group.groupMode || "failover") !== "chain") continue;
       const hopIndex = Number((r as any).hopIndex);

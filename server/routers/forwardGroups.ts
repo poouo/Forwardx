@@ -29,6 +29,8 @@ const baseSchema = z.object({
   recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),
   failoverSeconds: z.number().int().min(10).max(3600).default(60),
   recoverSeconds: z.number().int().min(10).max(3600).default(120),
+  chinaHealthCheckEnabled: z.boolean().default(false),
+  chinaHealthCheckTarget: z.string().max(253).nullable().optional(),
   autoFailback: z.boolean().default(true),
   isEnabled: z.boolean().default(true),
   members: z.array(memberSchema).min(1),

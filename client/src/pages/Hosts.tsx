@@ -9,8 +9,8 @@ import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLa
 import {
   agentDetectedIpText,
   compareVersions,
-  hostAddressLines,
   hostAddressText,
+  hostPrimaryAddressLines,
   HostRegionBadge,
   hostRegionText,
   isAgentUpgradeTimedOut,
@@ -68,9 +68,12 @@ import {
   Key,
   Rows3,
   RotateCcw,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
 const ReactGlobe = lazy(() => import("react-globe.gl")) as typeof import("react-globe.gl").default;
 const HostFlatMap = lazy(() => import("@/components/HostFlatMap"));
@@ -611,6 +614,7 @@ type HostFormData = {
   trafficLimitGb: string;
   trafficMeasureMode: HostTrafficMeasureMode;
   telegramTrafficAlertEnabled: boolean;
+  trafficAlertThresholdPercent: number;
   trafficAutoReset: boolean;
   trafficResetDay: number;
   blockHttp: boolean;
@@ -633,6 +637,7 @@ const defaultFormData: HostFormData = {
   trafficLimitGb: "",
   trafficMeasureMode: "both",
   telegramTrafficAlertEnabled: false,
+  trafficAlertThresholdPercent: 20,
   trafficAutoReset: false,
   trafficResetDay: 1,
   blockHttp: false,
@@ -660,6 +665,10 @@ function clampMonthlyResetDay(value: number) {
   return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
 }
 
+function clampTrafficAlertThresholdPercent(value: number) {
+  return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
+}
+
 function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
   return value === "outbound" ? "outbound" : "both";
 }
@@ -669,6 +678,209 @@ function formatTrafficLimitGbInput(value: unknown) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   const gb = bytes / HOST_TRAFFIC_GB_BYTES;
   return Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(3)));
+}
+
+function padDatePart(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateTimePickerLabel(value: string) {
+  const date = parseDateTimeLocal(value);
+  if (!date) return "";
+  return `${date.getFullYear()}年${padDatePart(date.getMonth() + 1)}月${padDatePart(date.getDate())}日 ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+}
+
+function sameDateOnly(a: Date | null, b: Date) {
+  return !!a && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function clampPickerHour(value: number) {
+  return Math.min(23, Math.max(0, Math.floor(Number(value) || 0)));
+}
+
+function clampPickerMinute(value: number) {
+  return Math.min(59, Math.max(0, Math.floor(Number(value) || 0)));
+}
+
+type DateTimePickerInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+  align?: "start" | "end";
+};
+
+function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePickerInputProps) {
+  const selected = useMemo(() => parseDateTimeLocal(value), [value]);
+  const selectedTime = selected?.getTime() ?? null;
+  const [open, setOpen] = useState(false);
+  const [viewDate, setViewDate] = useState(() => selected || new Date());
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const updatePanelPosition = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect || typeof window === "undefined") return;
+    const width = Math.min(416, Math.max(288, window.innerWidth - 32));
+    const left = align === "end" ? rect.right - width : rect.left;
+    setPanelStyle({
+      top: rect.bottom + 8,
+      left: Math.max(16, Math.min(left, window.innerWidth - width - 16)),
+      width,
+    });
+  };
+
+  useEffect(() => {
+    if (open) setViewDate(selected || new Date());
+  }, [open, selectedTime]);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePanelPosition();
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const handleReposition = () => updatePanelPosition();
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handleReposition);
+    window.addEventListener("scroll", handleReposition, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handleReposition);
+      window.removeEventListener("scroll", handleReposition, true);
+    };
+  }, [open, align, selectedTime]);
+
+  const monthStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+  const calendarOffset = (monthStart.getDay() + 6) % 7;
+  const days = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(viewDate.getFullYear(), viewDate.getMonth(), index - calendarOffset + 1);
+    return {
+      date,
+      inMonth: date.getMonth() === viewDate.getMonth(),
+      isToday: sameDateOnly(new Date(), date),
+      isSelected: sameDateOnly(selected, date),
+    };
+  });
+  const currentHour = selected ? selected.getHours() : 0;
+  const currentMinute = selected ? selected.getMinutes() : 0;
+
+  const commitDate = (date: Date) => {
+    const next = new Date(date);
+    next.setHours(currentHour, currentMinute, 0, 0);
+    onChange(formatDateTimeLocal(next));
+    setViewDate(next);
+  };
+
+  const commitTime = (hour: number, minute: number) => {
+    const next = new Date(selected || viewDate || new Date());
+    next.setHours(clampPickerHour(hour), clampPickerMinute(minute), 0, 0);
+    onChange(formatDateTimeLocal(next));
+    setViewDate(next);
+  };
+
+  const shiftMonth = (offset: number) => {
+    setViewDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  };
+
+  const chooseToday = () => {
+    const now = new Date();
+    onChange(formatDateTimeLocal(now));
+    setViewDate(now);
+  };
+
+  const label = formatDateTimePickerLabel(value);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="flex h-8 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-left text-sm transition-colors hover:border-primary/40 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        onClick={() => {
+          if (!open) updatePanelPosition();
+          setOpen((next) => !next);
+        }}
+        aria-expanded={open}
+      >
+        <span className={label ? "truncate text-foreground" : "truncate text-muted-foreground"}>{label || "年 /月/日 --:--"}</span>
+        <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </button>
+      <div
+        aria-hidden={!open}
+        style={panelStyle}
+        className={`fixed z-[70] max-h-[calc(100vh-2rem)] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${align === "end" ? "origin-top-right" : "origin-top-left"} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : "pointer-events-none -translate-y-1.5 scale-[0.98] opacity-0"}`}
+      >
+        <div className="grid gap-0 sm:grid-cols-[1fr_7.25rem]">
+          <div className="p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
+              <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
+              {[
+                "一",
+                "二",
+                "三",
+                "四",
+                "五",
+                "六",
+                "日",
+              ].map((day) => <div key={day} className="py-1">{day}</div>)}
+            </div>
+            <div className="mt-1 grid grid-cols-7 gap-1">
+              {days.map((day) => (
+                <button
+                  key={day.date.toISOString()}
+                  type="button"
+                  className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
+                  onClick={() => commitDate(day.date)}
+                >
+                  {day.date.getDate()}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="border-t border-border/70 bg-muted/20 p-3 sm:border-l sm:border-t-0">
+            <div className="mb-2 text-xs font-medium text-muted-foreground">时间</div>
+            <div className="flex items-center gap-1.5">
+              <Input
+                className="h-8 px-1 text-center"
+                type="number"
+                min={0}
+                max={23}
+                value={padDatePart(currentHour)}
+                onChange={(event) => commitTime(Number(event.target.value), currentMinute)}
+              />
+              <span className="text-muted-foreground">:</span>
+              <Input
+                className="h-8 px-1 text-center"
+                type="number"
+                min={0}
+                max={59}
+                value={padDatePart(currentMinute)}
+                onChange={(event) => commitTime(currentHour, Number(event.target.value))}
+              />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-1">
+              <Button type="button" size="sm" variant="outline" className="h-8" onClick={chooseToday}>现在</Button>
+              <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => onChange("")}>清除</Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
@@ -752,6 +964,7 @@ function HostsContent() {
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
+  const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -856,15 +1069,15 @@ function HostsContent() {
   }, [displayHosts, latestAgentVersion]);
 
   useEffect(() => {
-    if (!pageVisible || !displayHosts.length) return;
+    if (!hostLiveRefreshInterval || !displayHosts.length) return;
     const hostIds = displayHosts.map((host: any) => Number(host.id)).filter(Boolean);
     if (hostIds.length === 0) return;
     watchMetricsMutation.mutate({ hostIds });
     const timer = window.setInterval(() => {
       watchMetricsMutation.mutate({ hostIds });
-    }, 5000);
+    }, hostLiveRefreshInterval);
     return () => window.clearInterval(timer);
-  }, [pageVisible, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hostLiveRefreshInterval, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetForm = () => {
     setForm(defaultFormData);
@@ -895,6 +1108,7 @@ function HostsContent() {
       trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
       telegramTrafficAlertEnabled: !!host.telegramTrafficAlertEnabled,
+      trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(host.trafficAlertThresholdPercent),
       trafficAutoReset: !!host.trafficAutoReset,
       trafficResetDay: clampMonthlyResetDay(host.trafficResetDay || 1),
       blockHttp: !!host.blockHttp,
@@ -945,6 +1159,7 @@ function HostsContent() {
       return;
     }
     const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
+    const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
     const trafficConfigPayload = user?.role === "admin"
       ? {
           purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
@@ -952,6 +1167,7 @@ function HostsContent() {
           trafficLimit: trafficLimitBytes,
           trafficMeasureMode: form.trafficMeasureMode,
           telegramTrafficAlertEnabled: form.telegramTrafficAlertEnabled,
+          trafficAlertThresholdPercent,
           trafficAutoReset: form.trafficAutoReset,
           trafficResetDay: clampMonthlyResetDay(form.trafficResetDay),
         }
@@ -1019,7 +1235,7 @@ function HostsContent() {
   const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: 30000 });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
-    { enabled: pagedHostIds.length > 0, refetchInterval: hostRefreshInterval }
+    { enabled: !!hostLiveRefreshInterval && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
   );
   const hostTrafficById = useMemo(() => {
     const map = new Map<number, any>();
@@ -1300,7 +1516,7 @@ function HostsContent() {
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostRefreshInterval}
+                  refreshInterval={hostLiveRefreshInterval}
                 />
               ))}
             </AutoAnimateContainer>
@@ -1334,7 +1550,7 @@ function HostsContent() {
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostRefreshInterval}
+                  refreshInterval={hostLiveRefreshInterval}
                 />
               ))}
             </AutoAnimateContainer>
@@ -1361,7 +1577,7 @@ function HostsContent() {
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                 traffic={hostTrafficById.get(host.id)}
                 latestAgentVersion={latestAgentVersion}
-                refreshInterval={hostRefreshInterval}
+                refreshInterval={hostLiveRefreshInterval}
                 compact={viewMode === "compact-card"}
               />
             ))}
@@ -1383,7 +1599,7 @@ function HostsContent() {
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostRefreshInterval}
+                  refreshInterval={hostLiveRefreshInterval}
                 />
               ))}
             </AutoAnimateContainer>
@@ -1426,7 +1642,7 @@ function HostsContent() {
                         </TableCell>
                         <TableCell>
                           <div className="space-y-1">
-                            {hostAddressLines(host).map((item) => (
+                            {hostPrimaryAddressLines(host).map((item) => (
                               <div key={item.label} className="flex min-w-0 items-start gap-1 font-mono text-xs leading-5">
                                 <span className="shrink-0 text-[10px] text-muted-foreground">{item.label}</span>
                                 <span className="min-w-0 max-w-[260px] break-all">{item.value}</span>
@@ -1718,7 +1934,7 @@ function HostsContent() {
 
       {/* 编辑主机对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex h-[min(760px,88vh)] max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
+        <DialogContent className="flex h-[min(720px,86vh)] max-h-[86vh] flex-col overflow-hidden sm:max-w-[44rem]">
           <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>编辑主机</DialogTitle>
             <DialogDescription className="sr-only">
@@ -1734,59 +1950,59 @@ function HostsContent() {
               {HOST_DIALOG_TABS.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 gap-2 px-3 py-2">
+                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 gap-2 px-3 py-1.5 text-sm">
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="truncate">{item.label}</span>
                   </TabsTrigger>
                 );
               })}
             </TabsList>
-            <div className="mt-4 min-h-0 flex-1 overflow-y-scroll pr-2 [scrollbar-gutter:stable]">
-              <TabsContent value="basic" className="m-0 space-y-4 !animate-none">
-                <section className="rounded-md border border-border/50 bg-background/45 p-4">
-                  <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1.5 [scrollbar-gutter:stable]">
+              <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
+                <section className="space-y-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">基础信息</Label>
                     <span className="text-xs text-muted-foreground">主机连接</span>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    <div className="space-y-1">
                       <Label className="text-sm">主机名称</Label>
                       <Input
-                        className="h-9"
+                        className="h-8"
                         placeholder="例如: 香港节点-01"
                         value={form.name}
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
                       />
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                       <Label className="text-sm">Agent 检测 IP</Label>
-                      <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                      <Input className="h-8 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
                     </div>
                   </div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1.5">
+                  <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+                    <div className="space-y-1">
                       <Label className="text-sm">入口 IP / 域名</Label>
                       <Input
-                        className="h-9"
+                        className="h-8"
                         placeholder="例如: example.com 或 1.2.3.4"
                         value={form.entryIp}
                         onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                       />
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                       <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
                       <Input
-                        className="h-9"
+                        className="h-8"
                         placeholder="10.0.0.8 或 node-a.internal"
                         value={form.tunnelEntryIp}
                         onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
                       />
                     </div>
                   </div>
-                  <div className="mt-3 space-y-1.5">
+                  <div className="mt-2.5 space-y-1">
                     <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
                     <Input
-                      className="h-9"
+                      className="h-8"
                       placeholder="eth0, ens33, bond0"
                       value={form.networkInterface}
                       onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
@@ -1794,16 +2010,16 @@ function HostsContent() {
                   </div>
                 </section>
 
-                <section className="rounded-md border border-border/50 bg-background/45 p-4">
-                  <div className="mb-4 flex items-center justify-between gap-3">
+                <section className="space-y-3 border-t border-border/40 pt-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">端口限制</Label>
                     <span className="text-xs text-muted-foreground">留空不限</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
                       <Label className="text-xs text-muted-foreground">起始端口</Label>
                       <Input
-                        className="h-9"
+                        className="h-8"
                         type="number"
                         min={1}
                         max={65535}
@@ -1816,10 +2032,10 @@ function HostsContent() {
                         }}
                       />
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                       <Label className="text-xs text-muted-foreground">结束端口</Label>
                       <Input
-                        className="h-9"
+                        className="h-8"
                         type="number"
                         min={1}
                         max={65535}
@@ -1833,7 +2049,7 @@ function HostsContent() {
                       />
                     </div>
                   </div>
-                  <div className="mt-3 space-y-1.5">
+                  <div className="mt-2.5 space-y-1">
                     <div className="flex items-center justify-between gap-3">
                       <Label className="text-xs text-muted-foreground">自定义端口</Label>
                       {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
@@ -1844,7 +2060,7 @@ function HostsContent() {
                       placeholder="例如: 80,443,65095"
                       value={form.portAllowlist}
                       onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
-                      className={`h-9 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                      className={`h-8 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
                     />
                     {customPortInputState.invalid.length > 0 ? (
                       <p className="text-xs text-destructive">
@@ -1859,21 +2075,21 @@ function HostsContent() {
                   )}
                 </section>
                 {user?.role === "admin" && (
-                  <section className="rounded-md border border-border/50 bg-background/45 p-4">
-                    <div className="mb-4 flex items-center justify-between gap-3">
+                  <section className="space-y-3 border-t border-border/40 pt-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
                       <Label className="text-sm font-semibold">协议屏蔽</Label>
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
                         <span className="text-sm font-medium">HTTP</span>
                         <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
                       </label>
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
                         <span className="text-sm font-medium">SOCKS</span>
                         <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
                       </label>
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
                         <span className="text-sm font-medium">TLS</span>
                         <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
                       </label>
@@ -1883,37 +2099,34 @@ function HostsContent() {
               </TabsContent>
 
               <TabsContent value="other" className="m-0 !animate-none">
-                <section className="rounded-md border border-border/50 bg-background/45 p-4">
-                  <div className="mb-4 flex items-center justify-between gap-3">
+                <section className="space-y-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">其他配置</Label>
                     <span className="text-xs text-muted-foreground">主机统计</span>
                   </div>
                   {user?.role === "admin" ? (
                     <>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="space-y-1.5">
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        <div className="space-y-1">
                           <Label className="text-sm">机器购买时间</Label>
-                          <Input
-                            className="h-9"
-                            type="datetime-local"
+                          <DateTimePickerInput
                             value={form.purchasedAt}
-                            onChange={(e) => setForm({ ...form, purchasedAt: e.target.value })}
+                            onChange={(value) => setForm({ ...form, purchasedAt: value })}
                           />
                         </div>
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           <Label className="text-sm">机器停止时间</Label>
-                          <Input
-                            className="h-9"
-                            type="datetime-local"
+                          <DateTimePickerInput
                             value={form.stoppedAt}
-                            onChange={(e) => setForm({ ...form, stoppedAt: e.target.value })}
+                            onChange={(value) => setForm({ ...form, stoppedAt: value })}
+                            align="end"
                           />
                         </div>
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           <Label className="text-sm">套餐流量</Label>
                           <div className="flex overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
                             <Input
-                              className="h-9 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                              className="h-8 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                               type="number"
                               min={0}
                               step={1}
@@ -1921,16 +2134,16 @@ function HostsContent() {
                               value={form.trafficLimitGb}
                               onChange={(e) => setForm({ ...form, trafficLimitGb: e.target.value })}
                             />
-                            <span className="flex h-9 shrink-0 items-center border-l border-border/60 bg-muted/50 px-3 text-sm text-muted-foreground">GB</span>
+                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-sm text-muted-foreground">GB</span>
                           </div>
                         </div>
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           <Label className="text-sm">流量计算</Label>
                           <Select
                             value={form.trafficMeasureMode}
                             onValueChange={(value) => setForm({ ...form, trafficMeasureMode: normalizeHostTrafficMeasureMode(value) })}
                           >
-                            <SelectTrigger className="h-9">
+                            <SelectTrigger className="h-8">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1940,26 +2153,36 @@ function HostsContent() {
                           </Select>
                         </div>
                       </div>
-                      <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
+                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
-                          <Label className="text-sm font-medium">流量阈值 TG 机器人预警</Label>
+                          <Label className="text-sm font-medium">流量耗尽提醒</Label>
                         </div>
-                        <Switch checked={form.telegramTrafficAlertEnabled} onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })} />
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                            <Input
+                              className="h-8 rounded-none border-0 px-2 text-right focus-visible:ring-0 focus-visible:ring-offset-0"
+                              type="number"
+                              min={1}
+                              max={99}
+                              step={1}
+                              value={form.trafficAlertThresholdPercent}
+                              onChange={(e) => setForm({ ...form, trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(Number(e.target.value)) })}
+                            />
+                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
+                          </div>
+                          <Switch checked={form.telegramTrafficAlertEnabled} onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })} />
+                        </div>
                       </div>
-                      <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
+                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
                           <Label className="text-sm font-medium">自动重置流量</Label>
                         </div>
-                        <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
-                      </div>
-                      {form.trafficAutoReset && (
-                        <div className="mt-3 space-y-1.5">
-                          <Label className="text-sm">每月重置日</Label>
+                        <div className="flex shrink-0 items-center gap-2">
                           <Select
                             value={String(clampMonthlyResetDay(form.trafficResetDay))}
                             onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
                           >
-                            <SelectTrigger className="h-9">
+                            <SelectTrigger className="h-8 w-24">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1968,12 +2191,13 @@ function HostsContent() {
                               ))}
                             </SelectContent>
                           </Select>
-                          <p className="text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
+                          <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
                         </div>
-                      )}
+                      </div>
+                      <p className="mt-1.5 px-3 text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
                     </>
                   ) : (
-                    <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    <div className="rounded-md bg-muted/35 px-3 py-2 text-sm text-muted-foreground">
                       仅管理员可配置主机其他配置。
                     </div>
                   )}
