@@ -5,6 +5,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import HostCard from "@/components/hosts/HostCard";
 import HostProbeServiceManager from "@/components/hosts/HostProbeServiceManager";
+import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
 import {
   agentDetectedIpText,
   compareVersions,
@@ -65,6 +66,7 @@ import {
   Key,
   Rows3,
   RotateCcw,
+  Eye,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -713,6 +715,8 @@ function HostsContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
+  const [probeLatencyHost, setProbeLatencyHost] = useState<any>(null);
+  const [resetTrafficHost, setResetTrafficHost] = useState<any>(null);
   const [resetTrafficHostId, setResetTrafficHostId] = useState<number | null>(null);
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -773,6 +777,7 @@ function HostsContent() {
   const resetHostTrafficMutation = trpc.hosts.resetTraffic.useMutation({
     onSuccess: () => {
       utils.hosts.trafficSummary.invalidate();
+      setResetTrafficHost(null);
       toast.success("流量统计已重置");
     },
     onError: (err) => toast.error(err.message || "重置流量统计失败"),
@@ -842,7 +847,12 @@ function HostsContent() {
       setServiceCreateSignal((value) => value + 1);
       return;
     }
-    setTokenCreateSignal((value) => value + 1);
+    if (activeManageTab === "tokens") {
+      setTokenCreateSignal((value) => value + 1);
+      return;
+    }
+    resetForm();
+    setShowDialog(true);
   };
 
   const openEdit = (host: any) => {
@@ -969,6 +979,7 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
+  const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: 30000 });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
     { enabled: pagedHostIds.length > 0, refetchInterval: hostRefreshInterval }
@@ -978,8 +989,13 @@ function HostsContent() {
     for (const row of hostTrafficRows as any[]) map.set(Number(row.hostId), row);
     return map;
   }, [hostTrafficRows]);
-  const resetHostTraffic = (host: any) => {
+  const requestResetHostTraffic = (host: any) => {
     const hostId = Number(host?.id);
+    if (!Number.isInteger(hostId) || hostId <= 0) return;
+    setResetTrafficHost(host);
+  };
+  const confirmResetHostTraffic = () => {
+    const hostId = Number(resetTrafficHost?.id);
     if (!Number.isInteger(hostId) || hostId <= 0) return;
     setResetTrafficHostId(hostId);
     resetHostTrafficMutation.mutate({ hostId });
@@ -1172,7 +1188,7 @@ function HostsContent() {
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
-              {activeManageTab === "services" ? "添加服务" : "添加主机"}
+              {activeManageTab === "services" ? "添加服务" : activeManageTab === "tokens" ? "添加 Token" : "添加主机"}
             </Button>
           )}
         </div>
@@ -1192,15 +1208,16 @@ function HostsContent() {
             主机管理
           </TabsTrigger>
           {user?.role === "admin" && (
-            <TabsTrigger value="services" className="gap-1.5 px-4">
-              <Rows3 className="h-3.5 w-3.5" />
-              服务管理
-            </TabsTrigger>
-          )}
-          {user?.role === "admin" && (
             <TabsTrigger value="tokens" className="gap-1.5 px-4">
               <Key className="h-3.5 w-3.5" />
               Token 管理
+            </TabsTrigger>
+          )}
+
+          {user?.role === "admin" && (
+            <TabsTrigger value="services" className="gap-1.5 px-4">
+              <Rows3 className="h-3.5 w-3.5" />
+              服务管理
             </TabsTrigger>
           )}
         </TabsList>
@@ -1241,8 +1258,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
-                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+                  onViewProbeLatency={setProbeLatencyHost}
+                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
@@ -1274,8 +1292,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
-                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+                  onViewProbeLatency={setProbeLatencyHost}
+                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
@@ -1300,7 +1319,8 @@ function HostsContent() {
                 onDelete={(id) => deleteMutation.mutate({ id })}
                 onUpgrade={requestAgentUpgrade}
                 canUpgrade={user?.role === "admin"}
-                onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
+                onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+                onViewProbeLatency={setProbeLatencyHost}
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                 traffic={hostTrafficById.get(host.id)}
                 latestAgentVersion={latestAgentVersion}
@@ -1321,8 +1341,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
-                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+                  onViewProbeLatency={setProbeLatencyHost}
+                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
@@ -1413,37 +1434,27 @@ function HostsContent() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            {user?.role === "admin" && (resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? (
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-8 w-8"
-                                disabled
-                                title="正在重置流量统计"
-                              >
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              </Button>
-                            ) : resetTrafficHostId === host.id ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-8 px-2 text-xs"
-                                title="确认清空流量统计"
-                                onClick={() => resetHostTraffic(host)}
-                              >
-                                确定
-                              </Button>
-                            ) : (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="查看服务延迟"
+                              onClick={() => setProbeLatencyHost(host)}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            {user?.role === "admin" && (
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="h-8 w-8"
-                                title="重置流量统计"
-                                onClick={() => setResetTrafficHostId(host.id)}
+                                disabled={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                                title={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? "正在重置流量统计" : "重置流量统计"}
+                                onClick={() => requestResetHostTraffic(host)}
                               >
-                                <RotateCcw className="h-3.5 w-3.5" />
+                                {resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
                               </Button>
-                            ))}
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -1502,22 +1513,22 @@ function HostsContent() {
           </CardContent>
         </Card>
       )}
-        </TabsContent>
-        {user?.role === "admin" && (
-          <TabsContent value="services" className="space-y-4">
-            <HostProbeServiceManager
-              createSignal={serviceCreateSignal}
-              onCreateSignalHandled={() => setServiceCreateSignal(0)}
-            />
-          </TabsContent>
-        )}
-        {user?.role === "admin" && (
+        </TabsContent>{user?.role === "admin" && (
           <TabsContent value="tokens" className="space-y-4">
             <AgentTokenManager
               showCreateButton={false}
               hideViewModeToggle
               viewMode={tokenViewMode}
               onViewModeChange={handleTokenViewModeChange}
+            />
+          </TabsContent>
+        )}
+
+        {user?.role === "admin" && (
+          <TabsContent value="services" className="space-y-4">
+            <HostProbeServiceManager
+              createSignal={serviceCreateSignal}
+              onCreateSignalHandled={() => setServiceCreateSignal(0)}
             />
           </TabsContent>
         )}
@@ -1533,6 +1544,55 @@ function HostsContent() {
         />
       )}
 
+      <HostProbeServiceLatencyDialog
+        open={!!probeLatencyHost}
+        onOpenChange={(open) => !open && setProbeLatencyHost(null)}
+        host={probeLatencyHost}
+        services={probeServices as any[]}
+      />
+      {/* Reset Host Traffic Dialog */}
+      <Dialog open={!!resetTrafficHost} onOpenChange={(open) => !open && !resetHostTrafficMutation.isPending && setResetTrafficHost(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCcw className="h-5 w-5 text-primary" />
+              重置流量统计
+            </DialogTitle>
+            <DialogDescription>
+              确认清空该主机当前累计的流量统计？
+            </DialogDescription>
+          </DialogHeader>
+          {resetTrafficHost && (
+            <div className="space-y-3 rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">主机</span>
+                <span className="font-medium">{resetTrafficHost.name}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Agent</span>
+                <span className="font-mono">{resetTrafficHost.agentVersion ? `v${resetTrafficHost.agentVersion}` : "未上报"}</span>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setResetTrafficHost(null)}
+              disabled={resetHostTrafficMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              className="gap-2"
+              onClick={confirmResetHostTraffic}
+              disabled={!resetTrafficHost || resetHostTrafficMutation.isPending}
+            >
+              {resetHostTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+              {resetHostTrafficMutation.isPending ? "重置中..." : "确认重置"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* Agent Upgrade Dialog */}
       <Dialog open={!!upgradeHost} onOpenChange={(open) => !open && setUpgradeHost(null)}>
         <DialogContent className="sm:max-w-md">
@@ -1621,7 +1681,7 @@ function HostsContent() {
 
       {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
+        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-5xl">
           <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
             <DialogDescription className="sr-only">
@@ -1629,49 +1689,51 @@ function HostsContent() {
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
-              <section className="space-y-4 rounded-md border border-border/50 bg-background/40 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm font-semibold">基础信息</Label>
-                  <span className="text-xs text-muted-foreground">主机连接</span>
-                </div>
-                <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
-                  <div className="space-y-1.5">
-                    <Label className="text-sm">主机名称</Label>
-                    <Input
-                      className="h-9"
-                      placeholder="例如: 香港节点-01"
-                      value={form.name}
-                      onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    />
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]">
+              <div className="space-y-4">
+                <section className="rounded-md border border-border/50 bg-background/45 p-4">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <Label className="text-sm font-semibold">基础信息</Label>
+                    <span className="text-xs text-muted-foreground">主机连接</span>
                   </div>
-                  {editingId && (
+                  <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
                     <div className="space-y-1.5">
-                      <Label className="text-sm">Agent 检测 IP</Label>
-                      <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                      <Label className="text-sm">主机名称</Label>
+                      <Input
+                        className="h-9"
+                        placeholder="例如: 香港节点-01"
+                        value={form.name}
+                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      />
                     </div>
-                  )}
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-sm">入口 IP / 域名</Label>
-                  <Input
-                    className="h-9"
-                    placeholder="例如: example.com 或 1.2.3.4"
-                    value={form.entryIp}
-                    onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
-                  />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
-                    <Input
-                      className="h-9"
-                      placeholder="10.0.0.8 或 node-a.internal"
-                      value={form.tunnelEntryIp}
-                      onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
-                    />
+                    {editingId && (
+                      <div className="space-y-1.5">
+                        <Label className="text-sm">Agent 检测 IP</Label>
+                        <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">入口 IP / 域名</Label>
+                      <Input
+                        className="h-9"
+                        placeholder="例如: example.com 或 1.2.3.4"
+                        value={form.entryIp}
+                        onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
+                      <Input
+                        className="h-9"
+                        placeholder="10.0.0.8 或 node-a.internal"
+                        value={form.tunnelEntryIp}
+                        onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-1.5">
                     <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
                     <Input
                       className="h-9"
@@ -1680,10 +1742,11 @@ function HostsContent() {
                       onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
                     />
                   </div>
-                </div>
-                <div className="space-y-3 border-t border-border/50 pt-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label className="text-sm font-medium">端口限制</Label>
+                </section>
+
+                <section className="rounded-md border border-border/50 bg-background/45 p-4">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <Label className="text-sm font-semibold">端口限制</Label>
                     <span className="text-xs text-muted-foreground">留空不限</span>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -1720,7 +1783,7 @@ function HostsContent() {
                       />
                     </div>
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="mt-3 space-y-1.5">
                     <div className="flex items-center justify-between gap-3">
                       <Label className="text-xs text-muted-foreground">自定义端口</Label>
                       {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
@@ -1740,15 +1803,81 @@ function HostsContent() {
                     ) : null}
                   </div>
                   {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
-                    <p className="text-xs text-destructive">
+                    <p className="mt-3 text-xs text-destructive">
                       起始端口不能大于结束端口
                     </p>
                   )}
-                </div>
+                </section>
+              </div>
+
+              <div className="space-y-4">
+                <section className="rounded-md border border-border/50 bg-background/45 p-4">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <Label className="text-sm font-semibold">流量配置</Label>
+                    <span className="text-xs text-muted-foreground">主机统计</span>
+                  </div>
+                  {user?.role === "admin" ? (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">机器购买时间</Label>
+                          <Input
+                            className="h-9"
+                            type="datetime-local"
+                            value={form.purchasedAt}
+                            onChange={(e) => setForm({ ...form, purchasedAt: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">机器停止时间</Label>
+                          <Input
+                            className="h-9"
+                            type="datetime-local"
+                            value={form.stoppedAt}
+                            onChange={(e) => setForm({ ...form, stoppedAt: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <Label className="text-sm font-medium">自动重置流量</Label>
+                        </div>
+                        <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
+                      </div>
+                      {form.trafficAutoReset && (
+                        <div className="mt-3 space-y-1.5">
+                          <Label className="text-sm">每月重置日</Label>
+                          <Select
+                            value={String(clampMonthlyResetDay(form.trafficResetDay))}
+                            onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
+                          >
+                            <SelectTrigger className="h-9">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                                <SelectItem key={day} value={String(day)}>{day} 号</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                      仅管理员可配置主机流量重置。
+                    </div>
+                  )}
+                </section>
+
                 {user?.role === "admin" && (
-                  <div className="space-y-3 border-t border-border/50 pt-3">
-                    <Label className="text-sm font-medium">协议屏蔽</Label>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <section className="rounded-md border border-border/50 bg-background/45 p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <Label className="text-sm font-semibold">协议屏蔽</Label>
+                      <span className="text-xs text-muted-foreground">访问策略</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
                       <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
                         <span className="text-sm font-medium">HTTP</span>
                         <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
@@ -1762,69 +1891,9 @@ function HostsContent() {
                         <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
                       </label>
                     </div>
-                  </div>
+                  </section>
                 )}
-              </section>
-
-              <section className="space-y-4 rounded-md border border-border/50 bg-background/40 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm font-semibold">流量配置</Label>
-                  <span className="text-xs text-muted-foreground">主机统计</span>
-                </div>
-                {user?.role === "admin" ? (
-                  <>
-                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                      <div className="space-y-1.5">
-                        <Label className="text-sm">机器购买时间</Label>
-                        <Input
-                          className="h-9"
-                          type="datetime-local"
-                          value={form.purchasedAt}
-                          onChange={(e) => setForm({ ...form, purchasedAt: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-sm">机器停止时间</Label>
-                        <Input
-                          className="h-9"
-                          type="datetime-local"
-                          value={form.stoppedAt}
-                          onChange={(e) => setForm({ ...form, stoppedAt: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
-                      <div className="min-w-0">
-                        <Label className="text-sm font-medium">自动重置流量</Label>
-                      </div>
-                      <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
-                    </div>
-                    {form.trafficAutoReset && (
-                      <div className="space-y-1.5">
-                        <Label className="text-sm">每月重置日</Label>
-                        <Select
-                          value={String(clampMonthlyResetDay(form.trafficResetDay))}
-                          onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
-                        >
-                          <SelectTrigger className="h-9">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
-                              <SelectItem key={day} value={String(day)}>{day} 号</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                    仅管理员可配置主机流量重置。
-                  </div>
-                )}
-              </section>
+              </div>
             </div>
           </div>
           <DialogFooter className="shrink-0 pt-2">

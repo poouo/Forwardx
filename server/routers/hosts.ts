@@ -260,7 +260,7 @@ export const hostsRouter = router({
       }));
     }),
     probeServiceSeries: protectedProcedure
-      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hours: z.number().int().min(1).max(24 * 30).default(24) }).optional())
+      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hostId: z.number().int().positive().optional(), hours: z.number().int().min(1).max(24 * 30).default(24) }).optional())
       .query(async ({ input, ctx }) => {
         const isAdmin = ctx.user.role === "admin";
         const visibleServices = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);
@@ -268,7 +268,7 @@ export const hostsRouter = router({
         const requested = Array.from(new Set((input?.serviceIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
         const serviceIds = requested.length > 0 ? requested.filter((id) => visibleIds.has(id)) : Array.from(visibleIds);
         if (serviceIds.length === 0) return [];
-        return db.getHostProbeServiceSeries({ serviceIds, hours: input?.hours || 24 });
+        return db.getHostProbeServiceSeries({ serviceIds, hostId: input?.hostId, hours: input?.hours || 24 });
       }),
     createProbeService: adminProcedure
       .input(hostProbeServiceInputSchema)

@@ -3,59 +3,8 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
 
-const Dialog = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) => {
-  const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
-  const isOpen = open ?? internalOpen
-  const lockActiveRef = React.useRef(false)
-  const releaseTimerRef = React.useRef<number | null>(null)
-
-  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
-    setInternalOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-  }, [onOpenChange])
-
-  const releaseScrollLock = React.useCallback(() => {
-    if (!lockActiveRef.current || typeof document === "undefined") return
-    const nextCount = Number(document.body.dataset.dialogScrollLock || "1") - 1
-    if (nextCount > 0) {
-      document.body.dataset.dialogScrollLock = String(nextCount)
-    } else {
-      delete document.body.dataset.dialogScrollLock
-    }
-    lockActiveRef.current = false
-  }, [])
-
-  React.useLayoutEffect(() => {
-    if (typeof document === "undefined") return
-    if (isOpen) {
-      if (releaseTimerRef.current !== null) {
-        window.clearTimeout(releaseTimerRef.current)
-        releaseTimerRef.current = null
-      }
-      if (!lockActiveRef.current) {
-        const count = Number(document.body.dataset.dialogScrollLock || "0") + 1
-        document.body.dataset.dialogScrollLock = String(count)
-        lockActiveRef.current = true
-      }
-      return
-    }
-    if (lockActiveRef.current && releaseTimerRef.current === null) {
-      releaseTimerRef.current = window.setTimeout(() => {
-        releaseTimerRef.current = null
-        releaseScrollLock()
-      }, 360)
-    }
-  }, [isOpen, releaseScrollLock])
-
-  React.useLayoutEffect(() => () => {
-    if (releaseTimerRef.current !== null && typeof window !== "undefined") {
-      window.clearTimeout(releaseTimerRef.current)
-      releaseTimerRef.current = null
-    }
-    releaseScrollLock()
-  }, [releaseScrollLock])
-
-  return <DialogPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
+const Dialog = ({ modal, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) => {
+  return <DialogPrimitive.Root modal={modal ?? false} {...props} />
 }
 Dialog.displayName = DialogPrimitive.Root.displayName
 const DialogTrigger = DialogPrimitive.Trigger
@@ -70,7 +19,7 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<React.ComponentRef<typeof DialogPrimitive.Content>, React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>>(({ className, children, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
-    <DialogPrimitive.Content ref={ref} className={cn("glass-panel scrollbar-gutter-stable fixed left-[50%] top-[50%] z-50 grid max-h-[92svh] w-[calc(100vw-1.5rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-x-hidden overflow-y-auto overscroll-contain rounded-md p-4 pr-5 shadow-2xl opacity-0 transition-opacity duration-200 data-[state=open]:opacity-100 sm:w-full sm:p-6 sm:pr-7", className)} {...props}>
+    <DialogPrimitive.Content ref={ref} className={cn("glass-panel fixed left-[50%] top-[50%] z-50 grid max-h-[92svh] w-[calc(100vw-1.5rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-x-hidden overflow-y-auto overscroll-contain rounded-md p-4 pr-5 shadow-2xl opacity-0 transition-opacity duration-200 data-[state=open]:opacity-100 sm:w-full sm:p-6 sm:pr-7", className)} {...props}>
       {children}
       <DialogPrimitive.Close className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground opacity-70 ring-offset-background transition-colors hover:bg-destructive/10 hover:text-destructive hover:opacity-100 focus:bg-destructive/10 focus:text-destructive focus:outline-none focus:ring-2 focus:ring-destructive/40 focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
         <X className="h-4 w-4" />

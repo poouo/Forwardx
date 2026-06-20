@@ -243,10 +243,8 @@
     background-color: transparent;
   }
 
-  body[data-select-scroll-lock][data-scroll-locked],
-  body[data-dialog-scroll-lock] {
-    overflow-y: scroll !important;
-    padding-right: 0 !important;
+  body[data-scroll-locked],
+  body[data-select-scroll-lock][data-scroll-locked] {
     margin-right: 0 !important;
   }
 
@@ -407,10 +405,6 @@
   --fx-scrollbar-size: 10px;
 }
 
-.scrollbar-gutter-stable {
-  scrollbar-gutter: stable;
-}
-
 * {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--foreground) 24%, transparent) transparent;
@@ -437,7 +431,6 @@
 }
 
 .terminal-scrollbar {
-  overflow-y: scroll;
   scrollbar-width: auto;
   scrollbar-color: rgb(148 163 184 / 0.72) rgb(15 23 42 / 0.92);
 }

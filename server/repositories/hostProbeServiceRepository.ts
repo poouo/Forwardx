@@ -191,8 +191,9 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[]) {
   return latest;
 }
 
-export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; hours?: number; limit?: number } = {}) {
+export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; hostId?: number; hours?: number; limit?: number } = {}) {
   const ids = Array.from(new Set((opts.serviceIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const hostId = Number(opts.hostId || 0);
   const hours = clampPositiveInt(opts.hours, 24, 24 * 30);
   const limit = clampPositiveInt(opts.limit, 20_000, 100_000);
   const since = new Date(Date.now() - hours * 3600 * 1000);
@@ -203,6 +204,10 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
     const list = inList(ids);
     conditions.push(`${q("serviceId")} IN ${list.sql}`);
     params.push(...list.params);
+  }
+  if (Number.isInteger(hostId) && hostId > 0) {
+    conditions.push(`${q("hostId")} = ?`);
+    params.push(hostId);
   }
   const page = limitOffset(limit);
   const rows = await queryRaw<any>(
@@ -221,7 +226,6 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
     recordedAt: rowDate(row.recordedAt),
   }));
 }
-
 export async function cleanOldHostProbeServiceStats(retainHours = 48) {
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
   await executeRaw(

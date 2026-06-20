@@ -11,6 +11,7 @@ import {
   Clock,
   Cpu,
   Download,
+  Eye,
   HardDrive,
   RotateCcw,
   Loader2,
@@ -20,7 +21,7 @@ import {
   Server,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
   formatBytes,
   formatUptime,
@@ -39,6 +40,7 @@ type HostCardProps = {
   onDelete: (id: number) => void;
   onUpgrade: (host: any) => void;
   onResetTraffic?: (host: any) => void;
+  onViewProbeLatency?: (host: any) => void;
   resetTrafficPending?: boolean;
   traffic?: { bytesIn?: number | null; bytesOut?: number | null } | null;
   canUpgrade: boolean;
@@ -53,6 +55,7 @@ export default function HostCard({
   onDelete,
   onUpgrade,
   onResetTraffic,
+  onViewProbeLatency,
   resetTrafficPending = false,
   traffic = null,
   canUpgrade,
@@ -86,7 +89,6 @@ export default function HostCard({
     const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
     return { in: inDelta / seconds, out: outDelta / seconds };
   }, [latestMetric, previousMetric]);
-  const [confirmResetTraffic, setConfirmResetTraffic] = useState(false);
   const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
@@ -163,32 +165,28 @@ export default function HostCard({
             </span>
           </CardTitle>
           <div className="flex shrink-0 items-center justify-end gap-1">
+            {onViewProbeLatency && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="查看服务延迟"
+                onClick={() => onViewProbeLatency(host)}
+              >
+                <Eye className="h-3.5 w-3.5" />
+              </Button>
+            )}
             {onResetTraffic && (
-              confirmResetTraffic ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={resetTrafficPending}
-                  title="确认清空流量统计"
-                  onClick={() => {
-                    onResetTraffic(host);
-                    setConfirmResetTraffic(false);
-                  }}
-                >
-                  {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "确定"}
-                </Button>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title="重置流量统计"
-                  onClick={() => setConfirmResetTraffic(true)}
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </Button>
-              )
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={resetTrafficPending}
+                title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
+                onClick={() => onResetTraffic(host)}
+              >
+                {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              </Button>
             )}
             <Button
               variant="ghost"
