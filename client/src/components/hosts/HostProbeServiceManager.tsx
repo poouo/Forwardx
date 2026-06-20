@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
+import HostStatusLabel from "@/components/HostStatusLabel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,10 +37,6 @@ const defaultForm: ServiceForm = {
   isEnabled: true,
 };
 
-function toggleId(ids: number[], id: number) {
-  return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
-}
-
 function serviceTarget(service: any) {
   return service.method === "ping" ? service.targetIp : `${service.targetIp}:${service.targetPort || "-"}`;
 }
@@ -59,6 +56,22 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
+  const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
+  const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
+  const availableScopeHosts = useMemo(
+    () => (hosts as any[]).filter((host) => !selectedScopeHostIdSet.has(Number(host.id))),
+    [hosts, selectedScopeHostIdSet]
+  );
+  const selectedScopeHosts = useMemo(
+    () => selectedScopeHostIds
+      .map((id) => {
+        const hostId = Number(id);
+        const host = hostsById.get(hostId);
+        return { id: hostId, host, name: host?.name || `#${hostId}` };
+      })
+      .filter((item) => Number.isInteger(item.id) && item.id > 0),
+    [hostsById, selectedScopeHostIds]
+  );
 
   const createMutation = trpc.hosts.createProbeService.useMutation({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setForm(defaultForm); toast.success("服务已添加"); },
@@ -94,6 +107,34 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
     else createMutation.mutate(payload);
   };
 
+  const addScopeHost = (hostId: string) => {
+    const id = Number(hostId);
+    if (!Number.isInteger(id) || id <= 0) return;
+    setForm((prev) => {
+      if (prev.hostScope === "exclude") {
+        if (prev.excludeHostIds.map(Number).includes(id)) return prev;
+        return { ...prev, excludeHostIds: [...prev.excludeHostIds, id] };
+      }
+      if (prev.hostScope === "specific") {
+        if (prev.hostIds.map(Number).includes(id)) return prev;
+        return { ...prev, hostIds: [...prev.hostIds, id] };
+      }
+      return prev;
+    });
+  };
+
+  const removeScopeHost = (hostId: number) => {
+    setForm((prev) => {
+      if (prev.hostScope === "exclude") {
+        return { ...prev, excludeHostIds: prev.excludeHostIds.filter((id) => Number(id) !== hostId) };
+      }
+      if (prev.hostScope === "specific") {
+        return { ...prev, hostIds: prev.hostIds.filter((id) => Number(id) !== hostId) };
+      }
+      return prev;
+    });
+  };
+
   const openEdit = (service: any) => {
     setEditingId(Number(service.id));
     setForm({
@@ -102,8 +143,8 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
       targetIp: service.targetIp || "",
       targetPort: service.targetPort ? String(service.targetPort) : "",
       hostScope: service.hostScope === "exclude" || service.hostScope === "specific" ? service.hostScope : "all",
-      hostIds: service.hostIds || [],
-      excludeHostIds: service.excludeHostIds || [],
+      hostIds: Array.isArray(service.hostIds) ? service.hostIds.map(Number).filter(Boolean) : [],
+      excludeHostIds: Array.isArray(service.excludeHostIds) ? service.excludeHostIds.map(Number).filter(Boolean) : [],
       intervalSeconds: Math.max(5, Number(service.intervalSeconds) || 30),
       isEnabled: service.isEnabled !== false,
     });
@@ -183,20 +224,46 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
               <div className="space-y-1.5"><Label>服务运行时间</Label><Input type="number" min={5} value={form.intervalSeconds} onChange={(e) => setForm({ ...form, intervalSeconds: Math.max(5, Number(e.target.value) || 5) })} /></div>
             </div>
             {form.hostScope !== "all" && (
-              <div className="space-y-2 rounded-md border border-border/50 p-3">
-                <Label className="text-sm">{form.hostScope === "exclude" ? "添加需要排除在外的主机" : "选择需要运行服务的主机"}</Label>
-                <div className="grid max-h-56 gap-2 overflow-y-auto sm:grid-cols-2">
-                  {(hosts as any[]).map((host) => {
-                    const ids = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
-                    const checked = ids.includes(Number(host.id));
-                    return (
-                      <label key={host.id} className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2 text-sm">
-                        <span className="min-w-0 truncate">{host.name}</span>
-                        <Switch checked={checked} onCheckedChange={() => form.hostScope === "exclude" ? setForm({ ...form, excludeHostIds: toggleId(form.excludeHostIds, Number(host.id)) }) : setForm({ ...form, hostIds: toggleId(form.hostIds, Number(host.id)) })} />
-                      </label>
-                    );
-                  })}
+              <div className="space-y-3 rounded-md border border-border/50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-sm">{form.hostScope === "exclude" ? "添加需要排除在外的主机" : "选择需要运行服务的主机"}</Label>
+                  {selectedScopeHostIds.length > 0 && (
+                    <span className="text-xs text-muted-foreground">{selectedScopeHostIds.length} 台</span>
+                  )}
                 </div>
+                <Select value="" onValueChange={addScopeHost}>
+                  <SelectTrigger className="h-9">
+                    <SelectValue placeholder={availableScopeHosts.length === 0 ? "已全部添加" : form.hostScope === "exclude" ? "添加排除主机..." : "添加运行主机..."} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableScopeHosts.length === 0 ? (
+                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">已全部添加</div>
+                    ) : availableScopeHosts.map((host) => (
+                      <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
+                        <HostStatusLabel host={host} label={host.name} />
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedScopeHosts.length === 0 ? (
+                  <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
+                    从上方选择主机
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
+                    {selectedScopeHosts.map((item, index) => (
+                      <div key={item.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border/50 bg-background px-2.5 py-1.5">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                          {index + 1}
+                        </span>
+                        <HostStatusLabel host={item.host} label={item.name} className="min-w-0 text-sm font-medium" labelClassName="truncate" />
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => removeScopeHost(item.id)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/50 px-3 py-2.5">

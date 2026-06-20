@@ -11,7 +11,6 @@ import {
   Clock,
   Cpu,
   Download,
-  Eye,
   HardDrive,
   RotateCcw,
   Loader2,
@@ -173,7 +172,7 @@ export default function HostCard({
                 title="查看服务延迟"
                 onClick={() => onViewProbeLatency(host)}
               >
-                <Eye className="h-3.5 w-3.5" />
+                <Activity className="h-3.5 w-3.5" />
               </Button>
             )}
             {onResetTraffic && (

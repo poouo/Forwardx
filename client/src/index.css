@@ -199,6 +199,13 @@
     animation-delay: var(--card-enter-delay, 0ms);
   }
 
+  body[data-dialog-motion-lock] .stagger-card,
+  body[data-dialog-scroll-lock] .stagger-card,
+  body[data-dialog-motion-lock] .card-mode-transition,
+  body[data-dialog-scroll-lock] .card-mode-transition {
+    animation-play-state: paused !important;
+  }
+
   .stagger-card:nth-child(1) { --card-enter-delay: 0ms; }
   .stagger-card:nth-child(2) { --card-enter-delay: 45ms; }
   .stagger-card:nth-child(3) { --card-enter-delay: 90ms; }
@@ -614,10 +621,10 @@
   }
 
   .dialog-overlay {
-    --dialog-overlay-tint: rgb(15 23 42 / 0.38);
-    --dialog-overlay-blur: 24px;
-    --dialog-overlay-saturate: 1.75;
-    --dialog-overlay-brightness: 0.92;
+    --dialog-overlay-tint: rgb(15 23 42 / 0.44);
+    --dialog-overlay-blur: 36px;
+    --dialog-overlay-saturate: 1.9;
+    --dialog-overlay-brightness: 0.84;
     background-color: rgb(15 23 42 / 0);
     backdrop-filter: blur(0) saturate(1) brightness(1);
     -webkit-backdrop-filter: blur(0) saturate(1) brightness(1);
@@ -626,10 +633,10 @@
   }
 
   .dark .dialog-overlay {
-    --dialog-overlay-tint: rgb(0 0 0 / 0.56);
-    --dialog-overlay-blur: 26px;
-    --dialog-overlay-saturate: 1.36;
-    --dialog-overlay-brightness: 0.74;
+    --dialog-overlay-tint: rgb(0 0 0 / 0.64);
+    --dialog-overlay-blur: 38px;
+    --dialog-overlay-saturate: 1.45;
+    --dialog-overlay-brightness: 0.66;
   }
 
   .dialog-overlay::before,

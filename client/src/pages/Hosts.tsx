@@ -51,6 +51,7 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { trpc } from "@/lib/trpc";
 import {
+  Activity,
   Plus,
   Trash2,
   Pencil,
@@ -60,13 +61,14 @@ import {
   Globe,
   MapPinned,
   Download,
+  Gauge,
   AlertTriangle,
   Loader2,
   RefreshCw,
   Key,
   Rows3,
   RotateCcw,
-  Eye,
+  ShieldCheck,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -651,6 +653,14 @@ function clampMonthlyResetDay(value: number) {
 
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "services" | "tokens";
+type HostDialogTab = "basic" | "ports" | "traffic" | "policy";
+
+const HOST_DIALOG_TABS = [
+  { value: "basic", label: "基础信息", icon: Server },
+  { value: "ports", label: "端口限制", icon: Rows3 },
+  { value: "traffic", label: "流量配置", icon: Gauge },
+  { value: "policy", label: "协议屏蔽", icon: ShieldCheck },
+] as const;
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
@@ -714,6 +724,7 @@ function HostsContent() {
   const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
   const [showDialog, setShowDialog] = useState(false);
+  const [hostDialogTab, setHostDialogTab] = useState<HostDialogTab>("basic");
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
   const [probeLatencyHost, setProbeLatencyHost] = useState<any>(null);
   const [resetTrafficHost, setResetTrafficHost] = useState<any>(null);
@@ -847,12 +858,7 @@ function HostsContent() {
       setServiceCreateSignal((value) => value + 1);
       return;
     }
-    if (activeManageTab === "tokens") {
-      setTokenCreateSignal((value) => value + 1);
-      return;
-    }
-    resetForm();
-    setShowDialog(true);
+    setTokenCreateSignal((value) => value + 1);
   };
 
   const openEdit = (host: any) => {
@@ -875,6 +881,7 @@ function HostsContent() {
       blockTls: !!host.blockTls,
     });
     setEditingId(host.id);
+    setHostDialogTab("basic");
     setShowDialog(true);
   };
 
@@ -1188,7 +1195,7 @@ function HostsContent() {
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
-              {activeManageTab === "services" ? "添加服务" : activeManageTab === "tokens" ? "添加 Token" : "添加主机"}
+              {activeManageTab === "services" ? "添加服务" : "添加主机"}
             </Button>
           )}
         </div>
@@ -1441,7 +1448,7 @@ function HostsContent() {
                               title="查看服务延迟"
                               onClick={() => setProbeLatencyHost(host)}
                             >
-                              <Eye className="h-3.5 w-3.5" />
+                              <Activity className="h-3.5 w-3.5" />
                             </Button>
                             {user?.role === "admin" && (
                               <Button
@@ -1679,24 +1686,39 @@ function HostsContent() {
         </DialogContent>
       </Dialog>
 
-      {/* 添加/编辑对话框 */}
+      {/* 编辑主机对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-5xl">
+        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
           <DialogHeader className="shrink-0 space-y-1">
-            <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
+            <DialogTitle>编辑主机</DialogTitle>
             <DialogDescription className="sr-only">
-              {editingId ? "修改主机信息" : "添加 Agent 主机"}
+              修改主机信息
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]">
-              <div className="space-y-4">
+          <Tabs
+            value={hostDialogTab === "policy" && user?.role !== "admin" ? "basic" : hostDialogTab}
+            onValueChange={(value) => setHostDialogTab(value as HostDialogTab)}
+            className="min-h-0 flex flex-1 flex-col overflow-hidden"
+          >
+            <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-1 sm:grid-cols-3"} gap-1 rounded-md bg-muted/50 p-1`}>
+              {HOST_DIALOG_TABS.filter((item) => item.value !== "policy" || user?.role === "admin").map((item) => {
+                const Icon = item.icon;
+                return (
+                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 gap-2 px-3 py-2">
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+              <TabsContent value="basic" className="m-0">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">基础信息</Label>
                     <span className="text-xs text-muted-foreground">主机连接</span>
                   </div>
-                  <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">
                       <Label className="text-sm">主机名称</Label>
                       <Input
@@ -1706,12 +1728,10 @@ function HostsContent() {
                         onChange={(e) => setForm({ ...form, name: e.target.value })}
                       />
                     </div>
-                    {editingId && (
-                      <div className="space-y-1.5">
-                        <Label className="text-sm">Agent 检测 IP</Label>
-                        <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
-                      </div>
-                    )}
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">Agent 检测 IP</Label>
+                      <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                    </div>
                   </div>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1.5">
@@ -1743,7 +1763,9 @@ function HostsContent() {
                     />
                   </div>
                 </section>
+              </TabsContent>
 
+              <TabsContent value="ports" className="m-0">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">端口限制</Label>
@@ -1808,9 +1830,9 @@ function HostsContent() {
                     </p>
                   )}
                 </section>
-              </div>
+              </TabsContent>
 
-              <div className="space-y-4">
+              <TabsContent value="traffic" className="m-0">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">流量配置</Label>
@@ -1818,7 +1840,7 @@ function HostsContent() {
                   </div>
                   {user?.role === "admin" ? (
                     <>
-                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                      <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-1.5">
                           <Label className="text-sm">机器购买时间</Label>
                           <Input
@@ -1870,14 +1892,16 @@ function HostsContent() {
                     </div>
                   )}
                 </section>
+              </TabsContent>
 
-                {user?.role === "admin" && (
+              {user?.role === "admin" && (
+                <TabsContent value="policy" className="m-0">
                   <section className="rounded-md border border-border/50 bg-background/45 p-4">
                     <div className="mb-4 flex items-center justify-between gap-3">
                       <Label className="text-sm font-semibold">协议屏蔽</Label>
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                       <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
                         <span className="text-sm font-medium">HTTP</span>
                         <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
@@ -1892,16 +1916,16 @@ function HostsContent() {
                       </label>
                     </div>
                   </section>
-                )}
-              </div>
+                </TabsContent>
+              )}
             </div>
-          </div>
+          </Tabs>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowDialog(false)}>
               取消
             </Button>
             <Button onClick={handleSubmit} disabled={isPending || !form.name}>
-              {isPending ? "处理中..." : editingId ? "保存" : "添加"}
+              {isPending ? "处理中..." : "保存"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1917,4 +1941,3 @@ export default function Hosts() {
     </DashboardLayout>
   );
 }
-

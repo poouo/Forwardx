@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.156] - 2026-06-20
+
+### Changed
+
+- Improved host and tunnel management selectors with compact selected-host rows, status labels, and clearer load-balance exit controls.
+- Reworked the host edit dialog into focused tabs and refined dialog motion handling so card animations do not conflict with modal transitions.
+- Bumped panel version to 2.3.156. Agent target version remains 2.2.99.
+- Android APP version remains 2.3.44 and the APK release pointer is updated to 2.3.156.
+
 ## [2.3.141] - 2026-06-15
 
 ### Fixed

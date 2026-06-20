@@ -4,17 +4,43 @@ import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
 
 const LOCK_RELEASE_DELAY_MS = 360
+const MOTION_LOCK_RELEASE_DELAY_MS = 520
 
 const Dialog = ({ open, defaultOpen, onOpenChange, modal = true, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) => {
   const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
   const isOpen = open ?? internalOpen
   const lockActiveRef = React.useRef(false)
   const releaseTimerRef = React.useRef<number | null>(null)
+  const motionReleaseTimerRef = React.useRef<number | null>(null)
 
   const handleOpenChange = React.useCallback((nextOpen: boolean) => {
     setInternalOpen(nextOpen)
     onOpenChange?.(nextOpen)
   }, [onOpenChange])
+
+  const markMotionLocked = React.useCallback(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return
+    if (motionReleaseTimerRef.current !== null) {
+      window.clearTimeout(motionReleaseTimerRef.current)
+      motionReleaseTimerRef.current = null
+    }
+    document.body.dataset.dialogMotionLock = "true"
+    document.body.dataset.dialogMotionLockUntil = String(Date.now() + MOTION_LOCK_RELEASE_DELAY_MS)
+  }, [])
+
+  const releaseMotionLock = React.useCallback(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return
+    document.body.dataset.dialogMotionLockUntil = String(Date.now() + MOTION_LOCK_RELEASE_DELAY_MS)
+    if (motionReleaseTimerRef.current !== null) window.clearTimeout(motionReleaseTimerRef.current)
+    motionReleaseTimerRef.current = window.setTimeout(() => {
+      motionReleaseTimerRef.current = null
+      const lockUntil = Number(document.body.dataset.dialogMotionLockUntil || "0")
+      if (Date.now() >= lockUntil && !document.body.dataset.dialogScrollLock) {
+        delete document.body.dataset.dialogMotionLock
+        delete document.body.dataset.dialogMotionLockUntil
+      }
+    }, MOTION_LOCK_RELEASE_DELAY_MS)
+  }, [])
 
   const releaseScrollLock = React.useCallback(() => {
     if (!lockActiveRef.current || typeof document === "undefined") return
@@ -24,15 +50,17 @@ const Dialog = ({ open, defaultOpen, onOpenChange, modal = true, ...props }: Rea
     } else {
       delete document.body.dataset.dialogScrollLock
       delete document.body.dataset.dialogHadScrollbar
+      releaseMotionLock()
       document.body.style.removeProperty("--fx-dialog-lock-width")
       document.documentElement.style.removeProperty("--fx-dialog-lock-width")
     }
     lockActiveRef.current = false
-  }, [])
+  }, [releaseMotionLock])
 
   React.useLayoutEffect(() => {
     if (!modal || typeof document === "undefined") return
     if (isOpen) {
+      markMotionLocked()
       if (releaseTimerRef.current !== null) {
         window.clearTimeout(releaseTimerRef.current)
         releaseTimerRef.current = null
@@ -59,15 +87,20 @@ const Dialog = ({ open, defaultOpen, onOpenChange, modal = true, ...props }: Rea
         releaseScrollLock()
       }, LOCK_RELEASE_DELAY_MS)
     }
-  }, [isOpen, modal, releaseScrollLock])
+  }, [isOpen, markMotionLocked, modal, releaseScrollLock])
 
   React.useLayoutEffect(() => () => {
     if (releaseTimerRef.current !== null && typeof window !== "undefined") {
       window.clearTimeout(releaseTimerRef.current)
       releaseTimerRef.current = null
     }
+    if (motionReleaseTimerRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(motionReleaseTimerRef.current)
+      motionReleaseTimerRef.current = null
+    }
     releaseScrollLock()
-  }, [releaseScrollLock])
+    releaseMotionLock()
+  }, [releaseMotionLock, releaseScrollLock])
 
   return <DialogPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} modal={modal} {...props} />
 }

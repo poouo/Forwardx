@@ -1,4 +1,4 @@
-﻿import DashboardLayout from "@/components/DashboardLayout";
+import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
@@ -59,7 +59,6 @@ import {
   ShieldCheck,
   Stethoscope,
   Trash2,
-  X,
   XCircle,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
@@ -81,6 +80,7 @@ import {
   YAxis,
 } from "recharts";
 import MultiHopEditor from "@/components/MultiHopEditor";
+import HostStatusLabel from "@/components/HostStatusLabel";
 import { ForwardGroupsContent } from "@/pages/ForwardGroups";
 
 const loadReactGlobe = () => import("react-globe.gl");
@@ -320,69 +320,121 @@ function TunnelLoadBalanceExitEditor({
   value: Array<{ hostId: number | null; connectHost: string }>;
   onChange: (next: Array<{ hostId: number | null; connectHost: string }>) => void;
 }) {
+  const hostById = useMemo(() => new Map((hosts || []).map((host: any) => [Number(host.id), host])), [hosts]);
   const selectedIds = new Set(value.map((item) => Number(item.hostId || 0)).filter((id) => id > 0));
   const blockedIds = new Set(primaryHostIds.map((id) => Number(id || 0)).filter((id) => id > 0));
-  const canAdd = value.length < MAX_EXTRA_TUNNEL_EXITS;
-  const updateItem = (index: number, patch: Partial<{ hostId: number | null; connectHost: string }>) => {
-    onChange(value.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
+  const selectedExits = value
+    .map((item, index) => {
+      const hostId = Number(item.hostId || 0);
+      const host = hostById.get(hostId);
+      return { item, index, hostId, host };
+    })
+    .filter((item) => item.hostId > 0 && item.host);
+  const availableHosts = hosts.filter((host: any) => {
+    const hostId = Number(host.id);
+    return hostId > 0 && !blockedIds.has(hostId) && !selectedIds.has(hostId);
+  });
+  const reachedMaxExits = selectedExits.length >= MAX_EXTRA_TUNNEL_EXITS;
+  const canAdd = !reachedMaxExits && availableHosts.length > 0;
+
+  const addExit = (hostIdValue: string) => {
+    if (reachedMaxExits) return;
+    const hostId = Number(hostIdValue);
+    if (!Number.isInteger(hostId) || hostId <= 0 || selectedIds.has(hostId) || blockedIds.has(hostId)) return;
+    const host = hostById.get(hostId);
+    if (!host) return;
+    const cleanValue = value.filter((item) => Number(item.hostId || 0) > 0);
+    onChange([...cleanValue, { hostId, connectHost: "" }]);
   };
+
+  const updateExitConnection = (index: number, usePrivateAddress: boolean) => {
+    onChange(value.map((item, idx) => {
+      if (idx !== index) return item;
+      const host = hostById.get(Number(item.hostId || 0));
+      const privateAddr = hostPrivateAddress(host);
+      return { ...item, connectHost: usePrivateAddress && privateAddr ? privateAddr : "" };
+    }));
+  };
+
   const removeItem = (index: number) => {
     onChange(value.filter((_, idx) => idx !== index));
   };
+
   return (
     <div className="space-y-2 rounded-md border border-border/60 bg-muted/15 p-2.5">
       <div className="flex items-center justify-between gap-2">
         <Label className="text-sm">负载出口</Label>
-        <Badge variant="outline" className="h-6 px-2 text-[11px]">{value.length + 1}/5</Badge>
+        <Badge variant="outline" className="h-6 px-2 text-[11px]">{selectedExits.length + 1}/{MAX_EXTRA_TUNNEL_EXITS + 1}</Badge>
       </div>
-      <div className="space-y-2">
-        {value.map((item, index) => {
-          const currentId = Number(item.hostId || 0);
-          const availableHosts = hosts.filter((host: any) => {
-            const hostId = Number(host.id);
-            return hostId === currentId || (!blockedIds.has(hostId) && !selectedIds.has(hostId));
-          });
-          return (
-            <div key={index} className="grid gap-2 rounded-md border border-border/50 bg-background/70 p-2 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)_32px]">
-              <Select
-                value={currentId ? String(currentId) : ""}
-                onValueChange={(hostId) => updateItem(index, { hostId: Number(hostId), connectHost: "" })}
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="选择出口" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableHosts.map((host: any) => (
-                    <SelectItem key={host.id} value={String(host.id)}>
-                      {host.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                className="h-9"
-                value={item.connectHost}
-                onChange={(event) => updateItem(index, { connectHost: event.target.value })}
-                placeholder="连接地址，留空使用入口地址"
-              />
-              <Button type="button" variant="ghost" size="icon" className="h-9 w-9" onClick={() => removeItem(index)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          );
-        })}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Select value="" onValueChange={addExit} disabled={!canAdd}>
+          <SelectTrigger className="h-8 text-sm">
+            <SelectValue placeholder={reachedMaxExits ? `最多 ${MAX_EXTRA_TUNNEL_EXITS} 个负载出口` : availableHosts.length === 0 ? "无可添加出口" : "添加负载出口..."} />
+          </SelectTrigger>
+          <SelectContent>
+            {reachedMaxExits ? (
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">最多支持 {MAX_EXTRA_TUNNEL_EXITS} 个负载出口</div>
+            ) : availableHosts.length === 0 ? (
+              <div className="px-2 py-4 text-center text-xs text-muted-foreground">已无可添加出口</div>
+            ) : availableHosts.map((host: any) => (
+              <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
+                <HostStatusLabel host={host} label={host.name} />
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selectedExits.length > 0 && (
+          <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{selectedExits.length} / {MAX_EXTRA_TUNNEL_EXITS} 个出口</span>
+        )}
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="h-8 w-full gap-1.5"
-        disabled={!canAdd}
-        onClick={() => onChange([...value, { hostId: null, connectHost: "" }])}
-      >
-        <Plus className="h-4 w-4" />
-        添加出口
-      </Button>
+
+      {selectedExits.length === 0 ? (
+        <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
+          从上方选择负载出口
+        </div>
+      ) : (
+        <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
+          {selectedExits.map(({ item, index, hostId, host }, displayIndex) => {
+            const privateAddr = hostPrivateAddress(host);
+            const publicAddr = hostPublicAddress(host);
+            const usePrivateAddress = !!privateAddr && String(item.connectHost || "").trim() === privateAddr;
+            return (
+              <div key={hostId} className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+                  {displayIndex + 1}
+                </span>
+                <div className="min-w-0">
+                  <HostStatusLabel host={host} label={host?.name || `#${hostId}`} className="min-w-0 text-sm font-medium" labelClassName="truncate" />
+                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {usePrivateAddress ? `内网 ${privateAddr}` : `入口 ${publicAddr || "未配置"}`}
+                  </div>
+                </div>
+                <div className="flex h-7 items-center gap-1.5">
+                  <TooltipProvider delayDuration={120}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className={privateAddr ? "inline-flex" : "inline-flex cursor-not-allowed"}>
+                          <Switch
+                            checked={usePrivateAddress}
+                            disabled={!privateAddr}
+                            onCheckedChange={(checked) => updateExitConnection(index, !!checked)}
+                            aria-label={`为${host?.name || `#${hostId}`}使用内网IP`}
+                          />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{privateAddr ? "使用内网IP连接" : "请先配置内网IP"}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                  <span className="hidden text-xs text-muted-foreground sm:inline">内网IP</span>
+                </div>
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => removeItem(index)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1480,10 +1532,16 @@ function TunnelsContent() {
       connectHost: tunnel.connectHost || "",
       loadBalanceEnabled: !!tunnel.loadBalanceEnabled,
       loadBalanceExits: Array.isArray(tunnel.loadBalanceExits)
-        ? tunnel.loadBalanceExits.map((exit: any) => ({
-          hostId: Number(exit.hostId) || null,
-          connectHost: String(exit.connectHost || "").trim(),
-        })).slice(0, MAX_EXTRA_TUNNEL_EXITS)
+        ? tunnel.loadBalanceExits.map((exit: any) => {
+          const hostId = Number(exit.hostId) || null;
+          const host = hosts?.find((item: any) => Number(item.id) === Number(hostId));
+          const privateAddr = hostPrivateAddress(host);
+          const connectHost = String(exit.connectHost || "").trim();
+          return {
+            hostId,
+            connectHost: privateAddr && connectHost === privateAddr ? privateAddr : "",
+          };
+        }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
         : [],
       blockHttp: false,
       blockSocks: false,
@@ -2297,9 +2355,7 @@ function TunnelsContent() {
                           onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
                             ...prev,
                             loadBalanceEnabled,
-                            loadBalanceExits: loadBalanceEnabled && prev.loadBalanceExits.length === 0
-                              ? [{ hostId: null, connectHost: "" }]
-                              : prev.loadBalanceExits,
+                            loadBalanceExits: prev.loadBalanceExits,
                           }))}
                         />
                       </div>
@@ -2505,9 +2561,7 @@ function TunnelsContent() {
                   onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
                     ...prev,
                     loadBalanceEnabled,
-                    loadBalanceExits: loadBalanceEnabled && prev.loadBalanceExits.length === 0
-                      ? [{ hostId: null, connectHost: "" }]
-                      : prev.loadBalanceExits,
+                    loadBalanceExits: prev.loadBalanceExits,
                   }))}
                 />
               </div>

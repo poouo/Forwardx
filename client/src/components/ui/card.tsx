@@ -6,7 +6,17 @@ type CardProps = React.HTMLAttributes<HTMLDivElement> & {
   disableEnterAnimation?: boolean
 }
 
+function isDialogMotionLocked() {
+  if (typeof document === "undefined") return false
+  const lockUntil = Number(document.body.dataset.dialogMotionLockUntil || "0")
+  return document.body.hasAttribute("data-dialog-motion-lock")
+    || document.body.hasAttribute("data-dialog-scroll-lock")
+    || document.body.hasAttribute("data-scroll-locked")
+    || Date.now() < lockUntil
+}
+
 const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, enterIndex, disableEnterAnimation, ...props }, ref) => {
+  const [animateEnter, setAnimateEnter] = React.useState(() => !disableEnterAnimation && !isDialogMotionLocked())
   const enterStyle = enterIndex === undefined
     ? style
     : ({
@@ -14,12 +24,19 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(({ className, style, en
         "--card-enter-delay": `${Math.min(Math.max(enterIndex, 0), 12) * 45}ms`,
       } as React.CSSProperties)
 
+  React.useEffect(() => {
+    if (!animateEnter) return
+    const delay = Math.min(Math.max(enterIndex ?? 0, 0), 12) * 45
+    const timer = window.setTimeout(() => setAnimateEnter(false), delay + 420)
+    return () => window.clearTimeout(timer)
+  }, [animateEnter, enterIndex])
+
   return (
     <div
       ref={ref}
       className={cn(
         "glass-panel rounded-lg transition-[border-color,box-shadow,transform] duration-300",
-        !disableEnterAnimation && "stagger-card",
+        animateEnter && "stagger-card",
         className,
       )}
       style={enterStyle}

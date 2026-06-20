@@ -20,6 +20,15 @@ type AutoAnimateContainerProps<T extends ElementType = "div"> = {
 const standardCardGridClassPattern = /\bstandard-card-grid(?:-compact)?\b/;
 const LAYOUT_ANIMATION_CHILD_LIMIT = 36;
 
+function isDialogMotionLocked() {
+  if (typeof document === "undefined") return false;
+  const lockUntil = Number(document.body.dataset.dialogMotionLockUntil || "0");
+  return document.body.hasAttribute("data-dialog-motion-lock")
+    || document.body.hasAttribute("data-dialog-scroll-lock")
+    || document.body.hasAttribute("data-scroll-locked")
+    || Date.now() < lockUntil;
+}
+
 function measureChildren(container: Element) {
   const rects = new Map<Element, DOMRect>();
   Array.from(container.children).forEach((child) => {
@@ -78,6 +87,11 @@ export default function AutoAnimateContainer<T extends ElementType = "div">({
     const animateFromPreviousLayout = () => {
       if (getVisibleChildCount(container) > LAYOUT_ANIMATION_CHILD_LIMIT) {
         previousRectsRef.current = new Map();
+        return;
+      }
+
+      if (isDialogMotionLocked()) {
+        previousRectsRef.current = measureChildren(container);
         return;
       }
 
