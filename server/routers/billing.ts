@@ -79,6 +79,28 @@ export const billingRouter = router({
       return { ...result, forwardAccessRestored: recovery.restored };
     }),
 
+
+  adminSetBalance: adminProcedure
+    .input(z.object({
+      userId: z.number().int().positive(),
+      balanceCents: z.number().int().min(0).max(100_000_000),
+      description: z.string().trim().max(200).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await db.setUserBalance(input.userId, input.balanceCents, {
+        type: "admin_adjust",
+        description: input.description || "管理员手动修改余额",
+        operatorUserId: ctx.user.id,
+      } as any);
+      const recovery = await db.recoverUserForwardAccessIfEligible(input.userId);
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(input.userId, "balance-adjusted-forward-restored");
+      } else if (recovery.reason === "traffic_billing_balance") {
+        await refreshUserForwardEndpoints(input.userId, "balance-adjusted-forward-paused");
+      }
+      appendPanelLog("info", `[Balance] admin set user=${input.userId} balance=${input.balanceCents} delta=${result.amountCents} operator=${ctx.user.id}`);
+      return { ...result, forwardAccessRestored: recovery.restored };
+    }),
   purchasePlanWithBalance: protectedProcedure
     .input(z.object({
       planId: z.number().int().positive(),

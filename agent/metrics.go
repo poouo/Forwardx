@@ -27,6 +27,7 @@ var (
 	tcpingRuleCursor         int
 	tcpingTunnelCursor       int
 	tcpingForwardGroupCursor int
+	tcpingServiceCursor      int
 )
 
 type localRuleState struct {
@@ -47,6 +48,7 @@ type tcpingTask struct {
 	RuleID     int
 	TunnelID   int
 	GroupID    int
+	ServiceID  int
 	Method     string
 	TargetIP   string
 	TargetPort int
@@ -59,6 +61,12 @@ type tcpingTaskResult struct {
 	Payload map[string]any
 }
 
+func hostTrafficSnapshot() map[string]any {
+	return map[string]any{
+		"bytesIn":  netBytes(0),
+		"bytesOut": netBytes(1),
+	}
+}
 func collectTraffic(cfg Config) {
 	states := readLocalRuleStates()
 	iptablesCounters := iptablesCounterSnapshot()
@@ -91,14 +99,16 @@ func collectTraffic(cfg Config) {
 			stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 		}
 	}
-	if len(stats) > 0 {
-		if err := post(cfg, "/api/agent/traffic", map[string]any{"stats": stats}, &map[string]any{}); err != nil {
+	hostTraffic := hostTrafficSnapshot()
+	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
+	if len(stats) > 0 || hostTraffic != nil {
+		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
 			logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 		}
 	}
 }
 
-func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, force bool) {
+func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
 	ruleTasks := []tcpingTask{}
 	for _, state := range readLocalRuleStates() {
 		if state.RuleID <= 0 || state.TargetIP == "" || state.TargetPort <= 0 {
@@ -127,6 +137,33 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			TargetPort: probe.TargetPort,
 			HopIndex:   probe.HopIndex,
 			HopCount:   probe.HopCount,
+		})
+	}
+
+	serviceTasks := []tcpingTask{}
+	for _, probe := range serviceProbes {
+		if probe.ServiceID <= 0 || probe.TargetIP == "" {
+			continue
+		}
+		method := strings.ToLower(strings.TrimSpace(probe.Method))
+		if method == "ping" {
+			serviceTasks = append(serviceTasks, tcpingTask{
+				Kind:      "service",
+				ServiceID: probe.ServiceID,
+				Method:    method,
+				TargetIP:  probe.TargetIP,
+			})
+			continue
+		}
+		if probe.TargetPort <= 0 {
+			continue
+		}
+		serviceTasks = append(serviceTasks, tcpingTask{
+			Kind:       "service",
+			ServiceID:  probe.ServiceID,
+			Method:     "tcping",
+			TargetIP:   probe.TargetIP,
+			TargetPort: probe.TargetPort,
 		})
 	}
 
@@ -164,14 +201,15 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 	selected = append(selected, rotateTCPingTasks(ruleTasks, &tcpingRuleCursor, ruleLimit)...)
 	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, probeLimit)...)
 	selected = append(selected, rotateTCPingTasks(forwardGroupTasks, &tcpingForwardGroupCursor, probeLimit)...)
+	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, probeLimit)...)
 	tcpingCursorMu.Unlock()
 	if len(selected) == 0 {
 		return
 	}
 
-	results, tunnels, forwardGroups := runTCPingTasks(selected)
-	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 {
-		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups}, &map[string]any{})
+	results, tunnels, forwardGroups, services := runTCPingTasks(selected)
+	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
+		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services}, &map[string]any{})
 	}
 }
 
@@ -224,7 +262,7 @@ func rotateTCPingTasks(tasks []tcpingTask, cursor *int, limit int) []tcpingTask 
 	return selected
 }
 
-func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []map[string]any) {
+func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []map[string]any, []map[string]any) {
 	sem := make(chan struct{}, tcpingMaxConcurrency)
 	out := make(chan tcpingTaskResult, len(tasks))
 	var wg sync.WaitGroup
@@ -243,6 +281,7 @@ func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []m
 	results := []map[string]any{}
 	tunnels := []map[string]any{}
 	forwardGroups := []map[string]any{}
+	services := []map[string]any{}
 	for result := range out {
 		if result.Payload == nil {
 			continue
@@ -254,15 +293,17 @@ func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []m
 			tunnels = append(tunnels, result.Payload)
 		case "forwardGroup":
 			forwardGroups = append(forwardGroups, result.Payload)
+		case "service":
+			services = append(services, result.Payload)
 		}
 	}
-	return results, tunnels, forwardGroups
+	return results, tunnels, forwardGroups, services
 }
 
 func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	var latency int
 	var reachable bool
-	if task.Kind == "forwardGroup" && task.Method == "ping" {
+	if (task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatency(task.TargetIP, tcpingProbeTimeout)
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
@@ -282,6 +323,9 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 		payload["method"] = task.Method
 		payload["hopIndex"] = task.HopIndex
 		payload["hopCount"] = task.HopCount
+	case "service":
+		payload["serviceId"] = task.ServiceID
+		payload["method"] = task.Method
 	default:
 		return tcpingTaskResult{}
 	}

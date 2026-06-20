@@ -1168,6 +1168,9 @@ export const systemRouter = router({
         if (input.ddns.webhookMethod !== undefined) next.ddnsWebhookMethod = input.ddns.webhookMethod;
         if (input.ddns.webhookHeaders !== undefined) next.ddnsWebhookHeaders = input.ddns.webhookHeaders.trim() || null;
         await db.setSettings(next);
+        db.runForwardGroupFailoverSweep().catch((error) => {
+          console.warn(`[Settings] forward group DDNS refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
         console.info("[Settings] ddns settings updated");
       }
       return { success: true };

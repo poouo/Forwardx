@@ -1,5 +1,5 @@
-﻿import { desc, eq, sql } from "drizzle-orm";
-import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, trafficStats } from "../../drizzle/schema";
+import { desc, eq, sql } from "drizzle-orm";
+import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, hostTrafficCounters, trafficStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { sqlBool } from "./repositoryUtils";
@@ -53,6 +53,7 @@ export async function deleteHost(id: number) {
   if (!db) return;
   await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
+  await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));
   await db.delete(trafficStats).where(eq(trafficStats.hostId, id));
   await db.delete(hosts).where(eq(hosts.id, id));
 }
@@ -131,6 +132,52 @@ export async function clearStaleHostAgentUpgradeRequests(timeoutMs = 10 * 60 * 1
   );
 }
 
+function dateTimeMs(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) && time > 0 ? time : null;
+  }
+  const text = String(value).trim();
+  const numericText = typeof value === "number" || /^\d+(\.\d+)?$/.test(text);
+  const numberValue = Number(value);
+  if (numericText) {
+    return Number.isFinite(numberValue) && numberValue > 0
+      ? (numberValue < 100_000_000_000 ? numberValue * 1000 : numberValue)
+      : null;
+  }
+  const parsed = new Date(text).getTime();
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function hostResetDueToday(host: any, now: Date) {
+  const resetDay = Math.min(31, Math.max(1, Math.floor(Number(host?.trafficResetDay || 1))));
+  const dueDay = Math.min(resetDay, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
+  if (now.getDate() < dueDay) return false;
+
+  const nowMs = now.getTime();
+  const purchasedAt = dateTimeMs(host?.purchasedAt);
+  if (purchasedAt != null && nowMs < purchasedAt) return false;
+  const stoppedAt = dateTimeMs(host?.stoppedAt);
+  if (stoppedAt != null && nowMs >= stoppedAt) return false;
+
+  const monthStartMs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const lastResetAt = dateTimeMs(host?.lastTrafficReset);
+  return lastResetAt == null || lastResetAt < monthStartMs;
+}
+
+export async function getHostsForTrafficAutoReset(now = new Date()) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(hosts).where(eq(hosts.trafficAutoReset, true));
+  return rows.filter((host) => hostResetDueToday(host, now));
+}
+
+export async function markHostTrafficReset(hostId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(hosts).set({ lastTrafficReset: nowDate(), updatedAt: nowDate() }).where(eq(hosts.id, hostId));
+}
 export async function getHostByAgentToken(token: string) {
   const db = await getDb();
   if (!db) return undefined;
@@ -194,4 +241,3 @@ export async function getHostRuleCount(hostId: number): Promise<number> {
   const blockers = await getHostRuleDeleteBlockers(hostId);
   return blockers.ruleCount + blockers.managedRuleCount + blockers.pendingCleanupCount;
 }
-

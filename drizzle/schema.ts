@@ -1,4 +1,4 @@
-﻿import fs from "fs";
+import fs from "fs";
 import path from "path";
 import { sql } from "drizzle-orm";
 import {
@@ -197,6 +197,11 @@ export const hosts = table("hosts", {
   agentUpgradeRequested: boolean("agentUpgradeRequested").notNull().default(false),
   agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
+  purchasedAt: epoch("purchasedAt"),
+  stoppedAt: epoch("stoppedAt"),
+  trafficAutoReset: boolean("trafficAutoReset").notNull().default(false),
+  trafficResetDay: int("trafficResetDay").notNull().default(1),
+  lastTrafficReset: epoch("lastTrafficReset"),
   networkInterface: text("networkInterface"),
   geoCountryCode: varchar("geoCountryCode", { length: 8 }),
   geoCountryName: text("geoCountryName"),
@@ -342,6 +347,7 @@ export const tunnels = table("tunnels", {
   blockHttp: boolean("blockHttp").notNull().default(false),
   blockSocks: boolean("blockSocks").notNull().default(false),
   blockTls: boolean("blockTls").notNull().default(false),
+  loadBalanceEnabled: boolean("loadBalanceEnabled").notNull().default(false),
   isEnabled: boolean("isEnabled").notNull().default(true),
   isRunning: boolean("isRunning").notNull().default(false),
   lastLatencyMs: int("lastLatencyMs"),
@@ -355,6 +361,20 @@ export const tunnels = table("tunnels", {
 export type Tunnel = typeof tunnels.$inferSelect;
 export type InsertTunnel = typeof tunnels.$inferInsert;
 
+export const tunnelExitNodes = table("tunnel_exit_nodes", {
+  id: serial("id"),
+  tunnelId: int("tunnelId").notNull(),
+  seq: int("seq").notNull(),
+  hostId: int("hostId").notNull(),
+  listenPort: int("listenPort").notNull(),
+  connectHost: text("connectHost"),
+  isEnabled: boolean("isEnabled").notNull().default(true),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type TunnelExitNode = typeof tunnelExitNodes.$inferSelect;
+export type InsertTunnelExitNode = typeof tunnelExitNodes.$inferInsert;
+
 export const tunnelHops = table("tunnel_hops", {
   id: serial("id"),
   tunnelId: int("tunnelId").notNull(),
@@ -365,6 +385,20 @@ export const tunnelHops = table("tunnel_hops", {
 });
 export type TunnelHop = typeof tunnelHops.$inferSelect;
 export type InsertTunnelHop = typeof tunnelHops.$inferInsert;
+
+export const forwardRuleTunnelExits = table("forward_rule_tunnel_exits", {
+  id: serial("id"),
+  ruleId: int("ruleId").notNull(),
+  tunnelId: int("tunnelId").notNull(),
+  exitNodeId: int("exitNodeId").notNull(),
+  exitSeq: int("exitSeq").notNull(),
+  exitHostId: int("exitHostId").notNull(),
+  tunnelExitPort: int("tunnelExitPort").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type ForwardRuleTunnelExit = typeof forwardRuleTunnelExits.$inferSelect;
+export type InsertForwardRuleTunnelExit = typeof forwardRuleTunnelExits.$inferInsert;
 
 export const hostMetrics = table("host_metrics", {
   id: serial("id"),
@@ -383,6 +417,22 @@ export const hostMetrics = table("host_metrics", {
 export type HostMetric = typeof hostMetrics.$inferSelect;
 export type InsertHostMetric = typeof hostMetrics.$inferInsert;
 
+export const hostTrafficCounters = table("host_traffic_counters", {
+  id: serial("id"),
+  hostId: int("hostId").notNull().unique(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  lastSystemIn: bigint("lastSystemIn", { mode: "number" }),
+  lastSystemOut: bigint("lastSystemOut", { mode: "number" }),
+  lastDeltaIn: bigint("lastDeltaIn", { mode: "number" }).notNull().default(0),
+  lastDeltaOut: bigint("lastDeltaOut", { mode: "number" }).notNull().default(0),
+  lastReportedAt: epoch("lastReportedAt"),
+  resetAt: epoch("resetAt"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type HostTrafficCounter = typeof hostTrafficCounters.$inferSelect;
+export type InsertHostTrafficCounter = typeof hostTrafficCounters.$inferInsert;
 export const trafficStats = table("traffic_stats", {
   id: serial("id"),
   ruleId: int("ruleId").notNull(),
@@ -430,6 +480,34 @@ export const forwardGroupLatencyStats = table("forward_group_latency_stats", {
 export type ForwardGroupLatencyStat = typeof forwardGroupLatencyStats.$inferSelect;
 export type InsertForwardGroupLatencyStat = typeof forwardGroupLatencyStats.$inferInsert;
 
+export const hostProbeServices = table("host_probe_services", {
+  id: serial("id"),
+  name: text("name").notNull(),
+  method: varchar("method", { length: 16 }).notNull().default("tcping"),
+  targetIp: text("targetIp").notNull(),
+  targetPort: int("targetPort"),
+  hostScope: varchar("hostScope", { length: 16 }).notNull().default("all"),
+  hostIds: text("hostIds"),
+  excludeHostIds: text("excludeHostIds"),
+  intervalSeconds: int("intervalSeconds").notNull().default(30),
+  isEnabled: boolean("isEnabled").notNull().default(true),
+  userId: int("userId").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type HostProbeService = typeof hostProbeServices.$inferSelect;
+export type InsertHostProbeService = typeof hostProbeServices.$inferInsert;
+
+export const hostProbeServiceStats = table("host_probe_service_stats", {
+  id: serial("id"),
+  serviceId: int("serviceId").notNull(),
+  hostId: int("hostId").notNull(),
+  latencyMs: int("latencyMs"),
+  isTimeout: boolean("isTimeout").notNull().default(false),
+  recordedAt: epoch("recordedAt").notNull().default(nowDefault()),
+});
+export type HostProbeServiceStat = typeof hostProbeServiceStats.$inferSelect;
+export type InsertHostProbeServiceStat = typeof hostProbeServiceStats.$inferInsert;
 export const agentTokens = table("agent_tokens", {
   id: serial("id"),
   token: text("token").notNull().unique(),
@@ -615,7 +693,7 @@ export type InsertUserTrafficAddon = typeof userTrafficAddons.$inferInsert;
 export const balanceTransactions = table("balance_transactions", {
   id: serial("id"),
   userId: int("userId").notNull(),
-  type: varchar("type", { length: 32 }).notNull(), // admin_recharge | payment | purchase | redeem | traffic_addon_purchase
+  type: varchar("type", { length: 32 }).notNull(), // admin_recharge | admin_adjust | payment | purchase | redeem | traffic_addon_purchase
   amountCents: bigint("amountCents", { mode: "number" }).notNull(),
   balanceAfterCents: bigint("balanceAfterCents", { mode: "number" }).notNull(),
   description: text("description"),
@@ -786,5 +864,3 @@ export const userTunnelPermissions = table("user_tunnel_permissions", {
 });
 export type UserTunnelPermission = typeof userTunnelPermissions.$inferSelect;
 export type InsertUserTunnelPermission = typeof userTunnelPermissions.$inferInsert;
-
-

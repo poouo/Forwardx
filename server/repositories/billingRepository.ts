@@ -1260,6 +1260,7 @@ function paymentOrderTypeLabel(type: string | null | undefined) {
 
 function balanceTypeLabel(type: string) {
   if (type === "admin_recharge") return "管理员充值";
+  if (type === "admin_adjust") return "管理员修改";
   if (type === "payment") return "在线充值入账";
   if (type === "purchase") return "余额消费";
   if (type === "redeem") return "兑换入账";
@@ -1376,6 +1377,22 @@ export async function addUserBalance(userId: number, amountCents: number, meta: 
   if (kind === "postgresql") return addUserBalancePostgresql(userId, amountCents, meta);
   if (kind === "sqlite") return addUserBalanceSqlite(userId, amountCents, meta);
   throw new Error("Database not available");
+}
+
+export async function setUserBalance(userId: number, balanceCents: number, meta: Omit<InsertBalanceTransaction, "userId" | "amountCents" | "balanceAfterCents">) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (!Number.isFinite(balanceCents) || balanceCents < 0) throw new Error("金额无效");
+  const user = await getUserById(userId);
+  if (!user) throw new Error("用户不存在");
+  const previous = Number((user as any).balanceCents || 0);
+  const next = Math.round(balanceCents);
+  const delta = next - previous;
+  if (delta === 0) {
+    return { balanceCents: next, previousBalanceCents: previous, amountCents: 0, changed: false };
+  }
+  const result = await addUserBalance(userId, delta, meta);
+  return { ...result, previousBalanceCents: previous, amountCents: delta, changed: true };
 }
 
 export async function purchasePlanWithBalance(userId: number, planId: number, discountCodeId?: number | null) {

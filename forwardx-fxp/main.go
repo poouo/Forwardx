@@ -104,7 +104,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.92"
+	fxpRuntimeVersion   = "2.2.99"
 )
 
 var (
@@ -128,12 +128,170 @@ type connGate struct {
 	ips            map[string]int
 }
 
+type exitEndpointSelector struct {
+	endpoints []exitEndpoint
+	healthy   []bool
+	next      int
+	mu        sync.Mutex
+}
+
 func newConnGate(maxConnections, maxIPs int) *connGate {
 	return &connGate{
 		maxConnections: int64(maxConnections),
 		maxIPs:         maxIPs,
 		ips:            make(map[string]int),
 	}
+}
+
+func newExitEndpointSelector(exits []exitEndpoint, fallback exitEndpoint) *exitEndpointSelector {
+	endpoints := make([]exitEndpoint, 0, len(exits)+1)
+	seen := map[string]bool{}
+	add := func(endpoint exitEndpoint) {
+		endpoint.Host = strings.TrimSpace(endpoint.Host)
+		if endpoint.Key == "" {
+			endpoint.Key = fallback.Key
+		}
+		if endpoint.Host == "" || endpoint.Port <= 0 || endpoint.Port > 65535 {
+			return
+		}
+		key := endpoint.Host + ":" + strconv.Itoa(endpoint.Port) + ":" + endpoint.Key
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		endpoints = append(endpoints, endpoint)
+	}
+	add(fallback)
+	for _, endpoint := range exits {
+		add(endpoint)
+	}
+	healthy := make([]bool, len(endpoints))
+	for i := range healthy {
+		healthy[i] = true
+	}
+	return &exitEndpointSelector{endpoints: endpoints, healthy: healthy}
+}
+
+func (s *exitEndpointSelector) count() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.endpoints)
+}
+
+func (s *exitEndpointSelector) pick(excluded map[int]bool) (exitEndpoint, int, bool) {
+	if s == nil {
+		return exitEndpoint{}, -1, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.endpoints) == 0 {
+		return exitEndpoint{}, -1, false
+	}
+	candidates := make([]int, 0, len(s.endpoints))
+	for i := range s.endpoints {
+		if excluded != nil && excluded[i] {
+			continue
+		}
+		if s.healthy[i] {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		for i := range s.endpoints {
+			if excluded != nil && excluded[i] {
+				continue
+			}
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return exitEndpoint{}, -1, false
+	}
+	index := candidates[s.next%len(candidates)]
+	s.next = (s.next + 1) % 1000000
+	return s.endpoints[index], index, true
+}
+
+func (s *exitEndpointSelector) markFailure(index int, err error) {
+	if s == nil || index < 0 {
+		return
+	}
+	s.mu.Lock()
+	if index >= len(s.endpoints) {
+		s.mu.Unlock()
+		return
+	}
+	endpoint := s.endpoints[index]
+	wasHealthy := s.healthy[index]
+	s.healthy[index] = false
+	s.mu.Unlock()
+	if wasHealthy {
+		log.Printf("exit endpoint unhealthy index=%d endpoint=%s:%d reason=%v", index, endpoint.Host, endpoint.Port, err)
+	}
+}
+
+func (s *exitEndpointSelector) markHealthy(index int) {
+	if s == nil || index < 0 {
+		return
+	}
+	s.mu.Lock()
+	if index >= len(s.endpoints) {
+		s.mu.Unlock()
+		return
+	}
+	endpoint := s.endpoints[index]
+	wasHealthy := s.healthy[index]
+	s.healthy[index] = true
+	s.mu.Unlock()
+	if !wasHealthy {
+		log.Printf("exit endpoint recovered index=%d endpoint=%s:%d", index, endpoint.Host, endpoint.Port)
+	}
+}
+
+func dialSelectedSecureTCP(selector *exitEndpointSelector, cfg config) (net.Conn, *secureConn, exitEndpoint, error) {
+	if selector == nil || selector.count() == 0 {
+		return nil, nil, exitEndpoint{}, errors.New("no exit endpoints")
+	}
+	attempted := map[int]bool{}
+	var lastErr error
+	for len(attempted) < selector.count() {
+		endpoint, index, ok := selector.pick(attempted)
+		if !ok {
+			break
+		}
+		attempted[index] = true
+		dialCfg := cfg
+		if endpoint.Key != "" {
+			dialCfg.Key = endpoint.Key
+		}
+		conn, sec, err := dialSecureTCP(endpoint.Host, endpoint.Port, dialCfg)
+		if err == nil {
+			selector.markHealthy(index)
+			return conn, sec, endpoint, nil
+		}
+		lastErr = err
+		selector.markFailure(index, err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no exit endpoint available")
+	}
+	return nil, nil, exitEndpoint{}, lastErr
+}
+
+func formatEndpointList(selector *exitEndpointSelector) string {
+	if selector == nil {
+		return ""
+	}
+	selector.mu.Lock()
+	defer selector.mu.Unlock()
+	parts := make([]string, 0, len(selector.endpoints))
+	for _, endpoint := range selector.endpoints {
+		parts = append(parts, endpoint.Host+":"+strconv.Itoa(endpoint.Port))
+	}
+	return strings.Join(parts, ",")
 }
 
 func (g *connGate) acquire(remoteAddr net.Addr) (func(), bool, string) {
@@ -309,6 +467,10 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, Key: cfg.Key})
+	if selector.count() > 1 {
+		log.Printf("entry load balance exits=%s strategy=round", formatEndpointList(selector))
+	}
 	if protocolHas(cfg, "tcp") {
 		ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
 		if err != nil {
@@ -324,7 +486,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptEntryTCP(ln, cfg, gate)
+			errCh <- acceptEntryTCP(ln, cfg, gate, selector)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -346,7 +508,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- serveEntryUDP(udpConn, cfg)
+			errCh <- serveEntryUDP(udpConn, cfg, selector)
 		}()
 	}
 	wg.Wait()
@@ -361,7 +523,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate) error {
+func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector) error {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
@@ -377,14 +539,14 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate) error {
 		}
 		go func() {
 			defer release()
-			if err := handleEntryTCP(client, cfg); err != nil && !isClosedErr(err) {
+			if err := handleEntryTCP(client, cfg, selector); err != nil && !isClosedErr(err) {
 				log.Printf("entry tcp session error: %v", err)
 			}
 		}()
 	}
 }
 
-func handleEntryTCP(client net.Conn, cfg config) error {
+func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector) error {
 	defer client.Close()
 	var first []byte
 	proxyInfo := proxyProtocolInfoFromConn(client)
@@ -437,7 +599,7 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 			return nil
 		}
 	}
-	exit, sec, err := dialSecureTCP(cfg.ExitHost, cfg.ExitPort, cfg)
+	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
 	if err != nil {
 		return fmt.Errorf("dial exit: %w", err)
 	}
@@ -458,7 +620,7 @@ func handleEntryTCP(client net.Conn, cfg config) error {
 	if err := sec.writeFrame(hello); err != nil {
 		return err
 	}
-	log.Printf("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), cfg.ExitHost, cfg.ExitPort, cfg.TargetIP, cfg.TargetPort)
+	log.Printf("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
 	if len(first) > 0 {
 		if err := sec.writeFrame(first); err != nil {
 			return err
@@ -603,7 +765,7 @@ func formatProxyProtocolV1(hello helloFrame) string {
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
 }
 
-func serveEntryUDP(conn *net.UDPConn, cfg config) error {
+func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector) error {
 	buf := make([]byte, 65535)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
@@ -612,7 +774,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config) error {
 		}
 		payload := append([]byte(nil), buf[:n]...)
 		go func() {
-			resp, err := udpRoundTripToExit(cfg, payload)
+			resp, err := udpRoundTripToExit(cfg, selector, payload)
 			if err != nil || len(resp) == 0 {
 				if err != nil && !isClosedErr(err) {
 					log.Printf("entry udp session error: %v", err)
@@ -624,8 +786,8 @@ func serveEntryUDP(conn *net.UDPConn, cfg config) error {
 	}
 }
 
-func udpRoundTripToExit(cfg config, payload []byte) ([]byte, error) {
-	exit, sec, err := dialSecureTCP(cfg.ExitHost, cfg.ExitPort, cfg)
+func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []byte) ([]byte, error) {
+	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -643,6 +805,7 @@ func udpRoundTripToExit(cfg config, payload []byte) ([]byte, error) {
 	if err := sec.writeFrame(payload); err != nil {
 		return nil, err
 	}
+	log.Printf("entry udp routed tunnel=%d rule=%d exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
 	_ = exit.SetReadDeadline(time.Now().Add(8 * time.Second))
 	resp, err := sec.readFrame()
 	if err == nil {
@@ -777,11 +940,15 @@ func runRelay(done <-chan struct{}, cfg config) error {
 	if cfg.RelayExitHost == "" || cfg.RelayExitPort <= 0 || cfg.RelayKey == "" {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
+	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, Key: cfg.RelayKey})
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
 	if err != nil {
 		return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
 	}
 	log.Printf("relay listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+	if selector.count() > 1 {
+		log.Printf("relay load balance exits=%s strategy=round", formatEndpointList(selector))
+	}
 	go func() {
 		<-done
 		_ = ln.Close()
@@ -796,14 +963,14 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		}
 		enableTCPKeepAlive(upConn)
 		go func() {
-			if err := handleRelaySession(upConn, cfg); err != nil && !isClosedErr(err) {
+			if err := handleRelaySession(upConn, cfg, selector); err != nil && !isClosedErr(err) {
 				log.Printf("relay session error: %v", err)
 			}
 		}()
 	}
 }
 
-func handleRelaySession(upConn net.Conn, cfg config) error {
+func handleRelaySession(upConn net.Conn, cfg config, selector *exitEndpointSelector) error {
 	defer upConn.Close()
 	// Accept upstream encrypted connection (like exit)
 	upSec, err := newExitSecureConn(upConn, cfg)
@@ -837,7 +1004,7 @@ func handleRelaySession(upConn net.Conn, cfg config) error {
 	// Connect to downstream (like entry)
 	downCfg := cfg
 	downCfg.Key = cfg.RelayKey
-	downConn, downSec, err := dialSecureTCP(cfg.RelayExitHost, cfg.RelayExitPort, downCfg)
+	downConn, downSec, endpoint, err := dialSelectedSecureTCP(selector, downCfg)
 	if err != nil {
 		log.Printf("relay dial downstream %s:%d: %v", cfg.RelayExitHost, cfg.RelayExitPort, err)
 		return err
@@ -848,7 +1015,7 @@ func handleRelaySession(upConn net.Conn, cfg config) error {
 	if err := downSec.writeFrame(helloBytes); err != nil {
 		return err
 	}
-	log.Printf("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), cfg.RelayExitHost, cfg.RelayExitPort, hello.TargetIP, hello.TargetPort)
+	log.Printf("relay tcp routed tunnel=%d upstream=%s downstream=%s:%d target=%s:%d", cfg.TunnelID, upConn.RemoteAddr(), endpoint.Host, endpoint.Port, hello.TargetIP, hello.TargetPort)
 	// Bidirectional relay: upstream ↔ downstream
 	return relayBidir(upSec, downSec)
 }

@@ -246,6 +246,10 @@ function UsersContent() {
   const [rechargeUserId, setRechargeUserId] = useState<number | null>(null);
   const [rechargeUserName, setRechargeUserName] = useState("");
   const [rechargeAmount, setRechargeAmount] = useState("");
+  const [showSetBalance, setShowSetBalance] = useState(false);
+  const [setBalanceUserId, setSetBalanceUserId] = useState<number | null>(null);
+  const [setBalanceUserName, setSetBalanceUserName] = useState("");
+  const [setBalanceAmount, setSetBalanceAmount] = useState("");
   const [showSendEmail, setShowSendEmail] = useState(false);
   const [emailUserId, setEmailUserId] = useState<number | null>(null);
   const [emailUserName, setEmailUserName] = useState("");
@@ -474,6 +478,9 @@ function UsersContent() {
   const adminRechargeMutation = trpc.billing.adminRecharge.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
+      utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
+      utils.billing.listTransactions.invalidate();
       toast.success("余额已充值");
       setShowRecharge(false);
       setRechargeAmount("");
@@ -481,6 +488,18 @@ function UsersContent() {
     onError: (err) => toast.error(err.message || "充值失败"),
   });
 
+  const adminSetBalanceMutation = trpc.billing.adminSetBalance.useMutation({
+    onSuccess: (data) => {
+      utils.users.list.invalidate();
+      utils.billing.me.invalidate();
+      utils.billing.ledger.invalidate();
+      utils.billing.listTransactions.invalidate();
+      toast.success(data.changed ? "余额已修改" : "余额未变化");
+      setShowSetBalance(false);
+      setSetBalanceAmount("");
+    },
+    onError: (err) => toast.error(err.message || "修改余额失败"),
+  });
   const adminAddTrafficAddonMutation = trpc.billing.adminAddTrafficAddon.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -593,6 +612,13 @@ function UsersContent() {
     setRechargeUserName(userLabel(u));
     setRechargeAmount("");
     setShowRecharge(true);
+  };
+
+  const openSetBalanceDialog = (u: any) => {
+    setSetBalanceUserId(u.id);
+    setSetBalanceUserName(userLabel(u));
+    setSetBalanceAmount((Number(u.balanceCents || 0) / 100).toFixed(2));
+    setShowSetBalance(true);
   };
 
   const openResetTrafficDialog = (u: any) => {
@@ -790,6 +816,13 @@ function UsersContent() {
     adminRechargeMutation.mutate({ userId: rechargeUserId, amountCents, description: "用户管理手动充值" });
   };
 
+  const handleSetBalance = () => {
+    if (!setBalanceUserId) return;
+    const balanceCents = Math.round(Number(setBalanceAmount || 0) * 100);
+    if (!Number.isFinite(balanceCents) || balanceCents < 0) return toast.error("请输入有效余额");
+    adminSetBalanceMutation.mutate({ userId: setBalanceUserId, balanceCents, description: "用户管理手动修改余额" });
+  };
+
   const handleManageTypeChange = (value: string) => {
     const next = value === "subscriptions" ? "subscriptions" : "accounts";
     setManageType(next);
@@ -902,6 +935,10 @@ function UsersContent() {
         <DropdownMenuItem onSelect={() => openRechargeDialog(u)}>
           <WalletCards className="mr-2 h-4 w-4 text-muted-foreground" />
           <span>余额充值</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openSetBalanceDialog(u)}>
+          <Pencil className="mr-2 h-4 w-4 text-muted-foreground" />
+          <span>修改余额</span>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openAccountDialog(u)}>
           <User className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -1687,6 +1724,34 @@ function UsersContent() {
             </Button>
             <Button onClick={handleRecharge} disabled={adminRechargeMutation.isPending}>
               {adminRechargeMutation.isPending ? "充值中..." : "确认充值"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSetBalance} onOpenChange={setShowSetBalance}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>修改余额</DialogTitle>
+          <DialogDescription>直接设置 "{setBalanceUserName}" 的当前余额。</DialogDescription>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>当前余额</Label>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={setBalanceAmount}
+                onChange={(e) => setSetBalanceAmount(e.target.value)}
+                placeholder="例如：50"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSetBalance(false)} disabled={adminSetBalanceMutation.isPending}>
+              取消
+            </Button>
+            <Button onClick={handleSetBalance} disabled={adminSetBalanceMutation.isPending}>
+              {adminSetBalanceMutation.isPending ? "修改中..." : "确认修改"}
             </Button>
           </DialogFooter>
         </DialogContent>

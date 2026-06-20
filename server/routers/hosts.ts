@@ -45,6 +45,75 @@ const networkInterfaceSchema = z.string().trim().max(32).nullable().optional().r
   "Invalid network interface",
 );
 
+const optionalDateInputSchema = z.string().trim().max(64).nullable().optional();
+const hostProbeTargetSchema = z.string().trim().min(1).max(253).refine(isValidHostOrIp, "Invalid target IP or host");
+const hostProbeIdsSchema = z.array(z.number().int().positive()).max(500).optional();
+const hostProbeServiceInputSchema = z.object({
+  name: z.string().trim().min(1).max(128),
+  method: z.enum(["tcping", "ping"]),
+  targetIp: hostProbeTargetSchema,
+  targetPort: z.number().int().min(1).max(65535).nullable().optional(),
+  hostScope: z.enum(["all", "exclude", "specific"]).default("all"),
+  hostIds: hostProbeIdsSchema,
+  excludeHostIds: hostProbeIdsSchema,
+  intervalSeconds: z.number().int().min(5).max(86400).default(30),
+  isEnabled: z.boolean().optional(),
+});
+
+function normalizeHostProbeServiceInput(input: z.infer<typeof hostProbeServiceInputSchema>) {
+  if (input.method === "tcping" && !input.targetPort) throw new Error("TCPing 服务需要填写目标端口");
+  const hostIds = Array.from(new Set((input.hostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+  const excludeHostIds = Array.from(new Set((input.excludeHostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+  if (input.hostScope === "specific" && hostIds.length === 0) throw new Error("请选择需要运行服务的主机");
+  return {
+    ...input,
+    targetPort: input.method === "tcping" ? Number(input.targetPort) : null,
+    hostIds: input.hostScope === "specific" ? hostIds : [],
+    excludeHostIds: input.hostScope === "exclude" ? excludeHostIds : [],
+    intervalSeconds: Math.max(5, Number(input.intervalSeconds) || 30),
+    isEnabled: input.isEnabled !== false,
+  };
+}
+
+function parseOptionalDateInput(value: string | null | undefined, label: string) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const date = new Date(text);
+  if (!Number.isFinite(date.getTime())) throw new Error(`${label}格式不正确`);
+  return date;
+}
+
+function normalizeExistingOptionalDate(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return value.getTime() > 0 ? value : null;
+  }
+  const date = new Date(String(value));
+  return Number.isFinite(date.getTime()) && date.getTime() > 0 ? date : null;
+}
+
+function assertHostTrafficDates(purchasedAt: Date | null, stoppedAt: Date | null) {
+  if (purchasedAt && stoppedAt && stoppedAt.getTime() <= purchasedAt.getTime()) {
+    throw new Error("机器停止时间必须晚于购买时间");
+  }
+}
+
+function hostTrafficConfigPayload(input: {
+  purchasedAt?: string | null;
+  stoppedAt?: string | null;
+  trafficAutoReset?: boolean;
+  trafficResetDay?: number;
+}) {
+  const purchasedAt = parseOptionalDateInput(input.purchasedAt, "机器购买时间");
+  const stoppedAt = parseOptionalDateInput(input.stoppedAt, "机器停止时间");
+  assertHostTrafficDates(purchasedAt, stoppedAt);
+  return {
+    purchasedAt,
+    stoppedAt,
+    trafficAutoReset: !!input.trafficAutoReset,
+    trafficResetDay: input.trafficResetDay ?? 1,
+  };
+}
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
 }
@@ -181,6 +250,50 @@ export const hostsRouter = router({
       scheduleHostGeoRefresh(visibleHosts);
       return visibleHosts;
     }),
+    probeServices: protectedProcedure.query(async ({ ctx }) => {
+      const isAdmin = ctx.user.role === "admin";
+      const services = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);
+      const latestById = await db.getLatestHostProbeServiceStats(services.map((service: any) => Number(service.id)));
+      return services.map((service: any) => ({
+        ...service,
+        latest: latestById.get(Number(service.id)) || null,
+      }));
+    }),
+    probeServiceSeries: protectedProcedure
+      .input(z.object({ serviceIds: z.array(z.number().int().positive()).max(200).optional(), hours: z.number().int().min(1).max(24 * 30).default(24) }).optional())
+      .query(async ({ input, ctx }) => {
+        const isAdmin = ctx.user.role === "admin";
+        const visibleServices = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);
+        const visibleIds = new Set((visibleServices as any[]).map((service) => Number(service.id)));
+        const requested = Array.from(new Set((input?.serviceIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0)));
+        const serviceIds = requested.length > 0 ? requested.filter((id) => visibleIds.has(id)) : Array.from(visibleIds);
+        if (serviceIds.length === 0) return [];
+        return db.getHostProbeServiceSeries({ serviceIds, hours: input?.hours || 24 });
+      }),
+    createProbeService: adminProcedure
+      .input(hostProbeServiceInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const payload = normalizeHostProbeServiceInput(input);
+        const id = await db.createHostProbeService({ ...payload, userId: ctx.user.id });
+        return { id };
+      }),
+    updateProbeService: adminProcedure
+      .input(hostProbeServiceInputSchema.extend({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        const service = await db.getHostProbeServiceById(input.id);
+        if (!service) throw new Error("服务不存在");
+        const payload = normalizeHostProbeServiceInput(input);
+        await db.updateHostProbeService(input.id, payload);
+        return { success: true };
+      }),
+    deleteProbeService: adminProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        const service = await db.getHostProbeServiceById(input.id);
+        if (!service) throw new Error("服务不存在");
+        await db.deleteHostProbeService(input.id);
+        return { success: true };
+      }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
     listAll: adminProcedure.query(async () => {
       const hosts = await getHostsWithUpgradeStateCleanup();
@@ -211,6 +324,10 @@ export const hostsRouter = router({
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         portAllowlist: z.string().max(2000).nullable().optional(),
+        purchasedAt: optionalDateInputSchema,
+        stoppedAt: optionalDateInputSchema,
+        trafficAutoReset: z.boolean().optional(),
+        trafficResetDay: z.number().int().min(1).max(31).optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -226,8 +343,12 @@ export const hostsRouter = router({
           }
         }
         const agentToken = nanoid(32);
+        const trafficConfig = ctx.user.role === "admin"
+          ? hostTrafficConfigPayload(input)
+          : { purchasedAt: null, stoppedAt: null, trafficAutoReset: false, trafficResetDay: 1 };
         const id = await db.createHost({
           ...input,
+          ...trafficConfig,
           agentToken,
           networkInterface: input.networkInterface || null,
           entryIp: input.entryIp || null,
@@ -254,6 +375,10 @@ export const hostsRouter = router({
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         portAllowlist: z.string().max(2000).nullable().optional(),
+        purchasedAt: optionalDateInputSchema,
+        stoppedAt: optionalDateInputSchema,
+        trafficAutoReset: z.boolean().optional(),
+        trafficResetDay: z.number().int().min(1).max(31).optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -279,6 +404,24 @@ export const hostsRouter = router({
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;
+        if (ctx.user.role === "admin") {
+          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
+          if (hasTrafficConfigInput) {
+            const purchasedAt = (data as any).purchasedAt !== undefined
+              ? parseOptionalDateInput((data as any).purchasedAt, "机器购买时间")
+              : normalizeExistingOptionalDate((host as any).purchasedAt);
+            const stoppedAt = (data as any).stoppedAt !== undefined
+              ? parseOptionalDateInput((data as any).stoppedAt, "机器停止时间")
+              : normalizeExistingOptionalDate((host as any).stoppedAt);
+            assertHostTrafficDates(purchasedAt, stoppedAt);
+            if ((data as any).purchasedAt !== undefined) (data as any).purchasedAt = purchasedAt;
+            if ((data as any).stoppedAt !== undefined) (data as any).stoppedAt = stoppedAt;
+            if ((data as any).trafficAutoReset !== undefined) (data as any).trafficAutoReset = !!(data as any).trafficAutoReset;
+            if ((data as any).trafficResetDay !== undefined) (data as any).trafficResetDay = Math.min(31, Math.max(1, Number((data as any).trafficResetDay) || 1));
+          }
+        } else {
+          for (const field of ["purchasedAt", "stoppedAt", "trafficAutoReset", "trafficResetDay"] as const) delete (data as any)[field];
+        }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];
         }
@@ -364,6 +507,32 @@ export const hostsRouter = router({
           { ttlMs: 10_000, staleMs: 60_000 },
           () => db.getLatestHostMetrics(input.hostId, input.limit),
         );
+      }),
+    traffic: protectedProcedure
+      .input(z.object({ hostId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        await requireHostAccess(ctx, input.hostId);
+        return db.getHostTraffic(input.hostId);
+      }),
+    trafficSummary: protectedProcedure
+      .input(z.object({ hostIds: z.array(z.number()).max(500).optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const hostIds = Array.from(new Set((input?.hostIds || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0)));
+        if (ctx.user.role !== "admin" && hostIds.length === 0) return [];
+        if (ctx.user.role !== "admin" || hostIds.length > 0) {
+          for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
+          return db.getHostTrafficSummary(hostIds);
+        }
+        return db.getHostTrafficSummary();
+      }),
+    resetTraffic: adminProcedure
+      .input(z.object({ hostId: z.number() }))
+      .mutation(async ({ input }) => {
+        const host = await db.getHostById(input.hostId);
+        if (!host) throw new Error("主机不存在");
+        return db.resetHostTraffic(input.hostId);
       }),
     watchMetrics: protectedProcedure
       .input(z.object({ hostIds: z.array(z.number()).max(200) }))

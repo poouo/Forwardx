@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { domainToASCII } from "node:url";
 import * as db from "./db";
 
 export type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
@@ -126,6 +127,21 @@ function normalizeDomain(value: string) {
   return String(value || "").trim().replace(/\.+$/, "").toLowerCase();
 }
 
+function normalizeDnsName(value: string) {
+  const normalized = normalizeDomain(value);
+  return domainToASCII(normalized) || normalized;
+}
+
+function cloudflareZoneCandidates(domain: string) {
+  const labels = normalizeDnsName(domain).split(".").filter(Boolean);
+  const candidates: string[] = [];
+  for (let index = 0; index < labels.length - 1; index += 1) {
+    const candidate = labels.slice(index).join(".");
+    if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+  }
+  return candidates;
+}
+
 function fqdn(value: string) {
   const normalized = normalizeDomain(value);
   return normalized ? `${normalized}.` : "";
@@ -199,33 +215,68 @@ async function readJson(resp: Response, fallback: string) {
   return body;
 }
 
+async function resolveCloudflareZoneId(input: {
+  zoneId?: string;
+  apiToken: string;
+  domain: string;
+}) {
+  const configuredZoneId = String(input.zoneId || "").trim();
+  if (configuredZoneId) return configuredZoneId;
+
+  const headers = {
+    Authorization: `Bearer ${input.apiToken}`,
+    "Content-Type": "application/json",
+  };
+  const candidates = cloudflareZoneCandidates(input.domain);
+  for (const candidate of candidates) {
+    const query = new URLSearchParams({ name: candidate, status: "active", per_page: "50" });
+    const resp = await fetch(`https://api.cloudflare.com/client/v4/zones?${query.toString()}`, { headers });
+    const body = await readJson(resp, "Cloudflare 查询 Zone 失败");
+    if (body?.success === false) {
+      throw new Error(extractJsonError(body, "Cloudflare 查询 Zone 失败"));
+    }
+    const zones = Array.isArray(body?.result) ? body.result : [];
+    const zone = zones.find((item: any) => normalizeDnsName(String(item?.name || "")) === candidate) || zones[0];
+    if (zone?.id) return String(zone.id);
+  }
+
+  throw new Error("Cloudflare 未找到匹配的 Zone；请确认 API Token 有 Zone:Read + DNS:Edit 权限，或手动填写 Zone ID");
+}
+
 async function updateCloudflare(input: {
-  zoneId: string;
+  zoneId?: string;
   apiToken: string;
   domain: string;
   recordType: string;
   value: string;
 }) {
-  const base = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(input.zoneId)}/dns_records`;
   const headers = {
     Authorization: `Bearer ${input.apiToken}`,
     "Content-Type": "application/json",
   };
-  const findUrl = `${base}?type=${encodeURIComponent(input.recordType)}&name=${encodeURIComponent(input.domain)}`;
-  const findResp = await fetch(findUrl, { headers });
+  const zoneId = await resolveCloudflareZoneId(input);
+  const base = `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/dns_records`;
+  const recordName = normalizeDnsName(input.domain);
+  const query = new URLSearchParams({ type: input.recordType, name: recordName, per_page: "50" });
+  const findResp = await fetch(`${base}?${query.toString()}`, { headers });
   const findBody = await readJson(findResp, "Cloudflare 查询记录失败");
   if (findBody?.success === false) {
     throw new Error(extractJsonError(findBody, "Cloudflare 查询记录失败"));
   }
-  const record = Array.isArray(findBody?.result) ? findBody.result[0] : null;
-  const payload = {
+  const records = Array.isArray(findBody?.result) ? findBody.result : [];
+  const record = records.find((item: any) => (
+    normalizeDnsName(String(item?.name || "")) === recordName &&
+    String(item?.type || "").toUpperCase() === input.recordType
+  )) || records[0] || null;
+  const payload: Record<string, unknown> = {
     type: input.recordType,
-    name: input.domain,
+    name: recordName,
     content: input.value,
-    ttl: 60,
-    proxied: false,
+    ttl: record?.ttl || 60,
+    proxied: !!record?.proxied,
   };
-  const resp = await fetch(record?.id ? `${base}/${record.id}` : base, {
+  if (typeof record?.comment === "string" && record.comment) payload.comment = record.comment;
+  const resp = await fetch(record?.id ? `${base}/${encodeURIComponent(String(record.id))}` : base, {
     method: record?.id ? "PUT" : "POST",
     headers,
     body: JSON.stringify(payload),
@@ -550,8 +601,8 @@ export async function updateDdnsRecord(input: DdnsRecordInput) {
   };
 
   if (settings.provider === "cloudflare") {
-    if (!settings.cloudflareZoneId || !settings.cloudflareApiToken) {
-      throw new Error("Cloudflare DDNS 配置不完整");
+    if (!settings.cloudflareApiToken) {
+      throw new Error("Cloudflare DDNS 未配置 API Token");
     }
     await updateCloudflare({
       zoneId: settings.cloudflareZoneId,

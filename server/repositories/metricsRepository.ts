@@ -73,6 +73,192 @@ export async function getLatestHostMetrics(hostId: number, limit = 60) {
   return db.select().from(hostMetrics).where(eq(hostMetrics.hostId, hostId)).orderBy(desc(hostMetrics.recordedAt)).limit(limit);
 }
 
+
+type HostTrafficSample = {
+  bytesIn?: number;
+  bytesOut?: number;
+  reportedAt?: Date;
+};
+
+function nonNegativeCounter(value: unknown) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER);
+}
+
+function hostTrafficDelta(current: number, previous: number | null) {
+  if (previous === null) return 0;
+  return current >= previous ? current - previous : current;
+}
+
+function nullableRowDate(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (value instanceof Date) return value;
+  return new Date(n * 1000);
+}
+
+function zeroHostTraffic(hostId: number) {
+  return {
+    id: 0,
+    hostId,
+    bytesIn: 0,
+    bytesOut: 0,
+    lastSystemIn: null as number | null,
+    lastSystemOut: null as number | null,
+    lastDeltaIn: 0,
+    lastDeltaOut: 0,
+    lastReportedAt: null as Date | null,
+    resetAt: null as Date | null,
+    createdAt: null as Date | null,
+    updatedAt: null as Date | null,
+  };
+}
+
+function mapHostTrafficRow(row: any, fallbackHostId = 0) {
+  const hostId = Number(row?.hostId || fallbackHostId || 0);
+  return {
+    id: Number(row?.id || 0),
+    hostId,
+    bytesIn: nonNegativeCounter(row?.bytesIn),
+    bytesOut: nonNegativeCounter(row?.bytesOut),
+    lastSystemIn: row?.lastSystemIn === null || row?.lastSystemIn === undefined ? null : nonNegativeCounter(row.lastSystemIn),
+    lastSystemOut: row?.lastSystemOut === null || row?.lastSystemOut === undefined ? null : nonNegativeCounter(row.lastSystemOut),
+    lastDeltaIn: nonNegativeCounter(row?.lastDeltaIn),
+    lastDeltaOut: nonNegativeCounter(row?.lastDeltaOut),
+    lastReportedAt: nullableRowDate(row?.lastReportedAt),
+    resetAt: nullableRowDate(row?.resetAt),
+    createdAt: nullableRowDate(row?.createdAt),
+    updatedAt: nullableRowDate(row?.updatedAt),
+  };
+}
+
+async function getHostTrafficRow(hostId: number) {
+  const q = quoteIdentifier;
+  const rows = await queryRaw<any>(
+    `SELECT ${q("id")}, ${q("hostId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("lastSystemIn")}, ${q("lastSystemOut")}, ${q("lastDeltaIn")}, ${q("lastDeltaOut")}, ${q("lastReportedAt")}, ${q("resetAt")}, ${q("createdAt")}, ${q("updatedAt")}
+       FROM ${q("host_traffic_counters")}
+      WHERE ${q("hostId")} = ?
+      LIMIT 1`,
+    [hostId],
+  ).catch(() => []);
+  return rows[0] || null;
+}
+
+export async function recordHostTrafficSample(hostId: number, sample: HostTrafficSample) {
+  const db = await getDb();
+  if (!db) return null;
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+
+  const systemIn = nonNegativeCounter(sample.bytesIn);
+  const systemOut = nonNegativeCounter(sample.bytesOut);
+  const now = sample.reportedAt || nowDate();
+  const nowSec = epochSeconds(now);
+  const q = quoteIdentifier;
+  const table = q("host_traffic_counters");
+  const existing = await getHostTrafficRow(id);
+  const prevIn = existing?.lastSystemIn === null || existing?.lastSystemIn === undefined ? null : nonNegativeCounter(existing.lastSystemIn);
+  const prevOut = existing?.lastSystemOut === null || existing?.lastSystemOut === undefined ? null : nonNegativeCounter(existing.lastSystemOut);
+  const deltaIn = hostTrafficDelta(systemIn, prevIn);
+  const deltaOut = hostTrafficDelta(systemOut, prevOut);
+
+  if (existing) {
+    await executeRaw(
+      `UPDATE ${table}
+          SET ${q("bytesIn")} = ${q("bytesIn")} + ?,
+              ${q("bytesOut")} = ${q("bytesOut")} + ?,
+              ${q("lastSystemIn")} = ?,
+              ${q("lastSystemOut")} = ?,
+              ${q("lastDeltaIn")} = ?,
+              ${q("lastDeltaOut")} = ?,
+              ${q("lastReportedAt")} = ?,
+              ${q("updatedAt")} = ?
+        WHERE ${q("hostId")} = ?`,
+      [deltaIn, deltaOut, systemIn, systemOut, deltaIn, deltaOut, nowSec, nowSec, id],
+    );
+    return getHostTraffic(id);
+  }
+
+  const cols = ["hostId", "bytesIn", "bytesOut", "lastSystemIn", "lastSystemOut", "lastDeltaIn", "lastDeltaOut", "lastReportedAt", "createdAt", "updatedAt"];
+  await executeRaw(
+    `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+    [id, 0, 0, systemIn, systemOut, 0, 0, nowSec, nowSec, nowSec],
+  ).catch(async () => {
+    await executeRaw(
+      `UPDATE ${table}
+          SET ${q("lastSystemIn")} = ?,
+              ${q("lastSystemOut")} = ?,
+              ${q("lastReportedAt")} = ?,
+              ${q("updatedAt")} = ?
+        WHERE ${q("hostId")} = ?`,
+      [systemIn, systemOut, nowSec, nowSec, id],
+    );
+  });
+  return getHostTraffic(id);
+}
+
+export async function getHostTraffic(hostId: number) {
+  const db = await getDb();
+  if (!db) return zeroHostTraffic(Number(hostId) || 0);
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return zeroHostTraffic(0);
+  const row = await getHostTrafficRow(id);
+  return row ? mapHostTrafficRow(row, id) : zeroHostTraffic(id);
+}
+
+export async function getHostTrafficSummary(hostIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = Array.from(new Set((hostIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const q = quoteIdentifier;
+  const where = ids.length ? `WHERE ${q("hostId")} IN (${ids.map(() => "?").join(",")})` : "";
+  const rows = await queryRaw<any>(
+    `SELECT ${q("id")}, ${q("hostId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("lastSystemIn")}, ${q("lastSystemOut")}, ${q("lastDeltaIn")}, ${q("lastDeltaOut")}, ${q("lastReportedAt")}, ${q("resetAt")}, ${q("createdAt")}, ${q("updatedAt")}
+       FROM ${q("host_traffic_counters")}
+      ${where}
+      ORDER BY ${q("hostId")} ASC`,
+    ids,
+  ).catch(() => []);
+  const mapped = (rows as any[]).map((row) => mapHostTrafficRow(row));
+  if (ids.length === 0) return mapped;
+  const byHost = new Map(mapped.map((row) => [row.hostId, row]));
+  return ids.map((id) => byHost.get(id) || zeroHostTraffic(id));
+}
+
+export async function resetHostTraffic(hostId: number) {
+  const db = await getDb();
+  if (!db) return zeroHostTraffic(Number(hostId) || 0);
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return zeroHostTraffic(0);
+  const nowSec = epochSeconds(nowDate());
+  const q = quoteIdentifier;
+  const table = q("host_traffic_counters");
+  const existing = await getHostTrafficRow(id);
+  if (existing) {
+    await executeRaw(
+      `UPDATE ${table}
+          SET ${q("bytesIn")} = 0,
+              ${q("bytesOut")} = 0,
+              ${q("lastDeltaIn")} = 0,
+              ${q("lastDeltaOut")} = 0,
+              ${q("resetAt")} = ?,
+              ${q("updatedAt")} = ?
+        WHERE ${q("hostId")} = ?`,
+      [nowSec, nowSec, id],
+    );
+    return getHostTraffic(id);
+  }
+  const cols = ["hostId", "bytesIn", "bytesOut", "lastDeltaIn", "lastDeltaOut", "resetAt", "createdAt", "updatedAt"];
+  await executeRaw(
+    `INSERT INTO ${table} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+    [id, 0, 0, 0, 0, nowSec, nowSec, nowSec],
+  ).catch(() => undefined);
+  return getHostTraffic(id);
+}
 // ==================== Traffic Stats Queries ====================
 
 export async function insertTrafficStat(stat: InsertTrafficStat, options: { userId?: number } = {}) {

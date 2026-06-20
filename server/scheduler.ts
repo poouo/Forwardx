@@ -71,6 +71,16 @@ async function runMonthlyTrafficReset() {
       console.log(`[Scheduler] Monthly traffic reset: ${usersToReset.length} user(s) reset`);
     }
 
+    const hostsToReset = await db.getHostsForTrafficAutoReset(new Date());
+    for (const host of hostsToReset as any[]) {
+      await db.resetHostTraffic(Number(host.id));
+      await db.markHostTrafficReset(Number(host.id));
+      console.log(`[Scheduler] Auto-reset host traffic for host ${host.id} (${host.name})`);
+    }
+    if (hostsToReset.length > 0) {
+      console.log(`[Scheduler] Monthly host traffic reset: ${hostsToReset.length} host(s) reset`);
+    }
+
     const recharged = await db.rechargeSubscriptionTrafficCycles();
     if (recharged > 0) {
       console.log(`[Scheduler] Subscription traffic recharge: ${recharged} user(s) reset`);
@@ -226,6 +236,7 @@ async function runSelfTestTimeoutSweep() {
 async function runTcpingCleanup() {
   try {
     await db.cleanOldTcpingStats(48);
+    await db.cleanOldHostProbeServiceStats(48);
   } catch (error) {
     console.error("[Scheduler] TCPing cleanup error:", error);
   }

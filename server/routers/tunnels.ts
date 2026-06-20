@@ -16,6 +16,7 @@ import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from ".
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
+const MAX_EXTRA_TUNNEL_EXITS = 4;
 const tunnelQueryCache = createQueryCache(300);
 
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
@@ -64,6 +65,11 @@ const getTunnelDialHost = (tunnel: any, exit: any) => {
 const getHostPublicAddress = (host: any) =>
   String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
+const tunnelLoadBalanceExitSchema = z.object({
+  hostId: z.number(),
+  connectHost: z.string().max(128).nullable().optional(),
+});
+
 function structuredLinkTestMessage(input: {
   kind: string;
   message: string;
@@ -105,10 +111,56 @@ async function normalizeHopConnectHostsForHosts(hopHostIds: number[], hopConnect
   return next;
 }
 
+async function buildExtraExitNodes(ctx: any, options: {
+  tunnelId?: number;
+  primaryHostId: number;
+  blockedHostIds?: number[];
+  enabled: boolean;
+  mode: string;
+  exits?: Array<{ hostId: number; connectHost?: string | null }> | null;
+  existingNodes?: any[];
+}) {
+  if (!options.enabled) return [];
+  const raw = Array.isArray(options.exits) ? options.exits : [];
+  if (raw.length === 0) throw new Error("开启多出口负载后至少需要添加 1 个额外出口");
+  if (raw.length > MAX_EXTRA_TUNNEL_EXITS) throw new Error(`多出口负载最多可额外添加 ${MAX_EXTRA_TUNNEL_EXITS} 个出口`);
+  const seen = new Set<number>([
+    Number(options.primaryHostId),
+    ...(options.blockedHostIds || []).map((id) => Number(id || 0)),
+  ].filter((id) => Number.isFinite(id) && id > 0));
+  const existingByHost = new Map<number, any>();
+  for (const node of options.existingNodes || []) {
+    existingByHost.set(Number((node as any).hostId), node);
+  }
+  const nodes: { seq: number; hostId: number; listenPort: number; connectHost?: string | null; isEnabled: boolean }[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const hostId = Number(raw[i]?.hostId || 0);
+    if (!Number.isFinite(hostId) || hostId <= 0) throw new Error("请选择有效的额外出口 Agent");
+    if (seen.has(hostId)) throw new Error("多出口负载中的出口 Agent 不能重复");
+    seen.add(hostId);
+    const host = await requireHostAccess(ctx, hostId);
+    const connectHost = normalizeTunnelConnect(raw[i]?.connectHost ?? null);
+    let listenPort = Number(existingByHost.get(hostId)?.listenPort || 0);
+    if (!listenPort) {
+      listenPort = await db.findAvailableTunnelExitPort(hostId, (host as any)?.portRangeStart, (host as any)?.portRangeEnd) ?? 0;
+      if (!listenPort) throw new Error(`出口 Agent ${host?.name || hostId} 已无可用隧道端口`);
+    }
+    nodes.push({
+      seq: i + 1,
+      hostId,
+      listenPort,
+      connectHost,
+      isEnabled: true,
+    });
+  }
+  return nodes;
+}
+
 async function attachTunnelEndpointHosts(tunnels: any[]) {
   const hostMap = new Map<number, any>();
   const hopHostIdsByTunnel = new Map<number, number[]>();
   const hopConnectHostsByTunnel = new Map<number, Array<string | null>>();
+  const extraExitNodesByTunnel = new Map<number, any[]>();
   const hostIds = new Set<number>();
   for (const tunnel of tunnels) {
     const entryHostId = Number(tunnel.entryHostId || 0);
@@ -128,6 +180,21 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
       return value ? value : null;
     });
     if (hopConnectHosts.length >= 2) hopConnectHostsByTunnel.set(Number(tunnel.id), hopConnectHosts);
+    const extraExitNodes = await hopRepo.getTunnelExitNodes(Number(tunnel.id));
+    const normalizedExtraExitNodes = (extraExitNodes || [])
+      .map((node: any) => ({
+        id: Number(node.id),
+        seq: Number(node.seq),
+        hostId: Number(node.hostId),
+        listenPort: Number(node.listenPort),
+        connectHost: String(node.connectHost || "").trim() || null,
+        isEnabled: node.isEnabled !== false,
+      }))
+      .filter((node) => node.hostId > 0);
+    if (normalizedExtraExitNodes.length > 0) {
+      extraExitNodesByTunnel.set(Number(tunnel.id), normalizedExtraExitNodes);
+      for (const node of normalizedExtraExitNodes) hostIds.add(Number(node.hostId));
+    }
   }));
   await Promise.all(tunnels.map(async (tunnel) => {
     const hopIds = hopHostIdsByTunnel.get(Number(tunnel.id));
@@ -187,6 +254,11 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
       hopHosts: (hopHostIdsByTunnel.get(Number(tunnel.id)) || [])
         .map((hostId) => hostSummary(hostMap.get(Number(hostId))))
         .filter(Boolean),
+      loadBalanceExits: (extraExitNodesByTunnel.get(Number(tunnel.id)) || [])
+        .map((node) => ({
+          ...node,
+          host: hostSummary(hostMap.get(Number(node.hostId))),
+        })),
       entryHost: hostSummary(hostMap.get(Number(tunnel.entryHostId || 0))),
       exitHost: hostSummary(hostMap.get(Number(tunnel.exitHostId || 0))),
     };
@@ -250,6 +322,8 @@ export const tunnelsRouter = router({
         blockHttp: z.boolean().optional().default(false),
         blockSocks: z.boolean().optional().default(false),
         blockTls: z.boolean().optional().default(false),
+        loadBalanceEnabled: z.boolean().optional().default(false),
+        loadBalanceExits: z.array(tunnelLoadBalanceExitSchema).max(MAX_EXTRA_TUNNEL_EXITS).optional(),
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
@@ -299,9 +373,18 @@ export const tunnelsRouter = router({
         const connectHost = hopHostIds
           ? normalizeTunnelConnect(input.connectHost)
           : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
+        const loadBalanceEnabled = !!input.loadBalanceEnabled;
+        const extraExitNodes = await buildExtraExitNodes(ctx, {
+          primaryHostId: exitHostId,
+          blockedHostIds: hopHostIds || [entryHostId, exitHostId],
+          enabled: loadBalanceEnabled,
+          mode: input.mode,
+          exits: input.loadBalanceExits || [],
+        });
         const {
           hopHostIds: _ignoredHopHostIds,
           hopConnectHosts: _ignoredHopConnectHosts,
+          loadBalanceExits: _ignoredLoadBalanceExits,
           blockHttp: _ignoredBlockHttp,
           blockSocks: _ignoredBlockSocks,
           blockTls: _ignoredBlockTls,
@@ -318,10 +401,14 @@ export const tunnelsRouter = router({
           blockHttp: false,
           blockSocks: false,
           blockTls: false,
+          loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
           listenPort,
           secret,
           userId: ctx.user.id,
         } as any);
+        if (loadBalanceEnabled && extraExitNodes.length > 0) {
+          await hopRepo.replaceTunnelExitNodes(id, extraExitNodes);
+        }
         // Create hops for multi-hop tunnels
         if (hopHostIds) {
           const hops: { hostId: number; listenPort: number; connectHost?: string | null }[] = [];
@@ -342,7 +429,7 @@ export const tunnelsRouter = router({
           await hopRepo.createTunnelHops(id, hops);
         }
         if (hopHostIds) {
-          await refreshTunnelRuntimeHosts(id, hopHostIds, "tunnel-created");
+          await refreshTunnelRuntimeHosts(id, [...hopHostIds, ...extraExitNodes.map((node) => node.hostId)], "tunnel-created");
         } else {
           await pushTunnelEndpointRefresh({ id, entryHostId: input.entryHostId, exitHostId: input.exitHostId }, "tunnel-created");
         }
@@ -363,6 +450,8 @@ export const tunnelsRouter = router({
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
+        loadBalanceEnabled: z.boolean().optional(),
+        loadBalanceExits: z.array(tunnelLoadBalanceExitSchema).max(MAX_EXTRA_TUNNEL_EXITS).optional(),
         isEnabled: z.boolean().optional(),
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
@@ -372,6 +461,7 @@ export const tunnelsRouter = router({
         if (!tunnel) throw new Error("隧道不存在");
         if (ctx.user.role !== "admin" && tunnel.userId !== ctx.user.id) throw new Error("无权操作此隧道");
         const existingHops = await hopRepo.getTunnelHops(input.id);
+        const existingExtraExitNodes = await hopRepo.getTunnelExitNodes(input.id);
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const nextModeForRuntime = input.mode ?? (tunnel as any).mode;
@@ -401,6 +491,7 @@ export const tunnelsRouter = router({
           id,
           hopHostIds: _ignoredHopHostIds,
           hopConnectHosts: _ignoredHopConnectHosts,
+          loadBalanceExits: _ignoredLoadBalanceExits,
           blockHttp: _ignoredBlockHttp,
           blockSocks: _ignoredBlockSocks,
           blockTls: _ignoredBlockTls,
@@ -446,12 +537,41 @@ export const tunnelsRouter = router({
         (data as any).entryHostId = entryHostId;
         (data as any).exitHostId = exitHostId;
         const normalizedRequestedHopIds = hopHostIds ? hopHostIds : (switchToRegular ? [] : existingHopHostIds);
+        const nextLoadBalanceEnabled = (data as any).loadBalanceEnabled !== undefined ? !!(data as any).loadBalanceEnabled : !!(tunnel as any).loadBalanceEnabled;
+        const requestedExtraExits = (input as any).loadBalanceExits !== undefined
+          ? ((input as any).loadBalanceExits as Array<{ hostId: number; connectHost?: string | null }>)
+          : (existingExtraExitNodes || []).map((node: any) => ({
+            hostId: Number(node.hostId),
+            connectHost: String(node.connectHost || "").trim() || null,
+          }));
+        const extraExitNodes = await buildExtraExitNodes(ctx, {
+          tunnelId: id,
+          primaryHostId: exitHostId,
+          blockedHostIds: normalizedRequestedHopIds.length > 0 ? normalizedRequestedHopIds : [entryHostId, exitHostId],
+          enabled: nextLoadBalanceEnabled,
+          mode: nextModeForRuntime,
+          exits: requestedExtraExits,
+          existingNodes: existingExtraExitNodes,
+        });
+        (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
         const hopChanged = requestedHopHostIds !== undefined
           && (
             JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
             || JSON.stringify(normalizedRequestedHopConnectHosts) !== JSON.stringify(existingHopConnectHosts)
           );
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged;
+        const existingExtraSignature = JSON.stringify((existingExtraExitNodes || []).map((node: any) => ({
+          hostId: Number(node.hostId),
+          connectHost: String(node.connectHost || "").trim() || null,
+          listenPort: Number(node.listenPort) || 0,
+        })));
+        const nextExtraSignature = JSON.stringify(extraExitNodes.map((node) => ({
+          hostId: Number(node.hostId),
+          connectHost: String(node.connectHost || "").trim() || null,
+          listenPort: Number(node.listenPort) || 0,
+        })));
+        const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
+          || existingExtraSignature !== nextExtraSignature;
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
@@ -484,6 +604,13 @@ export const tunnelsRouter = router({
         } else if (switchToRegular) {
           await hopRepo.deleteTunnelHops(id);
         }
+        if ((data as any).loadBalanceEnabled) {
+          await hopRepo.replaceTunnelExitNodes(id, extraExitNodes);
+          await hopRepo.reconcileTunnelRuleExitMappings(id);
+        } else {
+          await hopRepo.clearTunnelExitNodes(id);
+          await hopRepo.clearForwardRuleTunnelExitsByTunnel(id);
+        }
         if (enabledChanged) {
           if ((data as any).isEnabled) {
             await db.restoreForwardRulesByTunnel(id);
@@ -493,14 +620,17 @@ export const tunnelsRouter = router({
         }
         if (keyChanged) await db.resetForwardRulesByTunnel(id);
         if (keyChanged) {
-          const affectedHopHostIds = Array.from(new Set([...existingHopHostIds, ...normalizedRequestedHopIds]));
-          if (affectedHopHostIds.length >= 3) {
+          const existingExtraHostIds = (existingExtraExitNodes || []).map((node: any) => Number(node.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
+          const nextExtraHostIds = extraExitNodes.map((node) => Number(node.hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+          const affectedHopHostIds = Array.from(new Set([...existingHopHostIds, ...normalizedRequestedHopIds, ...existingExtraHostIds, ...nextExtraHostIds]));
+          const hasMultiHopRuntime = existingHopHostIds.length >= 3 || normalizedRequestedHopIds.length >= 3;
+          if (hasMultiHopRuntime) {
             await refreshTunnelRuntimeHosts(id, affectedHopHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
           } else {
             clearTunnelRuntimeStatus(id);
             await pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
           }
-          const endpointHostIds = [tunnel.entryHostId, tunnel.exitHostId, entryHostId, exitHostId]
+          const endpointHostIds = [tunnel.entryHostId, tunnel.exitHostId, entryHostId, exitHostId, ...existingExtraHostIds, ...nextExtraHostIds]
             .map((hostId) => Number(hostId))
             .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
           for (const hostId of Array.from(new Set(endpointHostIds))) {
@@ -550,15 +680,21 @@ export const tunnelsRouter = router({
         const tunnelHopHostIds = Array.isArray(tunnelHops)
           ? tunnelHops.map((hop: any) => Number(hop.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)
           : [];
+        const tunnelExtraExitNodes = await hopRepo.getTunnelExitNodes(Number(tunnel.id));
+        const tunnelExtraExitHostIds = (tunnelExtraExitNodes || [])
+          .map((node: any) => Number(node.hostId))
+          .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
         if (tunnelHopHostIds.length >= 3) {
-          await refreshTunnelRuntimeHosts(Number(tunnel.id), tunnelHopHostIds, "tunnel-test-refresh");
+          await refreshTunnelRuntimeHosts(Number(tunnel.id), [...tunnelHopHostIds, ...tunnelExtraExitHostIds], "tunnel-test-refresh");
         } else if (!tunnel.isRunning) {
-          const pushed = pushAgentRefresh(tunnel.exitHostId, "tunnel-test-refresh");
+          const testRefreshHostIds = Array.from(new Set([Number(tunnel.exitHostId), ...tunnelExtraExitHostIds].filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
+          const pushedResults = testRefreshHostIds.map((hostId) => pushAgentRefresh(hostId, "tunnel-test-refresh"));
+          const pushed = pushedResults.every(Boolean);
           appendPanelLog(
             pushed ? "info" : "warn",
             pushed
-              ? `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; pushed refresh to exit Agent`
-              : `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; exit Agent event stream unavailable, test will still be queued`
+              ? `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; pushed refresh to exit Agent(s)`
+              : `[TunnelTest] tunnel=${tunnel.id} exit service not applied yet; one or more exit Agent event streams unavailable, test will still be queued`
           );
         }
         const target = getTunnelDialHost(tunnel, exit);

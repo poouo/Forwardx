@@ -365,14 +365,17 @@ const IMPORT_TABLE_ORDER = [
   "users",
   "hosts",
   "tunnels",
+  "tunnel_exit_nodes",
   "forward_groups",
   "forward_group_members",
   "forward_rules",
+  "forward_rule_tunnel_exits",
   "tunnel_hops",
   "agent_tokens",
   "user_host_permissions",
   "user_tunnel_permissions",
   "host_metrics",
+  "host_traffic_counters",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "traffic_stats",
@@ -493,6 +496,11 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row, existingWhere: { tunnelId: row.tunnelId, seq: row.seq } };
 
+    case "tunnel_exit_nodes":
+      row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { tunnelId: row.tunnelId, seq: row.seq } };
+
     case "forward_groups":
       row.userId = mapRequiredId(maps, "users", source.userId);
       row.activeMemberId = null;
@@ -516,6 +524,13 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.pendingDelete = false;
       return { row };
 
+    case "forward_rule_tunnel_exits":
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.tunnelId = mapRequiredId(maps, "tunnels", source.tunnelId);
+      row.exitNodeId = mapRequiredId(maps, "tunnel_exit_nodes", source.exitNodeId);
+      row.exitHostId = mapRequiredId(maps, "hosts", source.exitHostId);
+      return { row, existingWhere: { ruleId: row.ruleId, exitNodeId: row.exitNodeId } };
+
     case "agent_tokens":
       if (!row.token) return null;
       row.userId = mapRequiredId(maps, "users", source.userId);
@@ -526,6 +541,10 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
     case "host_metrics":
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row };
+
+    case "host_traffic_counters":
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { hostId: row.hostId } };
 
     case "traffic_stats":
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);

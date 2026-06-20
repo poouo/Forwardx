@@ -1,9 +1,10 @@
-﻿import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTokenManager";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import HostCard from "@/components/hosts/HostCard";
+import HostProbeServiceManager from "@/components/hosts/HostProbeServiceManager";
 import {
   agentDetectedIpText,
   compareVersions,
@@ -63,6 +64,7 @@ import {
   RefreshCw,
   Key,
   Rows3,
+  RotateCcw,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -597,6 +599,10 @@ type HostFormData = {
   portRangeStart: number | null;
   portRangeEnd: number | null;
   portAllowlist: string;
+  purchasedAt: string;
+  stoppedAt: string;
+  trafficAutoReset: boolean;
+  trafficResetDay: number;
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
@@ -612,13 +618,37 @@ const defaultFormData: HostFormData = {
   portRangeStart: null,
   portRangeEnd: null,
   portAllowlist: "",
+  purchasedAt: "",
+  stoppedAt: "",
+  trafficAutoReset: false,
+  trafficResetDay: 1,
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
 };
 
+function formatDateTimeLocal(value: unknown) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(String(value));
+  const time = date.getTime();
+  if (!Number.isFinite(time) || time <= 0) return "";
+  const local = new Date(time - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function parseDateTimeLocal(value: string) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const date = new Date(text);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function clampMonthlyResetDay(value: number) {
+  return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
+}
+
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
-type HostManageTab = "hosts" | "tokens";
+type HostManageTab = "hosts" | "services" | "tokens";
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
@@ -683,12 +713,14 @@ function HostsContent() {
 
   const [showDialog, setShowDialog] = useState(false);
   const [upgradeHost, setUpgradeHost] = useState<any>(null);
+  const [resetTrafficHostId, setResetTrafficHostId] = useState<number | null>(null);
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
+  const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
   const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
@@ -736,6 +768,15 @@ function HostsContent() {
       toast.success("主机已删除");
     },
     onError: (err) => toast.error(err.message || "删除失败"),
+  });
+
+  const resetHostTrafficMutation = trpc.hosts.resetTraffic.useMutation({
+    onSuccess: () => {
+      utils.hosts.trafficSummary.invalidate();
+      toast.success("流量统计已重置");
+    },
+    onError: (err) => toast.error(err.message || "重置流量统计失败"),
+    onSettled: () => setResetTrafficHostId(null),
   });
 
   const upgradeAgentMutation = trpc.hosts.requestAgentUpgrade.useMutation({
@@ -797,6 +838,10 @@ function HostsContent() {
   };
 
   const openCreate = () => {
+    if (activeManageTab === "services") {
+      setServiceCreateSignal((value) => value + 1);
+      return;
+    }
     setTokenCreateSignal((value) => value + 1);
   };
 
@@ -811,6 +856,10 @@ function HostsContent() {
       portRangeStart: host.portRangeStart ?? null,
       portRangeEnd: host.portRangeEnd ?? null,
       portAllowlist: host.portAllowlist || "",
+      purchasedAt: formatDateTimeLocal(host.purchasedAt),
+      stoppedAt: formatDateTimeLocal(host.stoppedAt),
+      trafficAutoReset: !!host.trafficAutoReset,
+      trafficResetDay: clampMonthlyResetDay(host.trafficResetDay || 1),
       blockHttp: !!host.blockHttp,
       blockSocks: !!host.blockSocks,
       blockTls: !!host.blockTls,
@@ -844,6 +893,22 @@ function HostsContent() {
     }
 
     const ni = (form.networkInterface || "").trim();
+    const purchasedAt = parseDateTimeLocal(form.purchasedAt);
+    const stoppedAt = parseDateTimeLocal(form.stoppedAt);
+    if (form.purchasedAt && !purchasedAt) { toast.error("机器购买时间格式不正确"); return; }
+    if (form.stoppedAt && !stoppedAt) { toast.error("机器停止时间格式不正确"); return; }
+    if (purchasedAt && stoppedAt && stoppedAt.getTime() <= purchasedAt.getTime()) {
+      toast.error("机器停止时间必须晚于购买时间");
+      return;
+    }
+    const trafficConfigPayload = user?.role === "admin"
+      ? {
+          purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
+          stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
+          trafficAutoReset: form.trafficAutoReset,
+          trafficResetDay: clampMonthlyResetDay(form.trafficResetDay),
+        }
+      : {};
     const protocolPolicyPayload = user?.role === "admin"
       ? { blockHttp: form.blockHttp, blockSocks: form.blockSocks, blockTls: form.blockTls }
       : {};
@@ -859,6 +924,7 @@ function HostsContent() {
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
         portAllowlist: customPorts.normalized || null,
+        ...trafficConfigPayload,
         ...protocolPolicyPayload,
       });
     } else {
@@ -873,6 +939,7 @@ function HostsContent() {
         portRangeStart: ps ?? null,
         portRangeEnd: pe ?? null,
         portAllowlist: customPorts.normalized || null,
+        ...trafficConfigPayload,
         ...protocolPolicyPayload,
       });
     }
@@ -898,6 +965,25 @@ function HostsContent() {
     isReady: hasDisplayHosts,
   });
   const pagedHosts = hostPagination.items;
+  const pagedHostIds = useMemo(
+    () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
+    [pagedHosts]
+  );
+  const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
+    { hostIds: pagedHostIds },
+    { enabled: pagedHostIds.length > 0, refetchInterval: hostRefreshInterval }
+  );
+  const hostTrafficById = useMemo(() => {
+    const map = new Map<number, any>();
+    for (const row of hostTrafficRows as any[]) map.set(Number(row.hostId), row);
+    return map;
+  }, [hostTrafficRows]);
+  const resetHostTraffic = (host: any) => {
+    const hostId = Number(host?.id);
+    if (!Number.isInteger(hostId) || hostId <= 0) return;
+    setResetTrafficHostId(hostId);
+    resetHostTrafficMutation.mutate({ hostId });
+  };
   const isAgentLatest = (host: any) => {
     if (!latestAgentVersion || !host?.agentVersion) return false;
     return compareVersions(host.agentVersion, latestAgentVersion) >= 0;
@@ -1086,7 +1172,7 @@ function HostsContent() {
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
-              添加主机
+              {activeManageTab === "services" ? "添加服务" : "添加主机"}
             </Button>
           )}
         </div>
@@ -1095,16 +1181,22 @@ function HostsContent() {
       <Tabs
         value={activeManageTab}
         onValueChange={(value) => {
-          if (value === "tokens" && user?.role !== "admin") return;
+          if ((value === "tokens" || value === "services") && user?.role !== "admin") return;
           setActiveManageTab(value as HostManageTab);
         }}
         className="space-y-4"
       >
-        <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-2" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto`}>
+        <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto`}>
           <TabsTrigger value="hosts" className="gap-1.5 px-4">
             <Server className="h-3.5 w-3.5" />
             主机管理
           </TabsTrigger>
+          {user?.role === "admin" && (
+            <TabsTrigger value="services" className="gap-1.5 px-4">
+              <Rows3 className="h-3.5 w-3.5" />
+              服务管理
+            </TabsTrigger>
+          )}
           {user?.role === "admin" && (
             <TabsTrigger value="tokens" className="gap-1.5 px-4">
               <Key className="h-3.5 w-3.5" />
@@ -1149,6 +1241,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
+                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
+                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
                 />
@@ -1179,6 +1274,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
+                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
+                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
                 />
@@ -1202,6 +1300,9 @@ function HostsContent() {
                 onDelete={(id) => deleteMutation.mutate({ id })}
                 onUpgrade={requestAgentUpgrade}
                 canUpgrade={user?.role === "admin"}
+                onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
+                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                traffic={hostTrafficById.get(host.id)}
                 latestAgentVersion={latestAgentVersion}
                 refreshInterval={hostRefreshInterval}
                 compact={viewMode === "compact-card"}
@@ -1220,6 +1321,9 @@ function HostsContent() {
                   onDelete={(id) => deleteMutation.mutate({ id })}
                   onUpgrade={requestAgentUpgrade}
                   canUpgrade={user?.role === "admin"}
+                  onResetTraffic={user?.role === "admin" ? resetHostTraffic : undefined}
+                  resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+                  traffic={hostTrafficById.get(host.id)}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostRefreshInterval}
                 />
@@ -1309,6 +1413,37 @@ function HostsContent() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {user?.role === "admin" && (resetTrafficHostId === host.id && resetHostTrafficMutation.isPending ? (
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-8 w-8"
+                                disabled
+                                title="正在重置流量统计"
+                              >
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              </Button>
+                            ) : resetTrafficHostId === host.id ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 px-2 text-xs"
+                                title="确认清空流量统计"
+                                onClick={() => resetHostTraffic(host)}
+                              >
+                                确定
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title="重置流量统计"
+                                onClick={() => setResetTrafficHostId(host.id)}
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                              </Button>
+                            ))}
                             <Button
                               variant="ghost"
                               size="icon"
@@ -1368,6 +1503,14 @@ function HostsContent() {
         </Card>
       )}
         </TabsContent>
+        {user?.role === "admin" && (
+          <TabsContent value="services" className="space-y-4">
+            <HostProbeServiceManager
+              createSignal={serviceCreateSignal}
+              onCreateSignalHandled={() => setServiceCreateSignal(0)}
+            />
+          </TabsContent>
+        )}
         {user?.role === "admin" && (
           <TabsContent value="tokens" className="space-y-4">
             <AgentTokenManager
@@ -1478,145 +1621,211 @@ function HostsContent() {
 
       {/* 添加/编辑对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-xl">
+        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
           <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>{editingId ? "编辑主机" : "添加主机"}</DialogTitle>
             <DialogDescription className="sr-only">
               {editingId ? "修改主机信息" : "添加 Agent 主机"}
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            <div className="space-y-4">
-              <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(280px,0.95fr)]">
+              <section className="space-y-4 rounded-md border border-border/50 bg-background/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-sm font-semibold">基础信息</Label>
+                  <span className="text-xs text-muted-foreground">主机连接</span>
+                </div>
+                <div className={`grid gap-3 ${editingId ? "sm:grid-cols-2" : ""}`}>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm">主机名称</Label>
+                    <Input
+                      className="h-9"
+                      placeholder="例如: 香港节点-01"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    />
+                  </div>
+                  {editingId && (
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">Agent 检测 IP</Label>
+                      <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                    </div>
+                  )}
+                </div>
                 <div className="space-y-1.5">
-                  <Label className="text-sm">主机名称</Label>
+                  <Label className="text-sm">入口 IP / 域名</Label>
                   <Input
                     className="h-9"
-                    placeholder="例如: 香港节点-01"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="例如: example.com 或 1.2.3.4"
+                    value={form.entryIp}
+                    onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
                   />
                 </div>
-                {editingId && (
+                <div className="grid gap-3 sm:grid-cols-3">
                   <div className="space-y-1.5">
-                    <Label className="text-sm">Agent 检测 IP</Label>
-                    <Input className="h-9 bg-muted/40" value={agentDetectedIpText(displayHosts.find((host: any) => host.id === editingId) || form)} readOnly />
+                    <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
+                    <Input
+                      className="h-9"
+                      placeholder="10.0.0.8 或 node-a.internal"
+                      value={form.tunnelEntryIp}
+                      onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
+                    <Input
+                      className="h-9"
+                      placeholder="eth0, ens33, bond0"
+                      value={form.networkInterface}
+                      onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-3 border-t border-border/50 pt-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-sm font-medium">端口限制</Label>
+                    <span className="text-xs text-muted-foreground">留空不限</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">起始端口</Label>
+                      <Input
+                        className="h-9"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        step={1}
+                        placeholder="例如: 10000"
+                        value={form.portRangeStart ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value ? parseInt(e.target.value) : null;
+                          setForm({ ...form, portRangeStart: v });
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">结束端口</Label>
+                      <Input
+                        className="h-9"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        step={1}
+                        placeholder="例如: 20000"
+                        value={form.portRangeEnd ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value ? parseInt(e.target.value) : null;
+                          setForm({ ...form, portRangeEnd: v });
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label className="text-xs text-muted-foreground">自定义端口</Label>
+                      {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
+                        <span className="text-xs text-muted-foreground">{customPortInputState.ports.length} 个</span>
+                      ) : null}
+                    </div>
+                    <Input
+                      placeholder="例如: 80,443,65095"
+                      value={form.portAllowlist}
+                      onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
+                      className={`h-9 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                    />
+                    {customPortInputState.invalid.length > 0 ? (
+                      <p className="text-xs text-destructive">
+                        自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔
+                      </p>
+                    ) : null}
+                  </div>
+                  {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
+                    <p className="text-xs text-destructive">
+                      起始端口不能大于结束端口
+                    </p>
+                  )}
+                </div>
+                {user?.role === "admin" && (
+                  <div className="space-y-3 border-t border-border/50 pt-3">
+                    <Label className="text-sm font-medium">协议屏蔽</Label>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">HTTP</span>
+                        <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">SOCKS</span>
+                        <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">TLS</span>
+                        <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                      </label>
+                    </div>
                   </div>
                 )}
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-sm">入口 IP / 域名</Label>
-                <Input
-                  className="h-9"
-                  placeholder="例如: example.com 或 1.2.3.4"
-                  value={form.entryIp}
-                  onChange={(e) => setForm({ ...form, entryIp: e.target.value })}
-                />
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label className="text-sm">内网地址 <span className="text-xs text-muted-foreground">可选</span></Label>
-                  <Input
-                    className="h-9"
-                    placeholder="10.0.0.8 或 node-a.internal"
-                    value={form.tunnelEntryIp}
-                    onChange={(e) => setForm({ ...form, tunnelEntryIp: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
-                  <Input
-                    className="h-9"
-                    placeholder="eth0, ens33, bond0"
-                    value={form.networkInterface}
-                    onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="space-y-3 border-t border-border/50 pt-3">
-              <div className="flex items-center justify-between gap-3">
-                <Label className="text-sm font-medium">端口限制</Label>
-                <span className="text-xs text-muted-foreground">留空不限</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">起始端口</Label>
-                  <Input
-                    className="h-9"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    step={1}
-                    placeholder="例如: 10000"
-                    value={form.portRangeStart ?? ""}
-                    onChange={(e) => {
-                      const v = e.target.value ? parseInt(e.target.value) : null;
-                      setForm({ ...form, portRangeStart: v });
-                    }}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">结束端口</Label>
-                  <Input
-                    className="h-9"
-                    type="number"
-                    min={1}
-                    max={65535}
-                    step={1}
-                    placeholder="例如: 20000"
-                    value={form.portRangeEnd ?? ""}
-                    onChange={(e) => {
-                      const v = e.target.value ? parseInt(e.target.value) : null;
-                      setForm({ ...form, portRangeEnd: v });
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
+              </section>
+
+              <section className="space-y-4 rounded-md border border-border/50 bg-background/40 p-4">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs text-muted-foreground">自定义端口</Label>
-                  {customPortInputState.invalid.length === 0 && customPortInputState.ports.length > 0 ? (
-                    <span className="text-xs text-muted-foreground">{customPortInputState.ports.length} 个</span>
-                  ) : null}
+                  <Label className="text-sm font-semibold">流量配置</Label>
+                  <span className="text-xs text-muted-foreground">主机统计</span>
                 </div>
-                <Input
-                  placeholder="例如: 80,443,65095"
-                  value={form.portAllowlist}
-                  onChange={(e) => setForm({ ...form, portAllowlist: e.target.value })}
-                  className={`h-9 ${customPortInputState.invalid.length > 0 ? "border-destructive focus-visible:ring-destructive" : ""}`}
-                />
-                {customPortInputState.invalid.length > 0 ? (
-                  <p className="text-xs text-destructive">
-                    自定义端口只能填写 1-65535 的整数，多个端口使用英文逗号分隔
-                  </p>
-                ) : null}
-              </div>
-              {form.portRangeStart != null && form.portRangeEnd != null && form.portRangeStart > form.portRangeEnd && (
-                <p className="text-xs text-destructive">
-                  起始端口不能大于结束端口
-                </p>
-              )}
+                {user?.role === "admin" ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+                      <div className="space-y-1.5">
+                        <Label className="text-sm">机器购买时间</Label>
+                        <Input
+                          className="h-9"
+                          type="datetime-local"
+                          value={form.purchasedAt}
+                          onChange={(e) => setForm({ ...form, purchasedAt: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-sm">机器停止时间</Label>
+                        <Input
+                          className="h-9"
+                          type="datetime-local"
+                          value={form.stoppedAt}
+                          onChange={(e) => setForm({ ...form, stoppedAt: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <Label className="text-sm font-medium">自动重置流量</Label>
+                      </div>
+                      <Switch checked={form.trafficAutoReset} onCheckedChange={(checked) => setForm({ ...form, trafficAutoReset: checked })} />
+                    </div>
+                    {form.trafficAutoReset && (
+                      <div className="space-y-1.5">
+                        <Label className="text-sm">每月重置日</Label>
+                        <Select
+                          value={String(clampMonthlyResetDay(form.trafficResetDay))}
+                          onValueChange={(value) => setForm({ ...form, trafficResetDay: clampMonthlyResetDay(Number(value)) })}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Array.from({ length: 31 }, (_, index) => index + 1).map((day) => (
+                              <SelectItem key={day} value={String(day)}>{day} 号</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    仅管理员可配置主机流量重置。
+                  </div>
+                )}
+              </section>
             </div>
-            {user?.role === "admin" && (
-              <div className="space-y-3 border-t border-border/50 pt-3">
-                <Label className="text-sm font-medium">协议屏蔽</Label>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                    <span className="text-sm font-medium">HTTP</span>
-                    <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
-                  </label>
-                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                    <span className="text-sm font-medium">SOCKS</span>
-                    <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
-                  </label>
-                  <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                    <span className="text-sm font-medium">TLS</span>
-                    <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
-                  </label>
-                </div>
-              </div>
-            )}
           </div>
           <DialogFooter className="shrink-0 pt-2">
             <Button variant="outline" onClick={() => setShowDialog(false)}>

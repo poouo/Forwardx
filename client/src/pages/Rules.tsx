@@ -290,6 +290,7 @@ const ruleTypeDescriptions = {
 type RuleViewMode = "card" | "table" | "globe";
 type RuleCardSize = "standard" | "compact";
 type RuleDisplayMode = RuleCardSize | "table" | "globe";
+type RuleTrafficRange = "24h" | "total";
 type RulePageSize = 12 | 24 | 36 | 48;
 type RuleGroupType = keyof typeof desktopRuleTypeLabels;
 type RuleGroupCollapsedState = Partial<Record<RuleGroupType, boolean>>;
@@ -1186,6 +1187,7 @@ function RuleTrafficGlobe({
   tunnels,
   forwardGroups,
   trafficByRule,
+  trafficRangeLabel = "24h",
   targetGeoByAddress,
   targetGeoLookupReady,
   onEditRule,
@@ -1195,6 +1197,7 @@ function RuleTrafficGlobe({
   tunnels: any[];
   forwardGroups: any[];
   trafficByRule: Map<number, RuleTrafficSummary>;
+  trafficRangeLabel?: string;
   targetGeoByAddress: Map<string, RuleTargetGeo>;
   targetGeoLookupReady: boolean;
   onEditRule: (rule: any) => void;
@@ -1373,7 +1376,7 @@ function RuleTrafficGlobe({
 
           <div className="pointer-events-none absolute right-4 top-4 flex max-h-[calc(100%-2rem)] w-[min(360px,calc(100%-2rem))] flex-col gap-2 overflow-hidden rounded-md border border-white/10 bg-black/35 p-3 text-xs text-white shadow-lg backdrop-blur-md">
             <div className="flex items-center justify-between gap-3">
-              <span className="font-medium">24h 流量走向</span>
+              <span className="font-medium">{trafficRangeLabel} 流量走向</span>
               <span className="text-white/60">{formatBytes(globeData.summaries.reduce((sum, item) => sum + item.totalBytes, 0))}</span>
             </div>
             <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
@@ -1544,6 +1547,7 @@ function RulesContent() {
   const [ruleCategory, setRuleCategory] = useState<RuleCategory>(() => getStoredRuleCategory());
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
+  const [trafficRange, setTrafficRange] = useState<RuleTrafficRange>("24h");
   const [rulePageSize, setRulePageSize] = useState<RulePageSize>(() =>
     getStoredRulePageSize(getStoredRuleCardSize() === "compact" ? 24 : 12)
   );
@@ -2374,9 +2378,11 @@ function RulesContent() {
     });
     return map;
   }, [ruleTargetGeoRows]);
-  // 近 24h 按规则汇总的流量
+  const trafficRangeLabel = trafficRange === "total" ? "累计" : "近 24h";
+  const trafficRangeHeaderLabel = trafficRange === "total" ? "累计流量" : "24h 流量";
+
   const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
-    { hours: 24, ruleIds: visibleRuleIdsForMetrics },
+    { hours: 24, range: trafficRange, ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
       refetchInterval: 30000,
@@ -2385,6 +2391,7 @@ function RulesContent() {
     }
   );
   const [stableTrafficSummaryRows, setStableTrafficSummaryRows] = useState<any[]>([]);
+  useEffect(() => { setStableTrafficSummaryRows([]); }, [trafficRange]);
   useEffect(() => {
     if (!filteredRulesPrimed) return;
     if (visibleRuleIdsForMetrics.length === 0) {
@@ -2394,7 +2401,7 @@ function RulesContent() {
     if (trafficSummary) {
       setStableTrafficSummaryRows(trafficSummary);
     }
-  }, [filteredRulesPrimed, trafficSummary, visibleRuleIdsForMetrics.length]);
+  }, [filteredRulesPrimed, trafficSummary, trafficRange, visibleRuleIdsForMetrics.length]);
   const trafficSummaryRows = visibleRuleIdsForMetrics.length === 0 ? [] : trafficSummary ?? stableTrafficSummaryRows;
   const trafficByRule = useMemo(() => {
     const m = new Map<number, {
@@ -2464,10 +2471,11 @@ function RulesContent() {
       user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
       filterHost,
       ruleCategory,
+      trafficRange,
     ].join("."),
-    [filterHost, ruleCategory, filterUser, user?.id, user?.role],
+    [filterHost, ruleCategory, trafficRange, filterUser, user?.id, user?.role],
   );
-  const trafficTotalsLastCacheScope = user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`;
+  const trafficTotalsLastCacheScope = `${user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`}.${trafficRange}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
   const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all";
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
@@ -2859,7 +2867,7 @@ function RulesContent() {
         </div>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="shrink-0 text-[10px] text-muted-foreground">出口</span>
-          <code className="min-w-0 flex-1 break-all rounded bg-muted/40 px-1.5 py-0.5 leading-4" title={targetAddress}>
+          <code className="inline-block max-w-full break-all rounded bg-muted/40 px-1.5 py-0.5 leading-4" title={targetAddress}>
             {targetAddress}
           </code>
           {failoverBadge}
@@ -3291,11 +3299,11 @@ function RulesContent() {
           </div>
           <div className="grid grid-cols-3 gap-3 text-xs">
             <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">近 24h 入向</div>
+              <div className="mb-1 text-muted-foreground">{trafficRangeLabel} 入向</div>
               {renderRuleTrafficValue(rule, "in")}
             </div>
             <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">近 24h 出向</div>
+              <div className="mb-1 text-muted-foreground">{trafficRangeLabel} 出向</div>
               {renderRuleTrafficValue(rule, "out")}
             </div>
             <div className="min-w-0">
@@ -3483,12 +3491,34 @@ function RulesContent() {
         </div>
       )}
 
-      {/* 近 24 小时转发流量汇总 */}
+      {/* 转发流量汇总 */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="inline-flex w-full overflow-hidden rounded-md border border-border/40 sm:w-auto">
+          <Button
+            type="button"
+            variant={trafficRange === "total" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-8 flex-1 rounded-none px-3 text-xs sm:flex-none"
+            onClick={() => setTrafficRange("total")}
+          >
+            当前累计
+          </Button>
+          <Button
+            type="button"
+            variant={trafficRange === "24h" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-8 flex-1 rounded-none border-l border-border/40 px-3 text-xs sm:flex-none"
+            onClick={() => setTrafficRange("24h")}
+          >
+            24h
+          </Button>
+        </div>
+      </div>
       <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <Card className="border-border/40">
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 入向</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">{trafficRangeLabel} 入向</p>
               <AnimatedStatValue
                 as="p"
                 value={formatBytes(trafficTotals.bytesIn)}
@@ -3506,7 +3536,7 @@ function RulesContent() {
         <Card className="border-border/40">
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 出向</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">{trafficRangeLabel} 出向</p>
               <AnimatedStatValue
                 as="p"
                 value={formatBytes(trafficTotals.bytesOut)}
@@ -3524,7 +3554,7 @@ function RulesContent() {
         <Card className="border-border/40">
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
             <div className="min-w-0">
-              <p className="text-[10px] sm:text-xs text-muted-foreground">近 24h 连接</p>
+              <p className="text-[10px] sm:text-xs text-muted-foreground">{trafficRangeLabel} 连接</p>
               <AnimatedStatValue
                 as="p"
                 value={trafficTotals.connections.toLocaleString()}
@@ -3556,6 +3586,7 @@ function RulesContent() {
                 tunnels={tunnels || []}
                 forwardGroups={forwardGroups || []}
                 trafficByRule={trafficByRule}
+                trafficRangeLabel={trafficRangeLabel}
                 targetGeoByAddress={targetGeoByAddress}
                 targetGeoLookupReady={targetGeoLookupReady}
                 onEditRule={openEdit}
@@ -3617,7 +3648,7 @@ function RulesContent() {
                           <TableHead>转发配置</TableHead>
                           <TableHead className="w-[150px]">链路</TableHead>
                           <TableHead className="w-[86px]">协议</TableHead>
-                          <TableHead className="w-[140px]">24h 流量 / 延迟</TableHead>
+                          <TableHead className="w-[140px]">{trafficRangeHeaderLabel} / 延迟</TableHead>
                           <TableHead className="w-[76px] text-center">开关</TableHead>
                           <TableHead className="w-[164px] text-right">操作</TableHead>
                         </TableRow>

@@ -42,12 +42,13 @@ export const trafficRulesRouter = router({
     .input(
       z.object({
         hours: z.number().min(1).max(24 * 30).default(24),
+        range: z.enum(["24h", "total"]).default("24h"),
         hostId: z.number().optional(),
         ruleIds: z.array(z.number()).max(1000).optional(),
       })
     )
     .query(async ({ input, ctx }) => {
-      const since = new Date(Date.now() - input.hours * 3600 * 1000);
+      const since = input.range === "total" ? undefined : new Date(Date.now() - input.hours * 3600 * 1000);
       const isAdmin = ctx.user.role === "admin";
       const ruleIds = Array.from(new Set((input.ruleIds || [])
         .map((id) => Number(id))
@@ -55,7 +56,7 @@ export const trafficRulesRouter = router({
         .sort((a, b) => a - b);
       const ruleKey = ruleIds.join(",");
       return trafficQueryCache.get(
-        `summary:${ctx.user.id}:${input.hours}:${input.hostId || 0}:${ruleKey}`,
+        `summary:${ctx.user.id}:${input.range}:${input.hours}:${input.hostId || 0}:${ruleKey}`,
         { ttlMs: 15_000, staleMs: 2 * 60_000 },
         () => db.getTrafficSummaryByRule({
           userId: isAdmin ? undefined : ctx.user.id,

@@ -1,5 +1,5 @@
 ﻿import { and, desc, eq, sql } from "drizzle-orm";
-import { forwardGroupMembers, forwardRules, InsertForwardRule } from "../../drizzle/schema";
+import { forwardGroupMembers, forwardRuleTunnelExits, forwardRules, InsertForwardRule } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
@@ -122,6 +122,7 @@ export async function updateForwardRule(id: number, data: Partial<InsertForwardR
 export async function deleteForwardRule(id: number) {
   const db = await getDb();
   if (!db) return;
+  await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
   await db.update(forwardRules).set({
     isEnabled: false,
     isRunning: false,
@@ -133,6 +134,7 @@ export async function deleteForwardRule(id: number) {
 export async function markForwardRulePendingDelete(id: number) {
   const db = await getDb();
   if (!db) return;
+  await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
   await db.update(forwardRules).set({
     isEnabled: false,
     isRunning: true,

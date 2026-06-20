@@ -59,6 +59,7 @@ import {
   ShieldCheck,
   Stethoscope,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
@@ -119,6 +120,8 @@ type TunnelForm = {
   listenPort: number;
   networkType: "public" | "private";
   connectHost: string;
+  loadBalanceEnabled: boolean;
+  loadBalanceExits: Array<{ hostId: number | null; connectHost: string }>;
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
@@ -211,6 +214,8 @@ const defaultForm: TunnelForm = {
   listenPort: 0,
   networkType: "public",
   connectHost: "",
+  loadBalanceEnabled: false,
+  loadBalanceExits: [],
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
@@ -302,6 +307,84 @@ function normalizeChainConnectHostsForHosts(
     const text = String(value || "").trim();
     return privateAddr && text === privateAddr ? privateAddr : null;
   });
+}
+
+function TunnelLoadBalanceExitEditor({
+  hosts,
+  primaryHostIds,
+  value,
+  onChange,
+}: {
+  hosts: any[];
+  primaryHostIds: number[];
+  value: Array<{ hostId: number | null; connectHost: string }>;
+  onChange: (next: Array<{ hostId: number | null; connectHost: string }>) => void;
+}) {
+  const selectedIds = new Set(value.map((item) => Number(item.hostId || 0)).filter((id) => id > 0));
+  const blockedIds = new Set(primaryHostIds.map((id) => Number(id || 0)).filter((id) => id > 0));
+  const canAdd = value.length < MAX_EXTRA_TUNNEL_EXITS;
+  const updateItem = (index: number, patch: Partial<{ hostId: number | null; connectHost: string }>) => {
+    onChange(value.map((item, idx) => (idx === index ? { ...item, ...patch } : item)));
+  };
+  const removeItem = (index: number) => {
+    onChange(value.filter((_, idx) => idx !== index));
+  };
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-muted/15 p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-sm">负载出口</Label>
+        <Badge variant="outline" className="h-6 px-2 text-[11px]">{value.length + 1}/5</Badge>
+      </div>
+      <div className="space-y-2">
+        {value.map((item, index) => {
+          const currentId = Number(item.hostId || 0);
+          const availableHosts = hosts.filter((host: any) => {
+            const hostId = Number(host.id);
+            return hostId === currentId || (!blockedIds.has(hostId) && !selectedIds.has(hostId));
+          });
+          return (
+            <div key={index} className="grid gap-2 rounded-md border border-border/50 bg-background/70 p-2 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)_32px]">
+              <Select
+                value={currentId ? String(currentId) : ""}
+                onValueChange={(hostId) => updateItem(index, { hostId: Number(hostId), connectHost: "" })}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="选择出口" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableHosts.map((host: any) => (
+                    <SelectItem key={host.id} value={String(host.id)}>
+                      {host.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                className="h-9"
+                value={item.connectHost}
+                onChange={(event) => updateItem(index, { connectHost: event.target.value })}
+                placeholder="连接地址，留空使用入口地址"
+              />
+              <Button type="button" variant="ghost" size="icon" className="h-9 w-9" onClick={() => removeItem(index)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-8 w-full gap-1.5"
+        disabled={!canAdd}
+        onClick={() => onChange([...value, { hostId: null, connectHost: "" }])}
+      >
+        <Plus className="h-4 w-4" />
+        添加出口
+      </Button>
+    </div>
+  );
 }
 
 function hostGeoCoordinate(host: any) {
@@ -530,6 +613,7 @@ type TunnelViewMode = "card" | "table" | "globe";
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
 const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
 const MAX_TUNNEL_HOPS = 10;
+const MAX_EXTRA_TUNNEL_EXITS = 4;
 
 function getStoredTunnelViewMode(): TunnelViewMode {
   if (typeof window === "undefined") return "card";
@@ -1371,6 +1455,8 @@ function TunnelsContent() {
       exitHostId: null,
       hopHostIds: [],
       hopConnectHosts: [],
+      loadBalanceEnabled: false,
+      loadBalanceExits: [],
     });
   };
 
@@ -1392,6 +1478,13 @@ function TunnelsContent() {
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
+      loadBalanceEnabled: !!tunnel.loadBalanceEnabled,
+      loadBalanceExits: Array.isArray(tunnel.loadBalanceExits)
+        ? tunnel.loadBalanceExits.map((exit: any) => ({
+          hostId: Number(exit.hostId) || null,
+          connectHost: String(exit.connectHost || "").trim(),
+        })).slice(0, MAX_EXTRA_TUNNEL_EXITS)
+        : [],
       blockHttp: false,
       blockSocks: false,
       blockTls: false,
@@ -1489,6 +1582,36 @@ function TunnelsContent() {
     const regularPrivateConnectHost = !isMultiHopTunnel && exitPrivateAddr && regularConnectHost === exitPrivateAddr
       ? exitPrivateAddr
       : null;
+    const loadBalanceEnabled = !!form.loadBalanceEnabled;
+    const loadBalanceExits = form.loadBalanceExits
+      .map((exit) => ({ hostId: Number(exit.hostId || 0), connectHost: String(exit.connectHost || "").trim() }))
+      .filter((exit) => exit.hostId > 0 || exit.connectHost);
+    if (loadBalanceEnabled) {
+      if (loadBalanceExits.length === 0) {
+        toast.error("开启多出口负载后至少需要添加 1 个额外出口");
+        return;
+      }
+      if (loadBalanceExits.length > MAX_EXTRA_TUNNEL_EXITS) {
+        toast.error(`最多额外添加 ${MAX_EXTRA_TUNNEL_EXITS} 个出口`);
+        return;
+      }
+      const usedExitIds = new Set<number>(orderedHopHostIds.map((id) => Number(id)).filter((id) => id > 0));
+      for (const exit of loadBalanceExits) {
+        if (!exit.hostId) {
+          toast.error("请选择额外出口 Agent");
+          return;
+        }
+        if (usedExitIds.has(exit.hostId)) {
+          toast.error("额外出口不能与主机链路中的主机重复");
+          return;
+        }
+        usedExitIds.add(exit.hostId);
+        if (exit.connectHost && !isValidConnectHost(exit.connectHost)) {
+          toast.error("额外出口连接地址格式无效");
+          return;
+        }
+      }
+    }
     const payload: any = {
       name: form.name,
       mode: form.mode,
@@ -1504,6 +1627,13 @@ function TunnelsContent() {
         const text = String(value || "").trim();
         return text ? text : null;
       }),
+      loadBalanceEnabled,
+      loadBalanceExits: loadBalanceEnabled
+        ? loadBalanceExits.map((exit) => ({
+          hostId: exit.hostId,
+          connectHost: exit.connectHost || null,
+        }))
+        : [],
     };
     if (editingId) updateMutation.mutate({ id: editingId, ...payload });
     else createMutation.mutate(payload);
@@ -2101,7 +2231,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-2xl sm:p-4">
+        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-xl sm:p-4">
           <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
@@ -2146,6 +2276,7 @@ function TunnelsContent() {
                               entryHostId: nextEntry,
                               exitHostId: nextExit,
                               hopConnectHosts: normalizedConnectHosts,
+                              loadBalanceExits: prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
                             };
                           });
                         }}
@@ -2159,8 +2290,31 @@ function TunnelsContent() {
                       />
                     </div>
                     <div className="space-y-2">
+                      <div className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                        <Label className="text-sm">多出口负载</Label>
+                        <Switch
+                          checked={form.loadBalanceEnabled}
+                          onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
+                            ...prev,
+                            loadBalanceEnabled,
+                            loadBalanceExits: loadBalanceEnabled && prev.loadBalanceExits.length === 0
+                              ? [{ hostId: null, connectHost: "" }]
+                              : prev.loadBalanceExits,
+                          }))}
+                        />
+                      </div>
+                      {form.loadBalanceEnabled && (
+                        <TunnelLoadBalanceExitEditor
+                          hosts={hosts || []}
+                          primaryHostIds={form.hopHostIds}
+                          value={form.loadBalanceExits}
+                          onChange={(loadBalanceExits) => setForm((prev) => ({ ...prev, loadBalanceExits }))}
+                        />
+                      )}
+                    </div>
+                    <div className="space-y-2">
                       <Label>隧道类型</Label>
-                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div className="grid grid-cols-2 gap-1 rounded-md border border-border/50 bg-muted/25 p-0.5">
                         <button
                           type="button"
                           onClick={() => {
@@ -2169,17 +2323,14 @@ function TunnelsContent() {
                           }}
                           disabled={gostRuntimeDisabled}
                           title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                          className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
                             gostTunnelModes.includes(form.mode)
-                              ? "border-primary bg-primary/5 text-foreground"
-                              : "border-border bg-background hover:border-primary/40"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                           } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                         >
                           <Network className="h-4 w-4 shrink-0 text-primary" />
-                          <span className="min-w-0">
-                            <span className="block text-sm font-semibold">GOST 隧道</span>
-                            <span className="block truncate text-xs text-muted-foreground">协议转发</span>
-                          </span>
+                          <span className="truncate">GOST</span>
                         </button>
                         <button
                           type="button"
@@ -2191,17 +2342,14 @@ function TunnelsContent() {
                           }
                           disabled={forwardxRuntimeDisabled}
                           title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                          className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
                             form.mode === "forwardx"
-                              ? "border-primary bg-primary/5 text-foreground"
-                              : "border-border bg-background hover:border-primary/40"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                           } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                         >
                           <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-semibold">ForwardX 加密</span>
-                            <span className="block truncate text-xs text-muted-foreground">统计 / 限速</span>
-                          </span>
+                          <span className="truncate">ForwardX</span>
                         </button>
                       </div>
                     </div>
@@ -2301,7 +2449,7 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-2xl sm:p-4">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-xl sm:p-4">
           <DialogHeader>
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
           </DialogHeader>
@@ -2336,6 +2484,7 @@ function TunnelsContent() {
                       entryHostId: nextEntry,
                       exitHostId: nextExit,
                       hopConnectHosts: normalizedConnectHosts,
+                      loadBalanceExits: prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
                     };
                   });
                 }}
@@ -2349,8 +2498,31 @@ function TunnelsContent() {
               />
             </div>
             <div className="space-y-2">
+              <div className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                <Label className="text-sm">多出口负载</Label>
+                <Switch
+                  checked={form.loadBalanceEnabled}
+                  onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
+                    ...prev,
+                    loadBalanceEnabled,
+                    loadBalanceExits: loadBalanceEnabled && prev.loadBalanceExits.length === 0
+                      ? [{ hostId: null, connectHost: "" }]
+                      : prev.loadBalanceExits,
+                  }))}
+                />
+              </div>
+              {form.loadBalanceEnabled && (
+                <TunnelLoadBalanceExitEditor
+                  hosts={hosts || []}
+                  primaryHostIds={form.hopHostIds}
+                  value={form.loadBalanceExits}
+                  onChange={(loadBalanceExits) => setForm((prev) => ({ ...prev, loadBalanceExits }))}
+                />
+              )}
+            </div>
+            <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="grid grid-cols-2 gap-1 rounded-md border border-border/50 bg-muted/25 p-0.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -2359,17 +2531,14 @@ function TunnelsContent() {
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
                     gostTunnelModes.includes(form.mode)
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background hover:border-primary/40"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                   } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <Network className="h-4 w-4 shrink-0 text-primary" />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold">GOST 隧道</span>
-                    <span className="block truncate text-xs text-muted-foreground">协议转发</span>
-                  </span>
+                  <span className="truncate">GOST</span>
                 </button>
                 <button
                   type="button"
@@ -2381,17 +2550,14 @@ function TunnelsContent() {
                   }
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                  className={`flex min-h-[44px] items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors ${
+                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
                     form.mode === "forwardx"
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background hover:border-primary/40"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                   } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold">ForwardX 加密</span>
-                    <span className="block truncate text-xs text-muted-foreground">统计 / 限速</span>
-                  </span>
+                  <span className="truncate">ForwardX</span>
                 </button>
               </div>
             </div>

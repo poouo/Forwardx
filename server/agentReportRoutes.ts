@@ -3,10 +3,14 @@ import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
 import {
   isAgentForwardGroupLatencyResult,
+  isAgentHostProbeServiceResult,
+  isAgentHostTrafficStat,
   isAgentTcpingResult,
   isAgentTrafficStat,
   isAgentTunnelTcpingResult,
   type AgentForwardGroupLatencyResult,
+  type AgentHostProbeServiceResult,
+  type AgentHostTrafficStat,
   type AgentTcpingResult,
   type AgentTrafficStat,
   type AgentTunnelTcpingResult,
@@ -161,12 +165,23 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       return;
     }
 
-    const stats: AgentTrafficStat[] = Array.isArray(req.body?.stats)
+    const hasStatsArray = Array.isArray(req.body?.stats);
+    const stats: AgentTrafficStat[] = hasStatsArray
       ? req.body.stats.filter(isAgentTrafficStat)
       : [];
-    if (!Array.isArray(req.body?.stats)) {
-      res.status(400).json({ error: "stats array is required" });
+    const hostTraffic: AgentHostTrafficStat | null = isAgentHostTrafficStat(req.body?.hostTraffic)
+      ? req.body.hostTraffic
+      : null;
+    if (!hasStatsArray && !hostTraffic) {
+      res.status(400).json({ error: "stats array or hostTraffic is required" });
       return;
+    }
+
+    if (hostTraffic) {
+      await db.recordHostTrafficSample(host.id, {
+        bytesIn: Number(hostTraffic.bytesIn) || 0,
+        bytesOut: Number(hostTraffic.bytesOut) || 0,
+      });
     }
 
     const quotaTrafficByUser = new Map<number, number>();
@@ -287,8 +302,12 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       ? req.body.forwardGroups
       : (Array.isArray(req.body?.forwardGroupResults) ? req.body.forwardGroupResults : []);
     const forwardGroupResults: AgentForwardGroupLatencyResult[] = rawForwardGroupResults.filter(isAgentForwardGroupLatencyResult);
-    if (results.length === 0 && tunnelResults.length === 0 && forwardGroupResults.length === 0) {
-      res.status(400).json({ error: "results, tunnels or forwardGroups array is required" });
+    const rawServiceResults = Array.isArray(req.body?.services)
+      ? req.body.services
+      : (Array.isArray(req.body?.serviceResults) ? req.body.serviceResults : []);
+    const serviceResults: AgentHostProbeServiceResult[] = rawServiceResults.filter(isAgentHostProbeServiceResult);
+    if (results.length === 0 && tunnelResults.length === 0 && forwardGroupResults.length === 0 && serviceResults.length === 0) {
+      res.status(400).json({ error: "results, tunnels, forwardGroups or services array is required" });
       return;
     }
 
@@ -350,6 +369,23 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
         latencyMs: aggregate.success ? aggregate.latencyMs : null,
         isTimeout: !aggregate.success,
       });
+    }
+
+    const serviceStats = [];
+    for (const r of serviceResults) {
+      const serviceId = Number(r.serviceId);
+      if (serviceId <= 0) continue;
+      const service = await db.getHostProbeServiceById(serviceId) as any;
+      if (!service || !service.isEnabled) continue;
+      serviceStats.push({
+        serviceId,
+        hostId: host.id,
+        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
+        isTimeout: !!r.isTimeout,
+      });
+    }
+    if (serviceStats.length > 0) {
+      await db.insertHostProbeServiceStats(serviceStats);
     }
 
     const stats = [];

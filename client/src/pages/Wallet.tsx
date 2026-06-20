@@ -35,6 +35,7 @@ function orderTypeText(type?: string | null) {
 
 function balanceTypeText(type?: string | null) {
   if (type === "admin_recharge") return "管理员充值";
+  if (type === "admin_adjust") return "管理员修改";
   if (type === "payment") return "在线充值入账";
   if (type === "purchase") return "余额消费";
   if (type === "redeem") return "兑换入账";

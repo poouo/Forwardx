@@ -226,7 +226,7 @@
   }
   html {
     -webkit-tap-highlight-color: transparent;
-    scrollbar-gutter: stable both-edges;
+    background-color: var(--background);
   }
 
   body {
@@ -236,6 +236,11 @@
       radial-gradient(circle at 92% 8%, color-mix(in oklch, var(--chart-2) 14%, transparent) 0, transparent 30rem),
       linear-gradient(135deg, color-mix(in oklch, var(--background) 90%, white 10%) 0%, var(--background) 48%, color-mix(in oklch, var(--background) 88%, var(--chart-4) 12%) 100%);
     min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
+    background-color: transparent;
   }
 
   body[data-select-scroll-lock][data-scroll-locked],
@@ -403,7 +408,7 @@
 }
 
 .scrollbar-gutter-stable {
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: stable;
 }
 
 * {
@@ -429,12 +434,6 @@
 
 *::-webkit-scrollbar-track {
   background: transparent;
-}
-
-.overflow-auto,
-.overflow-y-auto,
-.overflow-x-auto {
-  scrollbar-gutter: stable both-edges;
 }
 
 .terminal-scrollbar {
@@ -704,30 +703,6 @@
   }
 }
 
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 140ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(root) {
-  animation-name: theme-fade-out;
-}
-
-::view-transition-new(root) {
-  animation-name: theme-fade-in;
-}
-
-@keyframes theme-fade-out {
-  from { opacity: 1; }
-  to { opacity: 0.92; }
-}
-
-@keyframes theme-fade-in {
-  from { opacity: 0.92; }
-  to { opacity: 1; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .card-mode-transition {
     animation: none;
@@ -748,8 +723,4 @@
     transform: none;
   }
 
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none;
-  }
 }

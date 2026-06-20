@@ -88,12 +88,19 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
 
 export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
+  const extraExitRows = tunnel?.id ? await db.getTunnelExitNodes(Number(tunnel.id)) : [];
   const hopHostIds = Array.isArray(hopRows)
     ? hopRows.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
     : [];
-  const hostIds = hopHostIds.length >= 3
+  const extraExitHostIds = Array.isArray(extraExitRows)
+    ? extraExitRows.map((exit: any) => Number(exit.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
+    : [];
+  const hostIds = [
+    ...(hopHostIds.length >= 3
     ? hopHostIds
-    : [Number(tunnel.entryHostId), Number(tunnel.exitHostId)].filter((id) => Number.isFinite(id) && id > 0);
+    : [Number(tunnel.entryHostId), Number(tunnel.exitHostId)].filter((id) => Number.isFinite(id) && id > 0)),
+    ...extraExitHostIds,
+  ];
   const uniqueHostIds = Array.from(new Set(hostIds));
   const pushed = uniqueHostIds.map((hostId) => ({
     hostId,

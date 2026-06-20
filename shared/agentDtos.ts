@@ -5,6 +5,10 @@ export type AgentTrafficStat = {
   connections?: number;
 };
 
+export type AgentHostTrafficStat = {
+  bytesIn?: number;
+  bytesOut?: number;
+};
 export type AgentTcpingResult = {
   ruleId: number;
   latencyMs?: number | null;
@@ -19,6 +23,12 @@ export type AgentTunnelTcpingResult = {
   hopCount?: number;
 };
 
+export type AgentHostProbeServiceResult = {
+  serviceId: number;
+  latencyMs?: number | null;
+  isTimeout?: boolean;
+  method?: "tcping" | "ping" | string;
+};
 export type AgentForwardGroupLatencyResult = {
   groupId: number;
   latencyMs?: number | null;
@@ -76,6 +86,13 @@ export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {
   return !!item && Number.isFinite(Number(item.ruleId));
 }
 
+export function isAgentHostTrafficStat(value: unknown): value is AgentHostTrafficStat {
+  const item = value as Partial<AgentHostTrafficStat>;
+  if (!item || typeof item !== "object") return false;
+  const bytesIn = item.bytesIn === undefined || Number.isFinite(Number(item.bytesIn));
+  const bytesOut = item.bytesOut === undefined || Number.isFinite(Number(item.bytesOut));
+  return bytesIn && bytesOut && (item.bytesIn !== undefined || item.bytesOut !== undefined);
+}
 export function isAgentTcpingResult(value: unknown): value is AgentTcpingResult {
   const item = value as Partial<AgentTcpingResult>;
   return !!item && Number.isFinite(Number(item.ruleId));
@@ -86,6 +103,10 @@ export function isAgentTunnelTcpingResult(value: unknown): value is AgentTunnelT
   return !!item && Number.isFinite(Number(item.tunnelId));
 }
 
+export function isAgentHostProbeServiceResult(value: unknown): value is AgentHostProbeServiceResult {
+  const item = value as Partial<AgentHostProbeServiceResult>;
+  return !!item && Number.isFinite(Number(item.serviceId));
+}
 export function isAgentForwardGroupLatencyResult(value: unknown): value is AgentForwardGroupLatencyResult {
   const item = value as Partial<AgentForwardGroupLatencyResult>;
   return !!item && Number.isFinite(Number(item.groupId));

@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
-import { flushSync } from "react-dom";
 
 type Theme = "dark" | "light" | "system";
 
@@ -21,15 +20,6 @@ const ThemeProviderContext = createContext<ThemeProviderState>({
   setTheme: () => null,
 });
 
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (updateCallback: () => void) => {
-    finished: Promise<void>;
-    ready: Promise<void>;
-    updateCallbackDone: Promise<void>;
-    skipTransition: () => void;
-  };
-};
-
 function getResolvedTheme(theme: Theme): "dark" | "light" {
   if (theme === "system") {
     return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -37,10 +27,6 @@ function getResolvedTheme(theme: Theme): "dark" | "light" {
       : "light";
   }
   return theme;
-}
-
-function prefersReducedMotion() {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 export function ThemeProvider({
@@ -63,18 +49,7 @@ export function ThemeProvider({
   const setTheme = useCallback((newTheme: Theme) => {
     if (newTheme === theme) return;
     localStorage.setItem(storageKey, newTheme);
-
-    const transitionDocument = document as ViewTransitionDocument;
-    if (!transitionDocument.startViewTransition || prefersReducedMotion()) {
-      setThemeState(newTheme);
-      return;
-    }
-
-    transitionDocument.startViewTransition(() => {
-      flushSync(() => {
-        setThemeState(newTheme);
-      });
-    });
+    setThemeState(newTheme);
   }, [storageKey, theme]);
 
   const value = useMemo(() => ({

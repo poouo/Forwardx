@@ -34,6 +34,7 @@ export * from "./repositories/billingRepository";
 export * from "./repositories/trafficBillingRepository";
 export * from "./repositories/announcementRepository";
 export * from "./repositories/forwardGroupRepository";
+export * from "./repositories/hostProbeServiceRepository";
 
 // ==================== Initialization ====================
 

@@ -398,6 +398,7 @@ export const crudRulesRouter = router({
           userId: ctx.user.id,
         } as any);
         await db.syncForwardGroupRules(input.forwardGroupId);
+        await db.runForwardGroupFailover(input.forwardGroupId);
         return { id, sourcePort };
       }
 
@@ -532,6 +533,10 @@ export const crudRulesRouter = router({
       });
       if (tunnelId) {
         const tunnel = await db.getTunnelById(tunnelId);
+        if (tunnel) await db.reconcileForwardRuleTunnelExits({ ...input, id, tunnelExitPort, sourcePort, tunnelId }, tunnel);
+      }
+      if (tunnelId) {
+        const tunnel = await db.getTunnelById(tunnelId);
         await db.updateTunnel(tunnelId, { isRunning: false } as any);
         if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-created");
       }
@@ -663,6 +668,7 @@ export const crudRulesRouter = router({
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
         await db.syncForwardGroupRules(groupId);
+        await db.runForwardGroupFailover(groupId);
         return { success: true, reset: keyFieldChanged };
       }
 
@@ -834,6 +840,7 @@ export const crudRulesRouter = router({
           }
         } else {
           (data as any).tunnelExitPort = null;
+          await db.clearForwardRuleTunnelExits(id);
         }
       }
       if (data.isEnabled === true) {
@@ -894,6 +901,22 @@ export const crudRulesRouter = router({
         }
       }
       await db.updateForwardRule(id, data);
+      if ((data.forwardType ?? rule.forwardType) === "gost") {
+        const activeTunnelId = Number(nextTunnelIdForRule || 0);
+        if (activeTunnelId) {
+          const tunnel = selectedTunnelForRule ?? await db.getTunnelById(activeTunnelId);
+          if (tunnel) {
+            await db.reconcileForwardRuleTunnelExits(
+              { ...rule, ...data, id, tunnelId: activeTunnelId, tunnelExitPort: (data as any).tunnelExitPort ?? (rule as any).tunnelExitPort },
+              tunnel,
+            );
+          }
+        } else {
+          await db.clearForwardRuleTunnelExits(id);
+        }
+      } else {
+        await db.clearForwardRuleTunnelExits(id);
+      }
       if (keyFieldChanged) {
         if (hostChanged) {
           pushAgentRefresh(oldHostIdForRule, "forward-rule-updated-old-host");
@@ -929,6 +952,7 @@ export const crudRulesRouter = router({
         }
         await settleTrafficBillingForDeletedRule(rule);
         await db.markForwardRulePendingDelete(input.id);
+        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId || 0));
         return { success: true };
       }
       await settleTrafficBillingForDeletedRule(rule);
@@ -982,6 +1006,7 @@ export const crudRulesRouter = router({
           await db.toggleForwardRule(input.id, false);
         }
         await db.syncForwardGroupRules(Number((rule as any).forwardGroupId));
+        await db.runForwardGroupFailover(Number((rule as any).forwardGroupId));
         return { success: true };
       }
       await requireRuleProtocolEnabled(rule);

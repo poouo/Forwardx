@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.97"
+var Version = "2.2.99"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -119,18 +119,19 @@ type envelope struct {
 }
 
 type heartbeatResp struct {
-	Actions            []action            `json:"actions"`
-	SelfTests          []selfTest          `json:"selfTests"`
-	RunningRules       []runningRule       `json:"runningRules"`
-	TunnelProbes       []tunnelProbe       `json:"tunnelProbes"`
-	ForwardGroupProbes []forwardGroupProbe `json:"forwardGroupProbes"`
-	GuardRules         []guardRule         `json:"guardRules"`
-	DNSWatch           []dnsWatchItem      `json:"dnsWatch"`
-	LookingGlassTests  []lookingGlassTask  `json:"lookingGlassTests"`
-	Iperf3Tasks        []iperf3Task        `json:"iperf3Tasks"`
-	AgentUpgrade       *agentUpgrade       `json:"agentUpgrade"`
-	ForceTCPing        bool                `json:"forceTcping"`
-	NextInterval       int                 `json:"nextInterval"`
+	Actions            []action                `json:"actions"`
+	SelfTests          []selfTest              `json:"selfTests"`
+	RunningRules       []runningRule           `json:"runningRules"`
+	TunnelProbes       []tunnelProbe           `json:"tunnelProbes"`
+	ForwardGroupProbes []forwardGroupProbe     `json:"forwardGroupProbes"`
+	HostProbeServices  []hostProbeServiceProbe `json:"hostProbeServices"`
+	GuardRules         []guardRule             `json:"guardRules"`
+	DNSWatch           []dnsWatchItem          `json:"dnsWatch"`
+	LookingGlassTests  []lookingGlassTask      `json:"lookingGlassTests"`
+	Iperf3Tasks        []iperf3Task            `json:"iperf3Tasks"`
+	AgentUpgrade       *agentUpgrade           `json:"agentUpgrade"`
+	ForceTCPing        bool                    `json:"forceTcping"`
+	NextInterval       int                     `json:"nextInterval"`
 }
 
 type selfTestResp struct {
@@ -195,6 +196,13 @@ type tunnelProbe struct {
 	HopCount   int    `json:"hopCount"`
 }
 
+type hostProbeServiceProbe struct {
+	ServiceID       int    `json:"serviceId"`
+	TargetIP        string `json:"targetIp"`
+	TargetPort      int    `json:"targetPort"`
+	Method          string `json:"method"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+}
 type forwardGroupProbe struct {
 	GroupID    int    `json:"groupId"`
 	TargetIP   string `json:"targetIp"`
@@ -246,33 +254,40 @@ type selfTest struct {
 }
 
 type fxpSpec struct {
-	Role                     string `json:"role"`
-	TunnelID                 int    `json:"tunnelId"`
-	RuleID                   int    `json:"ruleId"`
-	ListenPort               int    `json:"listenPort"`
-	Protocol                 string `json:"protocol"`
-	ExitHost                 string `json:"exitHost"`
-	ExitPort                 int    `json:"exitPort"`
-	TargetIP                 string `json:"targetIp"`
-	TargetPort               int    `json:"targetPort"`
-	Key                      string `json:"key"`
-	LimitIn                  int64  `json:"limitIn"`
-	LimitOut                 int64  `json:"limitOut"`
-	MaxConnections           int    `json:"maxConnections"`
-	MaxIPs                   int    `json:"maxIPs"`
-	AccessScope              string `json:"accessScope"`
-	BlockHTTP                bool   `json:"blockHttp"`
-	BlockSocks               bool   `json:"blockSocks"`
-	BlockTLS                 bool   `json:"blockTls"`
-	ProxyProtocolReceive     bool   `json:"proxyProtocolReceive"`
-	ProxyProtocolSend        bool   `json:"proxyProtocolSend"`
-	ProxyProtocolExitReceive bool   `json:"proxyProtocolExitReceive"`
-	ProxyProtocolExitSend    bool   `json:"proxyProtocolExitSend"`
-	PanelURL                 string `json:"panelUrl,omitempty"`
-	Token                    string `json:"token,omitempty"`
-	RelayExitHost            string `json:"relayExitHost,omitempty"`
-	RelayExitPort            int    `json:"relayExitPort,omitempty"`
-	RelayKey                 string `json:"relayKey,omitempty"`
+	Role                     string            `json:"role"`
+	TunnelID                 int               `json:"tunnelId"`
+	RuleID                   int               `json:"ruleId"`
+	ListenPort               int               `json:"listenPort"`
+	Protocol                 string            `json:"protocol"`
+	ExitHost                 string            `json:"exitHost"`
+	ExitPort                 int               `json:"exitPort"`
+	Exits                    []fxpExitEndpoint `json:"exits,omitempty"`
+	TargetIP                 string            `json:"targetIp"`
+	TargetPort               int               `json:"targetPort"`
+	Key                      string            `json:"key"`
+	LimitIn                  int64             `json:"limitIn"`
+	LimitOut                 int64             `json:"limitOut"`
+	MaxConnections           int               `json:"maxConnections"`
+	MaxIPs                   int               `json:"maxIPs"`
+	AccessScope              string            `json:"accessScope"`
+	BlockHTTP                bool              `json:"blockHttp"`
+	BlockSocks               bool              `json:"blockSocks"`
+	BlockTLS                 bool              `json:"blockTls"`
+	ProxyProtocolReceive     bool              `json:"proxyProtocolReceive"`
+	ProxyProtocolSend        bool              `json:"proxyProtocolSend"`
+	ProxyProtocolExitReceive bool              `json:"proxyProtocolExitReceive"`
+	ProxyProtocolExitSend    bool              `json:"proxyProtocolExitSend"`
+	PanelURL                 string            `json:"panelUrl,omitempty"`
+	Token                    string            `json:"token,omitempty"`
+	RelayExitHost            string            `json:"relayExitHost,omitempty"`
+	RelayExitPort            int               `json:"relayExitPort,omitempty"`
+	RelayKey                 string            `json:"relayKey,omitempty"`
+}
+
+type fxpExitEndpoint struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	Key  string `json:"key,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -443,8 +458,9 @@ func heartbeat(cfg Config) (int, error) {
 		collectTraffic(cfg)
 		lastTrafficCollectAt = time.Now()
 	}
-	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= time.Minute {
-		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes, resp.ForceTCPing)
+	tcpingInterval := tcpingDueInterval(resp.HostProbeServices)
+	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
+		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes, resp.HostProbeServices, resp.ForceTCPing)
 		lastTCPingAt = time.Now()
 	}
 	if dnsWatchChanged && resp.NextInterval > 2 {
@@ -453,6 +469,29 @@ func heartbeat(cfg Config) (int, error) {
 	return resp.NextInterval, nil
 }
 
+func tcpingDueInterval(serviceProbes []hostProbeServiceProbe) time.Duration {
+	if len(serviceProbes) == 0 {
+		return time.Minute
+	}
+	interval := time.Duration(0)
+	for _, probe := range serviceProbes {
+		seconds := probe.IntervalSeconds
+		if seconds <= 0 {
+			seconds = 30
+		}
+		if seconds < 5 {
+			seconds = 5
+		}
+		duration := time.Duration(seconds) * time.Second
+		if interval == 0 || duration < interval {
+			interval = duration
+		}
+	}
+	if interval <= 0 {
+		return time.Minute
+	}
+	return interval
+}
 func handleLookingGlassTask(cfg Config, task lookingGlassTask) {
 	result := runLookingGlassTask(cfg, task)
 	if err := post(cfg, "/api/agent/looking-glass-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
@@ -2145,7 +2184,7 @@ func fxpServerID(spec fxpSpec) string {
 }
 
 func fxpServerSignature(spec fxpSpec) string {
-	return strings.Join([]string{
+	parts := []string{
 		spec.Role,
 		strconv.Itoa(spec.TunnelID),
 		strconv.Itoa(spec.RuleID),
@@ -2171,7 +2210,11 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		spec.RelayKey,
-	}, "|")
+	}
+	for _, exit := range spec.Exits {
+		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strings.TrimSpace(exit.Key))
+	}
+	return strings.Join(parts, "|")
 }
 
 func fxpConfigPath(spec fxpSpec) string {
@@ -2278,6 +2321,12 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 	}
 	spec.Role = strings.ToLower(strings.TrimSpace(spec.Role))
 	spec.Protocol = normalizeRuntimeProtocol(spec.Protocol)
+	for i := range spec.Exits {
+		spec.Exits[i].Host = strings.TrimSpace(spec.Exits[i].Host)
+		if spec.Exits[i].Key == "" {
+			spec.Exits[i].Key = spec.Key
+		}
+	}
 
 	id := fxpServerID(spec)
 	signature := fxpServerSignature(spec)

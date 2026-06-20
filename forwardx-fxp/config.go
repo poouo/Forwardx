@@ -22,6 +22,12 @@ func readConfig(path string) (config, error) {
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
 	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
+	for i := range cfg.Exits {
+		cfg.Exits[i].Host = strings.TrimSpace(cfg.Exits[i].Host)
+		if cfg.Exits[i].Key == "" {
+			cfg.Exits[i].Key = cfg.Key
+		}
+	}
 	return cfg, nil
 }
 
@@ -35,6 +41,11 @@ func validateConfig(cfg config) error {
 	if cfg.Role == "entry" {
 		if cfg.ExitHost == "" || cfg.ExitPort <= 0 || cfg.ExitPort > 65535 {
 			return errors.New("entry requires exit host and port")
+		}
+		for _, exit := range cfg.Exits {
+			if exit.Host == "" || exit.Port <= 0 || exit.Port > 65535 {
+				return errors.New("entry exits require host and port")
+			}
 		}
 		if cfg.TargetIP == "" || cfg.TargetPort <= 0 || cfg.TargetPort > 65535 {
 			return errors.New("entry requires target host and port")

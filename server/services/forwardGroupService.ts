@@ -99,13 +99,16 @@ function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
 
 export async function createForwardGroupFromInput(input: ForwardGroupInput, userId: number) {
   const normalized = normalizeForwardGroupInput(input, userId);
-  return db.createForwardGroup(normalized.createData as any, normalized.members as any);
+  const id = await db.createForwardGroup(normalized.createData as any, normalized.members as any);
+  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
+  return id;
 }
 
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
   const normalized = normalizeForwardGroupInput(input);
   await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
   await db.replaceForwardGroupMembers(id, normalized.members as any);
+  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
 }
 
 export async function getForwardGroupDeleteImpact(groupId: number) {

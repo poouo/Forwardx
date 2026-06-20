@@ -43,11 +43,16 @@ function requestTunnelTcpingRefresh(hostIds: number[], reason: string) {
 
 async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
   const tunnelId = Number(tunnel?.id || 0);
-  const exitHostId = Number(tunnel?.exitHostId || 0);
-  if (!tunnelId || !exitHostId || !isForwardXTunnel(tunnel)) return false;
-  if (getTunnelRuntimeHostStatus(tunnelId, exitHostId) === false) return false;
+  if (!tunnelId || !isForwardXTunnel(tunnel)) return false;
   await db.updateTunnelRunningStatus(tunnelId, true);
   return true;
+}
+
+async function getTunnelExtraExitHostIds(tunnelId: number) {
+  const rows = await hopRepo.getTunnelExitNodes(Number(tunnelId));
+  return (rows || [])
+    .map((row: any) => Number(row.hostId))
+    .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
 }
 
 export function registerAgentStatusRoutes(agentRouter: Router) {
@@ -127,15 +132,26 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       }
       const tunnel = await db.getTunnelById(tunnelId);
       const hops = tunnel ? await hopRepo.getTunnelHops(Number(tunnel.id)) : [];
+      const extraExitHostIds = tunnel ? await getTunnelExtraExitHostIds(Number(tunnel.id)) : [];
       const isTunnelHop = Array.isArray(hops)
         && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
-      if (!tunnel || (Number(tunnel.entryHostId) !== Number(host.id) && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop)) {
+      const isExtraExit = extraExitHostIds.includes(Number(host.id));
+      if (!tunnel || (Number(tunnel.entryHostId) !== Number(host.id) && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
         res.status(404).json({ error: "tunnel not found" });
         return;
       }
       const hopHostIds = Array.isArray(hops)
         ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
         : [];
+      if (isForwardXTunnel(tunnel) && isExtraExit) {
+        recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
+        appendPanelLog(
+          !!isRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} extraExit=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        );
+        res.json({ success: true });
+        return;
+      }
       if (hopHostIds.length >= 3) {
         recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
         const readyCount = getTunnelRuntimeReadyCount(tunnelId, hopHostIds);
@@ -158,7 +174,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         res.json({ success: true });
         return;
       }
-      if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id)) {
+      if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
         appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
         res.json({ success: true, ignored: true });
         return;
@@ -188,9 +204,11 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     let allowed = Number((rule as any).hostId) === Number(host.id);
     if (!allowed && (rule as any).tunnelId) {
       ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
+      const extraExitHostIds = ruleTunnel ? await getTunnelExtraExitHostIds(Number(ruleTunnel.id)) : [];
       allowed = !!ruleTunnel && (
         Number((ruleTunnel as any).entryHostId) === Number(host.id)
         || Number((ruleTunnel as any).exitHostId) === Number(host.id)
+        || extraExitHostIds.includes(Number(host.id))
       );
     } else if ((rule as any).tunnelId) {
       ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));

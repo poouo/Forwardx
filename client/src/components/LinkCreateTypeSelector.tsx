@@ -34,7 +34,7 @@ export default function LinkCreateTypeSelector({
   canCreateChain = true,
 }: LinkCreateTypeSelectorProps) {
   return (
-    <div className="rounded-lg border border-border/50 bg-muted/25 p-1">
+    <div className="rounded-md border border-border/50 bg-muted/25 p-0.5">
       <div className="grid grid-cols-2 gap-1">
         {options.map((option) => {
           const Icon = option.icon;
@@ -46,7 +46,7 @@ export default function LinkCreateTypeSelector({
               type="button"
               disabled={disabled}
               onClick={() => onValueChange(option.value)}
-              className={`flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition-colors ${
+              className={`flex h-9 items-center justify-center gap-2 rounded-sm px-3 text-sm font-medium transition-colors ${
                 isActive
                   ? "border border-border/60 bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:bg-background/60 hover:text-foreground"

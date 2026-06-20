@@ -1402,6 +1402,14 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             ))}
           </div>
 
+          <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-800 dark:text-sky-200">
+            <Database className="h-4 w-4" />
+            <AlertTitle>数据库版本要求</AlertTitle>
+            <AlertDescription>
+              MySQL 需要 8.0.13 或以上版本；PostgreSQL 建议 12 或以上版本；SQLite 使用本地数据文件，无需额外准备数据库服务。
+            </AlertDescription>
+          </Alert>
+
           <div className="grid gap-4 rounded-lg border border-border/40 bg-muted/20 p-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1716,6 +1724,13 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             <AlertTitle>请确认目标数据库为空库</AlertTitle>
             <AlertDescription>
               迁移会保留当前数据 ID；如果目标数据库已有业务数据，后端会阻止切换以避免覆盖或混合数据。
+            </AlertDescription>
+          </Alert>
+          <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-800 dark:text-sky-200">
+            <Database className="h-4 w-4" />
+            <AlertTitle>请确认数据库版本</AlertTitle>
+            <AlertDescription>
+              MySQL 需要 8.0.13 或以上版本；PostgreSQL 建议 12 或以上版本。
             </AlertDescription>
           </Alert>
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
@@ -3030,18 +3045,18 @@ function SystemInfoSection() {
           {ddnsProvider === "cloudflare" && (
             <div className="grid gap-3 lg:grid-cols-2">
               <div className="space-y-2">
-                <Label>Zone ID</Label>
-                <Input value={ddnsCloudflareZoneId} onChange={(e) => setDdnsCloudflareZoneId(e.target.value)} placeholder="Cloudflare Zone ID" />
+                <Label>Zone ID（可选）</Label>
+                <Input value={ddnsCloudflareZoneId} onChange={(e) => setDdnsCloudflareZoneId(e.target.value)} placeholder="可留空，系统会自动识别 Zone" />
               </div>
               <div className="space-y-2">
                 <Label>API Token</Label>
                 <Input
                   value={ddnsCloudflareApiToken}
                   onChange={(e) => setDdnsCloudflareApiToken(e.target.value)}
-                  placeholder={settings?.ddns?.cloudflareTokenMasked || "需要 DNS Edit 权限"}
+                  placeholder={settings?.ddns?.cloudflareTokenMasked || "需要 Zone:Read + DNS:Edit 权限"}
                   type="password"
                 />
-                <p className="text-xs text-muted-foreground">留空则保留已保存 Token。</p>
+                <p className="text-xs text-muted-foreground">留空则保留已保存 Token；未填写 Zone ID 时 Token 需具备 Zone:Read + DNS:Edit 权限。</p>
               </div>
             </div>
           )}

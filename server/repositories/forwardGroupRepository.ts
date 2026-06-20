@@ -22,7 +22,7 @@ import {
   updateForwardRule,
 } from "./forwardRuleRepository";
 import { getHostById } from "./hostRepository";
-import { findAvailableTunnelExitPort, getTunnelById, updateTunnel } from "./tunnelRepository";
+import { findAvailableTunnelExitPort, getTunnelById, reconcileForwardRuleTunnelExits, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
@@ -745,11 +745,19 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
 
   if (existing) {
     await updateForwardRule(Number(existing.id), payload);
+    if (member.memberType === "tunnel") {
+      const tunnel = await getTunnelById(Number(tunnelId || 0));
+      if (tunnel) await reconcileForwardRuleTunnelExits({ ...existing, ...payload, id: existing.id }, tunnel);
+    }
     await refreshRuleEndpoints({ ...existing, ...payload, id: existing.id }, "forward-group-child-updated");
     return Number(existing.id);
   }
 
   const ruleId = await createForwardRule(payload);
+  if (member.memberType === "tunnel") {
+    const tunnel = await getTunnelById(Number(tunnelId || 0));
+    if (tunnel) await reconcileForwardRuleTunnelExits({ ...payload, id: ruleId }, tunnel);
+  }
   await refreshRuleEndpoints({ ...payload, id: ruleId }, "forward-group-child-created");
   return ruleId;
 }
@@ -1174,8 +1182,7 @@ async function evaluateMemberHealth(member: any, group: any) {
   return { ...member, healthy, latencyMs, message, failureSince, healthySince, failedLongEnough, recoveredLongEnough };
 }
 
-export async function runForwardGroupFailoverSweep() {
-  const groups = await getForwardGroups();
+async function runForwardGroupFailoverForGroups(groups: any[]) {
   const db = await getDb();
   const ddnsSettings = await getDdnsSettings();
   for (const group of groups as any[]) {
@@ -1289,4 +1296,15 @@ export async function runForwardGroupFailoverSweep() {
       await insertForwardGroupEvent(group.id, next.id, "ddns-error", `DDNS update failed; ${message}; ${detail}`);
     }
   }
+}
+
+export async function runForwardGroupFailover(groupId: number) {
+  const group = await getForwardGroupById(groupId);
+  if (!group) return;
+  await runForwardGroupFailoverForGroups([group]);
+}
+
+export async function runForwardGroupFailoverSweep() {
+  const groups = await getForwardGroups();
+  await runForwardGroupFailoverForGroups(groups as any[]);
 }

@@ -428,12 +428,40 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const agentAllRules = await db.getForwardRulesForAgent(undefined);
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
     const tunnelHopsByTunnelId = new Map<number, any[]>();
+    const tunnelExitNodesByTunnelId = new Map<number, any[]>();
     await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
       const hops = await hopRepo.getTunnelHops(Number(tunnel.id));
       if (Array.isArray(hops) && hops.length >= 2) {
         tunnelHopsByTunnelId.set(Number(tunnel.id), hops);
       }
+      const exits = await hopRepo.getTunnelExitNodes(Number(tunnel.id));
+      if (Array.isArray(exits) && exits.length > 0) {
+        tunnelExitNodesByTunnelId.set(Number(tunnel.id), exits);
+      }
     }));
+    const allTunnelRuleIds = agentAllRules
+      .filter((rule: any) => rule && rule.forwardType === "gost" && Number(rule.tunnelId || 0) > 0)
+      .map((rule: any) => Number(rule.id))
+      .filter((id: number) => Number.isFinite(id) && id > 0);
+    const allTunnelRuleExitRows = await db.getForwardRuleTunnelExitsByRuleIds(allTunnelRuleIds);
+    const tunnelExitRowsByRuleId = new Map<number, any[]>();
+    for (const row of allTunnelRuleExitRows as any[]) {
+      const ruleId = Number(row.ruleId);
+      const rows = tunnelExitRowsByRuleId.get(ruleId) || [];
+      rows.push(row);
+      tunnelExitRowsByRuleId.set(ruleId, rows);
+    }
+    for (const rule of agentAllRules as any[]) {
+      if (!rule || rule.forwardType !== "gost" || !rule.tunnelId || rule.pendingDelete) continue;
+      const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+      if (!tunnel || String(tunnel?.mode || "").toLowerCase() === "forwardx" || !(tunnel as any).loadBalanceEnabled) continue;
+      const extraNodes = tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [];
+      const rows = tunnelExitRowsByRuleId.get(Number(rule.id)) || [];
+      if (extraNodes.length > 0 && rows.length < extraNodes.length) {
+        const nextRows = await db.reconcileForwardRuleTunnelExits(rule, tunnel);
+        tunnelExitRowsByRuleId.set(Number(rule.id), nextRows as any[]);
+      }
+    }
 
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
     // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
@@ -619,6 +647,41 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return getHostIngressAddress(Number((hop as any)?.hostId));
     };
+    const getExtraExitDialAddress = async (exitNode: any) => {
+      const configured = String((exitNode as any)?.connectHost || "").trim();
+      if (configured) {
+        addDnsWatch(dnsWatches, configured, "tunnel-exit-connect", Number((exitNode as any)?.id || 0));
+        return configured;
+      }
+      return getHostIngressAddress(Number((exitNode as any)?.hostId));
+    };
+    const tunnelRuleExitMappings = (rule: any) => {
+      const rows = tunnelExitRowsByRuleId.get(Number(rule?.id || 0)) || [];
+      return rows
+        .map((row: any) => ({
+          exitNodeId: Number(row.exitNodeId),
+          exitSeq: Number(row.exitSeq),
+          exitHostId: Number(row.exitHostId),
+          tunnelExitPort: Number(row.tunnelExitPort),
+        }))
+        .filter((row) => row.exitHostId > 0 && row.tunnelExitPort > 0)
+        .sort((a, b) => a.exitSeq - b.exitSeq);
+    };
+    const isCurrentHostTunnelExitForRule = (rule: any, tunnel: any) => {
+      if (!tunnel || isForwardXTunnel(tunnel)) return false;
+      if (Number(tunnel.exitHostId) === Number(host.id)) return true;
+      return tunnelRuleExitMappings(rule).some((row) => row.exitHostId === Number(host.id));
+    };
+    const currentHostTunnelExitPortsForRule = (rule: any, tunnel: any) => {
+      const ports: number[] = [];
+      if (tunnel && Number(tunnel.exitHostId) === Number(host.id) && Number((rule as any).tunnelExitPort) > 0) {
+        ports.push(Number((rule as any).tunnelExitPort));
+      }
+      for (const row of tunnelRuleExitMappings(rule)) {
+        if (row.exitHostId === Number(host.id) && row.tunnelExitPort > 0) ports.push(row.tunnelExitPort);
+      }
+      return Array.from(new Set(ports));
+    };
     const hopKey = (secret: string, idx: number) =>
       crypto.createHash("sha256").update(`${secret}|hop|${idx}`).digest("hex");
     const hopSeq = (hop: any, fallback: number) => {
@@ -627,6 +690,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const fxpHopKey = (tunnel: any, hop: any, fallback: number) =>
       hopKey(tunnelSecretSeed(tunnel), hopSeq(hop, fallback));
+    const forwardXExtraExitRoutes = async (tunnel: any) => {
+      const routes: Array<{ host: string; port: number; key: string }> = [];
+      if (!(tunnel as any).loadBalanceEnabled) return routes;
+      const extraNodes = tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [];
+      for (const exitNode of extraNodes as any[]) {
+        if ((exitNode as any).isEnabled === false) continue;
+        const port = Number((exitNode as any).listenPort || 0);
+        if (port <= 0) continue;
+        const exitHost = await getExtraExitDialAddress(exitNode);
+        if (!exitHost) continue;
+        routes.push({ host: exitHost, port, key: tunnelSecretSeed(tunnel) });
+      }
+      return routes;
+    };
     const buildForwardXHopSpec = async (
       tunnel: any,
       hops: any[],
@@ -650,6 +727,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         fxpSpec.relayExitHost = String(nextIp).trim();
         fxpSpec.relayExitPort = Number(nextHop?.listenPort) || 0;
         fxpSpec.relayKey = fxpHopKey(tunnel, nextHop, hopIdx + 1);
+        const nextIsFinalExit = hopIdx + 1 === hops.length - 1;
+        if (nextIsFinalExit && (tunnel as any).loadBalanceEnabled) {
+          const extraRoutes = await forwardXExtraExitRoutes(tunnel);
+          if (extraRoutes.length > 0) {
+            fxpSpec.exits = [
+              { host: fxpSpec.relayExitHost, port: fxpSpec.relayExitPort, key: fxpSpec.relayKey },
+              ...extraRoutes.map((route) => ({ host: route.host, port: route.port, key: route.key })),
+            ];
+          }
+        }
         if (op === "apply" && (!fxpSpec.relayExitHost || fxpSpec.relayExitPort <= 0 || !fxpSpec.relayKey)) {
           appendPanelLog("error", `[TunnelRoute] invalid ForwardX relay next hop tunnel=${tunnel.id} hop=${hopIdx} nextHost=${fxpSpec.relayExitHost || "-"} nextPort=${fxpSpec.relayExitPort || "-"}`);
           return null;
@@ -677,6 +764,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         port: Number(endpoint?.port || tunnel.listenPort) || 0,
         key: tunnelSecretSeed(tunnel),
       };
+    };
+    const forwardXEntryRoutes = async (rule: any, tunnel: any) => {
+      const primary = await forwardXEntryRoute(tunnel);
+      const routes: Array<{ host: string; port: number; key: string }> = [];
+      if (primary.host && primary.port > 0 && primary.key) routes.push(primary);
+      const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
+      if (!Array.isArray(hops) || hops.length < 3) {
+        routes.push(...await forwardXExtraExitRoutes(tunnel));
+      }
+      return routes;
     };
     for (const tunnel of hostTunnels as any[]) {
       if (tunnel.entryHostId === host.id && tunnel.isEnabled && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) {
@@ -766,7 +863,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           && tunnel.isEnabled
           && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
           && isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel)
-          && tunnel.exitHostId === host.id;
+          && isCurrentHostTunnelExitForRule(r, tunnel);
       });
 
     const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any) => ({
@@ -778,6 +875,34 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
       },
     });
+    const buildLoadBalancedExitNodes = async (rule: any, tunnel: any, primaryHostOverride?: string) => {
+      const nodes: any[] = [];
+      const primaryHost = String(primaryHostOverride || "").trim() || tunnelExitEndpointById.get(tunnel.id)?.host || await tunnelExitHostAddress(tunnel);
+      const primaryPort = Number((rule as any).tunnelExitPort) || 0;
+      if (primaryHost && primaryPort > 0) {
+        nodes.push(gostTunnelNode(`exit-${rule.id}-0`, `${primaryHost}:${primaryPort}`, tunnelProtocolType(tunnel.mode), tunnel));
+      }
+      if ((tunnel as any).loadBalanceEnabled) {
+        const extraNodes = tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [];
+        const mappingByNodeId = new Map(tunnelRuleExitMappings(rule).map((row) => [Number(row.exitNodeId), row]));
+        for (const exitNode of extraNodes as any[]) {
+          if ((exitNode as any).isEnabled === false) continue;
+          const mapping = mappingByNodeId.get(Number((exitNode as any).id));
+          const port = Number(mapping?.tunnelExitPort || 0);
+          if (!port) continue;
+          const exitHost = await getExtraExitDialAddress(exitNode);
+          if (!exitHost) continue;
+          nodes.push(gostTunnelNode(
+            `exit-${rule.id}-${Number((exitNode as any).seq) || Number((exitNode as any).id)}`,
+            `${exitHost}:${port}`,
+            tunnelProtocolType(tunnel.mode),
+            tunnel,
+          ));
+        }
+      }
+      return nodes;
+    };
+    const gostLoadBalanceHopMetadata = { strategy: "round", maxFails: 1, failTimeout: "15s" };
     const gostRelayHandler = (metadata?: Record<string, unknown>) => ({
       type: "relay",
       metadata: { nodelay: true, ...(metadata || {}) },
@@ -878,20 +1003,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           }
           const exitHop = tunnelHops[tunnelHops.length - 1] as any;
           const exitHost = await getHopDialAddress(exitHop);
-          const exitAddr = `${exitHost}:${Number((r as any).tunnelExitPort)}`;
-          if (!exitHost || !Number((r as any).tunnelExitPort)) return null;
+          const exitNodes = await buildLoadBalancedExitNodes(r, tunnel, exitHost);
+          if (!exitHost || exitNodes.length === 0) return null;
           chainHops.push({
             name: `hop-tunnel-${r.id}-exit`,
             ...(entrySendProxyMetadata ? { metadata: entrySendProxyMetadata } : {}),
-            nodes: [gostTunnelNode(
-              `exit-${r.id}`,
-              exitAddr,
-              tunnelProtocolType(tunnel.mode),
-              tunnel,
-            )],
+            ...(exitNodes.length > 1 ? { selector: gostLoadBalanceHopMetadata } : {}),
+            nodes: exitNodes,
           });
           if (chainHops.length === 0) return null;
-          routeParts.push(`exit#${Number(exitHop.hostId)}@${exitAddr}`);
+          routeParts.push(`exit#${Number(exitHop.hostId)}@${exitNodes.map((node: any) => node.addr).join(",")}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
           tunnelRouteLogCache.set(routeKey, route);
@@ -902,17 +1023,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ? `127.0.0.1:${Number(firstHop.listenPort)}`
           : `${tunnelExitHost}:${(r as any).tunnelExitPort}`;
         const chainNodeName = useMultiHopEntry ? `mhop-entry-${r.id}` : `exit-${r.id}`;
+        const exitNodes = !useMultiHopEntry ? await buildLoadBalancedExitNodes(r, tunnel) : [];
         return {
           name: `chain-tunnel-${r.id}`,
           hops: [{
             name: `hop-tunnel-${r.id}`,
             ...(maybeProxyProtocolMetadata(r, "entrySend") ? { metadata: maybeProxyProtocolMetadata(r, "entrySend") } : {}),
-            nodes: [gostTunnelNode(
+            ...(exitNodes.length > 1 ? { selector: gostLoadBalanceHopMetadata } : {}),
+            nodes: useMultiHopEntry ? [gostTunnelNode(
               chainNodeName,
               chainTargetAddr,
-              useMultiHopEntry ? "tcp" : tunnelProtocolType(tunnel.mode),
+              "tcp",
               tunnel,
-            )],
+            )] : exitNodes,
           }],
         };
       }))).filter(Boolean);
@@ -956,12 +1079,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }));
       const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
-        if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
+        if (!tunnel || isForwardXTunnel(tunnel)) return [];
+        const exitPorts = currentHostTunnelExitPortsForRule(rule, tunnel);
+        if (exitPorts.length === 0) return [];
         const policy = await tunnelProtocolPolicy(tunnel);
         const targetAddr = hasProtocolPolicy(policy) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
-        return [{
-          name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}`,
-          addr: `:${rule.tunnelExitPort}`,
+        return exitPorts.map((exitPort) => ({
+          name: `fwx-tunnel-exit-${tunnel.id}-${rule.id}-${exitPort}`,
+          addr: `:${exitPort}`,
           handler: gostRelayHandler(maybeProxyProtocolMetadata(rule, "exitSend")),
           listener: {
             type: tunnelProtocolType(tunnel.mode),
@@ -976,7 +1101,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               dialer: { type: "tcp" },
             }],
           },
-        }];
+        }));
       }))).flat();
       const multiHopRelayServices = await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
         if (!tunnel || !tunnel.isEnabled || isForwardXTunnel(tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)) return null;
@@ -999,8 +1124,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
       const countingCmds = tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
-        if (!tunnel || isForwardXTunnel(tunnel) || !rule.tunnelExitPort) return [];
-        return buildCountingChainCmds(Number(rule.tunnelExitPort), rule.targetIp, rule.targetPort, rule.protocol);
+        if (!tunnel || isForwardXTunnel(tunnel)) return [];
+        return currentHostTunnelExitPortsForRule(rule, tunnel)
+          .flatMap((exitPort) => buildCountingChainCmds(Number(exitPort), rule.targetIp, rule.targetPort, rule.protocol));
       });
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       const cmds = [
@@ -1056,10 +1182,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;
-      if (tunnel && !isForwardXTunnel(tunnel) && tunnel.exitHostId === host.id && rule.tunnelExitPort) {
-        return Number(rule.tunnelExitPort);
+      if (tunnel && !isForwardXTunnel(tunnel)) {
+        return currentHostTunnelExitPortsForRule(rule, tunnel)[0] || 0;
       }
-      if (tunnel && !isForwardXTunnel(tunnel)) return 0;
       return Number(rule.sourcePort) || 0;
     };
     const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
@@ -1198,12 +1323,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         .map((rule: any) => Number(rule.tunnelId))
     );
     for (const tunnel of hostTunnels as any[]) {
-      if (tunnel.exitHostId !== host.id) continue;
+      const isCurrentHostPrimaryExit = Number(tunnel.exitHostId) === Number(host.id);
+      const currentHostExtraExitNode = (tunnelExitNodesByTunnelId.get(Number(tunnel.id)) || [])
+        .find((node: any) => Number(node.hostId) === Number(host.id));
+      const isCurrentHostExtraExit = !!currentHostExtraExitNode;
       const existingHops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       const fxpTunnel = isForwardXTunnel(tunnel);
-      if (Array.isArray(existingHops) && existingHops.length >= (fxpTunnel ? 2 : 3)) continue;
+      if (!isCurrentHostPrimaryExit && !(fxpTunnel && isCurrentHostExtraExit)) continue;
+      if (Array.isArray(existingHops) && existingHops.length >= (fxpTunnel ? 2 : 3) && !isCurrentHostExtraExit) continue;
+      const fxpListenPort = isCurrentHostPrimaryExit
+        ? Number(tunnel.listenPort)
+        : Number((currentHostExtraExitNode as any)?.listenPort || 0);
+      const fxpRuntimeReady = fxpTunnel
+        ? isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id))
+        : false;
       const shouldRefreshExit = fxpTunnel
-        ? !tunnel.isRunning
+        ? !fxpRuntimeReady
         : (!tunnel.isRunning || pendingTunnelExitRuleIds.has(Number(tunnel.id)));
       const tunnelProtocolEnabled = isTunnelProtocolEnabled(forwardProtocolSettings, tunnel);
       if (tunnel.isEnabled && tunnelProtocolEnabled && shouldRefreshExit) {
@@ -1213,37 +1348,37 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ruleId: 0,
           op: "apply",
           forwardType: fxpTunnel ? "forwardx-tunnel" : "gost-tunnel",
-          sourcePort: tunnel.listenPort,
+          sourcePort: fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? tunnel.listenPort : 0),
           targetIp: host.ip,
-          targetPort: tunnel.listenPort,
+          targetPort: fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? tunnel.listenPort : 0),
           protocol: "tcp",
           commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
-          fxp: fxpTunnel ? {
+          fxp: fxpTunnel && fxpListenPort > 0 ? {
             role: "exit",
             tunnelId: tunnel.id,
             ruleId: 0,
-            listenPort: tunnel.listenPort,
+            listenPort: fxpListenPort,
             protocol: "both",
             key: tunnelSecretSeed(tunnel),
           } : undefined,
         });
-      } else if ((!tunnel.isEnabled || !tunnelProtocolEnabled) && tunnel.isRunning) {
+      } else if ((!tunnel.isEnabled || !tunnelProtocolEnabled) && (fxpTunnel ? fxpRuntimeReady : tunnel.isRunning)) {
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",
           ruleId: 0,
           op: "remove",
           forwardType: fxpTunnel ? "forwardx-tunnel" : "gost-tunnel",
-          sourcePort: tunnel.listenPort,
+          sourcePort: fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? tunnel.listenPort : 0),
           targetIp: host.ip,
-          targetPort: tunnel.listenPort,
+          targetPort: fxpTunnel ? fxpListenPort : (isCurrentHostPrimaryExit ? tunnel.listenPort : 0),
           protocol: "tcp",
           commands: fxpTunnel ? [] : await buildTunnelReloadCmds(),
-          fxp: fxpTunnel ? {
+          fxp: fxpTunnel && fxpListenPort > 0 ? {
             role: "exit",
             tunnelId: tunnel.id,
             ruleId: 0,
-            listenPort: tunnel.listenPort,
+            listenPort: fxpListenPort,
             protocol: "both",
             key: tunnelSecretSeed(tunnel),
           } : undefined,
@@ -1633,7 +1768,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         } else if (rule.forwardType === "gost") {
           const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
           if (tunnel && isForwardXTunnel(tunnel)) {
-            const entryRoute = await forwardXEntryRoute(tunnel);
+            const entryRoutes = await forwardXEntryRoutes(rule, tunnel);
+            const entryRoute = entryRoutes[0] || { host: "", port: 0, key: "" };
             if (!entryRoute.host || entryRoute.port <= 0 || !entryRoute.key) {
               appendPanelLog("error", `[TunnelRoute] invalid ForwardX entry route tunnel=${tunnel.id} rule=${rule.id} nextHost=${entryRoute.host || "-"} nextPort=${entryRoute.port || "-"}`);
               continue;
@@ -1662,6 +1798,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 protocol: rule.protocol,
                 exitHost: entryRoute.host,
                 exitPort: entryRoute.port,
+                exits: entryRoutes.map((route) => ({
+                  host: route.host,
+                  port: route.port,
+                  key: route.key,
+                })),
                 targetIp: mainBackup ? "127.0.0.1" : processTarget(rule),
                 targetPort: mainBackup ? failoverProxyPort(rule) : rule.targetPort,
                 key: entryRoute.key,
@@ -1855,7 +1996,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of tunnelExitRules) {
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
       const policy = tunnel ? await tunnelProtocolPolicy(tunnel) : emptyProtocolPolicy;
-      if (tunnel && hasProtocolPolicy(policy)) {
+      if (tunnel && !isForwardXTunnel(tunnel) && hasProtocolPolicy(policy)) {
         const target = failoverTargetEndpoint(rule);
         guardRules.push({
           ruleId: rule.id,
@@ -1872,17 +2013,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     for (const rule of tunnelExitRules) {
       if (!rule.isEnabled) continue;
-      const trafficPort = Number((rule as any).tunnelExitPort) || 0;
-      if (!trafficPort) continue;
-      addRunningRule({
-        ruleId: rule.id,
-        sourcePort: trafficPort,
-        targetIp: rule.targetIp,
-        targetPort: rule.targetPort,
-        protocol: rule.protocol,
-        forwardType: "gost-tunnel-exit",
-        failover: failoverForCurrentHost(rule, tunnelById.get(Number(rule.tunnelId)) as any, { listenPort: failoverProxyPort(rule) }),
-      });
+      const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+      for (const trafficPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
+        if (!trafficPort) continue;
+        addRunningRule({
+          ruleId: rule.id,
+          sourcePort: trafficPort,
+          targetIp: rule.targetIp,
+          targetPort: rule.targetPort,
+          protocol: rule.protocol,
+          forwardType: tunnel && isForwardXTunnel(tunnel) ? "forwardx-tunnel-exit" : "gost-tunnel-exit",
+          failover: failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) }),
+        });
+      }
     }
 
     const gostMultiHopRelayRules = await Promise.all(agentAllRules
@@ -1939,6 +2082,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
     }
     const forwardGroupProbes = Array.from(forwardGroupProbeMap.values());
+    const hostProbeServices = await db.getHostProbeTasksForHost(host.id);
 
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
@@ -2087,8 +2231,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       || iperf3Tasks.length > 0
       || forceTcping
       || (hasPendingMultiHopRuntime && !hasTunnelApplyActions);
-    const nextInterval = hasInteractiveTasks ? 2 : (isHostMetricsWatching(host.id) ? 10 : 30);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, forceTcping, nextInterval });
+    const serviceProbeInterval = hostProbeServices.reduce((min: number, service: any) => {
+      const seconds = Number(service?.intervalSeconds || 30);
+      return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
+    }, 30);
+    const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 10 : 30, serviceProbeInterval);
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, forceTcping, nextInterval });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });
