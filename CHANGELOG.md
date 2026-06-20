@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.157] - 2026-06-20
+
+### Added
+
+- Added forwarding-rule import and export dialogs for host, tunnel, forwarding-chain, and forwarding-group scoped rule files, with type matching validation before import.
+- Added package traffic limits in GB, traffic direction mode selection, and Telegram traffic-threshold alert controls to host editing.
+
+### Changed
+
+- Renamed host traffic configuration to other configuration and moved port limits and protocol blocking into basic host information.
+- Forwarding rule traffic columns now show total link traffic before the 24-hour traffic and latency details.
+- Improved shared dialog overlay timing, blur strength, and panel motion for smoother modal transitions.
+- Bumped panel version to 2.3.157. Agent target version remains 2.2.99.
+- Bumped Android APP version to 2.3.45 and updated the APK release pointer to 2.3.157.
+
 ## [2.3.156] - 2026-06-20
 
 ### Changed

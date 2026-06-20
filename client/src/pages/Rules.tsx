@@ -59,6 +59,8 @@ import {
   Shuffle,
   AlertCircle,
   Copy,
+  Download,
+  Upload,
   Network,
   ClipboardCopy,
   Layers3,
@@ -186,6 +188,8 @@ function combinePortPolicies(...policies: PortPolicy[]): PortPolicy {
   };
 }
 
+type RuleProtocol = "tcp" | "udp" | "both";
+
 type RuleFormData = {
   hostId: number | null;
   name: string;
@@ -295,6 +299,56 @@ type RulePageSize = 12 | 24 | 36 | 48;
 type RuleGroupType = keyof typeof desktopRuleTypeLabels;
 type RuleGroupCollapsedState = Partial<Record<RuleGroupType, boolean>>;
 type RuleCategory = "all" | "local" | "tunnel" | "chain" | "group";
+type RuleTransferScopeType = Exclude<RuleCategory, "all">;
+
+const RULE_TRANSFER_FILE_KIND = "forwardx.forward-rules";
+const RULE_TRANSFER_FILE_VERSION = 1;
+const RULE_TRANSFER_MAX_IMPORT_COUNT = 500;
+
+const ruleTransferScopeLabels: Record<RuleTransferScopeType, string> = {
+  local: "主机",
+  tunnel: "隧道",
+  chain: "转发链",
+  group: "转发组",
+};
+
+const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: string }> = [
+  { value: "local", label: "主机" },
+  { value: "tunnel", label: "隧道" },
+  { value: "chain", label: "转发链" },
+  { value: "group", label: "转发组" },
+];
+
+type RuleTransferFileRule = {
+  name: string;
+  forwardType: ForwardType;
+  protocol: RuleProtocol;
+  sourcePort: number;
+  targetIp: string;
+  targetPort: number;
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
+  proxyProtocolExitReceive: boolean;
+  proxyProtocolExitSend: boolean;
+  failoverEnabled: boolean;
+  failoverStrategy: FailoverStrategy;
+  failoverTargets: Array<{ targetIp: string; targetPort: number }>;
+  failoverSeconds: number;
+  recoverSeconds: number;
+  autoFailback: boolean;
+};
+
+type RuleTransferFile = {
+  kind?: string;
+  version?: number;
+  exportedAt?: string;
+  scope?: {
+    type?: string;
+    id?: number;
+    name?: string;
+  };
+  rules?: unknown[];
+};
 
 const RULE_VIEW_MODE_STORAGE_KEY = "forwardx.rules.viewMode";
 const RULE_CARD_SIZE_STORAGE_KEY = "forwardx.rules.cardSize";
@@ -1430,6 +1484,35 @@ function isValidTargetHost(value: string) {
   return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
 }
 
+function normalizeRuleProtocol(value: unknown): RuleProtocol {
+  return value === "tcp" || value === "udp" || value === "both" ? value : "both";
+}
+
+function normalizeRuleForwardType(value: unknown): ForwardType {
+  return FORWARD_TYPES.includes(value as ForwardType) ? (value as ForwardType) : "iptables";
+}
+
+function normalizePositiveRuleNumber(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeRuleTransferScopeType(value: unknown): RuleTransferScopeType | null {
+  return ["local", "tunnel", "chain", "group"].includes(value as string)
+    ? (value as RuleTransferScopeType)
+    : null;
+}
+
+function sanitizeRuleTransferFilePart(value: string) {
+  return value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48) || "rules";
+}
+
 function splitFailoverTargetLine(line: string) {
   const value = line.trim();
   if (!value) return null;
@@ -1466,6 +1549,75 @@ function formatFailoverTargetsText(raw: unknown) {
   return parseRuleFailoverTargets(raw)
     .map((target) => `${target.targetIp.includes(":") ? `[${target.targetIp}]` : target.targetIp}:${target.targetPort}`)
     .join("\n");
+}
+
+function exportRuleForTransfer(rule: any): RuleTransferFileRule {
+  return {
+    name: String(rule?.name || "导入规则"),
+    forwardType: normalizeRuleForwardType(rule?.forwardType),
+    protocol: normalizeRuleProtocol(rule?.protocol),
+    sourcePort: Number(rule?.sourcePort || 0),
+    targetIp: String(rule?.targetIp || ""),
+    targetPort: Number(rule?.targetPort || 0),
+    proxyProtocolReceive: Boolean(rule?.proxyProtocolReceive),
+    proxyProtocolSend: Boolean(rule?.proxyProtocolSend),
+    proxyProtocolExitReceive: Boolean(rule?.proxyProtocolExitReceive),
+    proxyProtocolExitSend: Boolean(rule?.proxyProtocolExitSend),
+    failoverEnabled: Boolean(rule?.failoverEnabled),
+    failoverStrategy: normalizeFailoverStrategy(rule?.failoverStrategy),
+    failoverTargets: parseRuleFailoverTargets(rule?.failoverTargets),
+    failoverSeconds: normalizePositiveRuleNumber(rule?.failoverSeconds, 60),
+    recoverSeconds: normalizePositiveRuleNumber(rule?.recoverSeconds, 120),
+    autoFailback: rule?.autoFailback !== false,
+  };
+}
+
+function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const name = String(source.name || "导入规则").trim().slice(0, 128) || "导入规则";
+  const sourcePort = Number(source.sourcePort || 0);
+  const targetPort = Number(source.targetPort || 0);
+  const targetIp = String(source.targetIp || "").trim();
+  if (!Number.isFinite(sourcePort) || sourcePort < 0 || sourcePort > 65535) return null;
+  if (!targetIp || !isValidTargetHost(targetIp)) return null;
+  if (!isValidPort(targetPort, false)) return null;
+  return {
+    name,
+    forwardType: normalizeRuleForwardType(source.forwardType),
+    protocol: normalizeRuleProtocol(source.protocol),
+    sourcePort,
+    targetIp,
+    targetPort,
+    proxyProtocolReceive: Boolean(source.proxyProtocolReceive),
+    proxyProtocolSend: Boolean(source.proxyProtocolSend),
+    proxyProtocolExitReceive: Boolean(source.proxyProtocolExitReceive),
+    proxyProtocolExitSend: Boolean(source.proxyProtocolExitSend),
+    failoverEnabled: Boolean(source.failoverEnabled),
+    failoverStrategy: normalizeFailoverStrategy(source.failoverStrategy),
+    failoverTargets: parseRuleFailoverTargets(source.failoverTargets),
+    failoverSeconds: normalizePositiveRuleNumber(source.failoverSeconds, 60),
+    recoverSeconds: normalizePositiveRuleNumber(source.recoverSeconds, 120),
+    autoFailback: source.autoFailback !== false,
+  };
+}
+
+function normalizeRuleTransferFile(raw: unknown): RuleTransferFile {
+  if (!raw || typeof raw !== "object") return {};
+  const source = raw as RuleTransferFile;
+  return {
+    kind: typeof source.kind === "string" ? source.kind : undefined,
+    version: typeof source.version === "number" ? source.version : undefined,
+    exportedAt: typeof source.exportedAt === "string" ? source.exportedAt : undefined,
+    scope: source.scope && typeof source.scope === "object"
+      ? {
+          type: typeof source.scope.type === "string" ? source.scope.type : undefined,
+          id: typeof source.scope.id === "number" ? source.scope.id : undefined,
+          name: typeof source.scope.name === "string" ? source.scope.name : undefined,
+        }
+      : undefined,
+    rules: Array.isArray(source.rules) ? source.rules : undefined,
+  };
 }
 
 function normalizeFailoverTargetsForSubmit(text: string) {
@@ -1573,6 +1725,17 @@ function RulesContent() {
   const [copyTargetHostIds, setCopyTargetHostIds] = useState<number[]>([]);
   const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
   const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("skip");
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [exportScopeType, setExportScopeType] = useState<RuleTransferScopeType>("local");
+  const [exportResourceId, setExportResourceId] = useState("");
+  const [importScopeType, setImportScopeType] = useState<RuleTransferScopeType>("local");
+  const [importResourceId, setImportResourceId] = useState("");
+  const [importFile, setImportFile] = useState<RuleTransferFile | null>(null);
+  const [importFileName, setImportFileName] = useState("");
+  const [importFileError, setImportFileError] = useState("");
+  const [importFileInputKey, setImportFileInputKey] = useState(0);
+  const [importingRules, setImportingRules] = useState(false);
   const { data: selectedScopeRules } = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
     enabled: selectedScopeQueryEnabled,
     refetchInterval: 15000,
@@ -1628,6 +1791,9 @@ function RulesContent() {
     },
     onError: (err) => toast.error(err.message || "复制失败"),
   });
+
+
+  const importCreateMutation = trpc.rules.create.useMutation();
 
   const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string } | null>(null);
   const [selfTestRule, setSelfTestRule] = useState<{ id: number; name: string } | null>(null);
@@ -1907,6 +2073,42 @@ function RulesContent() {
     () => (forwardGroups || []).filter((group: any) => group.isEnabled && (group.members || []).length > 0),
     [forwardGroups]
   );
+  const transferChainGroups = useMemo(
+    () => (forwardGroups || []).filter((group: any) => isForwardChainGroup(group)),
+    [forwardGroups]
+  );
+  const transferRuleGroups = useMemo(
+    () => (forwardGroups || []).filter((group: any) => !isForwardChainGroup(group)),
+    [forwardGroups]
+  );
+  const getTransferResources = useCallback((type: RuleTransferScopeType): any[] => {
+    if (type === "local") return hosts || [];
+    if (type === "tunnel") return tunnels || [];
+    if (type === "chain") return transferChainGroups;
+    return transferRuleGroups;
+  }, [hosts, tunnels, transferChainGroups, transferRuleGroups]);
+  const exportResources = useMemo(() => getTransferResources(exportScopeType), [exportScopeType, getTransferResources]);
+  const importResources = useMemo(() => getTransferResources(importScopeType), [importScopeType, getTransferResources]);
+  useEffect(() => {
+    const firstId = exportResources[0]?.id;
+    if (!firstId) {
+      if (exportResourceId) setExportResourceId("");
+      return;
+    }
+    if (!exportResources.some((item: any) => String(item.id) === exportResourceId)) {
+      setExportResourceId(String(firstId));
+    }
+  }, [exportResourceId, exportResources]);
+  useEffect(() => {
+    const firstId = importResources[0]?.id;
+    if (!firstId) {
+      if (importResourceId) setImportResourceId("");
+      return;
+    }
+    if (!importResources.some((item: any) => String(item.id) === importResourceId)) {
+      setImportResourceId(String(firstId));
+    }
+  }, [importResourceId, importResources]);
   const selectedForwardGroup = useMemo(() => {
     if (!form.forwardGroupId) return null;
     return forwardGroupById.get(Number(form.forwardGroupId)) || null;
@@ -2319,6 +2521,7 @@ function RulesContent() {
     setFilteredRulesPrimed(true);
   }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
   const filteredRules = stableFilteredRules;
+  const transferSourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
   const ruleCategoryCounts = useMemo(() => {
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
     const baseFilters = {
@@ -2379,7 +2582,7 @@ function RulesContent() {
     return map;
   }, [ruleTargetGeoRows]);
   const trafficRangeLabel = trafficRange === "total" ? "累计" : "近 24h";
-  const trafficRangeHeaderLabel = trafficRange === "total" ? "累计流量" : "24h 流量";
+  const trafficMetricHeaderLabel = trafficRange === "total" ? "累计流量 / 延迟" : "总量 / 24h 流量 / 延迟";
 
   const { data: trafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: trafficRange, ruleIds: visibleRuleIdsForMetrics },
@@ -2390,7 +2593,17 @@ function RulesContent() {
       refetchOnWindowFocus: false,
     }
   );
+  const { data: totalTrafficSummary } = trpc.rules.trafficSummary.useQuery(
+    { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
+    {
+      enabled: secondaryQueriesReady && trafficRange !== "total" && visibleRuleIdsForMetrics.length > 0,
+      refetchInterval: 30000,
+      staleTime: 15000,
+      refetchOnWindowFocus: false,
+    }
+  );
   const [stableTrafficSummaryRows, setStableTrafficSummaryRows] = useState<any[]>([]);
+  const [stableTotalTrafficSummaryRows, setStableTotalTrafficSummaryRows] = useState<any[]>([]);
   useEffect(() => { setStableTrafficSummaryRows([]); }, [trafficRange]);
   useEffect(() => {
     if (!filteredRulesPrimed) return;
@@ -2402,7 +2615,17 @@ function RulesContent() {
       setStableTrafficSummaryRows(trafficSummary);
     }
   }, [filteredRulesPrimed, trafficSummary, trafficRange, visibleRuleIdsForMetrics.length]);
+  useEffect(() => {
+    if (trafficRange === "total" || visibleRuleIdsForMetrics.length === 0) {
+      setStableTotalTrafficSummaryRows([]);
+      return;
+    }
+    if (totalTrafficSummary) {
+      setStableTotalTrafficSummaryRows(totalTrafficSummary);
+    }
+  }, [totalTrafficSummary, trafficRange, visibleRuleIdsForMetrics.length]);
   const trafficSummaryRows = visibleRuleIdsForMetrics.length === 0 ? [] : trafficSummary ?? stableTrafficSummaryRows;
+  const totalTrafficSummaryRows = trafficRange === "total" || visibleRuleIdsForMetrics.length === 0 ? [] : totalTrafficSummary ?? stableTotalTrafficSummaryRows;
   const trafficByRule = useMemo(() => {
     const m = new Map<number, {
       bytesIn: number;
@@ -2439,6 +2662,23 @@ function RulesContent() {
     });
     return m;
   }, [trafficSummaryRows]);
+  const totalTrafficByRule = useMemo(() => {
+    const m = new Map<number, { bytesIn: number; bytesOut: number }>();
+    totalTrafficSummaryRows.forEach((t: any) => {
+      const rid = Number(t.ruleId);
+      const prev = m.get(rid);
+      if (prev) {
+        prev.bytesIn += Number(t.bytesIn) || 0;
+        prev.bytesOut += Number(t.bytesOut) || 0;
+      } else {
+        m.set(rid, {
+          bytesIn: Number(t.bytesIn) || 0,
+          bytesOut: Number(t.bytesOut) || 0,
+        });
+      }
+    });
+    return m;
+  }, [totalTrafficSummaryRows]);
   const trafficTotals = useMemo(() => {
     let bytesIn = 0;
     let bytesOut = 0;
@@ -2679,6 +2919,216 @@ function RulesContent() {
     };
   }, [forwardGroupById, getRuleEntryHost, hosts, selfTestRule?.name, selfTestRuleDetail, targetGeoByAddress, tunnelById]);
 
+  const getTransferResourceLabel = (type: RuleTransferScopeType, resource: any) => {
+    if (!resource) return "";
+    if (type === "local") return getHostOptionText(resource);
+    if (type === "tunnel") return `${resource.name || `#${resource.id}`} · ${getTunnelRouteText(resource, hosts || [])}`;
+    return resource.name || `#${resource.id}`;
+  };
+
+  const renderTransferResourceOption = (type: RuleTransferScopeType, resource: any) => {
+    if (type === "local") {
+      return (
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <span className="truncate">{getHostOptionName(resource)}</span>
+          {renderHostStatusLabel(resource)}
+        </div>
+      );
+    }
+    if (type === "tunnel") {
+      return (
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate">{resource.name || `#${resource.id}`}</span>
+          <span className="truncate text-xs text-muted-foreground">{getTunnelRouteText(resource, hosts || [])}</span>
+        </div>
+      );
+    }
+    return <span className="truncate">{resource.name || `#${resource.id}`}</span>;
+  };
+
+  const getRulesForTransferScope = useCallback((type: RuleTransferScopeType, resourceId: string) => {
+    const id = Number(resourceId);
+    if (!Number.isFinite(id) || id <= 0) return [];
+    return transferSourceRules.filter((rule: any) => {
+      if (rule.forwardGroupRuleId || rule.forwardGroupMemberId) return false;
+      const category = getRuleCategory(rule, forwardGroupById);
+      if (category !== type) return false;
+      if (type === "local") return Number(rule.hostId) === id && !rule.tunnelId && !rule.forwardGroupId;
+      if (type === "tunnel") return Number(rule.tunnelId) === id;
+      return Number(rule.forwardGroupId) === id;
+    });
+  }, [forwardGroupById, transferSourceRules]);
+
+  const exportableRules = useMemo(
+    () => getRulesForTransferScope(exportScopeType, exportResourceId),
+    [exportScopeType, exportResourceId, getRulesForTransferScope]
+  );
+
+  const importValidation = useMemo<{ ok: boolean; message: string; rules: RuleTransferFileRule[] }>(() => {
+    if (!importResourceId) return { ok: false, message: `请选择${ruleTransferScopeLabels[importScopeType]}`, rules: [] };
+    if (importFileError) return { ok: false, message: importFileError, rules: [] };
+    if (!importFile) return { ok: false, message: "请选择导入文件", rules: [] };
+    if (importFile.kind !== RULE_TRANSFER_FILE_KIND) {
+      return { ok: false, message: "文件不是 ForwardX 转发规则导出文件", rules: [] };
+    }
+    const fileScopeType = normalizeRuleTransferScopeType(importFile.scope?.type);
+    if (!fileScopeType) return { ok: false, message: "文件缺少导出类型", rules: [] };
+    if (fileScopeType !== importScopeType) {
+      return {
+        ok: false,
+        message: `文件类型是${ruleTransferScopeLabels[fileScopeType]}，请切换为${ruleTransferScopeLabels[fileScopeType]}后导入`,
+        rules: [],
+      };
+    }
+    if (!Array.isArray(importFile.rules) || importFile.rules.length === 0) {
+      return { ok: false, message: "文件中没有可导入的规则", rules: [] };
+    }
+    if (importFile.rules.length > RULE_TRANSFER_MAX_IMPORT_COUNT) {
+      return { ok: false, message: `单次最多导入 ${RULE_TRANSFER_MAX_IMPORT_COUNT} 条规则`, rules: [] };
+    }
+    const normalizedRules = importFile.rules.map(normalizeRuleTransferRule);
+    const invalidIndex = normalizedRules.findIndex((rule) => !rule);
+    if (invalidIndex >= 0) {
+      return { ok: false, message: `第 ${invalidIndex + 1} 条规则格式不完整`, rules: [] };
+    }
+    const fixedRules = normalizedRules as RuleTransferFileRule[];
+    const zeroPortIndex = fixedRules.findIndex((rule) => rule.sourcePort <= 0);
+    if ((importScopeType === "chain" || importScopeType === "group") && zeroPortIndex >= 0) {
+      return { ok: false, message: `第 ${zeroPortIndex + 1} 条规则缺少监听端口`, rules: [] };
+    }
+    return { ok: true, message: `已识别 ${fixedRules.length} 条${ruleTransferScopeLabels[importScopeType]}规则`, rules: fixedRules };
+  }, [importFile, importFileError, importResourceId, importScopeType]);
+
+  const resetImportDialog = () => {
+    setImportFile(null);
+    setImportFileName("");
+    setImportFileError("");
+    setImportFileInputKey((key) => key + 1);
+  };
+
+  const openExportDialog = () => {
+    const preferredType = ruleCategory === "all" ? "local" : ruleCategory;
+    setExportScopeType(preferredType as RuleTransferScopeType);
+    setShowExportDialog(true);
+  };
+
+  const openImportDialog = () => {
+    if (!canAdd) {
+      toast.error("当前没有添加规则权限");
+      return;
+    }
+    const preferredType = ruleCategory === "all" ? "local" : ruleCategory;
+    setImportScopeType(preferredType as RuleTransferScopeType);
+    resetImportDialog();
+    setShowImportDialog(true);
+  };
+
+  const handleImportFileChange = async (event: any) => {
+    const file = event.target.files?.[0];
+    setImportFile(null);
+    setImportFileError("");
+    setImportFileName(file?.name || "");
+    if (!file) return;
+    try {
+      const rawText = await file.text();
+      const parsed = JSON.parse(rawText);
+      setImportFile(normalizeRuleTransferFile(parsed));
+    } catch {
+      setImportFileError("文件无法解析，请选择 JSON 格式的规则文件");
+    }
+  };
+
+  const buildImportRulePayload = (rule: RuleTransferFileRule) => {
+    const resourceId = Number(importResourceId);
+    const selectedTunnel = importScopeType === "tunnel" ? tunnelById.get(resourceId) : null;
+    const selectedGroup = importScopeType === "chain" || importScopeType === "group" ? forwardGroupById.get(resourceId) : null;
+    const groupUsesTunnel = importScopeType === "group" && selectedGroup && !isForwardChainGroup(selectedGroup) && selectedGroup.groupType === "tunnel";
+    const payloadForwardType: ForwardType = importScopeType === "tunnel" || groupUsesTunnel ? "gost" : rule.forwardType;
+    return {
+      hostId: importScopeType === "local" ? resourceId : importScopeType === "tunnel" ? Number(selectedTunnel?.entryHostId || 0) : undefined,
+      name: rule.name,
+      forwardType: payloadForwardType,
+      protocol: rule.protocol,
+      gostMode: "direct",
+      gostRelayHost: null,
+      gostRelayPort: null,
+      tunnelId: importScopeType === "tunnel" ? resourceId : null,
+      forwardGroupId: importScopeType === "chain" || importScopeType === "group" ? resourceId : null,
+      sourcePort: rule.sourcePort,
+      targetIp: rule.targetIp,
+      targetPort: rule.targetPort,
+      proxyProtocolReceive: rule.proxyProtocolReceive,
+      proxyProtocolSend: rule.proxyProtocolSend,
+      proxyProtocolExitReceive: rule.proxyProtocolExitReceive,
+      proxyProtocolExitSend: rule.proxyProtocolExitSend,
+      failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
+      failoverStrategy: rule.failoverStrategy,
+      failoverTargets: importScopeType === "chain" || !rule.failoverEnabled ? [] : rule.failoverTargets,
+      failoverSeconds: rule.failoverSeconds,
+      recoverSeconds: rule.recoverSeconds,
+      autoFailback: rule.autoFailback,
+    };
+  };
+
+  const handleImportRules = async () => {
+    if (!importValidation.ok) {
+      toast.error(importValidation.message);
+      return;
+    }
+    setImportingRules(true);
+    let importedCount = 0;
+    try {
+      for (const rule of importValidation.rules) {
+        await importCreateMutation.mutateAsync(buildImportRulePayload(rule));
+        importedCount += 1;
+      }
+      await utils.rules.list.invalidate();
+      await utils.rules.trafficSummary.invalidate();
+      toast.success(`已导入 ${importedCount} 条规则`);
+      setShowImportDialog(false);
+      resetImportDialog();
+    } catch (error: any) {
+      toast.error(`导入失败：已导入 ${importedCount} 条，${error?.message || "请检查规则配置"}`);
+    } finally {
+      setImportingRules(false);
+    }
+  };
+
+  const handleExportRules = () => {
+    const resource = exportResources.find((item: any) => String(item.id) === exportResourceId);
+    if (!resource) {
+      toast.error(`请选择${ruleTransferScopeLabels[exportScopeType]}`);
+      return;
+    }
+    if (exportableRules.length === 0) {
+      toast.error("当前选择没有可导出的规则");
+      return;
+    }
+    const resourceLabel = getTransferResourceLabel(exportScopeType, resource);
+    const payload = {
+      kind: RULE_TRANSFER_FILE_KIND,
+      version: RULE_TRANSFER_FILE_VERSION,
+      exportedAt: new Date().toISOString(),
+      scope: {
+        type: exportScopeType,
+        id: Number(exportResourceId),
+        name: resourceLabel,
+      },
+      rules: exportableRules.map(exportRuleForTransfer),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    anchor.href = url;
+    anchor.download = `forwardx-rules-${exportScopeType}-${sanitizeRuleTransferFilePart(resourceLabel)}-${date}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    toast.success(`已导出 ${exportableRules.length} 条规则`);
+    setShowExportDialog(false);
+  };
   const getRuleOwnerName = (rule: any) => {
     const owner = userById.get(Number(rule.userId));
     return owner?.name || owner?.username || `用户 #${rule.userId}`;
@@ -2959,6 +3409,24 @@ function RulesContent() {
     );
   };
 
+  const renderRuleTotalTraffic = (rule: any) => {
+    if (trafficRange === "total") return null;
+    const t = totalTrafficByRule.get(rule.id);
+    if (!t) {
+      return <span className="text-xs text-muted-foreground">总量 —</span>;
+    }
+    const total = Number(t.bytesIn || 0) + Number(t.bytesOut || 0);
+    return (
+      <span
+        className="flex items-center gap-1 text-xs font-medium text-foreground"
+        title={`累计入向 ${formatBytes(t.bytesIn)} / 出向 ${formatBytes(t.bytesOut)}`}
+      >
+        <ArrowRightLeft className="h-3 w-3 text-muted-foreground" />
+        总 {formatBytes(total)}
+      </span>
+    );
+  };
+
   const renderLatestLatency = (rule: any) => {
     const t = trafficByRule.get(rule.id);
     if (!t?.latestLatencyAt) return <span className="text-xs text-muted-foreground">未测试</span>;
@@ -3158,6 +3626,7 @@ function RulesContent() {
         </TableCell>
         <TableCell>
           <div className="space-y-1">
+            {renderRuleTotalTraffic(rule)}
             {renderRuleTraffic(rule)}
             {renderLatestLatency(rule)}
           </div>
@@ -3385,6 +3854,24 @@ function RulesContent() {
           >
             <ClipboardCopy className="h-4 w-4" />
             复制规则
+          </Button>
+          <Button
+            variant="outline"
+            onClick={openImportDialog}
+            disabled={rulePermissionLoading || !canAdd || importingRules}
+            className="gap-2"
+          >
+            <Upload className="h-4 w-4" />
+            导入规则
+          </Button>
+          <Button
+            variant="outline"
+            onClick={openExportDialog}
+            disabled={!transferSourceRules.length}
+            className="gap-2"
+          >
+            <Download className="h-4 w-4" />
+            导出规则
           </Button>
           {rulePermissionLoading ? (
             <Button disabled className="col-span-2 gap-2 sm:col-span-1">
@@ -3648,7 +4135,7 @@ function RulesContent() {
                           <TableHead>转发配置</TableHead>
                           <TableHead className="w-[150px]">链路</TableHead>
                           <TableHead className="w-[86px]">协议</TableHead>
-                          <TableHead className="w-[140px]">{trafficRangeHeaderLabel} / 延迟</TableHead>
+                          <TableHead className="w-[164px] whitespace-nowrap">{trafficMetricHeaderLabel}</TableHead>
                           <TableHead className="w-[76px] text-center">开关</TableHead>
                           <TableHead className="w-[164px] text-right">操作</TableHead>
                         </TableRow>
@@ -4158,6 +4645,161 @@ function RulesContent() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="h-5 w-5" />
+              导出规则
+            </DialogTitle>
+            <DialogDescription>选择范围后导出对应的转发规则</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>类型</Label>
+                <Select
+                  value={exportScopeType}
+                  onValueChange={(value) => {
+                    setExportScopeType(value as RuleTransferScopeType);
+                    setExportResourceId("");
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ruleTransferScopeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{ruleTransferScopeLabels[exportScopeType]}</Label>
+                <Select value={exportResourceId} onValueChange={setExportResourceId} disabled={exportResources.length === 0}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={`请选择${ruleTransferScopeLabels[exportScopeType]}`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {exportResources.map((resource: any) => (
+                      <SelectItem
+                        key={resource.id}
+                        value={String(resource.id)}
+                        textValue={getTransferResourceLabel(exportScopeType, resource)}
+                      >
+                        {renderTransferResourceOption(exportScopeType, resource)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              {exportResourceId
+                ? `将导出 ${exportableRules.length} 条${ruleTransferScopeLabels[exportScopeType]}规则`
+                : `请选择${ruleTransferScopeLabels[exportScopeType]}`}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setShowExportDialog(false)}>
+              取消
+            </Button>
+            <Button type="button" onClick={handleExportRules} disabled={!exportResourceId || exportableRules.length === 0}>
+              确定导出
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showImportDialog}
+        onOpenChange={(open) => {
+          setShowImportDialog(open);
+          if (!open) resetImportDialog();
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5" />
+              导入规则
+            </DialogTitle>
+            <DialogDescription>选择范围与规则文件后导入</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>类型</Label>
+                <Select
+                  value={importScopeType}
+                  onValueChange={(value) => {
+                    setImportScopeType(value as RuleTransferScopeType);
+                    setImportResourceId("");
+                    resetImportDialog();
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ruleTransferScopeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{ruleTransferScopeLabels[importScopeType]}</Label>
+                <Select value={importResourceId} onValueChange={setImportResourceId} disabled={importResources.length === 0}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={`请选择${ruleTransferScopeLabels[importScopeType]}`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {importResources.map((resource: any) => (
+                      <SelectItem
+                        key={resource.id}
+                        value={String(resource.id)}
+                        textValue={getTransferResourceLabel(importScopeType, resource)}
+                      >
+                        {renderTransferResourceOption(importScopeType, resource)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>规则文件</Label>
+              <Input key={importFileInputKey} type="file" accept=".json,application/json" onChange={handleImportFileChange} />
+            </div>
+            <div
+              className={`rounded-md border px-3 py-2 text-sm ${
+                importValidation.ok
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : importFileName || importFileError
+                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                    : "border-border/60 bg-muted/30 text-muted-foreground"
+              }`}
+            >
+              {importValidation.message}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setShowImportDialog(false)} disabled={importingRules}>
+              取消
+            </Button>
+            <Button type="button" onClick={handleImportRules} disabled={!importValidation.ok || importingRules}>
+              {importingRules && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              导入
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={showCopyDialog} onOpenChange={setShowCopyDialog}>
         <DialogContent className="sm:max-w-3xl">
           <DialogHeader>

@@ -68,7 +68,6 @@ import {
   Key,
   Rows3,
   RotateCcw,
-  ShieldCheck,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -593,6 +592,10 @@ function HostWorldMap({
   );
 }
 
+type HostTrafficMeasureMode = "outbound" | "both";
+
+const HOST_TRAFFIC_GB_BYTES = 1024 ** 3;
+
 type HostFormData = {
   name: string;
   ip: string;
@@ -605,6 +608,9 @@ type HostFormData = {
   portAllowlist: string;
   purchasedAt: string;
   stoppedAt: string;
+  trafficLimitGb: string;
+  trafficMeasureMode: HostTrafficMeasureMode;
+  telegramTrafficAlertEnabled: boolean;
   trafficAutoReset: boolean;
   trafficResetDay: number;
   blockHttp: boolean;
@@ -624,6 +630,9 @@ const defaultFormData: HostFormData = {
   portAllowlist: "",
   purchasedAt: "",
   stoppedAt: "",
+  trafficLimitGb: "",
+  trafficMeasureMode: "both",
+  telegramTrafficAlertEnabled: false,
   trafficAutoReset: false,
   trafficResetDay: 1,
   blockHttp: false,
@@ -651,15 +660,24 @@ function clampMonthlyResetDay(value: number) {
   return Math.min(31, Math.max(1, Math.floor(Number(value) || 1)));
 }
 
+function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
+  return value === "outbound" ? "outbound" : "both";
+}
+
+function formatTrafficLimitGbInput(value: unknown) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  const gb = bytes / HOST_TRAFFIC_GB_BYTES;
+  return Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(3)));
+}
+
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "services" | "tokens";
-type HostDialogTab = "basic" | "ports" | "traffic" | "policy";
+type HostDialogTab = "basic" | "other";
 
 const HOST_DIALOG_TABS = [
   { value: "basic", label: "基础信息", icon: Server },
-  { value: "ports", label: "端口限制", icon: Rows3 },
-  { value: "traffic", label: "流量配置", icon: Gauge },
-  { value: "policy", label: "协议屏蔽", icon: ShieldCheck },
+  { value: "other", label: "其他配置", icon: Gauge },
 ] as const;
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
@@ -874,6 +892,9 @@ function HostsContent() {
       portAllowlist: host.portAllowlist || "",
       purchasedAt: formatDateTimeLocal(host.purchasedAt),
       stoppedAt: formatDateTimeLocal(host.stoppedAt),
+      trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
+      trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
+      telegramTrafficAlertEnabled: !!host.telegramTrafficAlertEnabled,
       trafficAutoReset: !!host.trafficAutoReset,
       trafficResetDay: clampMonthlyResetDay(host.trafficResetDay || 1),
       blockHttp: !!host.blockHttp,
@@ -918,10 +939,19 @@ function HostsContent() {
       toast.error("机器停止时间必须晚于购买时间");
       return;
     }
+    const trafficLimitGb = Number(String(form.trafficLimitGb || "").trim() || 0);
+    if (user?.role === "admin" && (!Number.isFinite(trafficLimitGb) || trafficLimitGb < 0)) {
+      toast.error("套餐流量不能小于 0");
+      return;
+    }
+    const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
     const trafficConfigPayload = user?.role === "admin"
       ? {
           purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
+          trafficLimit: trafficLimitBytes,
+          trafficMeasureMode: form.trafficMeasureMode,
+          telegramTrafficAlertEnabled: form.telegramTrafficAlertEnabled,
           trafficAutoReset: form.trafficAutoReset,
           trafficResetDay: clampMonthlyResetDay(form.trafficResetDay),
         }
@@ -1688,7 +1718,7 @@ function HostsContent() {
 
       {/* 编辑主机对话框 */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
+        <DialogContent className="flex h-[min(760px,88vh)] max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
           <DialogHeader className="shrink-0 space-y-1">
             <DialogTitle>编辑主机</DialogTitle>
             <DialogDescription className="sr-only">
@@ -1696,12 +1726,12 @@ function HostsContent() {
             </DialogDescription>
           </DialogHeader>
           <Tabs
-            value={hostDialogTab === "policy" && user?.role !== "admin" ? "basic" : hostDialogTab}
+            value={hostDialogTab}
             onValueChange={(value) => setHostDialogTab(value as HostDialogTab)}
             className="min-h-0 flex flex-1 flex-col overflow-hidden"
           >
-            <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-1 sm:grid-cols-3"} gap-1 rounded-md bg-muted/50 p-1`}>
-              {HOST_DIALOG_TABS.filter((item) => item.value !== "policy" || user?.role === "admin").map((item) => {
+            <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-md bg-muted/50 p-1">
+              {HOST_DIALOG_TABS.map((item) => {
                 const Icon = item.icon;
                 return (
                   <TabsTrigger key={item.value} value={item.value} className="min-w-0 gap-2 px-3 py-2">
@@ -1711,8 +1741,8 @@ function HostsContent() {
                 );
               })}
             </TabsList>
-            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
-              <TabsContent value="basic" className="m-0">
+            <div className="mt-4 min-h-0 flex-1 overflow-y-scroll pr-2 [scrollbar-gutter:stable]">
+              <TabsContent value="basic" className="m-0 space-y-4 !animate-none">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">基础信息</Label>
@@ -1763,9 +1793,7 @@ function HostsContent() {
                     />
                   </div>
                 </section>
-              </TabsContent>
 
-              <TabsContent value="ports" className="m-0">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Label className="text-sm font-semibold">端口限制</Label>
@@ -1830,12 +1858,34 @@ function HostsContent() {
                     </p>
                   )}
                 </section>
+                {user?.role === "admin" && (
+                  <section className="rounded-md border border-border/50 bg-background/45 p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <Label className="text-sm font-semibold">协议屏蔽</Label>
+                      <span className="text-xs text-muted-foreground">访问策略</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">HTTP</span>
+                        <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">SOCKS</span>
+                        <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
+                        <span className="text-sm font-medium">TLS</span>
+                        <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                      </label>
+                    </div>
+                  </section>
+                )}
               </TabsContent>
 
-              <TabsContent value="traffic" className="m-0">
+              <TabsContent value="other" className="m-0 !animate-none">
                 <section className="rounded-md border border-border/50 bg-background/45 p-4">
                   <div className="mb-4 flex items-center justify-between gap-3">
-                    <Label className="text-sm font-semibold">流量配置</Label>
+                    <Label className="text-sm font-semibold">其他配置</Label>
                     <span className="text-xs text-muted-foreground">主机统计</span>
                   </div>
                   {user?.role === "admin" ? (
@@ -1859,6 +1909,42 @@ function HostsContent() {
                             onChange={(e) => setForm({ ...form, stoppedAt: e.target.value })}
                           />
                         </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">套餐流量</Label>
+                          <div className="flex overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                            <Input
+                              className="h-9 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                              type="number"
+                              min={0}
+                              step={1}
+                              placeholder="例如: 2000"
+                              value={form.trafficLimitGb}
+                              onChange={(e) => setForm({ ...form, trafficLimitGb: e.target.value })}
+                            />
+                            <span className="flex h-9 shrink-0 items-center border-l border-border/60 bg-muted/50 px-3 text-sm text-muted-foreground">GB</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-sm">流量计算</Label>
+                          <Select
+                            value={form.trafficMeasureMode}
+                            onValueChange={(value) => setForm({ ...form, trafficMeasureMode: normalizeHostTrafficMeasureMode(value) })}
+                          >
+                            <SelectTrigger className="h-9">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="outbound">仅出向</SelectItem>
+                              <SelectItem value="both">双向</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <Label className="text-sm font-medium">流量阈值 TG 机器人预警</Label>
+                        </div>
+                        <Switch checked={form.telegramTrafficAlertEnabled} onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })} />
                       </div>
                       <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/60 px-3 py-2.5">
                         <div className="min-w-0">
@@ -1888,36 +1974,12 @@ function HostsContent() {
                     </>
                   ) : (
                     <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                      仅管理员可配置主机流量重置。
+                      仅管理员可配置主机其他配置。
                     </div>
                   )}
                 </section>
               </TabsContent>
 
-              {user?.role === "admin" && (
-                <TabsContent value="policy" className="m-0">
-                  <section className="rounded-md border border-border/50 bg-background/45 p-4">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <Label className="text-sm font-semibold">协议屏蔽</Label>
-                      <span className="text-xs text-muted-foreground">访问策略</span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                        <span className="text-sm font-medium">HTTP</span>
-                        <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
-                      </label>
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                        <span className="text-sm font-medium">SOCKS</span>
-                        <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
-                      </label>
-                      <label className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-                        <span className="text-sm font-medium">TLS</span>
-                        <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
-                      </label>
-                    </div>
-                  </section>
-                </TabsContent>
-              )}
             </div>
           </Tabs>
           <DialogFooter className="shrink-0 pt-2">

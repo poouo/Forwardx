@@ -300,10 +300,13 @@ async function runTelegramReminders() {
 
     const expiryReminder = settings.telegramExpiryReminder === "true";
     const trafficReminder = settings.telegramTrafficReminder === "true";
-    const trafficReminderThreshold = Number(settings.telegramTrafficReminderThreshold || 20);
-    if (!expiryReminder && !trafficReminder) return;
+    const trafficReminderThreshold = Math.min(99, Math.max(1, Number(settings.telegramTrafficReminderThreshold || 20)));
+    const hostRows = await db.getHosts();
+    const hostTrafficAlertHosts = (hostRows as any[]).filter((host) => !!host.telegramTrafficAlertEnabled && Number(host.trafficLimit || 0) > 0);
+    if (!expiryReminder && !trafficReminder && hostTrafficAlertHosts.length === 0) return;
 
     const users = await db.getUserTrafficSummaries();
+    const usersById = new Map((users as any[]).map((user) => [Number(user.id), user]));
     const now = Date.now();
 
     for (const user of users as any[]) {
@@ -349,6 +352,38 @@ async function runTelegramReminders() {
         }
       }
     }
+
+    if (hostTrafficAlertHosts.length > 0) {
+      const hostIds = hostTrafficAlertHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0);
+      const hostTrafficRows = await db.getHostTrafficSummary(hostIds);
+      const trafficByHostId = new Map((hostTrafficRows as any[]).map((traffic) => [Number(traffic.hostId), traffic]));
+
+      for (const host of hostTrafficAlertHosts as any[]) {
+        const owner = usersById.get(Number(host.userId));
+        if (!owner?.telegramId) continue;
+
+        const limit = Number(host.trafficLimit || 0);
+        const traffic = trafficByHostId.get(Number(host.id));
+        const used = hostTrafficUsageBytes(traffic, host.trafficMeasureMode);
+        const leftPercent = Math.max(0, Math.round(((limit - used) / limit) * 100));
+        const key = dayKey(`telegramReminder:hostTraffic:${host.id}`, owner.id);
+        if (leftPercent <= trafficReminderThreshold && !(await db.getSetting(key))) {
+          await sendTelegramMessage(
+            owner.telegramId,
+            [
+              "ForwardX 主机流量提醒",
+              "",
+              `主机：${escapeHtmlLocal(host.name || `#${host.id}`)}`,
+              `剩余约 ${leftPercent}%`,
+              `已用：${formatBytesLocal(used)}`,
+              `总量：${formatBytesLocal(limit)}`,
+              `计算方式：${host.trafficMeasureMode === "outbound" ? "仅出向" : "双向"}`,
+            ].join("\n"),
+          );
+          await db.setSetting(key, "sent");
+        }
+      }
+    }
   } catch (error) {
     console.error("[Scheduler] Telegram reminder error:", error);
   }
@@ -369,6 +404,19 @@ async function runHostStatusSweep() {
   } catch (error) {
     console.error("[Scheduler] Host status sweep error:", error);
   }
+}
+
+function hostTrafficUsageBytes(traffic: any, mode: unknown) {
+  const bytesOut = Number(traffic?.bytesOut || 0);
+  if (mode === "outbound") return bytesOut;
+  return Number(traffic?.bytesIn || 0) + bytesOut;
+}
+
+function escapeHtmlLocal(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function formatBytesLocal(bytes: number) {

@@ -597,8 +597,8 @@
   @keyframes dialog-panel-in {
     from {
       opacity: 0;
-      filter: blur(2px);
-      transform: translate3d(-50%, calc(-50% + 14px), 0) scale(0.965);
+      filter: blur(6px);
+      transform: translate3d(-50%, calc(-50% + 18px), 0) scale(0.972);
     }
     to {
       opacity: 1;
@@ -615,16 +615,16 @@
     }
     to {
       opacity: 0;
-      filter: blur(1px);
-      transform: translate3d(-50%, calc(-50% + 8px), 0) scale(0.975);
+      filter: blur(4px);
+      transform: translate3d(-50%, calc(-50% + 10px), 0) scale(0.982);
     }
   }
 
   .dialog-overlay {
-    --dialog-overlay-tint: rgb(15 23 42 / 0.44);
-    --dialog-overlay-blur: 36px;
-    --dialog-overlay-saturate: 1.9;
-    --dialog-overlay-brightness: 0.84;
+    --dialog-overlay-tint: rgb(15 23 42 / 0.56);
+    --dialog-overlay-blur: 48px;
+    --dialog-overlay-saturate: 2.05;
+    --dialog-overlay-brightness: 0.76;
     background-color: rgb(15 23 42 / 0);
     backdrop-filter: blur(0) saturate(1) brightness(1);
     -webkit-backdrop-filter: blur(0) saturate(1) brightness(1);
@@ -633,10 +633,10 @@
   }
 
   .dark .dialog-overlay {
-    --dialog-overlay-tint: rgb(0 0 0 / 0.64);
-    --dialog-overlay-blur: 38px;
-    --dialog-overlay-saturate: 1.45;
-    --dialog-overlay-brightness: 0.66;
+    --dialog-overlay-tint: rgb(0 0 0 / 0.72);
+    --dialog-overlay-blur: 50px;
+    --dialog-overlay-saturate: 1.6;
+    --dialog-overlay-brightness: 0.56;
   }
 
   .dialog-overlay::before,
@@ -682,20 +682,20 @@
   }
 
   .dialog-overlay[data-state="open"] {
-    animation: dialog-overlay-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: dialog-overlay-in 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .dialog-overlay[data-state="closed"] {
-    animation: dialog-overlay-out 190ms cubic-bezier(0.4, 0, 0.2, 1) both;
+    animation: dialog-overlay-out 220ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
   .dialog-overlay[data-state="open"]::before,
   .dialog-overlay[data-state="open"]::after {
-    animation: dialog-overlay-material-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: dialog-overlay-material-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .dialog-overlay[data-state="open"]::after {
-    animation-delay: 40ms;
+    animation-delay: 28ms;
   }
 
   .dialog-overlay[data-state="closed"]::before,
@@ -715,15 +715,17 @@
     isolation: isolate;
     opacity: 0;
     transform: translate3d(-50%, -50%, 0) scale(0.98);
+    backdrop-filter: blur(18px) saturate(1.12);
+    -webkit-backdrop-filter: blur(18px) saturate(1.12);
     will-change: opacity, transform, filter;
   }
 
   .dialog-panel[data-state="open"] {
-    animation: dialog-panel-in 230ms cubic-bezier(0.22, 1, 0.36, 1) 70ms both;
+    animation: dialog-panel-in 300ms cubic-bezier(0.16, 1, 0.3, 1) 28ms both;
   }
 
   .dialog-panel[data-state="closed"] {
-    animation: dialog-panel-out 170ms cubic-bezier(0.4, 0, 0.2, 1) both;
+    animation: dialog-panel-out 210ms cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 
   .dark .dialog-panel {
