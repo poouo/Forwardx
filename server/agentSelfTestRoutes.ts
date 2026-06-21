@@ -10,6 +10,16 @@ async function resolveSelfTestTarget(rule: any) {
   return rule?.targetIp;
 }
 
+function tunnelSeriesKey(value: unknown, fallback: string) {
+  const key = String(value || fallback).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (key || fallback).slice(0, 64);
+}
+
+function tunnelSeriesLabel(value: unknown, fallback: string) {
+  const label = String(value || fallback).trim().replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ");
+  return (label || fallback).slice(0, 96);
+}
+
 function structuredLinkTestMessage(input: {
   kind: string;
   message: string;
@@ -114,10 +124,31 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           message: aggregateMessage,
         });
+        const recordedAt = new Date();
+        if (latencyMode === "max") {
+          let branchIndex = 0;
+          for (const detail of aggregate.details || []) {
+            branchIndex += 1;
+            const key = branchIndex === 1 ? "primary" : `exit-${branchIndex}`;
+            const label = tunnelSeriesLabel((detail as any).routeLabel || (detail as any).hopLabel, `出口 ${branchIndex}`);
+            const branchLatency = typeof (detail as any).latencyMs === "number" && (detail as any).latencyMs > 0 ? Number((detail as any).latencyMs) : null;
+            await db.insertTunnelLatencyStat({
+              tunnelId: aggregate.tunnelId,
+              latencyMs: (detail as any).success ? branchLatency : null,
+              isTimeout: !(detail as any).success,
+              seriesKey: key,
+              seriesLabel: label,
+              recordedAt,
+            }, { preserveMessage: true, updateTunnel: false });
+          }
+        }
         await db.insertTunnelLatencyStat({
           tunnelId: aggregate.tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
+          seriesKey: "total",
+          seriesLabel: latencyMode === "max" ? "最大延迟" : "总延迟",
+          recordedAt,
         }, { message: aggregateMessage });
         if (aggregate.success) {
           console.log(`[TunnelTest] tunnel=${aggregate.tunnelId} multi-hop total latency=${aggregate.latencyMs}ms`);

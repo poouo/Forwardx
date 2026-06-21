@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.100"
+var Version = "2.2.101"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -47,6 +47,8 @@ const trafficCollectInterval = 3 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
 const runtimeActionRefreshInterval = 5 * time.Minute
 const agentLogRetention = 72 * time.Hour
+const agentSlowRequestThreshold = 1500 * time.Millisecond
+const agentReportLogInterval = 30 * time.Second
 
 const agentLogDir = "/var/log/forwardx-agent"
 const agentLogPath = agentLogDir + "/agent-go.log"
@@ -93,10 +95,13 @@ var runtimeActionCache = map[string]runtimeActionState{}
 var runtimeProxyLogMu sync.Mutex
 var runtimeProxyLogSignatures = map[string]string{}
 var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
+var agentReportLogMu sync.Mutex
+var agentReportLogAt = map[string]time.Time{}
 
 type actionJob struct {
 	cfg    Config
 	action action
+	done   chan struct{}
 }
 
 type runtimeActionState struct {
@@ -188,12 +193,14 @@ type failoverSpec struct {
 }
 
 type tunnelProbe struct {
-	TunnelID   int    `json:"tunnelId"`
-	TargetIP   string `json:"targetIp"`
-	TargetPort int    `json:"targetPort"`
-	Protocol   string `json:"protocol"`
-	HopIndex   int    `json:"hopIndex"`
-	HopCount   int    `json:"hopCount"`
+	TunnelID    int    `json:"tunnelId"`
+	TargetIP    string `json:"targetIp"`
+	TargetPort  int    `json:"targetPort"`
+	Protocol    string `json:"protocol"`
+	HopIndex    int    `json:"hopIndex"`
+	HopCount    int    `json:"hopCount"`
+	SeriesKey   string `json:"seriesKey"`
+	SeriesLabel string `json:"seriesLabel"`
 }
 
 type hostProbeServiceProbe struct {
@@ -336,7 +343,7 @@ func main() {
 	go agentEventStream(cfg)
 	for {
 		nextInterval, err := heartbeat(cfg)
-		if err != nil {
+		if err != nil && shouldLogAgentReport("heartbeat-error", agentReportLogInterval) {
 			logf("heartbeat error: %v", err)
 		}
 		if nextInterval <= 0 {
@@ -435,11 +442,15 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	dnsWatchChanged := updateDNSWatch(resp.DNSWatch)
 	pendingActionPorts := map[string]bool{}
+	actionDone := make([]<-chan struct{}, 0, len(resp.Actions))
 	for _, a := range resp.Actions {
 		if a.SourcePort > 0 {
 			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
 		}
-		enqueueAction(cfg, a)
+		actionDone = append(actionDone, enqueueAction(cfg, a))
+	}
+	if len(resp.SelfTests) > 0 && len(actionDone) > 0 {
+		waitForActionBatch(actionDone, 20*time.Second)
 	}
 	for _, t := range resp.SelfTests {
 		go handleSelfTest(cfg, t)
@@ -3572,6 +3583,7 @@ func post(cfg Config, path string, payload any, out any) error {
 }
 
 func postOnce(cfg Config, path string, payload any, out any) error {
+	startedAt := time.Now()
 	env, err := encrypt(map[string]any{
 		"path":    path,
 		"payload": payload,
@@ -3588,6 +3600,9 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
+		if shouldLogAgentReport("post-error:"+path, agentReportLogInterval) {
+			logf("agent request failed path=%s duration=%s error=%v", path, time.Since(startedAt).Round(time.Millisecond), err)
+		}
 		return err
 	}
 	defer res.Body.Close()
@@ -3624,7 +3639,13 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	if decryptErr != nil {
 		return decryptErr
 	}
-	return json.Unmarshal(decodedBody, out)
+	if err := json.Unmarshal(decodedBody, out); err != nil {
+		return err
+	}
+	if elapsed := time.Since(startedAt); elapsed >= agentSlowRequestThreshold && shouldLogAgentReport("post-slow:"+path, agentReportLogInterval) {
+		logf("agent request slow path=%s duration=%s status=%d", path, elapsed.Round(time.Millisecond), res.StatusCode)
+	}
+	return nil
 }
 
 func isClockSyncCandidateError(err error) bool {
@@ -4021,6 +4042,17 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
+func shouldLogAgentReport(key string, interval time.Duration) bool {
+	now := time.Now()
+	agentReportLogMu.Lock()
+	defer agentReportLogMu.Unlock()
+	last := agentReportLogAt[key]
+	if !last.IsZero() && now.Sub(last) < interval {
+		return false
+	}
+	agentReportLogAt[key] = now
+	return true
+}
 func logf(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	createdAt := time.Now().Format(time.RFC3339)

@@ -51,6 +51,7 @@ async function maybeMarkForwardXTunnelRunningFromRule(tunnel: any) {
 async function getTunnelExtraExitHostIds(tunnelId: number) {
   const rows = await hopRepo.getTunnelExitNodes(Number(tunnelId));
   return (rows || [])
+    .filter((row: any) => row?.isEnabled !== false)
     .map((row: any) => Number(row.hostId))
     .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
 }
@@ -143,7 +144,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       const hopHostIds = Array.isArray(hops)
         ? hops.map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
         : [];
-      if (isForwardXTunnel(tunnel) && isExtraExit) {
+      if (isExtraExit) {
         recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
         appendPanelLog(
           !!isRunning ? "info" : "warn",

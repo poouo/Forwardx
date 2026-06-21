@@ -472,6 +472,8 @@ export type InsertTrafficStatBucket = typeof trafficStatBuckets.$inferInsert;
 export const tunnelLatencyStats = table("tunnel_latency_stats", {
   id: serial("id"),
   tunnelId: int("tunnelId").notNull(),
+  seriesKey: varchar("seriesKey", { length: 64 }),
+  seriesLabel: text("seriesLabel"),
   latencyMs: int("latencyMs"),
   isTimeout: boolean("isTimeout").notNull().default(false),
   recordedAt: epoch("recordedAt").notNull().default(nowDefault()),

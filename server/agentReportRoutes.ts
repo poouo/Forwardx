@@ -41,6 +41,15 @@ async function refreshUserRuleAgents(userId: number, reason: string) {
   }
 }
 
+function cleanTunnelSeriesKey(value: unknown) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return key.slice(0, 64);
+}
+
+function cleanTunnelSeriesLabel(value: unknown, fallback: string) {
+  const label = String(value || "").trim().replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ");
+  return (label || fallback).slice(0, 96);
+}
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
@@ -61,6 +70,74 @@ async function shouldAccountForwardRuleTraffic(rule: any) {
     .filter((member: any) => !!member.isEnabled)
     .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
   return Number(members[0]?.id || 0) === memberId;
+}
+
+const trafficReportLogIntervalMs = 10_000;
+const tcpingReportLogIntervalMs = 30_000;
+
+type TrafficReportLogBucket = {
+  lastLoggedAt: number;
+  samples: number;
+  bytesIn: number;
+  bytesOut: number;
+  connectionsMax: number;
+};
+
+const trafficReportLogBuckets = new Map<string, TrafficReportLogBucket>();
+const reportLogTimes = new Map<string, number>();
+
+function logTrafficReportSample(key: string, label: string, bytesIn: number, bytesOut: number, connections: number) {
+  const now = Date.now();
+  const bucket = trafficReportLogBuckets.get(key) || {
+    lastLoggedAt: 0,
+    samples: 0,
+    bytesIn: 0,
+    bytesOut: 0,
+    connectionsMax: 0,
+  };
+  bucket.samples += 1;
+  bucket.bytesIn += Math.max(0, Number(bytesIn) || 0);
+  bucket.bytesOut += Math.max(0, Number(bytesOut) || 0);
+  bucket.connectionsMax = Math.max(bucket.connectionsMax, Number(connections) || 0);
+  if (bucket.lastLoggedAt === 0 || now - bucket.lastLoggedAt >= trafficReportLogIntervalMs) {
+    console.log(`${label} samples=${bucket.samples} in=${bucket.bytesIn} out=${bucket.bytesOut} connectionsMax=${bucket.connectionsMax}`);
+    trafficReportLogBuckets.set(key, {
+      lastLoggedAt: now,
+      samples: 0,
+      bytesIn: 0,
+      bytesOut: 0,
+      connectionsMax: 0,
+    });
+    return;
+  }
+  trafficReportLogBuckets.set(key, bucket);
+}
+
+function shouldLogReport(key: string, intervalMs: number) {
+  const now = Date.now();
+  const last = reportLogTimes.get(key) || 0;
+  if (now - last < intervalMs) return false;
+  reportLogTimes.set(key, now);
+  return true;
+}
+
+function logTcpingReportSummary(
+  hostId: number,
+  results: AgentTcpingResult[],
+  tunnelResults: AgentTunnelTcpingResult[],
+  forwardGroupResults: AgentForwardGroupLatencyResult[],
+  serviceResults: AgentHostProbeServiceResult[],
+) {
+  if (!shouldLogReport(`tcping:${hostId}`, tcpingReportLogIntervalMs)) return;
+  const all = [...results, ...tunnelResults, ...forwardGroupResults, ...serviceResults] as Array<{ latencyMs?: unknown; isTimeout?: unknown }>;
+  const timeouts = all.filter((item) => !!item.isTimeout).length;
+  const latencies = all
+    .map((item) => Number(item.latencyMs))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const avgLatency = latencies.length
+    ? `${Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length)}ms`
+    : "-";
+  console.info(`[Agent TCPing] host=${hostId} rules=${results.length} tunnels=${tunnelResults.length} groups=${forwardGroupResults.length} services=${serviceResults.length} timeouts=${timeouts}/${all.length} avg=${avgLatency}`);
 }
 
 export function registerAgentReportRoutes(agentRouter: Router) {
@@ -205,7 +282,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       if (accountingHostId !== Number(host.id)) {
         const ruleBytes = bytesIn + bytesOut;
         if (ruleBytes > 0 && tunnel && !isForwardXTunnel(tunnel)) {
-          console.log(`[TunnelTraffic] host=${host.id} tunnel=${tunnelId} rule=${rule.id} in=${bytesIn} out=${bytesOut} connections=${stat.connections || 0}`);
+          logTrafficReportSample(
+            `tunnel:${host.id}:${tunnelId}:${rule.id}`,
+            `[TunnelTraffic] host=${host.id} tunnel=${tunnelId} rule=${rule.id}`,
+            bytesIn,
+            bytesOut,
+            stat.connections || 0,
+          );
         }
         continue;
       }
@@ -220,7 +303,13 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
       });
       const ruleBytes = bytesIn + bytesOut;
       if (ruleBytes > 0) {
-        console.log(`[Traffic] host=${host.id} rule=${rule.id} in=${bytesIn} out=${bytesOut} connections=${stat.connections || 0}`);
+        logTrafficReportSample(
+          `rule:${host.id}:${rule.id}`,
+          `[Traffic] host=${host.id} rule=${rule.id}`,
+          bytesIn,
+          bytesOut,
+          stat.connections || 0,
+        );
         const billingResource = tunnelId > 0
           ? { resourceType: "tunnel" as const, resourceId: tunnelId }
           : { resourceType: "host" as const, resourceId: Number(rule.hostId) };
@@ -310,12 +399,23 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       res.status(400).json({ error: "results, tunnels, forwardGroups or services array is required" });
       return;
     }
+    logTcpingReportSummary(host.id, results, tunnelResults, forwardGroupResults, serviceResults);
 
+    const tunnelBranchGroups = new Map<number, Array<{ key: string; label: string; latencyMs: number | null; isTimeout: boolean }>>();
     for (const r of tunnelResults) {
       const tunnelId = Number(r.tunnelId);
       if (!tunnelId) continue;
       const tunnel = await db.getTunnelById(tunnelId);
       if (!tunnel) continue;
+      const latencyValue = typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null;
+      const isTimeout = !!r.isTimeout || latencyValue === null;
+      const seriesKey = cleanTunnelSeriesKey((r as any).seriesKey);
+      if (seriesKey) {
+        const label = cleanTunnelSeriesLabel((r as any).seriesLabel, seriesKey === "primary" ? "主出口" : seriesKey);
+        if (!tunnelBranchGroups.has(tunnelId)) tunnelBranchGroups.set(tunnelId, []);
+        tunnelBranchGroups.get(tunnelId)!.push({ key: seriesKey, label, latencyMs: latencyValue, isTimeout });
+        continue;
+      }
       const hopIndex = Number((r as any).hopIndex);
       const hopCount = Number((r as any).hopCount);
       if (Number.isFinite(hopIndex) && Number.isFinite(hopCount) && hopCount > 0) {
@@ -323,14 +423,16 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
           tunnelId,
           hopIndex,
           hopCount,
-          latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-          isTimeout: !!r.isTimeout,
+          latencyMs: latencyValue,
+          isTimeout,
         });
         if (!aggregate) continue;
         await db.insertTunnelLatencyStat({
           tunnelId,
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
+          seriesKey: "total",
+          seriesLabel: "总延迟",
         }, { preserveMessage: true });
         if (aggregate.success && !(tunnel as any).isRunning) {
           await db.updateTunnelRunningStatus(tunnelId, true);
@@ -340,14 +442,44 @@ agentRouter.post("/api/agent/tcping", async (req: Request, res: Response) => {
       if (tunnel.entryHostId !== host.id) continue;
       await db.insertTunnelLatencyStat({
         tunnelId,
-        latencyMs: typeof r.latencyMs === "number" && r.latencyMs > 0 ? r.latencyMs : null,
-        isTimeout: !!r.isTimeout,
+        latencyMs: latencyValue,
+        isTimeout,
+        seriesKey: "total",
+        seriesLabel: "总延迟",
       }, { preserveMessage: true });
-      if (!r.isTimeout && !(tunnel as any).isRunning) {
+      if (!isTimeout && !(tunnel as any).isRunning) {
         await db.updateTunnelRunningStatus(tunnelId, true);
       }
     }
 
+    for (const [tunnelId, branches] of tunnelBranchGroups.entries()) {
+      const tunnel = await db.getTunnelById(tunnelId) as any;
+      if (!tunnel || Number(tunnel.entryHostId) !== Number(host.id)) continue;
+      const recordedAt = new Date();
+      for (const branch of branches) {
+        await db.insertTunnelLatencyStat({
+          tunnelId,
+          latencyMs: branch.isTimeout ? null : branch.latencyMs,
+          isTimeout: branch.isTimeout,
+          seriesKey: branch.key,
+          seriesLabel: branch.label,
+          recordedAt,
+        }, { preserveMessage: true, updateTunnel: false });
+      }
+      const failed = branches.length === 0 || branches.some((branch) => branch.isTimeout || !branch.latencyMs || branch.latencyMs <= 0);
+      const maxLatency = failed ? null : Math.max(...branches.map((branch) => Number(branch.latencyMs || 0)));
+      await db.insertTunnelLatencyStat({
+        tunnelId,
+        latencyMs: maxLatency,
+        isTimeout: failed,
+        seriesKey: "total",
+        seriesLabel: "最大延迟",
+        recordedAt,
+      }, { preserveMessage: true });
+      if (!failed && !(tunnel as any).isRunning) {
+        await db.updateTunnelRunningStatus(tunnelId, true);
+      }
+    }
     for (const r of forwardGroupResults) {
       const groupId = Number(r.groupId);
       if (!groupId) continue;

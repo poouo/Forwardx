@@ -61,6 +61,12 @@ function formatRemainingTime(purchasedAt: unknown, stoppedAt: unknown) {
   return `剩余${Math.ceil(remainingMs / dayMs)}天`;
 }
 
+function compactHostOsInfo(value: unknown) {
+  return String(value || "")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || "-";
+}
 type HostCardProps = {
   host: any;
   onEdit: (host: any) => void;
@@ -91,7 +97,7 @@ export default function HostCard({
   compact = false,
 }: HostCardProps) {
   const { data: metrics } = trpc.hosts.metrics.useQuery(
-    { hostId: host.id, limit: 2 },
+    { hostId: host.id, limit: 2, live: !!refreshInterval },
     { refetchInterval: refreshInterval }
   );
   const cachedMetrics = useMemo(() => readCachedHostMetrics(host.id), [host.id]);
@@ -117,6 +123,7 @@ export default function HostCard({
     return { in: inDelta / seconds, out: outDelta / seconds };
   }, [latestMetric, previousMetric]);
   const remainingTimeLabel = formatRemainingTime(host.purchasedAt, host.stoppedAt);
+  const osInfoText = compactHostOsInfo(host.osInfo);
   const remainingTimeClass = remainingTimeLabel === "已到期"
     ? "border-destructive/30 bg-destructive/10 text-destructive"
     : remainingTimeLabel === "不足1天"
@@ -266,15 +273,15 @@ export default function HostCard({
               <HostRegionBadge host={host} />
             </div>
           </div>
-          <div className={`flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 ${compact ? "text-xs" : "text-sm"}`}>
-            <div className="flex items-center gap-1.5">
+          <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap ${compact ? "text-xs" : "text-sm"}`}>
+            <div className="flex shrink-0 items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-muted-foreground" />
               <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
               <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
             </div>
-            {!compact && <div className="flex min-w-0 items-center gap-1.5">
+            {!compact && <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
               <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate" title={host.osInfo || ""}>{host.osInfo || "-"}</span>
+              <span className="min-w-0 truncate" title={host.osInfo || ""}>{osInfoText}</span>
             </div>}
           </div>
         </div>

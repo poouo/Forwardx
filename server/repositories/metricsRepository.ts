@@ -1054,11 +1054,12 @@ export async function insertTcpingStats(stats: InsertTcpingStat[]) {
 /** 获取某条规则的 TCPing 延迟序列（按时间升序） */
 export async function insertTunnelLatencyStat(
   stat: InsertTunnelLatencyStat,
-  options: { message?: string | null; preserveMessage?: boolean } = {},
+  options: { message?: string | null; preserveMessage?: boolean; updateTunnel?: boolean } = {},
 ) {
   const db = await getDb();
   if (!db) return;
   await db.insert(tunnelLatencyStats).values(stat);
+  if (options.updateTunnel === false) return;
   const status = stat.isTimeout ? "failed" : "success";
   const now = nowDate();
   const updates: any = {
@@ -1094,6 +1095,7 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
          SELECT ${q("tunnelId")}, MAX(${q("id")}) AS ${q("id")}
            FROM ${q("tunnel_latency_stats")}
           WHERE ${q("tunnelId")} IN (${ids.map(() => "?").join(",")})
+            AND (${q("seriesKey")} IS NULL OR ${q("seriesKey")} = '' OR ${q("seriesKey")} = 'total')
           GROUP BY ${q("tunnelId")}
        ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}`,
     ids,
@@ -1114,14 +1116,14 @@ export async function getTunnelLatencySeries(
   opts: { since?: Date; limit?: number } = {}
 ) {
   const db = await getDb();
-  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>;
+  if (!db) return [] as Array<{ latencyMs: number | null; isTimeout: boolean; recordedAt: Date; seriesKey: string; seriesLabel: string | null }>;
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const limit = clampPositiveInt(opts.limit, 2880, 10_000);
+  const limit = clampPositiveInt(opts.limit, 20_000, 50_000);
   const q = quoteIdentifier;
   const startedAt = Date.now();
   const page = limitOffset(limit);
-  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
-    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}
+  const rows = await queryRaw<{ latencyMs: number | null; isTimeout: unknown; recordedAt: unknown; seriesKey: string | null; seriesLabel: string | null }>(
+    `SELECT ${q("latencyMs")}, ${q("isTimeout")}, ${q("recordedAt")}, ${q("seriesKey")}, ${q("seriesLabel")}
        FROM ${q("tunnel_latency_stats")}
       WHERE ${q("tunnelId")} = ? AND ${q("recordedAt")} >= ?
       ORDER BY ${q("recordedAt")} DESC, ${q("id")} DESC
@@ -1132,11 +1134,16 @@ export async function getTunnelLatencySeries(
   if (elapsedMs > 800) {
     console.warn(`[TunnelLatency] slow tunnel=${tunnelId} rows=${rows.length} elapsedMs=${elapsedMs}`);
   }
-  return rows.reverse().map((row) => ({
-    latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
-    isTimeout: rowBool(row.isTimeout),
-    recordedAt: rowDate(row.recordedAt),
-  }));
+  return rows.reverse().map((row) => {
+    const key = String(row.seriesKey || "").trim();
+    return {
+      latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
+      isTimeout: rowBool(row.isTimeout),
+      recordedAt: rowDate(row.recordedAt),
+      seriesKey: key || "total",
+      seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
+    };
+  });
 }
 
 export async function insertForwardGroupLatencyStat(stat: InsertForwardGroupLatencyStat) {

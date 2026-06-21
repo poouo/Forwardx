@@ -44,18 +44,20 @@ type trafficCounters struct {
 }
 
 type tcpingTask struct {
-	Kind       string
-	RuleID     int
-	TunnelID   int
-	GroupID    int
-	MemberID   int
-	ProbeType  string
-	ServiceID  int
-	Method     string
-	TargetIP   string
-	TargetPort int
-	HopIndex   int
-	HopCount   int
+	Kind        string
+	RuleID      int
+	TunnelID    int
+	GroupID     int
+	MemberID    int
+	ProbeType   string
+	ServiceID   int
+	Method      string
+	TargetIP    string
+	TargetPort  int
+	HopIndex    int
+	HopCount    int
+	SeriesKey   string
+	SeriesLabel string
 }
 
 type tcpingTaskResult struct {
@@ -104,7 +106,7 @@ func collectTraffic(cfg Config) {
 	hostTraffic := hostTrafficSnapshot()
 	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
 	if len(stats) > 0 || hostTraffic != nil {
-		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
+		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil && shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
 			logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 		}
 	}
@@ -114,9 +116,6 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 	ruleTasks := []tcpingTask{}
 	for _, state := range readLocalRuleStates() {
 		if state.RuleID <= 0 || state.TargetIP == "" || state.TargetPort <= 0 {
-			continue
-		}
-		if state.ForwardType == "forwardx" {
 			continue
 		}
 		ruleTasks = append(ruleTasks, tcpingTask{
@@ -133,12 +132,14 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			continue
 		}
 		tunnelTasks = append(tunnelTasks, tcpingTask{
-			Kind:       "tunnel",
-			TunnelID:   probe.TunnelID,
-			TargetIP:   probe.TargetIP,
-			TargetPort: probe.TargetPort,
-			HopIndex:   probe.HopIndex,
-			HopCount:   probe.HopCount,
+			Kind:        "tunnel",
+			TunnelID:    probe.TunnelID,
+			TargetIP:    probe.TargetIP,
+			TargetPort:  probe.TargetPort,
+			HopIndex:    probe.HopIndex,
+			HopCount:    probe.HopCount,
+			SeriesKey:   probe.SeriesKey,
+			SeriesLabel: probe.SeriesLabel,
 		})
 	}
 
@@ -200,10 +201,14 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 		ruleLimit *= 2
 		probeLimit *= 2
 	}
+	tunnelProbeLimit := probeLimit
+	if len(tunnelTasks) > tunnelProbeLimit {
+		tunnelProbeLimit = len(tunnelTasks)
+	}
 	tcpingCursorMu.Lock()
 	selected := []tcpingTask{}
 	selected = append(selected, rotateTCPingTasks(ruleTasks, &tcpingRuleCursor, ruleLimit)...)
-	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, probeLimit)...)
+	selected = append(selected, rotateTCPingTasks(tunnelTasks, &tcpingTunnelCursor, tunnelProbeLimit)...)
 	selected = append(selected, rotateTCPingTasks(forwardGroupTasks, &tcpingForwardGroupCursor, probeLimit)...)
 	selected = append(selected, rotateTCPingTasks(serviceTasks, &tcpingServiceCursor, probeLimit)...)
 	tcpingCursorMu.Unlock()
@@ -213,8 +218,55 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 
 	results, tunnels, forwardGroups, services := runTCPingTasks(selected)
 	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
-		_ = post(cfg, "/api/agent/tcping", map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services}, &map[string]any{})
+		payload := map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services}
+		if err := post(cfg, "/api/agent/tcping", payload, &map[string]any{}); err != nil {
+			if shouldLogAgentReport("tcping-report-failed", agentReportLogInterval) {
+				logf("tcping report failed rules=%d tunnels=%d groups=%d services=%d: %v", len(results), len(tunnels), len(forwardGroups), len(services), err)
+			}
+		} else if len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
+			total, timeouts, avgLatency := summarizeTCPingReport(results, tunnels, forwardGroups, services)
+			if shouldLogAgentReport("tcping-report-ok", agentReportLogInterval) {
+				logf("tcping report ok rules=%d tunnels=%d groups=%d services=%d timeouts=%d/%d avg=%s", len(results), len(tunnels), len(forwardGroups), len(services), timeouts, total, avgLatency)
+			}
+		}
 	}
+}
+
+func summarizeTCPingReport(results, tunnels, forwardGroups, services []map[string]any) (int, int, string) {
+	groups := [][]map[string]any{results, tunnels, forwardGroups, services}
+	total := 0
+	timeouts := 0
+	latencyTotal := 0
+	latencyCount := 0
+	for _, group := range groups {
+		for _, item := range group {
+			total++
+			if timeout, _ := item["isTimeout"].(bool); timeout {
+				timeouts++
+			}
+			switch value := item["latencyMs"].(type) {
+			case int:
+				if value > 0 {
+					latencyTotal += value
+					latencyCount++
+				}
+			case int64:
+				if value > 0 {
+					latencyTotal += int(value)
+					latencyCount++
+				}
+			case float64:
+				if value > 0 {
+					latencyTotal += int(value)
+					latencyCount++
+				}
+			}
+		}
+	}
+	if latencyCount == 0 {
+		return total, timeouts, "-"
+	}
+	return total, timeouts, fmt.Sprintf("%dms", latencyTotal/latencyCount)
 }
 
 func readLocalRuleStates() []localRuleState {
@@ -321,6 +373,12 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 		if task.HopCount > 0 {
 			payload["hopIndex"] = task.HopIndex
 			payload["hopCount"] = task.HopCount
+		}
+		if task.SeriesKey != "" {
+			payload["seriesKey"] = task.SeriesKey
+		}
+		if task.SeriesLabel != "" {
+			payload["seriesLabel"] = task.SeriesLabel
 		}
 	case "forwardGroup":
 		payload["groupId"] = task.GroupID

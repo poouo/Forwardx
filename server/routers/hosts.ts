@@ -528,9 +528,10 @@ export const hostsRouter = router({
         return { success: true };
       }),
     metrics: protectedProcedure
-      .input(z.object({ hostId: z.number(), limit: z.number().default(60) }))
+      .input(z.object({ hostId: z.number(), limit: z.number().default(60), live: z.boolean().optional() }))
       .query(async ({ input, ctx }) => {
         await requireHostAccess(ctx, input.hostId);
+        if (input.live) return db.getLatestHostMetrics(input.hostId, input.limit);
         return hostQueryCache.get(
           `metrics:${ctx.user.id}:${input.hostId}:${input.limit}`,
           { ttlMs: 10_000, staleMs: 60_000 },

@@ -701,6 +701,8 @@ export const tunnelsRouter = router({
           .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
         if (tunnelHopHostIds.length >= 3) {
           await refreshTunnelRuntimeHosts(Number(tunnel.id), [...tunnelHopHostIds, ...tunnelExtraExitHostIds], "tunnel-test-refresh");
+        } else if (tunnel.loadBalanceEnabled && tunnelExtraExitHostIds.length > 0) {
+          await refreshTunnelRuntimeHosts(Number(tunnel.id), [Number(tunnel.exitHostId), ...tunnelExtraExitHostIds], "tunnel-load-balance-test-refresh");
         } else if (!tunnel.isRunning) {
           const testRefreshHostIds = Array.from(new Set([Number(tunnel.exitHostId), ...tunnelExtraExitHostIds].filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
           const pushedResults = testRefreshHostIds.map((hostId) => pushAgentRefresh(hostId, "tunnel-test-refresh"));

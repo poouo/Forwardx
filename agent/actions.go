@@ -3,21 +3,49 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
-func enqueueAction(cfg Config, a action) {
+func enqueueAction(cfg Config, a action) <-chan struct{} {
+	done := make(chan struct{})
 	if isOlderAction(a, true) {
-		return
+		close(done)
+		return done
 	}
-	actionQueue <- actionJob{cfg: cfg, action: a}
+	actionQueue <- actionJob{cfg: cfg, action: a, done: done}
+	return done
 }
 
 func actionWorker() {
 	for job := range actionQueue {
-		if isOlderAction(job.action, false) {
+		func() {
+			if job.done != nil {
+				defer close(job.done)
+			}
+			if isOlderAction(job.action, false) {
+				return
+			}
+			handleAction(job.cfg, job.action)
+		}()
+	}
+}
+
+func waitForActionBatch(done []<-chan struct{}, timeout time.Duration) {
+	if len(done) == 0 {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for i, ch := range done {
+		if ch == nil {
 			continue
 		}
-		handleAction(job.cfg, job.action)
+		select {
+		case <-ch:
+		case <-timer.C:
+			logf("selftest action wait timeout completed=%d total=%d timeout=%s", i, len(done), timeout)
+			return
+		}
 	}
 }
 

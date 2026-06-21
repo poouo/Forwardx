@@ -71,9 +71,9 @@ import {
 } from "@shared/forwardTypes";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  Area,
-  AreaChart,
   CartesianGrid,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip as RTooltip,
   XAxis,
@@ -137,15 +137,24 @@ type ChainCreateForm = {
 type TunnelLatencyPoint = {
   label: string;
   fullLabel: string;
-  latency: number;
-  chartLatency: number;
-  isTimeout: boolean;
+  [key: string]: string | number | boolean | null | undefined;
 };
 
 type TunnelLatencySeriesDatum = {
   recordedAt: string | Date;
   latencyMs?: number | null;
   isTimeout?: boolean | null;
+  seriesKey?: string | null;
+  seriesLabel?: string | null;
+};
+
+type TunnelLatencySeriesMeta = {
+  key: string;
+  dataKey: string;
+  rawKey: string;
+  timeoutKey: string;
+  label: string;
+  color: string;
 };
 
 type TunnelGlobeHostPoint = {
@@ -193,6 +202,28 @@ type TunnelGlobeCountryFeature = CountryFeatureLike & {
   };
 };
 
+const tunnelLatencyColors = [
+  "var(--color-chart-2)",
+  "var(--color-chart-1)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
+  "#0ea5e9",
+  "#f97316",
+];
+
+function normalizeTunnelLatencySeriesKey(value: unknown) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return key || "total";
+}
+
+function tunnelLatencySeriesDisplayName(key: string, label?: string | null) {
+  const cleanLabel = String(label || "").trim();
+  if (cleanLabel) return cleanLabel;
+  if (key === "total") return "总延迟";
+  if (key === "primary") return "主出口";
+  return key.replace(/^exit-/, "出口 ");
+}
 const tunnelLatencySeriesCache = new Map<number, TunnelLatencySeriesDatum[]>();
 const tunnelLatencyAnimatedKeys = new Set<number>();
 const TUNNEL_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
@@ -1126,24 +1157,71 @@ function TunnelLatencyDialog({
     }
   }, [data, tunnelId]);
 
+  const seriesMeta = useMemo<TunnelLatencySeriesMeta[]>(() => {
+    if (!seriesData || seriesData.length === 0) return [];
+    const byKey = new Map<string, TunnelLatencySeriesMeta>();
+    for (const item of seriesData) {
+      const key = normalizeTunnelLatencySeriesKey(item.seriesKey);
+      if (byKey.has(key)) continue;
+      byKey.set(key, {
+        key,
+        dataKey: `${key}ChartLatency`,
+        rawKey: `${key}Latency`,
+        timeoutKey: `${key}Timeout`,
+        label: tunnelLatencySeriesDisplayName(key, item.seriesLabel),
+        color: tunnelLatencyColors[byKey.size % tunnelLatencyColors.length],
+      });
+    }
+    return Array.from(byKey.values()).sort((a, b) => {
+      if (a.key === "total") return -1;
+      if (b.key === "total") return 1;
+      if (a.key === "primary") return -1;
+      if (b.key === "primary") return 1;
+      return a.label.localeCompare(b.label, "zh-CN");
+    });
+  }, [seriesData]);
+
   const chartData = useMemo<TunnelLatencyPoint[]>(() => {
     if (!seriesData || seriesData.length === 0) return [];
-    return seriesData.map((d: TunnelLatencySeriesDatum): TunnelLatencyPoint => ({
-      label: formatTunnelLatencyTime(d.recordedAt),
-      fullLabel: formatTunnelLatencyTime(d.recordedAt),
-      latency: d.isTimeout ? 0 : (Number(d.latencyMs) || 0),
-      chartLatency: d.isTimeout ? 0 : clipLatencyForChart(Number(d.latencyMs) || 0),
-      isTimeout: !!d.isTimeout,
-    }));
+    const byTime = new Map<number, TunnelLatencyPoint>();
+    for (const item of seriesData) {
+      const at = new Date(item.recordedAt);
+      const time = Number.isFinite(at.getTime()) ? at.getTime() : Date.now();
+      const point = byTime.get(time) || {
+        label: formatTunnelLatencyTime(at),
+        fullLabel: formatTunnelLatencyTime(at),
+      };
+      const key = normalizeTunnelLatencySeriesKey(item.seriesKey);
+      const isTimeout = !!item.isTimeout;
+      const latency = isTimeout ? 0 : (Number(item.latencyMs) || 0);
+      point[`${key}Latency`] = latency;
+      point[`${key}ChartLatency`] = isTimeout ? 0 : clipLatencyForChart(latency);
+      point[`${key}Timeout`] = isTimeout;
+      byTime.set(time, point);
+    }
+    return Array.from(byTime.entries()).sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
   }, [seriesData]);
+
+  const statsSeries = useMemo(() => {
+    if (seriesMeta.length === 0 || chartData.length === 0) return [];
+    const meta = seriesMeta.find((item) => item.key === "total") || seriesMeta[0];
+    return chartData
+      .filter((point) => point[meta.rawKey] !== undefined || point[meta.timeoutKey] !== undefined)
+      .map((point) => ({
+        latency: Number(point[meta.rawKey] || 0),
+        isTimeout: !!point[meta.timeoutKey],
+      }));
+  }, [chartData, seriesMeta]);
+
   const stats = useMemo(() => {
-    return getLatencyStabilityStats(chartData);
-  }, [chartData]);
+    return getLatencyStabilityStats(statsSeries);
+  }, [statsSeries]);
   const yMax = useMemo(() => {
-    if (chartData.length === 0) return 120;
-    const maxVal = Math.max(...chartData.filter((d) => !d.isTimeout).map((d) => d.chartLatency), 0);
+    if (chartData.length === 0 || seriesMeta.length === 0) return 120;
+    const values = chartData.flatMap((point) => seriesMeta.map((meta) => Number(point[meta.dataKey] || 0))).filter((value) => value > 0);
+    const maxVal = values.length > 0 ? Math.max(...values) : 0;
     return getLatencyYAxisMax(maxVal, 120);
-  }, [chartData]);
+  }, [chartData, seriesMeta]);
   const yTicks = useMemo(() => {
     return getLatencyYAxisTicks(yMax);
   }, [yMax]);
@@ -1169,13 +1247,7 @@ function TunnelLatencyDialog({
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道链路延迟数据</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="tunnelLatencyGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
+              <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={60} interval="preserveStartEnd" />
                 <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
@@ -1187,24 +1259,60 @@ function TunnelLatencyDialog({
                     if (!active || !payload?.length) return null;
                     const item = payload[0].payload;
                     return (
-                      <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md">
-                        <p className="mb-1 text-xs text-muted-foreground">{item.fullLabel}</p>
-                        {item.isTimeout ? (
-                          <p className="text-sm font-semibold text-destructive">超时</p>
-                        ) : (
-                          <p className="text-sm font-semibold tabular-nums">
-                            {item.latency}ms
-                          </p>
-                        )}
+                      <div className="min-w-40 rounded-lg border border-border bg-card px-3 py-2 shadow-md">
+                        <p className="mb-2 text-xs text-muted-foreground">{item.fullLabel}</p>
+                        <div className="space-y-1">
+                          {seriesMeta.map((meta) => {
+                            const hasValue = item[meta.rawKey] !== undefined || item[meta.timeoutKey] !== undefined;
+                            if (!hasValue) return null;
+                            const timeout = !!item[meta.timeoutKey];
+                            return (
+                              <div key={meta.key} className="flex items-center justify-between gap-4 text-xs">
+                                <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: timeout ? "var(--color-destructive)" : meta.color }} />
+                                  <span className="truncate">{meta.label}</span>
+                                </span>
+                                <span className={timeout ? "font-semibold text-destructive" : "font-semibold tabular-nums"}>
+                                  {timeout ? "不通" : `${Number(item[meta.rawKey] || 0)}ms`}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     );
                   }}
                 />
-                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#tunnelLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
-              </AreaChart>
+                {seriesMeta.map((meta) => (
+                  <Line
+                    key={meta.key}
+                    type="monotone"
+                    dataKey={meta.dataKey}
+                    stroke={meta.color}
+                    strokeWidth={meta.key === "total" ? 2.4 : 1.8}
+                    dot={(props: any) => props?.payload?.[meta.timeoutKey] ? (
+                      <circle cx={props.cx} cy={props.cy} r={3} fill="var(--color-destructive)" stroke="var(--color-background)" strokeWidth={1.5} />
+                    ) : false}
+                    activeDot={{ r: 4, fill: meta.color, stroke: "var(--color-background)", strokeWidth: 2 }}
+                    connectNulls={false}
+                    isAnimationActive={shouldAnimateChart}
+                    animationDuration={shouldAnimateChart ? 500 : 0}
+                  />
+                ))}
+              </LineChart>
             </ResponsiveContainer>
           )}
         </div>
+        {seriesMeta.length > 1 ? (
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {seriesMeta.map((meta) => (
+              <span key={meta.key} className="inline-flex max-w-[180px] items-center gap-1.5 truncate">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
+                <span className="truncate">{meta.label}</span>
+              </span>
+            ))}
+          </div>
+        ) : null}
         <LatencyStabilityStats stats={stats} />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
@@ -1213,7 +1321,6 @@ function TunnelLatencyDialog({
     </Dialog>
   );
 }
-
 function TunnelSelfTestDialog({
   tunnelId,
   tunnelName,

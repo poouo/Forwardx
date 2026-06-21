@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.160] - 2026-06-21
+
+### Fixed
+
+- Reworked Agent install script runtime checks so existing /usr/local/bin/forwardx-runtime is reused only when the bundled GOST runtime version matches; otherwise GOST is reinstalled and install/upgrade stops on runtime failure.
+- Fixed load-balanced GOST/ForwardX tunnel TCPing history by storing each exit as its own latency series plus an aggregate maximum-latency series.
+- Fixed tunnel latency charts so load-balanced tunnels show primary and extra exits with distinct colors and per-exit timeout states.
+
+### Changed
+
+- Agent now preserves tunnel probe series metadata in TCPing reports and sends all current tunnel probes together so multi-exit history is not split across cycles.
+- Bumped panel version to 2.3.160 and Agent target version to 2.2.101.
+- Bumped Android APP version to 2.3.48 and updated the APK release pointer to 2.3.160.
+
 ## [2.3.159] - 2026-06-21
 
 ### Added

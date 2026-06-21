@@ -21,6 +21,8 @@ export type AgentTunnelTcpingResult = {
   isTimeout?: boolean;
   hopIndex?: number;
   hopCount?: number;
+  seriesKey?: string | null;
+  seriesLabel?: string | null;
 };
 
 export type AgentHostProbeServiceResult = {
