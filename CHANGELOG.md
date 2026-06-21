@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.161] - 2026-06-21
+
+### Fixed
+
+- Fixed GOST tunnel business routing so the primary and load-balance exits use the configured tunnel exit listener ports for the primary active rule instead of unexpected rule-allocated ports.
+- Avoided generating duplicate GOST probe listeners on tunnel exit ports that are already used by active business tunnel rules.
+
+### Changed
+
+- Bumped panel version to 2.3.161. Agent target version remains 2.2.101.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.161.
+
 ## [2.3.160] - 2026-06-21
 
 ### Fixed
