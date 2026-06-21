@@ -10,6 +10,7 @@ import { isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
 import { refreshHostAddressRuntime } from "../hostAddressRuntime";
 import { scheduleHostDdnsUpdate } from "../hostDdns";
+import { clearTunnelRuntimeStatusForHost } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 
@@ -25,6 +26,7 @@ async function refreshHostPolicyRuntime(hostId: number, reason: string) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;
   await db.resetAgentRuntimeStateForHost(id);
+  clearTunnelRuntimeStatusForHost(id);
   const tunnels = await db.getTunnelsByHost(id);
   for (const tunnel of tunnels as any[]) {
     await pushTunnelEndpointRefresh(tunnel, reason);

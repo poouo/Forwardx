@@ -657,15 +657,20 @@ function formatDateTimeLocal(value: unknown) {
   const date = value instanceof Date ? value : new Date(String(value));
   const time = date.getTime();
   if (!Number.isFinite(time) || time <= 0) return "";
-  const local = new Date(time - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
 }
 
 function parseDateTimeLocal(value: string) {
   const text = String(value || "").trim();
   if (!text) return null;
-  const date = new Date(text);
-  return Number.isFinite(date.getTime()) ? date : null;
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
 }
 
 function clampMonthlyResetDay(value: number) {
@@ -699,19 +704,11 @@ function padDatePart(value: number) {
 function formatDateTimePickerLabel(value: string) {
   const date = parseDateTimeLocal(value);
   if (!date) return "";
-  return `${date.getFullYear()}年${padDatePart(date.getMonth() + 1)}月${padDatePart(date.getDate())}日 ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+  return `${date.getFullYear()}年${padDatePart(date.getMonth() + 1)}月${padDatePart(date.getDate())}日`;
 }
 
 function sameDateOnly(a: Date | null, b: Date) {
   return !!a && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
-
-function clampPickerHour(value: number) {
-  return Math.min(23, Math.max(0, Math.floor(Number(value) || 0)));
-}
-
-function clampPickerMinute(value: number) {
-  return Math.min(59, Math.max(0, Math.floor(Number(value) || 0)));
 }
 
 type DateTimePickerInputProps = {
@@ -747,8 +744,8 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
     const boundaryBottom = Math.min(viewportHeight - padding, (containerRect?.bottom ?? viewportHeight) - padding);
     const availableWidth = Math.max(288, boundaryRight - boundaryLeft);
     const availableHeight = Math.max(220, boundaryBottom - boundaryTop);
-    const width = Math.min(416, availableWidth);
-    const panelHeight = Math.min(panelRef.current?.offsetHeight || 360, availableHeight);
+    const width = Math.min(320, availableWidth);
+    const panelHeight = Math.min(panelRef.current?.offsetHeight || 330, availableHeight);
     const spaceBelow = boundaryBottom - rect.bottom;
     const spaceAbove = rect.top - boundaryTop;
     const side = spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
@@ -804,21 +801,12 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
       isSelected: sameDateOnly(selected, date),
     };
   });
-  const currentHour = selected ? selected.getHours() : 0;
-  const currentMinute = selected ? selected.getMinutes() : 0;
 
   const commitDate = (date: Date) => {
-    const next = new Date(date);
-    next.setHours(currentHour, currentMinute, 0, 0);
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
     onChange(formatDateTimeLocal(next));
     setViewDate(next);
-  };
-
-  const commitTime = (hour: number, minute: number) => {
-    const next = new Date(selected || viewDate || new Date());
-    next.setHours(clampPickerHour(hour), clampPickerMinute(minute), 0, 0);
-    onChange(formatDateTimeLocal(next));
-    setViewDate(next);
+    setOpen(false);
   };
 
   const shiftMonth = (offset: number) => {
@@ -826,9 +814,7 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
   };
 
   const chooseToday = () => {
-    const now = new Date();
-    onChange(formatDateTimeLocal(now));
-    setViewDate(now);
+    commitDate(new Date());
   };
 
   const label = formatDateTimePickerLabel(value);
@@ -849,82 +835,49 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
         }}
         aria-expanded={open}
       >
-        <span className={label ? "truncate text-foreground" : "truncate text-muted-foreground"}>{label || "年 /月/日 --:--"}</span>
+        <span className={label ? "truncate text-foreground" : "truncate text-muted-foreground"}>{label || "年/月/日"}</span>
         <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
       <div
         ref={panelRef}
         aria-hidden={!open}
-          style={panelStyle}
-          className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
+        style={panelStyle}
+        className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
       >
-        <div className="grid gap-0 sm:grid-cols-[1fr_7.25rem]">
-          <div className="p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
-              <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
-              {[
-                "一",
-                "二",
-                "三",
-                "四",
-                "五",
-                "六",
-                "日",
-              ].map((day) => <div key={day} className="py-1">{day}</div>)}
-            </div>
-            <div className="mt-1 grid grid-cols-7 gap-1">
-              {days.map((day) => (
-                <button
-                  key={day.date.toISOString()}
-                  type="button"
-                  className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
-                  onClick={() => commitDate(day.date)}
-                >
-                  {day.date.getDate()}
-                </button>
-              ))}
-            </div>
+        <div className="p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
+            <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-          <div className="border-t border-border/70 bg-muted/20 p-3 sm:border-l sm:border-t-0">
-            <div className="mb-2 text-xs font-medium text-muted-foreground">时间</div>
-            <div className="flex items-center gap-1.5">
-              <Input
-                className="h-8 px-1 text-center"
-                type="number"
-                min={0}
-                max={23}
-                value={padDatePart(currentHour)}
-                onChange={(event) => commitTime(Number(event.target.value), currentMinute)}
-              />
-              <span className="text-muted-foreground">:</span>
-              <Input
-                className="h-8 px-1 text-center"
-                type="number"
-                min={0}
-                max={59}
-                value={padDatePart(currentMinute)}
-                onChange={(event) => commitTime(currentHour, Number(event.target.value))}
-              />
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-1">
-              <Button type="button" size="sm" variant="outline" className="h-8" onClick={chooseToday}>现在</Button>
-              <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => onChange("")}>清除</Button>
-            </div>
+          <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
+            {["一", "二", "三", "四", "五", "六", "日"].map((day) => <div key={day} className="py-1">{day}</div>)}
+          </div>
+          <div className="mt-1 grid grid-cols-7 gap-1">
+            {days.map((day) => (
+              <button
+                key={day.date.toISOString()}
+                type="button"
+                className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
+                onClick={() => commitDate(day.date)}
+              >
+                {day.date.getDate()}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button type="button" size="sm" variant="outline" className="h-8" onClick={chooseToday}>今天</Button>
+            <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
           </div>
         </div>
       </div>
     </div>
   );
 }
-
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "services" | "tokens";
 type HostDialogTab = "basic" | "other";
@@ -2166,7 +2119,7 @@ function HostsContent() {
                   </div>
                   {user?.role === "admin" ? (
                     <>
-                      <div className="grid min-w-0 gap-2.5 md:grid-cols-2">
+                      <div className="grid min-w-0 gap-2.5 px-1 md:grid-cols-2">
                         <div className="space-y-1">
                           <Label className="text-sm">机器购买时间</Label>
                           <DateTimePickerInput
@@ -2184,7 +2137,7 @@ function HostsContent() {
                         </div>
                         <div className="min-w-0 space-y-1">
                           <Label className="text-sm">套餐流量</Label>
-                          <div className="flex min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                          <div className="flex min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:ring-offset-0">
                             <Input
                               className="h-8 min-w-0 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                               type="number"
@@ -2214,8 +2167,9 @@ function HostsContent() {
                         </div>
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
+                        <div className="min-w-0 space-y-0.5">
                           <Label className="text-sm font-medium">流量耗尽提醒</Label>
+                          <p className="text-xs text-muted-foreground">开启后通过 TG 机器人发送提醒。</p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
