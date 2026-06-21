@@ -9,6 +9,7 @@ import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
 import { isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
 import { refreshHostAddressRuntime } from "../hostAddressRuntime";
+import { scheduleHostDdnsUpdate } from "../hostDdns";
 import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 
@@ -47,6 +48,9 @@ const networkInterfaceSchema = z.string().trim().max(32).nullable().optional().r
 
 const optionalDateInputSchema = z.string().trim().max(64).nullable().optional();
 const hostTrafficMeasureModeSchema = z.enum(["outbound", "both"]).default("both");
+const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6"]);
+const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA"]);
+const hostDdnsDomainSchema = z.string().trim().max(253).nullable().optional();
 const hostProbeTargetSchema = z.string().trim().min(1).max(253).refine(isValidHostOrIp, "Invalid target IP or host");
 const hostProbeIdsSchema = z.array(z.number().int().positive()).max(500).optional();
 const hostProbeServiceInputSchema = z.object({
@@ -105,6 +109,41 @@ function normalizeHostTrafficMeasureMode(value: unknown) {
 
 function normalizeTrafficAlertThresholdPercent(value: unknown) {
   return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
+}
+
+function normalizeHostDdnsIpVersion(value: unknown, recordType?: string) {
+  if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
+  return "ipv4";
+}
+
+function normalizeHostDdnsRecordType(ipVersion: unknown) {
+  return ipVersion === "ipv6" ? "AAAA" : "A";
+}
+
+function normalizeHostDdnsPayload(input: {
+  ddnsEnabled?: boolean;
+  ddnsDomain?: string | null;
+  ddnsRecordType?: "A" | "AAAA";
+  ddnsIpVersion?: "ipv4" | "ipv6";
+}) {
+  const ipVersion = normalizeHostDdnsIpVersion(input.ddnsIpVersion, input.ddnsRecordType);
+  const recordType = normalizeHostDdnsRecordType(ipVersion);
+  const domain = String(input.ddnsDomain || "").trim().replace(/\.+$/, "").toLowerCase();
+  if (input.ddnsEnabled && !domain) throw new Error("开启 DDNS 服务需要填写域名");
+  return {
+    ddnsEnabled: !!input.ddnsEnabled,
+    ddnsDomain: domain || null,
+    ddnsRecordType: recordType,
+    ddnsIpVersion: ipVersion,
+  };
+}
+
+async function assertHostDdnsServiceConfigured() {
+  const settings = await db.getAllSettings();
+  const provider = String(settings.ddnsProvider || "disabled");
+  if (settings.ddnsEnabled !== "true" || provider === "disabled") {
+    throw new Error("请先在系统设置内启用 DDNS 服务商");
+  }
 }
 
 function hostTrafficConfigPayload(input: {
@@ -349,6 +388,10 @@ export const hostsRouter = router({
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
+        ddnsEnabled: z.boolean().optional(),
+        ddnsDomain: hostDdnsDomainSchema,
+        ddnsRecordType: hostDdnsRecordTypeSchema.optional(),
+        ddnsIpVersion: hostDdnsIpVersionSchema.optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -367,9 +410,14 @@ export const hostsRouter = router({
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
           : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, trafficAutoReset: false, trafficResetDay: 1 };
+        const ddnsConfig = ctx.user.role === "admin"
+          ? normalizeHostDdnsPayload(input)
+          : { ddnsEnabled: false, ddnsDomain: null, ddnsRecordType: "A", ddnsIpVersion: "ipv4" };
+        if ((ddnsConfig as any).ddnsEnabled) await assertHostDdnsServiceConfigured();
         const id = await db.createHost({
           ...input,
           ...trafficConfig,
+          ...ddnsConfig,
           agentToken,
           networkInterface: input.networkInterface || null,
           entryIp: input.entryIp || null,
@@ -404,6 +452,10 @@ export const hostsRouter = router({
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
+        ddnsEnabled: z.boolean().optional(),
+        ddnsDomain: hostDdnsDomainSchema,
+        ddnsRecordType: hostDdnsRecordTypeSchema.optional(),
+        ddnsIpVersion: hostDdnsIpVersionSchema.optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -425,11 +477,33 @@ export const hostsRouter = router({
           ? normalizePortAllowlist(input.portAllowlist)
           : String((host as any).portAllowlist || "");
         const { id, ...data } = input;
+        let ddnsConfigChanged = false;
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;
         if (ctx.user.role === "admin") {
+          const hasDdnsConfigInput = ["ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"].some((key) => (data as any)[key] !== undefined);
+          if (hasDdnsConfigInput) {
+            const ddnsConfig = normalizeHostDdnsPayload({
+              ddnsEnabled: (data as any).ddnsEnabled !== undefined ? (data as any).ddnsEnabled : (host as any).ddnsEnabled,
+              ddnsDomain: (data as any).ddnsDomain !== undefined ? (data as any).ddnsDomain : (host as any).ddnsDomain,
+              ddnsRecordType: (data as any).ddnsRecordType !== undefined ? (data as any).ddnsRecordType : (host as any).ddnsRecordType,
+              ddnsIpVersion: (data as any).ddnsIpVersion !== undefined ? (data as any).ddnsIpVersion : (host as any).ddnsIpVersion,
+            });
+            if (ddnsConfig.ddnsEnabled) await assertHostDdnsServiceConfigured();
+            Object.assign(data as any, ddnsConfig);
+            ddnsConfigChanged = true;
+            const previousDdnsDomain = String((host as any).ddnsDomain || "").trim().replace(/\.+$/, "").toLowerCase();
+            const ddnsTargetChanged = ddnsConfig.ddnsDomain !== previousDdnsDomain
+              || ddnsConfig.ddnsEnabled !== !!(host as any).ddnsEnabled
+              || ddnsConfig.ddnsIpVersion !== normalizeHostDdnsIpVersion((host as any).ddnsIpVersion, (host as any).ddnsRecordType);
+            if (ddnsTargetChanged) {
+              (data as any).lastDdnsValue = null;
+              (data as any).lastDdnsAt = null;
+              (data as any).lastDdnsError = null;
+            }
+          }
           const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
           if (hasTrafficConfigInput) {
             const purchasedAt = (data as any).purchasedAt !== undefined
@@ -449,7 +523,7 @@ export const hostsRouter = router({
             if ((data as any).trafficResetDay !== undefined) (data as any).trafficResetDay = Math.min(31, Math.max(1, Number((data as any).trafficResetDay) || 1));
           }
         } else {
-          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay"] as const) delete (data as any)[field];
+          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
         }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];
@@ -475,6 +549,9 @@ export const hostsRouter = router({
           });
         }
         await db.updateHost(id, data as any);
+        if (ddnsConfigChanged) {
+          scheduleHostDdnsUpdate({ ...host, ...(data as any), id }, "host-ddns-config-updated");
+        }
         if (entryChanged) {
           await refreshHostAddressRuntime(id, host, "host-address-updated");
         }

@@ -106,6 +106,21 @@ export default function HostCard({
   const previousMetric = displayMetrics?.[1];
   const totalNetworkIn = traffic?.bytesIn == null ? null : Number(traffic.bytesIn);
   const totalNetworkOut = traffic?.bytesOut == null ? null : Number(traffic.bytesOut);
+  const trafficLimit = Math.max(0, Number(host.trafficLimit || 0));
+  const trafficMeasureMode = host.trafficMeasureMode === "outbound" ? "outbound" : "both";
+  const trafficUsedBytes = trafficMeasureMode === "outbound"
+    ? Math.max(0, totalNetworkOut ?? 0)
+    : Math.max(0, (totalNetworkIn ?? 0) + (totalNetworkOut ?? 0));
+  const trafficPercent = trafficLimit > 0 ? Math.round((trafficUsedBytes / trafficLimit) * 100) : null;
+  const trafficProgress = trafficPercent === null ? 0 : Math.min(100, Math.max(0, trafficPercent));
+  const trafficUsageLabel = trafficPercent === null
+    ? `${formatBytes(trafficUsedBytes)} / 无限大`
+    : `${formatBytes(trafficUsedBytes)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`;
+  const trafficUsageTooltip = [
+    `流量使用（${trafficMeasureMode === "outbound" ? "仅出向" : "双向"}）`,
+    `入站 ${totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)} / 出站 ${totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}`,
+    trafficUsageLabel,
+  ].join("\n");
   const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
   const memoryTotal = host.memoryTotal == null ? null : Number(host.memoryTotal);
   const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
@@ -133,6 +148,11 @@ export default function HostCard({
   const agentUpgradeTimedOut = isAgentUpgradeTimedOut(host);
   const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
   const isOnline = !!host.isOnline;
+  const trafficUsageProgressClass = trafficLimit > 0
+    ? metricUsageProgressClass(trafficProgress, isOnline)
+    : isOnline
+      ? "h-1.5 bg-muted [&>div]:bg-muted-foreground/30"
+      : "h-1.5 bg-muted [&>div]:bg-muted-foreground/20";
   const infoPanelClass = isOnline
     ? "border-border/40 bg-background/30"
     : "border-muted-foreground/20 bg-muted/25";
@@ -151,6 +171,8 @@ export default function HostCard({
       label: "CPU",
       icon: Cpu,
       value: cpuUsage,
+      valueLabel: `${cpuUsage}%`,
+      progressClass: metricUsageProgressClass(cpuUsage, isOnline),
       tooltip: host.cpuInfo ? `CPU 使用率 ${cpuUsage}%\n${host.cpuInfo}` : `CPU 使用率 ${cpuUsage}%`,
     },
     {
@@ -158,6 +180,8 @@ export default function HostCard({
       label: "内存",
       icon: MemoryStick,
       value: memoryUsage,
+      valueLabel: `${memoryUsage}%`,
+      progressClass: metricUsageProgressClass(memoryUsage, isOnline),
       tooltip: memoryUsed !== null && memoryTotal
         ? `内存使用率 ${memoryUsage}%\n${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)}`
         : `内存使用率 ${memoryUsage}%`,
@@ -167,9 +191,20 @@ export default function HostCard({
       label: "磁盘",
       icon: HardDrive,
       value: diskUsage,
+      valueLabel: `${diskUsage}%`,
+      progressClass: metricUsageProgressClass(diskUsage, isOnline),
       tooltip: diskUsed !== null && diskTotal
         ? `磁盘使用率 ${diskUsage}%\n${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}`
         : `磁盘使用率 ${diskUsage}%`,
+    },
+    {
+      key: "traffic",
+      label: "流量",
+      icon: Activity,
+      value: trafficProgress,
+      valueLabel: trafficPercent === null ? "∞" : `${trafficPercent}%`,
+      progressClass: trafficUsageProgressClass,
+      tooltip: trafficUsageTooltip,
     },
   ];
 
@@ -298,8 +333,8 @@ export default function HostCard({
                         <TooltipTrigger asChild>
                           <div className={compactMetricItemClass} aria-label={item.tooltip} tabIndex={0}>
                             <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <Progress value={item.value} className={metricUsageProgressClass(item.value, isOnline)} />
-                            <span className="shrink-0 text-right font-semibold leading-none tabular-nums">{item.value}%</span>
+                            <Progress value={item.value} className={item.progressClass} />
+                            <span className="shrink-0 text-right font-semibold leading-none tabular-nums">{item.valueLabel}</span>
                           </div>
                         </TooltipTrigger>
                         <TooltipContent collisionPadding={12} className="max-w-[240px] whitespace-pre-line text-xs">
@@ -365,15 +400,20 @@ export default function HostCard({
               </div>
               <Progress value={latestMetric.diskUsage ?? 0} className={metricUsageProgressClass(latestMetric.diskUsage, isOnline)} />
             </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="text-muted-foreground flex items-center gap-1"><Activity className="h-3 w-3" /> 流量</span>
+                <span className="max-w-[70%] truncate text-right font-medium tabular-nums" title={trafficUsageTooltip}>
+                  {trafficUsageLabel}
+                </span>
+              </div>
+              <Progress value={trafficProgress} className={trafficUsageProgressClass} />
+            </div>
             <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
               <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ArrowDownToLine className="h-3 w-3" />
                   <span>入站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="text-muted-foreground">当前</span>
@@ -384,10 +424,6 @@ export default function HostCard({
                 <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
                   <ArrowUpFromLine className="h-3 w-3" />
                   <span>出站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">累计</span>
-                  <span className="font-medium tabular-nums">{totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2 text-[11px]">
                   <span className="text-muted-foreground">当前</span>

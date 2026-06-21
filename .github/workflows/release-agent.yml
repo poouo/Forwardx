@@ -57,5 +57,7 @@ jobs:
             dist/agent/forwardx-agent-linux-arm64
             dist/agent/forwardx-fxp-linux-amd64
             dist/agent/forwardx-fxp-linux-arm64
+            dist/agent/forwardx-runtime-linux-amd64
+            dist/agent/forwardx-runtime-linux-arm64
             dist/agent/SHA256SUMS
           fail_on_unmatched_files: true

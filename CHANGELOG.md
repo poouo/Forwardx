@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.162] - 2026-06-21
+
+### Added
+
+- Added host-level DDNS controls so a host can update IPv4 or IPv6 records through the configured system DDNS provider when the Agent-reported address changes.
+- Added panel-hosted ForwardX runtime and GOST release assets as a fallback path for Agent install and upgrade when GitHub assets are unavailable.
+
+### Fixed
+
+- Reworked Agent install and upgrade downloads to use connection timeout plus low-speed timeout instead of a fixed total download timeout, preventing slow active downloads from being interrupted.
+- Applied the same low-speed timeout handling to GOST and realm runtime asset downloads and copied install commands.
+
+### Changed
+
+- Host cards now show traffic quota usage in the resource section and avoid duplicating the old inbound/outbound total cards.
+- Bumped panel version to 2.3.162 and Agent target version to 2.2.102.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.162.
+
 ## [2.3.161] - 2026-06-21
 
 ### Fixed
