@@ -38,6 +38,7 @@ import {
 import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
+import { scheduleHostDdnsUpdate } from "./hostDdns";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -186,6 +187,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
+    if (addressChanged) {
+      scheduleHostDdnsUpdate(host, "agent-address-changed");
+    }
     if (!wasOnline) {
       void notifyHostOnlineIfNeeded(host).catch((error) => {
         console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);

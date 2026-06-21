@@ -11,6 +11,9 @@ TOKEN="${2:-}"
 GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-https://git.poouo.com}"
 GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-false}"
 FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-false}"
+FORWARDX_CURL_CONNECT_TIMEOUT="${FORWARDX_CURL_CONNECT_TIMEOUT:-15}"
+FORWARDX_CURL_LOW_SPEED_LIMIT="${FORWARDX_CURL_LOW_SPEED_LIMIT:-1024}"
+FORWARDX_CURL_LOW_SPEED_TIME="${FORWARDX_CURL_LOW_SPEED_TIME:-60}"
 
 SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
@@ -91,7 +94,7 @@ read_existing_config() {
 run_panel_installer() {
   local mode="$1"
   local token="$2"
-  local timeout="${3:-20}"
+  local low_speed_time="${3:-$FORWARDX_CURL_LOW_SPEED_TIME}"
   local tmp_script
 
   if [ -z "${PANEL_URL:-}" ]; then
@@ -105,7 +108,11 @@ run_panel_installer() {
   local url="${PANEL_URL}/api/agent/install.sh"
 
   echo "[信息] 正在从面板获取安装脚本: ${PANEL_URL}"
-  if ! curl -fsSL --max-time "$timeout" "$url" -o "$tmp_script"; then
+  if ! curl -fsSL \
+    --connect-timeout "$FORWARDX_CURL_CONNECT_TIMEOUT" \
+    --speed-limit "$FORWARDX_CURL_LOW_SPEED_LIMIT" \
+    --speed-time "$low_speed_time" \
+    "$url" -o "$tmp_script"; then
     rm -f "$tmp_script"
     return 1
   fi
@@ -154,7 +161,7 @@ do_install() {
   echo ""
 
   echo "[信息] 正在从面板获取安装脚本..."
-  if ! run_panel_installer "install" "$agent_token" 20; then
+  if ! run_panel_installer "install" "$agent_token" 60; then
     echo ""
     echo "[错误] 无法从面板获取安装脚本"
     echo "       请检查面板地址和网络连接"
@@ -188,7 +195,7 @@ do_upgrade() {
   echo ""
 
   echo "[信息] 正在从面板获取最新安装脚本..."
-  if ! run_panel_installer "upgrade" "$agent_token" 20; then
+  if ! run_panel_installer "upgrade" "$agent_token" 60; then
     echo ""
     echo "[错误] 升级失败：无法从面板获取安装脚本"
     exit 1

@@ -3,7 +3,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 RUN npm install -g pnpm@10
 
-RUN apk add --no-cache bash python3 make g++ go
+RUN apk add --no-cache bash python3 make g++ go curl ca-certificates
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --prod=false

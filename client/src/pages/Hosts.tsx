@@ -59,6 +59,7 @@ import {
   LayoutGrid,
   List,
   Globe,
+  RadioTower,
   MapPinned,
   Download,
   Gauge,
@@ -617,6 +618,9 @@ type HostFormData = {
   trafficAlertThresholdPercent: number;
   trafficAutoReset: boolean;
   trafficResetDay: number;
+  ddnsEnabled: boolean;
+  ddnsIpVersion: "ipv4" | "ipv6";
+  ddnsDomain: string;
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
@@ -640,6 +644,9 @@ const defaultFormData: HostFormData = {
   trafficAlertThresholdPercent: 20,
   trafficAutoReset: false,
   trafficResetDay: 1,
+  ddnsEnabled: false,
+  ddnsIpVersion: "ipv4",
+  ddnsDomain: "",
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
@@ -671,6 +678,11 @@ function clampTrafficAlertThresholdPercent(value: number) {
 
 function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
   return value === "outbound" ? "outbound" : "both";
+}
+
+function normalizeHostDdnsIpVersion(value: unknown, recordType?: unknown): "ipv4" | "ipv6" {
+  if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
+  return "ipv4";
 }
 
 function formatTrafficLimitGbInput(value: unknown) {
@@ -714,18 +726,40 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
   const [open, setOpen] = useState(false);
   const [viewDate, setViewDate] = useState(() => selected || new Date());
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+  const [panelSide, setPanelSide] = useState<"top" | "bottom">("bottom");
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const updatePanelPosition = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect || typeof window === "undefined") return;
-    const width = Math.min(416, Math.max(288, window.innerWidth - 32));
-    const left = align === "end" ? rect.right - width : rect.left;
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 640;
+    const containerRect = triggerRef.current?.closest(".dialog-panel")?.getBoundingClientRect();
+    const containingLeft = containerRect?.left ?? 0;
+    const containingTop = containerRect?.top ?? 0;
+    const padding = 16;
+    const gap = 8;
+    const boundaryLeft = Math.max(padding, (containerRect?.left ?? 0) + padding);
+    const boundaryRight = Math.min(viewportWidth - padding, (containerRect?.right ?? viewportWidth) - padding);
+    const boundaryTop = Math.max(padding, (containerRect?.top ?? 0) + padding);
+    const boundaryBottom = Math.min(viewportHeight - padding, (containerRect?.bottom ?? viewportHeight) - padding);
+    const availableWidth = Math.max(288, boundaryRight - boundaryLeft);
+    const availableHeight = Math.max(220, boundaryBottom - boundaryTop);
+    const width = Math.min(416, availableWidth);
+    const panelHeight = Math.min(panelRef.current?.offsetHeight || 360, availableHeight);
+    const spaceBelow = boundaryBottom - rect.bottom;
+    const spaceAbove = rect.top - boundaryTop;
+    const side = spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
+    const desiredTop = side === "bottom" ? rect.bottom + gap : rect.top - panelHeight - gap;
+    const desiredLeft = align === "end" ? rect.right - width : rect.left;
+    setPanelSide(side);
     setPanelStyle({
-      top: rect.bottom + 8,
-      left: Math.max(16, Math.min(left, window.innerWidth - width - 16)),
+      top: Math.max(boundaryTop, Math.min(desiredTop, boundaryBottom - panelHeight)) - containingTop,
+      left: Math.max(boundaryLeft, Math.min(desiredLeft, boundaryRight - width)) - containingLeft,
       width,
+      maxHeight: availableHeight,
     });
   };
 
@@ -736,8 +770,10 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
   useEffect(() => {
     if (!open) return;
     updatePanelPosition();
+    const frame = window.requestAnimationFrame(updatePanelPosition);
     const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -749,6 +785,7 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
     window.addEventListener("resize", handleReposition);
     window.addEventListener("scroll", handleReposition, true);
     return () => {
+      window.cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", handleReposition);
@@ -795,6 +832,10 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
   };
 
   const label = formatDateTimePickerLabel(value);
+  const panelOrigin = panelSide === "top"
+    ? align === "end" ? "origin-bottom-right" : "origin-bottom-left"
+    : align === "end" ? "origin-top-right" : "origin-top-left";
+  const panelClosedTranslate = panelSide === "top" ? "translate-y-1.5" : "-translate-y-1.5";
 
   return (
     <div ref={rootRef} className="relative">
@@ -812,9 +853,10 @@ function DateTimePickerInput({ value, onChange, align = "start" }: DateTimePicke
         <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
       <div
+        ref={panelRef}
         aria-hidden={!open}
-        style={panelStyle}
-        className={`fixed z-[70] max-h-[calc(100vh-2rem)] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${align === "end" ? "origin-top-right" : "origin-top-left"} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : "pointer-events-none -translate-y-1.5 scale-[0.98] opacity-0"}`}
+          style={panelStyle}
+          className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
       >
         <div className="grid gap-0 sm:grid-cols-[1fr_7.25rem]">
           <div className="p-3">
@@ -951,6 +993,7 @@ function HostsContent() {
     () => systemSettings?.agentVersion || "",
     [systemSettings?.agentVersion]
   );
+  const ddnsProviderEnabled = Boolean(systemSettings?.ddns?.enabled && systemSettings?.ddns?.provider && systemSettings.ddns.provider !== "disabled");
   const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
   const [showDialog, setShowDialog] = useState(false);
@@ -1111,6 +1154,9 @@ function HostsContent() {
       trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(host.trafficAlertThresholdPercent),
       trafficAutoReset: !!host.trafficAutoReset,
       trafficResetDay: clampMonthlyResetDay(host.trafficResetDay || 1),
+      ddnsEnabled: !!host.ddnsEnabled,
+      ddnsIpVersion: normalizeHostDdnsIpVersion(host.ddnsIpVersion, host.ddnsRecordType),
+      ddnsDomain: host.ddnsDomain || "",
       blockHttp: !!host.blockHttp,
       blockSocks: !!host.blockSocks,
       blockTls: !!host.blockTls,
@@ -1158,6 +1204,16 @@ function HostsContent() {
       toast.error("套餐流量不能小于 0");
       return;
     }
+    if (user?.role === "admin" && form.ddnsEnabled) {
+      if (!ddnsProviderEnabled) {
+        toast.error("请先在系统设置内启用 DDNS 服务商");
+        return;
+      }
+      if (!form.ddnsDomain.trim()) {
+        toast.error("开启 DDNS 服务需要填写域名");
+        return;
+      }
+    }
     const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
     const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
     const trafficConfigPayload = user?.role === "admin"
@@ -1170,6 +1226,10 @@ function HostsContent() {
           trafficAlertThresholdPercent,
           trafficAutoReset: form.trafficAutoReset,
           trafficResetDay: clampMonthlyResetDay(form.trafficResetDay),
+          ddnsEnabled: form.ddnsEnabled,
+          ddnsDomain: form.ddnsDomain.trim(),
+          ddnsIpVersion: form.ddnsIpVersion,
+          ddnsRecordType: form.ddnsIpVersion === "ipv6" ? "AAAA" : "A",
         }
       : {};
     const protocolPolicyPayload = user?.role === "admin"
@@ -1957,7 +2017,7 @@ function HostsContent() {
                 );
               })}
             </TabsList>
-            <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1.5 [scrollbar-gutter:stable]">
+            <div className="-mx-1.5 mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-1 pr-3 [scrollbar-gutter:stable]">
               <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
@@ -2106,7 +2166,7 @@ function HostsContent() {
                   </div>
                   {user?.role === "admin" ? (
                     <>
-                      <div className="grid gap-2.5 sm:grid-cols-2">
+                      <div className="grid min-w-0 gap-2.5 md:grid-cols-2">
                         <div className="space-y-1">
                           <Label className="text-sm">机器购买时间</Label>
                           <DateTimePickerInput
@@ -2122,11 +2182,11 @@ function HostsContent() {
                             align="end"
                           />
                         </div>
-                        <div className="space-y-1">
+                        <div className="min-w-0 space-y-1">
                           <Label className="text-sm">套餐流量</Label>
-                          <div className="flex overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                          <div className="flex min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
                             <Input
-                              className="h-8 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                              className="h-8 min-w-0 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                               type="number"
                               min={0}
                               step={1}
@@ -2137,13 +2197,13 @@ function HostsContent() {
                             <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-sm text-muted-foreground">GB</span>
                           </div>
                         </div>
-                        <div className="space-y-1">
+                        <div className="min-w-0 space-y-1">
                           <Label className="text-sm">流量计算</Label>
                           <Select
                             value={form.trafficMeasureMode}
                             onValueChange={(value) => setForm({ ...form, trafficMeasureMode: normalizeHostTrafficMeasureMode(value) })}
                           >
-                            <SelectTrigger className="h-8">
+                            <SelectTrigger className="h-8 min-w-0">
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -2195,6 +2255,47 @@ function HostsContent() {
                         </div>
                       </div>
                       <p className="mt-1.5 px-3 text-xs text-muted-foreground">当月没有该日期时按最后一天重置。</p>
+                      <div className="mt-2.5 space-y-2 rounded-md bg-muted/35 px-3 py-2.5">
+                        <div className="flex min-h-8 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <RadioTower className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            <Label className="text-sm font-medium">DDNS 服务</Label>
+                            {!ddnsProviderEnabled ? (
+                              <Badge variant="secondary" className="shrink-0 text-[11px]">未配置服务商</Badge>
+                            ) : null}
+                          </div>
+                          <Switch
+                            checked={form.ddnsEnabled}
+                            disabled={!ddnsProviderEnabled && !form.ddnsEnabled}
+                            onCheckedChange={(checked) => setForm({ ...form, ddnsEnabled: checked })}
+                          />
+                        </div>
+                        <div className="grid min-w-0 gap-2.5 sm:grid-cols-[8rem_minmax(0,1fr)]">
+                          <Select
+                            value={form.ddnsIpVersion}
+                            disabled={!ddnsProviderEnabled}
+                            onValueChange={(value) => setForm({ ...form, ddnsIpVersion: normalizeHostDdnsIpVersion(value) })}
+                          >
+                            <SelectTrigger className="h-8 min-w-0">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ipv4">IPv4 / A</SelectItem>
+                              <SelectItem value="ipv6">IPv6 / AAAA</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Input
+                            className="h-8 min-w-0"
+                            placeholder="例如: node.example.com"
+                            value={form.ddnsDomain}
+                            disabled={!ddnsProviderEnabled}
+                            onChange={(e) => setForm({ ...form, ddnsDomain: e.target.value })}
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          开启后，Agent 上报的对应 IP 发生变化时会自动更新到系统设置中的 DDNS 服务商。
+                        </p>
+                      </div>
                     </>
                   ) : (
                     <div className="rounded-md bg-muted/35 px-3 py-2 text-sm text-muted-foreground">
