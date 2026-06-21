@@ -26,6 +26,15 @@ export function getTunnelRuntimeReadyCount(tunnelId: number, hostIds: number[]) 
   return hostIds.filter((hostId) => hosts.get(Number(hostId)) === true).length;
 }
 
+export function clearTunnelRuntimeStatusForHost(hostId: number) {
+  const hid = Number(hostId);
+  if (!Number.isFinite(hid) || hid <= 0) return;
+  for (const [tunnelId, hosts] of tunnelRuntimeStatus.entries()) {
+    hosts.delete(hid);
+    if (hosts.size === 0) tunnelRuntimeStatus.delete(tunnelId);
+  }
+}
+
 export function clearTunnelRuntimeStatus(tunnelId: number) {
   tunnelRuntimeStatus.delete(Number(tunnelId));
 }

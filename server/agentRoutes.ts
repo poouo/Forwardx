@@ -15,8 +15,9 @@ import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
 import { registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
-import { hostUsesAutomaticIngress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
+import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
@@ -47,6 +48,8 @@ async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: stri
   if (now - last < AGENT_RUNTIME_RECOVERY_COOLDOWN_MS) return;
   lastRuntimeRecoveryByHost.set(hostId, now);
   await db.resetAgentRuntimeStateForHost(hostId);
+  clearTunnelRuntimeStatusForHost(hostId);
+  await refreshAgentsAffectedByHostAddress(hostId, reason);
   appendPanelLog("info", `[AgentRecovery] host=${hostId} reason=${reason} runtime state marked for reapply`);
 }
 

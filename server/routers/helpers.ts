@@ -1,6 +1,7 @@
 import * as db from "../db";
 import { pushAgentRefresh } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
+import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 
 export function ensureAdminOrSelf(ctx: { user: { id: number; role: string } }, userId: number) {
   if (ctx.user.role !== "admin" && ctx.user.id !== userId) {
@@ -87,6 +88,7 @@ export async function requireTunnelUseOrTrafficBillingAccess(ctx: { user: { id: 
 }
 
 export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
+  if (tunnel?.id) clearTunnelRuntimeStatus(Number(tunnel.id));
   const hopRows = tunnel?.id ? await db.getTunnelHops(Number(tunnel.id)) : [];
   const extraExitRows = tunnel?.id ? await db.getTunnelExitNodes(Number(tunnel.id)) : [];
   const hopHostIds = Array.isArray(hopRows)

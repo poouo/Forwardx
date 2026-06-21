@@ -114,7 +114,7 @@ export default function HostCard({
   const trafficPercent = trafficLimit > 0 ? Math.round((trafficUsedBytes / trafficLimit) * 100) : null;
   const trafficProgress = trafficPercent === null ? 0 : Math.min(100, Math.max(0, trafficPercent));
   const trafficUsageLabel = trafficPercent === null
-    ? `${formatBytes(trafficUsedBytes)} / 无限大`
+    ? `${formatBytes(trafficUsedBytes)} / ♾️`
     : `${formatBytes(trafficUsedBytes)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`;
   const trafficUsageTooltip = [
     `流量使用（${trafficMeasureMode === "outbound" ? "仅出向" : "双向"}）`,
@@ -411,22 +411,14 @@ export default function HostCard({
             </div>
             <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
               <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowDownToLine className="h-3 w-3" />
-                  <span>入站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入站</span>
                   <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.in)}</span>
                 </div>
               </div>
               <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ArrowUpFromLine className="h-3 w-3" />
-                  <span>出站</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px]">
-                  <span className="text-muted-foreground">当前</span>
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出站</span>
                   <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.out)}</span>
                 </div>
               </div>

@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.3.163] - 2026-06-22
+
+### Fixed
+
+- Cleared stale tunnel runtime readiness caches when Agents reconnect, host runtime settings change, DNS updates are reported, or tunnel endpoints are refreshed so custom ForwardX tunnels are reapplied after Agent upgrades without requiring a manual toggle.
+- Included load-balance tunnel exit nodes when waking affected Agents for runtime refreshes.
+- Refined host edit date inputs, traffic quota display, and host-card realtime traffic labels.
+
+### Changed
+
+- Added a host traffic exhaustion reminder hint clarifying that alerts are sent through the TG bot.
+- Bumped panel version to 2.3.163. Agent target version remains 2.2.102.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.163.
+
 ## [2.3.162] - 2026-06-21
 
 ### Added

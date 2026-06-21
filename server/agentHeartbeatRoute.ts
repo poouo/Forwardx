@@ -11,7 +11,7 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
-import { isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
+import { clearTunnelRuntimeStatusForHost, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4 } from "dns/promises";
@@ -200,6 +200,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
     if (dnsChangedReports.length > 0) {
       await db.resetAgentRuntimeStateForHost(host.id);
+      clearTunnelRuntimeStatusForHost(host.id);
       await refreshAgentsAffectedByHostAddress(host.id, "agent-dns-changed");
       appendPanelLog("info", `[AgentDNS] host=${host.id} reported DNS change for ${dnsChangedReports.length} watched name(s)`);
     }

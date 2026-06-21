@@ -1,6 +1,7 @@
 import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
+import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 
 export function hostIngressAddress(hostLike: any) {
   return String(hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
@@ -27,6 +28,12 @@ export async function refreshAgentsAffectedByHostAddress(hostId: number, reason:
       const hopHostId = Number((hop as any)?.hostId || 0);
       if (hopHostId > 0) affected.add(hopHostId);
     }
+
+    const exits = await hopRepo.getTunnelExitNodes(Number(tunnel?.id || 0)).catch(() => []);
+    for (const exit of exits || []) {
+      const exitHostId = Number((exit as any)?.hostId || 0);
+      if (exitHostId > 0) affected.add(exitHostId);
+    }
   }));
 
   for (const affectedHostId of affected) {
@@ -37,5 +44,6 @@ export async function refreshAgentsAffectedByHostAddress(hostId: number, reason:
 export async function refreshHostAddressRuntime(hostId: number, previousHost: any, reason: string) {
   await db.syncForwardChainsForHost(hostId, previousHost);
   await db.resetAgentRuntimeStateForHost(hostId);
+  clearTunnelRuntimeStatusForHost(hostId);
   await refreshAgentsAffectedByHostAddress(hostId, reason);
 }
