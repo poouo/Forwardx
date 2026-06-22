@@ -125,9 +125,9 @@ function validateForwardGroupModeMembers(groupMode: ForwardGroupMode, groupType:
     return;
   }
   if (isCollectionGroupMode(groupMode)) {
-    if (members.length < 1 || members.length > 5) throw new Error(groupMode === "entry" ? "Entry group requires 1-5 hosts" : "Exit group requires 1-5 hosts");
-    if (groupType !== "host") throw new Error(groupMode === "entry" ? "Entry group only supports host members" : "Exit group only supports host members");
-    if (members.some((member) => member.memberType !== "host")) throw new Error(groupMode === "entry" ? "Entry group only supports host members" : "Exit group only supports host members");
+    if (members.length < 1 || members.length > 5) throw new Error(groupMode === "entry" ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
+    if (groupType !== "host") throw new Error(groupMode === "entry" ? "入口组仅支持主机成员" : "出口组仅支持主机成员");
+    if (members.some((member) => member.memberType !== "host")) throw new Error(groupMode === "entry" ? "入口组仅支持主机成员" : "出口组仅支持主机成员");
   }
 }
 
@@ -783,6 +783,7 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     recoverSeconds: group.recoverSeconds,
     chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
     chinaHealthCheckTarget: group.chinaHealthCheckTarget || null,
+    ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
     autoFailback: group.autoFailback,
     isEnabled: group.isEnabled,
     lastStatus: group.lastStatus,
@@ -1103,10 +1104,10 @@ export async function syncForwardGroupTemplateRule(templateRuleId: number) {
 }
 
 export async function createForwardGroup(data: InsertForwardGroup, members: ForwardGroupMemberInput[]) {
-  if (members.length === 0) throw new Error("Forward group requires at least one member");
+  if (members.length === 0) throw new Error("转发组至少需要一个成员");
   const groupMode = groupModeOf(data);
   validateForwardGroupModeMembers(groupMode, String((data as any).groupType || "host"), members);
-  if (groupMode === "entry" && !String((data as any).domain || "").trim()) throw new Error("Entry group requires a DDNS domain");
+  if (groupMode === "entry" && !String((data as any).domain || "").trim()) throw new Error("入口组需要指定入口域名");
   for (const member of members) await targetHostIdForMember(member);
   const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index)));
   const id = await insertAndGetId("forward_groups", {
@@ -1136,9 +1137,9 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
   await insertForwardGroupEvent(id, null, "created", groupMode === "chain"
     ? "Port forwarding chain created; rules will generate hop routes when this chain is selected."
     : groupMode === "entry"
-      ? "Entry group created; DDNS can publish all entry hosts to the same domain."
+      ? "入口组已创建；开启自动解析后会把入口主机同步到同一个入口域名。"
       : groupMode === "exit"
-        ? "Exit group created; it can be selected as a tunnel exit group."
+        ? "出口组已创建；可在隧道中作为出口组选择。"
         : "Forward group created; use it from forwarding rules to generate member routes.");
   return id;
 }
@@ -1150,7 +1151,7 @@ export async function updateForwardGroup(id: number, data: Partial<InsertForward
 }
 
 export async function replaceForwardGroupMembers(groupId: number, members: ForwardGroupMemberInput[]) {
-  if (members.length === 0) throw new Error("Forward group requires at least one member");
+  if (members.length === 0) throw new Error("转发组至少需要一个成员");
   const group = await getForwardGroupById(groupId);
   const groupMode = groupModeOf(group);
   validateForwardGroupModeMembers(groupMode, String((group as any)?.groupType || "host"), members);
@@ -1336,17 +1337,17 @@ async function evaluateMemberHealth(member: any, group: any) {
       const chinaStatus = String(member.chinaHealthStatus || "unknown");
       if (chinaStatus === "unhealthy") {
         healthy = false;
-        message = "China health TCPing timeout";
+        message = "国内健康度检测超时";
       } else if (chinaStatus !== "healthy") {
         healthy = false;
-        message = "Waiting for China health TCPing data";
+        message = "等待国内健康度检测数据";
       } else if (typeof member.chinaHealthLatencyMs === "number") {
         latencies.push(Number(member.chinaHealthLatencyMs));
       }
     }
     if (healthy) {
       latencyMs = latencies.length > 0 ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length) : null;
-      message = latencies.length > 0 ? "TCPing healthy" : "Rules running; waiting for TCPing data";
+      message = latencies.length > 0 ? "TCPing 正常" : "规则运行中，等待 TCPing 数据";
     }
   }
 
@@ -1390,12 +1391,12 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
     }
   }
   const joined = values.join(",");
-  const excludedSuffix = excluded.length > 0 ? `; excluded ${excluded.length} unhealthy entr${excluded.length === 1 ? "y" : "ies"}` : "";
+  const excludedSuffix = excluded.length > 0 ? `；已临时剔除 ${excluded.length} 个不健康入口` : "";
 
   if (!String(group.domain || "").trim()) {
     await db.update(forwardGroups).set({
       lastStatus: "error",
-      lastMessage: "Entry group requires a DDNS domain.",
+      lastMessage: "入口组需要指定入口域名。",
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     return;
@@ -1403,28 +1404,39 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
   if (values.length === 0) {
     await db.update(forwardGroups).set({
       lastStatus: "down",
-      lastMessage: excluded.length > 0 ? "Entry group has no healthy entry address." : "Entry group has no usable entry address.",
+      lastMessage: excluded.length > 0 ? "入口组没有健康的入口地址。" : "入口组没有可用入口地址。",
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     return;
   }
 
+  if (group.ddnsAutoResolveEnabled === false) {
+    await db.update(forwardGroups).set({
+      activeMemberId,
+      lastDdnsValue: joined,
+      lastStatus: "healthy",
+      lastMessage: `自动解析已关闭；请手动将 ${String(group.domain || "-")} 解析到 ${values.join(", ")}${excludedSuffix}`,
+      updatedAt: nowDate(),
+    }).where(eq(forwardGroups.id, group.id));
+    await insertForwardGroupEvent(group.id, null, "ddns-skip", `入口组自动解析已关闭；domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}`);
+    return;
+  }
   if (!ddnsSettings.enabled || ddnsSettings.provider === "disabled") {
     await db.update(forwardGroups).set({
       activeMemberId,
       lastDdnsValue: joined,
       lastStatus: "healthy",
-      lastMessage: `DDNS disabled; recommended entries ${values.join(", ")}${excludedSuffix}`,
+      lastMessage: `系统 DDNS 未启用；建议入口 ${values.join(", ")}${excludedSuffix}`,
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
-    await insertForwardGroupEvent(group.id, null, "ddns-skip", `Entry group DDNS disabled; domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}`);
+    await insertForwardGroupEvent(group.id, null, "ddns-skip", `入口组 DDNS 未启用；domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}`);
     return;
   }
 
   if (String(group.lastDdnsValue || "") === joined) {
     await db.update(forwardGroups).set({
       lastStatus: "healthy",
-      lastMessage: `Entry group DDNS current; ${values.length} entries${excludedSuffix}`,
+      lastMessage: `入口组 DDNS 已是最新；${values.length} 个入口${excludedSuffix}`,
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     return;
@@ -1444,10 +1456,10 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
       lastDdnsAt: nowDate(),
       lastFailoverAt: nowDate(),
       lastStatus: "healthy",
-      lastMessage: `Entry group DDNS synced ${values.length} entries${excludedSuffix}`,
+      lastMessage: `入口组 DDNS 已同步 ${values.length} 个入口${excludedSuffix}`,
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
-    await insertForwardGroupEvent(group.id, null, "ddns-update", `Entry group DDNS synced; domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}`);
+    await insertForwardGroupEvent(group.id, null, "ddns-update", `入口组 DDNS 已同步；domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.update(forwardGroups).set({
@@ -1455,7 +1467,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
       lastMessage: message,
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
-    await insertForwardGroupEvent(group.id, null, "ddns-error", `Entry group DDNS update failed; ${message}; domain=${String(group.domain || "-")} values=${joined}`);
+    await insertForwardGroupEvent(group.id, null, "ddns-error", `入口组 DDNS 更新失败；${message}；domain=${String(group.domain || "-")} values=${joined}`);
   }
 }
 
@@ -1465,7 +1477,7 @@ async function markExitGroupReady(group: any) {
   await db.update(forwardGroups).set({
     activeMemberId: Number(members[0]?.id || 0) || null,
     lastStatus: members.length > 0 ? "healthy" : "down",
-    lastMessage: members.length > 0 ? "Exit group saved; select it as a tunnel exit group." : "Exit group has no enabled hosts.",
+    lastMessage: members.length > 0 ? "出口组已保存，可在隧道中作为出口组选择。" : "出口组没有已启用主机。",
     updatedAt: nowDate(),
   }).where(eq(forwardGroups.id, group.id));
 }
@@ -1497,7 +1509,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
     if (templates.length === 0) {
       await db.update(forwardGroups).set({
         lastStatus: "unknown",
-        lastMessage: "No forwarding rule is using this group yet.",
+        lastMessage: "当前还没有转发规则使用这个组。",
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
       continue;
@@ -1522,7 +1534,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
     if (!group.domain) {
       await db.update(forwardGroups).set({
         lastStatus: evaluated.some((m) => m.healthy) ? "healthy" : "down",
-        lastMessage: "DDNS domain is not configured; member health was updated only.",
+        lastMessage: "未配置 DDNS 域名，仅更新成员健康状态。",
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
       continue;
@@ -1545,7 +1557,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
     if (!next) {
       await db.update(forwardGroups).set({
         lastStatus: "down",
-        lastMessage: "No healthy member is available for DDNS failover.",
+        lastMessage: "没有可用于 DDNS 故障转移的健康成员。",
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
       continue;
@@ -1553,7 +1565,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
 
     const value = await memberEntryAddress(next);
     if (!value) {
-      await insertForwardGroupEvent(group.id, next.id, "ddns-error", "Healthy member has no entry address.");
+      await insertForwardGroupEvent(group.id, next.id, "ddns-error", "健康成员没有可用入口地址。");
       continue;
     }
 
@@ -1562,10 +1574,10 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
       await db.update(forwardGroups).set({
         activeMemberId: next.id,
         lastStatus: "healthy",
-        lastMessage: `DDNS disabled; recommended entry ${value}`,
+        lastMessage: `系统 DDNS 未启用；建议入口 ${value}`,
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
-      await insertForwardGroupEvent(group.id, next.id, "ddns-skip", `DDNS disabled; record was not updated; ${detail}`);
+      await insertForwardGroupEvent(group.id, next.id, "ddns-skip", `系统 DDNS 未启用，解析记录未更新；${detail}`);
       continue;
     }
 
@@ -1573,10 +1585,10 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
       const detail = describeDdnsTarget(group, value, ddnsSettings.provider);
       await db.update(forwardGroups).set({
         lastStatus: "healthy",
-        lastMessage: `Current entry ${value}`,
+        lastMessage: `当前入口 ${value}`,
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
-      await insertForwardGroupEvent(group.id, next.id, "ddns-current", `DDNS current; record already points to the selected entry; ${detail}`);
+      await insertForwardGroupEvent(group.id, next.id, "ddns-current", `DDNS 已是最新，解析记录已指向选中入口；${detail}`);
       continue;
     }
 
@@ -1595,10 +1607,10 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
         lastDdnsAt: nowDate(),
         lastFailoverAt: nowDate(),
         lastStatus: "healthy",
-        lastMessage: `DDNS switched to ${value}`,
+        lastMessage: `DDNS 已切换到 ${value}`,
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
-      await insertForwardGroupEvent(group.id, next.id, "failover", `DDNS switched; ${detail}`);
+      await insertForwardGroupEvent(group.id, next.id, "failover", `DDNS 已切换；${detail}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const detail = describeDdnsTarget(group, value, ddnsSettings.provider);
@@ -1607,7 +1619,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
         lastMessage: message,
         updatedAt: nowDate(),
       }).where(eq(forwardGroups.id, group.id));
-      await insertForwardGroupEvent(group.id, next.id, "ddns-error", `DDNS update failed; ${message}; ${detail}`);
+      await insertForwardGroupEvent(group.id, next.id, "ddns-error", `DDNS 更新失败；${message}；${detail}`);
     }
   }
 }

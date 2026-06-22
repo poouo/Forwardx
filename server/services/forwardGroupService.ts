@@ -1,4 +1,5 @@
 import * as db from "../db";
+import { getDdnsSettings } from "../ddns";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
@@ -27,6 +28,7 @@ export type ForwardGroupInput = {
   recoverSeconds: number;
   chinaHealthCheckEnabled?: boolean;
   chinaHealthCheckTarget?: string | null;
+  ddnsAutoResolveEnabled?: boolean;
   autoFailback: boolean;
   isEnabled: boolean;
   members: ForwardGroupMemberRequest[];
@@ -65,13 +67,35 @@ export function normalizeForwardGroupMembers(
     };
   });
 }
+async function assertEntryGroupReference(entryGroupId: number | null, userId?: number) {
+  if (!entryGroupId) return null;
+  const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
+  if (!entryGroup || String(entryGroup.groupMode || "") !== "entry") throw new Error("入口组不存在或类型不正确");
+  if (userId && Number(entryGroup.userId) !== Number(userId)) throw new Error("无权使用该入口组");
+  if (!entryGroup.isEnabled) throw new Error("入口组未启用");
+  if (!String(entryGroup.domain || "").trim()) throw new Error("入口组未配置入口域名");
+  return entryGroup;
+}
+
+async function assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled: boolean) {
+  if (!ddnsAutoResolveEnabled) return;
+  const settings = await getDdnsSettings();
+  if (!settings.enabled || settings.provider === "disabled") {
+    throw new Error("入口组已开启自动解析，请先在系统设置中配置并启用 DDNS 服务商");
+  }
+}
+
 async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
   const rawMode = input.groupMode;
   const groupMode: ForwardGroupMode = rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
   const groupType: ForwardGroupType = groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
+  const entryGroupId = groupMode === "chain" ? Number(input.entryGroupId || 0) || null : null;
+  await assertEntryGroupReference(entryGroupId, userId);
   const domain = groupMode === "entry" || groupMode === "failover" ? input.domain?.trim() || null : null;
-  if (groupMode === "entry" && !domain) throw new Error("入口组需要指定 DDNS 域名");
+  if (groupMode === "entry" && !domain) throw new Error("入口组需要指定入口域名");
+  const ddnsAutoResolveEnabled = groupMode === "entry" ? input.ddnsAutoResolveEnabled !== false : true;
+  if (groupMode === "entry") await assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled);
   const members = normalizeForwardGroupMembers(groupMode, groupType, input.members);
   const chinaHealthCheckEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.chinaHealthCheckEnabled;
   const chinaHealthCheckTarget = chinaHealthCheckEnabled
@@ -81,7 +105,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
   const commonData = {
     name: input.name,
-    remark: input.remark?.trim() || null,
+    remark: isCollectionGroup ? null : input.remark?.trim() || null,
     groupMode,
     entryGroupId,
     groupType,
@@ -92,6 +116,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     recoverSeconds: input.recoverSeconds,
     chinaHealthCheckEnabled,
     chinaHealthCheckTarget,
+    ddnsAutoResolveEnabled,
     autoFailback: input.autoFailback,
     isEnabled: input.isEnabled,
   };

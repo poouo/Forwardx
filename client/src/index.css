@@ -234,6 +234,7 @@
   html {
     -webkit-tap-highlight-color: transparent;
     background-color: var(--background);
+    scrollbar-gutter: stable;
   }
 
   body {
@@ -260,6 +261,16 @@
   body[data-dialog-scroll-lock] {
     width: var(--fx-dialog-lock-width, auto);
     max-width: var(--fx-dialog-lock-width, none);
+  }
+
+  body[data-select-scroll-lock] {
+    width: var(--fx-select-lock-width, auto);
+    max-width: var(--fx-select-lock-width, none);
+  }
+
+  body[data-select-scroll-lock][data-scroll-locked] {
+    overflow-x: hidden !important;
+    overflow-y: scroll !important;
   }
 
   html.capacitor-native,

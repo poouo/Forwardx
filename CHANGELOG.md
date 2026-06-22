@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.165] - 2026-06-23
+
+### Fixed
+
+- Fixed DDNS settings save failing silently after the TTL field was added.
+- Fixed DDNS provider dropdowns causing the page scrollbar to disappear and the settings layout to jump.
+- Fixed port-forwarding chains with entry groups so creating a chain no longer raises `entryGroupId is not defined`, and entry groups can be used as fixed chain entries.
+- Fixed entry groups so DDNS provider configuration is required only when automatic resolution is enabled; manual-domain mode now saves without a system DDNS provider.
+- Fixed user-space IPv6 forwarding for realm and socat listeners and restored traffic accounting for ForwardX/GOST-backed user-space forwarding, including IPv6 counters.
+- Localized forwarding-group DDNS and health-check status messages that were still shown in English.
+
+### Changed
+
+- Entry and exit group dialogs now keep only group name plus enable state, keep record type visible for entry groups, and clarify that empty domestic health-check targets default to `www.189.cn:80`.
+- Bumped panel version to 2.3.165 and Agent target version to 2.2.104.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.165.
+
 ## [2.3.164] - 2026-06-23
 
 ### Added

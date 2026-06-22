@@ -58,6 +58,7 @@ import {
   Upload,
   Lock,
   MoveRight,
+  Loader2,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
@@ -2377,6 +2378,7 @@ function SystemInfoSection() {
       toast.error("阿里云 Endpoint 需要以 http:// 或 https:// 开头");
       return;
     }
+    const ttl = normalizeTtl(ddnsTtl, Number(settings?.ddns?.ttl || 600));
     saveSystemSettings("ddns", {
       ddns: {
         enabled: ddnsEnabled,
@@ -3220,7 +3222,8 @@ function SystemInfoSection() {
 
           <div className="flex justify-end">
             <Button onClick={handleSaveDdns} disabled={isSavingSetting("ddns")}>
-              保存 DDNS 配置
+              {isSavingSetting("ddns") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isSavingSetting("ddns") ? "保存中..." : "保存 DDNS 配置"}
             </Button>
           </div>
         </CardContent>

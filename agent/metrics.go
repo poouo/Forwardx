@@ -82,9 +82,6 @@ func collectTraffic(cfg Config) {
 		if state.RuleID <= 0 {
 			continue
 		}
-		if state.ForwardType == "forwardx" {
-			continue
-		}
 		counters := iptablesCounters[state.Port]
 		if state.ForwardType == "nftables" {
 			if nft := nftCounters[state.RuleID]; nft.In > 0 || nft.Out > 0 {

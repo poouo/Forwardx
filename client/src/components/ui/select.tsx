@@ -14,14 +14,21 @@ const Select = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentPr
 
   React.useLayoutEffect(() => {
     if (!isOpen || typeof document === "undefined") return
-    const count = Number(document.body.dataset.selectScrollLock || "0") + 1
-    document.body.dataset.selectScrollLock = String(count)
+    const body = document.body
+    const count = Number(body.dataset.selectScrollLock || "0") + 1
+    if (!body.dataset.selectScrollLock) {
+      body.style.setProperty("--fx-select-lock-width", document.documentElement.clientWidth + "px")
+      body.dataset.selectHadScrollbar = document.documentElement.scrollHeight > document.documentElement.clientHeight ? "true" : "false"
+    }
+    body.dataset.selectScrollLock = String(count)
     return () => {
-      const nextCount = Number(document.body.dataset.selectScrollLock || "1") - 1
+      const nextCount = Number(body.dataset.selectScrollLock || "1") - 1
       if (nextCount > 0) {
-        document.body.dataset.selectScrollLock = String(nextCount)
+        body.dataset.selectScrollLock = String(nextCount)
       } else {
-        delete document.body.dataset.selectScrollLock
+        delete body.dataset.selectScrollLock
+        delete body.dataset.selectHadScrollbar
+        body.style.removeProperty("--fx-select-lock-width")
       }
     }
   }, [isOpen])

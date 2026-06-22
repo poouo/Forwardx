@@ -677,12 +677,25 @@ function formatAddressWithPort(address: string, port: number | string): string {
   return `${value}:${port}`;
 }
 
+function normalizeForwardGroupModeForRule(group: any | null | undefined) {
+  const mode = String(group?.groupMode || "failover");
+  return mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
+}
+
 function isForwardChainGroup(group: any | null | undefined) {
-  return String(group?.groupMode || "failover") === "chain";
+  return normalizeForwardGroupModeForRule(group) === "chain";
+}
+
+function isSelectableForwardRuleGroup(group: any | null | undefined) {
+  const mode = normalizeForwardGroupModeForRule(group);
+  return mode === "failover" || mode === "chain";
 }
 
 function getForwardGroupKindLabel(group: any | null | undefined) {
-  if (isForwardChainGroup(group)) return "端口转发链";
+  const mode = normalizeForwardGroupModeForRule(group);
+  if (mode === "chain") return "端口转发链";
+  if (mode === "entry") return "入口组";
+  if (mode === "exit") return "出口组";
   return group?.groupType === "tunnel" ? "隧道组" : "主机组";
 }
 
@@ -2073,7 +2086,7 @@ function RulesContent() {
     return Number(rule.hostId || 0);
   }, [forwardGroupById, tunnelById]);
   const availableForwardGroups = useMemo(
-    () => (forwardGroups || []).filter((group: any) => group.isEnabled && (group.members || []).length > 0),
+    () => (forwardGroups || []).filter((group: any) => isSelectableForwardRuleGroup(group) && group.isEnabled && (group.members || []).length > 0),
     [forwardGroups]
   );
   const transferChainGroups = useMemo(
@@ -2081,7 +2094,7 @@ function RulesContent() {
     [forwardGroups]
   );
   const transferRuleGroups = useMemo(
-    () => (forwardGroups || []).filter((group: any) => !isForwardChainGroup(group)),
+    () => (forwardGroups || []).filter((group: any) => normalizeForwardGroupModeForRule(group) === "failover"),
     [forwardGroups]
   );
   const getTransferResources = useCallback((type: RuleTransferScopeType): any[] => {
@@ -3305,6 +3318,15 @@ function RulesContent() {
     return getHostEntryAddress(h);
   };
 
+  const entryDomainForForwardGroup = (group: any | null | undefined) => {
+    if (!group) return "";
+    if (isForwardChainGroup(group) && group.entryGroupId) {
+      const entryGroup = forwardGroupById.get(Number(group.entryGroupId));
+      return String(entryGroup?.domain || "").trim();
+    }
+    return "";
+  };
+
   const getRuleEntry = (rule: any): string => {
     return getHostEntryAddress(getRuleEntryHost(rule));
   };
@@ -3318,9 +3340,9 @@ function RulesContent() {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
       if (isForwardChainGroup(group)) {
-        const entry = String(group?.members?.[0]?.entryAddress || "").trim();
+        const entry = String(entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || "").trim();
         if (!entry) {
-          toast.error("该端口转发链第一台主机未配置入口地址");
+          toast.error("该端口转发链未配置可用入口地址");
           return;
         }
         const text = formatAddressWithPort(entry, rule.sourcePort);
@@ -3403,7 +3425,7 @@ function RulesContent() {
   const renderTransfer = (rule: any, compact = false) => {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const groupEntry = isForwardChainGroup(group)
-      ? (group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
+      ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
       : (group?.domain || getForwardGroupName(rule.forwardGroupId));
     const entryItems = rule.forwardGroupId
       ? [{ label: isForwardChainGroup(group) ? "转发链" : "转发组", value: groupEntry }]

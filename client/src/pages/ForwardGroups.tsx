@@ -94,6 +94,7 @@ type GroupForm = {
   recoverSeconds: string;
   chinaHealthCheckEnabled: boolean;
   chinaHealthCheckTarget: string;
+  ddnsAutoResolveEnabled: boolean;
   autoFailback: boolean;
   isEnabled: boolean;
   members: MemberForm[];
@@ -110,6 +111,7 @@ const makeDefaultForm = (): GroupForm => ({
   recoverSeconds: "120",
   chinaHealthCheckEnabled: false,
   chinaHealthCheckTarget: "",
+  ddnsAutoResolveEnabled: true,
   autoFailback: true,
   isEnabled: true,
   members: [],
@@ -126,6 +128,10 @@ function normalizeGroupMode(mode: unknown): GroupMode {
 
 function isCollectionMode(mode: GroupMode) {
   return mode === "entry" || mode === "exit";
+}
+
+function shouldShowGroupRemark(group: any) {
+  return !!group?.remark && !isCollectionMode(normalizeGroupMode(group.groupMode));
 }
 
 function isChinaHealthTargetValid(value: string) {
@@ -543,6 +549,7 @@ export function ForwardGroupsContent({
   const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
+  const closeResetTimerRef = useRef<number | null>(null);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
   const deleteImpactQuery = trpc.forwardGroups.deleteImpact.useQuery(
@@ -582,7 +589,35 @@ export function ForwardGroupsContent({
     savedMembersRef.current = { host: [], tunnel: [] };
   };
 
+  const clearCloseResetTimer = () => {
+    if (closeResetTimerRef.current !== null) {
+      window.clearTimeout(closeResetTimerRef.current);
+      closeResetTimerRef.current = null;
+    }
+  };
+
+  const closeDialog = () => {
+    setShowDialog(false);
+    clearCloseResetTimer();
+    closeResetTimerRef.current = window.setTimeout(() => {
+      resetForm();
+      closeResetTimerRef.current = null;
+    }, 220);
+  };
+
+  const handleDialogOpenChange = (open: boolean) => {
+    if (open) {
+      clearCloseResetTimer();
+      setShowDialog(true);
+      return;
+    }
+    closeDialog();
+  };
+
+  useEffect(() => () => clearCloseResetTimer(), []);
+
   const openCreate = () => {
+    clearCloseResetTimer();
     const initial = makeDefaultForm();
     setForm({
       ...initial,
@@ -604,10 +639,11 @@ export function ForwardGroupsContent({
   }, [createRequestKey]);
 
   const openEdit = (group: any) => {
+    clearCloseResetTimer();
     const groupMode = normalizeGroupMode(group.groupMode);
     setForm({
       name: group.name || "",
-      remark: group.remark || "",
+      remark: isCollectionMode(groupMode) ? "" : group.remark || "",
       groupMode,
       groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
       domain: group.domain || "",
@@ -616,6 +652,7 @@ export function ForwardGroupsContent({
       recoverSeconds: String(Number(group.recoverSeconds || 120)),
       chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: group.chinaHealthCheckTarget || "",
+      ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
       autoFailback: !!group.autoFailback,
       isEnabled: !!group.isEnabled,
       members: (group.members || []).map((member: any) => ({
@@ -645,8 +682,7 @@ export function ForwardGroupsContent({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
-      setShowDialog(false);
-      resetForm();
+      closeDialog();
       toast.success("转发组已创建");
     },
     onError: (e) => toast.error(e.message || "创建失败"),
@@ -656,8 +692,7 @@ export function ForwardGroupsContent({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
-      setShowDialog(false);
-      resetForm();
+      closeDialog();
       toast.success("转发组已更新");
     },
     onError: (e) => toast.error(e.message || "更新失败"),
@@ -830,7 +865,7 @@ export function ForwardGroupsContent({
       return toast.error("请至少添加一个成员");
     }
     if ((isFailoverMode || isEntryGroup) && !form.domain.trim()) {
-      return toast.error(isEntryGroup ? "入口组需要指定 DDNS 域名" : "请填写 DDNS 域名");
+      return toast.error(isEntryGroup ? "入口组需要指定入口域名" : "请填写 DDNS 域名");
     }
     const failoverSeconds = Number(form.failoverSeconds);
     const recoverSeconds = Number(form.recoverSeconds);
@@ -847,7 +882,7 @@ export function ForwardGroupsContent({
     const payload = {
       ...form,
       name: form.name.trim(),
-      remark: form.remark.trim() || null,
+      remark: isEntryGroup || isExitGroup ? null : form.remark.trim() || null,
       groupType: isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
@@ -855,6 +890,7 @@ export function ForwardGroupsContent({
       recoverSeconds,
       chinaHealthCheckEnabled: supportsChinaHealth && form.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: supportsChinaHealth && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
+      ddnsAutoResolveEnabled: isEntryGroup ? form.ddnsAutoResolveEnabled : true,
       members: form.members.map((member, index) => ({
         memberType: member.memberType,
         hostId: member.hostId,
@@ -1103,7 +1139,7 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
-                      {group.remark ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
+                      {shouldShowGroupRemark(group) ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1181,7 +1217,7 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
-                      {group.remark ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
+                      {shouldShowGroupRemark(group) ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1268,7 +1304,7 @@ export function ForwardGroupsContent({
                       <TableCell>
                         <div className="font-medium">{group.name}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
-                        {group.remark ? <div className="mt-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</div> : null}
+                        {shouldShowGroupRemark(group) ? <div className="mt-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</div> : null}
                       </TableCell>
                       <TableCell>
                         {groupKindBadge(group)}
@@ -1347,10 +1383,7 @@ export function ForwardGroupsContent({
 
       <Dialog
         open={showDialog}
-        onOpenChange={(open) => {
-          if (!open) resetForm();
-          setShowDialog(open);
-        }}
+        onOpenChange={handleDialogOpenChange}
       >
         <DialogContent className={isChainMode ? "sm:max-w-xl" : "sm:max-w-3xl"}>
           <DialogHeader>
@@ -1385,14 +1418,14 @@ export function ForwardGroupsContent({
                 </Select>
               </div>
               )}
-              {form.groupMode !== "chain" && (
+              {form.groupMode !== "chain" && !isCollectionMode(form.groupMode) && (
                 <div className="space-y-2">
                   <Label>备注</Label>
                   <Input value={form.remark} maxLength={255} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="用于区分这组主机" />
                 </div>
               )}
               {isCollectionMode(form.groupMode) && (
-                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
                   <span className="text-sm">启用</span>
                   <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
                 </label>
@@ -1401,9 +1434,9 @@ export function ForwardGroupsContent({
 
             {(form.groupMode === "failover" || form.groupMode === "entry") && (
             <>
-            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
+            <div className={`grid gap-4 ${form.groupMode === "entry" ? "sm:grid-cols-[minmax(0,1fr)_120px_160px]" : "sm:grid-cols-[minmax(0,1fr)_160px]"}`}>
               <div className="space-y-2">
-                <Label>DDNS 域名</Label>
+                <Label>{form.groupMode === "entry" ? "入口域名" : "DDNS 域名"}</Label>
                 <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="例如 app.example.com" />
               </div>
               <div className="space-y-2">
@@ -1417,6 +1450,12 @@ export function ForwardGroupsContent({
                   </SelectContent>
                 </Select>
               </div>
+              {form.groupMode === "entry" && (
+                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
+                  <span className="text-sm">自动解析</span>
+                  <Switch checked={form.ddnsAutoResolveEnabled} onCheckedChange={(ddnsAutoResolveEnabled) => setForm({ ...form, ddnsAutoResolveEnabled })} />
+                </label>
+              )}
             </div>
 
             {form.groupMode === "failover" && <div className="space-y-2">
@@ -1457,7 +1496,14 @@ export function ForwardGroupsContent({
               </div>
             </div>}
 
-            {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+            {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
+              <Input
+                aria-label="入口健康度检测目标，留空默认 www.189.cn:80"
+                disabled={!form.chinaHealthCheckEnabled}
+                value={form.chinaHealthCheckTarget}
+                onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
+                placeholder="留空默认 www.189.cn:80"
+              />
               <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
                 <span className="text-sm">入口健康度检测</span>
                 <Switch
@@ -1465,13 +1511,6 @@ export function ForwardGroupsContent({
                   onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
                 />
               </label>
-              <Input
-                aria-label="入口健康度检测目标"
-                disabled={!form.chinaHealthCheckEnabled}
-                value={form.chinaHealthCheckTarget}
-                onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                placeholder="www.189.cn:80"
-              />
             </div>}
             </>
             )}
@@ -1572,7 +1611,7 @@ export function ForwardGroupsContent({
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)}>取消</Button>
+            <Button variant="outline" onClick={closeDialog}>取消</Button>
             <Button onClick={handleSubmit} disabled={isPending}>{isPending ? "保存中..." : editingId ? "保存" : "创建"}</Button>
           </DialogFooter>
         </DialogContent>

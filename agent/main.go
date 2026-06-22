@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.103"
+var Version = "2.2.104"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -2236,7 +2236,7 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 }
 
 func ensureCountingChainsIfNeeded(r runningRule) {
-	if r.ForwardType == "nftables" || r.ForwardType == "forwardx" || r.SourcePort <= 0 {
+	if r.ForwardType == "nftables" || r.SourcePort <= 0 {
 		return
 	}
 	signature := fmt.Sprintf("%d|%s|%d|%s", r.SourcePort, r.TargetIP, r.TargetPort, r.Protocol)

@@ -152,7 +152,7 @@ const tables: TableDef[] = [
       c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true }),
       c("targetPort", "int", { notNull: true, default: 1 }), c("failoverSeconds", "int", { notNull: true, default: 60 }),
       c("recoverSeconds", "int", { notNull: true, default: 120 }), c("chinaHealthCheckEnabled", "bool", { notNull: true, default: false }), c("chinaHealthCheckTarget", "text"),
-      c("autoFailback", "bool", { notNull: true, default: true }),
+      c("ddnsAutoResolveEnabled", "bool", { notNull: true, default: true }), c("autoFailback", "bool", { notNull: true, default: true }),
       c("isEnabled", "bool", { notNull: true, default: true }), c("activeMemberId", "int"), c("lastDdnsValue", "text"),
       c("lastDdnsAt", "epoch"), c("lastFailoverAt", "epoch"), c("lastStatus", "varchar", { length: 32, notNull: true, default: "unknown" }),
       c("lastMessage", "text"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),

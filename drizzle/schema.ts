@@ -299,6 +299,7 @@ export const forwardGroups = table("forward_groups", {
   recoverSeconds: int("recoverSeconds").notNull().default(120),
   chinaHealthCheckEnabled: boolean("chinaHealthCheckEnabled").notNull().default(false),
   chinaHealthCheckTarget: text("chinaHealthCheckTarget"),
+  ddnsAutoResolveEnabled: boolean("ddnsAutoResolveEnabled").notNull().default(true),
   autoFailback: boolean("autoFailback").notNull().default(true),
   isEnabled: boolean("isEnabled").notNull().default(true),
   activeMemberId: int("activeMemberId"),

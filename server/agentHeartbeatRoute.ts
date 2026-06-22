@@ -1719,7 +1719,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const udpFlag = rule.protocol === "udp" || rule.protocol === "both" ? "--udp" : "";
           // 如果主机配置了网卡，realm 使用 --interface 绑定
           const ifaceFlag = hostInterface ? `--interface ${hostInterface}` : "";
-          const realmCmd = `/usr/local/bin/realm -l 0.0.0.0:${rule.sourcePort} -r ${processTarget(rule)}:${rule.targetPort} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
+          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${processTarget(rule)}:${rule.targetPort} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
           const unit = [
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -1778,7 +1778,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat TCP-LISTEN:${rule.sourcePort},fork,reuseaddr TCP:${processTarget(rule)}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat TCP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 TCP:${processTarget(rule)}:${rule.targetPort}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -1794,7 +1794,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat UDP-LISTEN:${rule.sourcePort},fork,reuseaddr UDP:${processTarget(rule)}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat UDP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 UDP:${processTarget(rule)}:${rule.targetPort}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -1825,7 +1825,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             });
           } else {
             const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
-            const socatCmd = `/usr/bin/socat ${protoUpper}-LISTEN:${rule.sourcePort},fork,reuseaddr ${protoUpper}:${processTarget(rule)}:${rule.targetPort}`;
+            const listenProto = protoUpper === "UDP" ? "UDP6" : "TCP6";
+            const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${protoUpper}:${processTarget(rule)}:${rule.targetPort}`;
             const unit = [
               "[Unit]",
               `Description=ForwardX socat ${rule.protocol} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
