@@ -494,13 +494,40 @@ func parsePingLatencyMs(output string) int {
 }
 
 func iptablesCounterSnapshot() map[string]trafficCounters {
+	chainCounters := map[string]map[string]uint64{}
+	parseIptablesCounterSnapshot("iptables", chainCounters)
+	parseIptablesCounterSnapshot("ip6tables", chainCounters)
+
 	out := map[string]trafficCounters{}
-	raw, err := exec.Command("iptables", "-t", "mangle", "-nvxL").Output()
+	for marker, byChain := range chainCounters {
+		parts := strings.SplitN(marker, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		port, direction := parts[0], parts[1]
+		maxBytes := uint64(0)
+		for _, value := range byChain {
+			if value > maxBytes {
+				maxBytes = value
+			}
+		}
+		counters := out[port]
+		if direction == "in" {
+			counters.In = maxBytes
+		} else {
+			counters.Out = maxBytes
+		}
+		out[port] = counters
+	}
+	return out
+}
+
+func parseIptablesCounterSnapshot(binary string, chainCounters map[string]map[string]uint64) {
+	raw, err := exec.Command(binary, "-t", "mangle", "-nvxL").Output()
 	if err != nil {
-		return out
+		return
 	}
 	markerPattern := regexp.MustCompile(`fwx-stat-([0-9]+):(in|out)`)
-	chainCounters := map[string]map[string]uint64{}
 	currentChain := ""
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -532,27 +559,6 @@ func iptablesCounterSnapshot() map[string]trafficCounters {
 		}
 		chainCounters[marker][currentChain] += bytesValue
 	}
-	for marker, byChain := range chainCounters {
-		parts := strings.SplitN(marker, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		port, direction := parts[0], parts[1]
-		maxBytes := uint64(0)
-		for _, value := range byChain {
-			if value > maxBytes {
-				maxBytes = value
-			}
-		}
-		counters := out[port]
-		if direction == "in" {
-			counters.In = maxBytes
-		} else {
-			counters.Out = maxBytes
-		}
-		out[port] = counters
-	}
-	return out
 }
 
 func nftablesCounterSnapshot() map[int]trafficCounters {
@@ -667,14 +673,13 @@ func conntrackConnections(port string) uint64 {
 }
 
 func iptablesBytes(port string, direction string) uint64 {
-	marker := "fwx-stat-" + port + ":" + direction
-	parentChains := "PREROUTING INPUT FORWARD OUTPUT POSTROUTING"
-	cmd := fmt.Sprintf(`for c in %s; do iptables -t mangle -nvxL "$c" 2>/dev/null | awk -v marker=%s '$0 ~ marker {s+=$2} END{print s+0}'; done | sort -nr | head -n1`, parentChains, shellQuote(marker))
-	out, err := exec.Command("sh", "-lc", cmd).Output()
-	if err == nil {
-		if v, parseErr := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64); parseErr == nil && v > 0 {
-			return v
+	counters := iptablesCounterSnapshot()[port]
+	if direction == "out" {
+		if counters.Out > 0 {
+			return counters.Out
 		}
+	} else if counters.In > 0 {
+		return counters.In
 	}
 	legacyChain := "FWX_IN_" + port
 	if direction == "out" {
@@ -684,14 +689,37 @@ func iptablesBytes(port string, direction string) uint64 {
 }
 
 func iptablesLegacyBytes(chain string) uint64 {
-	parentChains := "PREROUTING INPUT FORWARD OUTPUT POSTROUTING"
-	cmd := fmt.Sprintf(`for c in %s; do iptables -t mangle -nvxL "$c" 2>/dev/null | awk -v ch=%s '$0 ~ ch {s+=$2} END{print s+0}'; done | sort -nr | head -n1`, parentChains, shellQuote(chain))
-	out, err := exec.Command("sh", "-lc", cmd).Output()
-	if err != nil {
-		return 0
+	parentChains := []string{"PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"}
+	byChain := map[string]uint64{}
+	for _, binary := range []string{"iptables", "ip6tables"} {
+		for _, parent := range parentChains {
+			raw, err := exec.Command(binary, "-t", "mangle", "-nvxL", parent).Output()
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(raw), "\n") {
+				if !strings.Contains(line, chain) {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				value, err := strconv.ParseUint(fields[1], 10, 64)
+				if err != nil {
+					continue
+				}
+				byChain[parent] += value
+			}
+		}
 	}
-	v, _ := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
-	return v
+	maxBytes := uint64(0)
+	for _, value := range byChain {
+		if value > maxBytes {
+			maxBytes = value
+		}
+	}
+	return maxBytes
 }
 
 func nftablesBytes(ruleID int, port string) (uint64, uint64) {

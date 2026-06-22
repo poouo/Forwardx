@@ -14,7 +14,7 @@ import {
 import { clearTunnelRuntimeStatusForHost, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
-import { resolve4 } from "dns/promises";
+import { resolve4, resolve6 } from "dns/promises";
 import { takeLookingGlassAgentTasks } from "./lookingGlassAgentTasks";
 import { takeIperf3AgentTasks } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest, getResolvedAgentToken } from "./agentAuth";
@@ -23,11 +23,10 @@ import {
   buildCountingChainCmds,
   buildCountingCleanupCmds,
   buildIptablesForwardCleanupCmds,
+  buildIptablesForwardCmds,
   buildManagedPortCleanupCmds,
   buildNftCleanupCmds,
   buildNftForwardCmds,
-  ipIfMissing,
-  ipIfMissingT,
   killByPatternCmd,
   removeManagedServiceCmd,
   restartManagedServiceIfConfigChangedCmd,
@@ -109,6 +108,10 @@ async function resolveTargetIp(raw: string): Promise<string> {
   if (isIP(trimmed)) return trimmed;
   try {
     const ips = await resolve4(trimmed);
+    if (ips.length > 0) return ips[0];
+  } catch { /* fall through */ }
+  try {
+    const ips = await resolve6(trimmed);
     if (ips.length > 0) return ips[0];
   } catch { /* fall through */ }
   return trimmed; // 解析失败返回原值
@@ -279,30 +282,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // DNS 变更的规则：生成清理旧 IP 规则的动作
     const buildDnsChangeCleanup = (rule: any, oldIp: string): string[] => {
       const port = rule.sourcePort;
-      const proto = rule.protocol === "both" ? "tcp" : (rule.protocol || "tcp");
       const cmds: string[] = [];
       if (rule.forwardType === "iptables") {
-        cmds.push(`iptables -t nat -D PREROUTING -p ${proto} --dport ${port} -j DNAT --to-destination ${oldIp}:${rule.targetPort} 2>/dev/null || true`);
-        cmds.push(`iptables -t nat -D POSTROUTING -p ${proto} -d ${oldIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-        if (rule.protocol === "both") {
-          cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination ${oldIp}:${rule.targetPort} 2>/dev/null || true`);
-          cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${oldIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-        }
-        cmds.push(`iptables -D FORWARD -p ${proto} -d ${oldIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
-        cmds.push(`iptables -D FORWARD -p ${proto} -s ${oldIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`);
-        // 清理旧 IP 对应的 mangle FORWARD 计数规则
-        cmds.push(`iptables -t mangle -D FORWARD -p tcp -d ${oldIp} --dport ${rule.targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
-        cmds.push(`iptables -t mangle -D FORWARD -p udp -d ${oldIp} --dport ${rule.targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
-        cmds.push(`iptables -t mangle -D FORWARD -p tcp -s ${oldIp} --sport ${rule.targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
-        cmds.push(`iptables -t mangle -D FORWARD -p udp -s ${oldIp} --sport ${rule.targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
+        cmds.push(...buildIptablesForwardCleanupCmds({ ...rule, targetIp: oldIp }));
       } else if (rule.forwardType === "nftables") {
-        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx prerouting 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx prerouting handle "$h" 2>/dev/null || true; done`);
-        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx postrouting 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx postrouting handle "$h" 2>/dev/null || true; done`);
-        cmds.push(`nft list table inet forwardx >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet forwardx forward 2>/dev/null | awk '/fwx-rule-${rule.id}/ {print $NF}'); do nft delete rule inet forwardx forward handle "$h" 2>/dev/null || true; done`);
+        cmds.push(...buildNftCleanupCmds(rule));
       }
-      // 刷新计数链（apply 时会重建）
-      cmds.push(`iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`);
-      cmds.push(`iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`);
+      cmds.push(...buildCountingCleanupCmds(port, oldIp, rule.targetPort, rule.protocol));
       return cmds;
     };
     const failoverProxyHandlesTargetDns = (rule: any) => (
@@ -525,32 +511,49 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         maxIPs: Math.max(0, Number(user?.maxIPs) || 0),
       };
     };
+    type AccessLimitBinary = "iptables" | "ip6tables";
+    const accessLimitBinaries: AccessLimitBinary[] = ["iptables", "ip6tables"];
+    const accessLimitCommand = (binary: AccessLimitBinary, command: string) => (
+      binary === "ip6tables"
+        ? `command -v ip6tables >/dev/null 2>&1 && { ${command}; } || true`
+        : command
+    );
     const accessScopeName = (scope: string) => `FWX_LIMIT_${scope.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 40)}`;
     const buildAccessLimitCleanupCmds = (port: number, scope: string): string[] => {
       const chain = accessScopeName(scope);
-      return [
-        `iptables -D INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || true`,
-        `iptables -D FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || true`,
-      ];
+      const cmds: string[] = [];
+      for (const binary of accessLimitBinaries) {
+        cmds.push(
+          accessLimitCommand(binary, `while ${binary} -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null; do ${binary} -D INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || break; done`),
+          accessLimitCommand(binary, `while ${binary} -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null; do ${binary} -D FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || break; done`),
+        );
+      }
+      return cmds;
     };
     const buildAccessLimitCmds = (port: number, scope: string, limits: { maxConnections?: number; maxIPs?: number }): string[] => {
       const maxConnections = Math.max(0, Number(limits.maxConnections || 0));
       const maxIPs = Math.max(0, Number(limits.maxIPs || 0));
       if (maxConnections <= 0 && maxIPs <= 0) return buildAccessLimitCleanupCmds(port, scope);
       const chain = accessScopeName(scope);
-      const cmds = [
-        `iptables -N ${chain} 2>/dev/null || true`,
-        `iptables -F ${chain} 2>/dev/null || true`,
-      ];
-      if (maxConnections > 0) {
-        cmds.push(`iptables -A ${chain} -p tcp -m connlimit --connlimit-above ${maxConnections} --connlimit-mask 0 -j REJECT --reject-with tcp-reset`);
+      const cmds = buildAccessLimitCleanupCmds(port, scope);
+      for (const binary of accessLimitBinaries) {
+        const mask = binary === "ip6tables" ? 128 : 32;
+        cmds.push(
+          accessLimitCommand(binary, `${binary} -N ${chain} 2>/dev/null || true`),
+          accessLimitCommand(binary, `${binary} -F ${chain} 2>/dev/null || true`),
+        );
+        if (maxConnections > 0) {
+          cmds.push(accessLimitCommand(binary, `${binary} -A ${chain} -p tcp -m connlimit --connlimit-above ${maxConnections} --connlimit-mask 0 -j REJECT --reject-with tcp-reset`));
+        }
+        if (maxIPs > 0) {
+          cmds.push(accessLimitCommand(binary, `${binary} -A ${chain} -p tcp -m connlimit --connlimit-above ${maxIPs} --connlimit-mask ${mask} -j REJECT --reject-with tcp-reset`));
+        }
+        cmds.push(
+          accessLimitCommand(binary, `${binary} -A ${chain} -j RETURN`),
+          accessLimitCommand(binary, `${binary} -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || ${binary} -I INPUT -p tcp --dport ${port} -j ${chain}`),
+          accessLimitCommand(binary, `${binary} -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || ${binary} -I FORWARD -p tcp --dport ${port} -j ${chain}`),
+        );
       }
-      if (maxIPs > 0) {
-        cmds.push(`iptables -A ${chain} -p tcp -m connlimit --connlimit-above ${maxIPs} --connlimit-mask 32 -j REJECT --reject-with tcp-reset`);
-      }
-      cmds.push(`iptables -A ${chain} -j RETURN`);
-      cmds.push(`iptables -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ${chain}`);
-      cmds.push(`iptables -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || iptables -I FORWARD -p tcp --dport ${port} -j ${chain}`);
       return cmds;
     };
     const accessScopeForRule = (rule: any) => (
@@ -1320,20 +1323,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const buildDisabledRuleRemovalAction = async (rule: any) => {
       const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
       if (rule.forwardType === "iptables") {
-        const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
-        const cmds: string[] = [];
-        cmds.push(`iptables -t nat -D PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
-        cmds.push(`iptables -t nat -D POSTROUTING -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-        if (rule.protocol === "both") {
-          cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
-          cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-        }
-        cmds.push(`iptables -D FORWARD -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
-        cmds.push(`iptables -D FORWARD -p ${proto} -s ${rule.targetIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`);
-        cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
-        cmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
-        cmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
-        cmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
+        const cmds: string[] = [
+          ...buildIptablesForwardCleanupCmds(rule),
+          `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
+          `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
+          ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+          ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
+        ];
         return {
           ruleId: rule.id,
           op: "remove",
@@ -1690,27 +1686,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             failover: guardFailover,
           });
         } else if (rule.forwardType === "iptables") {
-          const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
-          // 必须先启用内核转发，否则 DNAT 后数据包不会被路由到目标主机
-          cmds.push(`sysctl -w net.ipv4.ip_forward=1 >/dev/null`);
-          // 避免重复添加：先反向清理同 sourcePort 老规则
-          cmds.push(`while iptables -t nat -C PREROUTING -p tcp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null; do iptables -t nat -D PREROUTING -p tcp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort}; done`);
-          cmds.push(`while iptables -t nat -C PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null; do iptables -t nat -D PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort}; done`);
-
-          cmds.push(ipIfMissingT("nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort}`));
-          cmds.push(ipIfMissingT("nat", `POSTROUTING -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
-          if (rule.protocol === "both") {
-            cmds.push(ipIfMissingT("nat", `PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort}`));
-            cmds.push(ipIfMissingT("nat", `POSTROUTING -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
-          }
-          // FORWARD 默认 DROP 的发行版（如 Debian/Docker host）需要显式放行
-          cmds.push(ipIfMissing(`FORWARD -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT`));
-          cmds.push(ipIfMissing(`FORWARD -p ${proto} -s ${rule.targetIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT`));
-          if (rule.protocol === "both") {
-            cmds.push(ipIfMissing(`FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT`));
-            cmds.push(ipIfMissing(`FORWARD -p udp -s ${rule.targetIp} --sport ${rule.targetPort} -j ACCEPT`));
-          }
-          // 挂入 mangle 计数链，为 Agent 采样提供准确流量计数器
+          cmds.push(...buildIptablesForwardCmds(rule));
           for (const c of buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol)) cmds.push(c);
           for (const c of buildRuleAccessLimitCmds(rule)) cmds.push(c);
           actions.push({
@@ -1961,36 +1937,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } else if (!rule.isEnabled && rule.isRunning) {
         const cmds: string[] = [];
         if (rule.forwardType === "iptables") {
-          const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
-          cmds.push(`iptables -t nat -D PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
-          cmds.push(`iptables -t nat -D POSTROUTING -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-          if (rule.protocol === "both") {
-            cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
-            cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-          }
-          cmds.push(`iptables -D FORWARD -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
-          cmds.push(`iptables -D FORWARD -p ${proto} -s ${rule.targetIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`);
-          // 清理 conntrack 流量状态文件
-          cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
-          cmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
-          // 兼容清理旧版 mangle/filter 表计数链
-          cmds.push(`iptables -t mangle -D PREROUTING -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -D PREROUTING -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -D POSTROUTING -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -D POSTROUTING -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -t mangle -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -D FORWARD -p tcp -d ${rule.targetIp} --dport ${rule.targetPort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -D FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -D FORWARD -p tcp -s ${rule.targetIp} --sport ${rule.targetPort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -D FORWARD -p udp -s ${rule.targetIp} --sport ${rule.targetPort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          cmds.push(`iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) cmds.push(c);
+          cmds.push(
+            ...buildIptablesForwardCleanupCmds(rule),
+            `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
+            `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
+            ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
+          );
           actions.push({
             ruleId: rule.id,
             op: "remove",
@@ -2018,23 +1971,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
               `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
-              // 兼容清理旧版 mangle/filter 表计数链
-              `iptables -t mangle -D PREROUTING -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -D PREROUTING -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -D POSTROUTING -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -D POSTROUTING -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -t mangle -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -D INPUT -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -D INPUT -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -D OUTPUT -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -D OUTPUT -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
-              `iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`,
+              ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
             ],
           });
@@ -2053,23 +1990,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
           removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
-          // 兼容清理旧版 mangle/filter 表计数链
-          removeCmds.push(`iptables -t mangle -D PREROUTING -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -D PREROUTING -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -D POSTROUTING -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -D POSTROUTING -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -t mangle -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -D INPUT -p tcp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -D INPUT -p udp --dport ${rule.sourcePort} -j FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -D OUTPUT -p tcp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -D OUTPUT -p udp --sport ${rule.sourcePort} -j FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -F FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -X FWX_IN_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -F FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
-          removeCmds.push(`iptables -X FWX_OUT_${rule.sourcePort} 2>/dev/null || true`);
+          removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
           for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) removeCmds.push(c);
           actions.push({
             ruleId: rule.id,

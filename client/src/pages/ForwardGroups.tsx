@@ -72,7 +72,7 @@ import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } 
 import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
 
 type GroupType = "host" | "tunnel";
-type GroupMode = "failover" | "chain";
+type GroupMode = "failover" | "chain" | "entry" | "exit";
 
 type MemberForm = {
   key: string;
@@ -85,6 +85,7 @@ type MemberForm = {
 
 type GroupForm = {
   name: string;
+  remark: string;
   groupMode: GroupMode;
   groupType: GroupType;
   domain: string;
@@ -100,6 +101,7 @@ type GroupForm = {
 
 const makeDefaultForm = (): GroupForm => ({
   name: "",
+  remark: "",
   groupMode: "failover",
   groupType: "host",
   domain: "",
@@ -115,6 +117,15 @@ const makeDefaultForm = (): GroupForm => ({
 
 function memberKey(memberType: GroupType, id: number) {
   return `${memberType}-${id}`;
+}
+
+function normalizeGroupMode(mode: unknown): GroupMode {
+  const value = String(mode || "failover");
+  return value === "chain" || value === "entry" || value === "exit" ? value : "failover";
+}
+
+function isCollectionMode(mode: GroupMode) {
+  return mode === "entry" || mode === "exit";
 }
 
 function isChinaHealthTargetValid(value: string) {
@@ -541,11 +552,18 @@ export function ForwardGroupsContent({
 
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
-  const failoverGroups = useMemo(() => (groups || []).filter((group: any) => group.groupMode !== "chain"), [groups]);
-  const chainGroups = useMemo(() => (groups || []).filter((group: any) => group.groupMode === "chain"), [groups]);
-  const visibleGroups = activeGroupMode === "chain" ? chainGroups : failoverGroups;
-  const activeCount = failoverGroups.filter((g: any) => g.isEnabled && g.lastStatus === "healthy").length;
-  const chainCount = chainGroups.filter((g: any) => g.isEnabled).length;
+  const groupsByMode = useMemo(() => {
+    const next: Record<GroupMode, any[]> = { failover: [], chain: [], entry: [], exit: [] };
+    for (const group of groups || []) next[normalizeGroupMode(group.groupMode)].push(group);
+    return next;
+  }, [groups]);
+  const visibleGroups = groupsByMode[activeGroupMode] || [];
+  const modeTotal = visibleGroups.length;
+  const activeCount = visibleGroups.filter((g: any) => {
+    if (!g.isEnabled) return false;
+    if (activeGroupMode === "failover" || activeGroupMode === "entry") return g.lastStatus === "healthy";
+    return true;
+  }).length;
   const groupPagination = usePersistentPagination(visibleGroups, {
     storageKey: `forwardx.forwardGroups.${activeGroupMode}.page`,
     pageSize: 12,
@@ -570,8 +588,8 @@ export function ForwardGroupsContent({
       ...initial,
       groupMode: activeGroupMode,
       groupType: "host",
-      domain: activeGroupMode === "chain" ? "" : initial.domain,
-      recordType: activeGroupMode === "chain" ? "A" : initial.recordType,
+      domain: activeGroupMode === "failover" || activeGroupMode === "entry" ? initial.domain : "",
+      recordType: activeGroupMode === "chain" || activeGroupMode === "exit" ? "A" : initial.recordType,
     });
     setEditingId(null);
     setDragMemberKey(null);
@@ -586,10 +604,12 @@ export function ForwardGroupsContent({
   }, [createRequestKey]);
 
   const openEdit = (group: any) => {
+    const groupMode = normalizeGroupMode(group.groupMode);
     setForm({
       name: group.name || "",
-      groupMode: group.groupMode === "chain" ? "chain" : "failover",
-      groupType: group.groupType === "tunnel" ? "tunnel" : "host",
+      remark: group.remark || "",
+      groupMode,
+      groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
       domain: group.domain || "",
       recordType: group.recordType || "A",
       failoverSeconds: String(Number(group.failoverSeconds || 60)),
@@ -670,7 +690,7 @@ export function ForwardGroupsContent({
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
-  const effectiveGroupType = form.groupMode === "chain" ? "host" : form.groupType;
+  const effectiveGroupType = form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
   const availableMemberOptions = effectiveGroupType === "host"
     ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "", host: h }))
     : (tunnels || []).map((t: any) => ({
@@ -681,8 +701,8 @@ export function ForwardGroupsContent({
 
   const addMember = (id: number) => {
     if (!id) return;
-    if (form.groupMode === "chain" && form.members.length >= 5) {
-      toast.error("端口转发链最多支持 5 台主机");
+    if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= 5) {
+      toast.error(form.groupMode === "chain" ? "端口转发链最多支持 5 台主机" : "入口组/出口组最多支持 5 台主机");
       return;
     }
     const effectiveType = effectiveGroupType;
@@ -700,6 +720,7 @@ export function ForwardGroupsContent({
           memberType: effectiveType,
           hostId: effectiveType === "host" ? id : null,
           tunnelId: effectiveType === "tunnel" ? id : null,
+          connectHost: null,
           isEnabled: true,
         },
       ],
@@ -708,6 +729,22 @@ export function ForwardGroupsContent({
 
   const removeMember = (key: string) => {
     setForm({ ...form, members: form.members.filter((m) => m.key !== key) });
+  };
+
+  const updateExitMemberUsePrivate = (key: string, checked: boolean) => {
+    setForm((prev) => ({
+      ...prev,
+      members: prev.members.map((member) => {
+        if (member.key !== key) return member;
+        const host = hostById.get(Number(member.hostId || 0));
+        const privateAddr = hostPrivateAddress(host);
+        if (checked && !privateAddr) {
+          toast.error("该主机未配置隧道内网 IP");
+          return member;
+        }
+        return { ...member, connectHost: checked ? privateAddr : null };
+      }),
+    }));
   };
 
   const updateChainMemberIds = (ids: number[]) => {
@@ -779,11 +816,21 @@ export function ForwardGroupsContent({
   };
 
   const handleSubmit = () => {
-    if (!form.name.trim()) return toast.error("请填写组名称");
-    if (form.groupMode === "chain") {
+    const isFailoverMode = form.groupMode === "failover";
+    const isChainGroup = form.groupMode === "chain";
+    const isEntryGroup = form.groupMode === "entry";
+    const isExitGroup = form.groupMode === "exit";
+    const supportsChinaHealth = isFailoverMode || isEntryGroup;
+    if (!form.name.trim()) return toast.error(isChainGroup ? "请填写链名称" : "请填写组名称");
+    if (isChainGroup) {
       if (form.members.length < 2 || form.members.length > 5) return toast.error("端口转发链需要配置 2-5 台主机");
+    } else if (isEntryGroup || isExitGroup) {
+      if (form.members.length < 1 || form.members.length > 5) return toast.error(isEntryGroup ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
     } else if (form.members.length === 0) {
       return toast.error("请至少添加一个成员");
+    }
+    if ((isFailoverMode || isEntryGroup) && !form.domain.trim()) {
+      return toast.error(isEntryGroup ? "入口组需要指定 DDNS 域名" : "请填写 DDNS 域名");
     }
     const failoverSeconds = Number(form.failoverSeconds);
     const recoverSeconds = Number(form.recoverSeconds);
@@ -794,24 +841,26 @@ export function ForwardGroupsContent({
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
     const chinaHealthTarget = form.chinaHealthCheckTarget.trim();
-    if (form.groupMode === "failover" && form.chinaHealthCheckEnabled && !isChinaHealthTargetValid(chinaHealthTarget)) {
-      return toast.error("国内健康检测目标格式不正确");
+    if (supportsChinaHealth && form.chinaHealthCheckEnabled && !isChinaHealthTargetValid(chinaHealthTarget)) {
+      return toast.error("入口健康度检测目标格式不正确");
     }
     const payload = {
       ...form,
       name: form.name.trim(),
-      groupType: form.groupMode === "chain" ? "host" : form.groupType,
-      domain: form.groupMode === "chain" ? null : form.domain.trim() || null,
+      remark: form.remark.trim() || null,
+      groupType: isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
+      domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
+      recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
       recoverSeconds,
-      chinaHealthCheckEnabled: form.groupMode === "failover" && form.chinaHealthCheckEnabled,
-      chinaHealthCheckTarget: form.groupMode === "failover" && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
+      chinaHealthCheckEnabled: supportsChinaHealth && form.chinaHealthCheckEnabled,
+      chinaHealthCheckTarget: supportsChinaHealth && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
       members: form.members.map((member, index) => ({
         memberType: member.memberType,
         hostId: member.hostId,
         tunnelId: member.tunnelId,
-        connectHost: form.groupMode === "chain" ? member.connectHost || null : null,
-        isEnabled: member.isEnabled,
+        connectHost: isChainGroup || isExitGroup ? member.connectHost || null : null,
+        isEnabled: isChainGroup ? true : member.isEnabled,
         priority: index,
       })),
     };
@@ -820,15 +869,19 @@ export function ForwardGroupsContent({
   };
 
   const groupStatusBadge = (group: any) => {
-    if (group.groupMode === "chain") {
-      if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
-      return <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-500/20 dark:hover:text-sky-100">链路</Badge>;
-    }
+    const mode = normalizeGroupMode(group.groupMode);
     if (!group.isEnabled) return <Badge variant="outline">停用</Badge>;
+    if (mode === "chain") return <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-500/20 dark:hover:text-sky-100">链路</Badge>;
+    if (mode === "entry") {
+      if (group.lastStatus === "error") return <Badge variant="destructive">DDNS 异常</Badge>;
+      if (group.lastStatus === "healthy") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">已同步</Badge>;
+      return <Badge variant="secondary">等待同步</Badge>;
+    }
+    if (mode === "exit") return <Badge className="border-indigo-500/20 bg-indigo-500/10 text-indigo-700 hover:bg-indigo-500/20 hover:text-indigo-900 dark:text-indigo-300 dark:hover:bg-indigo-500/20 dark:hover:text-indigo-100">可选出口</Badge>;
     if (group.lastStatus === "healthy") return <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 hover:text-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-500/20 dark:hover:text-emerald-100">健康</Badge>;
     if (group.lastStatus === "down") return <Badge variant="destructive">不可用</Badge>;
     if (group.lastStatus === "error") return <Badge variant="destructive">DDNS 异常</Badge>;
-    return <Badge variant="secondary">等待检测</Badge>;
+    return <Badge variant="secondary">等待故障转移检查</Badge>;
   };
 
   const memberLabel = (member: any) => {
@@ -846,13 +899,41 @@ export function ForwardGroupsContent({
   };
 
   const groupKindBadge = (group: any) => {
-    if (group.groupMode === "chain") return <Badge variant="outline">端口转发链</Badge>;
+    const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "chain") return <Badge variant="outline">端口转发链</Badge>;
+    if (mode === "entry") return <Badge variant="outline">入口组</Badge>;
+    if (mode === "exit") return <Badge variant="outline">出口组</Badge>;
     return <Badge variant="outline">{group.groupType === "tunnel" ? "隧道高可用" : "主机高可用"}</Badge>;
   };
 
-  const groupMemberTitle = (group: any) => group.groupMode === "chain" ? "链路顺序" : "成员优先级";
+  const groupMemberTitle = (group: any) => {
+    const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "chain") return "链路顺序";
+    if (mode === "entry") return "入口主机";
+    if (mode === "exit") return "出口主机";
+    return "成员优先级";
+  };
 
-  const groupDdnsText = (group: any) => group.groupMode === "chain" ? "不使用" : group.domain || "未配置";
+  const groupStatusMessage = (group: any) => {
+    const mode = normalizeGroupMode(group.groupMode);
+    if (group.lastMessage) return group.lastMessage;
+    if (mode === "chain") return "等待转发规则引用";
+    if (mode === "entry") return "等待 DDNS 同步";
+    if (mode === "exit") return "出口组已保存，可作为隧道出口使用";
+    return "等待故障转移检查";
+  };
+
+  const groupDdnsText = (group: any) => {
+    const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "chain" || mode === "exit") return "不使用";
+    return group.domain || "未配置";
+  };
+
+  const memberDecoratedLabel = (group: any, member: any, index: number) => {
+    const prefix = normalizeGroupMode(group.groupMode) === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : "";
+    const suffix = normalizeGroupMode(group.groupMode) === "exit" && member.connectHost ? " · 内网" : "";
+    return `${index + 1}. ${prefix}${memberLabel(member)}${suffix}`;
+  };
 
   const renderChainLatencySummary = (group: any) => {
     if (group.groupMode !== "chain") return <span className="text-muted-foreground">--</span>;
@@ -895,14 +976,62 @@ export function ForwardGroupsContent({
     storeForwardGroupViewMode(nextViewMode);
   };
   const isChainMode = activeGroupMode === "chain";
-  const pageTitle = isChainMode ? "端口转发链" : "转发组";
-  const pageDescription = isChainMode ? "管理按主机顺序串联的端口转发链路。" : "管理可故障转移的入口组。";
-  const addButtonText = isChainMode ? "添加转发链" : "添加转发组";
-  const loadingLabel = isChainMode ? "正在加载端口转发链" : "正在加载转发组";
-  const emptyTitle = isChainMode ? "暂无端口转发链" : "暂无转发组";
-  const emptyDescription = isChainMode ? "创建后可在端口转发规则中作为链路使用" : "创建后可在转发规则中作为高可用入口使用";
-  const paginationItemName = isChainMode ? "条转发链" : "个转发组";
-  const dialogTitle = editingId ? (isChainMode ? "编辑端口转发链" : "编辑转发组") : (isChainMode ? "添加端口转发链" : "添加转发组");
+  const canManualCheck = activeGroupMode === "failover" || activeGroupMode === "entry";
+  const modeMeta: Record<GroupMode, {
+    title: string;
+    description: string;
+    addButtonText: string;
+    loadingLabel: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    paginationItemName: string;
+  }> = {
+    failover: {
+      title: "转发组",
+      description: "管理 DDNS 故障转移规则。",
+      addButtonText: "添加转发组",
+      loadingLabel: "正在加载转发组",
+      emptyTitle: "暂无转发组",
+      emptyDescription: "创建后可在转发规则中作为高可用入口使用",
+      paginationItemName: "个转发组",
+    },
+    chain: {
+      title: "端口转发链",
+      description: "管理按主机顺序串联的端口转发链路。",
+      addButtonText: "添加转发链",
+      loadingLabel: "正在加载端口转发链",
+      emptyTitle: "暂无端口转发链",
+      emptyDescription: "创建后可在端口转发规则中作为链路使用",
+      paginationItemName: "条转发链",
+    },
+    entry: {
+      title: "入口组",
+      description: "组合最多 5 台入口主机，并把它们同步到同一个 DDNS 域名。",
+      addButtonText: "添加入口组",
+      loadingLabel: "正在加载入口组",
+      emptyTitle: "暂无入口组",
+      emptyDescription: "创建后会把多台入口主机同步到同一个 DDNS 域名",
+      paginationItemName: "个入口组",
+    },
+    exit: {
+      title: "出口组",
+      description: "组合最多 5 台出口主机，供隧道作为固定出口选择。",
+      addButtonText: "添加出口组",
+      loadingLabel: "正在加载出口组",
+      emptyTitle: "暂无出口组",
+      emptyDescription: "创建后可在隧道出口下拉中选择使用",
+      paginationItemName: "个出口组",
+    },
+  };
+  const currentModeMeta = modeMeta[activeGroupMode];
+  const pageTitle = currentModeMeta.title;
+  const pageDescription = currentModeMeta.description;
+  const addButtonText = currentModeMeta.addButtonText;
+  const loadingLabel = currentModeMeta.loadingLabel;
+  const emptyTitle = currentModeMeta.emptyTitle;
+  const emptyDescription = currentModeMeta.emptyDescription;
+  const paginationItemName = currentModeMeta.paginationItemName;
+  const dialogTitle = editingId ? `编辑${currentModeMeta.title}` : `添加${currentModeMeta.title}`;
   const contentTransitionKey = `${activeGroupMode}-${isLoading ? "loading" : visibleGroups.length > 0 ? `list-${viewMode}` : "empty"}`;
 
   return (
@@ -922,15 +1051,15 @@ export function ForwardGroupsContent({
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Activity className={`h-3 w-3 ${isChainMode ? "text-sky-500" : "text-emerald-500"}`} />
             <AnimatedStatValue
-              value={isChainMode ? `${chainCount} / ${chainGroups.length} 启用` : `${activeCount} / ${failoverGroups.length} 健康`}
+              value={`${activeCount} / ${modeTotal} ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
               loading={isLoading || !groups}
-              cacheKey={isChainMode ? "forwardGroups.header.chainEnabled" : "forwardGroups.header.healthy"}
-              fallbackValue={isChainMode ? "0 / 0 启用" : "0 / 0 健康"}
+              cacheKey={`forwardGroups.header.${activeGroupMode}.active`}
+              fallbackValue={`0 / 0 ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
             />
           </Badge>
-          {!isChainMode && <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
+          {canManualCheck && <Button variant="outline" className="gap-2" onClick={() => runFailoverMutation.mutate()} disabled={runFailoverMutation.isPending}>
             {runFailoverMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            检查
+            {activeGroupMode === "entry" ? "同步" : "检查"}
           </Button>}
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
             <Button
@@ -973,7 +1102,8 @@ export function ForwardGroupsContent({
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
                         {groupKindBadge(group)}
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.lastMessage || "等待检查"}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
+                      {group.remark ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -997,7 +1127,7 @@ export function ForwardGroupsContent({
                             <XCircle className="h-3 w-3 shrink-0" />
                           ) : null}
                           <span className="truncate">
-                            {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
+                            {memberDecoratedLabel(group, member, index)}
                           </span>
                         </span>
                       )) : (
@@ -1008,12 +1138,12 @@ export function ForwardGroupsContent({
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "入口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "链路延迟" : "引用规则"}</p>
-                      <div className="mt-1">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</div>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -1050,7 +1180,8 @@ export function ForwardGroupsContent({
                         <p className="min-w-0 truncate font-medium">{group.name}</p>
                         {groupKindBadge(group)}
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.lastMessage || "等待检查"}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
+                      {group.remark ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1074,7 +1205,7 @@ export function ForwardGroupsContent({
                             <XCircle className="h-3 w-3 shrink-0" />
                           ) : null}
                           <span className="truncate">
-                            {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
+                            {memberDecoratedLabel(group, member, index)}
                           </span>
                         </span>
                       )) : (
@@ -1085,12 +1216,12 @@ export function ForwardGroupsContent({
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "入口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{group.groupMode === "chain" ? "链路延迟" : "引用规则"}</p>
-                      <div className="mt-1">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</div>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
+                      <div className="mt-1">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</div>
                     </div>
                   </div>
 
@@ -1125,8 +1256,8 @@ export function ForwardGroupsContent({
                     <TableHead>名称</TableHead>
                     <TableHead>类型</TableHead>
                     <TableHead>成员/链路</TableHead>
-                    <TableHead className="hidden md:table-cell">入口</TableHead>
-                    <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : "引用规则"}</TableHead>
+                    <TableHead className="hidden md:table-cell">{activeGroupMode === "exit" ? "出口" : activeGroupMode === "entry" ? "DDNS" : "入口"}</TableHead>
+                    <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : isCollectionMode(activeGroupMode) ? "用途" : "引用规则"}</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1136,7 +1267,8 @@ export function ForwardGroupsContent({
                       <TableCell>{groupStatusBadge(group)}</TableCell>
                       <TableCell>
                         <div className="font-medium">{group.name}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{group.lastMessage || (group.groupMode === "chain" ? "等待规则引用" : "等待故障转移检查")}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
+                        {group.remark ? <div className="mt-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</div> : null}
                       </TableCell>
                       <TableCell>
                         {groupKindBadge(group)}
@@ -1158,16 +1290,16 @@ export function ForwardGroupsContent({
                               ) : member.healthStatus === "unhealthy" ? (
                                 <XCircle className="h-3 w-3" />
                               ) : null}
-                              {index + 1}. {group.groupMode === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : ""}{memberLabel(member)}
+                              {memberDecoratedLabel(group, member, index)}
                             </span>
                           ))}
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <div className="text-sm">{group.groupMode === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : group.domain || "未配置域名"}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{group.groupMode === "chain" ? "规则使用时监听入口端口" : group.lastDdnsValue || "未切换"}</div>
+                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">{group.groupMode === "chain" ? renderChainLatencySummary(group) : Number(group.templateRuleCount || 0)}</TableCell>
+                      <TableCell className="hidden md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
@@ -1230,7 +1362,7 @@ export function ForwardGroupsContent({
                 <Label>{isChainMode ? "链名称" : "组名称"}</Label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"} />
               </div>
-              {!isChainMode && (
+              {form.groupMode === "failover" && (
               <div className="space-y-2">
                 <Label>组类型</Label>
                 <Select
@@ -1253,9 +1385,21 @@ export function ForwardGroupsContent({
                 </Select>
               </div>
               )}
+              {form.groupMode !== "chain" && (
+                <div className="space-y-2">
+                  <Label>备注</Label>
+                  <Input value={form.remark} maxLength={255} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="用于区分这组主机" />
+                </div>
+              )}
+              {isCollectionMode(form.groupMode) && (
+                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                  <span className="text-sm">启用</span>
+                  <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
+                </label>
+              )}
             </div>
 
-            {form.groupMode === "failover" && (
+            {(form.groupMode === "failover" || form.groupMode === "entry") && (
             <>
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
               <div className="space-y-2">
@@ -1275,7 +1419,7 @@ export function ForwardGroupsContent({
               </div>
             </div>
 
-            <div className="space-y-2">
+            {form.groupMode === "failover" && <div className="space-y-2">
               <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
@@ -1311,29 +1455,29 @@ export function ForwardGroupsContent({
                   </label>
                 </div>
               </div>
-            </div>
+            </div>}
 
-            <div className="grid gap-4 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+            {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
               <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                <span className="text-sm">国内健康性检测</span>
+                <span className="text-sm">入口健康度检测</span>
                 <Switch
                   checked={form.chinaHealthCheckEnabled}
                   onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
                 />
               </label>
               <Input
-                aria-label="国内健康检测目标"
+                aria-label="入口健康度检测目标"
                 disabled={!form.chinaHealthCheckEnabled}
                 value={form.chinaHealthCheckTarget}
                 onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                placeholder="www.189.cn"
+                placeholder="www.189.cn:80"
               />
-            </div>
+            </div>}
             </>
             )}
 
             <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
-              <Label>{form.groupMode === "chain" ? "链路主机顺序" : "成员优先级"}</Label>
+              <Label>{form.groupMode === "chain" ? "链路主机顺序" : form.groupMode === "entry" ? "入口主机" : form.groupMode === "exit" ? "出口主机" : "成员优先级"}</Label>
               {form.groupMode === "chain" ? (
                 <MultiHopEditor
                   hosts={hosts || []}
@@ -1348,12 +1492,12 @@ export function ForwardGroupsContent({
                   <div className="flex justify-end">
                     <Select onValueChange={(v) => addMember(Number(v))}>
                       <SelectTrigger className="w-full sm:w-64">
-                        <SelectValue placeholder={form.groupType === "host" ? "添加主机成员" : "添加隧道成员"} />
+                        <SelectValue placeholder={effectiveGroupType === "host" ? "添加主机成员" : "添加隧道成员"} />
                       </SelectTrigger>
                       <SelectContent>
                         {availableMemberOptions.map((item: any) => (
                           <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
-                            {form.groupType === "host" ? (
+                            {effectiveGroupType === "host" ? (
                               <HostStatusLabel
                                 host={item.host}
                                 label={(
@@ -1401,6 +1545,16 @@ export function ForwardGroupsContent({
                             </div>
                           </>
                         )}
+                        {form.groupMode === "exit" && member.memberType === "host" && (
+                          <label className="flex shrink-0 items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
+                            <span>内网IP</span>
+                            <Switch
+                              checked={!!member.connectHost}
+                              disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
+                              onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
+                            />
+                          </label>
+                        )}
                         <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
                           setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
                         }} />
@@ -1444,7 +1598,7 @@ export function ForwardGroupsContent({
       <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{deleteGroup?.groupMode === "chain" ? "删除端口转发链" : "删除转发组"}</DialogTitle>
+            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
             <DialogDescription>
               确认删除 "{deleteGroup?.name}"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。
             </DialogDescription>
@@ -1457,7 +1611,7 @@ export function ForwardGroupsContent({
             ) : deleteImpactQuery.data?.forwardRuleCount ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
                 <p className="font-medium text-destructive">
-                  当前{deleteGroup?.groupMode === "chain" ? "端口转发链" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
+                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   包含 {deleteImpactQuery.data.templateRuleCount || 0} 条用户规则和 {deleteImpactQuery.data.childRuleCount || 0} 条成员运行规则。

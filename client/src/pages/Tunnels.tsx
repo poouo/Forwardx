@@ -80,7 +80,6 @@ import {
   YAxis,
 } from "recharts";
 import MultiHopEditor from "@/components/MultiHopEditor";
-import HostStatusLabel from "@/components/HostStatusLabel";
 import { ForwardGroupsContent } from "@/pages/ForwardGroups";
 
 const loadReactGlobe = () => import("react-globe.gl");
@@ -112,6 +111,7 @@ function TunnelSectionTransition({
 
 type TunnelForm = {
   name: string;
+  entryGroupId: number | null;
   entryHostId: number | null;
   exitHostId: number | null;
   hopHostIds: number[];
@@ -122,6 +122,7 @@ type TunnelForm = {
   connectHost: string;
   loadBalanceEnabled: boolean;
   loadBalanceExits: Array<{ hostId: number | null; connectHost: string }>;
+  exitGroupId: number | null;
   blockHttp: boolean;
   blockSocks: boolean;
   blockTls: boolean;
@@ -129,6 +130,7 @@ type TunnelForm = {
 
 type ChainCreateForm = {
   name: string;
+  entryGroupId: number | null;
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
   isEnabled: boolean;
@@ -237,6 +239,7 @@ let reactGlobePrefetchStarted = false;
 
 const defaultForm: TunnelForm = {
   name: "",
+  entryGroupId: null,
   entryHostId: null,
   exitHostId: null,
   hopHostIds: [],
@@ -247,6 +250,7 @@ const defaultForm: TunnelForm = {
   connectHost: "",
   loadBalanceEnabled: false,
   loadBalanceExits: [],
+  exitGroupId: null,
   blockHttp: false,
   blockSocks: false,
   blockTls: false,
@@ -254,6 +258,7 @@ const defaultForm: TunnelForm = {
 
 const defaultChainCreateForm: ChainCreateForm = {
   name: "",
+  entryGroupId: null,
   hopHostIds: [],
   hopConnectHosts: [],
   isEnabled: true,
@@ -338,136 +343,6 @@ function normalizeChainConnectHostsForHosts(
     const text = String(value || "").trim();
     return privateAddr && text === privateAddr ? privateAddr : null;
   });
-}
-
-function TunnelLoadBalanceExitEditor({
-  hosts,
-  primaryHostIds,
-  value,
-  onChange,
-}: {
-  hosts: any[];
-  primaryHostIds: number[];
-  value: Array<{ hostId: number | null; connectHost: string }>;
-  onChange: (next: Array<{ hostId: number | null; connectHost: string }>) => void;
-}) {
-  const hostById = useMemo(() => new Map((hosts || []).map((host: any) => [Number(host.id), host])), [hosts]);
-  const selectedIds = new Set(value.map((item) => Number(item.hostId || 0)).filter((id) => id > 0));
-  const blockedIds = new Set(primaryHostIds.map((id) => Number(id || 0)).filter((id) => id > 0));
-  const selectedExits = value
-    .map((item, index) => {
-      const hostId = Number(item.hostId || 0);
-      const host = hostById.get(hostId);
-      return { item, index, hostId, host };
-    })
-    .filter((item) => item.hostId > 0 && item.host);
-  const availableHosts = hosts.filter((host: any) => {
-    const hostId = Number(host.id);
-    return hostId > 0 && !blockedIds.has(hostId) && !selectedIds.has(hostId);
-  });
-  const reachedMaxExits = selectedExits.length >= MAX_EXTRA_TUNNEL_EXITS;
-  const canAdd = !reachedMaxExits && availableHosts.length > 0;
-
-  const addExit = (hostIdValue: string) => {
-    if (reachedMaxExits) return;
-    const hostId = Number(hostIdValue);
-    if (!Number.isInteger(hostId) || hostId <= 0 || selectedIds.has(hostId) || blockedIds.has(hostId)) return;
-    const host = hostById.get(hostId);
-    if (!host) return;
-    const cleanValue = value.filter((item) => Number(item.hostId || 0) > 0);
-    onChange([...cleanValue, { hostId, connectHost: "" }]);
-  };
-
-  const updateExitConnection = (index: number, usePrivateAddress: boolean) => {
-    onChange(value.map((item, idx) => {
-      if (idx !== index) return item;
-      const host = hostById.get(Number(item.hostId || 0));
-      const privateAddr = hostPrivateAddress(host);
-      return { ...item, connectHost: usePrivateAddress && privateAddr ? privateAddr : "" };
-    }));
-  };
-
-  const removeItem = (index: number) => {
-    onChange(value.filter((_, idx) => idx !== index));
-  };
-
-  return (
-    <div className="space-y-2 rounded-md border border-border/60 bg-muted/15 p-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <Label className="text-sm">负载出口</Label>
-        <Badge variant="outline" className="h-6 px-2 text-[11px]">{selectedExits.length + 1}/{MAX_EXTRA_TUNNEL_EXITS + 1}</Badge>
-      </div>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <Select value="" onValueChange={addExit} disabled={!canAdd}>
-          <SelectTrigger className="h-8 text-sm">
-            <SelectValue placeholder={reachedMaxExits ? `最多 ${MAX_EXTRA_TUNNEL_EXITS} 个负载出口` : availableHosts.length === 0 ? "无可添加出口" : "添加负载出口..."} />
-          </SelectTrigger>
-          <SelectContent>
-            {reachedMaxExits ? (
-              <div className="px-2 py-4 text-center text-xs text-muted-foreground">最多支持 {MAX_EXTRA_TUNNEL_EXITS} 个负载出口</div>
-            ) : availableHosts.length === 0 ? (
-              <div className="px-2 py-4 text-center text-xs text-muted-foreground">已无可添加出口</div>
-            ) : availableHosts.map((host: any) => (
-              <SelectItem key={host.id} value={String(host.id)} textValue={host.name}>
-                <HostStatusLabel host={host} label={host.name} />
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {selectedExits.length > 0 && (
-          <span className="text-xs text-muted-foreground sm:whitespace-nowrap">{selectedExits.length} / {MAX_EXTRA_TUNNEL_EXITS} 个出口</span>
-        )}
-      </div>
-
-      {selectedExits.length === 0 ? (
-        <div className="flex items-center justify-center rounded-md border border-dashed border-border py-5 text-sm text-muted-foreground">
-          从上方选择负载出口
-        </div>
-      ) : (
-        <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
-          {selectedExits.map(({ item, index, hostId, host }, displayIndex) => {
-            const privateAddr = hostPrivateAddress(host);
-            const publicAddr = hostPublicAddress(host);
-            const usePrivateAddress = !!privateAddr && String(item.connectHost || "").trim() === privateAddr;
-            return (
-              <div key={hostId} className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
-                  {displayIndex + 1}
-                </span>
-                <div className="min-w-0">
-                  <HostStatusLabel host={host} label={host?.name || `#${hostId}`} className="min-w-0 text-sm font-medium" labelClassName="truncate" />
-                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                    {usePrivateAddress ? `内网 ${privateAddr}` : `入口 ${publicAddr || "未配置"}`}
-                  </div>
-                </div>
-                <div className="flex h-7 items-center gap-1.5">
-                  <TooltipProvider delayDuration={120}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className={privateAddr ? "inline-flex" : "inline-flex cursor-not-allowed"}>
-                          <Switch
-                            checked={usePrivateAddress}
-                            disabled={!privateAddr}
-                            onCheckedChange={(checked) => updateExitConnection(index, !!checked)}
-                            aria-label={`为${host?.name || `#${hostId}`}使用内网IP`}
-                          />
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>{privateAddr ? "使用内网IP连接" : "请先配置内网IP"}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                  <span className="hidden text-xs text-muted-foreground sm:inline">内网IP</span>
-                </div>
-                <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => removeItem(index)}>
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function hostGeoCoordinate(host: any) {
@@ -692,6 +567,8 @@ function getTunnelModeDisplay(mode: unknown) {
 }
 
 type TunnelViewMode = "card" | "table" | "globe";
+type TunnelSection = "tunnels" | "chains" | "entries" | "exits";
+type TunnelGroupMode = "entry" | "exit";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
 const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -1544,6 +1421,28 @@ function TunnelSelfTestDialog({
   );
 }
 
+function normalizeForwardGroupMode(mode: unknown) {
+  const value = String(mode || "failover");
+  return value === "chain" || value === "entry" || value === "exit" ? value : "failover";
+}
+
+function enabledHostGroupMembers(group: any) {
+  return (group?.members || [])
+    .filter((member: any) => member?.memberType === "host" && Number(member?.hostId || 0) > 0 && member?.isEnabled !== false)
+    .sort((a: any, b: any) => Number(a?.priority || 0) - Number(b?.priority || 0));
+}
+
+function groupMemberHostName(member: any, hosts: any[] | undefined) {
+  const hostId = Number(member?.hostId || 0);
+  return (hosts || []).find((host: any) => Number(host.id) === hostId)?.name || `主机 #${hostId}`;
+}
+
+function groupHostSummary(group: any, hosts: any[] | undefined) {
+  const members = enabledHostGroupMembers(group);
+  if (members.length === 0) return "无可用主机";
+  return members.map((member: any) => `${groupMemberHostName(member, hosts)}${member.connectHost ? "(内网)" : ""}`).join("、");
+}
+
 function TunnelsContent() {
   const utils = trpc.useUtils();
   const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 3000 });
@@ -1557,11 +1456,12 @@ function TunnelsContent() {
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
   const [chainViewMode, setChainViewMode] = useState<TunnelViewMode>(() => getStoredChainViewMode());
-  const [activeSection, setActiveSection] = useState<"tunnels" | "chains">("tunnels");
+  const [activeSection, setActiveSection] = useState<TunnelSection>("tunnels");
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
   const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
+  const [groupCreateRequest, setGroupCreateRequest] = useState<{ mode: TunnelGroupMode; requestKey: number } | null>(null);
   const [deleteTunnel, setDeleteTunnel] = useState<any | null>(null);
   const deleteImpactQuery = trpc.tunnels.deleteImpact.useQuery(
     { id: Number(deleteTunnel?.id || 0) },
@@ -1596,8 +1496,65 @@ function TunnelsContent() {
       : (enabledGostTunnelModes[0] || "forwardx");
   };
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
-  const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => group.groupMode === "chain"), [forwardGroups]);
+  const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "chain"), [forwardGroups]);
+  const entryGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "entry"), [forwardGroups]);
+  const exitGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "exit"), [forwardGroups]);
   const activeChainCount = useMemo(() => chainGroups.filter((group: any) => group.isEnabled).length, [chainGroups]);
+  const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [entryGroups]);
+  const usableEntryGroups = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [entryGroups]);
+  const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0).length, [exitGroups]);
+  const usableExitGroups = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0), [exitGroups]);
+  const exitGroupById = useMemo(() => new Map<number, any>(exitGroups.map((group: any) => [Number(group.id), group])), [exitGroups]);
+  const exitMembersForGroup = (groupId: number | null | undefined) => {
+    const group = groupId ? exitGroupById.get(Number(groupId)) : null;
+    return enabledHostGroupMembers(group);
+  };
+  const inferExitGroupIdForTunnel = (tunnel: any, hopIds: number[]) => {
+    const activeExitIds = [
+      Number(hopIds[hopIds.length - 1] || tunnel?.exitHostId || 0),
+      ...((Array.isArray(tunnel?.loadBalanceExits) ? tunnel.loadBalanceExits : [])
+        .map((exit: any) => Number(exit?.hostId || 0))
+        .filter((id: number) => id > 0)),
+    ];
+    if (activeExitIds.length === 0) return null;
+    for (const group of exitGroups) {
+      const groupIds = enabledHostGroupMembers(group).map((member: any) => Number(member.hostId || 0));
+      if (groupIds.length === activeExitIds.length && groupIds.every((id: number, index: number) => id === activeExitIds[index])) return Number(group.id);
+    }
+    return null;
+  };
+  const applyExitGroupToForm = (prev: TunnelForm, exitGroupId: number | null): TunnelForm => {
+    if (!exitGroupId) return { ...prev, exitGroupId: null, loadBalanceEnabled: false, loadBalanceExits: [] };
+    const members = exitMembersForGroup(exitGroupId);
+    if (members.length === 0) return { ...prev, exitGroupId, loadBalanceEnabled: false, loadBalanceExits: [] };
+    const primaryMember = members[0];
+    const primaryExitHostId = Number(primaryMember.hostId || 0);
+    const groupHostIds = new Set(members.map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
+    const previousGroupHostIds = new Set(exitMembersForGroup(prev.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
+    const exitHostIdsToRemove = new Set([...groupHostIds, ...previousGroupHostIds]);
+    const currentHops = prev.hopHostIds.filter((hostId) => Number(hostId || 0) > 0 && !exitHostIdsToRemove.has(Number(hostId)));
+    const routeBeforeExit = prev.exitGroupId ? currentHops : (currentHops.length > 1 ? currentHops.slice(0, -1) : currentHops);
+    const nextHopHostIds = [...routeBeforeExit, primaryExitHostId].filter((hostId, index, all) => hostId > 0 && all.indexOf(hostId) === index);
+    const connectHostByHostId = new Map(prev.hopHostIds.map((hostId, index) => [Number(hostId || 0), prev.hopConnectHosts[index] || null]));
+    const rawConnectHosts = nextHopHostIds.map((hostId, index) => (
+      index === nextHopHostIds.length - 1 && Number(hostId) === primaryExitHostId
+        ? String(primaryMember.connectHost || "").trim() || null
+        : connectHostByHostId.get(Number(hostId)) || null
+    ));
+    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(rawConnectHosts, nextHopHostIds, hosts);
+    return {
+      ...prev,
+      exitGroupId,
+      exitHostId: primaryExitHostId || prev.exitHostId,
+      hopHostIds: nextHopHostIds,
+      hopConnectHosts: normalizedConnectHosts,
+      loadBalanceEnabled: members.length > 1,
+      loadBalanceExits: members.slice(1).map((member: any) => ({
+        hostId: Number(member.hostId || 0) || null,
+        connectHost: String(member.connectHost || "").trim(),
+      })),
+    };
+  };
   const tunnelPagination = usePersistentPagination(tunnels || [], {
     storageKey: "forwardx.tunnels.page",
     pageSize: 12,
@@ -1649,12 +1606,14 @@ function TunnelsContent() {
     setForm({
       ...defaultForm,
       mode: fallbackMode,
+      entryGroupId: null,
       entryHostId: null,
       exitHostId: null,
       hopHostIds: [],
       hopConnectHosts: [],
       loadBalanceEnabled: false,
       loadBalanceExits: [],
+      exitGroupId: null,
     });
   };
 
@@ -1666,8 +1625,22 @@ function TunnelsContent() {
     const hopConnectHosts = Array.isArray(tunnel.hopConnectHosts) && tunnel.hopConnectHosts.length >= 2
       ? tunnel.hopConnectHosts
       : [null, tunnel.connectHost || null];
-    setForm({
+    const loadBalanceExits = Array.isArray(tunnel.loadBalanceExits)
+      ? tunnel.loadBalanceExits.map((exit: any) => {
+        const hostId = Number(exit.hostId) || null;
+        const host = hosts?.find((item: any) => Number(item.id) === Number(hostId));
+        const privateAddr = hostPrivateAddress(host);
+        const connectHost = String(exit.connectHost || "").trim();
+        return {
+          hostId,
+          connectHost: privateAddr && connectHost === privateAddr ? privateAddr : "",
+        };
+      }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
+      : [];
+    const exitGroupId = inferExitGroupIdForTunnel(tunnel, hopHostIds);
+    const nextForm: TunnelForm = {
       name: tunnel.name,
+      entryGroupId: tunnel.entryGroupId ? Number(tunnel.entryGroupId) : null,
       entryHostId: tunnel.entryHostId,
       exitHostId: tunnel.exitHostId,
       hopHostIds,
@@ -1676,23 +1649,14 @@ function TunnelsContent() {
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
-      loadBalanceEnabled: !!tunnel.loadBalanceEnabled,
-      loadBalanceExits: Array.isArray(tunnel.loadBalanceExits)
-        ? tunnel.loadBalanceExits.map((exit: any) => {
-          const hostId = Number(exit.hostId) || null;
-          const host = hosts?.find((item: any) => Number(item.id) === Number(hostId));
-          const privateAddr = hostPrivateAddress(host);
-          const connectHost = String(exit.connectHost || "").trim();
-          return {
-            hostId,
-            connectHost: privateAddr && connectHost === privateAddr ? privateAddr : "",
-          };
-        }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
-        : [],
+      loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
+      loadBalanceExits: exitGroupId ? loadBalanceExits : [],
+      exitGroupId,
       blockHttp: false,
       blockSocks: false,
       blockTls: false,
-    });
+    };
+    setForm(exitGroupId ? applyExitGroupToForm(nextForm, exitGroupId) : nextForm);
     setEditingId(tunnel.id);
     setShowDialog(true);
   };
@@ -1742,27 +1706,44 @@ function TunnelsContent() {
   });
 
   const handleSubmit = () => {
-    if (!form.name || form.hopHostIds.length < 2) {
-      toast.error("请填写隧道名称并至少选择两台主机");
+    const selectedExitMembers = form.exitGroupId ? exitMembersForGroup(form.exitGroupId) : [];
+    if (form.exitGroupId && selectedExitMembers.length === 0) {
+      toast.error("请选择可用的出口组");
       return;
     }
-    if (form.hopHostIds.length > MAX_TUNNEL_HOPS) {
+    const submitForm = form.exitGroupId ? applyExitGroupToForm(form, form.exitGroupId) : form;
+    if (!submitForm.name || submitForm.hopHostIds.length < 2) {
+      toast.error("请填写隧道名称并至少选择入口主机和出口组");
+      return;
+    }
+    if (submitForm.hopHostIds.length > MAX_TUNNEL_HOPS) {
       toast.error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
       return;
     }
-    const orderedHopHostIds = [...form.hopHostIds];
-    const orderedHopConnectHosts = normalizeHopConnectHostsForHosts(form.hopConnectHosts, orderedHopHostIds, hosts);
+    const orderedHopHostIds = [...submitForm.hopHostIds];
+    const selectedPrimaryExitConnectHost = form.exitGroupId && selectedExitMembers.length > 0
+      ? String(selectedExitMembers[0]?.connectHost || "").trim()
+      : "";
+    const rawHopConnectHosts = [...submitForm.hopConnectHosts];
+    if (selectedPrimaryExitConnectHost && rawHopConnectHosts.length > 0) {
+      rawHopConnectHosts[rawHopConnectHosts.length - 1] = selectedPrimaryExitConnectHost;
+    }
+    const orderedHopConnectHosts = normalizeHopConnectHostsForHosts(rawHopConnectHosts, orderedHopHostIds, hosts);
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
       toast.error("请确保入口与出口主机有效且不同");
       return;
     }
-    if (!isValidPort(form.listenPort, true)) {
+    if (new Set(orderedHopHostIds).size !== orderedHopHostIds.length) {
+      toast.error("主机链路中的主机不能重复");
+      return;
+    }
+    if (!isValidPort(submitForm.listenPort, true)) {
       toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
       return;
     }
-    if (!isTunnelSupported(form)) {
+    if (!isTunnelSupported(submitForm)) {
       toast.error(unsupportedProtocolTitle);
       return;
     }
@@ -1786,15 +1767,11 @@ function TunnelsContent() {
     const regularPrivateConnectHost = !isMultiHopTunnel && exitPrivateAddr && regularConnectHost === exitPrivateAddr
       ? exitPrivateAddr
       : null;
-    const loadBalanceEnabled = !!form.loadBalanceEnabled;
-    const loadBalanceExits = form.loadBalanceExits
+    const loadBalanceExits = submitForm.loadBalanceExits
       .map((exit) => ({ hostId: Number(exit.hostId || 0), connectHost: String(exit.connectHost || "").trim() }))
       .filter((exit) => exit.hostId > 0 || exit.connectHost);
+    const loadBalanceEnabled = !!submitForm.loadBalanceEnabled && loadBalanceExits.length > 0;
     if (loadBalanceEnabled) {
-      if (loadBalanceExits.length === 0) {
-        toast.error("开启多出口负载后至少需要添加 1 个额外出口");
-        return;
-      }
       if (loadBalanceExits.length > MAX_EXTRA_TUNNEL_EXITS) {
         toast.error(`最多额外添加 ${MAX_EXTRA_TUNNEL_EXITS} 个出口`);
         return;
@@ -1802,28 +1779,29 @@ function TunnelsContent() {
       const usedExitIds = new Set<number>(orderedHopHostIds.map((id) => Number(id)).filter((id) => id > 0));
       for (const exit of loadBalanceExits) {
         if (!exit.hostId) {
-          toast.error("请选择额外出口 Agent");
+          toast.error("出口组包含无效出口 Agent");
           return;
         }
         if (usedExitIds.has(exit.hostId)) {
-          toast.error("额外出口不能与主机链路中的主机重复");
+          toast.error("出口组成员不能与主机链路中的主机重复");
           return;
         }
         usedExitIds.add(exit.hostId);
         if (exit.connectHost && !isValidConnectHost(exit.connectHost)) {
-          toast.error("额外出口连接地址格式无效");
+          toast.error("出口组连接地址格式无效");
           return;
         }
       }
     }
     const payload: any = {
-      name: form.name,
-      mode: form.mode,
-      listenPort: form.listenPort,
+      name: submitForm.name,
+      mode: submitForm.mode,
+      listenPort: submitForm.listenPort,
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
       connectHost: isMultiHopTunnel ? null : regularPrivateConnectHost,
+      entryGroupId: submitForm.entryGroupId || null,
       entryHostId,
       exitHostId,
       hopHostIds: orderedHopHostIds,
@@ -1860,6 +1838,7 @@ function TunnelsContent() {
     );
     createChainMutation.mutate({
       name,
+      entryGroupId: chainCreateForm.entryGroupId || null,
       groupMode: "chain",
       groupType: "host",
       domain: null,
@@ -1883,6 +1862,7 @@ function TunnelsContent() {
   const isCreateTypePending = selectedCreateType === "chain" ? createChainMutation.isPending : createMutation.isPending;
   const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
+  const groupViewMode: "card" | "table" = chainViewMode === "table" ? "table" : "card";
   const handleViewModeChange = (nextViewMode: TunnelViewMode) => {
     setViewMode(nextViewMode);
     storeTunnelViewMode(nextViewMode);
@@ -1891,14 +1871,30 @@ function TunnelsContent() {
     setChainViewMode(nextViewMode);
     storeChainViewMode(nextViewMode);
   };
-  const activeViewMode = activeSection === "chains" ? chainViewMode : viewMode;
+  const activeViewMode = activeSection === "tunnels"
+    ? viewMode
+    : activeSection === "chains"
+      ? chainViewMode
+      : groupViewMode;
   const handleActiveViewModeChange = (nextViewMode: TunnelViewMode) => {
-    if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
-    else handleViewModeChange(nextViewMode);
+    if (activeSection === "tunnels") handleViewModeChange(nextViewMode);
+    else if (activeSection === "chains") handleChainViewModeChange(nextViewMode);
+    else if (nextViewMode !== "globe") handleChainViewModeChange(nextViewMode);
   };
   const activeSectionTransitionKey = activeSection === "chains"
     ? `chains-${chainViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : chainGroups.length > 0 ? "list" : "empty"}`
-    : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
+    : activeSection === "entries"
+      ? `entries-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : entryGroups.length > 0 ? "list" : "empty"}`
+      : activeSection === "exits"
+        ? `exits-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : exitGroups.length > 0 ? "list" : "empty"}`
+        : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
+  const headerStat = activeSection === "chains"
+    ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-sky-500" }
+    : activeSection === "entries"
+      ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
+      : activeSection === "exits"
+        ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-indigo-500" }
+        : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
@@ -1910,15 +1906,22 @@ function TunnelsContent() {
     && hosts.length >= 2
     && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0);
   const canCreateChain = !!hosts?.length && hosts.length >= 2;
+  const canCreateGroup = !!hosts?.length && hosts.length >= 1;
   const canCreateAny = canCreateTunnel || canCreateChain;
-  const createDisabledTitle = !canCreateAny
-    ? "至少需要 2 台主机且启用可用隧道协议"
-    : !canCreateTunnel
+  const canCreateActive = activeSection === "entries" || activeSection === "exits" ? canCreateGroup : canCreateAny;
+  const createDisabledTitle = !canCreateActive
+    ? (activeSection === "entries" || activeSection === "exits" ? "至少需要 1 台主机" : "至少需要 2 台主机且启用可用隧道协议")
+    : !canCreateTunnel && activeSection === "tunnels"
       ? "隧道链路暂不可创建，可选择端口转发链"
-      : !canCreateChain
+      : !canCreateChain && activeSection === "chains"
         ? "端口转发链暂不可创建，可选择隧道链路"
         : undefined;
   const openCreateTypeDialog = () => {
+    if (activeSection === "entries" || activeSection === "exits") {
+      if (!canCreateGroup) return;
+      setGroupCreateRequest({ mode: activeSection === "entries" ? "entry" : "exit", requestKey: Date.now() });
+      return;
+    }
     if (!canCreateAny) return;
     const preferredType: LinkCreateType = activeSection === "chains" ? "chain" : "tunnel";
     const nextType = preferredType === "chain"
@@ -1963,14 +1966,12 @@ function TunnelsContent() {
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className={`h-3 w-3 ${activeSection === "chains" ? "text-sky-500" : "text-chart-2"}`} />
+            <Activity className={`h-3 w-3 ${headerStat.iconClass}`} />
             <AnimatedStatValue
-              value={activeSection === "chains"
-                ? `${activeChainCount} / ${chainGroups.length} 启用`
-                : `${activeCount} / ${tunnels?.length ?? 0} 活跃`}
-              loading={activeSection === "chains" ? (forwardGroupsLoading || !forwardGroups) : (isLoading || !tunnels)}
-              cacheKey={activeSection === "chains" ? "tunnels.header.chainsActive" : "tunnels.header.active"}
-              fallbackValue={activeSection === "chains" ? "0 / 0 启用" : "0 / 0 活跃"}
+              value={headerStat.value}
+              loading={headerStat.loading}
+              cacheKey={headerStat.cacheKey}
+              fallbackValue={headerStat.fallback}
             />
           </Badge>
           <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
@@ -1990,7 +1991,7 @@ function TunnelsContent() {
             >
               <List className="h-4 w-4" />
             </Button>
-            <Button
+            {(activeSection === "tunnels" || activeSection === "chains") && <Button
               variant={activeViewMode === "globe" ? "secondary" : "ghost"}
               size="icon"
               className="h-8 w-8 rounded-none"
@@ -1998,11 +1999,11 @@ function TunnelsContent() {
               onClick={() => handleActiveViewModeChange("globe")}
             >
               <Globe className="h-4 w-4" />
-            </Button>
+            </Button>}
           </div>
           <Button
             className="gap-2"
-            disabled={!canCreateAny}
+            disabled={!canCreateActive}
             title={createDisabledTitle}
             onClick={openCreateTypeDialog}
           >
@@ -2012,8 +2013,8 @@ function TunnelsContent() {
         </div>
       </div>
 
-      <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as "tunnels" | "chains")} className="space-y-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto">
+      <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:grid-cols-4 sm:inline-flex sm:w-auto">
           <TabsTrigger value="tunnels" className="gap-1.5 px-4">
             <Network className="h-4 w-4" />
             隧道链路
@@ -2021,6 +2022,14 @@ function TunnelsContent() {
           <TabsTrigger value="chains" className="gap-1.5 px-4">
             <Route className="h-4 w-4" />
             端口转发链
+          </TabsTrigger>
+          <TabsTrigger value="entries" className="gap-1.5 px-4">
+            <ShieldCheck className="h-4 w-4" />
+            入口组
+          </TabsTrigger>
+          <TabsTrigger value="exits" className="gap-1.5 px-4">
+            <CheckCircle2 className="h-4 w-4" />
+            出口组
           </TabsTrigger>
         </TabsList>
 
@@ -2365,6 +2374,31 @@ function TunnelsContent() {
           )}
           </TunnelSectionTransition>
         </TabsContent>
+        <TabsContent value="entries" className="space-y-4">
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
+            <ForwardGroupsContent
+              mode="entry"
+              embedded
+              viewMode={groupViewMode}
+              onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
+              hideHeaderActions
+              createRequestKey={groupCreateRequest?.mode === "entry" ? groupCreateRequest.requestKey : undefined}
+            />
+          </TunnelSectionTransition>
+        </TabsContent>
+
+        <TabsContent value="exits" className="space-y-4">
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
+            <ForwardGroupsContent
+              mode="exit"
+              embedded
+              viewMode={groupViewMode}
+              onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
+              hideHeaderActions
+              createRequestKey={groupCreateRequest?.mode === "exit" ? groupCreateRequest.requestKey : undefined}
+            />
+          </TunnelSectionTransition>
+        </TabsContent>
       </Tabs>
 
       {latencyTunnel && (
@@ -2455,12 +2489,42 @@ function TunnelsContent() {
                       <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
                     </div>
                     <div className="space-y-2">
+                      <Label>入口组</Label>
+                      <Select
+                        value={form.entryGroupId ? String(form.entryGroupId) : "none"}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="选择已保存入口组" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">不使用入口组</SelectItem>
+                          {usableEntryGroups.length === 0 ? (
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                          ) : usableEntryGroups.map((group: any) => (
+                            <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                              <span className="inline-flex min-w-0 flex-col">
+                                <span className="truncate">{group.name}</span>
+                                <span className="truncate text-xs text-muted-foreground">{String(group.domain || "-")}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {form.entryGroupId ? (
+                        <p className="text-xs text-muted-foreground">入口组只作为入口 DDNS 域名选择器，主机链路中的第一台仍固定为实际入口主机。</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">入口组会把多台入口主机同步到同一个 DDNS 域名。</p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
                       <Label>主机链路</Label>
                       <MultiHopEditor
                         hosts={hosts || []}
                         initialHopIds={form.hopHostIds}
                         initialHopConnectHosts={form.hopConnectHosts}
                         maxHops={MAX_TUNNEL_HOPS}
+                        fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
                         onChange={(ids) => {
                           setForm((prev) => {
                             const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
@@ -2474,44 +2538,54 @@ function TunnelsContent() {
                             ) {
                               return prev;
                             }
-                            return {
+                            const nextForm = {
                               ...prev,
                               hopHostIds: ids,
                               entryHostId: nextEntry,
                               exitHostId: nextExit,
                               hopConnectHosts: normalizedConnectHosts,
-                              loadBalanceExits: prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
+                              loadBalanceExits: prev.exitGroupId ? prev.loadBalanceExits : prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
                             };
+                            return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;
                           });
                         }}
                         onConnectHostsChange={(hopConnectHosts) => {
                           setForm((prev) => {
                             const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
                             if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
-                            return { ...prev, hopConnectHosts: normalizedConnectHosts };
+                            const nextForm = { ...prev, hopConnectHosts: normalizedConnectHosts };
+                            return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;
                           });
                         }}
                       />
                     </div>
                     <div className="space-y-2">
-                      <div className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                        <Label className="text-sm">多出口负载</Label>
-                        <Switch
-                          checked={form.loadBalanceEnabled}
-                          onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
-                            ...prev,
-                            loadBalanceEnabled,
-                            loadBalanceExits: prev.loadBalanceExits,
-                          }))}
-                        />
-                      </div>
-                      {form.loadBalanceEnabled && (
-                        <TunnelLoadBalanceExitEditor
-                          hosts={hosts || []}
-                          primaryHostIds={form.hopHostIds}
-                          value={form.loadBalanceExits}
-                          onChange={(loadBalanceExits) => setForm((prev) => ({ ...prev, loadBalanceExits }))}
-                        />
+                      <Label>出口组</Label>
+                      <Select
+                        value={form.exitGroupId ? String(form.exitGroupId) : "none"}
+                        onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="选择已保存出口组" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">不使用出口组</SelectItem>
+                          {usableExitGroups.length === 0 ? (
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用出口组</div>
+                          ) : usableExitGroups.map((group: any) => (
+                            <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                              <span className="inline-flex min-w-0 flex-col">
+                                <span className="truncate">{group.name}</span>
+                                <span className="truncate text-xs text-muted-foreground">{groupHostSummary(group, hosts)}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {form.exitGroupId ? (
+                        <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">选择出口组后会自动把组内第一台作为主出口，其余作为额外出口。</p>
                       )}
                     </div>
                     <div className="space-y-2">
@@ -2602,6 +2676,31 @@ function TunnelsContent() {
                       </div>
                     </div>
                     <div className="space-y-2">
+                      <Label>入口组</Label>
+                      <Select
+                        value={chainCreateForm.entryGroupId ? String(chainCreateForm.entryGroupId) : "none"}
+                        onValueChange={(value) => setChainCreateForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="选择已保存入口组" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">不使用入口组</SelectItem>
+                          {usableEntryGroups.length === 0 ? (
+                            <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                          ) : usableEntryGroups.map((group: any) => (
+                            <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                              <span className="inline-flex min-w-0 flex-col">
+                                <span className="truncate">{group.name}</span>
+                                <span className="truncate text-xs text-muted-foreground">{String(group.domain || "-")}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">入口组只作为转发链入口 DDNS 域名选择器，链路第一台仍固定为实际入口主机。</p>
+                    </div>
+                    <div className="space-y-2">
                       <Label>链路主机顺序</Label>
                       <MultiHopEditor
                         hosts={hosts || []}
@@ -2661,12 +2760,42 @@ function TunnelsContent() {
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
             </div>
             <div className="space-y-2">
+              <Label>入口组</Label>
+              <Select
+                value={form.entryGroupId ? String(form.entryGroupId) : "none"}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择已保存入口组" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">不使用入口组</SelectItem>
+                  {usableEntryGroups.length === 0 ? (
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                  ) : usableEntryGroups.map((group: any) => (
+                    <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                      <span className="inline-flex min-w-0 flex-col">
+                        <span className="truncate">{group.name}</span>
+                        <span className="truncate text-xs text-muted-foreground">{String(group.domain || "-")}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.entryGroupId ? (
+                <p className="text-xs text-muted-foreground">入口组只作为入口 DDNS 域名选择器，主机链路中的第一台仍固定为实际入口主机。</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">入口组会把多台入口主机同步到同一个 DDNS 域名。</p>
+              )}
+            </div>
+            <div className="space-y-2">
               <Label>主机链路</Label>
               <MultiHopEditor
                 hosts={hosts || []}
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
                 maxHops={MAX_TUNNEL_HOPS}
+                fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
                 onChange={(ids) => {
                   setForm((prev) => {
                     const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
@@ -2680,44 +2809,54 @@ function TunnelsContent() {
                     ) {
                       return prev;
                     }
-                    return {
+                    const nextForm = {
                       ...prev,
                       hopHostIds: ids,
                       entryHostId: nextEntry,
                       exitHostId: nextExit,
                       hopConnectHosts: normalizedConnectHosts,
-                      loadBalanceExits: prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
+                      loadBalanceExits: prev.exitGroupId ? prev.loadBalanceExits : prev.loadBalanceExits.filter((exit) => !ids.includes(Number(exit.hostId || 0))),
                     };
+                    return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;
                   });
                 }}
                 onConnectHostsChange={(hopConnectHosts) => {
                   setForm((prev) => {
                     const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
                     if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
-                    return { ...prev, hopConnectHosts: normalizedConnectHosts };
+                    const nextForm = { ...prev, hopConnectHosts: normalizedConnectHosts };
+                    return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;
                   });
                 }}
               />
             </div>
             <div className="space-y-2">
-              <div className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                <Label className="text-sm">多出口负载</Label>
-                <Switch
-                  checked={form.loadBalanceEnabled}
-                  onCheckedChange={(loadBalanceEnabled) => setForm((prev) => ({
-                    ...prev,
-                    loadBalanceEnabled,
-                    loadBalanceExits: prev.loadBalanceExits,
-                  }))}
-                />
-              </div>
-              {form.loadBalanceEnabled && (
-                <TunnelLoadBalanceExitEditor
-                  hosts={hosts || []}
-                  primaryHostIds={form.hopHostIds}
-                  value={form.loadBalanceExits}
-                  onChange={(loadBalanceExits) => setForm((prev) => ({ ...prev, loadBalanceExits }))}
-                />
+              <Label>出口组</Label>
+              <Select
+                value={form.exitGroupId ? String(form.exitGroupId) : "none"}
+                onValueChange={(value) => setForm((prev) => applyExitGroupToForm(prev, value === "none" ? null : Number(value)))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择已保存出口组" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">不使用出口组</SelectItem>
+                  {usableExitGroups.length === 0 ? (
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用出口组</div>
+                  ) : usableExitGroups.map((group: any) => (
+                    <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                      <span className="inline-flex min-w-0 flex-col">
+                        <span className="truncate">{group.name}</span>
+                        <span className="truncate text-xs text-muted-foreground">{groupHostSummary(group, hosts)}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.exitGroupId ? (
+                <p className="text-xs text-muted-foreground">出口组固定为隧道出口，内网 IP 按出口组成员保存值使用。</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">选择出口组后会自动把组内第一台作为主出口，其余作为额外出口。</p>
               )}
             </div>
             <div className="space-y-2">

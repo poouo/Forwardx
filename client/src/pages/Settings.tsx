@@ -2070,6 +2070,7 @@ function SystemInfoSection() {
   const [agentPreferPanelInstall, setAgentPreferPanelInstall] = useState(false);
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<DdnsProvider>("disabled");
+  const [ddnsTtl, setDdnsTtl] = useState("600");
   const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
   const [ddnsCloudflareApiToken, setDdnsCloudflareApiToken] = useState("");
   const [ddnsHuaweiCloudAccessKeyId, setDdnsHuaweiCloudAccessKeyId] = useState("");
@@ -2077,18 +2078,15 @@ function SystemInfoSection() {
   const [ddnsHuaweiCloudRegion, setDdnsHuaweiCloudRegion] = useState("cn-north-4");
   const [ddnsHuaweiCloudEndpoint, setDdnsHuaweiCloudEndpoint] = useState("");
   const [ddnsHuaweiCloudZoneId, setDdnsHuaweiCloudZoneId] = useState("");
-  const [ddnsHuaweiCloudTtl, setDdnsHuaweiCloudTtl] = useState("300");
   const [ddnsHuaweiCloudLine, setDdnsHuaweiCloudLine] = useState("default_view");
   const [ddnsAliyunAccessKeyId, setDdnsAliyunAccessKeyId] = useState("");
   const [ddnsAliyunAccessKeySecret, setDdnsAliyunAccessKeySecret] = useState("");
   const [ddnsAliyunDomainName, setDdnsAliyunDomainName] = useState("");
   const [ddnsAliyunEndpoint, setDdnsAliyunEndpoint] = useState("https://alidns.aliyuncs.com");
-  const [ddnsAliyunTtl, setDdnsAliyunTtl] = useState("600");
   const [ddnsAliyunLine, setDdnsAliyunLine] = useState("default");
   const [ddnsTencentCloudSecretId, setDdnsTencentCloudSecretId] = useState("");
   const [ddnsTencentCloudSecretKey, setDdnsTencentCloudSecretKey] = useState("");
   const [ddnsTencentCloudDomainName, setDdnsTencentCloudDomainName] = useState("");
-  const [ddnsTencentCloudTtl, setDdnsTencentCloudTtl] = useState("600");
   const [ddnsTencentCloudRecordLine, setDdnsTencentCloudRecordLine] = useState("默认");
   const [ddnsTencentCloudRecordLineId, setDdnsTencentCloudRecordLineId] = useState("");
   const [ddnsWebhookUrl, setDdnsWebhookUrl] = useState("");
@@ -2126,21 +2124,20 @@ function SystemInfoSection() {
       setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
       setDdnsEnabled(!!settings.ddns?.enabled);
       setDdnsProvider(isDdnsProvider(settings.ddns?.provider) ? settings.ddns.provider : "disabled");
+      const ddnsUnifiedTtl = String(settings.ddns?.ttl || settings.ddns?.huaweicloudTtl || settings.ddns?.aliyunTtl || settings.ddns?.tencentcloudTtl || 600);
+      setDdnsTtl(ddnsUnifiedTtl);
       setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
       setDdnsHuaweiCloudAccessKeyId(settings.ddns?.huaweicloudAccessKeyId || "");
       setDdnsHuaweiCloudRegion(settings.ddns?.huaweicloudRegion || "cn-north-4");
       setDdnsHuaweiCloudEndpoint(settings.ddns?.huaweicloudEndpoint || "");
       setDdnsHuaweiCloudZoneId(settings.ddns?.huaweicloudZoneId || "");
-      setDdnsHuaweiCloudTtl(String(settings.ddns?.huaweicloudTtl || 300));
       setDdnsHuaweiCloudLine(settings.ddns?.huaweicloudLine || "default_view");
       setDdnsAliyunAccessKeyId(settings.ddns?.aliyunAccessKeyId || "");
       setDdnsAliyunDomainName(settings.ddns?.aliyunDomainName || "");
       setDdnsAliyunEndpoint(settings.ddns?.aliyunEndpoint || "https://alidns.aliyuncs.com");
-      setDdnsAliyunTtl(String(settings.ddns?.aliyunTtl || 600));
       setDdnsAliyunLine(settings.ddns?.aliyunLine || "default");
       setDdnsTencentCloudSecretId(settings.ddns?.tencentcloudSecretId || "");
       setDdnsTencentCloudDomainName(settings.ddns?.tencentcloudDomainName || "");
-      setDdnsTencentCloudTtl(String(settings.ddns?.tencentcloudTtl || 600));
       setDdnsTencentCloudRecordLine(settings.ddns?.tencentcloudRecordLine || "默认");
       setDdnsTencentCloudRecordLineId(settings.ddns?.tencentcloudRecordLineId || "");
       setDdnsWebhookUrl(settings.ddns?.webhookUrl || "");
@@ -2384,6 +2381,7 @@ function SystemInfoSection() {
       ddns: {
         enabled: ddnsEnabled,
         provider: ddnsProvider,
+        ttl,
         cloudflareZoneId: ddnsCloudflareZoneId,
         cloudflareApiToken: ddnsCloudflareApiToken.trim() || undefined,
         huaweicloudAccessKeyId: ddnsHuaweiCloudAccessKeyId,
@@ -2391,18 +2389,18 @@ function SystemInfoSection() {
         huaweicloudRegion: ddnsHuaweiCloudRegion,
         huaweicloudEndpoint,
         huaweicloudZoneId: ddnsHuaweiCloudZoneId,
-        huaweicloudTtl: normalizeTtl(ddnsHuaweiCloudTtl, 300),
+        huaweicloudTtl: ttl,
         huaweicloudLine: ddnsHuaweiCloudLine,
         aliyunAccessKeyId: ddnsAliyunAccessKeyId,
         aliyunAccessKeySecret: ddnsAliyunAccessKeySecret.trim() || undefined,
         aliyunDomainName: ddnsAliyunDomainName,
         aliyunEndpoint,
-        aliyunTtl: normalizeTtl(ddnsAliyunTtl, 600),
+        aliyunTtl: ttl,
         aliyunLine: ddnsAliyunLine,
         tencentcloudSecretId: ddnsTencentCloudSecretId,
         tencentcloudSecretKey: ddnsTencentCloudSecretKey.trim() || undefined,
         tencentcloudDomainName: ddnsTencentCloudDomainName,
-        tencentcloudTtl: normalizeTtl(ddnsTencentCloudTtl, 600),
+        tencentcloudTtl: ttl,
         tencentcloudRecordLine: ddnsTencentCloudRecordLine,
         tencentcloudRecordLineId: ddnsTencentCloudRecordLineId,
         webhookUrl: ddnsWebhookUrl,
@@ -3042,6 +3040,17 @@ function SystemInfoSection() {
             </div>
           </div>
 
+          <div className="space-y-2">
+            <Label>TTL</Label>
+            <Input
+              value={ddnsTtl}
+              onChange={(e) => setDdnsTtl(e.target.value.replace(/\D/g, "").slice(0, 5))}
+              placeholder="600"
+              inputMode="numeric"
+            />
+            <p className="text-xs text-muted-foreground">统一用于 DDNS 解析记录。Cloudflare、华为云、阿里云、腾讯云 DNSPod 在面板中按 60-86400 秒保存；Webhook 会在请求中透传 ttl。</p>
+          </div>
+
           {ddnsProvider === "cloudflare" && (
             <div className="grid gap-3 lg:grid-cols-2">
               <div className="space-y-2">
@@ -3088,14 +3097,10 @@ function SystemInfoSection() {
                   <Input value={ddnsHuaweiCloudRegion} onChange={(e) => setDdnsHuaweiCloudRegion(e.target.value)} placeholder="cn-north-4" />
                 </div>
               </div>
-              <div className="grid gap-3 lg:grid-cols-3">
+              <div className="grid gap-3 lg:grid-cols-2">
                 <div className="space-y-2">
                   <Label>默认线路</Label>
                   <Input value={ddnsHuaweiCloudLine} onChange={(e) => setDdnsHuaweiCloudLine(e.target.value)} placeholder="default_view" />
-                </div>
-                <div className="space-y-2">
-                  <Label>TTL</Label>
-                  <Input value={ddnsHuaweiCloudTtl} onChange={(e) => setDdnsHuaweiCloudTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="300" inputMode="numeric" />
                 </div>
                 <div className="space-y-2">
                   <Label>Endpoint</Label>
@@ -3137,10 +3142,6 @@ function SystemInfoSection() {
                   <Label>默认线路</Label>
                   <Input value={ddnsAliyunLine} onChange={(e) => setDdnsAliyunLine(e.target.value)} placeholder="default" />
                 </div>
-                <div className="space-y-2">
-                  <Label>TTL</Label>
-                  <Input value={ddnsAliyunTtl} onChange={(e) => setDdnsAliyunTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="600" inputMode="numeric" />
-                </div>
               </div>
             </div>
           )}
@@ -3166,10 +3167,6 @@ function SystemInfoSection() {
                 <div className="space-y-2">
                   <Label>主域名</Label>
                   <Input value={ddnsTencentCloudDomainName} onChange={(e) => setDdnsTencentCloudDomainName(e.target.value)} placeholder="example.com" />
-                </div>
-                <div className="space-y-2">
-                  <Label>TTL</Label>
-                  <Input value={ddnsTencentCloudTtl} onChange={(e) => setDdnsTencentCloudTtl(e.target.value.replace(/\D/g, "").slice(0, 5))} placeholder="600" inputMode="numeric" />
                 </div>
               </div>
               <div className="grid gap-3 lg:grid-cols-2">

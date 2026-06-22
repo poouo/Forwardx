@@ -145,8 +145,8 @@ const tables: TableDef[] = [
   {
     name: "forward_groups",
     columns: [
-      c("id", "id"), c("name", "text", { notNull: true }), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
-      c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }),
+      c("id", "id"), c("name", "text", { notNull: true }), c("remark", "text"), c("groupType", "varchar", { length: 32, notNull: true, default: "host" }),
+      c("groupMode", "varchar", { length: 32, notNull: true, default: "failover" }), c("entryGroupId", "int"),
       c("forwardType", "varchar", { length: 32, notNull: true, default: "iptables" }), c("domain", "text"),
       c("recordType", "varchar", { length: 16, notNull: true, default: "A" }), c("sourcePort", "int", { notNull: true, default: 1 }),
       c("protocol", "varchar", { length: 16, notNull: true, default: "both" }), c("targetIp", "text", { notNull: true }),
@@ -158,7 +158,7 @@ const tables: TableDef[] = [
       c("lastMessage", "text"), c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
       c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
-    indexes: [["userId"], ["userId", "createdAt"], ["isEnabled"], ["activeMemberId"]],
+    indexes: [["userId"], ["userId", "createdAt"], ["isEnabled"], ["activeMemberId"], ["entryGroupId"]],
   },
   {
     name: "forward_group_members",
@@ -183,7 +183,7 @@ const tables: TableDef[] = [
   {
     name: "tunnels",
     columns: [
-      c("id", "id"), c("name", "text", { notNull: true }), c("entryHostId", "int", { notNull: true }),
+      c("id", "id"), c("name", "text", { notNull: true }), c("entryGroupId", "int"), c("entryHostId", "int", { notNull: true }),
       c("exitHostId", "int", { notNull: true }), c("mode", "varchar", { length: 32, notNull: true, default: "tls" }),
       c("secret", "text"), c("listenPort", "int", { notNull: true }), c("portRangeStart", "int"), c("portRangeEnd", "int"),
       c("networkType", "varchar", { length: 32, notNull: true, default: "public" }), c("connectHost", "text"),
@@ -194,7 +194,7 @@ const tables: TableDef[] = [
       c("userId", "int", { notNull: true }), c("createdAt", "epoch", { notNull: true, default: "now" }),
       c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
-    indexes: [["entryHostId"], ["exitHostId"], ["userId"], ["userId", "createdAt"]],
+    indexes: [["entryGroupId"], ["entryHostId"], ["exitHostId"], ["userId"], ["userId", "createdAt"]],
   },
   { name: "tunnel_exit_nodes", columns: [c("id", "id"), c("tunnelId", "int", { notNull: true }), c("seq", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("listenPort", "int", { notNull: true }), c("connectHost", "text"), c("isEnabled", "bool", { notNull: true, default: true }), c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" })], unique: [["tunnelId", "seq"]], indexes: [["tunnelId"], ["hostId"], ["hostId", "listenPort"]] },
   { name: "tunnel_hops", columns: [c("id", "id"), c("tunnelId", "int", { notNull: true }), c("seq", "int", { notNull: true }), c("hostId", "int", { notNull: true }), c("listenPort", "int", { notNull: true, default: 0 }), c("connectHost", "text")], unique: [["tunnelId", "seq"]], indexes: [["tunnelId"], ["hostId"]] },
@@ -244,6 +244,7 @@ const seedSettings = [
   ["discountEnabled", "true"],
   ["trafficBillingEnabled", "false"],
   ["twoFactorEnabled", "false"],
+  ["ddnsTtl", "600"],
 ] as const;
 
 export function getDatabaseTableDefs(): readonly TableDef[] {

@@ -23,7 +23,9 @@ const forwardGroupQueryCache = createQueryCache(300);
 
 const baseSchema = z.object({
   name: z.string().min(1).max(128),
-  groupMode: z.enum(["failover", "chain"]).default("failover"),
+  remark: z.string().max(255).nullable().optional(),
+  groupMode: z.enum(["failover", "chain", "entry", "exit"]).default("failover"),
+  entryGroupId: z.number().nullable().optional(),
   groupType: z.enum(["host", "tunnel"]),
   domain: z.string().max(255).nullable().optional(),
   recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),

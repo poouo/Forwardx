@@ -1,26 +1,82 @@
-export function ipIfMissing(rule: string) {
-  return `iptables -C ${rule} 2>/dev/null || iptables -A ${rule}`;
+type IptablesBinary = "iptables" | "ip6tables";
+
+const iptablesBinaries: IptablesBinary[] = ["iptables", "ip6tables"];
+
+function cleanAddress(value: unknown) {
+  return String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
 }
 
-export function ipIfMissingT(table: string, rule: string) {
-  return `iptables -t ${table} -C ${rule} 2>/dev/null || iptables -t ${table} -A ${rule}`;
+function isIpv6Address(value: unknown) {
+  return cleanAddress(value).includes(":");
+}
+
+function iptablesBinaryForTarget(targetIp: unknown): IptablesBinary {
+  return isIpv6Address(targetIp) ? "ip6tables" : "iptables";
+}
+
+function iptablesCommand(binary: IptablesBinary, args: string, optional = false) {
+  if (binary === "ip6tables") {
+    const command = `command -v ip6tables >/dev/null 2>&1 && ip6tables ${args}`;
+    return optional ? `${command} || true` : command;
+  }
+  return `iptables ${args}`;
+}
+
+function iptablesEnsure(binary: IptablesBinary, table: string | null, rule: string, optional = false) {
+  const tableArg = table ? `-t ${table} ` : "";
+  const command = `${binary} ${tableArg}-C ${rule} 2>/dev/null || ${binary} ${tableArg}-A ${rule}`;
+  if (binary === "ip6tables") {
+    const guarded = `command -v ip6tables >/dev/null 2>&1 && { ${command}; }`;
+    return optional ? `${guarded} || true` : guarded;
+  }
+  return command;
+}
+
+function iptablesDelete(binary: IptablesBinary, table: string | null, rule: string) {
+  const tableArg = table ? `-t ${table} ` : "";
+  const command = `while ${binary} ${tableArg}-C ${rule} 2>/dev/null; do ${binary} ${tableArg}-D ${rule} 2>/dev/null || break; done`;
+  if (binary === "ip6tables") {
+    return `command -v ip6tables >/dev/null 2>&1 && { ${command}; } || true`;
+  }
+  return `${command} || true`;
+}
+
+function iptablesFlush(binary: IptablesBinary, table: string, chain: string) {
+  return iptablesCommand(binary, `-t ${table} -F ${chain} 2>/dev/null || true`, true);
+}
+
+function iptablesDeleteChain(binary: IptablesBinary, table: string, chain: string) {
+  return iptablesCommand(binary, `-t ${table} -X ${chain} 2>/dev/null || true`, true);
+}
+
+function iptablesDnatTarget(targetIp: unknown, targetPort: unknown) {
+  const host = cleanAddress(targetIp);
+  return isIpv6Address(host) ? `[${host}]:${Number(targetPort) || 0}` : `${host}:${Number(targetPort) || 0}`;
+}
+
+function nftAddressFamily(targetIp: unknown) {
+  return isIpv6Address(targetIp) ? "ip6" : "ip";
 }
 
 export function buildCountingChainCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
   const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
   const inMarker = `fwx-stat-${port}:in`;
   const outMarker = `fwx-stat-${port}:out`;
-  const addStatRule = (chain: string, rule: string, marker: string) =>
-    `iptables -t mangle -C ${chain} ${rule} -m comment --comment "${marker}" 2>/dev/null || iptables -t mangle -A ${chain} ${rule} -m comment --comment "${marker}"`;
+  const addStatRule = (binary: IptablesBinary, chain: string, rule: string, marker: string) =>
+    iptablesEnsure(binary, "mangle", `${chain} ${rule} -m comment --comment "${marker}"`, true);
   const cmds: string[] = [...buildCountingCleanupCmds(port, targetIp, targetPort, protocol)];
   for (const proto of protos) {
-    cmds.push(addStatRule("PREROUTING", `-p ${proto} --dport ${port}`, inMarker));
-    cmds.push(addStatRule("INPUT", `-p ${proto} --dport ${port}`, inMarker));
-    cmds.push(addStatRule("POSTROUTING", `-p ${proto} --sport ${port}`, outMarker));
-    cmds.push(addStatRule("OUTPUT", `-p ${proto} --sport ${port}`, outMarker));
+    for (const binary of iptablesBinaries) {
+      cmds.push(addStatRule(binary, "PREROUTING", `-p ${proto} --dport ${port}`, inMarker));
+      cmds.push(addStatRule(binary, "INPUT", `-p ${proto} --dport ${port}`, inMarker));
+      cmds.push(addStatRule(binary, "POSTROUTING", `-p ${proto} --sport ${port}`, outMarker));
+      cmds.push(addStatRule(binary, "OUTPUT", `-p ${proto} --sport ${port}`, outMarker));
+    }
     if (targetIp && Number(targetPort) > 0) {
-      cmds.push(addStatRule("FORWARD", `-p ${proto} -d ${targetIp} --dport ${targetPort}`, inMarker));
-      cmds.push(addStatRule("FORWARD", `-p ${proto} -s ${targetIp} --sport ${targetPort}`, outMarker));
+      const target = cleanAddress(targetIp);
+      const targetBinary = iptablesBinaryForTarget(target);
+      cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker));
+      cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker));
     }
   }
   return cmds;
@@ -30,38 +86,45 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
   const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
   const inMarker = `fwx-stat-${port}:in`;
   const outMarker = `fwx-stat-${port}:out`;
-  const cmds = [
-    `iptables -t mangle -D PREROUTING -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D PREROUTING -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D INPUT -p tcp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D INPUT -p udp --dport ${port} -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D OUTPUT -p udp --sport ${port} -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D FORWARD -p tcp -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D FORWARD -p udp -j FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -D FORWARD -p udp -j FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -F FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -X FWX_IN_${port} 2>/dev/null || true`,
-    `iptables -t mangle -F FWX_OUT_${port} 2>/dev/null || true`,
-    `iptables -t mangle -X FWX_OUT_${port} 2>/dev/null || true`,
-  ];
+  const cmds: string[] = [];
+  for (const binary of iptablesBinaries) {
+    cmds.push(
+      iptablesDelete(binary, "mangle", `PREROUTING -p tcp --dport ${port} -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `PREROUTING -p udp --dport ${port} -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port}`),
+      iptablesDelete(binary, "mangle", `POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port}`),
+      iptablesDelete(binary, "mangle", `INPUT -p tcp --dport ${port} -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `INPUT -p udp --dport ${port} -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port}`),
+      iptablesDelete(binary, "mangle", `OUTPUT -p udp --sport ${port} -j FWX_OUT_${port}`),
+      iptablesDelete(binary, "mangle", `FORWARD -p tcp -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `FORWARD -p udp -j FWX_IN_${port}`),
+      iptablesDelete(binary, "mangle", `FORWARD -p tcp -j FWX_OUT_${port}`),
+      iptablesDelete(binary, "mangle", `FORWARD -p udp -j FWX_OUT_${port}`),
+      iptablesFlush(binary, "mangle", `FWX_IN_${port}`),
+      iptablesDeleteChain(binary, "mangle", `FWX_IN_${port}`),
+      iptablesFlush(binary, "mangle", `FWX_OUT_${port}`),
+      iptablesDeleteChain(binary, "mangle", `FWX_OUT_${port}`),
+    );
+  }
   for (const proto of protos) {
-    cmds.unshift(`iptables -t mangle -D PREROUTING -p ${proto} --dport ${port} -m comment --comment "${inMarker}" 2>/dev/null || true`);
-    cmds.unshift(`iptables -t mangle -D INPUT -p ${proto} --dport ${port} -m comment --comment "${inMarker}" 2>/dev/null || true`);
-    cmds.unshift(`iptables -t mangle -D POSTROUTING -p ${proto} --sport ${port} -m comment --comment "${outMarker}" 2>/dev/null || true`);
-    cmds.unshift(`iptables -t mangle -D OUTPUT -p ${proto} --sport ${port} -m comment --comment "${outMarker}" 2>/dev/null || true`);
+    for (const binary of iptablesBinaries) {
+      cmds.unshift(iptablesDelete(binary, "mangle", `PREROUTING -p ${proto} --dport ${port} -m comment --comment "${inMarker}"`));
+      cmds.unshift(iptablesDelete(binary, "mangle", `INPUT -p ${proto} --dport ${port} -m comment --comment "${inMarker}"`));
+      cmds.unshift(iptablesDelete(binary, "mangle", `POSTROUTING -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
+      cmds.unshift(iptablesDelete(binary, "mangle", `OUTPUT -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
+    }
     if (targetIp && Number(targetPort) > 0) {
-      cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -m comment --comment "${inMarker}" 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -m comment --comment "${outMarker}" 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -d ${targetIp} --dport ${targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D FORWARD -p ${proto} -s ${targetIp} --sport ${targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D OUTPUT -p ${proto} -d ${targetIp} --dport ${targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D POSTROUTING -p ${proto} -d ${targetIp} --dport ${targetPort} -j FWX_IN_${port} 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D PREROUTING -p ${proto} -s ${targetIp} --sport ${targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
-      cmds.unshift(`iptables -t mangle -D INPUT -p ${proto} -s ${targetIp} --sport ${targetPort} -j FWX_OUT_${port} 2>/dev/null || true`);
+      const target = cleanAddress(targetIp);
+      const targetBinary = iptablesBinaryForTarget(target);
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `OUTPUT -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `POSTROUTING -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `PREROUTING -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
     }
   }
   return cmds;
@@ -93,9 +156,13 @@ export function buildNftCleanupCmds(rule: any): string[] {
 export function buildNftForwardCmds(rule: any): string[] {
   const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
   const comment = nftComment(rule);
+  const targetIp = cleanAddress(rule.targetIp);
+  const family = nftAddressFamily(targetIp);
+  const dnatTarget = family === "ip6" ? `[${targetIp}]:${rule.targetPort}` : `${targetIp}:${rule.targetPort}`;
   const cmds = [
     `command -v nft >/dev/null 2>&1`,
     `sysctl -w net.ipv4.ip_forward=1 >/dev/null`,
+    `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true`,
     `nft add table inet ${nftTable} 2>/dev/null || true`,
     `nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true`,
     `nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }' 2>/dev/null || true`,
@@ -111,12 +178,12 @@ export function buildNftForwardCmds(rule: any): string[] {
     `nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }' 2>/dev/null || true`,
   ];
   for (const proto of protos) {
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPreroutingChain} ip protocol ${proto} ${proto} dport ${rule.sourcePort} counter comment "${comment}:in"`);
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPostroutingChain} ip protocol ${proto} ip saddr ${rule.targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
-    cmds.push(`nft add rule inet ${nftTable} prerouting ${proto} dport ${rule.sourcePort} dnat ip to ${rule.targetIp}:${rule.targetPort} comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} postrouting ip protocol ${proto} ip daddr ${rule.targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} forward ip protocol ${proto} ip daddr ${rule.targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} forward ip protocol ${proto} ip saddr ${rule.targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPreroutingChain} meta l4proto ${proto} ${proto} dport ${rule.sourcePort} counter comment "${comment}:in"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficPostroutingChain} meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
+    cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}"`);
   }
   return cmds;
 }
@@ -133,18 +200,34 @@ export function buildManagedPortCleanupCmds(port: number, targetIp?: string, tar
 }
 
 export function buildIptablesForwardCleanupCmds(rule: any): string[] {
-  const proto = rule.protocol === "both" ? "tcp" : rule.protocol;
+  const targetIp = cleanAddress(rule.targetIp);
+  const binary = iptablesBinaryForTarget(targetIp);
+  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const cmds: string[] = [];
+  for (const proto of protos) {
+    cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
+    cmds.push(iptablesDelete(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
+    cmds.push(iptablesDelete(binary, null, `FORWARD -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j ACCEPT`));
+    cmds.push(iptablesDelete(binary, null, `FORWARD -p ${proto} -s ${targetIp} --sport ${rule.targetPort} ${proto === "tcp" ? "-m state --state ESTABLISHED,RELATED " : ""}-j ACCEPT`));
+  }
+  return cmds;
+}
+
+export function buildIptablesForwardCmds(rule: any): string[] {
+  const targetIp = cleanAddress(rule.targetIp);
+  const binary = iptablesBinaryForTarget(targetIp);
+  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
   const cmds = [
-    `iptables -t nat -D PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`,
-    `iptables -t nat -D POSTROUTING -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`,
-    `iptables -D FORWARD -p ${proto} -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`,
-    `iptables -D FORWARD -p ${proto} -s ${rule.targetIp} --sport ${rule.targetPort} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true`,
+    binary === "ip6tables"
+      ? `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null`
+      : `sysctl -w net.ipv4.ip_forward=1 >/dev/null`,
+    ...buildIptablesForwardCleanupCmds(rule),
   ];
-  if (rule.protocol === "both") {
-    cmds.push(`iptables -t nat -D PREROUTING -p udp --dport ${rule.sourcePort} -j DNAT --to-destination ${rule.targetIp}:${rule.targetPort} 2>/dev/null || true`);
-    cmds.push(`iptables -t nat -D POSTROUTING -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j MASQUERADE 2>/dev/null || true`);
-    cmds.push(`iptables -D FORWARD -p udp -d ${rule.targetIp} --dport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
-    cmds.push(`iptables -D FORWARD -p udp -s ${rule.targetIp} --sport ${rule.targetPort} -j ACCEPT 2>/dev/null || true`);
+  for (const proto of protos) {
+    cmds.push(iptablesEnsure(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
+    cmds.push(iptablesEnsure(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
+    cmds.push(iptablesEnsure(binary, null, `FORWARD -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j ACCEPT`));
+    cmds.push(iptablesEnsure(binary, null, `FORWARD -p ${proto} -s ${targetIp} --sport ${rule.targetPort} ${proto === "tcp" ? "-m state --state ESTABLISHED,RELATED " : ""}-j ACCEPT`));
   }
   return cmds;
 }

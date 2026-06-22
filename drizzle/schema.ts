@@ -284,8 +284,10 @@ export type InsertForwardRule = typeof forwardRules.$inferInsert;
 export const forwardGroups = table("forward_groups", {
   id: serial("id"),
   name: text("name").notNull(),
+  remark: text("remark"),
   groupType: varchar("groupType", { length: 32 }).notNull().default("host"),
   groupMode: varchar("groupMode", { length: 32 }).notNull().default("failover"),
+  entryGroupId: int("entryGroupId"),
   forwardType: varchar("forwardType", { length: 32 }).notNull().default("iptables"),
   domain: text("domain"),
   recordType: varchar("recordType", { length: 16 }).notNull().default("A"),
@@ -351,6 +353,7 @@ export type InsertForwardGroupEvent = typeof forwardGroupEvents.$inferInsert;
 export const tunnels = table("tunnels", {
   id: serial("id"),
   name: text("name").notNull(),
+  entryGroupId: int("entryGroupId"),
   entryHostId: int("entryHostId").notNull(),
   exitHostId: int("exitHostId").notNull(),
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp

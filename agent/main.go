@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.102"
+var Version = "2.2.103"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1978,57 +1978,150 @@ func nftRuleCleanupCmd(ruleID int) string {
 	return "nft list table inet forwardx >/dev/null 2>&1 && { for c in prerouting postrouting forward traffic_prerouting traffic_postrouting; do for h in $(nft -a list chain inet forwardx \"$c\" 2>/dev/null | awk -v marker=\"" + comment + "\" '$0 ~ marker {print $NF}'); do nft delete rule inet forwardx \"$c\" handle \"$h\" 2>/dev/null || true; done; done; nft flush chain inet forwardx in_" + id + " 2>/dev/null || true; nft delete chain inet forwardx in_" + id + " 2>/dev/null || true; nft flush chain inet forwardx out_" + id + " 2>/dev/null || true; nft delete chain inet forwardx out_" + id + " 2>/dev/null || true; } || true"
 }
 
+func iptablesAgentBinaries() []string {
+	return []string{"iptables", "ip6tables"}
+}
+
+func iptablesAgentAddress(value string) string {
+	text := strings.TrimSpace(value)
+	text = strings.TrimPrefix(strings.TrimSuffix(text, "]"), "[")
+	return text
+}
+
+func iptablesAgentBinaryForTarget(targetIP string) string {
+	if strings.Contains(iptablesAgentAddress(targetIP), ":") {
+		return "ip6tables"
+	}
+	return "iptables"
+}
+
+func iptablesAgentCommand(binary string, args string, optional bool) string {
+	if binary == "ip6tables" {
+		cmd := "command -v ip6tables >/dev/null 2>&1 && ip6tables " + args
+		if optional {
+			return cmd + " || true"
+		}
+		return cmd
+	}
+	return "iptables " + args
+}
+
+func iptablesAgentEnsure(binary string, table string, rule string) string {
+	tableArg := ""
+	if table != "" {
+		tableArg = "-t " + table + " "
+	}
+	cmd := binary + " " + tableArg + "-C " + rule + " 2>/dev/null || " + binary + " " + tableArg + "-A " + rule
+	if binary == "ip6tables" {
+		return "command -v ip6tables >/dev/null 2>&1 && { " + cmd + "; } || true"
+	}
+	return cmd
+}
+
+func iptablesAgentDelete(binary string, table string, rule string) string {
+	tableArg := ""
+	if table != "" {
+		tableArg = "-t " + table + " "
+	}
+	cmd := "while " + binary + " " + tableArg + "-C " + rule + " 2>/dev/null; do " + binary + " " + tableArg + "-D " + rule + " 2>/dev/null || break; done"
+	if binary == "ip6tables" {
+		return "command -v ip6tables >/dev/null 2>&1 && { " + cmd + "; } || true"
+	}
+	return cmd + " || true"
+}
+
+func iptablesAgentFlush(binary string, table string, chain string) string {
+	return iptablesAgentCommand(binary, "-t "+table+" -F "+chain+" 2>/dev/null || true", true)
+}
+
+func iptablesAgentDeleteChain(binary string, table string, chain string) string {
+	return iptablesAgentCommand(binary, "-t "+table+" -X "+chain+" 2>/dev/null || true", true)
+}
+
+func iptablesAgentDnatTarget(targetIP string, targetPort int) string {
+	host := iptablesAgentAddress(targetIP)
+	port := strconv.Itoa(targetPort)
+	if strings.Contains(host, ":") {
+		return "[" + host + "]:" + port
+	}
+	return host + ":" + port
+}
+
 func managedPortCleanupCmds(port string) []string {
+	inMarker := "fwx-stat-" + port + ":in"
+	outMarker := "fwx-stat-" + port + ":out"
 	cmds := append(managedListenerCleanupCmds(port),
 		managedServiceCleanupShell("forwardx-socat-"+port),
 		managedServiceCleanupShell("forwardx-socat-tcp-"+port),
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
-		"iptables -t mangle -D PREROUTING -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p udp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p tcp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p udp --dport "+port+" -m comment --comment \"fwx-stat-"+port+":in\" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p tcp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p udp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p tcp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p udp --sport "+port+" -m comment --comment \"fwx-stat-"+port+":out\" 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p tcp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p udp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p tcp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p udp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p tcp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p udp --dport "+port+" -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p tcp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p udp --sport "+port+" -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p tcp -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p udp -j FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p tcp -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -D FORWARD -p udp -j FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -F FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -X FWX_IN_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -F FWX_OUT_"+port+" 2>/dev/null || true",
-		"iptables -t mangle -X FWX_OUT_"+port+" 2>/dev/null || true",
-		"rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true",
 	)
+	for _, binary := range iptablesAgentBinaries() {
+		directRules := []string{
+			fmt.Sprintf(`PREROUTING -p tcp --dport %s -m comment --comment %q`, port, inMarker),
+			fmt.Sprintf(`PREROUTING -p udp --dport %s -m comment --comment %q`, port, inMarker),
+			fmt.Sprintf(`INPUT -p tcp --dport %s -m comment --comment %q`, port, inMarker),
+			fmt.Sprintf(`INPUT -p udp --dport %s -m comment --comment %q`, port, inMarker),
+			fmt.Sprintf(`POSTROUTING -p tcp --sport %s -m comment --comment %q`, port, outMarker),
+			fmt.Sprintf(`POSTROUTING -p udp --sport %s -m comment --comment %q`, port, outMarker),
+			fmt.Sprintf(`OUTPUT -p tcp --sport %s -m comment --comment %q`, port, outMarker),
+			fmt.Sprintf(`OUTPUT -p udp --sport %s -m comment --comment %q`, port, outMarker),
+		}
+		for _, rule := range directRules {
+			cmds = append(cmds, iptablesAgentDelete(binary, "mangle", rule))
+		}
+		legacyRules := []string{
+			fmt.Sprintf(`PREROUTING -p tcp --dport %s -j FWX_IN_%s`, port, port),
+			fmt.Sprintf(`PREROUTING -p udp --dport %s -j FWX_IN_%s`, port, port),
+			fmt.Sprintf(`POSTROUTING -p tcp --sport %s -j FWX_OUT_%s`, port, port),
+			fmt.Sprintf(`POSTROUTING -p udp --sport %s -j FWX_OUT_%s`, port, port),
+			fmt.Sprintf(`INPUT -p tcp --dport %s -j FWX_IN_%s`, port, port),
+			fmt.Sprintf(`INPUT -p udp --dport %s -j FWX_IN_%s`, port, port),
+			fmt.Sprintf(`OUTPUT -p tcp --sport %s -j FWX_OUT_%s`, port, port),
+			fmt.Sprintf(`OUTPUT -p udp --sport %s -j FWX_OUT_%s`, port, port),
+			fmt.Sprintf(`FORWARD -p tcp -j FWX_IN_%s`, port),
+			fmt.Sprintf(`FORWARD -p udp -j FWX_IN_%s`, port),
+			fmt.Sprintf(`FORWARD -p tcp -j FWX_OUT_%s`, port),
+			fmt.Sprintf(`FORWARD -p udp -j FWX_OUT_%s`, port),
+		}
+		for _, rule := range legacyRules {
+			cmds = append(cmds, iptablesAgentDelete(binary, "mangle", rule))
+		}
+		cmds = append(cmds,
+			iptablesAgentFlush(binary, "mangle", "FWX_IN_"+port),
+			iptablesAgentDeleteChain(binary, "mangle", "FWX_IN_"+port),
+			iptablesAgentFlush(binary, "mangle", "FWX_OUT_"+port),
+			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+port),
+		)
+	}
+	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
 	if targetIP, targetPort, ok := readTargetInfo(port); ok {
+		target := iptablesAgentAddress(targetIP)
 		tp := strconv.Itoa(targetPort)
-		targetCmds := []string{
-			"iptables -t nat -D PREROUTING -p tcp --dport " + port + " -j DNAT --to-destination " + targetIP + ":" + tp + " 2>/dev/null || true",
-			"iptables -t nat -D PREROUTING -p udp --dport " + port + " -j DNAT --to-destination " + targetIP + ":" + tp + " 2>/dev/null || true",
-			"iptables -t nat -D POSTROUTING -p tcp -d " + targetIP + " --dport " + tp + " -j MASQUERADE 2>/dev/null || true",
-			"iptables -t nat -D POSTROUTING -p udp -d " + targetIP + " --dport " + tp + " -j MASQUERADE 2>/dev/null || true",
-			"iptables -D FORWARD -p tcp -d " + targetIP + " --dport " + tp + " -j ACCEPT 2>/dev/null || true",
-			"iptables -D FORWARD -p udp -d " + targetIP + " --dport " + tp + " -j ACCEPT 2>/dev/null || true",
-			"iptables -D FORWARD -p tcp -s " + targetIP + " --sport " + tp + " -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true",
-			"iptables -D FORWARD -p udp -s " + targetIP + " --sport " + tp + " -j ACCEPT 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p tcp -d " + targetIP + " --dport " + tp + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p udp -d " + targetIP + " --dport " + tp + " -m comment --comment \"fwx-stat-" + port + ":in\" 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p tcp -s " + targetIP + " --sport " + tp + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p udp -s " + targetIP + " --sport " + tp + " -m comment --comment \"fwx-stat-" + port + ":out\" 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p tcp -d " + targetIP + " --dport " + tp + " -j FWX_IN_" + port + " 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p udp -d " + targetIP + " --dport " + tp + " -j FWX_IN_" + port + " 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p tcp -s " + targetIP + " --sport " + tp + " -j FWX_OUT_" + port + " 2>/dev/null || true",
-			"iptables -t mangle -D FORWARD -p udp -s " + targetIP + " --sport " + tp + " -j FWX_OUT_" + port + " 2>/dev/null || true",
+		binary := iptablesAgentBinaryForTarget(target)
+		dnatTarget := iptablesAgentDnatTarget(target, targetPort)
+		targetCmds := []string{}
+		for _, proto := range []string{"tcp", "udp"} {
+			stateMatch := ""
+			if proto == "tcp" {
+				stateMatch = "-m state --state ESTABLISHED,RELATED "
+			}
+			targetRules := []struct {
+				table string
+				rule  string
+			}{
+				{"nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -j DNAT --to-destination %s`, proto, port, dnatTarget)},
+				{"nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j MASQUERADE`, proto, target, tp)},
+				{"", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j ACCEPT`, proto, target, tp)},
+				{"", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s %s-j ACCEPT`, proto, target, tp, stateMatch)},
+				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
+				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
+				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, port)},
+				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, port)},
+			}
+			for _, targetRule := range targetRules {
+				targetCmds = append(targetCmds, iptablesAgentDelete(binary, targetRule.table, targetRule.rule))
+			}
 		}
 		cmds = append(targetCmds, cmds...)
 	}
@@ -2080,43 +2173,63 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 	if protocol == "tcp" || protocol == "udp" {
 		protos = []string{protocol}
 	}
-	commands := []string{
-		"iptables -t mangle -D PREROUTING -p tcp --dport " + p + " -j FWX_IN_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D PREROUTING -p udp --dport " + p + " -j FWX_IN_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p tcp --dport " + p + " -j FWX_IN_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D INPUT -p udp --dport " + p + " -j FWX_IN_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p tcp --sport " + p + " -j FWX_OUT_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D POSTROUTING -p udp --sport " + p + " -j FWX_OUT_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p tcp --sport " + p + " -j FWX_OUT_" + p + " 2>/dev/null || true",
-		"iptables -t mangle -D OUTPUT -p udp --sport " + p + " -j FWX_OUT_" + p + " 2>/dev/null || true",
+	commands := []string{}
+	for _, binary := range iptablesAgentBinaries() {
+		legacyRules := []string{
+			fmt.Sprintf(`PREROUTING -p tcp --dport %s -j FWX_IN_%s`, p, p),
+			fmt.Sprintf(`PREROUTING -p udp --dport %s -j FWX_IN_%s`, p, p),
+			fmt.Sprintf(`INPUT -p tcp --dport %s -j FWX_IN_%s`, p, p),
+			fmt.Sprintf(`INPUT -p udp --dport %s -j FWX_IN_%s`, p, p),
+			fmt.Sprintf(`POSTROUTING -p tcp --sport %s -j FWX_OUT_%s`, p, p),
+			fmt.Sprintf(`POSTROUTING -p udp --sport %s -j FWX_OUT_%s`, p, p),
+			fmt.Sprintf(`OUTPUT -p tcp --sport %s -j FWX_OUT_%s`, p, p),
+			fmt.Sprintf(`OUTPUT -p udp --sport %s -j FWX_OUT_%s`, p, p),
+		}
+		for _, rule := range legacyRules {
+			commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
+		}
 	}
 	for _, proto := range protos {
-		commands = append(commands,
-			"iptables -t mangle -C PREROUTING -p "+proto+" --dport "+p+" -m comment --comment \""+inMarker+"\" 2>/dev/null || iptables -t mangle -A PREROUTING -p "+proto+" --dport "+p+" -m comment --comment \""+inMarker+"\"",
-			"iptables -t mangle -C INPUT -p "+proto+" --dport "+p+" -m comment --comment \""+inMarker+"\" 2>/dev/null || iptables -t mangle -A INPUT -p "+proto+" --dport "+p+" -m comment --comment \""+inMarker+"\"",
-			"iptables -t mangle -C POSTROUTING -p "+proto+" --sport "+p+" -m comment --comment \""+outMarker+"\" 2>/dev/null || iptables -t mangle -A POSTROUTING -p "+proto+" --sport "+p+" -m comment --comment \""+outMarker+"\"",
-			"iptables -t mangle -C OUTPUT -p "+proto+" --sport "+p+" -m comment --comment \""+outMarker+"\" 2>/dev/null || iptables -t mangle -A OUTPUT -p "+proto+" --sport "+p+" -m comment --comment \""+outMarker+"\"",
-		)
+		for _, binary := range iptablesAgentBinaries() {
+			directRules := []string{
+				fmt.Sprintf(`PREROUTING -p %s --dport %s -m comment --comment %q`, proto, p, inMarker),
+				fmt.Sprintf(`INPUT -p %s --dport %s -m comment --comment %q`, proto, p, inMarker),
+				fmt.Sprintf(`POSTROUTING -p %s --sport %s -m comment --comment %q`, proto, p, outMarker),
+				fmt.Sprintf(`OUTPUT -p %s --sport %s -m comment --comment %q`, proto, p, outMarker),
+			}
+			for _, rule := range directRules {
+				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
+			}
+		}
 		if targetIP != "" && targetPort > 0 {
+			target := iptablesAgentAddress(targetIP)
 			tp := strconv.Itoa(targetPort)
+			binary := iptablesAgentBinaryForTarget(target)
+			cleanupRules := []string{
+				fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
+				fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
+				fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
+				fmt.Sprintf(`INPUT -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
+				fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, p),
+				fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, p),
+			}
+			for _, rule := range cleanupRules {
+				commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
+			}
 			commands = append(commands,
-				"iptables -t mangle -D OUTPUT -p "+proto+" -d "+targetIP+" --dport "+tp+" -j FWX_IN_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -D POSTROUTING -p "+proto+" -d "+targetIP+" --dport "+tp+" -j FWX_IN_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -D PREROUTING -p "+proto+" -s "+targetIP+" --sport "+tp+" -j FWX_OUT_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -D INPUT -p "+proto+" -s "+targetIP+" --sport "+tp+" -j FWX_OUT_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -D FORWARD -p "+proto+" -d "+targetIP+" --dport "+tp+" -j FWX_IN_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -D FORWARD -p "+proto+" -s "+targetIP+" --sport "+tp+" -j FWX_OUT_"+p+" 2>/dev/null || true",
-				"iptables -t mangle -C FORWARD -p "+proto+" -d "+targetIP+" --dport "+tp+" -m comment --comment \""+inMarker+"\" 2>/dev/null || iptables -t mangle -A FORWARD -p "+proto+" -d "+targetIP+" --dport "+tp+" -m comment --comment \""+inMarker+"\"",
-				"iptables -t mangle -C FORWARD -p "+proto+" -s "+targetIP+" --sport "+tp+" -m comment --comment \""+outMarker+"\" 2>/dev/null || iptables -t mangle -A FORWARD -p "+proto+" -s "+targetIP+" --sport "+tp+" -m comment --comment \""+outMarker+"\"",
+				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)),
+				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)),
 			)
 		}
 	}
-	commands = append(commands,
-		"iptables -t mangle -F FWX_IN_"+p+" 2>/dev/null || true",
-		"iptables -t mangle -X FWX_IN_"+p+" 2>/dev/null || true",
-		"iptables -t mangle -F FWX_OUT_"+p+" 2>/dev/null || true",
-		"iptables -t mangle -X FWX_OUT_"+p+" 2>/dev/null || true",
-	)
+	for _, binary := range iptablesAgentBinaries() {
+		commands = append(commands,
+			iptablesAgentFlush(binary, "mangle", "FWX_IN_"+p),
+			iptablesAgentDeleteChain(binary, "mangle", "FWX_IN_"+p),
+			iptablesAgentFlush(binary, "mangle", "FWX_OUT_"+p),
+			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+p),
+		)
+	}
 	for _, cmd := range commands {
 		_ = runShell(cmd)
 	}
@@ -2572,7 +2685,7 @@ func listenPortBusy(proto string, port int) bool {
 	}
 	switch proto {
 	case "udp":
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+		conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(port))
 		if err != nil {
 			return true
 		}

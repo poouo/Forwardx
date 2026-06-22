@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -40,6 +40,7 @@ interface MultiHopEditorProps {
   maxHops?: number;
   onChange?: (hopHostIds: number[]) => void;
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
+  fixedExitHostIds?: number[];
 }
 
 const missingTunnelEntryIpTip = "请先配置内网IP";
@@ -74,6 +75,7 @@ export default function MultiHopEditor({
   maxHops = 5,
   onChange,
   onConnectHostsChange,
+  fixedExitHostIds = [],
 }: MultiHopEditorProps) {
   const hostById = useMemo(() => new Map(hosts.map((host) => [host.id, host])), [hosts]);
   const [hops, setHops] = useState<HopEntry[]>([]);
@@ -192,6 +194,7 @@ export default function MultiHopEditor({
   }, []);
 
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
+  const fixedExitIds = new Set(fixedExitHostIds.map((id) => Number(id || 0)).filter((id) => id > 0));
   const reachedMaxHops = hops.length >= maxHops;
   const availableHosts = reachedMaxHops ? [] : hosts.filter((host) => !selectedIds.has(host.id));
 
@@ -205,11 +208,16 @@ export default function MultiHopEditor({
   };
 
   const removeHop = (idx: number) => {
+    const hop = hops[idx];
+    if (hop && fixedExitIds.has(hop.hostId)) return;
     setHops((prev) => prev.filter((_, i) => i !== idx));
     clearDragState();
   };
 
   const moveHop = (fromIdx: number, toIdx: number) => {
+    const fromHop = hops[fromIdx];
+    const toHop = hops[toIdx];
+    if ((fromHop && fixedExitIds.has(fromHop.hostId)) || (toHop && fixedExitIds.has(toHop.hostId))) return;
     setHops((prev) => reorder(prev, fromIdx, toIdx));
   };
 
@@ -223,6 +231,10 @@ export default function MultiHopEditor({
   };
 
   const onDragStart = (idx: number) => (e: React.DragEvent) => {
+    if (fixedExitIds.has(hops[idx]?.hostId || 0)) {
+      e.preventDefault();
+      return;
+    }
     if (!emptyDragImageRef.current) {
       const img = new Image();
       img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=";
@@ -261,7 +273,9 @@ export default function MultiHopEditor({
       clearDragState();
       return;
     }
-    if (dragSourceIdx !== idx) {
+    const source = hops[dragSourceIdx];
+    const target = hops[idx];
+    if (dragSourceIdx !== idx && !fixedExitIds.has(source?.hostId || 0) && !fixedExitIds.has(target?.hostId || 0)) {
       setHops((prev) => reorder(prev, dragSourceIdx, idx));
     }
     clearDragState();
@@ -309,6 +323,8 @@ export default function MultiHopEditor({
             const host = hostById.get(hop.hostId);
             const hasTunnelEntryIp = !!String(host?.tunnelEntryIp || "").trim();
             const useTunnelEntryIp = hop.useTunnelEntryIp && hasTunnelEntryIp;
+            const isFixedExit = fixedExitIds.has(hop.hostId);
+            const showTunnelEntryIpSwitch = !isFirst && !isFixedExit;
             const tunnelEntrySwitch = (
               <Switch
                 checked={useTunnelEntryIp}
@@ -323,7 +339,7 @@ export default function MultiHopEditor({
                 className={`grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:grid-cols-[auto_auto_minmax(14rem,1fr)_auto_auto_auto_auto_auto] ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
-                draggable
+                draggable={!isFixedExit}
                 onDragStart={onDragStart(idx)}
                 onDragEnter={onDragEnterRow(idx)}
                 onDragOver={(e) => {
@@ -333,7 +349,7 @@ export default function MultiHopEditor({
                 onDrop={onDropRow(idx)}
                 onDragEnd={onDragEnd}
               >
-                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing" />
+                <GripVertical className={`h-4 w-4 shrink-0 text-muted-foreground ${isFixedExit ? "cursor-not-allowed opacity-40" : "cursor-grab active:cursor-grabbing"}`} />
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
                   {idx + 1}
                 </span>
@@ -345,7 +361,7 @@ export default function MultiHopEditor({
                 />
 
                 <div className="col-span-full flex h-7 items-center justify-start gap-1.5 sm:col-span-1 sm:w-[54px] sm:justify-end">
-                  {!isFirst ? (
+                  {showTunnelEntryIpSwitch ? (
                     <TooltipProvider delayDuration={120}>
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -369,7 +385,7 @@ export default function MultiHopEditor({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  disabled={isFirst}
+                  disabled={isFirst || isFixedExit}
                   onClick={() => moveHop(idx, idx - 1)}
                   title="上移"
                 >
@@ -379,7 +395,7 @@ export default function MultiHopEditor({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  disabled={isLast}
+                  disabled={isLast || isFixedExit}
                   onClick={() => moveHop(idx, idx + 1)}
                   title="下移"
                 >
@@ -389,6 +405,7 @@ export default function MultiHopEditor({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                  disabled={isFixedExit}
                   onClick={() => removeHop(idx)}
                   title="移除"
                 >

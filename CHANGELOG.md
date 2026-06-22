@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.3.164] - 2026-06-23
+
+### Added
+
+- Added entry and exit forwarding groups with card/list management, remarks, entry DDNS binding, and group selection in tunnel and forwarding-chain workflows.
+- Added DDNS TTL configuration and entry-group health checks that can temporarily remove unhealthy entries from shared DDNS records.
+
+### Fixed
+
+- Fixed IPv6 traffic accounting for iptables-backed forwarding by installing and reading ip6tables counting rules alongside IPv4 rules.
+- Fixed nftables forwarding and counters to use dual-stack rule matching and IPv6 NAT targets when the destination is IPv6.
+- Extended Agent cleanup, access-limit, dependency, and forwarding setup paths to cover ip6tables/nftables and IPv6 forwarding.
+
+### Changed
+
+- Multi-entry groups can be used only as entries and multi-exit groups only as exits; tunnel multi-exit selection now uses saved exit groups instead of ad-hoc multi-exit toggles.
+- Bumped panel version to 2.3.164 and Agent target version to 2.2.103.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.164.
+
 ## [2.3.163] - 2026-06-22
 
 ### Fixed

@@ -1,4 +1,4 @@
-﻿import { protectedProcedure, router } from "../_core/trpc";
+import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
 const isValidHostOrIp = (value: string) => /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(value) && value.length <= 253;
@@ -69,6 +69,15 @@ const tunnelLoadBalanceExitSchema = z.object({
   hostId: z.number(),
   connectHost: z.string().max(128).nullable().optional(),
 });
+
+async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined) {
+  const id = Number(entryGroupId || 0);
+  if (!id) return null;
+  const group = await db.getForwardGroupById(id) as any;
+  if (!group || String(group.groupMode || "failover") !== "entry") throw new Error("入口组不存在或类型不正确");
+  if (ctx.user.role !== "admin" && Number(group.userId) !== Number(ctx.user.id)) throw new Error("无权使用此入口组");
+  return group;
+}
 
 function structuredLinkTestMessage(input: {
   kind: string;
@@ -323,6 +332,7 @@ export const tunnelsRouter = router({
     create: protectedProcedure
       .input(z.object({
         name: z.string().min(1).max(128),
+        entryGroupId: z.number().nullable().optional(),
         entryHostId: z.number(),
         exitHostId: z.number(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("forwardx"),
@@ -358,6 +368,7 @@ export const tunnelsRouter = router({
           if (!entry || !exit) throw new Error("主机不存在");
         }
         await requireTunnelProtocolEnabled(input);
+        await requireEntryGroupAccess(ctx, input.entryGroupId);
 
         // Determine entry/exit host IDs
         const entryHostId = hopHostIds ? hopHostIds[0] : input.entryHostId;
@@ -406,6 +417,7 @@ export const tunnelsRouter = router({
         } = input as any;
         const id = await db.createTunnel({
           ...tunnelInput,
+          entryGroupId: input.entryGroupId ?? null,
           entryHostId,
           exitHostId,
           portRangeStart: input.portRangeStart ?? null,
@@ -453,6 +465,7 @@ export const tunnelsRouter = router({
       .input(z.object({
         id: z.number(),
         name: z.string().min(1).max(128).optional(),
+        entryGroupId: z.number().nullable().optional(),
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
@@ -480,6 +493,7 @@ export const tunnelsRouter = router({
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const nextModeForRuntime = input.mode ?? (tunnel as any).mode;
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
+        if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
           ? ((input as any).hopHostIds as number[]).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
           : undefined;

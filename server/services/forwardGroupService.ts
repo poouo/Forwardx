@@ -3,7 +3,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
 
-export type ForwardGroupMode = "failover" | "chain";
+export type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
 
 export type ForwardGroupMemberRequest = {
@@ -17,7 +17,9 @@ export type ForwardGroupMemberRequest = {
 
 export type ForwardGroupInput = {
   name: string;
+  remark?: string | null;
   groupMode?: ForwardGroupMode;
+  entryGroupId?: number | null;
   groupType: ForwardGroupType;
   domain?: string | null;
   recordType?: "A" | "AAAA" | "CNAME";
@@ -35,14 +37,18 @@ export function normalizeForwardGroupMembers(
   groupType: ForwardGroupType,
   members: ForwardGroupMemberRequest[],
 ) {
-  const effectiveGroupType = groupMode === "chain" ? "host" : groupType;
+  const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
+  const effectiveGroupType = groupMode === "chain" || isCollectionGroup ? "host" : groupType;
   if (groupMode === "chain" && (members.length < 2 || members.length > 5)) {
     throw new Error("端口转发链需要配置 2-5 台主机");
+  }
+  if (isCollectionGroup && (members.length < 1 || members.length > 5)) {
+    throw new Error(groupMode === "entry" ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
   }
   const seen = new Set<string>();
   return members.map((member, index) => {
     if (member.memberType !== effectiveGroupType) {
-      throw new Error(groupMode === "chain" ? "端口转发链仅支持主机成员" : "成员类型必须与转发组类型一致");
+      throw new Error(groupMode === "chain" ? "端口转发链仅支持主机成员" : isCollectionGroup ? "入口组/出口组仅支持主机成员" : "成员类型必须与转发组类型一致");
     }
     const id = effectiveGroupType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0);
     if (!id) throw new Error(effectiveGroupType === "host" ? "请选择成员主机" : "请选择成员隧道");
@@ -53,63 +59,60 @@ export function normalizeForwardGroupMembers(
       memberType: effectiveGroupType,
       hostId: effectiveGroupType === "host" ? id : null,
       tunnelId: effectiveGroupType === "tunnel" ? id : null,
-      connectHost: groupMode === "chain" ? String(member.connectHost || "").trim() || null : null,
+      connectHost: groupMode === "chain" || groupMode === "exit" ? String(member.connectHost || "").trim() || null : null,
       priority: member.priority ?? index,
       isEnabled: groupMode === "chain" ? true : member.isEnabled ?? true,
     };
   });
 }
-
-function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
-  const groupMode: ForwardGroupMode = input.groupMode === "chain" ? "chain" : "failover";
-  const groupType: ForwardGroupType = groupMode === "chain" ? "host" : input.groupType;
+async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
+  const rawMode = input.groupMode;
+  const groupMode: ForwardGroupMode = rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
+  const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
+  const groupType: ForwardGroupType = groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
+  const domain = groupMode === "entry" || groupMode === "failover" ? input.domain?.trim() || null : null;
+  if (groupMode === "entry" && !domain) throw new Error("入口组需要指定 DDNS 域名");
   const members = normalizeForwardGroupMembers(groupMode, groupType, input.members);
-  const chinaHealthCheckEnabled = groupMode !== "chain" && !!input.chinaHealthCheckEnabled;
+  const chinaHealthCheckEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.chinaHealthCheckEnabled;
   const chinaHealthCheckTarget = chinaHealthCheckEnabled
     ? String(input.chinaHealthCheckTarget || "").trim() || null
     : null;
   if (chinaHealthCheckTarget) db.normalizeChinaHealthTarget(chinaHealthCheckTarget);
+  const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
+  const commonData = {
+    name: input.name,
+    remark: input.remark?.trim() || null,
+    groupMode,
+    entryGroupId,
+    groupType,
+    forwardType: groupType === "tunnel" ? "gost" : "iptables",
+    domain,
+    recordType,
+    failoverSeconds: input.failoverSeconds,
+    recoverSeconds: input.recoverSeconds,
+    chinaHealthCheckEnabled,
+    chinaHealthCheckTarget,
+    autoFailback: input.autoFailback,
+    isEnabled: input.isEnabled,
+  };
   return {
     data: {
-      name: input.name,
-      groupMode,
-      groupType,
-      forwardType: groupType === "tunnel" ? "gost" : "iptables",
-      domain: groupMode === "chain" ? null : input.domain?.trim() || null,
-      recordType: groupMode === "chain" ? "A" : input.recordType || "A",
-      failoverSeconds: input.failoverSeconds,
-      recoverSeconds: input.recoverSeconds,
-      chinaHealthCheckEnabled,
-      chinaHealthCheckTarget,
-      autoFailback: input.autoFailback,
-      isEnabled: input.isEnabled,
+      ...commonData,
       ...(userId ? { userId } : {}),
     },
     createData: {
-      name: input.name,
-      groupMode,
-      groupType,
-      forwardType: groupType === "tunnel" ? "gost" : "iptables",
-      domain: groupMode === "chain" ? null : input.domain?.trim() || null,
-      recordType: groupMode === "chain" ? "A" : input.recordType || "A",
+      ...commonData,
       sourcePort: 1,
       protocol: "both",
       targetIp: "0.0.0.0",
       targetPort: 1,
-      failoverSeconds: input.failoverSeconds,
-      recoverSeconds: input.recoverSeconds,
-      chinaHealthCheckEnabled,
-      chinaHealthCheckTarget,
-      autoFailback: input.autoFailback,
-      isEnabled: input.isEnabled,
       userId,
     },
     members,
   };
 }
-
 export async function createForwardGroupFromInput(input: ForwardGroupInput, userId: number) {
-  const normalized = normalizeForwardGroupInput(input, userId);
+  const normalized = await normalizeForwardGroupInput(input, userId);
   const id = await db.createForwardGroup(normalized.createData as any, normalized.members as any);
   if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
   return id;
@@ -117,7 +120,7 @@ export async function createForwardGroupFromInput(input: ForwardGroupInput, user
 
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
   const existing = await db.getForwardGroupById(id) as any;
-  const normalized = normalizeForwardGroupInput(input);
+  const normalized = await normalizeForwardGroupInput(input);
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");

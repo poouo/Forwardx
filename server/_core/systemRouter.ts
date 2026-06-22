@@ -735,6 +735,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     ddns: {
       enabled: false,
       provider: "disabled",
+      ttl: 600,
       cloudflareZoneId: "",
       cloudflareTokenMasked: "",
       huaweicloudAccessKeyId: "",
@@ -742,7 +743,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       huaweicloudRegion: "cn-north-4",
       huaweicloudEndpoint: "",
       huaweicloudZoneId: "",
-      huaweicloudTtl: 300,
+      huaweicloudTtl: 600,
       huaweicloudLine: "default_view",
       aliyunAccessKeyId: "",
       aliyunAccessKeySecretMasked: "",
@@ -870,6 +871,7 @@ export const systemRouter = router({
       ddns: {
         enabled: all.ddnsEnabled === "true",
         provider: all.ddnsProvider || "disabled",
+        ttl: Number(all.ddnsTtl || all.ddnsHuaweiCloudTtl || all.ddnsAliyunTtl || all.ddnsTencentCloudTtl || 600),
         cloudflareZoneId: all.ddnsCloudflareZoneId ?? "",
         cloudflareTokenMasked: maskSecret(all.ddnsCloudflareApiToken),
         huaweicloudAccessKeyId: all.ddnsHuaweiCloudAccessKeyId ?? "",
@@ -877,18 +879,18 @@ export const systemRouter = router({
         huaweicloudRegion: all.ddnsHuaweiCloudRegion ?? "cn-north-4",
         huaweicloudEndpoint: all.ddnsHuaweiCloudEndpoint ?? "",
         huaweicloudZoneId: all.ddnsHuaweiCloudZoneId ?? "",
-        huaweicloudTtl: Number(all.ddnsHuaweiCloudTtl || 300),
+        huaweicloudTtl: Number(all.ddnsHuaweiCloudTtl || all.ddnsTtl || 600),
         huaweicloudLine: all.ddnsHuaweiCloudLine ?? "default_view",
         aliyunAccessKeyId: all.ddnsAliyunAccessKeyId ?? "",
         aliyunAccessKeySecretMasked: maskSecret(all.ddnsAliyunAccessKeySecret),
         aliyunDomainName: all.ddnsAliyunDomainName ?? "",
         aliyunEndpoint: all.ddnsAliyunEndpoint ?? "https://alidns.aliyuncs.com",
-        aliyunTtl: Number(all.ddnsAliyunTtl || 600),
+        aliyunTtl: Number(all.ddnsAliyunTtl || all.ddnsTtl || 600),
         aliyunLine: all.ddnsAliyunLine ?? "default",
         tencentcloudSecretId: all.ddnsTencentCloudSecretId ?? "",
         tencentcloudSecretKeyMasked: maskSecret(all.ddnsTencentCloudSecretKey),
         tencentcloudDomainName: all.ddnsTencentCloudDomainName ?? "",
-        tencentcloudTtl: Number(all.ddnsTencentCloudTtl || 600),
+        tencentcloudTtl: Number(all.ddnsTencentCloudTtl || all.ddnsTtl || 600),
         tencentcloudRecordLine: all.ddnsTencentCloudRecordLine ?? "默认",
         tencentcloudRecordLineId: all.ddnsTencentCloudRecordLineId ?? "",
         webhookUrl: all.ddnsWebhookUrl ?? "",
@@ -970,6 +972,7 @@ export const systemRouter = router({
         ddns: z.object({
           enabled: z.boolean().optional(),
           provider: ddnsProviderSchema.optional(),
+          ttl: z.number().int().min(60).max(86400).optional(),
           cloudflareZoneId: z.string().max(256).optional(),
           cloudflareApiToken: z.string().max(512).optional(),
           clearCloudflareApiToken: z.boolean().optional(),
@@ -1164,6 +1167,13 @@ export const systemRouter = router({
         if (input.ddns.tencentcloudTtl !== undefined) next.ddnsTencentCloudTtl = String(input.ddns.tencentcloudTtl);
         if (input.ddns.tencentcloudRecordLine !== undefined) next.ddnsTencentCloudRecordLine = input.ddns.tencentcloudRecordLine.trim() || null;
         if (input.ddns.tencentcloudRecordLineId !== undefined) next.ddnsTencentCloudRecordLineId = input.ddns.tencentcloudRecordLineId.trim() || null;
+        if (input.ddns.ttl !== undefined) {
+          const ttl = String(input.ddns.ttl);
+          next.ddnsTtl = ttl;
+          next.ddnsHuaweiCloudTtl = ttl;
+          next.ddnsAliyunTtl = ttl;
+          next.ddnsTencentCloudTtl = ttl;
+        }
         if (input.ddns.webhookUrl !== undefined) next.ddnsWebhookUrl = input.ddns.webhookUrl.trim() || null;
         if (input.ddns.webhookMethod !== undefined) next.ddnsWebhookMethod = input.ddns.webhookMethod;
         if (input.ddns.webhookHeaders !== undefined) next.ddnsWebhookHeaders = input.ddns.webhookHeaders.trim() || null;
