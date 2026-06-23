@@ -4,7 +4,7 @@ import AgentTokenManager, { type AgentTokenViewMode } from "@/components/AgentTo
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
 import HostCard from "@/components/hosts/HostCard";
-import HostProbeServiceManager from "@/components/hosts/HostProbeServiceManager";
+import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
 import {
   agentDetectedIpText,
@@ -898,6 +898,7 @@ const HOST_DIALOG_TABS = [
 
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
+const HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
 
 function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
@@ -937,6 +938,25 @@ function storeAgentTokenViewMode(viewMode: AgentTokenViewMode) {
   }
 }
 
+function getStoredHostProbeServiceViewMode(): HostProbeServiceViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeHostProbeServiceViewMode(viewMode: HostProbeServiceViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
 function HostsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -970,6 +990,7 @@ function HostsContent() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
+  const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
   const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
   const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
@@ -1005,6 +1026,11 @@ function HostsContent() {
   const handleTokenViewModeChange = (mode: AgentTokenViewMode) => {
     setTokenViewMode(mode);
     storeAgentTokenViewMode(mode);
+  };
+
+  const handleServiceViewModeChange = (mode: HostProbeServiceViewMode) => {
+    setServiceViewMode(mode);
+    storeHostProbeServiceViewMode(mode);
   };
 
   const createMutation = trpc.hosts.create.useMutation({
@@ -1480,6 +1506,28 @@ function HostsContent() {
               </Button>
             </div>
           )}
+          {activeManageTab === "services" && user?.role === "admin" && (
+            <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+              <Button
+                variant={serviceViewMode === "card" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="卡片视图"
+                onClick={() => handleServiceViewModeChange("card")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={serviceViewMode === "table" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="列表视图"
+                onClick={() => handleServiceViewModeChange("table")}
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
@@ -1824,6 +1872,9 @@ function HostsContent() {
             <HostProbeServiceManager
               createSignal={serviceCreateSignal}
               onCreateSignalHandled={() => setServiceCreateSignal(0)}
+              viewMode={serviceViewMode}
+              onViewModeChange={handleServiceViewModeChange}
+              hideViewModeToggle
             />
           </TabsContent>
         )}

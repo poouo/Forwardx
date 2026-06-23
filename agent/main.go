@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.108"
+var Version = "2.2.109"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -2123,7 +2123,7 @@ func reconcileRemovePort(port string) {
 func nftRuleCleanupCmd(ruleID int) string {
 	id := strconv.Itoa(ruleID)
 	comment := "fwx-rule-" + id
-	return "nft list table inet forwardx >/dev/null 2>&1 && { for c in prerouting postrouting forward traffic_prerouting traffic_postrouting; do for h in $(nft -a list chain inet forwardx \"$c\" 2>/dev/null | awk -v marker=\"" + comment + "\" '$0 ~ marker {print $NF}'); do nft delete rule inet forwardx \"$c\" handle \"$h\" 2>/dev/null || true; done; done; nft flush chain inet forwardx in_" + id + " 2>/dev/null || true; nft delete chain inet forwardx in_" + id + " 2>/dev/null || true; nft flush chain inet forwardx out_" + id + " 2>/dev/null || true; nft delete chain inet forwardx out_" + id + " 2>/dev/null || true; } || true"
+	return "if nft list table inet forwardx >/dev/null 2>&1; then for c in prerouting postrouting forward traffic_prerouting traffic_postrouting traffic_forward; do for h in $(nft -a list chain inet forwardx \"$c\" 2>/dev/null | awk -v marker=\"" + comment + "\" '$0 ~ marker {print $NF}'); do nft delete rule inet forwardx \"$c\" handle \"$h\" 2>/dev/null; true; done; done; nft flush chain inet forwardx in_" + id + " 2>/dev/null; true; nft delete chain inet forwardx in_" + id + " 2>/dev/null; true; nft flush chain inet forwardx out_" + id + " 2>/dev/null; true; nft delete chain inet forwardx out_" + id + " 2>/dev/null; true; fi; true"
 }
 
 func iptablesAgentBinaries() []string {
@@ -2145,13 +2145,16 @@ func iptablesAgentBinaryForTarget(targetIP string) string {
 
 func iptablesAgentCommand(binary string, args string, optional bool) string {
 	if binary == "ip6tables" {
-		cmd := "command -v ip6tables >/dev/null 2>&1 && ip6tables " + args
 		if optional {
-			return cmd + " || true"
+			return "if command -v ip6tables >/dev/null 2>&1; then ip6tables " + args + "; fi; true"
 		}
-		return cmd
+		return "if command -v ip6tables >/dev/null 2>&1; then ip6tables " + args + "; else exit 1; fi"
 	}
-	return "iptables " + args
+	cmd := "iptables " + args
+	if optional {
+		return cmd + "; true"
+	}
+	return cmd
 }
 
 func iptablesAgentEnsure(binary string, table string, rule string) string {
@@ -2159,9 +2162,9 @@ func iptablesAgentEnsure(binary string, table string, rule string) string {
 	if table != "" {
 		tableArg = "-t " + table + " "
 	}
-	cmd := binary + " " + tableArg + "-C " + rule + " 2>/dev/null || " + binary + " " + tableArg + "-A " + rule
+	cmd := "if " + binary + " " + tableArg + "-C " + rule + " 2>/dev/null; then :; else " + binary + " " + tableArg + "-A " + rule + "; fi"
 	if binary == "ip6tables" {
-		return "command -v ip6tables >/dev/null 2>&1 && { " + cmd + "; } || true"
+		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi"
 	}
 	return cmd
 }
@@ -2171,19 +2174,19 @@ func iptablesAgentDelete(binary string, table string, rule string) string {
 	if table != "" {
 		tableArg = "-t " + table + " "
 	}
-	cmd := "while " + binary + " " + tableArg + "-C " + rule + " 2>/dev/null; do " + binary + " " + tableArg + "-D " + rule + " 2>/dev/null || break; done"
+	cmd := "while " + binary + " " + tableArg + "-C " + rule + " 2>/dev/null; do if " + binary + " " + tableArg + "-D " + rule + " 2>/dev/null; then :; else break; fi; done"
 	if binary == "ip6tables" {
-		return "command -v ip6tables >/dev/null 2>&1 && { " + cmd + "; } || true"
+		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi; true"
 	}
-	return cmd + " || true"
+	return cmd + "; true"
 }
 
 func iptablesAgentFlush(binary string, table string, chain string) string {
-	return iptablesAgentCommand(binary, "-t "+table+" -F "+chain+" 2>/dev/null || true", true)
+	return iptablesAgentCommand(binary, "-t "+table+" -F "+chain+" 2>/dev/null", true)
 }
 
 func iptablesAgentDeleteChain(binary string, table string, chain string) string {
-	return iptablesAgentCommand(binary, "-t "+table+" -X "+chain+" 2>/dev/null || true", true)
+	return iptablesAgentCommand(binary, "-t "+table+" -X "+chain+" 2>/dev/null", true)
 }
 
 func iptablesAgentDnatTarget(targetIP string, targetPort int) string {

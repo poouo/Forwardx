@@ -27,7 +27,7 @@ type ServiceForm = {
   isEnabled: boolean;
 };
 
-type ServiceViewMode = "card" | "table";
+export type HostProbeServiceViewMode = "card" | "table";
 
 const SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
 
@@ -43,7 +43,7 @@ const defaultForm: ServiceForm = {
   isEnabled: true,
 };
 
-function getStoredServiceViewMode(): ServiceViewMode {
+function getStoredServiceViewMode(): HostProbeServiceViewMode {
   if (typeof window === "undefined") return "card";
   try {
     const value = window.localStorage.getItem(SERVICE_VIEW_MODE_STORAGE_KEY);
@@ -53,7 +53,7 @@ function getStoredServiceViewMode(): ServiceViewMode {
   }
 }
 
-function storeServiceViewMode(viewMode: ServiceViewMode) {
+function storeServiceViewMode(viewMode: HostProbeServiceViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(SERVICE_VIEW_MODE_STORAGE_KEY, viewMode);
@@ -157,7 +157,21 @@ function ServiceCard({
   );
 }
 
-export default function HostProbeServiceManager({ createSignal, onCreateSignalHandled }: { createSignal: number; onCreateSignalHandled: () => void }) {
+type HostProbeServiceManagerProps = {
+  createSignal: number;
+  onCreateSignalHandled: () => void;
+  viewMode?: HostProbeServiceViewMode;
+  onViewModeChange?: (viewMode: HostProbeServiceViewMode) => void;
+  hideViewModeToggle?: boolean;
+};
+
+export default function HostProbeServiceManager({
+  createSignal,
+  onCreateSignalHandled,
+  viewMode: controlledViewMode,
+  onViewModeChange,
+  hideViewModeToggle = false,
+}: HostProbeServiceManagerProps) {
   const utils = trpc.useUtils();
   const { data: hosts = [] } = trpc.hosts.list.useQuery(undefined, { staleTime: 30000 });
   const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: 30000 });
@@ -165,7 +179,8 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
-  const [viewMode, setViewMode] = useState<ServiceViewMode>(() => getStoredServiceViewMode());
+  const [internalViewMode, setInternalViewMode] = useState<HostProbeServiceViewMode>(() => getStoredServiceViewMode());
+  const viewMode = controlledViewMode ?? internalViewMode;
   const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
   const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
   const availableScopeHosts = useMemo(
@@ -196,9 +211,10 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
     onError: (err) => toast.error(err.message || "删除服务失败"),
   });
 
-  const handleViewModeChange = (nextViewMode: ServiceViewMode) => {
-    setViewMode(nextViewMode);
+  const handleViewModeChange = (nextViewMode: HostProbeServiceViewMode) => {
+    if (controlledViewMode === undefined) setInternalViewMode(nextViewMode);
     storeServiceViewMode(nextViewMode);
+    onViewModeChange?.(nextViewMode);
   };
 
   useEffect(() => {
@@ -272,6 +288,7 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
 
   return (
     <div className="space-y-4">
+      {!hideViewModeToggle && (
       <div className="flex justify-end">
         <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
           <Button
@@ -294,6 +311,7 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
           </Button>
         </div>
       </div>
+      )}
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardContent className="p-0">

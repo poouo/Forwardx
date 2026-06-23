@@ -835,8 +835,14 @@ func iptablesLegacyBytes(chain string) uint64 {
 }
 
 func nftablesBytes(ruleID int, port string) (uint64, uint64) {
-	in := nftablesRuleBytes("traffic_prerouting", ruleID, "in")
-	out := nftablesRuleBytes("traffic_postrouting", ruleID, "out")
+	in := nftablesRuleBytes("traffic_forward", ruleID, "in")
+	out := nftablesRuleBytes("traffic_forward", ruleID, "out")
+	if in == 0 {
+		in = nftablesRuleBytes("traffic_prerouting", ruleID, "in")
+	}
+	if out == 0 {
+		out = nftablesRuleBytes("traffic_postrouting", ruleID, "out")
+	}
 	// Older generated nftables rules stored counters in per-rule chains.
 	if in == 0 {
 		in = nftablesChainBytes("in_" + strconv.Itoa(ruleID))

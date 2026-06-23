@@ -14,40 +14,46 @@ function iptablesBinaryForTarget(targetIp: unknown): IptablesBinary {
   return isIpv6Address(targetIp) ? "ip6tables" : "iptables";
 }
 
+function ignoreShellFailure(command: string) {
+  return `${command}; true`;
+}
+
 function iptablesCommand(binary: IptablesBinary, args: string, optional = false) {
   if (binary === "ip6tables") {
-    const command = `command -v ip6tables >/dev/null 2>&1 && ip6tables ${args}`;
-    return optional ? `${command} || true` : command;
+    return optional
+      ? `if command -v ip6tables >/dev/null 2>&1; then ip6tables ${args}; fi; true`
+      : `if command -v ip6tables >/dev/null 2>&1; then ip6tables ${args}; else exit 1; fi`;
   }
   const command = `iptables ${args}`;
-  return optional ? `${command} || true` : command;
+  return optional ? ignoreShellFailure(command) : command;
 }
 
 function iptablesEnsure(binary: IptablesBinary, table: string | null, rule: string, optional = false) {
   const tableArg = table ? `-t ${table} ` : "";
-  const command = `${binary} ${tableArg}-C ${rule} 2>/dev/null || ${binary} ${tableArg}-A ${rule}`;
+  const command = `if ${binary} ${tableArg}-C ${rule} 2>/dev/null; then :; else ${binary} ${tableArg}-A ${rule}; fi`;
   if (binary === "ip6tables") {
-    const guarded = `command -v ip6tables >/dev/null 2>&1 && { ${command}; }`;
-    return optional ? `${guarded} || true` : guarded;
+    return optional
+      ? `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`
+      : `if command -v ip6tables >/dev/null 2>&1; then ${command}; else exit 1; fi`;
   }
-  return optional ? `${command} || true` : command;
+  return optional ? ignoreShellFailure(command) : command;
 }
 
 function iptablesDelete(binary: IptablesBinary, table: string | null, rule: string) {
   const tableArg = table ? `-t ${table} ` : "";
-  const command = `while ${binary} ${tableArg}-C ${rule} 2>/dev/null; do ${binary} ${tableArg}-D ${rule} 2>/dev/null || break; done`;
+  const command = `while ${binary} ${tableArg}-C ${rule} 2>/dev/null; do if ${binary} ${tableArg}-D ${rule} 2>/dev/null; then :; else break; fi; done`;
   if (binary === "ip6tables") {
-    return `command -v ip6tables >/dev/null 2>&1 && { ${command}; } || true`;
+    return `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`;
   }
-  return `${command} || true`;
+  return ignoreShellFailure(command);
 }
 
 function iptablesFlush(binary: IptablesBinary, table: string, chain: string) {
-  return iptablesCommand(binary, `-t ${table} -F ${chain} 2>/dev/null || true`, true);
+  return iptablesCommand(binary, `-t ${table} -F ${chain} 2>/dev/null`, true);
 }
 
 function iptablesDeleteChain(binary: IptablesBinary, table: string, chain: string) {
-  return iptablesCommand(binary, `-t ${table} -X ${chain} 2>/dev/null || true`, true);
+  return iptablesCommand(binary, `-t ${table} -X ${chain} 2>/dev/null`, true);
 }
 
 function iptablesDnatTarget(targetIp: unknown, targetPort: unknown) {
@@ -136,21 +142,31 @@ const nftChain = (prefix: string, id: number) => `${prefix}_${id}`;
 const nftComment = (rule: any) => `fwx-rule-${Number(rule.id) || 0}`;
 const nftTrafficPreroutingChain = "traffic_prerouting";
 const nftTrafficPostroutingChain = "traffic_postrouting";
+const nftTrafficForwardChain = "traffic_forward";
+
+function nftOptional(command: string) {
+  return `${command} 2>/dev/null; true`;
+}
+
+function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
+  return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
+}
 
 export function buildNftCleanupCmds(rule: any): string[] {
   const ruleId = Number(rule.id) || 0;
   const comment = nftComment(rule);
   return [
-    `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null || true; done`,
-    `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} postrouting 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} postrouting handle "$h" 2>/dev/null || true; done`,
-    `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} forward 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} forward handle "$h" 2>/dev/null || true; done`,
-    `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} ${nftTrafficPreroutingChain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${nftTrafficPreroutingChain} handle "$h" 2>/dev/null || true; done`,
-    `nft list table inet ${nftTable} >/dev/null 2>&1 || exit 0; for h in $(nft -a list chain inet ${nftTable} ${nftTrafficPostroutingChain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${nftTrafficPostroutingChain} handle "$h" 2>/dev/null || true; done`,
-    `nft flush chain inet ${nftTable} ${nftChain("in", ruleId)} 2>/dev/null || true`,
-    `nft delete chain inet ${nftTable} ${nftChain("in", ruleId)} 2>/dev/null || true`,
-    `nft flush chain inet ${nftTable} ${nftChain("out", ruleId)} 2>/dev/null || true`,
-    `nft delete chain inet ${nftTable} ${nftChain("out", ruleId)} 2>/dev/null || true`,
-    `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null || true`,
+    nftDeleteCommentedRulesCmd("prerouting", comment),
+    nftDeleteCommentedRulesCmd("postrouting", comment),
+    nftDeleteCommentedRulesCmd("forward", comment),
+    nftDeleteCommentedRulesCmd(nftTrafficPreroutingChain, comment),
+    nftDeleteCommentedRulesCmd(nftTrafficPostroutingChain, comment),
+    nftDeleteCommentedRulesCmd(nftTrafficForwardChain, comment),
+    nftOptional(`nft flush chain inet ${nftTable} ${nftChain("in", ruleId)}`),
+    nftOptional(`nft delete chain inet ${nftTable} ${nftChain("in", ruleId)}`),
+    nftOptional(`nft flush chain inet ${nftTable} ${nftChain("out", ruleId)}`),
+    nftOptional(`nft delete chain inet ${nftTable} ${nftChain("out", ruleId)}`),
+    `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`,
   ];
 }
 
@@ -163,26 +179,30 @@ export function buildNftForwardCmds(rule: any): string[] {
   const cmds = [
     `command -v nft >/dev/null 2>&1`,
     `sysctl -w net.ipv4.ip_forward=1 >/dev/null`,
-    `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true`,
-    `nft add table inet ${nftTable} 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }' 2>/dev/null || true`,
+    `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1; true`,
+    nftOptional(`nft add table inet ${nftTable}`),
+    nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficForwardChain} '{ type filter hook forward priority -150; policy accept; }'`),
     ...buildNftCleanupCmds(rule),
-    `nft add table inet ${nftTable} 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }' 2>/dev/null || true`,
-    `nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }' 2>/dev/null || true`,
+    nftOptional(`nft add table inet ${nftTable}`),
+    nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }'`),
+    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficForwardChain} '{ type filter hook forward priority -150; policy accept; }'`),
   ];
   for (const proto of protos) {
     cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
     cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment "${comment}:in"`);
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related counter accept comment "${comment}:out"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter comment "${comment}:in"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}"`);
   }
   return cmds;
 }

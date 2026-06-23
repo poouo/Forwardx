@@ -601,17 +601,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const accessLimitBinaries: AccessLimitBinary[] = ["iptables", "ip6tables"];
     const accessLimitCommand = (binary: AccessLimitBinary, command: string) => (
       binary === "ip6tables"
-        ? `command -v ip6tables >/dev/null 2>&1 && { ${command}; } || true`
-        : command
+        ? `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`
+        : `${command}; true`
     );
+    const accessLimitDeleteJump = (binary: AccessLimitBinary, chainName: string, port: number, scopeChain: string) => (
+      accessLimitCommand(binary, `while ${binary} -C ${chainName} -p tcp --dport ${port} -j ${scopeChain} 2>/dev/null; do if ${binary} -D ${chainName} -p tcp --dport ${port} -j ${scopeChain} 2>/dev/null; then :; else break; fi; done`)
+    );
+    const accessLimitEnsureJump = (binary: AccessLimitBinary, chainName: string, port: number, scopeChain: string) => (
+      accessLimitCommand(binary, `if ${binary} -C ${chainName} -p tcp --dport ${port} -j ${scopeChain} 2>/dev/null; then :; else ${binary} -I ${chainName} -p tcp --dport ${port} -j ${scopeChain}; fi`)
+    );
+    const accessLimitOptional = (binary: AccessLimitBinary, command: string) => accessLimitCommand(binary, `${command} 2>/dev/null`);
     const accessScopeName = (scope: string) => `FWX_LIMIT_${scope.replace(/[^A-Za-z0-9_]/g, "_").slice(0, 40)}`;
     const buildAccessLimitCleanupCmds = (port: number, scope: string): string[] => {
       const chain = accessScopeName(scope);
       const cmds: string[] = [];
       for (const binary of accessLimitBinaries) {
         cmds.push(
-          accessLimitCommand(binary, `while ${binary} -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null; do ${binary} -D INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || break; done`),
-          accessLimitCommand(binary, `while ${binary} -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null; do ${binary} -D FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || break; done`),
+          accessLimitDeleteJump(binary, "INPUT", port, chain),
+          accessLimitDeleteJump(binary, "FORWARD", port, chain),
         );
       }
       return cmds;
@@ -625,8 +632,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       for (const binary of accessLimitBinaries) {
         const mask = binary === "ip6tables" ? 128 : 32;
         cmds.push(
-          accessLimitCommand(binary, `${binary} -N ${chain} 2>/dev/null || true`),
-          accessLimitCommand(binary, `${binary} -F ${chain} 2>/dev/null || true`),
+          accessLimitOptional(binary, `${binary} -N ${chain}`),
+          accessLimitOptional(binary, `${binary} -F ${chain}`),
         );
         if (maxConnections > 0) {
           cmds.push(accessLimitCommand(binary, `${binary} -A ${chain} -p tcp -m connlimit --connlimit-above ${maxConnections} --connlimit-mask 0 -j REJECT --reject-with tcp-reset`));
@@ -636,8 +643,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         cmds.push(
           accessLimitCommand(binary, `${binary} -A ${chain} -j RETURN`),
-          accessLimitCommand(binary, `${binary} -C INPUT -p tcp --dport ${port} -j ${chain} 2>/dev/null || ${binary} -I INPUT -p tcp --dport ${port} -j ${chain}`),
-          accessLimitCommand(binary, `${binary} -C FORWARD -p tcp --dport ${port} -j ${chain} 2>/dev/null || ${binary} -I FORWARD -p tcp --dport ${port} -j ${chain}`),
+          accessLimitEnsureJump(binary, "INPUT", port, chain),
+          accessLimitEnsureJump(binary, "FORWARD", port, chain),
         );
       }
       return cmds;

@@ -551,7 +551,7 @@ export default function AgentTokenManager({
           ) : tokens && tokens.length > 0 ? (
             <>
               {viewMode === "card" ? (
-                <AutoAnimateContainer className="standard-card-grid gap-4 p-3">
+                <AutoAnimateContainer key="agent-token-card-view" className="standard-card-grid card-mode-transition gap-4 p-3" duration={220}>
                   {(tokens as any[]).map((tokenItem: any) => (
                     <AgentTokenCard
                       key={tokenItem.id}
@@ -564,7 +564,7 @@ export default function AgentTokenManager({
                   ))}
                 </AutoAnimateContainer>
               ) : (
-              <>
+              <div key="agent-token-table-view" className="card-mode-transition">
               <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
                 {(tokens as any[]).map((tokenItem: any) => (
                   <AgentTokenCard
@@ -627,7 +627,7 @@ export default function AgentTokenManager({
                   </TableBody>
                 </Table>
               </div>
-              </>
+              </div>
               )}
             </>
           ) : (

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.172] - 2026-06-24
+
+### Fixed
+- Fixed firewall command generation for iptables, ip6tables, and nftables so forwarding rules no longer depend on fallback shell operators that can be mangled in some Agent environments.
+- Fixed missing IPv6 firewall forwarding rules and related traffic counters for port forwarding, forward chains, and tunnel paths.
+- Moved nftables forwarding traffic counters into the traffic_forward chain so accepted IPv4 and IPv6 packets are counted before later accept rules can bypass counters.
+- Updated Agent-side traffic counter repair commands and access-limit chain commands to use the same safer shell form.
+- Included host service view-switch placement and card/list transition refinements from the current working tree.
+
+### Versions
+- Bumped panel version to 2.3.172 and Agent target version to 2.2.109.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.172.
+
 ## [2.3.171] - 2026-06-23
 
 ### 修复与优化
