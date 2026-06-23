@@ -1782,9 +1782,10 @@ function TelegramBotSettingsCard() {
   useEffect(() => {
     if (settings) {
       setTelegramEnabled(!!settings.telegram?.enabled);
-      setTelegramExpiryReminder(!!settings.telegram?.expiryReminder);
-      setTelegramTrafficReminder(!!settings.telegram?.trafficReminder);
-      setTelegramHostStatusNotify(!!settings.telegram?.hostStatusNotify);
+      const telegramReady = !!settings.telegram?.enabled && !!settings.telegram?.configured;
+      setTelegramExpiryReminder(telegramReady && !!settings.telegram?.expiryReminder);
+      setTelegramTrafficReminder(telegramReady && !!settings.telegram?.trafficReminder);
+      setTelegramHostStatusNotify(telegramReady && !!settings.telegram?.hostStatusNotify);
       setTelegramTrafficThreshold(Number(settings.telegram?.trafficReminderThreshold || 20));
     }
   }, [settings]);
@@ -1803,13 +1804,24 @@ function TelegramBotSettingsCard() {
 
   const handleSaveTelegram = () => {
     const canSubmitToken = !settings?.telegram?.configured && settings?.telegram?.tokenSource !== "env";
+    const nextToken = canSubmitToken ? telegramBotTokenInput.trim() : "";
+    const hasTelegramToken = !!settings?.telegram?.configured || settings?.telegram?.tokenSource === "env" || !!nextToken;
+    const remindersReady = telegramEnabled && !!settings?.telegram?.configured;
+    if (telegramEnabled && !hasTelegramToken) {
+      toast.error("请先填写 Bot Token");
+      return;
+    }
+    if ((telegramExpiryReminder || telegramTrafficReminder || telegramHostStatusNotify) && !remindersReady) {
+      toast.error("请先保存并启用 Telegram 机器人后再开启提醒");
+      return;
+    }
     updateSettingsMutation.mutate({
       telegram: {
         enabled: telegramEnabled,
-        botToken: canSubmitToken ? telegramBotTokenInput.trim() || undefined : undefined,
-        expiryReminder: telegramExpiryReminder,
-        trafficReminder: telegramTrafficReminder,
-        hostStatusNotify: telegramHostStatusNotify,
+        botToken: nextToken || undefined,
+        expiryReminder: remindersReady ? telegramExpiryReminder : false,
+        trafficReminder: remindersReady ? telegramTrafficReminder : false,
+        hostStatusNotify: remindersReady ? telegramHostStatusNotify : false,
         trafficReminderThreshold: telegramTrafficThreshold,
       },
     });
@@ -1839,6 +1851,9 @@ function TelegramBotSettingsCard() {
   const telegramTokenDisplayValue = telegramTokenLocked
     ? settings?.telegram?.tokenMasked || ""
     : telegramBotTokenInput;
+  const hasTelegramTokenForEnable = !!settings?.telegram?.configured || settings?.telegram?.tokenSource === "env" || !!telegramBotTokenInput.trim();
+  const telegramRemindersReady = telegramEnabled && !!settings?.telegram?.configured;
+  const telegramReminderHint = telegramRemindersReady ? null : "请先保存并启用 Telegram 机器人。";
 
   return (
     <>
@@ -1896,7 +1911,16 @@ function TelegramBotSettingsCard() {
                       {settings?.telegram?.botUsername ? `@${settings.telegram.botUsername}` : "保存 Token 后自动识别机器人"}
                     </p>
                   </div>
-                  <Switch checked={telegramEnabled} onCheckedChange={setTelegramEnabled} />
+                  <Switch
+                    checked={telegramEnabled}
+                    onCheckedChange={(checked) => {
+                      if (checked && !hasTelegramTokenForEnable) {
+                        toast.error("请先填写 Bot Token");
+                        return;
+                      }
+                      setTelegramEnabled(checked);
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -1912,27 +1936,39 @@ function TelegramBotSettingsCard() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">到期提醒</p>
-                    <p className="mt-1 text-xs text-muted-foreground">到期前 3 天提醒。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{telegramReminderHint || "到期前 3 天提醒。"}</p>
                   </div>
-                  <Switch checked={telegramExpiryReminder} onCheckedChange={setTelegramExpiryReminder} />
+                  <Switch
+                    checked={telegramRemindersReady && telegramExpiryReminder}
+                    disabled={!telegramRemindersReady}
+                    onCheckedChange={setTelegramExpiryReminder}
+                  />
                 </div>
               </div>
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">主机上线/离线通知</p>
-                    <p className="mt-1 text-xs text-muted-foreground">仅发送给已绑定 Telegram 的管理员。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{telegramReminderHint || "仅发送给已绑定 Telegram 的管理员。"}</p>
                   </div>
-                  <Switch checked={telegramHostStatusNotify} onCheckedChange={setTelegramHostStatusNotify} />
+                  <Switch
+                    checked={telegramRemindersReady && telegramHostStatusNotify}
+                    disabled={!telegramRemindersReady}
+                    onCheckedChange={setTelegramHostStatusNotify}
+                  />
                 </div>
               </div>
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">流量提醒</p>
-                    <p className="mt-1 text-xs text-muted-foreground">低于阈值时提醒。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{telegramReminderHint || "低于阈值时提醒。"}</p>
                   </div>
-                  <Switch checked={telegramTrafficReminder} onCheckedChange={setTelegramTrafficReminder} />
+                  <Switch
+                    checked={telegramRemindersReady && telegramTrafficReminder}
+                    disabled={!telegramRemindersReady}
+                    onCheckedChange={setTelegramTrafficReminder}
+                  />
                 </div>
                 <div className="mt-3 flex items-center gap-2">
                   <Label className="shrink-0 text-xs text-muted-foreground">阈值</Label>

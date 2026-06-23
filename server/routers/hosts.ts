@@ -13,6 +13,7 @@ import { scheduleHostDdnsUpdate } from "../hostDdns";
 import { clearTunnelRuntimeStatusForHost } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
+import { ENV } from "../env";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -114,6 +115,10 @@ function normalizeTrafficAlertThresholdPercent(value: unknown) {
   return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
 }
 
+function normalizeRenewalReminderDays(value: unknown) {
+  return Math.min(365, Math.max(1, Math.floor(Number(value) || 7)));
+}
+
 function normalizeHostDdnsIpVersion(value: unknown, recordType?: string) {
   if (value === "ipv6" || (!value && String(recordType || "").toUpperCase() === "AAAA")) return "ipv6";
   return "ipv4";
@@ -149,6 +154,16 @@ async function assertHostDdnsServiceConfigured() {
   }
 }
 
+async function assertTelegramBotConfiguredForHostReminder() {
+  const settings = await db.getAllSettings();
+  const envToken = ENV.telegramBotToken.trim();
+  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
+  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
+  if (!botEnabled || !botConfigured) {
+    throw new Error("请先在系统设置内配置并启用 Telegram 机器人");
+  }
+}
+
 function hostTrafficConfigPayload(input: {
   purchasedAt?: string | null;
   stoppedAt?: string | null;
@@ -156,6 +171,8 @@ function hostTrafficConfigPayload(input: {
   trafficMeasureMode?: "outbound" | "both" | "max";
   telegramTrafficAlertEnabled?: boolean;
   trafficAlertThresholdPercent?: number;
+  telegramRenewalReminderEnabled?: boolean;
+  renewalReminderDays?: number;
   trafficAutoReset?: boolean;
   trafficResetDay?: number;
 }) {
@@ -169,6 +186,8 @@ function hostTrafficConfigPayload(input: {
     trafficMeasureMode: normalizeHostTrafficMeasureMode(input.trafficMeasureMode),
     telegramTrafficAlertEnabled: !!input.telegramTrafficAlertEnabled,
     trafficAlertThresholdPercent: normalizeTrafficAlertThresholdPercent(input.trafficAlertThresholdPercent),
+    telegramRenewalReminderEnabled: !!input.telegramRenewalReminderEnabled,
+    renewalReminderDays: normalizeRenewalReminderDays(input.renewalReminderDays),
     trafficAutoReset: !!input.trafficAutoReset,
     trafficResetDay: input.trafficResetDay ?? 1,
   };
@@ -389,6 +408,8 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
+        telegramRenewalReminderEnabled: z.boolean().optional(),
+        renewalReminderDays: z.number().int().min(1).max(365).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         ddnsEnabled: z.boolean().optional(),
@@ -412,7 +433,10 @@ export const hostsRouter = router({
         const agentToken = nanoid(32);
         const trafficConfig = ctx.user.role === "admin"
           ? hostTrafficConfigPayload(input)
-          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, trafficAutoReset: false, trafficResetDay: 1 };
+          : { purchasedAt: null, stoppedAt: null, trafficLimit: 0, trafficMeasureMode: "both", telegramTrafficAlertEnabled: false, trafficAlertThresholdPercent: 20, telegramRenewalReminderEnabled: false, renewalReminderDays: 7, trafficAutoReset: false, trafficResetDay: 1 };
+        if (ctx.user.role === "admin" && (trafficConfig.telegramTrafficAlertEnabled || trafficConfig.telegramRenewalReminderEnabled)) {
+          await assertTelegramBotConfiguredForHostReminder();
+        }
         const ddnsConfig = ctx.user.role === "admin"
           ? normalizeHostDdnsPayload(input)
           : { ddnsEnabled: false, ddnsDomain: null, ddnsRecordType: "A", ddnsIpVersion: "ipv4" };
@@ -453,6 +477,8 @@ export const hostsRouter = router({
         trafficMeasureMode: hostTrafficMeasureModeSchema.optional(),
         telegramTrafficAlertEnabled: z.boolean().optional(),
         trafficAlertThresholdPercent: z.number().int().min(1).max(99).optional(),
+        telegramRenewalReminderEnabled: z.boolean().optional(),
+        renewalReminderDays: z.number().int().min(1).max(365).optional(),
         trafficAutoReset: z.boolean().optional(),
         trafficResetDay: z.number().int().min(1).max(31).optional(),
         ddnsEnabled: z.boolean().optional(),
@@ -507,7 +533,7 @@ export const hostsRouter = router({
               (data as any).lastDdnsError = null;
             }
           }
-          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
+          const hasTrafficConfigInput = ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "trafficAutoReset", "trafficResetDay"].some((key) => (data as any)[key] !== undefined);
           if (hasTrafficConfigInput) {
             const purchasedAt = (data as any).purchasedAt !== undefined
               ? parseOptionalDateInput((data as any).purchasedAt, "机器购买时间")
@@ -522,11 +548,22 @@ export const hostsRouter = router({
             if ((data as any).trafficMeasureMode !== undefined) (data as any).trafficMeasureMode = normalizeHostTrafficMeasureMode((data as any).trafficMeasureMode);
             if ((data as any).telegramTrafficAlertEnabled !== undefined) (data as any).telegramTrafficAlertEnabled = !!(data as any).telegramTrafficAlertEnabled;
             if ((data as any).trafficAlertThresholdPercent !== undefined) (data as any).trafficAlertThresholdPercent = normalizeTrafficAlertThresholdPercent((data as any).trafficAlertThresholdPercent);
+            if ((data as any).telegramRenewalReminderEnabled !== undefined) (data as any).telegramRenewalReminderEnabled = !!(data as any).telegramRenewalReminderEnabled;
+            if ((data as any).renewalReminderDays !== undefined) (data as any).renewalReminderDays = normalizeRenewalReminderDays((data as any).renewalReminderDays);
             if ((data as any).trafficAutoReset !== undefined) (data as any).trafficAutoReset = !!(data as any).trafficAutoReset;
             if ((data as any).trafficResetDay !== undefined) (data as any).trafficResetDay = Math.min(31, Math.max(1, Number((data as any).trafficResetDay) || 1));
+            const nextTelegramTrafficAlertEnabled = (data as any).telegramTrafficAlertEnabled !== undefined
+              ? !!(data as any).telegramTrafficAlertEnabled
+              : !!(host as any).telegramTrafficAlertEnabled;
+            const nextTelegramRenewalReminderEnabled = (data as any).telegramRenewalReminderEnabled !== undefined
+              ? !!(data as any).telegramRenewalReminderEnabled
+              : !!(host as any).telegramRenewalReminderEnabled;
+            if (nextTelegramTrafficAlertEnabled || nextTelegramRenewalReminderEnabled) {
+              await assertTelegramBotConfiguredForHostReminder();
+            }
           }
         } else {
-          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
+          for (const field of ["purchasedAt", "stoppedAt", "trafficLimit", "trafficMeasureMode", "telegramTrafficAlertEnabled", "trafficAlertThresholdPercent", "telegramRenewalReminderEnabled", "renewalReminderDays", "trafficAutoReset", "trafficResetDay", "ddnsEnabled", "ddnsDomain", "ddnsRecordType", "ddnsIpVersion"] as const) delete (data as any)[field];
         }
         if (ctx.user.role !== "admin") {
           for (const field of hostProtocolPolicyFields) delete (data as any)[field];

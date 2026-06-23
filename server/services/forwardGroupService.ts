@@ -108,6 +108,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     : null;
   if (chinaHealthCheckTarget) db.normalizeChinaHealthTarget(chinaHealthCheckTarget);
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
+  await db.validateForwardGroupRecordMembers({ groupMode, groupType, recordType }, members as any);
   const commonData = {
     name: input.name,
     remark: isCollectionGroup ? null : input.remark?.trim() || null,

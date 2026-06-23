@@ -616,6 +616,8 @@ type HostFormData = {
   trafficMeasureMode: HostTrafficMeasureMode;
   telegramTrafficAlertEnabled: boolean;
   trafficAlertThresholdPercent: number;
+  telegramRenewalReminderEnabled: boolean;
+  renewalReminderDays: number;
   trafficAutoReset: boolean;
   trafficResetDay: number;
   ddnsEnabled: boolean;
@@ -642,6 +644,8 @@ const defaultFormData: HostFormData = {
   trafficMeasureMode: "both",
   telegramTrafficAlertEnabled: false,
   trafficAlertThresholdPercent: 20,
+  telegramRenewalReminderEnabled: false,
+  renewalReminderDays: 7,
   trafficAutoReset: false,
   trafficResetDay: 1,
   ddnsEnabled: false,
@@ -679,6 +683,10 @@ function clampMonthlyResetDay(value: number) {
 
 function clampTrafficAlertThresholdPercent(value: number) {
   return Math.min(99, Math.max(1, Math.floor(Number(value) || 20)));
+}
+
+function clampRenewalReminderDays(value: number) {
+  return Math.min(365, Math.max(1, Math.floor(Number(value) || 7)));
 }
 
 function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
@@ -948,6 +956,8 @@ function HostsContent() {
     [systemSettings?.agentVersion]
   );
   const ddnsProviderEnabled = Boolean(systemSettings?.ddns?.enabled && systemSettings?.ddns?.provider && systemSettings.ddns.provider !== "disabled");
+  const telegramBotReady = Boolean(systemSettings?.telegram?.enabled && systemSettings?.telegram?.configured);
+  const telegramBotSettingsLoaded = Boolean(systemSettings?.telegram);
   const upgradingHosts = useRef<Map<number, string | null>>(new Map());
 
   const [showDialog, setShowDialog] = useState(false);
@@ -968,6 +978,18 @@ function HostsContent() {
   const lastAgentUpdateCheck = useRef(0);
   const [form, setForm] = useState<HostFormData>(defaultFormData);
   const watchMetricsMutation = trpc.hosts.watchMetrics.useMutation();
+
+  useEffect(() => {
+    if (!telegramBotSettingsLoaded || telegramBotReady) return;
+    setForm((current) => {
+      if (!current.telegramTrafficAlertEnabled && !current.telegramRenewalReminderEnabled) return current;
+      return {
+        ...current,
+        telegramTrafficAlertEnabled: false,
+        telegramRenewalReminderEnabled: false,
+      };
+    });
+  }, [telegramBotSettingsLoaded, telegramBotReady]);
 
   useEffect(() => {
     if (!hosts) return;
@@ -1104,8 +1126,10 @@ function HostsContent() {
       stoppedAt: formatDateTimeLocal(host.stoppedAt),
       trafficLimitGb: formatTrafficLimitGbInput(host.trafficLimit),
       trafficMeasureMode: normalizeHostTrafficMeasureMode(host.trafficMeasureMode),
-      telegramTrafficAlertEnabled: !!host.telegramTrafficAlertEnabled,
+      telegramTrafficAlertEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramTrafficAlertEnabled,
       trafficAlertThresholdPercent: clampTrafficAlertThresholdPercent(host.trafficAlertThresholdPercent),
+      telegramRenewalReminderEnabled: (!telegramBotSettingsLoaded || telegramBotReady) && !!host.telegramRenewalReminderEnabled,
+      renewalReminderDays: clampRenewalReminderDays(host.renewalReminderDays),
       trafficAutoReset: !!host.trafficAutoReset,
       trafficResetDay: clampMonthlyResetDay(host.trafficResetDay || 1),
       ddnsEnabled: !!host.ddnsEnabled,
@@ -1170,14 +1194,18 @@ function HostsContent() {
     }
     const trafficLimitBytes = Math.round(trafficLimitGb * HOST_TRAFFIC_GB_BYTES);
     const trafficAlertThresholdPercent = clampTrafficAlertThresholdPercent(form.trafficAlertThresholdPercent);
+    const renewalReminderDays = clampRenewalReminderDays(form.renewalReminderDays);
+    const canSaveTelegramReminder = telegramBotSettingsLoaded ? telegramBotReady : true;
     const trafficConfigPayload = user?.role === "admin"
       ? {
           purchasedAt: purchasedAt ? purchasedAt.toISOString() : null,
           stoppedAt: stoppedAt ? stoppedAt.toISOString() : null,
           trafficLimit: trafficLimitBytes,
           trafficMeasureMode: form.trafficMeasureMode,
-          telegramTrafficAlertEnabled: form.telegramTrafficAlertEnabled,
+          telegramTrafficAlertEnabled: canSaveTelegramReminder && form.telegramTrafficAlertEnabled,
           trafficAlertThresholdPercent,
+          telegramRenewalReminderEnabled: canSaveTelegramReminder && form.telegramRenewalReminderEnabled,
+          renewalReminderDays,
           trafficAutoReset: form.trafficAutoReset,
           trafficResetDay: clampMonthlyResetDay(form.trafficResetDay),
           ddnsEnabled: form.ddnsEnabled,
@@ -2171,7 +2199,9 @@ function HostsContent() {
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0 space-y-0.5">
                           <Label className="text-sm font-medium">流量耗尽提醒</Label>
-                          <p className="text-xs text-muted-foreground">开启后通过 TG 机器人发送提醒。</p>
+                          <p className="text-xs text-muted-foreground">
+                            {telegramBotReady ? "开启后通过 TG 机器人发送提醒。" : "请先在系统设置内配置并启用 TG 机器人。"}
+                          </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <div className="flex h-8 w-20 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
@@ -2186,7 +2216,38 @@ function HostsContent() {
                             />
                             <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-1.5 text-sm text-muted-foreground">%</span>
                           </div>
-                          <Switch checked={form.telegramTrafficAlertEnabled} onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })} />
+                          <Switch
+                            checked={telegramBotReady && form.telegramTrafficAlertEnabled}
+                            disabled={!telegramBotReady}
+                            onCheckedChange={(checked) => setForm({ ...form, telegramTrafficAlertEnabled: checked })}
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 space-y-0.5">
+                          <Label className="text-sm font-medium">续费提醒</Label>
+                          <p className="text-xs text-muted-foreground">
+                            {telegramBotReady ? "机器剩余日期不足指定天数时通过 TG 机器人提醒。" : "请先在系统设置内配置并启用 TG 机器人。"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex h-8 w-24 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+                            <Input
+                              className="h-8 rounded-none border-0 px-2 text-right focus-visible:ring-0 focus-visible:ring-offset-0"
+                              type="number"
+                              min={1}
+                              max={365}
+                              step={1}
+                              value={form.renewalReminderDays}
+                              onChange={(e) => setForm({ ...form, renewalReminderDays: clampRenewalReminderDays(Number(e.target.value)) })}
+                            />
+                            <span className="flex h-8 shrink-0 items-center border-l border-border/60 bg-muted/50 px-2 text-sm text-muted-foreground">天</span>
+                          </div>
+                          <Switch
+                            checked={telegramBotReady && form.telegramRenewalReminderEnabled}
+                            disabled={!telegramBotReady}
+                            onCheckedChange={(checked) => setForm({ ...form, telegramRenewalReminderEnabled: checked })}
+                          />
                         </div>
                       </div>
                       <div className="mt-2.5 flex min-h-9 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">

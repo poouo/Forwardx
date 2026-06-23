@@ -1,5 +1,7 @@
+import AutoAnimateContainer from "@/components/AutoAnimateContainer";
+import DataSectionLoading from "@/components/DataSectionLoading";
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
+import { Activity, LayoutGrid, List, Loader2, Pencil, RadioTower, Trash2 } from "lucide-react";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +27,10 @@ type ServiceForm = {
   isEnabled: boolean;
 };
 
+type ServiceViewMode = "card" | "table";
+
+const SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
+
 const defaultForm: ServiceForm = {
   name: "",
   method: "tcping",
@@ -37,6 +43,25 @@ const defaultForm: ServiceForm = {
   isEnabled: true,
 };
 
+function getStoredServiceViewMode(): ServiceViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(SERVICE_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeServiceViewMode(viewMode: ServiceViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SERVICE_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so service management remains usable.
+  }
+}
+
 function serviceTarget(service: any) {
   return service.method === "ping" ? service.targetIp : `${service.targetIp}:${service.targetPort || "-"}`;
 }
@@ -48,6 +73,90 @@ function scopeText(service: any, hostsById: Map<number, any>) {
   return "所有主机";
 }
 
+function ServiceActionButtons({
+  service,
+  onEdit,
+  onDelete,
+}: {
+  service: any;
+  onEdit: (service: any) => void;
+  onDelete: (service: any) => void;
+}) {
+  return (
+    <div className="flex justify-end gap-1">
+      <Button variant="ghost" size="icon" className="h-8 w-8" title="编辑服务" onClick={() => onEdit(service)}>
+        <Pencil className="h-3.5 w-3.5" />
+      </Button>
+      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" title="删除服务" onClick={() => onDelete(service)}>
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+function ServiceStatusBadge({ service }: { service: any }) {
+  return service.isEnabled !== false ? (
+    <Badge className="shrink-0 border-chart-2/25 bg-chart-2/10 text-chart-2 hover:bg-chart-2/15">启用</Badge>
+  ) : (
+    <Badge variant="outline" className="shrink-0 text-muted-foreground">停用</Badge>
+  );
+}
+
+function ServiceCard({
+  service,
+  hostsById,
+  onEdit,
+  onDelete,
+}: {
+  service: any;
+  hostsById: Map<number, any>;
+  onEdit: (service: any) => void;
+  onDelete: (service: any) => void;
+}) {
+  const target = serviceTarget(service);
+  const scope = scopeText(service, hostsById);
+  return (
+    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <CardContent className="space-y-4 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <Activity className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium" title={service.name}>{service.name}</p>
+                <Badge variant="outline" className="mt-1 px-1.5 py-0 text-[10px] uppercase">{service.method}</Badge>
+              </div>
+            </div>
+          </div>
+          <ServiceStatusBadge service={service} />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="min-w-0 rounded-md bg-muted/25 p-3">
+            <p className="mb-1 text-xs text-muted-foreground">目标</p>
+            <p className="truncate font-mono text-xs" title={target}>{target}</p>
+          </div>
+          <div className="min-w-0 rounded-md bg-muted/25 p-3">
+            <p className="mb-1 text-xs text-muted-foreground">运行时间</p>
+            <p className="text-sm tabular-nums">{service.intervalSeconds || 30}S</p>
+          </div>
+        </div>
+
+        <div className="min-w-0 rounded-md bg-muted/25 p-3">
+          <p className="mb-1 text-xs text-muted-foreground">主机范围</p>
+          <p className="truncate text-sm" title={scope}>{scope}</p>
+        </div>
+
+        <div className="flex justify-end border-t border-border/40 pt-2">
+          <ServiceActionButtons service={service} onEdit={onEdit} onDelete={onDelete} />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function HostProbeServiceManager({ createSignal, onCreateSignalHandled }: { createSignal: number; onCreateSignalHandled: () => void }) {
   const utils = trpc.useUtils();
   const { data: hosts = [] } = trpc.hosts.list.useQuery(undefined, { staleTime: 30000 });
@@ -56,6 +165,7 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
+  const [viewMode, setViewMode] = useState<ServiceViewMode>(() => getStoredServiceViewMode());
   const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
   const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
   const availableScopeHosts = useMemo(
@@ -85,6 +195,11 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
     onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success("服务已删除"); },
     onError: (err) => toast.error(err.message || "删除服务失败"),
   });
+
+  const handleViewModeChange = (nextViewMode: ServiceViewMode) => {
+    setViewMode(nextViewMode);
+    storeServiceViewMode(nextViewMode);
+  };
 
   useEffect(() => {
     if (createSignal <= 0) return;
@@ -151,18 +266,59 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
     setDialogOpen(true);
   };
 
+  const confirmDelete = (service: any) => {
+    if (confirm("确定要删除此服务吗？")) deleteMutation.mutate({ id: service.id });
+  };
+
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+          <Button
+            variant={viewMode === "card" ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8 rounded-none"
+            title="卡片视图"
+            onClick={() => handleViewModeChange("card")}
+          >
+            <LayoutGrid className="h-4 w-4" />
+          </Button>
+          <Button
+            variant={viewMode === "table" ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8 rounded-none"
+            title="列表视图"
+            onClick={() => handleViewModeChange("table")}
+          >
+            <List className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="flex min-h-[220px] items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在加载服务</div>
+            <div className="p-4">
+              <DataSectionLoading label="正在加载服务" />
+            </div>
           ) : (services as any[]).length === 0 ? (
             <div className="flex min-h-[220px] flex-col items-center justify-center text-muted-foreground">
               <RadioTower className="mb-3 h-9 w-9 opacity-40" />
               <p className="text-sm">暂无服务</p>
             </div>
+          ) : viewMode === "card" ? (
+            <AutoAnimateContainer className="standard-card-grid gap-4 p-3">
+              {(services as any[]).map((service) => (
+                <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
+              ))}
+            </AutoAnimateContainer>
           ) : (
+            <>
+            <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
+              {(services as any[]).map((service) => (
+                <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
+              ))}
+            </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -190,16 +346,14 @@ export default function HostProbeServiceManager({ createSignal, onCreateSignalHa
                       <TableCell className="max-w-[360px] truncate text-sm" title={scopeText(service, hostsById)}>{scopeText(service, hostsById)}</TableCell>
                       <TableCell className="text-sm tabular-nums">{service.intervalSeconds || 30}S</TableCell>
                       <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(service)}><Pencil className="h-3.5 w-3.5" /></Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => { if (confirm("确定要删除此服务吗？")) deleteMutation.mutate({ id: service.id }); }}><Trash2 className="h-3.5 w-3.5" /></Button>
-                        </div>
+                        <ServiceActionButtons service={service} onEdit={openEdit} onDelete={confirmDelete} />
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

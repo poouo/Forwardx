@@ -203,6 +203,8 @@ export const hosts = table("hosts", {
   trafficMeasureMode: varchar("trafficMeasureMode", { length: 16 }).notNull().default("both"),
   telegramTrafficAlertEnabled: boolean("telegramTrafficAlertEnabled").notNull().default(false),
   trafficAlertThresholdPercent: int("trafficAlertThresholdPercent").notNull().default(20),
+  telegramRenewalReminderEnabled: boolean("telegramRenewalReminderEnabled").notNull().default(false),
+  renewalReminderDays: int("renewalReminderDays").notNull().default(7),
   trafficAutoReset: boolean("trafficAutoReset").notNull().default(false),
   trafficResetDay: int("trafficResetDay").notNull().default(1),
   lastTrafficReset: epoch("lastTrafficReset"),

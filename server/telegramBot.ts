@@ -50,6 +50,7 @@ const pendingBindChats = new Map<string, number>();
 const pendingRedeemChats = new Map<string, number>();
 
 const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
+const LOGIN_SUCCESS_MESSAGE_DELETE_MS = 60 * 1000;
 const BIND_SESSION_TTL_MS = 10 * 60 * 1000;
 const REDEEM_SESSION_TTL_MS = 10 * 60 * 1000;
 const USER_PAGE_SIZE = 10;
@@ -249,6 +250,20 @@ async function editMessage(chatId: number | string, messageId: number, text: str
     disable_web_page_preview: true,
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
+}
+
+async function deleteMessage(chatId: number | string, messageId: number) {
+  await telegramApi("deleteMessage", {
+    chat_id: chatId,
+    message_id: messageId,
+  });
+}
+
+function deleteMessageLater(chatId: number | string, messageId: number, delayMs: number) {
+  const timer = setTimeout(() => {
+    deleteMessage(chatId, messageId).catch(() => undefined);
+  }, delayMs);
+  (timer as any).unref?.();
 }
 
 async function answerCallback(callbackId: string, text?: string) {
@@ -797,6 +812,7 @@ async function confirmMobileLogin(chatId: number | string, messageId: number, co
   }
   await db.createTelegramLoginCode(user.id, normalized, new Date(Date.now() + LOGIN_CODE_TTL_MS));
   await editMessage(chatId, messageId, "登录已确认，请返回 ForwardX。");
+  deleteMessageLater(chatId, messageId, LOGIN_SUCCESS_MESSAGE_DELETE_MS);
 }
 
 async function handleUsage(message: TelegramMessage, user: any) {

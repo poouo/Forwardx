@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   forwardGroupEvents,
@@ -48,6 +49,7 @@ type SyncForwardGroupRulesOptions = {
 };
 
 type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
+type ForwardGroupRecordType = "A" | "AAAA" | "CNAME";
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
 
@@ -93,6 +95,62 @@ function toDate(value: unknown): Date | null {
 
 function entryAddressForHost(host: any) {
   return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+}
+
+function manualEntryAddressForHost(host: any) {
+  return String(host?.entryIp || "").trim();
+}
+
+function normalizeIpCandidate(value: unknown) {
+  const text = String(value || "").trim();
+  if (text.startsWith("[") && text.endsWith("]")) return text.slice(1, -1).trim();
+  return text;
+}
+
+function ipv4AddressForHost(host: any) {
+  const manual = normalizeIpCandidate(manualEntryAddressForHost(host));
+  if (isIP(manual) === 4) return manual;
+  const reportedIpv4 = normalizeIpCandidate(host?.ipv4);
+  if (isIP(reportedIpv4) === 4) return reportedIpv4;
+  const primary = normalizeIpCandidate(host?.ip);
+  return isIP(primary) === 4 ? primary : "";
+}
+
+function ipv6AddressForHost(host: any) {
+  const manual = normalizeIpCandidate(manualEntryAddressForHost(host));
+  if (isIP(manual) === 6) return manual;
+  const reportedIpv6 = normalizeIpCandidate(host?.ipv6);
+  if (isIP(reportedIpv6) === 6) return reportedIpv6;
+  const primary = normalizeIpCandidate(host?.ip);
+  return isIP(primary) === 6 ? primary : "";
+}
+
+function ddnsDomainForHost(host: any) {
+  return host?.ddnsEnabled ? String(host?.ddnsDomain || "").trim() : "";
+}
+
+function cnameTargetForHost(host: any) {
+  const manual = manualEntryAddressForHost(host);
+  if (manual && isIP(normalizeIpCandidate(manual)) === 0) return manual;
+  return ddnsDomainForHost(host);
+}
+
+function normalizeForwardGroupRecordType(recordType: unknown): ForwardGroupRecordType {
+  const text = String(recordType || "A").trim().toUpperCase();
+  if (text === "AAAA" || text === "CNAME") return text;
+  return "A";
+}
+
+function recordTypeRequirementLabel(recordType: ForwardGroupRecordType) {
+  if (recordType === "AAAA") return "IPv6";
+  if (recordType === "CNAME") return "入口域名或 DDNS 域名";
+  return "IPv4";
+}
+
+function ddnsValueForHostByRecordType(host: any, recordType: ForwardGroupRecordType) {
+  if (recordType === "AAAA") return ipv6AddressForHost(host);
+  if (recordType === "CNAME") return cnameTargetForHost(host);
+  return ipv4AddressForHost(host);
 }
 
 function privateAddressForHost(host: any) {
@@ -246,6 +304,7 @@ export async function getForwardGroups(userId?: number) {
   const hydratedMembers = await Promise.all((members as any[]).map(async (member: any) => ({
     ...member,
     entryAddress: await memberEntryAddress(member).catch(() => ""),
+    ddnsValue: await memberDdnsValue(member, normalizeForwardGroupRecordType(groupRows.find((group: any) => Number(group.id) === Number(member.groupId))?.recordType)).catch(() => ""),
   })));
   return groupRows.map((group: any) => {
     const groupId = Number(group.id);
@@ -277,6 +336,7 @@ export async function getForwardGroupById(id: number) {
   const hydratedMembers = await Promise.all((members as any[]).map(async (member: any) => ({
     ...member,
     entryAddress: await memberEntryAddress(member).catch(() => ""),
+    ddnsValue: await memberDdnsValue(member, normalizeForwardGroupRecordType(group.recordType)).catch(() => ""),
   })));
   return { ...group, groupMode: groupModeOf(group), members: hydratedMembers };
 }
@@ -530,6 +590,46 @@ async function memberEntryAddress(member: any) {
     return entryAddressForHost(entry);
   }
   return "";
+}
+
+async function memberDdnsValue(member: any, recordType: ForwardGroupRecordType) {
+  if (member.memberType === "host") {
+    const host = await getHostById(Number(member.hostId));
+    return ddnsValueForHostByRecordType(host, recordType);
+  }
+  if (member.memberType === "tunnel") {
+    const tunnel = await getTunnelById(Number(member.tunnelId));
+    if (!tunnel) return "";
+    const entry = await getHostById(Number(tunnel.entryHostId));
+    return ddnsValueForHostByRecordType(entry, recordType);
+  }
+  return "";
+}
+
+export async function validateForwardGroupRecordMembers(group: any, members: ForwardGroupMemberInput[] | any[]) {
+  const mode = groupModeOf(group);
+  if (mode !== "failover" && mode !== "entry") return;
+  const recordType = normalizeForwardGroupRecordType((group as any)?.recordType);
+  const requirement = recordTypeRequirementLabel(recordType);
+  const label = mode === "entry" ? "入口组" : "转发组";
+  const missing: string[] = [];
+  for (const member of members || []) {
+    if (member?.isEnabled === false) continue;
+    const value = await memberDdnsValue(member, recordType).catch(() => "");
+    if (value) continue;
+    let name = "";
+    if (member.memberType === "host") {
+      const host = await getHostById(Number(member.hostId)).catch(() => null);
+      name = String((host as any)?.name || `主机 #${member.hostId}`);
+    } else {
+      const tunnel = await getTunnelById(Number(member.tunnelId)).catch(() => null);
+      name = String((tunnel as any)?.name || `隧道 #${member.tunnelId}`);
+    }
+    missing.push(name);
+  }
+  if (missing.length > 0) {
+    throw new Error(`${label}使用 ${recordType} 记录时，所有启用成员都需要配置${requirement}：${missing.slice(0, 5).join("、")}`);
+  }
 }
 
 async function targetHostIdForMember(member: ForwardGroupMemberInput) {
@@ -1269,6 +1369,7 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
   const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index, {
     externalEntry: groupMode === "chain" && Number((data as any).entryGroupId || 0) > 0,
   })));
+  await validateForwardGroupRecordMembers({ ...data, groupMode }, normalizedMembers as any);
   const id = await insertAndGetId("forward_groups", {
     ...data,
     groupMode,
@@ -1319,6 +1420,7 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
   const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index, {
     externalEntry: groupMode === "chain" && Number((group as any)?.entryGroupId || 0) > 0,
   })));
+  await validateForwardGroupRecordMembers(group, normalizedMembers as any);
   const db = await getDb();
   const existing = await db.select().from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, groupId));
   const keepKeys = new Set(normalizedMembers.map((m) => `${m.memberType}:${m.memberType === "host" ? m.hostId : m.tunnelId}`));
@@ -1536,13 +1638,14 @@ async function evaluateMemberHealth(member: any, group: any) {
 async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
   const db = await getDb();
   const members = sortedMembers(group, true) as any[];
+  const recordType = normalizeForwardGroupRecordType(group.recordType);
   const values: string[] = [];
   const excluded: string[] = [];
   let activeMemberId: number | null = null;
   const chinaHealthEnabled = !!group.chinaHealthCheckEnabled;
   for (const member of members) {
     if (member.memberType !== "host") continue;
-    const value = await memberEntryAddress(member).catch(() => "");
+    const value = await memberDdnsValue(member, recordType).catch(() => "");
     if (!value) continue;
     if (chinaHealthEnabled && String(member.chinaHealthStatus || "unknown") === "unhealthy") {
       if (!excluded.includes(value)) excluded.push(value);
@@ -1552,6 +1655,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
       values.push(value);
       if (!activeMemberId) activeMemberId = Number(member.id || 0) || null;
     }
+    if (recordType === "CNAME") break;
   }
   const joined = values.join(",");
   const excludedSuffix = excluded.length > 0 ? `；已临时剔除 ${excluded.length} 个不健康入口` : "";
@@ -1565,9 +1669,10 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
     return;
   }
   if (values.length === 0) {
+    const requirement = recordTypeRequirementLabel(recordType);
     await db.update(forwardGroups).set({
       lastStatus: "down",
-      lastMessage: excluded.length > 0 ? "入口组没有健康的入口地址。" : "入口组没有可用入口地址。",
+      lastMessage: excluded.length > 0 ? `入口组没有健康的${requirement}。` : `入口组没有可用${requirement}。`,
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     return;
@@ -1609,7 +1714,7 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any) {
     await updateDdnsRecordValues({
       groupId: Number(group.id),
       domain: String(group.domain || ""),
-      recordType: String(group.recordType || "A"),
+      recordType,
       values,
       ttl: Number(ddnsSettings.ttl || 600),
     });
@@ -1726,9 +1831,11 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
       continue;
     }
 
-    const value = await memberEntryAddress(next);
+    const recordType = normalizeForwardGroupRecordType(group.recordType);
+    const value = await memberDdnsValue(next, recordType);
     if (!value) {
-      await insertForwardGroupEvent(group.id, next.id, "ddns-error", "健康成员没有可用入口地址。");
+      const requirement = recordTypeRequirementLabel(recordType);
+      await insertForwardGroupEvent(group.id, next.id, "ddns-error", `健康成员没有可用${requirement}。`);
       continue;
     }
 
@@ -1761,7 +1868,7 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
       await updateDdnsRecord({
         groupId: Number(group.id),
         domain: String(group.domain || ""),
-        recordType: String(group.recordType || "A"),
+        recordType,
         value,
       });
       await db.update(forwardGroups).set({

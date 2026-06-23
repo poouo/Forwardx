@@ -86,7 +86,6 @@ type MemberForm = {
 
 type GroupForm = {
   name: string;
-  remark: string;
   groupMode: GroupMode;
   entryGroupId: number | null;
   groupType: GroupType;
@@ -104,7 +103,6 @@ type GroupForm = {
 
 const makeDefaultForm = (): GroupForm => ({
   name: "",
-  remark: "",
   groupMode: "failover",
   entryGroupId: null,
   groupType: "host",
@@ -133,10 +131,6 @@ function isCollectionMode(mode: GroupMode) {
   return mode === "entry" || mode === "exit";
 }
 
-function shouldShowGroupRemark(group: any) {
-  return !!group?.remark && !isCollectionMode(normalizeGroupMode(group.groupMode));
-}
-
 function isChinaHealthTargetValid(value: string) {
   const target = value.trim().replace(/^tcp:\/\//i, "").replace(/：/g, ":");
   if (!target) return true;
@@ -152,6 +146,46 @@ function isChinaHealthTargetValid(value: string) {
     return !!target.slice(0, lastColon).trim() && Number.isInteger(port) && port >= 1 && port <= 65535;
   }
   return true;
+}
+
+function unwrapBracketedHost(value: unknown) {
+  const text = String(value || "").trim();
+  return text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+}
+
+function looksLikeIpv4(value: unknown) {
+  const text = unwrapBracketedHost(value);
+  const parts = text.split(".");
+  return parts.length === 4 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function looksLikeIpv6(value: unknown) {
+  const text = unwrapBracketedHost(value);
+  return text.includes(":") && /^[0-9a-fA-F:.]+$/.test(text);
+}
+
+function looksLikeIp(value: unknown) {
+  return looksLikeIpv4(value) || looksLikeIpv6(value);
+}
+
+function forwardGroupRecordValueForHost(host: any, recordType: GroupForm["recordType"]) {
+  const manual = String(host?.entryIp || "").trim();
+  if (recordType === "AAAA") {
+    if (looksLikeIpv6(manual)) return unwrapBracketedHost(manual);
+    return unwrapBracketedHost(host?.ipv6 || (looksLikeIpv6(host?.ip) ? host?.ip : ""));
+  }
+  if (recordType === "CNAME") {
+    if (manual && !looksLikeIp(manual)) return manual;
+    return host?.ddnsEnabled ? String(host?.ddnsDomain || "").trim() : "";
+  }
+  if (looksLikeIpv4(manual)) return manual;
+  return String(host?.ipv4 || (looksLikeIpv4(host?.ip) ? host?.ip : "") || "").trim();
+}
+
+function forwardGroupRecordRequirement(recordType: GroupForm["recordType"]) {
+  if (recordType === "AAAA") return "IPv6";
+  if (recordType === "CNAME") return "入口域名或 DDNS 域名";
+  return "IPv4";
 }
 
 type ForwardGroupViewMode = "card" | "table";
@@ -339,12 +373,12 @@ function ForwardGroupLatencyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+            <div className="min-w-0">
               <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
               <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+            <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
         <div className="h-[260px] rounded-lg border border-border/60 bg-muted/20 p-3">
@@ -691,7 +725,6 @@ export function ForwardGroupsContent({
     const groupMode = normalizeGroupMode(group.groupMode);
     setForm({
       name: group.name || "",
-      remark: isCollectionMode(groupMode) ? "" : group.remark || "",
       groupMode,
       entryGroupId: group.entryGroupId ? Number(group.entryGroupId) : null,
       groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
@@ -920,6 +953,23 @@ export function ForwardGroupsContent({
     if ((isFailoverMode || isEntryGroup) && !form.domain.trim()) {
       return toast.error(isEntryGroup ? "入口组需要指定入口域名" : "请填写 DDNS 域名");
     }
+    if (isFailoverMode || isEntryGroup) {
+      const missingRecordMembers = form.members
+        .filter((member) => member.isEnabled !== false)
+        .filter((member) => {
+          if (member.memberType === "host") {
+            const host = hostById.get(Number(member.hostId || 0));
+            return !forwardGroupRecordValueForHost(host, form.recordType);
+          }
+          const tunnel = tunnelById.get(Number(member.tunnelId || 0));
+          const host = hostById.get(Number(tunnel?.entryHostId || 0));
+          return !forwardGroupRecordValueForHost(host, form.recordType);
+        })
+        .map((member) => memberLabel(member));
+      if (missingRecordMembers.length > 0) {
+        return toast.error(`${form.recordType} 记录需要成员配置${forwardGroupRecordRequirement(form.recordType)}：${missingRecordMembers.slice(0, 5).join("、")}`);
+      }
+    }
     const failoverSeconds = Number(form.failoverSeconds);
     const recoverSeconds = Number(form.recoverSeconds);
     if (!Number.isInteger(failoverSeconds) || failoverSeconds < 10 || failoverSeconds > 3600) {
@@ -935,7 +985,7 @@ export function ForwardGroupsContent({
     const payload = {
       ...form,
       name: form.name.trim(),
-      remark: isEntryGroup || isExitGroup ? null : form.remark.trim() || null,
+      remark: null,
       entryGroupId: isChainGroup ? form.entryGroupId || null : null,
       groupType: isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
@@ -1193,7 +1243,6 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
-                      {shouldShowGroupRemark(group) ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1271,7 +1320,6 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
-                      {shouldShowGroupRemark(group) ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</p> : null}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1358,7 +1406,6 @@ export function ForwardGroupsContent({
                       <TableCell>
                         <div className="font-medium">{group.name}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
-                        {shouldShowGroupRemark(group) ? <div className="mt-1 text-[11px] text-muted-foreground/80">备注：{group.remark}</div> : null}
                       </TableCell>
                       <TableCell>
                         {groupKindBadge(group)}
@@ -1471,12 +1518,6 @@ export function ForwardGroupsContent({
                 </Select>
               </div>
               )}
-              {form.groupMode !== "chain" && !isCollectionMode(form.groupMode) && (
-                <div className="space-y-2">
-                  <Label>备注</Label>
-                  <Input value={form.remark} maxLength={255} onChange={(e) => setForm({ ...form, remark: e.target.value })} placeholder="用于区分这组主机" />
-                </div>
-              )}
               {isCollectionMode(form.groupMode) && (
                 <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
                   <span className="text-sm">启用</span>
@@ -1513,7 +1554,7 @@ export function ForwardGroupsContent({
 
             {form.groupMode === "failover" && <div className="space-y-2">
               <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,150px)_minmax(0,150px)_minmax(0,1fr)]">
                 <div className="space-y-2">
                   <Label>故障转移时间</Label>
                   <Input
@@ -1536,13 +1577,13 @@ export function ForwardGroupsContent({
                     placeholder="120"
                   />
                 </div>
-                <div className="flex items-end gap-4">
-                  <label className="flex h-10 flex-1 items-center justify-between rounded-md border border-border/60 px-3">
-                    <span className="text-sm">恢复后切回</span>
+                <div className="flex items-end gap-3">
+                  <label className="flex h-10 min-w-[142px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                    <span className="whitespace-nowrap text-sm">恢复后切回</span>
                     <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
                   </label>
-                  <label className="flex h-10 flex-1 items-center justify-between rounded-md border border-border/60 px-3">
-                    <span className="text-sm">启用</span>
+                  <label className="flex h-10 min-w-[104px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                    <span className="whitespace-nowrap text-sm">启用</span>
                     <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
                   </label>
                 </div>

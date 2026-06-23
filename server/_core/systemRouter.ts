@@ -1102,15 +1102,37 @@ export const systemRouter = router({
       }
       if (input.telegram) {
         const next: Record<string, string | null> = {};
+        const envToken = ENV.telegramBotToken.trim();
+        const currentDbToken = String((await db.getSetting("telegramBotToken")) || "").trim();
+        const currentEnabledSetting = await db.getSetting("telegramBotEnabled");
+        const submittedToken = String(input.telegram.botToken || "").trim();
+        const clearingToken = !!input.telegram.clearToken;
+        const effectiveToken = envToken || (clearingToken ? "" : (submittedToken || currentDbToken));
+        const nextEnabled = input.telegram.enabled !== undefined
+          ? !!input.telegram.enabled
+          : (currentEnabledSetting === "true" || (!!envToken && currentEnabledSetting !== "false"));
+        const wantsReminder = !!input.telegram.expiryReminder || !!input.telegram.trafficReminder || !!input.telegram.hostStatusNotify;
+        if (nextEnabled && !effectiveToken) {
+          throw new Error("请先配置 Telegram Bot Token");
+        }
+        if (wantsReminder && (!nextEnabled || !effectiveToken)) {
+          throw new Error("请先配置并启用 Telegram 机器人");
+        }
         if (input.telegram.enabled !== undefined) next.telegramBotEnabled = input.telegram.enabled ? "true" : "false";
-        if (input.telegram.expiryReminder !== undefined) next.telegramExpiryReminder = input.telegram.expiryReminder ? "true" : "false";
-        if (input.telegram.trafficReminder !== undefined) next.telegramTrafficReminder = input.telegram.trafficReminder ? "true" : "false";
+        if (input.telegram.expiryReminder !== undefined) next.telegramExpiryReminder = input.telegram.expiryReminder && nextEnabled && !!effectiveToken ? "true" : "false";
+        if (input.telegram.trafficReminder !== undefined) next.telegramTrafficReminder = input.telegram.trafficReminder && nextEnabled && !!effectiveToken ? "true" : "false";
         if (input.telegram.trafficReminderThreshold !== undefined) next.telegramTrafficReminderThreshold = String(input.telegram.trafficReminderThreshold);
-        if (input.telegram.hostStatusNotify !== undefined) next.telegramHostStatusNotify = input.telegram.hostStatusNotify ? "true" : "false";
+        if (input.telegram.hostStatusNotify !== undefined) next.telegramHostStatusNotify = input.telegram.hostStatusNotify && nextEnabled && !!effectiveToken ? "true" : "false";
         let tokenChanged = false;
         if (input.telegram.clearToken) {
           next.telegramBotToken = null;
           next.telegramBotUsername = null;
+          if (!envToken) {
+            next.telegramBotEnabled = "false";
+            next.telegramExpiryReminder = "false";
+            next.telegramTrafficReminder = "false";
+            next.telegramHostStatusNotify = "false";
+          }
           tokenChanged = true;
         }
         if (input.telegram.botToken !== undefined && input.telegram.botToken.trim()) {

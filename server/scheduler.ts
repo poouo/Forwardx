@@ -313,7 +313,8 @@ async function runTelegramReminders() {
     const trafficReminderThreshold = Math.min(99, Math.max(1, Number(settings.telegramTrafficReminderThreshold || 20)));
     const hostRows = await db.getHosts();
     const hostTrafficAlertHosts = (hostRows as any[]).filter((host) => !!host.telegramTrafficAlertEnabled && Number(host.trafficLimit || 0) > 0);
-    if (!expiryReminder && !trafficReminder && hostTrafficAlertHosts.length === 0) return;
+    const hostRenewalReminderHosts = (hostRows as any[]).filter((host) => !!host.telegramRenewalReminderEnabled && !!host.stoppedAt);
+    if (!expiryReminder && !trafficReminder && hostTrafficAlertHosts.length === 0 && hostRenewalReminderHosts.length === 0) return;
 
     const users = await db.getUserTrafficSummaries();
     const usersById = new Map((users as any[]).map((user) => [Number(user.id), user]));
@@ -394,6 +395,30 @@ async function runTelegramReminders() {
           await db.setSetting(key, "sent");
         }
       }
+    }
+
+    for (const host of hostRenewalReminderHosts as any[]) {
+      const owner = usersById.get(Number(host.userId));
+      if (!owner?.telegramId) continue;
+      const stoppedAt = new Date(host.stoppedAt).getTime();
+      if (!Number.isFinite(stoppedAt)) continue;
+      const daysLeft = Math.ceil((stoppedAt - now) / (24 * 60 * 60 * 1000));
+      const reminderDays = Math.min(365, Math.max(1, Math.floor(Number(host.renewalReminderDays || 7))));
+      if (daysLeft < 0 || daysLeft > reminderDays) continue;
+      const key = dayKey(`telegramReminder:hostRenewal:${host.id}:${daysLeft}`, owner.id);
+      if (await db.getSetting(key)) continue;
+      await sendTelegramMessage(
+        owner.telegramId,
+        [
+          "ForwardX 主机续费提醒",
+          "",
+          `主机：${escapeHtmlLocal(host.name || `#${host.id}`)}`,
+          `剩余：${daysLeft} 天`,
+          `到期时间：${new Date(host.stoppedAt).toLocaleDateString("zh-CN")}`,
+          "请及时续费或联系管理员。",
+        ].join("\n"),
+      );
+      await db.setSetting(key, "sent");
     }
   } catch (error) {
     console.error("[Scheduler] Telegram reminder error:", error);

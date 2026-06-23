@@ -9,6 +9,10 @@ import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { cn } from "@/lib/utils";
 
 const colors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
+const hostServiceLatencyAnimatedKeys = new Set<number>();
+const HOST_SERVICE_CHART_POINT_BUDGET = 3200;
+const HOST_SERVICE_CHART_MIN_POINTS = 260;
+const HOST_SERVICE_CHART_MAX_POINTS = 720;
 
 function formatTime(value: string | Date) {
   const d = new Date(value);
@@ -25,6 +29,58 @@ function serviceAppliesToHost(service: any, hostId: number) {
   if (service.hostScope === "specific") return (service.hostIds || []).map(Number).includes(hostId);
   if (service.hostScope === "exclude") return !(service.excludeHostIds || []).map(Number).includes(hostId);
   return true;
+}
+
+function hostServiceChartPointLimit(visibleCount: number) {
+  const safeCount = Math.max(1, visibleCount || 1);
+  return Math.max(
+    HOST_SERVICE_CHART_MIN_POINTS,
+    Math.min(HOST_SERVICE_CHART_MAX_POINTS, Math.floor(HOST_SERVICE_CHART_POINT_BUDGET / safeCount)),
+  );
+}
+
+function compactHostServiceChart(points: any[], serviceIds: number[]) {
+  if (points.length === 0 || serviceIds.length === 0) return points;
+  const maxPoints = hostServiceChartPointLimit(serviceIds.length);
+  if (points.length <= maxPoints) return points;
+  const bucketSize = Math.ceil(points.length / maxPoints);
+  const compacted: any[] = [];
+
+  for (let start = 0; start < points.length; start += bucketSize) {
+    const bucket = points.slice(start, start + bucketSize);
+    const representative = bucket[Math.floor(bucket.length / 2)] || bucket[0];
+    const point: any = {
+      at: representative.at,
+      label: representative.label,
+      fullLabel: representative.fullLabel,
+    };
+
+    for (const id of serviceIds) {
+      const key = `service_${id}`;
+      let maxLatency: number | null = null;
+      let sawTimeout = false;
+      for (const item of bucket) {
+        const raw = item[`${key}Raw`];
+        if (!raw) continue;
+        if (raw.isTimeout) {
+          sawTimeout = true;
+          continue;
+        }
+        const latency = Number(raw.latencyMs);
+        if (Number.isFinite(latency) && latency > 0) {
+          maxLatency = Math.max(maxLatency || 0, latency);
+        }
+      }
+      const isTimeout = maxLatency === null && sawTimeout;
+      point[key] = isTimeout ? 0 : maxLatency;
+      point[`${key}Timeout`] = isTimeout;
+      point[`${key}Raw`] = { latencyMs: maxLatency, isTimeout };
+    }
+
+    compacted.push(point);
+  }
+
+  return compacted;
 }
 
 function ChartTooltip({ active, payload, label, services, allServices }: any) {
@@ -138,7 +194,7 @@ export default function HostProbeServiceLatencyDialog({
     return Array.from(byBucket.values()).sort((a, b) => a.at - b.at);
   }, [data]);
 
-  const chart = useMemo(() => {
+  const processedChart = useMemo(() => {
     if (!peakCutEnabled || visibleServiceIds.length === 0) return rawChart;
     const smoothed = applyLatencyPeakCut(
       rawChart,
@@ -164,6 +220,10 @@ export default function HostProbeServiceLatencyDialog({
       return next;
     });
   }, [peakCutEnabled, rawChart, visibleServiceIds]);
+  const chart = useMemo(
+    () => compactHostServiceChart(processedChart, visibleServiceIds),
+    [processedChart, visibleServiceIds],
+  );
 
   const yMax = useMemo(() => {
     const maxLatency = Math.max(0, ...chart.flatMap((point) => (
@@ -176,17 +236,24 @@ export default function HostProbeServiceLatencyDialog({
     return maxLatency > 0 ? Math.ceil(maxLatency * 1.2) : 120;
   }, [chart, visibleServiceIds]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
+  const shouldAnimateChart = open && hostId > 0 && chart.length > 0 && !hostServiceLatencyAnimatedKeys.has(hostId);
+
+  useEffect(() => {
+    if (shouldAnimateChart) {
+      hostServiceLatencyAnimatedKeys.add(hostId);
+    }
+  }, [hostId, shouldAnimateChart]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-5xl">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+            <div className="min-w-0">
               <DialogTitle>服务延迟图表</DialogTitle>
               <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
             </div>
-            <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+            <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
         {hostServices.length > 0 && (
@@ -242,7 +309,19 @@ export default function HostProbeServiceLatencyDialog({
                 {visibleServices.map((service) => {
                   const colorIndex = hostServices.findIndex((item) => Number(item.id) === Number(service.id));
                   return (
-                    <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={colors[Math.max(colorIndex, 0) % colors.length]} strokeWidth={1.15} dot={false} connectNulls={false} activeDot={{ r: 3 }} />
+                    <Line
+                      key={service.id}
+                      type="monotone"
+                      dataKey={`service_${service.id}`}
+                      name={service.name}
+                      stroke={colors[Math.max(colorIndex, 0) % colors.length]}
+                      strokeWidth={1.15}
+                      dot={false}
+                      connectNulls={false}
+                      activeDot={{ r: 3 }}
+                      isAnimationActive={shouldAnimateChart}
+                      animationDuration={shouldAnimateChart ? 500 : 0}
+                    />
                   );
                 })}
               </LineChart>

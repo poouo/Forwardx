@@ -101,6 +101,7 @@ const tables: TableDef[] = [
       c("agentUpgradeTargetVersion", "text"), c("agentUpgradeRequestedAt", "epoch"), c("purchasedAt", "epoch"), c("stoppedAt", "epoch"),
       c("trafficLimit", "bigint", { notNull: true, default: 0 }), c("trafficMeasureMode", "varchar", { length: 16, notNull: true, default: "both" }),
       c("telegramTrafficAlertEnabled", "bool", { notNull: true, default: false }), c("trafficAlertThresholdPercent", "int", { notNull: true, default: 20 }),
+      c("telegramRenewalReminderEnabled", "bool", { notNull: true, default: false }), c("renewalReminderDays", "int", { notNull: true, default: 7 }),
       c("trafficAutoReset", "bool", { notNull: true, default: false }), c("trafficResetDay", "int", { notNull: true, default: 1 }),
       c("lastTrafficReset", "epoch"), c("ddnsEnabled", "bool", { notNull: true, default: false }), c("ddnsDomain", "text"),
       c("ddnsRecordType", "varchar", { length: 8, notNull: true, default: "A" }), c("ddnsIpVersion", "varchar", { length: 8, notNull: true, default: "ipv4" }),
