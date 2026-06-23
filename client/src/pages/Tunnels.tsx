@@ -2696,7 +2696,7 @@ function TunnelsContent() {
                     </div>
                     <div className="space-y-2">
                       <Label>隧道类型</Label>
-                      <div className="grid grid-cols-2 gap-1 rounded-md border border-border/50 bg-muted/25 p-0.5">
+                      <div className="grid grid-cols-2 gap-1 rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5">
                         <button
                           type="button"
                           onClick={() => {
@@ -2705,10 +2705,10 @@ function TunnelsContent() {
                           }}
                           disabled={gostRuntimeDisabled}
                           title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
+                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
                             gostTunnelModes.includes(form.mode)
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                              ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
+                              : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
                           } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                         >
                           <Network className="h-4 w-4 shrink-0 text-primary" />
@@ -2724,10 +2724,10 @@ function TunnelsContent() {
                           }
                           disabled={forwardxRuntimeDisabled}
                           title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
+                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
                             form.mode === "forwardx"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                              ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
+                              : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
                           } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                         >
                           <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
@@ -2972,7 +2972,7 @@ function TunnelsContent() {
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className="grid grid-cols-2 gap-1 rounded-md border border-border/50 bg-muted/25 p-0.5">
+              <div className="grid grid-cols-2 gap-1 rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5">
                 <button
                   type="button"
                   onClick={() => {
@@ -2981,10 +2981,10 @@ function TunnelsContent() {
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
+                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
                     gostTunnelModes.includes(form.mode)
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                      ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
+                      : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
                   } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <Network className="h-4 w-4 shrink-0 text-primary" />
@@ -3000,10 +3000,10 @@ function TunnelsContent() {
                   }
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm px-2 text-center text-sm font-medium transition-colors ${
+                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
                     form.mode === "forwardx"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+                      ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
+                      : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
                   } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
                 >
                   <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />

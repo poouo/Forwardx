@@ -614,44 +614,44 @@
   @keyframes dialog-overlay-material-in {
     from {
       opacity: 0;
-      transform: translate3d(0, 6px, 0);
+      transform: translateY(6px);
     }
     to {
       opacity: 1;
-      transform: translate3d(0, 0, 0);
+      transform: translateY(0);
     }
   }
 
   @keyframes dialog-overlay-material-out {
     from {
       opacity: 1;
-      transform: translate3d(0, 0, 0);
+      transform: translateY(0);
     }
     to {
       opacity: 0;
-      transform: translate3d(0, 4px, 0);
+      transform: translateY(4px);
     }
   }
 
   @keyframes dialog-panel-in {
     from {
       opacity: 0;
-      transform: translate3d(-50%, calc(-50% + 14px), 0) scale(0.982);
+      transform: translateY(12px);
     }
     to {
       opacity: 1;
-      transform: translate3d(-50%, -50%, 0) scale(1);
+      transform: translateY(0);
     }
   }
 
   @keyframes dialog-panel-out {
     from {
       opacity: 1;
-      transform: translate3d(-50%, -50%, 0) scale(1);
+      transform: translateY(0);
     }
     to {
       opacity: 0;
-      transform: translate3d(-50%, calc(-50% + 8px), 0) scale(0.988);
+      transform: translateY(8px);
     }
   }
 
@@ -727,8 +727,10 @@
       0 24px 90px color-mix(in oklch, var(--foreground) 22%, transparent);
     isolation: isolate;
     opacity: 0;
-    transform: translate3d(-50%, -50%, 0) scale(0.98);
-    will-change: opacity, transform;
+    transform: translateY(0);
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    will-change: opacity;
   }
 
   .dialog-panel[data-state="open"] {

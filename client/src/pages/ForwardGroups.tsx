@@ -284,10 +284,19 @@ function normalizeChainConnectHostsForHosts(
   });
 }
 
-function chainRoleLabel(index: number, total: number) {
+function chainRoleLabel(index: number, total: number, hasExternalEntry = false) {
+  if (hasExternalEntry) return index === total - 1 ? "出口" : "中转";
   if (index === 0) return "入口";
   if (index === total - 1) return "出口";
   return "中转";
+}
+
+function entryGroupDisplayText(group: any, groupsByMode: Record<GroupMode, any[]>) {
+  const entryGroupId = Number(group?.entryGroupId || 0);
+  if (!entryGroupId) return "";
+  const entryGroup = groupsByMode.entry.find((item: any) => Number(item.id) === entryGroupId);
+  if (!entryGroup) return `入口组 #${entryGroupId}`;
+  return String(entryGroup.domain || entryGroup.name || `入口组 #${entryGroupId}`).trim();
 }
 
 type GroupLatencyPoint = {
@@ -432,6 +441,7 @@ function ForwardGroupSelfTestDialog({
   groupId,
   groupName,
   group,
+  entryGroup,
   hostById,
   open,
   onOpenChange,
@@ -439,6 +449,7 @@ function ForwardGroupSelfTestDialog({
   groupId: number;
   groupName: string;
   group?: any | null;
+  entryGroup?: any | null;
   hostById?: Map<number, any>;
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -474,7 +485,12 @@ function ForwardGroupSelfTestDialog({
     const members = [...(group?.members || [])]
       .filter((member: any) => member.isEnabled !== false)
       .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
-    members.forEach((member: any) => {
+    const entryMembers = entryGroup
+      ? [...(entryGroup.members || [])]
+        .filter((member: any) => member.memberType === "host" && member.isEnabled !== false)
+        .sort((a: any, b: any) => Number(a.priority) - Number(b.priority))
+      : [];
+    [...entryMembers, ...members].forEach((member: any) => {
       const hostId = Number(member.hostId || 0);
       const host = hostById?.get(hostId);
       addHostNodeMeta(meta, host, [
@@ -483,25 +499,41 @@ function ForwardGroupSelfTestDialog({
         hostId ? `主机 #${hostId}` : "",
       ]);
     });
+    const firstEntryHost = hostById?.get(Number(entryMembers[0]?.hostId || 0));
     const firstHost = hostById?.get(Number(members[0]?.hostId || 0));
     const lastHost = hostById?.get(Number(members[members.length - 1]?.hostId || 0));
-    const plannedSegments: LinkTestPlannedSegment[] = members.slice(0, -1).map((member: any, index: number) => {
+    const plannedSegments: LinkTestPlannedSegment[] = [];
+    if (entryMembers.length > 0 && members[0]) {
+      const firstChainHost = hostById?.get(Number(members[0].hostId || 0));
+      entryMembers.forEach((entryMember: any) => {
+        const entryHost = hostById?.get(Number(entryMember.hostId || 0));
+        plannedSegments.push({
+          from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
+          to: hostDisplayName(firstChainHost) || `主机 #${members[0].hostId || "-"}`,
+          fromMeta: meta[hostDisplayName(entryHost)] || meta[String(entryMember.hostId || "")],
+          toMeta: meta[hostDisplayName(firstChainHost)] || meta[String(members[0].hostId || "")],
+          groupKey: entryMembers.length > 1 ? `entry-${entryMember.id || entryMember.hostId}` : null,
+          groupLabel: entryMembers.length > 1 ? hostDisplayName(entryHost) || `入口 #${entryMember.hostId || "-"}` : null,
+        });
+      });
+    }
+    members.slice(0, -1).forEach((member: any, index: number) => {
       const fromHost = hostById?.get(Number(member.hostId || 0));
       const toHost = hostById?.get(Number(members[index + 1]?.hostId || 0));
-      return {
+      plannedSegments.push({
         from: hostDisplayName(fromHost) || `主机 #${member.hostId || "-"}`,
         to: hostDisplayName(toHost) || `主机 #${members[index + 1]?.hostId || "-"}`,
         fromMeta: meta[hostDisplayName(fromHost)] || meta[String(member.hostId || "")],
         toMeta: meta[hostDisplayName(toHost)] || meta[String(members[index + 1]?.hostId || "")],
-      };
-    }).filter((segment) => segment.from && segment.to);
+      });
+    });
     return {
       nodeMeta: meta,
-      sourceLabel: hostDisplayName(firstHost) || groupName,
+      sourceLabel: hostDisplayName(firstEntryHost) || hostDisplayName(firstHost) || groupName,
       targetLabel: hostDisplayName(lastHost) || groupName,
-      plannedSegments,
+      plannedSegments: plannedSegments.filter((segment) => segment.from && segment.to),
     };
-  }, [group?.members, groupName, hostById]);
+  }, [entryGroup?.members, group?.members, groupName, hostById]);
 
   useEffect(() => {
     if (!open) {
@@ -662,6 +694,12 @@ export function ForwardGroupsContent({
   const testGroupDetail = useMemo(
     () => testGroup ? (groups || []).find((group: any) => Number(group.id) === Number(testGroup.id)) || null : null,
     [groups, testGroup?.id]
+  );
+  const testGroupEntryGroup = useMemo(
+    () => testGroupDetail?.entryGroupId
+      ? (groups || []).find((group: any) => Number(group.id) === Number(testGroupDetail.entryGroupId)) || null
+      : null,
+    [groups, testGroupDetail?.entryGroupId]
   );
 
   const resetForm = () => {
@@ -1069,8 +1107,16 @@ export function ForwardGroupsContent({
     return group.domain || "未配置";
   };
 
+  const chainEntryText = (group: any) => {
+    const entryGroupText = entryGroupDisplayText(group, groupsByMode);
+    if (entryGroupText) return entryGroupText;
+    return group.members?.[0]?.entryAddress || "第一台主机";
+  };
+
   const memberDecoratedLabel = (group: any, member: any, index: number) => {
-    const prefix = normalizeGroupMode(group.groupMode) === "chain" ? `${chainRoleLabel(index, group.members?.length || 0)} · ` : "";
+    const prefix = normalizeGroupMode(group.groupMode) === "chain"
+      ? `${chainRoleLabel(index, group.members?.length || 0, !!Number(group.entryGroupId || 0))} · `
+      : "";
     const suffix = normalizeGroupMode(group.groupMode) === "exit" && member.connectHost ? " · 内网" : "";
     return `${index + 1}. ${prefix}${memberLabel(member)}${suffix}`;
   };
@@ -1278,7 +1324,7 @@ export function ForwardGroupsContent({
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
@@ -1355,7 +1401,7 @@ export function ForwardGroupsContent({
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
@@ -1433,7 +1479,7 @@ export function ForwardGroupsContent({
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "chain" ? (group.members?.[0]?.entryAddress || "第一台主机") : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
+                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
@@ -1752,6 +1798,7 @@ export function ForwardGroupsContent({
           groupId={testGroup.id}
           groupName={testGroup.name}
           group={testGroupDetail}
+          entryGroup={testGroupEntryGroup}
           hostById={hostById}
           open={!!testGroup}
           onOpenChange={(open) => !open && setTestGroup(null)}

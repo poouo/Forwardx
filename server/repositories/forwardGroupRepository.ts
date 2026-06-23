@@ -901,11 +901,12 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
     if (enabledMembers.length < minEnabledMembers || enabledMembers.length > 5) {
       throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
     }
+    const hasExternalEntry = entryMembers.length > 0;
     for (const [index, member] of enabledMembers.entries()) {
       if (member.memberType !== "host") throw new Error("Port forwarding chain only supports host members");
       const host = await getHostById(Number(member.hostId));
       if (!host) throw new Error("Host does not exist");
-      if (index === 0) {
+      if (index === 0 && !hasExternalEntry) {
         if (!entryAddressForHost(host)) throw new Error("Port forwarding chain entry host has no entry address");
       } else if (!resolveChainConnectHost(member, host)) {
         throw new Error("Port forwarding chain host has no usable connect address");
