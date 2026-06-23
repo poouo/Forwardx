@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.105"
+var Version = "2.2.106"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute

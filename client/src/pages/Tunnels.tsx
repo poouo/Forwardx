@@ -2,6 +2,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
+import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestProbeView, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
@@ -40,7 +41,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -1022,6 +1023,7 @@ function TunnelLatencyDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
     { tunnelId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
@@ -1062,7 +1064,7 @@ function TunnelLatencyDialog({
     });
   }, [seriesData]);
 
-  const chartData = useMemo<TunnelLatencyPoint[]>(() => {
+  const rawChartData = useMemo<TunnelLatencyPoint[]>(() => {
     if (!seriesData || seriesData.length === 0) return [];
     const byTime = new Map<number, TunnelLatencyPoint>();
     for (const item of seriesData) {
@@ -1082,6 +1084,16 @@ function TunnelLatencyDialog({
     }
     return Array.from(byTime.entries()).sort((a, b) => a[0] - b[0]).map((entry) => entry[1]);
   }, [seriesData]);
+  const chartData = useMemo<TunnelLatencyPoint[]>(() => {
+    if (!peakCutEnabled || seriesMeta.length === 0) return rawChartData;
+    return applyLatencyPeakCut(
+      rawChartData,
+      seriesMeta.flatMap((meta) => [
+        { dataKey: meta.rawKey, timeoutKey: meta.timeoutKey },
+        { dataKey: meta.dataKey, timeoutKey: meta.timeoutKey },
+      ]),
+    ) as TunnelLatencyPoint[];
+  }, [peakCutEnabled, rawChartData, seriesMeta]);
 
   const statsSeries = useMemo(() => {
     if (seriesMeta.length === 0 || chartData.length === 0) return [];
@@ -1118,8 +1130,13 @@ function TunnelLatencyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
-          <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
+              <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+            </div>
+            <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+          </div>
         </DialogHeader>
         <div className="h-72 w-full">
           {showInitialLoading ? (

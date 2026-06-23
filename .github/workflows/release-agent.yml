@@ -45,6 +45,10 @@ jobs:
       - name: Check version split
         run: npm run check:versions
 
+      - name: Prepare release notes
+        shell: bash
+        run: node scripts/extract-release-notes.mjs "${{ steps.release.outputs.version }}" > RELEASE_NOTES.md
+
       - name: Build Linux Agent binaries
         run: bash scripts/build-agent-release.sh
 
@@ -52,6 +56,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.version }}
+          body_path: RELEASE_NOTES.md
           files: |
             dist/agent/forwardx-agent-linux-amd64
             dist/agent/forwardx-agent-linux-arm64

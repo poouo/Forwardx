@@ -1,10 +1,11 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -70,6 +71,7 @@ function TcpingDetailDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
@@ -86,7 +88,7 @@ function TcpingDetailDialog({
     }
   }, [data, ruleId]);
 
-  const chartData = useMemo<TcpingChartPoint[]>(() => {
+  const rawChartData = useMemo<TcpingChartPoint[]>(() => {
     if (!seriesData || seriesData.length === 0) return [];
     return seriesData.map((d: TcpingSeriesDatum): TcpingChartPoint => ({
       label: formatTcpingTime(d.recordedAt),
@@ -96,6 +98,13 @@ function TcpingDetailDialog({
       isTimeout: !!d.isTimeout,
     }));
   }, [seriesData]);
+  const chartData = useMemo<TcpingChartPoint[]>(() => {
+    if (!peakCutEnabled) return rawChartData;
+    return applyLatencyPeakCut(rawChartData, [
+      { dataKey: "latency", timeoutKey: "isTimeout" },
+      { dataKey: "chartLatency", timeoutKey: "isTimeout" },
+    ]) as TcpingChartPoint[];
+  }, [peakCutEnabled, rawChartData]);
 
   const yMax = useMemo(() => {
     if (!chartData || chartData.length === 0) return 120;
@@ -118,8 +127,13 @@ function TcpingDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
-          <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <DialogTitle className="text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
+              <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+            </div>
+            <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+          </div>
         </DialogHeader>
         <div className="h-72 w-full">
           {showInitialLoading ? (

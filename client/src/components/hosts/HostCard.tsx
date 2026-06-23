@@ -107,17 +107,24 @@ export default function HostCard({
   const totalNetworkIn = traffic?.bytesIn == null ? null : Number(traffic.bytesIn);
   const totalNetworkOut = traffic?.bytesOut == null ? null : Number(traffic.bytesOut);
   const trafficLimit = Math.max(0, Number(host.trafficLimit || 0));
-  const trafficMeasureMode = host.trafficMeasureMode === "outbound" ? "outbound" : "both";
+  const trafficMeasureMode = host.trafficMeasureMode === "outbound" || host.trafficMeasureMode === "max" ? host.trafficMeasureMode : "both";
+  const trafficMeasureModeLabel = trafficMeasureMode === "outbound"
+    ? "仅出向"
+    : trafficMeasureMode === "max"
+      ? "取最大值"
+      : "双向";
   const trafficUsedBytes = trafficMeasureMode === "outbound"
     ? Math.max(0, totalNetworkOut ?? 0)
-    : Math.max(0, (totalNetworkIn ?? 0) + (totalNetworkOut ?? 0));
+    : trafficMeasureMode === "max"
+      ? Math.max(0, totalNetworkIn ?? 0, totalNetworkOut ?? 0)
+      : Math.max(0, (totalNetworkIn ?? 0) + (totalNetworkOut ?? 0));
   const trafficPercent = trafficLimit > 0 ? Math.round((trafficUsedBytes / trafficLimit) * 100) : null;
   const trafficProgress = trafficPercent === null ? 0 : Math.min(100, Math.max(0, trafficPercent));
   const trafficUsageLabel = trafficPercent === null
     ? `${formatBytes(trafficUsedBytes)} / ♾️`
     : `${formatBytes(trafficUsedBytes)} / ${formatBytes(trafficLimit)} (${trafficPercent}%)`;
   const trafficUsageTooltip = [
-    `流量使用（${trafficMeasureMode === "outbound" ? "仅出向" : "双向"}）`,
+    `流量使用（${trafficMeasureModeLabel}）`,
     `入站 ${totalNetworkIn === null ? "--" : formatBytes(totalNetworkIn)} / 出站 ${totalNetworkOut === null ? "--" : formatBytes(totalNetworkOut)}`,
     trafficUsageLabel,
   ].join("\n");

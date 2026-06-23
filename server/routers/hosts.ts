@@ -49,7 +49,7 @@ const networkInterfaceSchema = z.string().trim().max(32).nullable().optional().r
 );
 
 const optionalDateInputSchema = z.string().trim().max(64).nullable().optional();
-const hostTrafficMeasureModeSchema = z.enum(["outbound", "both"]).default("both");
+const hostTrafficMeasureModeSchema = z.enum(["outbound", "both", "max"]).default("both");
 const hostDdnsIpVersionSchema = z.enum(["ipv4", "ipv6"]);
 const hostDdnsRecordTypeSchema = z.enum(["A", "AAAA"]);
 const hostDdnsDomainSchema = z.string().trim().max(253).nullable().optional();
@@ -106,7 +106,8 @@ function assertHostTrafficDates(purchasedAt: Date | null, stoppedAt: Date | null
 }
 
 function normalizeHostTrafficMeasureMode(value: unknown) {
-  return value === "outbound" ? "outbound" : "both";
+  if (value === "outbound" || value === "max") return value;
+  return "both";
 }
 
 function normalizeTrafficAlertThresholdPercent(value: unknown) {
@@ -152,7 +153,7 @@ function hostTrafficConfigPayload(input: {
   purchasedAt?: string | null;
   stoppedAt?: string | null;
   trafficLimit?: number;
-  trafficMeasureMode?: "outbound" | "both";
+  trafficMeasureMode?: "outbound" | "both" | "max";
   telegramTrafficAlertEnabled?: boolean;
   trafficAlertThresholdPercent?: number;
   trafficAutoReset?: boolean;

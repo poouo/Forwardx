@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Loader2, X } from "lucide-react";
+import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
-import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { cn } from "@/lib/utils";
 
 const colors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
@@ -67,6 +68,7 @@ export default function HostProbeServiceLatencyDialog({
 }) {
   const hostId = Number(host?.id || 0);
   const [selectedServiceIds, setSelectedServiceIds] = useState<Set<number>>(new Set());
+  const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const hostServices = useMemo(
     () => (services || []).filter((service) => serviceAppliesToHost(service, hostId)),
     [services, hostId],
@@ -77,6 +79,7 @@ export default function HostProbeServiceLatencyDialog({
     return hostServices.filter((service) => selectedServiceIds.has(Number(service.id)));
   }, [hostServices, selectedServiceIds]);
   const visibleServiceIds = useMemo(() => visibleServices.map((service) => Number(service.id)).filter(Boolean), [visibleServices]);
+  const chartAnimationKey = useMemo(() => `${hostId || "host"}`, [hostId]);
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
     { serviceIds, hostId, hours: 24 },
     { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: open ? 30000 : false },
@@ -104,7 +107,7 @@ export default function HostProbeServiceLatencyDialog({
     });
   };
 
-  const chart = useMemo(() => {
+  const rawChart = useMemo(() => {
     const aggregates = new Map<string, { bucket: number; serviceId: number; sum: number; count: number; timeout: number }>();
     for (const row of data as any[]) {
       const at = new Date(row.recordedAt).getTime();
@@ -127,25 +130,64 @@ export default function HostProbeServiceLatencyDialog({
       const key = `service_${aggregate.serviceId}`;
       const isTimeout = aggregate.count === 0 && aggregate.timeout > 0;
       const latencyMs = aggregate.count > 0 ? Math.round(aggregate.sum / aggregate.count) : null;
-      point[key] = isTimeout ? 0 : latencyMs == null ? null : clipLatencyForChart(latencyMs);
+      point[key] = isTimeout ? 0 : latencyMs;
+      point[`${key}Timeout`] = isTimeout;
       point[`${key}Raw`] = { latencyMs, isTimeout };
       byBucket.set(aggregate.bucket, point);
     }
     return Array.from(byBucket.values()).sort((a, b) => a.at - b.at);
   }, [data]);
 
-  const yMax = useMemo(
-    () => getLatencyYAxisMax(Math.max(0, ...chart.flatMap((point) => visibleServiceIds.map((id) => Number(point[`service_${id}`] || 0)))), 120),
-    [chart, visibleServiceIds],
-  );
+  const chart = useMemo(() => {
+    if (!peakCutEnabled || visibleServiceIds.length === 0) return rawChart;
+    const smoothed = applyLatencyPeakCut(
+      rawChart,
+      visibleServiceIds.map((id) => ({
+        dataKey: `service_${id}`,
+        timeoutKey: `service_${id}Timeout`,
+      })),
+    );
+    return smoothed.map((point) => {
+      let next = point;
+      for (const id of visibleServiceIds) {
+        const key = `service_${id}`;
+        const rawKey = `${key}Raw`;
+        const raw = (next as any)[rawKey];
+        const latency = Number((next as any)[key]);
+        if (raw && !raw.isTimeout && Number.isFinite(latency) && latency > 0 && raw.latencyMs !== latency) {
+          next = {
+            ...next,
+            [rawKey]: { ...raw, latencyMs: Math.round(latency) },
+          };
+        }
+      }
+      return next;
+    });
+  }, [peakCutEnabled, rawChart, visibleServiceIds]);
+
+  const yMax = useMemo(() => {
+    const maxLatency = Math.max(0, ...chart.flatMap((point) => (
+      visibleServiceIds.map((id) => {
+        const raw = point[`service_${id}Raw`];
+        const latency = raw?.isTimeout ? 0 : Number(raw?.latencyMs || 0);
+        return Number.isFinite(latency) ? latency : 0;
+      })
+    )));
+    return maxLatency > 0 ? Math.ceil(maxLatency * 1.2) : 120;
+  }, [chart, visibleServiceIds]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[95vw] sm:max-w-5xl">
         <DialogHeader>
-          <DialogTitle>服务延迟图表</DialogTitle>
-          <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <DialogTitle>服务延迟图表</DialogTitle>
+              <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
+            </div>
+            <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+          </div>
         </DialogHeader>
         {hostServices.length > 0 && (
           <div className="flex items-start justify-between gap-2">
@@ -191,7 +233,7 @@ export default function HostProbeServiceLatencyDialog({
           ) : chart.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无服务延迟数据</div>
           ) : (
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer key={chartAnimationKey} width="100%" height="100%">
               <LineChart data={chart} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={46} />
@@ -200,7 +242,7 @@ export default function HostProbeServiceLatencyDialog({
                 {visibleServices.map((service) => {
                   const colorIndex = hostServices.findIndex((item) => Number(item.id) === Number(service.id));
                   return (
-                    <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={colors[Math.max(colorIndex, 0) % colors.length]} strokeWidth={2} dot={false} connectNulls={false} activeDot={{ r: 4 }} />
+                    <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={colors[Math.max(colorIndex, 0) % colors.length]} strokeWidth={1.15} dot={false} connectNulls={false} activeDot={{ r: 3 }} />
                   );
                 })}
               </LineChart>

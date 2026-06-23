@@ -262,14 +262,26 @@
   }
 
   body[data-scroll-locked],
-  body[data-dialog-scroll-lock] {
+  body[data-dialog-scroll-lock],
+  body.with-scroll-bars-hidden {
+    --removed-body-scroll-bar-size: 0px !important;
     padding-right: 0 !important;
     margin-right: 0 !important;
   }
 
-  body[data-scroll-locked] {
+  html body[data-scroll-locked],
+  html body[data-dialog-scroll-lock],
+  html body.with-scroll-bars-hidden {
     overflow-x: hidden !important;
-    overflow-y: scroll !important;
+    overflow-y: hidden !important;
+  }
+
+  .right-scroll-bar-position {
+    right: 0 !important;
+  }
+
+  .width-before-scroll-bar {
+    margin-right: 0 !important;
   }
 
   html.capacitor-native,

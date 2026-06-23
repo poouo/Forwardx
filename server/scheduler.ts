@@ -388,7 +388,7 @@ async function runTelegramReminders() {
               `剩余约 ${leftPercent}%`,
               `已用：${formatBytesLocal(used)}`,
               `总量：${formatBytesLocal(limit)}`,
-              `计算方式：${host.trafficMeasureMode === "outbound" ? "仅出向" : "双向"}`,
+              `计算方式：${hostTrafficMeasureModeLabel(host.trafficMeasureMode)}`,
             ].join("\n"),
           );
           await db.setSetting(key, "sent");
@@ -418,9 +418,17 @@ async function runHostStatusSweep() {
 }
 
 function hostTrafficUsageBytes(traffic: any, mode: unknown) {
+  const bytesIn = Number(traffic?.bytesIn || 0);
   const bytesOut = Number(traffic?.bytesOut || 0);
   if (mode === "outbound") return bytesOut;
-  return Number(traffic?.bytesIn || 0) + bytesOut;
+  if (mode === "max") return Math.max(bytesIn, bytesOut);
+  return bytesIn + bytesOut;
+}
+
+function hostTrafficMeasureModeLabel(mode: unknown) {
+  if (mode === "outbound") return "仅出向";
+  if (mode === "max") return "取最大值";
+  return "双向";
 }
 
 function escapeHtmlLocal(value: unknown) {

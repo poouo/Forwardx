@@ -27,6 +27,16 @@ export type LatencyStabilityStats = {
   rating: LatencyStabilityRating;
 };
 
+export type PeakCutSample = {
+  [key: string]: unknown;
+};
+
+export type PeakCutSeries = {
+  dataKey: string;
+  outputKey?: string;
+  timeoutKey?: string;
+};
+
 export function isLatencySeriesCacheFresh<T extends { recordedAt: string | Date }>(
   series: T[] | null | undefined,
   maxLatestAgeMs = 10 * 60 * 1000,
@@ -71,6 +81,43 @@ export function getLatencyYAxisTicks(yMax: number) {
   return ticks;
 }
 
+export function applyLatencyPeakCut<T extends PeakCutSample>(
+  data: T[],
+  series: PeakCutSeries[],
+  options: { windowSize?: number; alpha?: number } = {},
+): T[] {
+  if (!data.length || !series.length) return data;
+  const windowSize = Math.max(3, options.windowSize || 11);
+  const alpha = Number.isFinite(options.alpha) ? Number(options.alpha) : 0.3;
+  const ewmaHistory: Record<string, number> = {};
+
+  return data.map((point, index) => {
+    if (index < windowSize - 1) return point;
+    const window = data.slice(index - windowSize + 1, index + 1);
+    let changed = false;
+    const next: PeakCutSample = { ...point };
+
+    for (const item of series) {
+      const outputKey = item.outputKey || item.dataKey;
+      if (item.timeoutKey && point[item.timeoutKey]) continue;
+      const values = window
+        .filter((row) => !item.timeoutKey || !row[item.timeoutKey])
+        .map((row) => Number(row[item.dataKey]))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      const processed = processPeakCutValues(values, alpha);
+      if (processed === null) continue;
+      if (ewmaHistory[outputKey] === undefined) {
+        ewmaHistory[outputKey] = processed;
+      } else {
+        ewmaHistory[outputKey] = alpha * processed + (1 - alpha) * ewmaHistory[outputKey];
+      }
+      next[outputKey] = Math.max(1, Math.round(ewmaHistory[outputKey]));
+      changed = true;
+    }
+    return changed ? next as T : point;
+  });
+}
+
 function getNiceLatencyStep(rawStep: number) {
   if (!Number.isFinite(rawStep) || rawStep <= 1) return 1;
   const magnitude = 10 ** Math.floor(Math.log10(rawStep));
@@ -78,6 +125,31 @@ function getNiceLatencyStep(rawStep: number) {
   const candidates = magnitude >= 10 ? [1, 2, 2.5, 5, 10] : [1, 2, 5, 10];
   const selected = candidates.find((step) => normalized <= step) ?? 10;
   return selected * magnitude;
+}
+
+function getMedian(values: number[]) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function processPeakCutValues(values: number[], alpha: number) {
+  if (values.length === 0) return null;
+  const median = getMedian(values);
+  if (!Number.isFinite(median) || median <= 0) return null;
+  const deviations = values.map((value) => Math.abs(value - median));
+  const medianDeviation = getMedian(deviations) * 1.4826;
+  const validValues = values.filter((value) => {
+    const withinMad = medianDeviation <= 0 ? value <= median * 3 : Math.abs(value - median) <= 3 * medianDeviation;
+    return withinMad && value <= median * 3;
+  });
+  const filtered = validValues.length > 0 ? validValues : [median];
+  let ewma = filtered[0];
+  for (let index = 1; index < filtered.length; index += 1) {
+    ewma = alpha * filtered[index] + (1 - alpha) * ewma;
+  }
+  return ewma;
 }
 
 export function getLatencyStabilityStats(samples: LatencyStabilitySample[]): LatencyStabilityStats {

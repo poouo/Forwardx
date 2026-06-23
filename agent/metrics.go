@@ -20,6 +20,7 @@ const (
 	tcpingProbeBatchSize = 12
 	tcpingMaxConcurrency = 8
 	tcpingProbeTimeout   = 2 * time.Second
+	tcpingPingProbeCount = 5
 )
 
 var (
@@ -357,7 +358,7 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	var latency int
 	var reachable bool
 	if (task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
-		latency, reachable, _ = pingLatency(task.TargetIP, tcpingProbeTimeout)
+		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
 	}
@@ -433,16 +434,31 @@ func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {
 }
 
 func pingLatency(host string, timeout time.Duration) (int, bool, string) {
+	return pingLatencyWithCount(host, timeout, 1)
+}
+
+func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, bool, string) {
 	target := strings.TrimSpace(host)
 	if target == "" {
 		return 0, false, "目标为空"
 	}
+	if count < 1 {
+		count = 1
+	}
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+time.Second)
+	ctxTimeout := timeout + time.Second
+	if count > 1 {
+		ctxTimeout = timeout*time.Duration(count) + 2*time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ctxTimeout)
 	defer cancel()
-	args := []string{"-c", "1", "-W", strconv.Itoa(int(timeout.Seconds())), target}
+	timeoutSeconds := int(timeout.Seconds())
+	if timeoutSeconds < 1 {
+		timeoutSeconds = 1
+	}
+	args := []string{"-c", strconv.Itoa(count), "-W", strconv.Itoa(timeoutSeconds), target}
 	if runtime.GOOS == "windows" {
-		args = []string{"-n", "1", "-w", strconv.Itoa(int(timeout.Milliseconds())), target}
+		args = []string{"-n", strconv.Itoa(count), "-w", strconv.Itoa(int(timeout.Milliseconds())), target}
 	}
 	output, err := exec.CommandContext(ctx, "ping", args...).CombinedOutput()
 	elapsed := int(time.Since(start).Milliseconds())
@@ -453,6 +469,9 @@ func pingLatency(host string, timeout time.Duration) (int, bool, string) {
 	if ctx.Err() == context.DeadlineExceeded {
 		return 0, false, "timeout"
 	}
+	if parsed := parsePingLatencyMs(text); parsed > 0 {
+		return parsed, true, ""
+	}
 	if err != nil {
 		detail := strings.TrimSpace(text)
 		if detail == "" {
@@ -460,34 +479,66 @@ func pingLatency(host string, timeout time.Duration) (int, bool, string) {
 		}
 		return 0, false, detail
 	}
-	if parsed := parsePingLatencyMs(text); parsed > 0 {
-		return parsed, true, ""
-	}
 	return elapsed, true, ""
 }
 
 func parsePingLatencyMs(output string) int {
+	summaryPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:rtt|round-trip)[^=]*=\s*[0-9]+(?:\.[0-9]+)?/([0-9]+(?:\.[0-9]+)?)`),
+		regexp.MustCompile(`(?i)Average\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
+		regexp.MustCompile(`(?i)avg[/=]\s*([0-9]+(?:\.[0-9]+)?)`),
+	}
+	for _, pattern := range summaryPatterns {
+		matches := pattern.FindStringSubmatch(output)
+		if len(matches) >= 2 {
+			if latency := roundPositiveLatency(matches[1]); latency > 0 {
+				return latency
+			}
+		}
+	}
+	timePattern := regexp.MustCompile(`time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`)
+	timeMatches := timePattern.FindAllStringSubmatch(output, -1)
+	if len(timeMatches) > 0 {
+		total := 0
+		count := 0
+		for _, match := range timeMatches {
+			if len(match) < 2 {
+				continue
+			}
+			if latency := roundPositiveLatency(match[1]); latency > 0 {
+				total += latency
+				count++
+			}
+		}
+		if count > 0 {
+			return total / count
+		}
+	}
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
-		regexp.MustCompile(`Average\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
-		regexp.MustCompile(`avg[/=]\s*([0-9]+(?:\.[0-9]+)?)`),
+		regexp.MustCompile(`(?i)time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms`),
 	}
 	for _, pattern := range patterns {
 		matches := pattern.FindStringSubmatch(output)
 		if len(matches) < 2 {
 			continue
 		}
-		value, err := strconv.ParseFloat(matches[1], 64)
-		if err != nil || value <= 0 {
-			continue
+		if latency := roundPositiveLatency(matches[1]); latency > 0 {
+			return latency
 		}
-		latency := int(value + 0.5)
-		if latency < 1 {
-			latency = 1
-		}
-		return latency
 	}
 	return 0
+}
+
+func roundPositiveLatency(value string) int {
+	latencyValue, err := strconv.ParseFloat(value, 64)
+	if err != nil || latencyValue <= 0 {
+		return 0
+	}
+	latency := int(latencyValue + 0.5)
+	if latency < 1 {
+		latency = 1
+	}
+	return latency
 }
 
 func iptablesCounterSnapshot() map[string]trafficCounters {

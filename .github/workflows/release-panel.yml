@@ -57,6 +57,10 @@ jobs:
       - name: Check version split
         run: pnpm check:versions
 
+      - name: Prepare release notes
+        shell: bash
+        run: node scripts/extract-release-notes.mjs "${{ steps.release.outputs.version_no_v }}" > RELEASE_NOTES.md
+
       - name: Build panel assets
         run: pnpm build
 
@@ -92,6 +96,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.version }}
+          body_path: RELEASE_NOTES.md
           files: dist/panel/*.tar.gz
           fail_on_unmatched_files: true
 

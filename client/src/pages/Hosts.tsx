@@ -596,7 +596,7 @@ function HostWorldMap({
   );
 }
 
-type HostTrafficMeasureMode = "outbound" | "both";
+type HostTrafficMeasureMode = "outbound" | "both" | "max";
 
 const HOST_TRAFFIC_GB_BYTES = 1024 ** 3;
 
@@ -682,7 +682,8 @@ function clampTrafficAlertThresholdPercent(value: number) {
 }
 
 function normalizeHostTrafficMeasureMode(value: unknown): HostTrafficMeasureMode {
-  return value === "outbound" ? "outbound" : "both";
+  if (value === "outbound" || value === "max") return value;
+  return "both";
 }
 
 function normalizeHostDdnsIpVersion(value: unknown, recordType?: unknown): "ipv4" | "ipv6" {
@@ -1970,7 +1971,7 @@ function HostsContent() {
                 );
               })}
             </TabsList>
-            <div className="dialog-scroll-area -mx-1.5 mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-4 pr-5">
+            <div className="dialog-scroll-area mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pb-4 pl-0.5 pr-7">
               <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
@@ -2162,6 +2163,7 @@ function HostsContent() {
                             <SelectContent>
                               <SelectItem value="outbound">仅出向</SelectItem>
                               <SelectItem value="both">双向</SelectItem>
+                              <SelectItem value="max">取最大值</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>

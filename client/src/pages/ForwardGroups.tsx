@@ -2,9 +2,10 @@ import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
+import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
-import { clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -292,6 +293,7 @@ function ForwardGroupLatencyDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.forwardGroups.latencySeries.useQuery(
     { groupId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
@@ -305,7 +307,7 @@ function ForwardGroupLatencyDialog({
     if (data) groupLatencySeriesCache.set(groupId, data as GroupLatencySeriesDatum[]);
   }, [data, groupId]);
 
-  const chartData = useMemo<GroupLatencyPoint[]>(() => {
+  const rawChartData = useMemo<GroupLatencyPoint[]>(() => {
     if (!seriesData) return [];
     return seriesData.map((d: GroupLatencySeriesDatum): GroupLatencyPoint => ({
       label: formatGroupLatencyTime(d.recordedAt),
@@ -315,6 +317,13 @@ function ForwardGroupLatencyDialog({
       isTimeout: !!d.isTimeout,
     }));
   }, [seriesData]);
+  const chartData = useMemo<GroupLatencyPoint[]>(() => {
+    if (!peakCutEnabled) return rawChartData;
+    return applyLatencyPeakCut(rawChartData, [
+      { dataKey: "latency", timeoutKey: "isTimeout" },
+      { dataKey: "chartLatency", timeoutKey: "isTimeout" },
+    ]) as GroupLatencyPoint[];
+  }, [peakCutEnabled, rawChartData]);
 
   const stats = useMemo(() => {
     return getLatencyStabilityStats(chartData);
@@ -330,8 +339,13 @@ function ForwardGroupLatencyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
-          <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
+              <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
+            </div>
+            <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 sm:pt-1" />
+          </div>
         </DialogHeader>
         <div className="h-[260px] rounded-lg border border-border/60 bg-muted/20 p-3">
           {(isLoading || waitForFreshSeries) && !seriesData ? (
