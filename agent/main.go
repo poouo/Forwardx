@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.107"
+var Version = "2.2.108"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1279,6 +1279,12 @@ func logGostRuntimeProxySummary(path string, label string) {
 			Listener struct {
 				Type string `json:"type"`
 			} `json:"listener"`
+			Forwarder struct {
+				Nodes []struct {
+					Name string `json:"name"`
+					Addr string `json:"addr"`
+				} `json:"nodes"`
+			} `json:"forwarder"`
 		} `json:"services"`
 		Chains []struct {
 			Name string `json:"name"`
@@ -1300,9 +1306,16 @@ func logGostRuntimeProxySummary(path string, label string) {
 	for _, svc := range cfg.Services {
 		receive := hasProxyProtocolMetadata(svc.Metadata)
 		send := hasProxyProtocolMetadata(svc.Handler.Metadata)
+		targets := make([]string, 0, len(svc.Forwarder.Nodes))
+		for _, node := range svc.Forwarder.Nodes {
+			targets = append(targets, fmt.Sprintf("%s@%s", emptyDash(node.Name), emptyDash(node.Addr)))
+		}
+		if len(targets) == 0 {
+			targets = append(targets, "-")
+		}
 		if receive || send || strings.TrimSpace(svc.Handler.Chain) != "" {
 			lines = append(lines, fmt.Sprintf(
-				"service=%s addr=%s listener=%s handler=%s chain=%s acceptProxy=%v sendProxy=%v",
+				"service=%s addr=%s listener=%s handler=%s chain=%s acceptProxy=%v sendProxy=%v targets=%s",
 				emptyDash(svc.Name),
 				emptyDash(svc.Addr),
 				emptyDash(svc.Listener.Type),
@@ -1310,6 +1323,7 @@ func logGostRuntimeProxySummary(path string, label string) {
 				emptyDash(svc.Handler.Chain),
 				receive,
 				send,
+				strings.Join(targets, ","),
 			))
 		}
 	}
@@ -2365,7 +2379,9 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 		)
 	}
 	for _, cmd := range commands {
-		_ = runShell(cmd)
+		if ok := runShell(cmd); !ok && shouldLogAgentReport("traffic-counting-repair:"+p, 5*time.Minute) {
+			logf("traffic counting repair failed port=%s target=%s:%d protocol=%s cmd=%s", p, targetIP, targetPort, protocol, cmd)
+		}
 	}
 }
 

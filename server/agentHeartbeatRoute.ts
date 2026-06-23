@@ -42,7 +42,7 @@ import { scheduleHostDdnsUpdate } from "./hostDdns";
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
 const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
-const resolvedIpCache = new Map<number, string>();
+const resolvedIpCache = new Map<number, { raw: string; ip: string }>();
 const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
@@ -52,6 +52,7 @@ const RUNTIME_CONFIG_PATH = "/etc/forwardx-runtime/config.json";
 const TUNNEL_RUNTIME_CONFIG_PATH = "/etc/forwardx-tunnel-runtime/config.json";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
+const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 
 type AgentDnsWatch = {
   host: string;
@@ -191,6 +192,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ["ipv4", reportedAddress.ipv4],
       ["ipv6", reportedAddress.ipv6],
     ].some(([key, value]) => String(value || "") !== String((host as any)[key as string] || ""));
+    const upgradedFirewallCounterAgent = !!nextAgentVersion
+      && isAgentVersionAtLeast(nextAgentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
+      && !isAgentVersionAtLeast(previousHost.agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION);
 
     await db.updateHostHeartbeat(host.id, {
       ip: reportedAddress.ip,
@@ -220,11 +224,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (addressChanged && hostUsesAutomaticIngress(previousHost)) {
       await refreshHostAddressRuntime(host.id, previousHost, "agent-address-changed");
     }
-    if (dnsChangedReports.length > 0) {
+    if (dnsChangedReports.length > 0 || upgradedFirewallCounterAgent) {
       await db.resetAgentRuntimeStateForHost(host.id);
       clearTunnelRuntimeStatusForHost(host.id);
-      await refreshAgentsAffectedByHostAddress(host.id, "agent-dns-changed");
-      appendPanelLog("info", `[AgentDNS] host=${host.id} reported DNS change for ${dnsChangedReports.length} watched name(s)`);
+      await refreshAgentsAffectedByHostAddress(host.id, upgradedFirewallCounterAgent ? "agent-firewall-counter-upgrade" : "agent-dns-changed");
+      if (dnsChangedReports.length > 0) {
+        appendPanelLog("info", `[AgentDNS] host=${host.id} reported DNS change for ${dnsChangedReports.length} watched name(s)`);
+      }
+      if (upgradedFirewallCounterAgent) {
+        appendPanelLog("info", `[AgentUpgrade] host=${host.id} agent=${nextAgentVersion} runtime state marked for firewall counter refresh`);
+      }
     }
 
     await db.insertHostMetric({
@@ -373,7 +382,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const firstHost = await getForwardChainHost(Number(currentMember.hostId));
         const targetIp = chainMemberAddress(currentMember, firstHost);
         const targetPort = Number(rule.sourcePort) || 0;
-        return targetIp && targetPort > 0 ? { targetIp, targetPort } : null;
+        if (!targetIp || targetPort <= 0) return null;
+        const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
+        const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);
+        if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
+        resolvedIpCache.set(Number(rule.id), { raw: targetIp, ip: resolvedTargetIp });
+        return { targetIp: resolvedTargetIp, targetPort, originalTargetIp: targetIp };
       }
       if (memberIdx >= members.length - 1) return null;
       if (Number(rule.hostId || 0) !== Number(currentMember.hostId || 0)) return null;
@@ -382,7 +396,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const nextHost = await getForwardChainHost(Number(nextMember.hostId));
       const targetIp = chainMemberAddress(nextMember, nextHost);
       const targetPort = Number(rule.sourcePort) || 0;
-      return targetIp && targetPort > 0 ? { targetIp, targetPort } : null;
+      if (!targetIp || targetPort <= 0) return null;
+      const forcedResolved = dnsChangedIpByHost.get(String(targetIp).toLowerCase());
+      const resolvedTargetIp = forcedResolved || await resolveTargetIpCached(Number(rule.id), targetIp);
+      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
+      resolvedIpCache.set(Number(rule.id), { raw: targetIp, ip: resolvedTargetIp });
+      return { targetIp: resolvedTargetIp, targetPort, originalTargetIp: targetIp };
     };
 
     // 对 DNS 变更且正在运行的规则，先生成清理动作，再通过 isRunning=false 触发重新下发
@@ -414,7 +433,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       console.log(`[DNS] rule=${rule.id} target changed: ${oldIp} → ${ruleResolvedIp}, re-applying`);
     }
 
-    const chainTargetsByRuleId = new Map<number, { targetIp: string; targetPort: number }>();
+    const chainTargetsByRuleId = new Map<number, { targetIp: string; targetPort: number; originalTargetIp?: string }>();
     for (const rule of agentHostRules as any[]) {
       const chainTarget = await resolveForwardChainTarget(rule);
       if (!chainTarget) continue;
@@ -438,20 +457,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       rule.targetIp = chainTarget.targetIp;
       rule.targetPort = chainTarget.targetPort;
-      (rule as any)._originalTargetIp = chainTarget.targetIp;
+      (rule as any)._originalTargetIp = chainTarget.originalTargetIp || chainTarget.targetIp;
       await db.updateForwardRule(Number(rule.id), {
-        targetIp: chainTarget.targetIp,
+        targetIp: chainTarget.originalTargetIp || chainTarget.targetIp,
         targetPort: chainTarget.targetPort,
         isRunning: false,
       } as any);
-      appendPanelLog("info", `[ForwardChain] rule=${rule.id} target=${chainTarget.targetIp}:${chainTarget.targetPort} source=chain-config`);
+      appendPanelLog("info", `[ForwardChain] rule=${rule.id} target=${chainTarget.targetIp}:${chainTarget.targetPort}${chainTarget.originalTargetIp && chainTarget.originalTargetIp !== chainTarget.targetIp ? ` resolvedFrom=${chainTarget.originalTargetIp}` : ""} source=chain-config`);
     }
     for (const rule of rules as any[]) {
       const chainTarget = chainTargetsByRuleId.get(Number(rule.id));
       if (!chainTarget) continue;
       rule.targetIp = chainTarget.targetIp;
       rule.targetPort = chainTarget.targetPort;
-      (rule as any)._originalTargetIp = chainTarget.targetIp;
+      (rule as any)._originalTargetIp = chainTarget.originalTargetIp || chainTarget.targetIp;
       if ((agentHostRules as any[]).some((item: any) => Number(item.id) === Number(rule.id) && !item.isRunning)) {
         rule.isRunning = false;
       }

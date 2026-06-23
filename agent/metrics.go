@@ -693,15 +693,35 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	targetIPv6 := strings.Contains(target, ":")
 	iptablesMarker := iptablesMarkerSeen("iptables", state.Port)
 	ip6tablesMarker := iptablesMarkerSeen("ip6tables", state.Port)
+	nftMarker := false
+	if state.ForwardType == "nftables" {
+		nftMarker = nftRuleMarkerSeen(state.RuleID)
+	}
 	nft := nftCounters[state.RuleID]
-	nftSeen := nft.In > 0 || nft.Out > 0
-	if counters.In == 0 && counters.Out == 0 && connections == 0 {
-		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftSeen=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftSeen)
+	nftCounter := nft.In > 0 || nft.Out > 0
+	if counters.In == 0 && counters.Out == 0 && connections > 0 {
+		logf("traffic diag missing counters rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v hint=traffic-is-flowing-but-counter-rule-did-not-match", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 		return
 	}
-	if din > 0 || dout > 0 || targetIPv6 || state.ForwardType == "nftables" {
-		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftSeen=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftSeen)
+	if counters.In == 0 && counters.Out == 0 && connections == 0 {
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
+		return
 	}
+	if din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables" {
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
+	}
+}
+
+func nftRuleMarkerSeen(ruleID int) bool {
+	if ruleID <= 0 || !commandExists("nft") {
+		return false
+	}
+	raw, err := exec.Command("nft", "-a", "list", "table", "inet", "forwardx").Output()
+	if err != nil {
+		return false
+	}
+	marker := "fwx-rule-" + strconv.Itoa(ruleID)
+	return strings.Contains(string(raw), marker)
 }
 
 func iptablesMarkerSeen(binary string, port string) bool {

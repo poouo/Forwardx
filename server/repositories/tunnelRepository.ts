@@ -12,7 +12,7 @@ import {
   forwardGroupMembers,
   forwardGroups,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { getHostById } from "./hostRepository";
@@ -117,19 +117,15 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
            FROM ${quoteIdentifier("tunnel_exit_nodes")}
            WHERE ${quoteIdentifier("hostId")} = ?
          )
-         OR ${quoteIdentifier("id")} IN (
-           SELECT ${quoteIdentifier("id")}
-           FROM ${quoteIdentifier("tunnels")}
-           WHERE ${quoteIdentifier("entryGroupId")} IN (
-             SELECT g.${quoteIdentifier("id")}
-             FROM ${quoteIdentifier("forward_groups")} g
-             INNER JOIN ${quoteIdentifier("forward_group_members")} m ON m.${quoteIdentifier("groupId")} = g.${quoteIdentifier("id")}
-             WHERE g.${quoteIdentifier("groupMode")} = ?
-               AND g.${quoteIdentifier("isEnabled")} = ?
-               AND m.${quoteIdentifier("memberType")} = ?
-               AND m.${quoteIdentifier("hostId")} = ?
-               AND m.${quoteIdentifier("isEnabled")} = ?
-           )
+         OR ${quoteIdentifier("entryGroupId")} IN (
+           SELECT g.${quoteIdentifier("id")}
+           FROM ${quoteIdentifier("forward_groups")} g
+           INNER JOIN ${quoteIdentifier("forward_group_members")} m ON m.${quoteIdentifier("groupId")} = g.${quoteIdentifier("id")}
+           WHERE g.${quoteIdentifier("groupMode")} = ?
+             AND g.${quoteIdentifier("isEnabled")} = ?
+             AND m.${quoteIdentifier("memberType")} = ?
+             AND m.${quoteIdentifier("hostId")} = ?
+             AND m.${quoteIdentifier("isEnabled")} = ?
          )
        )`,
     [boolValue(false), now, boolValue(true), id, id, id, id, "entry", boolValue(true), "host", id, boolValue(true)],
@@ -408,15 +404,68 @@ export async function replaceForwardRuleTunnelExits(ruleId: number, rows: Array<
   if (!db) return;
   await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, ruleId));
   for (const row of rows) {
-    await db.insert(forwardRuleTunnelExits).values({
+    await upsertForwardRuleTunnelExit({
       ruleId,
       tunnelId: Number(row.tunnelId),
       exitNodeId: Number(row.exitNodeId),
       exitSeq: Number(row.exitSeq),
       exitHostId: Number(row.exitHostId),
       tunnelExitPort: Number(row.tunnelExitPort),
-    } as any);
+    });
   }
+}
+
+async function upsertForwardRuleTunnelExit(row: Omit<InsertForwardRuleTunnelExit, "id" | "createdAt" | "updatedAt">) {
+  const now = Math.floor(Date.now() / 1000);
+  const values = [
+    Number(row.ruleId),
+    Number(row.tunnelId),
+    Number(row.exitNodeId),
+    Number(row.exitSeq),
+    Number(row.exitHostId),
+    Number(row.tunnelExitPort),
+    now,
+    now,
+  ];
+  const q = quoteIdentifier;
+  const table = q("forward_rule_tunnel_exits");
+  const columns = [q("ruleId"), q("tunnelId"), q("exitNodeId"), q("exitSeq"), q("exitHostId"), q("tunnelExitPort"), q("createdAt"), q("updatedAt")].join(", ");
+  if (getDatabaseKind() === "sqlite") {
+    await executeRaw(
+      `INSERT INTO ${table} (${columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(${q("ruleId")}, ${q("exitNodeId")}) DO UPDATE SET
+         ${q("tunnelId")} = excluded.${q("tunnelId")},
+         ${q("exitSeq")} = excluded.${q("exitSeq")},
+         ${q("exitHostId")} = excluded.${q("exitHostId")},
+         ${q("tunnelExitPort")} = excluded.${q("tunnelExitPort")},
+         ${q("updatedAt")} = excluded.${q("updatedAt")}`,
+      values,
+    );
+    return;
+  }
+  if (getDatabaseKind() === "postgresql") {
+    await executeRaw(
+      `INSERT INTO ${table} (${columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (${q("ruleId")}, ${q("exitNodeId")}) DO UPDATE SET
+         ${q("tunnelId")} = excluded.${q("tunnelId")},
+         ${q("exitSeq")} = excluded.${q("exitSeq")},
+         ${q("exitHostId")} = excluded.${q("exitHostId")},
+         ${q("tunnelExitPort")} = excluded.${q("tunnelExitPort")},
+         ${q("updatedAt")} = excluded.${q("updatedAt")}`,
+      values,
+    );
+    return;
+  }
+  await executeRaw(
+    `INSERT INTO ${table} (${columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       ${q("tunnelId")} = VALUES(${q("tunnelId")}),
+       ${q("exitSeq")} = VALUES(${q("exitSeq")}),
+       ${q("exitHostId")} = VALUES(${q("exitHostId")}),
+       ${q("tunnelExitPort")} = VALUES(${q("tunnelExitPort")}),
+       ${q("updatedAt")} = VALUES(${q("updatedAt")})`,
+    values,
+  );
 }
 
 export async function reconcileForwardRuleTunnelExits(rule: any, tunnel: any) {

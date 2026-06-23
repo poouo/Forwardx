@@ -22,6 +22,7 @@ import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 const agentRouter = Router();
 const agentApiRouter = Router();
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
+const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 
 function migratedAgentPayload(panelUrl: string) {
@@ -85,7 +86,12 @@ async function openAgentEventStream(input: {
   const agentVersion = normalizeAgentText(input.agentVersion, 64);
   const wasOnline = isHostStatusOnline(host);
   if (agentVersion) {
+    const upgradedFirewallCounterAgent = isAgentVersionAtLeast(agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
+      && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION);
     await db.updateHostHeartbeat(host.id, { agentVersion } as any);
+    if (upgradedFirewallCounterAgent) {
+      await resetAgentRuntimeStateAfterReconnect(host.id, "agent-firewall-counter-upgrade");
+    }
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
     const agentUpgradeCompleted = (host as any).agentUpgradeRequested
       && isAgentVersionAtLeast(agentVersion, requestedTargetVersion);
