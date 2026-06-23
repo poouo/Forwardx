@@ -98,9 +98,9 @@ function TunnelSectionTransition({
     <AnimatePresence mode="wait">
       <motion.div
         key={transitionKey}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
       >
         {children}
@@ -316,11 +316,13 @@ function normalizeHopConnectHostsForHosts(
   raw: Array<string | null>,
   hopHostIds: number[],
   hosts: any[] | undefined,
+  externalEntry = false,
 ): Array<string | null> {
   const base = normalizeHopConnectHosts(raw, hopHostIds.length);
+  if (externalEntry && hopHostIds.length > 0) base[0] = raw[0] || null;
   const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
   return base.map((value, idx) => {
-    if (idx === 0) return null;
+    if (idx === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hopHostIds[idx] || 0));
     const publicAddr = hostPublicAddress(host);
     const privateAddr = hostPrivateAddress(host);
@@ -333,11 +335,13 @@ function normalizeChainConnectHostsForHosts(
   raw: Array<string | null>,
   hopHostIds: number[],
   hosts: any[] | undefined,
+  externalEntry = false,
 ): Array<string | null> {
   const base = normalizeHopConnectHosts(raw, hopHostIds.length);
+  if (externalEntry && hopHostIds.length > 0) base[0] = raw[0] || null;
   const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
   return base.map((value, idx) => {
-    if (idx === 0) return null;
+    if (idx === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hopHostIds[idx] || 0));
     const privateAddr = hostPrivateAddress(host);
     const text = String(value || "").trim();
@@ -1504,10 +1508,104 @@ function TunnelsContent() {
   const usableEntryGroups = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [entryGroups]);
   const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0).length, [exitGroups]);
   const usableExitGroups = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0), [exitGroups]);
+  const entryGroupById = useMemo(() => new Map<number, any>(entryGroups.map((group: any) => [Number(group.id), group])), [entryGroups]);
   const exitGroupById = useMemo(() => new Map<number, any>(exitGroups.map((group: any) => [Number(group.id), group])), [exitGroups]);
+  const entryMembersForGroup = (groupId: number | null | undefined) => {
+    const group = groupId ? entryGroupById.get(Number(groupId)) : null;
+    return enabledHostGroupMembers(group);
+  };
   const exitMembersForGroup = (groupId: number | null | undefined) => {
     const group = groupId ? exitGroupById.get(Number(groupId)) : null;
     return enabledHostGroupMembers(group);
+  };
+  const primaryEntryHostIdForGroup = (groupId: number | null | undefined) => Number(entryMembersForGroup(groupId)[0]?.hostId || 0) || null;
+  const primaryExitHostIdForGroup = (groupId: number | null | undefined) => Number(exitMembersForGroup(groupId)[0]?.hostId || 0) || null;
+  const memberHostIdsForGroup = (members: any[]) => members.map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0);
+  const externalTunnelHostIds = (entryGroupId: number | null | undefined, exitGroupId: number | null | undefined) => [
+    ...memberHostIdsForGroup(entryMembersForGroup(entryGroupId)),
+    ...memberHostIdsForGroup(exitMembersForGroup(exitGroupId)),
+  ];
+  const externalChainEntryHostIds = (entryGroupId: number | null | undefined) => memberHostIdsForGroup(entryMembersForGroup(entryGroupId));
+  const stripExternalTunnelHosts = (
+    hopIds: number[],
+    connectHosts: Array<string | null>,
+    entryGroupId: number | null | undefined,
+    exitGroupId: number | null | undefined,
+  ) => {
+    const entryIds = new Set(entryMembersForGroup(entryGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
+    const exitIds = new Set(exitMembersForGroup(exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
+    const nextIds: number[] = [];
+    const nextConnectHosts: Array<string | null> = [];
+    hopIds.forEach((hostId, index) => {
+      const id = Number(hostId || 0);
+      if (!id || entryIds.has(id) || exitIds.has(id)) return;
+      nextIds.push(id);
+      nextConnectHosts.push(connectHosts[index] || null);
+    });
+    return {
+      hopHostIds: nextIds,
+      hopConnectHosts: normalizeHopConnectHostsForHosts(nextConnectHosts, nextIds, hosts, !!entryGroupId),
+    };
+  };
+  const stripExternalChainHosts = (
+    hopIds: number[],
+    connectHosts: Array<string | null>,
+    entryGroupId: number | null | undefined,
+  ) => {
+    const entryIds = new Set(externalChainEntryHostIds(entryGroupId));
+    const nextIds: number[] = [];
+    const nextConnectHosts: Array<string | null> = [];
+    hopIds.forEach((hostId, index) => {
+      const id = Number(hostId || 0);
+      if (!id || entryIds.has(id)) return;
+      nextIds.push(id);
+      nextConnectHosts.push(connectHosts[index] || null);
+    });
+    return {
+      hopHostIds: nextIds,
+      hopConnectHosts: normalizeChainConnectHostsForHosts(nextConnectHosts, nextIds, hosts, !!entryGroupId),
+    };
+  };
+  const applyEntryGroupToTunnelForm = (prev: TunnelForm, entryGroupId: number | null): TunnelForm => {
+    const stripped = stripExternalTunnelHosts(prev.hopHostIds, prev.hopConnectHosts, entryGroupId, prev.exitGroupId);
+    return {
+      ...prev,
+      entryGroupId,
+      entryHostId: entryGroupId ? (primaryEntryHostIdForGroup(entryGroupId) || prev.entryHostId) : (stripped.hopHostIds[0] ?? null),
+      hopHostIds: stripped.hopHostIds,
+      hopConnectHosts: stripped.hopConnectHosts,
+    };
+  };
+  const applyEntryGroupToChainCreateForm = (prev: ChainCreateForm, entryGroupId: number | null): ChainCreateForm => {
+    const stripped = stripExternalChainHosts(prev.hopHostIds, prev.hopConnectHosts, entryGroupId);
+    return {
+      ...prev,
+      entryGroupId,
+      hopHostIds: stripped.hopHostIds,
+      hopConnectHosts: stripped.hopConnectHosts,
+    };
+  };
+  const buildActualTunnelRoute = (source: TunnelForm) => {
+    const displayRoute = stripExternalTunnelHosts(source.hopHostIds, source.hopConnectHosts, source.entryGroupId, source.exitGroupId);
+    const entryGroupHostId = primaryEntryHostIdForGroup(source.entryGroupId);
+    const exitGroupHostId = primaryExitHostIdForGroup(source.exitGroupId);
+    const actualIds = [
+      entryGroupHostId || null,
+      ...displayRoute.hopHostIds,
+      exitGroupHostId || null,
+    ].filter((id): id is number => Number(id || 0) > 0);
+    const fallbackIds = actualIds.length > 0 ? actualIds : source.hopHostIds.filter((id) => Number(id || 0) > 0);
+    const connectHostByHostId = new Map(displayRoute.hopHostIds.map((hostId, index) => [Number(hostId || 0), displayRoute.hopConnectHosts[index] || null]));
+    const exitGroupConnectHost = source.exitGroupId ? String(exitMembersForGroup(source.exitGroupId)[0]?.connectHost || "").trim() || null : null;
+    const rawConnectHosts = fallbackIds.map((hostId, index) => {
+      if (index === 0) return null;
+      if (exitGroupHostId && Number(hostId) === Number(exitGroupHostId)) return exitGroupConnectHost;
+      return connectHostByHostId.get(Number(hostId)) || null;
+    });
+    return {
+      hopHostIds: fallbackIds,
+      hopConnectHosts: normalizeHopConnectHostsForHosts(rawConnectHosts, fallbackIds, hosts),
+    };
   };
   const inferExitGroupIdForTunnel = (tunnel: any, hopIds: number[]) => {
     const activeExitIds = [
@@ -1527,27 +1625,14 @@ function TunnelsContent() {
     if (!exitGroupId) return { ...prev, exitGroupId: null, loadBalanceEnabled: false, loadBalanceExits: [] };
     const members = exitMembersForGroup(exitGroupId);
     if (members.length === 0) return { ...prev, exitGroupId, loadBalanceEnabled: false, loadBalanceExits: [] };
-    const primaryMember = members[0];
-    const primaryExitHostId = Number(primaryMember.hostId || 0);
-    const groupHostIds = new Set(members.map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
-    const previousGroupHostIds = new Set(exitMembersForGroup(prev.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0));
-    const exitHostIdsToRemove = new Set([...groupHostIds, ...previousGroupHostIds]);
-    const currentHops = prev.hopHostIds.filter((hostId) => Number(hostId || 0) > 0 && !exitHostIdsToRemove.has(Number(hostId)));
-    const routeBeforeExit = prev.exitGroupId ? currentHops : (currentHops.length > 1 ? currentHops.slice(0, -1) : currentHops);
-    const nextHopHostIds = [...routeBeforeExit, primaryExitHostId].filter((hostId, index, all) => hostId > 0 && all.indexOf(hostId) === index);
-    const connectHostByHostId = new Map(prev.hopHostIds.map((hostId, index) => [Number(hostId || 0), prev.hopConnectHosts[index] || null]));
-    const rawConnectHosts = nextHopHostIds.map((hostId, index) => (
-      index === nextHopHostIds.length - 1 && Number(hostId) === primaryExitHostId
-        ? String(primaryMember.connectHost || "").trim() || null
-        : connectHostByHostId.get(Number(hostId)) || null
-    ));
-    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(rawConnectHosts, nextHopHostIds, hosts);
+    const primaryExitHostId = Number(members[0]?.hostId || 0);
+    const stripped = stripExternalTunnelHosts(prev.hopHostIds, prev.hopConnectHosts, prev.entryGroupId, exitGroupId);
     return {
       ...prev,
       exitGroupId,
       exitHostId: primaryExitHostId || prev.exitHostId,
-      hopHostIds: nextHopHostIds,
-      hopConnectHosts: normalizedConnectHosts,
+      hopHostIds: stripped.hopHostIds,
+      hopConnectHosts: stripped.hopConnectHosts,
       loadBalanceEnabled: members.length > 1,
       loadBalanceExits: members.slice(1).map((member: any) => ({
         hostId: Number(member.hostId || 0) || null,
@@ -1637,14 +1722,16 @@ function TunnelsContent() {
         };
       }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
       : [];
+    const entryGroupId = tunnel.entryGroupId ? Number(tunnel.entryGroupId) : null;
     const exitGroupId = inferExitGroupIdForTunnel(tunnel, hopHostIds);
+    const displayRoute = stripExternalTunnelHosts(hopHostIds, hopConnectHosts, entryGroupId, exitGroupId);
     const nextForm: TunnelForm = {
       name: tunnel.name,
-      entryGroupId: tunnel.entryGroupId ? Number(tunnel.entryGroupId) : null,
+      entryGroupId,
       entryHostId: tunnel.entryHostId,
       exitHostId: tunnel.exitHostId,
-      hopHostIds,
-      hopConnectHosts,
+      hopHostIds: displayRoute.hopHostIds,
+      hopConnectHosts: displayRoute.hopConnectHosts,
       mode: tunnel.mode || "tls",
       listenPort: tunnel.listenPort,
       networkType: tunnel.networkType === "private" ? "private" : "public",
@@ -1707,28 +1794,27 @@ function TunnelsContent() {
 
   const handleSubmit = () => {
     const selectedExitMembers = form.exitGroupId ? exitMembersForGroup(form.exitGroupId) : [];
+    const selectedEntryMembers = form.entryGroupId ? entryMembersForGroup(form.entryGroupId) : [];
+    if (form.entryGroupId && selectedEntryMembers.length === 0) {
+      toast.error("请选择可用的入口组");
+      return;
+    }
     if (form.exitGroupId && selectedExitMembers.length === 0) {
       toast.error("请选择可用的出口组");
       return;
     }
     const submitForm = form.exitGroupId ? applyExitGroupToForm(form, form.exitGroupId) : form;
-    if (!submitForm.name || submitForm.hopHostIds.length < 2) {
+    const actualRoute = buildActualTunnelRoute(submitForm);
+    if (!submitForm.name || actualRoute.hopHostIds.length < 2) {
       toast.error("请填写隧道名称并至少选择入口主机和出口组");
       return;
     }
-    if (submitForm.hopHostIds.length > MAX_TUNNEL_HOPS) {
+    if (actualRoute.hopHostIds.length > MAX_TUNNEL_HOPS) {
       toast.error(`多级隧道最多支持 ${MAX_TUNNEL_HOPS} 级`);
       return;
     }
-    const orderedHopHostIds = [...submitForm.hopHostIds];
-    const selectedPrimaryExitConnectHost = form.exitGroupId && selectedExitMembers.length > 0
-      ? String(selectedExitMembers[0]?.connectHost || "").trim()
-      : "";
-    const rawHopConnectHosts = [...submitForm.hopConnectHosts];
-    if (selectedPrimaryExitConnectHost && rawHopConnectHosts.length > 0) {
-      rawHopConnectHosts[rawHopConnectHosts.length - 1] = selectedPrimaryExitConnectHost;
-    }
-    const orderedHopConnectHosts = normalizeHopConnectHostsForHosts(rawHopConnectHosts, orderedHopHostIds, hosts);
+    const orderedHopHostIds = [...actualRoute.hopHostIds];
+    const orderedHopConnectHosts = [...actualRoute.hopConnectHosts];
     const entryHostId = orderedHopHostIds[0] || 0;
     const exitHostId = orderedHopHostIds[orderedHopHostIds.length - 1] || 0;
     if (!entryHostId || !exitHostId || entryHostId === exitHostId) {
@@ -1823,8 +1909,9 @@ function TunnelsContent() {
 
   const handleChainCreateSubmit = () => {
     const name = chainCreateForm.name.trim();
-    if (!name || chainCreateForm.hopHostIds.length < 2) {
-      toast.error("请填写链名称并至少选择两台主机");
+    const minChainHops = chainCreateForm.entryGroupId ? 1 : 2;
+    if (!name || chainCreateForm.hopHostIds.length < minChainHops) {
+      toast.error(chainCreateForm.entryGroupId ? "请填写链名称并至少选择一台主机" : "请填写链名称并至少选择两台主机");
       return;
     }
     if (chainCreateForm.hopHostIds.length > 5) {
@@ -1835,6 +1922,7 @@ function TunnelsContent() {
       chainCreateForm.hopConnectHosts,
       chainCreateForm.hopHostIds,
       hosts,
+      !!chainCreateForm.entryGroupId,
     );
     createChainMutation.mutate({
       name,
@@ -2469,11 +2557,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="w-[calc(100vw-1rem)] max-w-[95vw] p-3.5 sm:max-w-xl sm:p-4">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-xl sm:p-4">
           <DialogHeader>
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
-          <div className="max-h-[calc(92svh-7rem)] space-y-2.5 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
             <div className="space-y-2.5">
               <LinkCreateTypeSelector
                 value={selectedCreateType}
@@ -2492,7 +2580,7 @@ function TunnelsContent() {
                       <Label>入口组</Label>
                       <Select
                         value={form.entryGroupId ? String(form.entryGroupId) : "none"}
-                        onValueChange={(value) => setForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+                        onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="选择已保存入口组" />
@@ -2511,11 +2599,9 @@ function TunnelsContent() {
                           ))}
                         </SelectContent>
                       </Select>
-                      {form.entryGroupId ? (
-                        <p className="text-xs text-muted-foreground">入口组只作为入口 DDNS 域名选择器，主机链路中的第一台仍固定为实际入口主机。</p>
-                      ) : (
-                        <p className="text-xs text-muted-foreground">入口组会把多台入口主机同步到同一个 DDNS 域名。</p>
-                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {form.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label>主机链路</Label>
@@ -2524,12 +2610,15 @@ function TunnelsContent() {
                         initialHopIds={form.hopHostIds}
                         initialHopConnectHosts={form.hopConnectHosts}
                         maxHops={MAX_TUNNEL_HOPS}
+                        externalEntry={!!form.entryGroupId}
+                        externalExit={!!form.exitGroupId}
                         fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
+                        excludedHostIds={externalTunnelHostIds(form.entryGroupId, form.exitGroupId)}
                         onChange={(ids) => {
                           setForm((prev) => {
-                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
-                            const nextEntry = ids[0] ?? null;
-                            const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
+                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts, !!prev.entryGroupId);
+                            const nextEntry = prev.entryGroupId ? prev.entryHostId : (ids[0] ?? null);
+                            const nextExit = prev.exitGroupId ? prev.exitHostId : (ids.length > 1 ? ids[ids.length - 1] : null);
                             if (
                               sameNumberArray(prev.hopHostIds, ids)
                               && prev.entryHostId === nextEntry
@@ -2551,7 +2640,7 @@ function TunnelsContent() {
                         }}
                         onConnectHostsChange={(hopConnectHosts) => {
                           setForm((prev) => {
-                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
+                            const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts, !!prev.entryGroupId);
                             if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
                             const nextForm = { ...prev, hopConnectHosts: normalizedConnectHosts };
                             return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;
@@ -2679,7 +2768,7 @@ function TunnelsContent() {
                       <Label>入口组</Label>
                       <Select
                         value={chainCreateForm.entryGroupId ? String(chainCreateForm.entryGroupId) : "none"}
-                        onValueChange={(value) => setChainCreateForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+                        onValueChange={(value) => setChainCreateForm((prev) => applyEntryGroupToChainCreateForm(prev, value === "none" ? null : Number(value)))}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="选择已保存入口组" />
@@ -2698,7 +2787,9 @@ function TunnelsContent() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">入口组只作为转发链入口 DDNS 域名选择器，链路第一台仍固定为实际入口主机。</p>
+                      <p className="text-xs text-muted-foreground">
+                        {chainCreateForm.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label>链路主机顺序</Label>
@@ -2707,9 +2798,11 @@ function TunnelsContent() {
                         initialHopIds={chainCreateForm.hopHostIds}
                         initialHopConnectHosts={chainCreateForm.hopConnectHosts}
                         maxHops={5}
+                        externalEntry={!!chainCreateForm.entryGroupId}
+                        excludedHostIds={externalChainEntryHostIds(chainCreateForm.entryGroupId)}
                         onChange={(ids) => {
                           setChainCreateForm((prev) => {
-                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
+                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(prev.hopConnectHosts, ids, hosts, !!prev.entryGroupId);
                             if (
                               sameNumberArray(prev.hopHostIds, ids)
                               && sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)
@@ -2725,7 +2818,7 @@ function TunnelsContent() {
                         }}
                         onConnectHostsChange={(hopConnectHosts) => {
                           setChainCreateForm((prev) => {
-                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
+                            const normalizedConnectHosts = normalizeChainConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts, !!prev.entryGroupId);
                             if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
                             return { ...prev, hopConnectHosts: normalizedConnectHosts };
                           });
@@ -2763,7 +2856,7 @@ function TunnelsContent() {
               <Label>入口组</Label>
               <Select
                 value={form.entryGroupId ? String(form.entryGroupId) : "none"}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, entryGroupId: value === "none" ? null : Number(value) }))}
+                onValueChange={(value) => setForm((prev) => applyEntryGroupToTunnelForm(prev, value === "none" ? null : Number(value)))}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="选择已保存入口组" />
@@ -2782,11 +2875,9 @@ function TunnelsContent() {
                   ))}
                 </SelectContent>
               </Select>
-              {form.entryGroupId ? (
-                <p className="text-xs text-muted-foreground">入口组只作为入口 DDNS 域名选择器，主机链路中的第一台仍固定为实际入口主机。</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">入口组会把多台入口主机同步到同一个 DDNS 域名。</p>
-              )}
+              <p className="text-xs text-muted-foreground">
+                {form.entryGroupId ? "入口组提供入口，下方主机从中转或出口开始配置。" : "未使用入口组时，下方第一台主机作为入口。"}
+              </p>
             </div>
             <div className="space-y-2">
               <Label>主机链路</Label>
@@ -2795,12 +2886,15 @@ function TunnelsContent() {
                 initialHopIds={form.hopHostIds}
                 initialHopConnectHosts={form.hopConnectHosts}
                 maxHops={MAX_TUNNEL_HOPS}
+                externalEntry={!!form.entryGroupId}
+                externalExit={!!form.exitGroupId}
                 fixedExitHostIds={form.exitGroupId ? exitMembersForGroup(form.exitGroupId).map((member: any) => Number(member.hostId || 0)).filter((id: number) => id > 0) : []}
+                excludedHostIds={externalTunnelHostIds(form.entryGroupId, form.exitGroupId)}
                 onChange={(ids) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts);
-                    const nextEntry = ids[0] ?? null;
-                    const nextExit = ids.length > 1 ? ids[ids.length - 1] : null;
+                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(prev.hopConnectHosts, ids, hosts, !!prev.entryGroupId);
+                    const nextEntry = prev.entryGroupId ? prev.entryHostId : (ids[0] ?? null);
+                    const nextExit = prev.exitGroupId ? prev.exitHostId : (ids.length > 1 ? ids[ids.length - 1] : null);
                     if (
                       sameNumberArray(prev.hopHostIds, ids)
                       && prev.entryHostId === nextEntry
@@ -2822,7 +2916,7 @@ function TunnelsContent() {
                 }}
                 onConnectHostsChange={(hopConnectHosts) => {
                   setForm((prev) => {
-                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts);
+                    const normalizedConnectHosts = normalizeHopConnectHostsForHosts(hopConnectHosts, prev.hopHostIds, hosts, !!prev.entryGroupId);
                     if (sameNullableStringArray(prev.hopConnectHosts, normalizedConnectHosts)) return prev;
                     const nextForm = { ...prev, hopConnectHosts: normalizedConnectHosts };
                     return prev.exitGroupId ? applyExitGroupToForm(nextForm, prev.exitGroupId) : nextForm;

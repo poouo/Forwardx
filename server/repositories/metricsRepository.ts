@@ -669,26 +669,38 @@ export async function getTrafficSummaryByRule(opts: {
       .where(sql`${forwardRules.id} IN (${sql.join(groupChildIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.forwardGroupRuleId} IS NOT NULL`);
     const groupModeById = await getForwardGroupModeMap((childRows as any[]).map((row: any) => Number(row.groupId || 0)));
     const chainMemberRows = (childRows as any[]).filter((row: any) => groupModeById.get(Number(row.groupId || 0)) === "chain");
-    const chainMemberPriority = new Map<number, number>();
+    const firstChainMemberByGroup = new Map<number, number>();
     if (chainMemberRows.length > 0) {
-      const memberIds = Array.from(new Set(chainMemberRows.map((row: any) => Number(row.memberId || 0)).filter((id: number) => id > 0)));
-      if (memberIds.length > 0) {
+      const groupIds = Array.from(new Set(chainMemberRows.map((row: any) => Number(row.groupId || 0)).filter((id: number) => id > 0)));
+      if (groupIds.length > 0) {
         const memberRows = await db
           .select({
             id: forwardGroupMembers.id,
+            groupId: forwardGroupMembers.groupId,
             priority: forwardGroupMembers.priority,
+            isEnabled: forwardGroupMembers.isEnabled,
           })
           .from(forwardGroupMembers)
-          .where(sql`${forwardGroupMembers.id} IN (${sql.join(memberIds.map((id) => sql`${id}`), sql`, `)})`);
+          .where(sql`${forwardGroupMembers.groupId} IN (${sql.join(groupIds.map((id) => sql`${id}`), sql`, `)})`);
         for (const row of memberRows as any[]) {
-          chainMemberPriority.set(Number(row.id), Number(row.priority || 0));
+          if (!rowBool((row as any).isEnabled)) continue;
+          const groupId = Number((row as any).groupId || 0);
+          const previousId = firstChainMemberByGroup.get(groupId);
+          if (!previousId) {
+            firstChainMemberByGroup.set(groupId, Number(row.id));
+            continue;
+          }
+          const previous = (memberRows as any[]).find((item: any) => Number(item.id) === previousId);
+          if (Number((row as any).priority || 0) < Number(previous?.priority || 0)) {
+            firstChainMemberByGroup.set(groupId, Number(row.id));
+          }
         }
       }
     }
     const parentByChild = new Map<number, { parentId: number; hostId: number }>();
     for (const row of childRows as any[]) {
       const groupMode = groupModeById.get(Number(row.groupId || 0));
-      if (groupMode === "chain" && Number(chainMemberPriority.get(Number(row.memberId || 0)) || 0) !== 0) {
+      if (groupMode === "chain" && Number(firstChainMemberByGroup.get(Number(row.groupId || 0)) || 0) !== Number(row.memberId || 0)) {
         continue;
       }
       parentByChild.set(Number(row.id), { parentId: Number(row.parentId), hostId: Number(row.hostId) });

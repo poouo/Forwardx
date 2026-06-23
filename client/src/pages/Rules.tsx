@@ -549,9 +549,9 @@ function RuleContentTransition({
       <motion.div
         key={transitionKey}
         className={className}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
       >
         {children}

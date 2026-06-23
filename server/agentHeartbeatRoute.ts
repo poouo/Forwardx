@@ -59,6 +59,25 @@ type AgentDnsWatch = {
   refId?: number;
 };
 
+function cleanEndpointHost(value: unknown) {
+  return String(value || "").trim().replace(/^\[([^\]]+)\]$/, "$1");
+}
+
+function isIpv6Literal(value: unknown) {
+  return isIP(cleanEndpointHost(value)) === 6;
+}
+
+function endpointHostPort(host: unknown, port: unknown) {
+  const clean = cleanEndpointHost(host);
+  return isIpv6Literal(clean) ? `[${clean}]:${Number(port) || 0}` : `${clean}:${Number(port) || 0}`;
+}
+
+function socatDialEndpoint(protocol: "TCP" | "UDP", host: unknown, port: unknown) {
+  const clean = cleanEndpointHost(host);
+  const dialProtocol = isIpv6Literal(clean) ? `${protocol}6` : protocol;
+  return `${dialProtocol}:${endpointHostPort(clean, port)}`;
+}
+
 function isHostnameAddress(value: string) {
   const text = String(value || "").trim();
   return !!text && !isIP(text) && /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$/.test(text);
@@ -336,6 +355,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
       const memberIdx = members.findIndex((member: any) => Number(member.id) === memberId);
       if (memberIdx < 0 || memberIdx >= members.length - 1) return null;
+      const currentMember = members[memberIdx] as any;
+      if (Number(rule.hostId || 0) !== Number(currentMember.hostId || 0)) return null;
       const nextMember = members[memberIdx + 1] as any;
       if (nextMember.memberType !== "host") return null;
       const nextHost = await getForwardChainHost(Number(nextMember.hostId));
@@ -1719,7 +1740,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const udpFlag = rule.protocol === "udp" || rule.protocol === "both" ? "--udp" : "";
           // 如果主机配置了网卡，realm 使用 --interface 绑定
           const ifaceFlag = hostInterface ? `--interface ${hostInterface}` : "";
-          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${processTarget(rule)}:${rule.targetPort} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
+          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${endpointHostPort(processTarget(rule), rule.targetPort)} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
           const unit = [
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -1778,7 +1799,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat TCP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 TCP:${processTarget(rule)}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat TCP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint("TCP", processTarget(rule), rule.targetPort)}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -1794,7 +1815,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
               "[Service]",
               "Type=simple",
-              `ExecStart=/usr/bin/socat UDP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 UDP:${processTarget(rule)}:${rule.targetPort}`,
+              `ExecStart=/usr/bin/socat UDP6-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint("UDP", processTarget(rule), rule.targetPort)}`,
               "Restart=always",
               "RestartSec=5",
               "LimitNOFILE=65535",
@@ -1826,7 +1847,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } else {
             const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
             const listenProto = protoUpper === "UDP" ? "UDP6" : "TCP6";
-            const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${protoUpper}:${processTarget(rule)}:${rule.targetPort}`;
+            const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`;
             const unit = [
               "[Unit]",
               `Description=ForwardX socat ${rule.protocol} forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,

@@ -87,6 +87,7 @@ type GroupForm = {
   name: string;
   remark: string;
   groupMode: GroupMode;
+  entryGroupId: number | null;
   groupType: GroupType;
   domain: string;
   recordType: "A" | "AAAA" | "CNAME";
@@ -104,6 +105,7 @@ const makeDefaultForm = (): GroupForm => ({
   name: "",
   remark: "",
   groupMode: "failover",
+  entryGroupId: null,
   groupType: "host",
   domain: "",
   recordType: "A",
@@ -178,9 +180,9 @@ function ForwardGroupViewTransition({
     <AnimatePresence mode="wait">
       <motion.div
         key={transitionKey}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995, filter: "blur(3px)" }}
-        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995, filter: "blur(3px)" }}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
+        animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.995 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
       >
         {children}
@@ -232,13 +234,14 @@ function normalizeChainConnectHostsForHosts(
   raw: Array<string | null>,
   hostIds: number[],
   hosts: any[] | undefined,
+  externalEntry = false,
 ): Array<string | null> {
   const base = [...raw].slice(0, hostIds.length);
   while (base.length < hostIds.length) base.push(null);
-  if (hostIds.length > 0) base[0] = null;
+  if (hostIds.length > 0 && !externalEntry) base[0] = null;
   const hostById = new Map((hosts || []).map((host: any) => [Number(host.id), host]));
   return base.map((value, index) => {
-    if (index === 0) return null;
+    if (index === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hostIds[index] || 0));
     const privateAddr = hostPrivateAddress(host);
     const text = String(value || "").trim();
@@ -564,6 +567,37 @@ export function ForwardGroupsContent({
     for (const group of groups || []) next[normalizeGroupMode(group.groupMode)].push(group);
     return next;
   }, [groups]);
+  const usableEntryGroups = useMemo(() => groupsByMode.entry.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [groupsByMode.entry]);
+  const entryGroupHostIds = (entryGroupId: number | null | undefined) => {
+    const id = Number(entryGroupId || 0);
+    if (!id) return [] as number[];
+    const group = groupsByMode.entry.find((item: any) => Number(item.id) === id);
+    return (group?.members || [])
+      .filter((member: any) => member.memberType === "host" && member.isEnabled !== false)
+      .map((member: any) => Number(member.hostId || 0))
+      .filter((hostId: number) => hostId > 0);
+  };
+  const applyEntryGroupToChainForm = (prev: GroupForm, entryGroupId: number | null): GroupForm => {
+    const excludedIds = new Set(entryGroupHostIds(entryGroupId));
+    const members = excludedIds.size > 0
+      ? prev.members.filter((member) => !excludedIds.has(Number(member.hostId || 0)))
+      : prev.members;
+    const hostIds = members.map((member) => Number(member.hostId || 0)).filter(Boolean);
+    const normalizedConnectHosts = normalizeChainConnectHostsForHosts(
+      members.map((item) => item.connectHost || null),
+      hostIds,
+      hosts,
+      !!entryGroupId,
+    );
+    return {
+      ...prev,
+      entryGroupId,
+      members: members.map((member, index) => ({
+        ...member,
+        connectHost: normalizedConnectHosts[index] || null,
+      })),
+    };
+  };
   const visibleGroups = groupsByMode[activeGroupMode] || [];
   const modeTotal = visibleGroups.length;
   const activeCount = visibleGroups.filter((g: any) => {
@@ -645,6 +679,7 @@ export function ForwardGroupsContent({
       name: group.name || "",
       remark: isCollectionMode(groupMode) ? "" : group.remark || "",
       groupMode,
+      entryGroupId: group.entryGroupId ? Number(group.entryGroupId) : null,
       groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
       domain: group.domain || "",
       recordType: group.recordType || "A",
@@ -792,6 +827,7 @@ export function ForwardGroupsContent({
         rawConnectHosts,
         ids,
         hosts,
+        !!prev.entryGroupId,
       );
       const nextMembers = ids.map((id, index) => {
         const key = memberKey("host", id);
@@ -825,7 +861,7 @@ export function ForwardGroupsContent({
   const updateChainConnectHosts = (connectHosts: Array<string | null>) => {
     setForm((prev) => {
       const hostIds = prev.members.map((member) => Number(member.hostId || 0)).filter(Boolean);
-      const normalizedConnectHosts = normalizeChainConnectHostsForHosts(connectHosts, hostIds, hosts);
+      const normalizedConnectHosts = normalizeChainConnectHostsForHosts(connectHosts, hostIds, hosts, !!prev.entryGroupId);
       if (sameNullableStringArray(prev.members.map((member) => member.connectHost || null), normalizedConnectHosts)) {
         return prev;
       }
@@ -858,7 +894,10 @@ export function ForwardGroupsContent({
     const supportsChinaHealth = isFailoverMode || isEntryGroup;
     if (!form.name.trim()) return toast.error(isChainGroup ? "请填写链名称" : "请填写组名称");
     if (isChainGroup) {
-      if (form.members.length < 2 || form.members.length > 5) return toast.error("端口转发链需要配置 2-5 台主机");
+      const minChainMembers = form.entryGroupId ? 1 : 2;
+      if (form.members.length < minChainMembers || form.members.length > 5) {
+        return toast.error(form.entryGroupId ? "端口转发链需要配置 1-5 台主机" : "端口转发链需要配置 2-5 台主机");
+      }
     } else if (isEntryGroup || isExitGroup) {
       if (form.members.length < 1 || form.members.length > 5) return toast.error(isEntryGroup ? "入口组需要配置 1-5 台主机" : "出口组需要配置 1-5 台主机");
     } else if (form.members.length === 0) {
@@ -883,6 +922,7 @@ export function ForwardGroupsContent({
       ...form,
       name: form.name.trim(),
       remark: isEntryGroup || isExitGroup ? null : form.remark.trim() || null,
+      entryGroupId: isChainGroup ? form.entryGroupId || null : null,
       groupType: isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
@@ -1385,11 +1425,11 @@ export function ForwardGroupsContent({
         open={showDialog}
         onOpenChange={handleDialogOpenChange}
       >
-        <DialogContent className={isChainMode ? "sm:max-w-xl" : "sm:max-w-3xl"}>
+        <DialogContent className={`flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden ${isChainMode ? "sm:max-w-xl" : "sm:max-w-3xl"}`}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
-          <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             <div className={`grid gap-3 ${isChainMode ? "" : "sm:grid-cols-2"}`}>
               <div className="space-y-2">
                 <Label>{isChainMode ? "链名称" : "组名称"}</Label>
@@ -1400,7 +1440,6 @@ export function ForwardGroupsContent({
                 <Label>组类型</Label>
                 <Select
                   value={form.groupType}
-                  disabled={form.groupMode === "chain"}
                   onValueChange={(v) => {
                     const newType = v as GroupType;
                     // Save current members before switching
@@ -1515,6 +1554,33 @@ export function ForwardGroupsContent({
             </>
             )}
 
+            {form.groupMode === "chain" && (
+              <div className="space-y-2">
+                <Label>入口组</Label>
+                <Select
+                  value={form.entryGroupId ? String(form.entryGroupId) : "none"}
+                  onValueChange={(value) => setForm((prev) => applyEntryGroupToChainForm(prev, value === "none" ? null : Number(value)))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择已保存入口组" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">不使用入口组</SelectItem>
+                    {usableEntryGroups.length === 0 ? (
+                      <div className="px-2 py-4 text-center text-xs text-muted-foreground">暂无可用入口组</div>
+                    ) : usableEntryGroups.map((group: any) => (
+                      <SelectItem key={group.id} value={String(group.id)} textValue={group.name}>
+                        <span className="inline-flex min-w-0 flex-col">
+                          <span className="truncate">{group.name}</span>
+                          <span className="truncate text-xs text-muted-foreground">{String(group.domain || "-")}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
               <Label>{form.groupMode === "chain" ? "链路主机顺序" : form.groupMode === "entry" ? "入口主机" : form.groupMode === "exit" ? "出口主机" : "成员优先级"}</Label>
               {form.groupMode === "chain" ? (
@@ -1523,6 +1589,8 @@ export function ForwardGroupsContent({
                   initialHopIds={form.members.map((member) => Number(member.hostId || 0)).filter(Boolean)}
                   initialHopConnectHosts={form.members.map((member) => member.connectHost || null)}
                   maxHops={5}
+                  externalEntry={!!form.entryGroupId}
+                  excludedHostIds={entryGroupHostIds(form.entryGroupId)}
                   onChange={updateChainMemberIds}
                   onConnectHostsChange={updateChainConnectHosts}
                 />

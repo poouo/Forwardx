@@ -9,6 +9,38 @@ import { createQueryCache } from "../queryCache";
 
 const selfTestQueryCache = createQueryCache(300);
 
+function sortedEnabledHostMembers(group: any) {
+  return [...(group?.members || [])]
+    .filter((member: any) => member.memberType === "host" && !!member.isEnabled)
+    .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
+}
+
+async function resolveForwardChainSelfTestEntry(group: any, chainMembers: any[], fallbackHostId: number) {
+  const entryGroupId = Number(group?.entryGroupId || 0);
+  if (entryGroupId > 0) {
+    const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
+    if (!entryGroup || String(entryGroup.groupMode || "failover") !== "entry" || !entryGroup.isEnabled) {
+      throw new Error("端口转发链入口组不可用");
+    }
+    const entryMembers = sortedEnabledHostMembers(entryGroup);
+    if (entryMembers.length < 1) throw new Error("端口转发链入口组没有可用入口主机");
+    if (chainMembers.length < 1) throw new Error("端口转发链至少需要一台已启用主机");
+    const firstEntry = entryMembers[0];
+    const hostId = Number(firstEntry.hostId || fallbackHostId);
+    const entryIp = String(firstEntry.entryAddress || "").trim();
+    if (!hostId) throw new Error("端口转发链入口组主机不可用");
+    if (!entryIp) throw new Error("端口转发链入口组主机未配置入口地址");
+    return { hostId, entryIp, entryGroupId };
+  }
+
+  if (chainMembers.length < 2) throw new Error("端口转发链至少需要两台已启用主机");
+  const first = chainMembers[0];
+  const hostId = Number(first.hostId || fallbackHostId);
+  const entryIp = String(first.entryAddress || "").trim();
+  if (!entryIp) throw new Error("端口转发链第一台主机未配置入口地址");
+  return { hostId, entryIp, entryGroupId: null };
+}
+
 export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
     .input(z.object({
@@ -43,24 +75,20 @@ export const selfTestRulesRouter = router({
       if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
         const group = await db.getForwardGroupById(Number((rule as any).forwardGroupId)) as any;
         if (String(group?.groupMode || "failover") === "chain") {
-          const members = [...(group.members || [])]
-            .filter((member: any) => !!member.isEnabled)
-            .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
-          if (members.length < 2) throw new Error("端口转发链至少需要两台已启用主机");
-          const first = members[0];
-          hostId = Number(first.hostId || rule.hostId);
-          const entryIp = String(first.entryAddress || "").trim();
-          if (!entryIp) throw new Error("端口转发链第一台主机未配置入口地址");
+          const members = sortedEnabledHostMembers(group);
+          const entry = await resolveForwardChainSelfTestEntry(group, members, Number(rule.hostId || 0));
+          hostId = entry.hostId;
           await db.syncForwardGroupRules(Number(group.id));
           message = JSON.stringify({
             kind: "forward-chain",
             groupId: group.id,
-            entryIp,
+            entryGroupId: entry.entryGroupId,
+            entryIp: entry.entryIp,
             entrySourcePort: rule.sourcePort,
             targetIp: rule.targetIp,
             targetPort: rule.targetPort,
           });
-          appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} queued entry-port test from host=${hostId} entry=${entryIp}:${rule.sourcePort} target=${rule.targetIp}:${rule.targetPort}`);
+          appendPanelLog("info", `[SelfTest] rule=${rule.id} forward-chain=${group.id} queued entry-port test from host=${hostId} entry=${entry.entryIp}:${rule.sourcePort} target=${rule.targetIp}:${rule.targetPort}${entry.entryGroupId ? ` entryGroup=${entry.entryGroupId}` : ""}`);
         }
       }
       if ((rule as any).tunnelId) {

@@ -38,10 +38,13 @@ export function normalizeForwardGroupMembers(
   groupMode: ForwardGroupMode,
   groupType: ForwardGroupType,
   members: ForwardGroupMemberRequest[],
+  options: { externalEntry?: boolean } = {},
 ) {
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
   const effectiveGroupType = groupMode === "chain" || isCollectionGroup ? "host" : groupType;
-  if (groupMode === "chain" && (members.length < 2 || members.length > 5)) {
+  const minChainMembers = options.externalEntry ? 1 : 2;
+  if (groupMode === "chain" && (members.length < minChainMembers || members.length > 5)) {
+    if (options.externalEntry) throw new Error("端口转发链需要配置 1-5 台主机");
     throw new Error("端口转发链需要配置 2-5 台主机");
   }
   if (isCollectionGroup && (members.length < 1 || members.length > 5)) {
@@ -96,7 +99,9 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   if (groupMode === "entry" && !domain) throw new Error("入口组需要指定入口域名");
   const ddnsAutoResolveEnabled = groupMode === "entry" ? input.ddnsAutoResolveEnabled !== false : true;
   if (groupMode === "entry") await assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled);
-  const members = normalizeForwardGroupMembers(groupMode, groupType, input.members);
+  const members = normalizeForwardGroupMembers(groupMode, groupType, input.members, {
+    externalEntry: groupMode === "chain" && !!entryGroupId,
+  });
   const chinaHealthCheckEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.chinaHealthCheckEnabled;
   const chinaHealthCheckTarget = chinaHealthCheckEnabled
     ? String(input.chinaHealthCheckTarget || "").trim() || null

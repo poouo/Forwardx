@@ -117,9 +117,12 @@ function supportsChinaHealthMode(mode: ForwardGroupMode) {
   return mode === "failover" || mode === "entry";
 }
 
-function validateForwardGroupModeMembers(groupMode: ForwardGroupMode, groupType: string, members: ForwardGroupMemberInput[]) {
+function validateForwardGroupModeMembers(groupMode: ForwardGroupMode, groupType: string, members: ForwardGroupMemberInput[], options: { externalEntry?: boolean } = {}) {
   if (groupMode === "chain") {
-    if (members.length < 2 || members.length > 5) throw new Error("Port forwarding chain requires 2-5 hosts");
+    const minMembers = options.externalEntry ? 1 : 2;
+    if (members.length < minMembers || members.length > 5) {
+      throw new Error(options.externalEntry ? "Port forwarding chain requires 1-5 hosts" : "Port forwarding chain requires 2-5 hosts");
+    }
     if (groupType !== "host") throw new Error("Port forwarding chain only supports host members");
     if (members.some((member) => member.memberType !== "host")) throw new Error("Port forwarding chain only supports host members");
     return;
@@ -151,7 +154,12 @@ function resolveChainConnectHost(member: any, host: any) {
   return publicAddr || stored;
 }
 
-async function normalizeForwardGroupMemberInput(groupMode: ForwardGroupMode, member: ForwardGroupMemberInput, index: number): Promise<ForwardGroupMemberInput> {
+async function normalizeForwardGroupMemberInput(
+  groupMode: ForwardGroupMode,
+  member: ForwardGroupMemberInput,
+  index: number,
+  options: { externalEntry?: boolean } = {},
+): Promise<ForwardGroupMemberInput> {
   if (groupMode === "exit" && member.memberType === "host" && member.hostId) {
     const host = await getHostById(Number(member.hostId));
     if (!host) throw new Error("Host does not exist");
@@ -166,15 +174,24 @@ async function normalizeForwardGroupMemberInput(groupMode: ForwardGroupMode, mem
   if (member.memberType !== "host" || !member.hostId) return { ...member, connectHost: null };
   const host = await getHostById(Number(member.hostId));
   if (!host) throw new Error("Host does not exist");
+  const hasExternalEntry = !!options.externalEntry;
   return {
     ...member,
-    connectHost: index === 0 ? null : normalizeStoredChainConnectHost(member.connectHost ?? null, host),
+    connectHost: index === 0 && !hasExternalEntry ? null : normalizeStoredChainConnectHost(member.connectHost ?? null, host),
   };
 }
 
 function sortedMembers(group: any, enabledOnly = false) {
   const members = [...((group as any).members || [])].sort((a, b) => Number(a.priority) - Number(b.priority));
   return enabledOnly ? members.filter((member: any) => !!member.isEnabled) : members;
+}
+
+async function chainEntryMembers(group: any) {
+  const entryGroupId = Number((group as any)?.entryGroupId || 0);
+  if (!entryGroupId) return [] as any[];
+  const entryGroup = await getForwardGroupById(entryGroupId) as any;
+  if (!entryGroup || groupModeOf(entryGroup) !== "entry" || !entryGroup.isEnabled) return [] as any[];
+  return sortedMembers(entryGroup, true).filter((member: any) => member.memberType === "host");
 }
 
 function describeDdnsTarget(group: any, value: string, provider?: string) {
@@ -333,10 +350,12 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
   if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
   const template = await getForwardGroupPrimaryTemplateRule(groupId) as any;
   const members = sortedMembers(group, true) as any[];
-  if (members.length < 2) return [] as ForwardGroupChainProbe[];
+  const entryMembers = await chainEntryMembers(group);
+  const hasExternalEntry = entryMembers.length > 0;
+  if (members.length < (hasExternalEntry ? 1 : 2)) return [] as ForwardGroupChainProbe[];
 
   const hostById = new Map<number, any>();
-  for (const member of members) {
+  for (const member of [...entryMembers, ...members]) {
     const hostId = Number(member.hostId || 0);
     if (hostId > 0 && !hostById.has(hostId)) hostById.set(hostId, await getHostById(hostId));
   }
@@ -347,7 +366,37 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     && !!template
     && String(template.targetIp || "").trim()
     && Number(template.targetPort || 0) > 0;
-  const hopCount = members.length - 1 + (hasFinalTarget ? 1 : 0);
+  const entryHopCount = hasExternalEntry ? 1 : 0;
+  const hopCount = entryHopCount + Math.max(0, members.length - 1) + (hasFinalTarget ? 1 : 0);
+  let hopIndex = 0;
+
+  if (hasExternalEntry) {
+    const firstMember = members[0] as any;
+    const firstHostId = Number(firstMember.hostId || 0);
+    const firstHost = hostById.get(firstHostId);
+    const targetIp = resolveChainConnectHost(firstMember, firstHost);
+    const firstName = String(firstHost?.name || `主机${firstHostId}`);
+    if (targetIp && sourcePort > 0) {
+      for (const entryMember of entryMembers) {
+        const entryHostId = Number(entryMember.hostId || 0);
+        const entryHost = hostById.get(entryHostId);
+        if (!entryHostId) continue;
+        const entryName = String(entryHost?.name || `主机${entryHostId}`);
+        probes.push({
+          groupId,
+          fromHostId: entryHostId,
+          targetIp,
+          targetPort: sourcePort,
+          method: "ping",
+          hopIndex,
+          hopCount,
+          hopLabel: `${hopIndex + 1}/${hopCount} ${entryHostId}->${firstHostId}`,
+          routeLabel: `${entryName} -> ${firstName}`,
+        });
+      }
+    }
+    hopIndex += 1;
+  }
   for (let index = 0; index < members.length - 1; index++) {
     const current = members[index] as any;
     const next = members[index + 1] as any;
@@ -365,11 +414,12 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
       targetIp,
       targetPort: sourcePort > 0 ? sourcePort : 0,
       method: "ping",
-      hopIndex: index,
+      hopIndex,
       hopCount,
-      hopLabel: `${index + 1}/${hopCount} ${currentHostId}->${nextHostId}`,
+      hopLabel: `${hopIndex + 1}/${hopCount} ${currentHostId}->${nextHostId}`,
       routeLabel: `${currentName} -> ${nextName}`,
     });
+    hopIndex += 1;
   }
   if (hasFinalTarget) {
     const lastMember = members[members.length - 1] as any;
@@ -384,9 +434,9 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
         targetIp,
         targetPort,
         method: "tcp",
-        hopIndex: probes.length,
+        hopIndex,
         hopCount,
-        hopLabel: `${probes.length + 1}/${hopCount} ${lastHostId}->target`,
+        hopLabel: `${hopIndex + 1}/${hopCount} ${lastHostId}->target`,
         routeLabel: `${String(lastHost?.name || `主机${lastHostId}`)} -> 目标 ${targetIp}:${targetPort}`,
       });
     }
@@ -518,12 +568,14 @@ export async function getForwardGroupDefaultHostId(groupId: number) {
   throw new Error("Forward group has no valid entry agent");
 }
 
-async function existingChildRule(templateRuleId: number, memberId: number) {
+async function existingChildRule(templateRuleId: number, memberId: number, hostId?: number | null) {
   const db = await getDb();
-  const rows = await db.select().from(forwardRules).where(and(
+  const conds: any[] = [
     eq(forwardRules.forwardGroupRuleId, templateRuleId),
     eq(forwardRules.forwardGroupMemberId, memberId),
-  )).limit(1);
+  ];
+  if (hostId) conds.push(eq(forwardRules.hostId, Number(hostId)));
+  const rows = await db.select().from(forwardRules).where(and(...conds)).limit(1);
   return rows[0];
 }
 
@@ -653,12 +705,14 @@ export async function getForwardGroupEntryPortRange(groupId: number): Promise<{ 
   if (members.length === 0) throw new Error("Forward group has no enabled members");
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
-  if (groupMode === "chain" && members.length < 2) {
-    throw new Error("Port forwarding chain requires at least two enabled hosts");
+  const entryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
+  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > 5)) {
+    throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires at least two enabled hosts");
   }
 
   let policy = portPolicyFrom(null);
-  for (const member of members) {
+  const policyMembers = groupMode === "chain" ? [...entryMembers, ...members] : members;
+  for (const member of policyMembers) {
     const entry = await entryPortPolicyForMember(member);
     if (!entry.hostId) throw new Error("Forward group member has no valid entry agent");
     policy = combinePortPolicies(policy, entry.policy);
@@ -677,18 +731,25 @@ export async function findAvailableForwardGroupPort(
   if (members.length === 0) throw new Error("Forward group has no enabled members");
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
-  if (groupMode === "chain" && members.length < 2) {
-    throw new Error("Port forwarding chain requires at least two enabled hosts");
+  const entryMembers = groupMode === "chain" ? await chainEntryMembers(group) : [];
+  const firstChainMember = groupMode === "chain" ? members[0] : null;
+  const entryMemberIds = new Set(entryMembers.map((member: any) => Number(member.id)));
+  if (groupMode === "chain" && (members.length < (entryMembers.length > 0 ? 1 : 2) || members.length > 5)) {
+    throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires at least two enabled hosts");
   }
 
   const entries: Array<{ hostId: number; ignoreRuleIds: number[] }> = [];
   let policy = portPolicyFrom(null);
 
-  for (const member of members) {
+  const candidateMembers = groupMode === "chain" ? [...entryMembers, ...members] : members;
+  for (const member of candidateMembers) {
     const entry = await entryPortPolicyForMember(member);
     if (!entry.hostId) throw new Error("Forward group member has no valid entry agent");
+    const childMemberId = groupMode === "chain" && entryMemberIds.has(Number(member.id)) && firstChainMember
+      ? Number(firstChainMember.id)
+      : Number(member.id);
     const existing = excludeTemplateRuleId
-      ? await existingChildRule(Number(excludeTemplateRuleId), Number(member.id))
+      ? await existingChildRule(Number(excludeTemplateRuleId), childMemberId, entry.hostId)
       : null;
     entries.push({
       hostId: entry.hostId,
@@ -732,11 +793,13 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
   if (groupMode === "chain") {
     const enabledMembers = members.filter((member: any) => !!member.isEnabled);
+    const entryMembers = await chainEntryMembers(group);
+    const minEnabledMembers = entryMembers.length > 0 ? 1 : 2;
     if (String((group as any).groupType || "host") !== "host") {
       throw new Error("Port forwarding chain only supports host members");
     }
-    if (enabledMembers.length < 2 || enabledMembers.length > 5) {
-      throw new Error("Port forwarding chain requires 2-5 enabled hosts");
+    if (enabledMembers.length < minEnabledMembers || enabledMembers.length > 5) {
+      throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
     }
     for (const [index, member] of enabledMembers.entries()) {
       if (member.memberType !== "host") throw new Error("Port forwarding chain only supports host members");
@@ -748,15 +811,31 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
         throw new Error("Port forwarding chain host has no usable connect address");
       }
     }
+    for (const entryMember of entryMembers) {
+      const host = await getHostById(Number(entryMember.hostId));
+      if (!host || !entryAddressForHost(host)) throw new Error("Entry group host has no entry address");
+    }
   }
 
-  for (const member of members) {
+  const portCheckMembers = groupMode === "chain"
+    ? [...(await chainEntryMembers(group)), ...members]
+    : members;
+  const firstChainMember = groupMode === "chain"
+    ? members.filter((member: any) => !!member.isEnabled)[0] || null
+    : null;
+  const externalEntryMemberIds = groupMode === "chain"
+    ? new Set((await chainEntryMembers(group)).map((member: any) => Number(member.id)))
+    : new Set<number>();
+  for (const member of portCheckMembers) {
     if (!member.isEnabled) continue;
     const hostId = await memberEntryHostId(member);
     if (!hostId) throw new Error("Forward group member has no valid entry agent");
     await assertEntryPortAllowed(member, sourcePort);
+    const childMemberId = groupMode === "chain" && externalEntryMemberIds.has(Number(member.id)) && firstChainMember
+      ? Number(firstChainMember.id)
+      : Number(member.id);
     const existing = config.excludeTemplateRuleId
-      ? await existingChildRule(Number(config.excludeTemplateRuleId), Number(member.id))
+      ? await existingChildRule(Number(config.excludeTemplateRuleId), childMemberId, hostId)
       : null;
     const used = await isPortUsedOnHostForGroupChild(
       hostId,
@@ -922,10 +1001,20 @@ async function ensureChainRuleForTemplate(
   index: number,
   total: number,
   options: SyncForwardGroupRulesOptions = {},
+  overrides: {
+    sourceMember?: any | null;
+    sourceHost?: any | null;
+    targetIp?: string | null;
+    targetPort?: number | null;
+    namePrefix?: string;
+  } = {},
 ) {
-  const existing = await existingChildRule(Number(templateRule.id), Number(member.id));
+  const sourceMember = overrides.sourceMember || member;
+  if (sourceMember.memberType !== "host") throw new Error("Port forwarding chain only supports host members");
+  const sourceHostId = Number(overrides.sourceHost?.id || sourceMember.hostId || 0);
+  const existing = await existingChildRule(Number(templateRule.id), Number(member.id), sourceHostId);
   if (!existing && options.createMissing === false) return null;
-  const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled;
+  const enabled = !!group.isEnabled && !!templateRule.isEnabled && !!member.isEnabled && !!sourceMember.isEnabled;
   if (!enabled) {
     if (existing) {
       await updateForwardRule(Number(existing.id), { isEnabled: false, isRunning: !!existing.isRunning } as any);
@@ -935,10 +1024,10 @@ async function ensureChainRuleForTemplate(
   }
 
   if (member.memberType !== "host") throw new Error("Port forwarding chain only supports host members");
-  const hostId = await memberEntryHostId(member);
+  const hostId = sourceHostId || await memberEntryHostId(sourceMember);
   if (!hostId) throw new Error("Port forwarding chain member has no valid entry agent");
   if (options.validatePorts !== false) {
-    await assertEntryPortAllowed(member, Number(templateRule.sourcePort));
+    await assertEntryPortAllowed(sourceMember, Number(templateRule.sourcePort));
     const used = await isPortUsedOnHostForGroupChild(
       hostId,
       Number(templateRule.sourcePort),
@@ -949,7 +1038,10 @@ async function ensureChainRuleForTemplate(
 
   let targetIp = String(templateRule.targetIp || "").trim();
   let targetPort = Number(templateRule.targetPort);
-  if (nextMember) {
+  if (overrides.targetIp) {
+    targetIp = String(overrides.targetIp || "").trim();
+    targetPort = Number(overrides.targetPort || templateRule.sourcePort);
+  } else if (nextMember) {
     if (nextMember.memberType !== "host") throw new Error("Port forwarding chain only supports host members");
     const nextHost = await getHostById(Number(nextMember.hostId));
     targetIp = resolveChainConnectHost(nextMember, nextHost);
@@ -959,7 +1051,7 @@ async function ensureChainRuleForTemplate(
 
   const payload: any = {
     hostId,
-    name: `[Chain:${group.name}] ${index + 1}/${total} ${templateRule.name}`,
+    name: `[Chain:${group.name}] ${overrides.namePrefix || `${index + 1}/${total}`} ${templateRule.name}`,
     forwardType: templateRule.forwardType,
     protocol: templateRule.protocol,
     gostMode: "direct",
@@ -1005,6 +1097,25 @@ async function ensureChainRuleForTemplate(
   return ruleId;
 }
 
+async function removeStaleForwardGroupChildRules(
+  groupId: number,
+  liveMemberIds: Set<number>,
+  liveTemplateIds: Set<number>,
+  liveChildKeys: Set<string>,
+) {
+  const childRules = await getForwardGroupChildRules(groupId);
+  for (const child of childRules as any[]) {
+    const childKey = `${Number(child.forwardGroupRuleId)}:${Number(child.forwardGroupMemberId)}:${Number(child.hostId)}`;
+    if (
+      !liveMemberIds.has(Number(child.forwardGroupMemberId))
+      || !liveTemplateIds.has(Number(child.forwardGroupRuleId))
+      || !liveChildKeys.has(childKey)
+    ) {
+      await removeManagedRule(Number(child.id));
+    }
+  }
+}
+
 async function removeManagedRule(ruleId: number) {
   const rule = await getForwardRuleById(ruleId);
   if (!rule) return;
@@ -1048,10 +1159,29 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
   const liveMemberIds = new Set((groupMode === "chain" ? activeChainMembers : members).map((m: any) => Number(m.id)));
   const liveTemplateIds = new Set((templates as any[]).map((rule: any) => Number(rule.id)));
 
-  const childRules = await getForwardGroupChildRules(groupId);
-  for (const child of childRules as any[]) {
-    if (!liveMemberIds.has(Number(child.forwardGroupMemberId)) || !liveTemplateIds.has(Number(child.forwardGroupRuleId))) {
-      await removeManagedRule(Number(child.id));
+  if (groupMode === "chain") {
+    const liveChildKeys = new Set<string>();
+    const entryMembers = await chainEntryMembers(group);
+    const firstChainMember = activeChainMembers[0] || null;
+    for (const template of templates as any[]) {
+      if (firstChainMember && entryMembers.length > 0) {
+        for (const entryMember of entryMembers) {
+          const entryHostId = await memberEntryHostId(entryMember);
+          if (entryHostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(firstChainMember.id)}:${entryHostId}`);
+        }
+      }
+      for (const member of activeChainMembers) {
+        const hostId = await memberEntryHostId(member);
+        if (hostId > 0) liveChildKeys.add(`${Number(template.id)}:${Number(member.id)}:${hostId}`);
+      }
+    }
+    await removeStaleForwardGroupChildRules(groupId, liveMemberIds, liveTemplateIds, liveChildKeys);
+  } else {
+    const childRules = await getForwardGroupChildRules(groupId);
+    for (const child of childRules as any[]) {
+      if (!liveMemberIds.has(Number(child.forwardGroupMemberId)) || !liveTemplateIds.has(Number(child.forwardGroupRuleId))) {
+        await removeManagedRule(Number(child.id));
+      }
     }
   }
 
@@ -1064,8 +1194,33 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
 
   for (const template of templates as any[]) {
     if (groupMode === "chain") {
-      if (activeChainMembers.length < 2 || activeChainMembers.length > 5) {
-        throw new Error("Port forwarding chain requires 2-5 enabled hosts");
+      const entryMembers = await chainEntryMembers(group);
+      const minChainMembers = entryMembers.length > 0 ? 1 : 2;
+      if (activeChainMembers.length < minChainMembers || activeChainMembers.length > 5) {
+        throw new Error(entryMembers.length > 0 ? "Port forwarding chain requires 1-5 enabled hosts" : "Port forwarding chain requires 2-5 enabled hosts");
+      }
+      if (entryMembers.length > 0) {
+        const firstMember = activeChainMembers[0];
+        const firstHost = await getHostById(Number(firstMember.hostId));
+        const targetIp = resolveChainConnectHost(firstMember, firstHost);
+        if (!targetIp) throw new Error("First chain host has no usable connect address");
+        for (const [entryIndex, entryMember] of entryMembers.entries()) {
+          const entryHostId = await memberEntryHostId(entryMember);
+          if (activeChainMembers.some((member: any) => Number(member.hostId || 0) === entryHostId)) {
+            throw new Error("Entry group host cannot also be used inside the port forwarding chain");
+          }
+          const entryHost = await getHostById(entryHostId);
+          const ruleId = await ensureChainRuleForTemplate(group, template, firstMember, null, entryIndex, entryMembers.length, options, {
+            sourceMember: entryMember,
+            sourceHost: entryHost,
+            targetIp,
+            targetPort: Number(template.sourcePort),
+            namePrefix: `entry ${entryIndex + 1}/${entryMembers.length}`,
+          });
+          if (ruleId && !preserveRuntime) {
+            await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, ruleId));
+          }
+        }
       }
       for (const [index, member] of activeChainMembers.entries()) {
         const nextMember = activeChainMembers[index + 1] || null;
@@ -1106,10 +1261,14 @@ export async function syncForwardGroupTemplateRule(templateRuleId: number) {
 export async function createForwardGroup(data: InsertForwardGroup, members: ForwardGroupMemberInput[]) {
   if (members.length === 0) throw new Error("转发组至少需要一个成员");
   const groupMode = groupModeOf(data);
-  validateForwardGroupModeMembers(groupMode, String((data as any).groupType || "host"), members);
+  validateForwardGroupModeMembers(groupMode, String((data as any).groupType || "host"), members, {
+    externalEntry: groupMode === "chain" && Number((data as any).entryGroupId || 0) > 0,
+  });
   if (groupMode === "entry" && !String((data as any).domain || "").trim()) throw new Error("入口组需要指定入口域名");
   for (const member of members) await targetHostIdForMember(member);
-  const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index)));
+  const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index, {
+    externalEntry: groupMode === "chain" && Number((data as any).entryGroupId || 0) > 0,
+  })));
   const id = await insertAndGetId("forward_groups", {
     ...data,
     groupMode,
@@ -1154,8 +1313,12 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
   if (members.length === 0) throw new Error("转发组至少需要一个成员");
   const group = await getForwardGroupById(groupId);
   const groupMode = groupModeOf(group);
-  validateForwardGroupModeMembers(groupMode, String((group as any)?.groupType || "host"), members);
-  const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index)));
+  validateForwardGroupModeMembers(groupMode, String((group as any)?.groupType || "host"), members, {
+    externalEntry: groupMode === "chain" && Number((group as any)?.entryGroupId || 0) > 0,
+  });
+  const normalizedMembers = await Promise.all(members.map((member, index) => normalizeForwardGroupMemberInput(groupMode, member, index, {
+    externalEntry: groupMode === "chain" && Number((group as any)?.entryGroupId || 0) > 0,
+  })));
   const db = await getDb();
   const existing = await db.select().from(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, groupId));
   const keepKeys = new Set(normalizedMembers.map((m) => `${m.memberType}:${m.memberType === "host" ? m.hostId : m.tunnelId}`));

@@ -41,6 +41,9 @@ interface MultiHopEditorProps {
   onChange?: (hopHostIds: number[]) => void;
   onConnectHostsChange?: (hopConnectHosts: Array<string | null>) => void;
   fixedExitHostIds?: number[];
+  excludedHostIds?: number[];
+  externalEntry?: boolean;
+  externalExit?: boolean;
 }
 
 const missingTunnelEntryIpTip = "请先配置内网IP";
@@ -76,6 +79,9 @@ export default function MultiHopEditor({
   onChange,
   onConnectHostsChange,
   fixedExitHostIds = [],
+  excludedHostIds = [],
+  externalEntry = false,
+  externalExit = false,
 }: MultiHopEditorProps) {
   const hostById = useMemo(() => new Map(hosts.map((host) => [host.id, host])), [hosts]);
   const [hops, setHops] = useState<HopEntry[]>([]);
@@ -91,6 +97,9 @@ export default function MultiHopEditor({
   const emptyDragImageRef = useRef<HTMLImageElement | null>(null);
 
   const getRole = (idx: number, total: number): HopRole => {
+    if (externalEntry && externalExit) return "mid";
+    if (externalEntry) return idx === total - 1 ? "exit" : "mid";
+    if (externalExit) return idx === 0 ? "entry" : "mid";
     if (idx === 0) return "entry";
     if (idx === total - 1) return "exit";
     return "mid";
@@ -99,7 +108,7 @@ export default function MultiHopEditor({
   const serializeIds = (list: HopEntry[]) => JSON.stringify(list.map((hop) => hop.hostId));
   const serializeConnectHosts = (list: HopEntry[]) => JSON.stringify(
     list.map((hop, idx) => {
-      if (idx === 0) return null;
+      if (idx === 0 && !externalEntry) return null;
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
@@ -117,7 +126,7 @@ export default function MultiHopEditor({
           hostId: host.id,
           hostName: host.name,
           useTunnelEntryIp: (() => {
-            if (idx === 0) return false;
+            if (idx === 0 && !externalEntry) return false;
             const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
             const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
             return !!initialConnectHost && !!tunnelEntryIp && initialConnectHost === tunnelEntryIp;
@@ -150,7 +159,7 @@ export default function MultiHopEditor({
       syncingFromPropsRef.current = true;
       return restored;
     });
-  }, [hostById, initialHopIds, initialHopConnectHosts]);
+  }, [hostById, initialHopIds, initialHopConnectHosts, externalEntry]);
 
   useEffect(() => {
     if (syncingFromPropsRef.current) {
@@ -168,7 +177,7 @@ export default function MultiHopEditor({
     }
 
     const connectHosts = hops.map((hop, idx) => {
-      if (idx === 0) return null;
+      if (idx === 0 && !externalEntry) return null;
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
@@ -194,9 +203,18 @@ export default function MultiHopEditor({
   }, []);
 
   const selectedIds = new Set(hops.map((hop) => hop.hostId));
-  const fixedExitIds = new Set(fixedExitHostIds.map((id) => Number(id || 0)).filter((id) => id > 0));
+  const fixedExitIds = useMemo(() => new Set(fixedExitHostIds.map((id) => Number(id || 0)).filter((id) => id > 0)), [fixedExitHostIds]);
+  const excludedIds = useMemo(() => new Set(excludedHostIds.map((id) => Number(id || 0)).filter((id) => id > 0)), [excludedHostIds]);
   const reachedMaxHops = hops.length >= maxHops;
-  const availableHosts = reachedMaxHops ? [] : hosts.filter((host) => !selectedIds.has(host.id));
+  const availableHosts = reachedMaxHops ? [] : hosts.filter((host) => !selectedIds.has(host.id) && !excludedIds.has(host.id));
+
+  useEffect(() => {
+    if (excludedIds.size === 0) return;
+    setHops((prev) => {
+      const next = prev.filter((hop) => !excludedIds.has(hop.hostId));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [excludedIds]);
 
   const addHop = (hostId: string) => {
     if (reachedMaxHops) return;
@@ -385,7 +403,7 @@ export default function MultiHopEditor({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  disabled={isFirst || isFixedExit}
+                  disabled={idx === 0 || isFixedExit}
                   onClick={() => moveHop(idx, idx - 1)}
                   title="上移"
                 >
@@ -395,7 +413,7 @@ export default function MultiHopEditor({
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 shrink-0"
-                  disabled={isLast || isFixedExit}
+                  disabled={idx === hops.length - 1 || isFixedExit}
                   onClick={() => moveHop(idx, idx + 1)}
                   title="下移"
                 >
