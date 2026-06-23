@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.167] - 2026-06-23
+
+### Added
+
+- Added an upgrade changelog shortcut in system settings so admins can open the GitHub changelog from the update area.
+- Added service filtering and a clear action to the host service latency chart, allowing single-service or multi-service latency views.
+
+### Fixed
+
+- Fixed Agent control-plane recovery when the panel public URL changes: heartbeat responses now publish the current panel URL, online Agents persist it locally, and Agent requests immediately switch to the updated URL.
+- Fixed Agent upgrade recovery so re-running the upgrade script with a new `PANEL_URL` rewrites `/etc/forwardx-agent/config.json` and restores communication without reinstalling.
+- Fixed dropdown, select, tooltip, and dialog overlays so popup UI no longer causes underlying page scrollbar jitter or layout flashing.
+- Improved host edit dialog scrolling and reduced modal animation overhead on slower clients.
+- Improved collapsed sidebar hover visuals so the logo/icon enlargement remains crisp.
+
+### Changed
+
+- Bumped panel version to 2.3.167 and Agent target version to 2.2.105.
+- Android APP version remains 2.3.48 and the APK release pointer is updated to 2.3.167.
+
 ## [2.3.165] - 2026-06-23
 
 ### Fixed

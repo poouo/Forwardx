@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.104"
+var Version = "2.2.105"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -74,6 +74,8 @@ var failoverProxies = map[string]*failoverProxy{}
 var lastTCPingAt time.Time
 var agentLogMu sync.Mutex
 var agentLogPrunedAt time.Time
+var activeConfigPath string
+var runtimePanelURL atomic.Value
 var actionQueue = make(chan actionJob, 128)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
@@ -135,6 +137,7 @@ type heartbeatResp struct {
 	LookingGlassTests  []lookingGlassTask      `json:"lookingGlassTests"`
 	Iperf3Tasks        []iperf3Task            `json:"iperf3Tasks"`
 	AgentUpgrade       *agentUpgrade           `json:"agentUpgrade"`
+	PanelURL           string                  `json:"panelUrl"`
 	ForceTCPing        bool                    `json:"forceTcping"`
 	NextInterval       int                     `json:"nextInterval"`
 }
@@ -329,6 +332,8 @@ func main() {
 		cfg.Interval = 30
 	}
 	cfg.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
+	activeConfigPath = *configPath
+	setRuntimePanelURL(cfg.PanelURL)
 
 	if *onceRegister {
 		if err := register(cfg); err != nil {
@@ -369,6 +374,96 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("panelUrl/token required")
 	}
 	return cfg, nil
+}
+
+func normalizePanelURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func setRuntimePanelURL(panelURL string) {
+	normalized := normalizePanelURL(panelURL)
+	if normalized == "" {
+		return
+	}
+	runtimePanelURL.Store(normalized)
+}
+
+func currentPanelURL(cfg Config) string {
+	if value, ok := runtimePanelURL.Load().(string); ok && value != "" {
+		return value
+	}
+	return strings.TrimRight(cfg.PanelURL, "/")
+}
+
+func persistPanelURL(panelURL string) error {
+	normalized := normalizePanelURL(panelURL)
+	if normalized == "" {
+		return fmt.Errorf("invalid panelUrl")
+	}
+	path := strings.TrimSpace(activeConfigPath)
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return err
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	if strings.TrimRight(fmt.Sprint(data["panelUrl"]), "/") == normalized {
+		return nil
+	}
+	data["panelUrl"] = normalized
+	next, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	next = append(next, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, next, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(path, 0600)
+	return nil
+}
+
+func syncPanelURLFromResponse(panelURL string) {
+	normalized := normalizePanelURL(panelURL)
+	if normalized == "" {
+		return
+	}
+	current := currentPanelURL(Config{})
+	if current == normalized {
+		return
+	}
+	setRuntimePanelURL(normalized)
+	if err := persistPanelURL(normalized); err != nil {
+		logf("panel URL switched to %s for runtime, persist failed: %v", normalized, err)
+		return
+	}
+	logf("panel URL updated to %s", normalized)
 }
 
 func register(cfg Config) error {
@@ -437,6 +532,7 @@ func heartbeat(cfg Config) (int, error) {
 		}
 		return cfg.Interval, err
 	}
+	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
@@ -972,7 +1068,8 @@ func runAgentEventStream(cfg Config) error {
 		return err
 	}
 	query, _ := json.Marshal(env)
-	req, err := http.NewRequest("GET", cfg.PanelURL+"/api/stream?e="+url.QueryEscape(string(query)), nil)
+	panelURL := currentPanelURL(cfg)
+	req, err := http.NewRequest("GET", panelURL+"/api/stream?e="+url.QueryEscape(string(query)), nil)
 	if err != nil {
 		return err
 	}
@@ -2487,7 +2584,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		return false
 	}
 	if spec.Role == "entry" {
-		spec.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
+		spec.PanelURL = currentPanelURL(cfg)
 		spec.Token = cfg.Token
 	}
 	logf(
@@ -3705,7 +3802,8 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 		return err
 	}
 	body, _ := json.Marshal(env)
-	req, err := http.NewRequest("POST", cfg.PanelURL+"/api/sync", bytes.NewReader(body))
+	panelURL := currentPanelURL(cfg)
+	req, err := http.NewRequest("POST", panelURL+"/api/sync", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

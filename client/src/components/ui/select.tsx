@@ -2,39 +2,9 @@ import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import { Check, ChevronDown, ChevronUp } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useOverlayContainer } from "@/components/ui/overlay-root"
 
-const Select = ({ open, defaultOpen, onOpenChange, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) => {
-  const [internalOpen, setInternalOpen] = React.useState(Boolean(defaultOpen))
-  const isOpen = open ?? internalOpen
-
-  const handleOpenChange = React.useCallback((nextOpen: boolean) => {
-    setInternalOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-  }, [onOpenChange])
-
-  React.useLayoutEffect(() => {
-    if (!isOpen || typeof document === "undefined") return
-    const body = document.body
-    const count = Number(body.dataset.selectScrollLock || "0") + 1
-    if (!body.dataset.selectScrollLock) {
-      body.style.setProperty("--fx-select-lock-width", document.documentElement.clientWidth + "px")
-      body.dataset.selectHadScrollbar = document.documentElement.scrollHeight > document.documentElement.clientHeight ? "true" : "false"
-    }
-    body.dataset.selectScrollLock = String(count)
-    return () => {
-      const nextCount = Number(body.dataset.selectScrollLock || "1") - 1
-      if (nextCount > 0) {
-        body.dataset.selectScrollLock = String(nextCount)
-      } else {
-        delete body.dataset.selectScrollLock
-        delete body.dataset.selectHadScrollbar
-        body.style.removeProperty("--fx-select-lock-width")
-      }
-    }
-  }, [isOpen])
-
-  return <SelectPrimitive.Root open={open} defaultOpen={defaultOpen} onOpenChange={handleOpenChange} {...props} />
-}
+const Select = SelectPrimitive.Root
 Select.displayName = SelectPrimitive.Root.displayName
 const SelectGroup = SelectPrimitive.Group
 const SelectValue = SelectPrimitive.Value
@@ -47,12 +17,18 @@ const SelectTrigger = React.forwardRef<React.ComponentRef<typeof SelectPrimitive
 ))
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName
 
+const SelectPortal = ({ container, ...props }: React.ComponentProps<typeof SelectPrimitive.Portal>) => {
+  const overlayContainer = useOverlayContainer()
+  return <SelectPrimitive.Portal container={container ?? overlayContainer} {...props} />
+}
+SelectPortal.displayName = SelectPrimitive.Portal.displayName
+
 const SelectContent = React.forwardRef<React.ComponentRef<typeof SelectPrimitive.Content>, React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>>(({ className, children, position = "popper", ...props }, ref) => (
-  <SelectPrimitive.Portal>
+  <SelectPortal>
     <SelectPrimitive.Content ref={ref} className={cn("relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2", position === "popper" && "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1", className)} position={position} {...props}>
       <SelectPrimitive.Viewport className={cn("p-1", position === "popper" && "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]")}>{children}</SelectPrimitive.Viewport>
     </SelectPrimitive.Content>
-  </SelectPrimitive.Portal>
+  </SelectPortal>
 ))
 SelectContent.displayName = SelectPrimitive.Content.displayName
 
@@ -64,4 +40,4 @@ const SelectItem = React.forwardRef<React.ComponentRef<typeof SelectPrimitive.It
 ))
 SelectItem.displayName = SelectPrimitive.Item.displayName
 
-export { Select, SelectGroup, SelectValue, SelectTrigger, SelectContent, SelectItem }
+export { Select, SelectGroup, SelectValue, SelectTrigger, SelectContent, SelectItem, SelectPortal }

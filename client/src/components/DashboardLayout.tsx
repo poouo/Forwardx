@@ -74,7 +74,7 @@ import { renderMixedHtml } from "@/lib/htmlContent";
 import { mobileAuth } from "@/lib/mobileAuth";
 import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult } from "@/lib/mobileNotifications";
 import { cn } from "@/lib/utils";
-import { PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -785,6 +785,7 @@ function DashboardLayoutContent({
   }, [backgroundUpgrade, upgradeJob, upgradeRefreshScheduled, upgradeStatus?.currentVersion]);
   const upgradeProgress = getLayoutUpgradeProgress(displayUpgradeJob);
   const upgradeTargetVersion = updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || displayUpgradeJob?.targetVersion || "";
+  const upgradeChangelogUrl = getPanelChangelogUrl(upgradeTargetVersion, updateInfo?.releaseUrl || upgradeStatus?.update?.releaseUrl);
   const isDockerDeployment = !!upgradeStatus?.docker;
   const dockerUpgradeCommand = upgradeStatus?.manualUpgradeCommand || DEFAULT_DOCKER_UPGRADE_COMMAND;
   const upgradeRefreshText = upgradeRefreshCountdown !== null
@@ -848,7 +849,7 @@ function DashboardLayoutContent({
           tooltip={item.label}
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
-          <item.icon className={`h-4 w-4 ${isActive ? "text-primary" : ""}`} />
+          <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]", isActive && "text-primary")} />
           <span className={cn(isDesktopCollapsed && "sr-only")}>{item.label}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
@@ -936,7 +937,7 @@ function DashboardLayoutContent({
             ) : (
               <button
                 onClick={toggleSidebar}
-                className="collapsed-sidebar-logo-button flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="collapsed-sidebar-logo-button flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="Toggle navigation"
                 title={siteTitle}
               >
@@ -976,9 +977,9 @@ function DashboardLayoutContent({
                     className="h-10 justify-center"
                   >
                     {resolvedTheme === "dark" ? (
-                      <Sun className="h-4 w-4" />
+                      <Sun className="sidebar-nav-icon h-[18px] w-[18px]" />
                     ) : (
-                      <Moon className="h-4 w-4" />
+                      <Moon className="sidebar-nav-icon h-[18px] w-[18px]" />
                     )}
                     <span className="sr-only">{resolvedTheme === "dark" ? "白天模式" : "黑夜模式"}</span>
                   </SidebarMenuButton>
@@ -1305,6 +1306,12 @@ function DashboardLayoutContent({
             );
           })()}
           <DialogFooter className="gap-2">
+            <Button className="w-full gap-2 sm:w-auto" variant="ghost" asChild>
+              <a href={upgradeChangelogUrl} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="h-4 w-4" />
+                升级日志
+              </a>
+            </Button>
             <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowUpgradeDialog(false)}>
               {displayUpgradeJob?.status === "running" ? "后台执行" : "取消"}
             </Button>
