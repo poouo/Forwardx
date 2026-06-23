@@ -1970,7 +1970,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               commands: (!rule.isRunning || shouldRefreshForwardXEntryRule) ? [
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
-              ],
+              ] : [],
               fxp: {
                 role: "entry",
                 tunnelId: tunnel.id,
