@@ -72,6 +72,7 @@ func hostTrafficSnapshot() map[string]any {
 		"bytesOut": netBytes(1),
 	}
 }
+
 func collectTraffic(cfg Config) {
 	states := readLocalRuleStates()
 	iptablesCounters := iptablesCounterSnapshot()
@@ -100,12 +101,17 @@ func collectTraffic(cfg Config) {
 		if din > 0 || dout > 0 || dconns > 0 {
 			stats = append(stats, map[string]any{"ruleId": state.RuleID, "bytesIn": din, "bytesOut": dout, "connections": dconns})
 		}
+		logTrafficCounterDiagnostic(state, counters, din, dout, curConns, nftCounters)
 	}
 	hostTraffic := hostTrafficSnapshot()
 	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
 	if len(stats) > 0 || hostTraffic != nil {
-		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil && shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
-			logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
+		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
+			if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
+				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
+			}
+		} else if len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+			logf("traffic report ok watched=%d stats=%d", watched, len(stats))
 		}
 	}
 }
@@ -673,6 +679,44 @@ func nftCounterBytes(line string) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters, din uint64, dout uint64, connections uint64, nftCounters map[int]trafficCounters) {
+	if state.RuleID <= 0 || state.Port == "" {
+		return
+	}
+	key := "traffic-diag:" + strconv.Itoa(state.RuleID) + ":" + state.Port
+	if !shouldLogAgentReport(key, 5*time.Minute) {
+		return
+	}
+	target := strings.Trim(strings.TrimSpace(state.TargetIP), "[]")
+	targetIPv6 := strings.Contains(target, ":")
+	iptablesMarker := iptablesMarkerSeen("iptables", state.Port)
+	ip6tablesMarker := iptablesMarkerSeen("ip6tables", state.Port)
+	nft := nftCounters[state.RuleID]
+	nftSeen := nft.In > 0 || nft.Out > 0
+	if counters.In == 0 && counters.Out == 0 && connections == 0 {
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftSeen=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftSeen)
+		return
+	}
+	if din > 0 || dout > 0 || targetIPv6 || state.ForwardType == "nftables" {
+		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftSeen=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftSeen)
+	}
+}
+
+func iptablesMarkerSeen(binary string, port string) bool {
+	if port == "" {
+		return false
+	}
+	if binary == "ip6tables" && !commandExists("ip6tables") {
+		return false
+	}
+	raw, err := exec.Command(binary, "-t", "mangle", "-S").Output()
+	if err != nil {
+		return false
+	}
+	marker := "fwx-stat-" + port + ":"
+	return strings.Contains(string(raw), marker)
 }
 
 func conntrackConnectionsSnapshot(states []localRuleState) map[string]uint64 {

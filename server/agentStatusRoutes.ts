@@ -56,6 +56,24 @@ async function getTunnelExtraExitHostIds(tunnelId: number) {
     .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
 }
 
+async function getTunnelEntryHostIds(tunnel: any) {
+  const hostIds = new Set<number>();
+  const primaryEntryHostId = Number(tunnel?.entryHostId || 0);
+  if (Number.isFinite(primaryEntryHostId) && primaryEntryHostId > 0) hostIds.add(primaryEntryHostId);
+  const entryGroupId = Number(tunnel?.entryGroupId || 0);
+  if (entryGroupId > 0) {
+    const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
+    if (entryGroup && entryGroup.isEnabled && String(entryGroup.groupMode || "") === "entry") {
+      for (const member of entryGroup.members || []) {
+        if (!member || member.isEnabled === false || member.memberType !== "host") continue;
+        const memberHostId = Number(member.hostId || 0);
+        if (Number.isFinite(memberHostId) && memberHostId > 0) hostIds.add(memberHostId);
+      }
+    }
+  }
+  return Array.from(hostIds);
+}
+
 export function registerAgentStatusRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response) => {
   try {
@@ -81,12 +99,16 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
       return;
     }
     const tunnel = tunnelId ? await db.getTunnelById(tunnelId) : ((rule as any).tunnelId ? await db.getTunnelById((rule as any).tunnelId) : null);
-    const entryHostId = tunnel ? Number((tunnel as any).entryHostId) : Number((rule as any).hostId);
+    const tunnelEntryHostIds = tunnel ? await getTunnelEntryHostIds(tunnel) : [];
+    const isTunnelEntryHost = tunnelEntryHostIds.includes(Number(host.id));
+    const entryHostId = tunnel
+      ? (isTunnelEntryHost ? Number(host.id) : Number((tunnel as any).entryHostId))
+      : Number((rule as any).hostId);
     const entryHost = entryHostId === Number(host.id) ? host : await db.getHostById(entryHostId);
     const policyAllowsBlock = hostBlocksProtocol(entryHost, protocol);
     const isTunnelRule = !!tunnel
       && Number((rule as any).tunnelId) === Number((tunnel as any).id)
-      && (Number((tunnel as any).entryHostId) === Number(host.id) || Number((tunnel as any).exitHostId) === Number(host.id))
+      && (isTunnelEntryHost || Number((tunnel as any).exitHostId) === Number(host.id))
       && policyAllowsBlock;
     const isDirectRule = !tunnel
       && Number((rule as any).hostId) === Number(host.id)
@@ -102,7 +124,7 @@ agentRouter.post("/api/agent/protocol-block", async (req: Request, res: Response
     await db.disableForwardRuleByProtocolBlock(ruleId, reason);
     if (tunnel) {
       await db.updateTunnel((tunnel as any).id, { isRunning: false } as any);
-      pushAgentRefresh(Number((tunnel as any).entryHostId), "protocol-block-entry");
+      for (const entryHostId of tunnelEntryHostIds) pushAgentRefresh(Number(entryHostId), "protocol-block-entry");
       pushAgentRefresh(Number((tunnel as any).exitHostId), "protocol-block-exit");
     } else {
       pushAgentRefresh(Number((rule as any).hostId), "protocol-block-rule");
@@ -137,7 +159,9 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       const isTunnelHop = Array.isArray(hops)
         && hops.some((hop: any) => Number(hop.hostId) === Number(host.id));
       const isExtraExit = extraExitHostIds.includes(Number(host.id));
-      if (!tunnel || (Number(tunnel.entryHostId) !== Number(host.id) && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
+      const tunnelEntryHostIds = tunnel ? await getTunnelEntryHostIds(tunnel) : [];
+      const isEntryHost = tunnelEntryHostIds.includes(Number(host.id));
+      if (!tunnel || (!isEntryHost && Number(tunnel.exitHostId) !== Number(host.id) && !isTunnelHop && !isExtraExit)) {
         res.status(404).json({ error: "tunnel not found" });
         return;
       }
@@ -182,7 +206,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       }
       const nextRunning = await updateDirectTunnelRunningStatus(tunnel, !!isRunning);
       if (nextRunning) {
-        requestTunnelTcpingRefresh([Number((tunnel as any).entryHostId)], "tunnel-tcping-refresh");
+        requestTunnelTcpingRefresh(tunnelEntryHostIds, "tunnel-tcping-refresh");
       }
       appendPanelLog(
         nextRunning ? "info" : "warn",
@@ -202,17 +226,18 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
     let ruleTunnel: any = null;
+    let ruleTunnelEntryHostIds: number[] = [];
     let allowed = Number((rule as any).hostId) === Number(host.id);
-    if (!allowed && (rule as any).tunnelId) {
+    if ((rule as any).tunnelId) {
       ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
-      const extraExitHostIds = ruleTunnel ? await getTunnelExtraExitHostIds(Number(ruleTunnel.id)) : [];
-      allowed = !!ruleTunnel && (
-        Number((ruleTunnel as any).entryHostId) === Number(host.id)
-        || Number((ruleTunnel as any).exitHostId) === Number(host.id)
-        || extraExitHostIds.includes(Number(host.id))
-      );
-    } else if ((rule as any).tunnelId) {
-      ruleTunnel = await db.getTunnelById(Number((rule as any).tunnelId));
+      if (ruleTunnel) {
+        ruleTunnelEntryHostIds = await getTunnelEntryHostIds(ruleTunnel);
+        const extraExitHostIds = await getTunnelExtraExitHostIds(Number(ruleTunnel.id));
+        allowed = allowed
+          || ruleTunnelEntryHostIds.includes(Number(host.id))
+          || Number((ruleTunnel as any).exitHostId) === Number(host.id)
+          || extraExitHostIds.includes(Number(host.id));
+      }
     }
     if (!allowed) {
       res.status(403).json({ error: "forbidden" });
@@ -220,6 +245,9 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     }
 
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
+    if (ruleTunnel && ruleTunnelEntryHostIds.includes(Number(host.id))) {
+      recordTunnelRuntimeHostStatus(Number(ruleTunnel.id), Number(host.id), !!isRunning);
+    }
     if (
       !!isRunning
       && ruleTunnel

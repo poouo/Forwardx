@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.106"
+var Version = "2.2.107"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1152,6 +1152,7 @@ func handleAction(cfg Config, a action) {
 		return
 	}
 	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
+	logIPv6ActionDiagnostic(a)
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
 		preserveRunningFXP := cleanupStaleRuntimeBeforeApply(a)
@@ -1205,6 +1206,42 @@ func handleAction(cfg Config, a action) {
 	} else {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
+}
+
+func logIPv6ActionDiagnostic(a action) {
+	if a.SourcePort <= 0 || a.Op != "apply" {
+		return
+	}
+	target := strings.Trim(strings.TrimSpace(a.TargetIP), "[]")
+	targetIPv6 := strings.Contains(target, ":")
+	commandText := strings.Join(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...), "\n")
+	usesIP6Tables := strings.Contains(commandText, "ip6tables")
+	usesNFT := strings.Contains(commandText, "nft ") || strings.Contains(commandText, "nftables")
+	serviceMode := a.Unit != "" || a.UnitExtra != "" || a.Fxp != nil || (a.Failover != nil && a.Failover.Enabled)
+	if !targetIPv6 && !usesIP6Tables && !usesNFT && !serviceMode {
+		return
+	}
+	if !shouldLogAgentReport(fmt.Sprintf("ipv6-forward-diag:%d:%d:%s", a.RuleID, a.SourcePort, a.ForwardType), 5*time.Minute) {
+		return
+	}
+	logf(
+		"ipv6-forward diag op=%s rule=%d tunnel=%d type=%s port=%d protocol=%s target=%s:%d targetIPv6=%v ip6tablesCmd=%v nftCmd=%v service=%v fxp=%v failover=%v ip6tablesInstalled=%v",
+		a.Op,
+		a.RuleID,
+		a.TunnelID,
+		a.ForwardType,
+		a.SourcePort,
+		a.Protocol,
+		target,
+		a.TargetPort,
+		targetIPv6,
+		usesIP6Tables,
+		usesNFT,
+		serviceMode,
+		a.Fxp != nil,
+		a.Failover != nil && a.Failover.Enabled,
+		commandExists("ip6tables"),
+	)
 }
 
 func shouldSkipRuntimeAction(a action) bool {

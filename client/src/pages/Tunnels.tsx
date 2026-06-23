@@ -10,6 +10,7 @@ import { PersistentPagination, usePersistentPagination } from "@/components/Pers
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { segmentedControlClassName, segmentedIconClassName, segmentedOptionClassName } from "@/components/ui/segmented";
 import {
   Dialog,
   DialogContent,
@@ -2696,7 +2697,7 @@ function TunnelsContent() {
                     </div>
                     <div className="space-y-2">
                       <Label>隧道类型</Label>
-                      <div className="grid grid-cols-2 gap-1 rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5">
+                      <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
                         <button
                           type="button"
                           onClick={() => {
@@ -2705,13 +2706,10 @@ function TunnelsContent() {
                           }}
                           disabled={gostRuntimeDisabled}
                           title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
-                            gostTunnelModes.includes(form.mode)
-                              ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
-                              : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                          } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                          aria-pressed={gostTunnelModes.includes(form.mode)}
+                          className={segmentedOptionClassName(gostTunnelModes.includes(form.mode), gostRuntimeDisabled, "px-2")}
                         >
-                          <Network className="h-4 w-4 shrink-0 text-primary" />
+                          <Network className={segmentedIconClassName(gostTunnelModes.includes(form.mode))} />
                           <span className="truncate">GOST</span>
                         </button>
                         <button
@@ -2724,13 +2722,10 @@ function TunnelsContent() {
                           }
                           disabled={forwardxRuntimeDisabled}
                           title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                          className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
-                            form.mode === "forwardx"
-                              ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
-                              : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                          } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                          aria-pressed={form.mode === "forwardx"}
+                          className={segmentedOptionClassName(form.mode === "forwardx", forwardxRuntimeDisabled, "px-2")}
                         >
-                          <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+                          <ShieldCheck className={segmentedIconClassName(form.mode === "forwardx")} />
                           <span className="truncate">ForwardX</span>
                         </button>
                       </div>
@@ -2972,7 +2967,7 @@ function TunnelsContent() {
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className="grid grid-cols-2 gap-1 rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5">
+              <div className={`${segmentedControlClassName} grid grid-cols-2 gap-1`}>
                 <button
                   type="button"
                   onClick={() => {
@@ -2981,13 +2976,10 @@ function TunnelsContent() {
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
-                    gostTunnelModes.includes(form.mode)
-                      ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
-                      : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                  } ${gostRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                  aria-pressed={gostTunnelModes.includes(form.mode)}
+                  className={segmentedOptionClassName(gostTunnelModes.includes(form.mode), gostRuntimeDisabled, "px-2")}
                 >
-                  <Network className="h-4 w-4 shrink-0 text-primary" />
+                  <Network className={segmentedIconClassName(gostTunnelModes.includes(form.mode))} />
                   <span className="truncate">GOST</span>
                 </button>
                 <button
@@ -3000,13 +2992,10 @@ function TunnelsContent() {
                   }
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
-                  className={`flex h-9 min-w-0 items-center justify-center gap-2 rounded-sm border px-2 text-center text-sm font-medium transition-colors ${
-                    form.mode === "forwardx"
-                      ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
-                      : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
-                  } ${forwardxRuntimeDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                  aria-pressed={form.mode === "forwardx"}
+                  className={segmentedOptionClassName(form.mode === "forwardx", forwardxRuntimeDisabled, "px-2")}
                 >
-                  <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+                  <ShieldCheck className={segmentedIconClassName(form.mode === "forwardx")} />
                   <span className="truncate">ForwardX</span>
                 </button>
               </div>

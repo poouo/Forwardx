@@ -47,7 +47,20 @@ async function refreshUserRuleAgents(userId: number, reason: string) {
     const tunnel = await db.getTunnelById(tunnelId);
     if (!tunnel) continue;
     await db.updateTunnel(tunnelId, { isRunning: false } as any);
-    hostIds.add(Number(tunnel.entryHostId));
+    let entryHostIds = [Number(tunnel.entryHostId)].filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+    const entryGroupId = Number((tunnel as any).entryGroupId || 0);
+    if (entryGroupId > 0) {
+      const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
+      const entryMembers = entryGroup && entryGroup.isEnabled && String(entryGroup.groupMode || "") === "entry"
+        ? (entryGroup.members || [])
+        : [];
+      const groupHostIds = entryMembers
+        .filter((member: any) => member && member.isEnabled !== false && member.memberType === "host")
+        .map((member: any) => Number(member.hostId))
+        .filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
+      if (groupHostIds.length > 0) entryHostIds = groupHostIds;
+    }
+    for (const entryHostId of entryHostIds) hostIds.add(entryHostId);
     hostIds.add(Number(tunnel.exitHostId));
   }
   for (const hostId of hostIds) {

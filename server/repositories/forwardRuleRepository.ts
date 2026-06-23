@@ -1,5 +1,5 @@
-﻿import { and, desc, eq, sql } from "drizzle-orm";
-import { forwardGroupMembers, forwardRuleTunnelExits, forwardRules, InsertForwardRule } from "../../drizzle/schema";
+﻿﻿import { and, desc, eq, sql } from "drizzle-orm";
+import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
@@ -38,7 +38,23 @@ export async function getForwardRulesForAgent(hostId?: number) {
     sql`(${forwardRules.pendingDelete} = ${sqlBool(false)} OR ${forwardRules.isRunning} = ${sqlBool(true)})`,
   ];
   if (hostId) {
-    conds.push(eq(forwardRules.hostId, hostId));
+    conds.push(sql`(
+      ${forwardRules.hostId} = ${hostId}
+      OR ${forwardRules.tunnelId} IN (
+        SELECT ${tunnels.id}
+        FROM ${tunnels}
+        WHERE ${tunnels.entryGroupId} IN (
+          SELECT ${forwardGroups.id}
+          FROM ${forwardGroups}
+          INNER JOIN ${forwardGroupMembers} ON ${forwardGroupMembers.groupId} = ${forwardGroups.id}
+          WHERE ${forwardGroups.groupMode} = 'entry'
+            AND ${forwardGroups.isEnabled} = ${sqlBool(true)}
+            AND ${forwardGroupMembers.memberType} = 'host'
+            AND ${forwardGroupMembers.hostId} = ${hostId}
+            AND ${forwardGroupMembers.isEnabled} = ${sqlBool(true)}
+        )
+      )
+    )`);
     return db.select().from(forwardRules).where(and(...conds)).orderBy(desc(forwardRules.createdAt));
   }
   return db.select().from(forwardRules).where(and(...conds)).orderBy(desc(forwardRules.createdAt));

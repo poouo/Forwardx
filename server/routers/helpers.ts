@@ -97,10 +97,22 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const extraExitHostIds = Array.isArray(extraExitRows)
     ? extraExitRows.map((exit: any) => Number(exit.hostId)).filter((id: number) => Number.isFinite(id) && id > 0)
     : [];
+  let entryHostIds = [Number(tunnel?.entryHostId)].filter((id) => Number.isFinite(id) && id > 0);
+  const entryGroupId = Number(tunnel?.entryGroupId || 0);
+  if (entryGroupId > 0) {
+    const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
+    const groupHostIds = entryGroup && entryGroup.isEnabled && String(entryGroup.groupMode || "") === "entry"
+      ? (entryGroup.members || [])
+        .filter((member: any) => member?.isEnabled !== false && member.memberType === "host")
+        .map((member: any) => Number(member.hostId))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+      : [];
+    if (groupHostIds.length > 0) entryHostIds = groupHostIds;
+  }
   const hostIds = [
     ...(hopHostIds.length >= 3
-    ? hopHostIds
-    : [Number(tunnel.entryHostId), Number(tunnel.exitHostId)].filter((id) => Number.isFinite(id) && id > 0)),
+    ? [...entryHostIds, ...hopHostIds]
+    : [...entryHostIds, Number(tunnel.exitHostId)].filter((id) => Number.isFinite(id) && id > 0)),
     ...extraExitHostIds,
   ];
   const uniqueHostIds = Array.from(new Set(hostIds));
@@ -113,8 +125,9 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
     allPushed ? "info" : "warn",
     `[Tunnel] refresh tunnel=${tunnel.id} reason=${reason} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
+  const entryHostIdSet = new Set(entryHostIds);
   return {
-    entryPushed: pushed.some((item) => item.hostId === Number(tunnel.entryHostId) && item.pushed),
+    entryPushed: pushed.some((item) => entryHostIdSet.has(item.hostId) && item.pushed),
     exitPushed: pushed.some((item) => item.hostId === Number(tunnel.exitHostId) && item.pushed),
     hostPushed: pushed,
   };

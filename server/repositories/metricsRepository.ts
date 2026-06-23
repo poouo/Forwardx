@@ -293,9 +293,11 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   const db = await getDb();
   if (!db) return [];
   const rule = await getRuleWithCreatedAt(ruleId);
+  const { queryRuleIds, parentByChildRuleId } = await expandTrafficQueryRuleIds([ruleId]);
+  const effectiveRuleIds = queryRuleIds.length > 0 ? queryRuleIds : [ruleId];
   const q = quoteIdentifier;
-  const conditions = [`${q("ruleId")} = ?`];
-  const params: any[] = [ruleId];
+  const conditions = [`${q("ruleId")} IN (${effectiveRuleIds.map(() => "?").join(",")})`];
+  const params: any[] = [...effectiveRuleIds];
   if (rule?.createdAt) {
     conditions.push(`${q("recordedAt")} >= ?`);
     params.push(epochSeconds(rule.createdAt));
@@ -311,6 +313,7 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   );
   return rows.map((row) => ({
     ...row,
+    ruleId: parentByChildRuleId.get(Number(row.ruleId)) || Number(row.ruleId),
     recordedAt: rowDate(row.recordedAt),
   }));
 }
@@ -592,6 +595,88 @@ async function getForwardGroupModeMap(groupIds: number[]) {
   return map;
 }
 
+type ForwardGroupTrafficChildRow = {
+  id: number;
+  parentId: number;
+  groupId: number;
+  memberId: number;
+  hostId: number;
+};
+
+async function getFirstEnabledMemberByGroup(groupIds: number[]) {
+  const db = await getDb();
+  const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const map = new Map<number, { id: number; priority: number }>();
+  if (!db || ids.length === 0) return map;
+  const rows = await db
+    .select({
+      id: forwardGroupMembers.id,
+      groupId: forwardGroupMembers.groupId,
+      priority: forwardGroupMembers.priority,
+    })
+    .from(forwardGroupMembers)
+    .where(sql`${forwardGroupMembers.groupId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}) AND ${forwardGroupMembers.isEnabled} = ${sqlBool(true)}`);
+  for (const row of rows as any[]) {
+    const groupId = Number(row.groupId || 0);
+    const id = Number(row.id || 0);
+    if (groupId <= 0 || id <= 0) continue;
+    const priority = Number(row.priority || 0);
+    const prev = map.get(groupId);
+    if (!prev || priority < prev.priority || (priority === prev.priority && id < prev.id)) {
+      map.set(groupId, { id, priority });
+    }
+  }
+  return map;
+}
+
+async function getForwardGroupTrafficChildRows(parentRuleIds: number[]) {
+  const db = await getDb();
+  const parentIds = Array.from(new Set(parentRuleIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  if (!db || parentIds.length === 0) return [] as ForwardGroupTrafficChildRow[];
+  const rows = await db
+    .select({
+      id: forwardRules.id,
+      parentId: forwardRules.forwardGroupRuleId,
+      groupId: forwardRules.forwardGroupId,
+      memberId: forwardRules.forwardGroupMemberId,
+      hostId: forwardRules.hostId,
+    })
+    .from(forwardRules)
+    .where(sql`${forwardRules.forwardGroupRuleId} IN (${sql.join(parentIds.map((id) => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${sqlBool(false)}`);
+  const childRows = (rows as any[]).map((row) => ({
+    id: Number(row.id || 0),
+    parentId: Number(row.parentId || 0),
+    groupId: Number(row.groupId || 0),
+    memberId: Number(row.memberId || 0),
+    hostId: Number(row.hostId || 0),
+  })).filter((row) => row.id > 0 && row.parentId > 0);
+  const groupModeById = await getForwardGroupModeMap(childRows.map((row) => row.groupId));
+  const chainGroupIds = childRows
+    .filter((row) => groupModeById.get(row.groupId) === "chain")
+    .map((row) => row.groupId);
+  const firstMemberByGroup = await getFirstEnabledMemberByGroup(chainGroupIds);
+  return childRows.filter((row) => {
+    if (groupModeById.get(row.groupId) !== "chain") return true;
+    return Number(firstMemberByGroup.get(row.groupId)?.id || 0) === row.memberId;
+  });
+}
+
+async function expandTrafficQueryRuleIds(ruleIds: number[]) {
+  const requestedRuleIds = Array.from(new Set(ruleIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  if (requestedRuleIds.length === 0) {
+    return { queryRuleIds: [] as number[], parentByChildRuleId: new Map<number, number>() };
+  }
+  const childRows = await getForwardGroupTrafficChildRows(requestedRuleIds);
+  const parentByChildRuleId = new Map<number, number>();
+  for (const row of childRows) {
+    parentByChildRuleId.set(row.id, row.parentId);
+  }
+  return {
+    queryRuleIds: Array.from(new Set([...requestedRuleIds, ...childRows.map((row) => row.id)])),
+    parentByChildRuleId,
+  };
+}
+
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
@@ -651,10 +736,12 @@ export async function getTrafficSummaryByRule(opts: {
   const requestedRuleIds = Array.from(new Set((opts.ruleIds || [])
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0)));
+  const expandedRuleIds = requestedRuleIds.length > 0
+    ? (await expandTrafficQueryRuleIds(requestedRuleIds)).queryRuleIds
+    : requestedRuleIds;
   let result: TrafficSummaryRow[] =
-    await getTrafficSummaryRowsFromBuckets({ ...opts, ruleIds: requestedRuleIds }) ??
-    await getTrafficSummaryRowsFromStats({ ...opts, ruleIds: requestedRuleIds });
-
+    await getTrafficSummaryRowsFromBuckets({ ...opts, ruleIds: expandedRuleIds }) ??
+    await getTrafficSummaryRowsFromStats({ ...opts, ruleIds: expandedRuleIds });
   const groupChildIds = Array.from(new Set(result.map((r) => r.ruleId)));
   if (groupChildIds.length > 0) {
     const childRows = await db
@@ -935,6 +1022,8 @@ export async function getTrafficSeriesByRule(
   const effectiveSince = rule?.createdAt && rule.createdAt > since ? rule.createdAt : since;
   const sinceSec = Math.floor(effectiveSince.getTime() / 1000);
   const bucketSec = bucket * 60;
+  const { queryRuleIds } = await expandTrafficQueryRuleIds([ruleId]);
+  const effectiveRuleIds = queryRuleIds.length > 0 ? queryRuleIds : [ruleId];
 
   const q = quoteIdentifier;
   const useBuckets = bucket === TRAFFIC_BUCKET_MINUTES && await trafficBucketsReady();
@@ -946,11 +1035,11 @@ export async function getTrafficSeriesByRule(
               COALESCE(SUM(b.${q("connections")}), 0) AS ${q("connections")}
          FROM ${q("traffic_stat_buckets")} b
         WHERE b.${q("bucketMinutes")} = ?
-          AND b.${q("ruleId")} = ?
+          AND b.${q("ruleId")} IN (${effectiveRuleIds.map(() => "?").join(",")})
           AND b.${q("bucketStart")} >= ?
         GROUP BY b.${q("bucketStart")}
         ORDER BY b.${q("bucketStart")} ASC`,
-      [TRAFFIC_BUCKET_MINUTES, ruleId, bucketStartFor(sinceSec)],
+      [TRAFFIC_BUCKET_MINUTES, ...effectiveRuleIds, bucketStartFor(sinceSec)],
     ).catch(() => [])
     : await queryRaw<{ bucket: number; bytesIn: number; bytesOut: number; connections: number }>(
       `SELECT ${bucketExprSql("ts", bucketSec)} AS ${q("bucket")},
@@ -958,11 +1047,11 @@ export async function getTrafficSeriesByRule(
               COALESCE(SUM(ts.${q("bytesOut")}), 0) AS ${q("bytesOut")},
               COALESCE(SUM(ts.${q("connections")}), 0) AS ${q("connections")}
          FROM ${q("traffic_stats")} ts
-        WHERE ts.${q("ruleId")} = ?
+        WHERE ts.${q("ruleId")} IN (${effectiveRuleIds.map(() => "?").join(",")})
           AND ts.${q("recordedAt")} >= ?
         GROUP BY ${bucketExprSql("ts", bucketSec)}
         ORDER BY ${q("bucket")} ASC`,
-      [ruleId, sinceSec],
+      [...effectiveRuleIds, sinceSec],
     );
 
   return rows.map((r: any) => ({

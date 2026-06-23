@@ -1,5 +1,6 @@
 import { Network, Route } from "lucide-react";
 import type { ComponentType } from "react";
+import { segmentedControlClassName, segmentedIconClassName, segmentedOptionClassName } from "@/components/ui/segmented";
 
 export type LinkCreateType = "tunnel" | "chain";
 
@@ -34,7 +35,7 @@ export default function LinkCreateTypeSelector({
   canCreateChain = true,
 }: LinkCreateTypeSelectorProps) {
   return (
-    <div className="rounded-md border border-border/60 bg-muted/25 p-1 shadow-inner shadow-black/5">
+    <div className={segmentedControlClassName}>
       <div className="grid grid-cols-2 gap-1">
         {options.map((option) => {
           const Icon = option.icon;
@@ -45,14 +46,11 @@ export default function LinkCreateTypeSelector({
               key={option.value}
               type="button"
               disabled={disabled}
+              aria-pressed={isActive}
               onClick={() => onValueChange(option.value)}
-              className={`flex h-9 items-center justify-center gap-2 rounded-sm border px-3 text-sm font-medium transition-colors ${
-                isActive
-                  ? "border-primary/60 bg-primary/10 text-primary shadow-md shadow-primary/10 ring-1 ring-primary/25"
-                  : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground"
-              } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+              className={segmentedOptionClassName(isActive, disabled)}
             >
-              <Icon className={`h-4 w-4 ${isActive ? "text-primary" : ""}`} />
+              <Icon className={segmentedIconClassName(isActive)} />
               <span>{option.label}</span>
             </button>
           );

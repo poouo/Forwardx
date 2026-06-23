@@ -23,10 +23,11 @@ import {
   updateForwardRule,
 } from "./forwardRuleRepository";
 import { getHostById } from "./hostRepository";
-import { findAvailableTunnelExitPort, getTunnelById, reconcileForwardRuleTunnelExits, updateTunnel } from "./tunnelRepository";
+import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
+import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -250,6 +251,67 @@ async function chainEntryMembers(group: any) {
   const entryGroup = await getForwardGroupById(entryGroupId) as any;
   if (!entryGroup || groupModeOf(entryGroup) !== "entry" || !entryGroup.isEnabled) return [] as any[];
   return sortedMembers(entryGroup, true).filter((member: any) => member.memberType === "host");
+}
+
+async function syncChainsUsingEntryGroup(entryGroupId: number, options: SyncForwardGroupRulesOptions = {}) {
+  const id = Number(entryGroupId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const db = await getDb();
+  if (!db) return;
+  const rows = await db.select({ id: forwardGroups.id }).from(forwardGroups).where(and(
+    eq(forwardGroups.groupMode, "chain"),
+    eq(forwardGroups.entryGroupId, id),
+  ));
+  for (const row of rows as any[]) {
+    await syncForwardGroupRules(Number(row.id), options);
+  }
+}
+
+async function refreshTunnelsUsingEntryGroup(entryGroupId: number, reason = "entry-group-updated") {
+  const id = Number(entryGroupId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const allTunnels = await getTunnels() as any[];
+  const affectedTunnels = allTunnels.filter((tunnel: any) => Number(tunnel?.entryGroupId || 0) === id);
+  if (affectedTunnels.length === 0) return;
+
+  const entryGroup = await getForwardGroupById(id) as any;
+  const entryHostIds = new Set<number>();
+  if (entryGroup && entryGroup.isEnabled && groupModeOf(entryGroup) === "entry") {
+    for (const member of sortedMembers(entryGroup, true) as any[]) {
+      if (member?.memberType !== "host") continue;
+      const hostId = Number(member.hostId || 0);
+      if (Number.isFinite(hostId) && hostId > 0) entryHostIds.add(hostId);
+    }
+  }
+
+  for (const tunnel of affectedTunnels) {
+    const tunnelId = Number(tunnel?.id || 0);
+    if (!Number.isFinite(tunnelId) || tunnelId <= 0) continue;
+    clearTunnelRuntimeStatus(tunnelId);
+    await updateTunnel(tunnelId, { isRunning: false } as any);
+    await resetForwardRulesByTunnel(tunnelId);
+
+    const hostIds = new Set<number>(entryHostIds);
+    const primaryEntryHostId = Number(tunnel?.entryHostId || 0);
+    if (hostIds.size === 0 && Number.isFinite(primaryEntryHostId) && primaryEntryHostId > 0) hostIds.add(primaryEntryHostId);
+
+    const exitHostId = Number(tunnel?.exitHostId || 0);
+    if (Number.isFinite(exitHostId) && exitHostId > 0) hostIds.add(exitHostId);
+
+    const hops = await getTunnelHops(tunnelId).catch(() => []);
+    for (const hop of hops as any[]) {
+      const hostId = Number(hop?.hostId || 0);
+      if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
+    }
+
+    const extraExits = await getTunnelExitNodes(tunnelId).catch(() => []);
+    for (const node of extraExits as any[]) {
+      const hostId = Number(node?.hostId || 0);
+      if (Number.isFinite(hostId) && hostId > 0) hostIds.add(hostId);
+    }
+
+    for (const hostId of hostIds) pushAgentRefresh(hostId, `${reason}-tunnel-${tunnelId}`);
+  }
 }
 
 function describeDdnsTarget(group: any, value: string, provider?: string) {
@@ -1408,7 +1470,14 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
 export async function updateForwardGroup(id: number, data: Partial<InsertForwardGroup>, options: { skipSync?: boolean } = {}) {
   const db = await getDb();
   await db.update(forwardGroups).set({ ...data, updatedAt: nowDate() }).where(eq(forwardGroups.id, id));
-  if (!options.skipSync) await syncForwardGroupRules(id);
+  if (!options.skipSync) {
+    await syncForwardGroupRules(id);
+    const group = await getForwardGroupById(id);
+    if (groupModeOf(group) === "entry") {
+      await syncChainsUsingEntryGroup(id);
+      await refreshTunnelsUsingEntryGroup(id);
+    }
+  }
 }
 
 export async function replaceForwardGroupMembers(groupId: number, members: ForwardGroupMemberInput[]) {
@@ -1465,6 +1534,10 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
   }
   if (isCollectionGroupMode(groupMode)) {
     await runForwardGroupFailover(groupId);
+    if (groupMode === "entry") {
+      await syncChainsUsingEntryGroup(groupId);
+      await refreshTunnelsUsingEntryGroup(groupId);
+    }
   } else {
     await syncForwardGroupRules(groupId, groupMode === "chain" ? { validatePorts: false, createMissing: false } : {});
   }

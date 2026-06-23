@@ -19,6 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { segmentedControlClassName, segmentedOptionClassName } from "@/components/ui/segmented";
 import {
   Select,
   SelectContent,
@@ -1483,11 +1484,7 @@ function RuleTrafficGlobe({
 }
 
 function routeModeOptionClass(active: boolean, disabled = false) {
-  return [
-    "flex min-h-9 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-    active ? "bg-background text-foreground shadow-sm ring-1 ring-border/60" : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-    disabled ? "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-muted-foreground" : "cursor-pointer",
-  ].join(" ");
+  return segmentedOptionClassName(active, disabled, "gap-1.5 px-3");
 }
 
 function isValidPort(port: number, allowZero = false) {
@@ -4424,11 +4421,12 @@ function RulesContent() {
             <DialogTitle>{editingId ? "编辑规则" : "添加转发规则"}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            <div className="rounded-md border border-border/60 bg-muted/25 p-1">
+            <div className={segmentedControlClassName}>
               <div className={`grid gap-1 ${canUseForwardGroup ? "grid-cols-3" : "grid-cols-2"}`}>
                 <button
                   type="button"
                   className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward || (!!editingId && form.routeMode !== "local"))}
+                  aria-pressed={form.routeMode === "local"}
                   onClick={() => setRouteMode("local")}
                   disabled={!canUseLocalForward || (!!editingId && form.routeMode !== "local")}
                   title={!canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
@@ -4439,6 +4437,7 @@ function RulesContent() {
                 <button
                   type="button"
                   className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost || (!!editingId && form.routeMode !== "tunnel"))}
+                  aria-pressed={form.routeMode === "tunnel"}
                   onClick={() => setRouteMode("tunnel")}
                   disabled={!canUseGost || (!!editingId && form.routeMode !== "tunnel")}
                   title={!canUseGost ? "暂无可用隧道" : undefined}
@@ -4450,6 +4449,7 @@ function RulesContent() {
                   <button
                     type="button"
                     className={routeModeOptionClass(form.routeMode === "group", !canUseForwardGroup || (!!editingId && form.routeMode !== "group"))}
+                    aria-pressed={form.routeMode === "group"}
                     onClick={() => setRouteMode("group")}
                     disabled={!canUseForwardGroup || (!!editingId && form.routeMode !== "group")}
                     title={!canUseForwardGroup ? "暂无可用转发组" : undefined}

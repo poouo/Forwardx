@@ -9,11 +9,14 @@ import {
   InsertTunnelExitNode,
   forwardRuleTunnelExits,
   InsertForwardRuleTunnelExit,
+  forwardGroupMembers,
+  forwardGroups,
 } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { getHostById } from "./hostRepository";
+import { sqlBool } from "./repositoryUtils";
 
 // ==================== Tunnel Queries ====================
 
@@ -32,10 +35,23 @@ export async function getTunnelsByHost(hostId: number) {
   );
   const hopRows = await db.select({ tunnelId: tunnelHops.tunnelId }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId));
   const extraExitRows = await db.select({ tunnelId: tunnelExitNodes.tunnelId }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId));
+  const entryGroupRows = await db.select({ id: tunnels.id }).from(tunnels).where(sql`
+    ${tunnels.entryGroupId} IN (
+      SELECT ${forwardGroups.id}
+      FROM ${forwardGroups}
+      INNER JOIN ${forwardGroupMembers} ON ${forwardGroupMembers.groupId} = ${forwardGroups.id}
+      WHERE ${forwardGroups.groupMode} = 'entry'
+        AND ${forwardGroups.isEnabled} = ${sqlBool(true)}
+        AND ${forwardGroupMembers.memberType} = 'host'
+        AND ${forwardGroupMembers.hostId} = ${hostId}
+        AND ${forwardGroupMembers.isEnabled} = ${sqlBool(true)}
+    )
+  `);
   const ids = Array.from(new Set([
     ...direct.map((row: any) => Number(row.id)),
     ...hopRows.map((row: any) => Number(row.tunnelId)),
     ...extraExitRows.map((row: any) => Number(row.tunnelId)),
+    ...entryGroupRows.map((row: any) => Number(row.id)),
   ].filter((id) => Number.isFinite(id) && id > 0)));
   if (ids.length === 0) return [];
   return db.select().from(tunnels).where(sql`${tunnels.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`).orderBy(desc(tunnels.createdAt));
@@ -93,16 +109,30 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
          OR ${quoteIdentifier("exitHostId")} = ?
          OR ${quoteIdentifier("id")} IN (
            SELECT ${quoteIdentifier("tunnelId")}
-          FROM ${quoteIdentifier("tunnel_hops")}
-          WHERE ${quoteIdentifier("hostId")} = ?
-          )
-          OR ${quoteIdentifier("id")} IN (
-            SELECT ${quoteIdentifier("tunnelId")}
-            FROM ${quoteIdentifier("tunnel_exit_nodes")}
-            WHERE ${quoteIdentifier("hostId")} = ?
-          )
-        )`,
-    [boolValue(false), now, boolValue(true), id, id, id, id],
+           FROM ${quoteIdentifier("tunnel_hops")}
+           WHERE ${quoteIdentifier("hostId")} = ?
+         )
+         OR ${quoteIdentifier("id")} IN (
+           SELECT ${quoteIdentifier("tunnelId")}
+           FROM ${quoteIdentifier("tunnel_exit_nodes")}
+           WHERE ${quoteIdentifier("hostId")} = ?
+         )
+         OR ${quoteIdentifier("id")} IN (
+           SELECT ${quoteIdentifier("id")}
+           FROM ${quoteIdentifier("tunnels")}
+           WHERE ${quoteIdentifier("entryGroupId")} IN (
+             SELECT g.${quoteIdentifier("id")}
+             FROM ${quoteIdentifier("forward_groups")} g
+             INNER JOIN ${quoteIdentifier("forward_group_members")} m ON m.${quoteIdentifier("groupId")} = g.${quoteIdentifier("id")}
+             WHERE g.${quoteIdentifier("groupMode")} = ?
+               AND g.${quoteIdentifier("isEnabled")} = ?
+               AND m.${quoteIdentifier("memberType")} = ?
+               AND m.${quoteIdentifier("hostId")} = ?
+               AND m.${quoteIdentifier("isEnabled")} = ?
+           )
+         )
+       )`,
+    [boolValue(false), now, boolValue(true), id, id, id, id, "entry", boolValue(true), "host", id, boolValue(true)],
   );
 
   await executeRaw(
@@ -114,21 +144,31 @@ export async function resetAgentRuntimeStateForHost(hostId: number) {
          OR ${quoteIdentifier("tunnelId")} IN (
            SELECT ${quoteIdentifier("id")}
            FROM ${quoteIdentifier("tunnels")}
-            WHERE ${quoteIdentifier("entryHostId")} = ?
-              OR ${quoteIdentifier("exitHostId")} = ?
-              OR ${quoteIdentifier("id")} IN (
-                SELECT ${quoteIdentifier("tunnelId")}
-                FROM ${quoteIdentifier("tunnel_hops")}
-                WHERE ${quoteIdentifier("hostId")} = ?
-              )
-              OR ${quoteIdentifier("id")} IN (
-                SELECT ${quoteIdentifier("tunnelId")}
-                FROM ${quoteIdentifier("tunnel_exit_nodes")}
-                WHERE ${quoteIdentifier("hostId")} = ?
-              )
-           )
-         )`,
-    [boolValue(false), now, boolValue(true), id, id, id, id, id],
+           WHERE ${quoteIdentifier("entryHostId")} = ?
+             OR ${quoteIdentifier("exitHostId")} = ?
+             OR ${quoteIdentifier("id")} IN (
+               SELECT ${quoteIdentifier("tunnelId")}
+               FROM ${quoteIdentifier("tunnel_hops")}
+               WHERE ${quoteIdentifier("hostId")} = ?
+             )
+             OR ${quoteIdentifier("id")} IN (
+               SELECT ${quoteIdentifier("tunnelId")}
+               FROM ${quoteIdentifier("tunnel_exit_nodes")}
+               WHERE ${quoteIdentifier("hostId")} = ?
+             )
+             OR ${quoteIdentifier("entryGroupId")} IN (
+               SELECT g.${quoteIdentifier("id")}
+               FROM ${quoteIdentifier("forward_groups")} g
+               INNER JOIN ${quoteIdentifier("forward_group_members")} m ON m.${quoteIdentifier("groupId")} = g.${quoteIdentifier("id")}
+               WHERE g.${quoteIdentifier("groupMode")} = ?
+                 AND g.${quoteIdentifier("isEnabled")} = ?
+                 AND m.${quoteIdentifier("memberType")} = ?
+                 AND m.${quoteIdentifier("hostId")} = ?
+                 AND m.${quoteIdentifier("isEnabled")} = ?
+             )
+         )
+       )`,
+    [boolValue(false), now, boolValue(true), id, id, id, id, id, "entry", boolValue(true), "host", id, boolValue(true)],
   );
 }
 
