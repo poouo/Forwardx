@@ -22,7 +22,7 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 	}
 	panel := strings.TrimRight(up.PanelURL, "/")
 	if panel == "" {
-		panel = cfg.PanelURL
+		panel = currentPanelURL(cfg)
 	}
 	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --connect-timeout 15 --speed-limit 1024 --speed-time 60 "%s/api/agent/install.sh" | bash -s -- upgrade %s`, panel, shellQuote(cfg.Token))
 	cmd := fmt.Sprintf(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=forwardx-agent-upgrade --collect /bin/sh -lc %s; else nohup sh -lc %s >/var/log/forwardx-agent/agent-upgrade.log 2>&1 < /dev/null & fi`, shellQuote(upgradeCmd), shellQuote(upgradeCmd))

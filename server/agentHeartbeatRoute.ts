@@ -2258,9 +2258,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (agentUpgradeCompleted) {
       await db.clearHostAgentUpgradeRequest(host.id);
     }
+    const panelUrl = await resolvePanelUrl(req);
     const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted ? {
       targetVersion: requestedTargetVersion,
-      panelUrl: await resolvePanelUrl(req),
+      panelUrl,
     } : null;
 
     const normalizedActions = actions.map((action: any) => ({
@@ -2313,7 +2314,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
     const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, forceTcping, nextInterval });
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, panelUrl, forceTcping, nextInterval });
   } catch (error) {
     console.error("[Agent Heartbeat] Error:", error);
     res.status(500).json({ error: "Internal server error" });

@@ -22,7 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
-import { PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import {
   FORWARD_PROTOCOL_LABELS,
   FORWARD_TYPES,
@@ -2535,6 +2535,7 @@ function SystemInfoSection() {
   const updateInfo = upgradeStatus?.update;
   const upgradeEnabled = !!upgradeStatus?.upgradeEnabled;
   const isDockerDeployment = !!upgradeStatus?.docker || !!settings?.upgrade?.docker;
+  const upgradeChangelogUrl = getPanelChangelogUrl(updateInfo?.latestVersion || upgradeStatus?.currentVersion || settings?.version, updateInfo?.releaseUrl);
   const dockerPanelUpgradeCommand =
     upgradeStatus?.manualUpgradeCommand ||
     settings?.upgrade?.manualUpgradeCommand ||
@@ -3506,14 +3507,12 @@ function SystemInfoSection() {
               <Rocket className="h-4 w-4" />
               {isDockerDeployment ? "查看升级脚本" : "升级并重启"}
             </Button>
-            {updateInfo?.releaseUrl && (
-              <Button variant="ghost" asChild className="gap-2">
-                <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="h-4 w-4" />
-                  查看 GitHub
-                </a>
-              </Button>
-            )}
+            <Button variant="ghost" asChild className="gap-2">
+              <a href={upgradeChangelogUrl} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="h-4 w-4" />
+                升级日志
+              </a>
+            </Button>
           </div>
 
           {upgradeStatus?.job && upgradeStatus.job.status !== "idle" && (

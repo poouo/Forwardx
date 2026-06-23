@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
 import { clipLatencyForChart, getLatencyYAxisMax, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { cn } from "@/lib/utils";
 
 const colors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
 
@@ -25,7 +26,7 @@ function serviceAppliesToHost(service: any, hostId: number) {
   return true;
 }
 
-function ChartTooltip({ active, payload, label, services }: any) {
+function ChartTooltip({ active, payload, label, services, allServices }: any) {
   if (!active || !payload?.length) return null;
   const point = payload[0]?.payload || {};
   return (
@@ -35,10 +36,11 @@ function ChartTooltip({ active, payload, label, services }: any) {
         {services.map((service: any, index: number) => {
           const key = `service_${service.id}`;
           const raw = point[`${key}Raw`];
+          const colorIndex = (allServices || services).findIndex((item: any) => Number(item.id) === Number(service.id));
           return (
             <div key={key} className="flex min-w-[180px] items-center justify-between gap-4 text-xs">
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
+                <span className="h-2 w-2 rounded-full" style={{ background: colors[Math.max(colorIndex, index, 0) % colors.length] }} />
                 <span className="truncate">{service.name}</span>
               </span>
               <span className={raw?.isTimeout ? "font-medium text-destructive" : "font-semibold tabular-nums"}>
@@ -64,15 +66,43 @@ export default function HostProbeServiceLatencyDialog({
   services: any[];
 }) {
   const hostId = Number(host?.id || 0);
+  const [selectedServiceIds, setSelectedServiceIds] = useState<Set<number>>(new Set());
   const hostServices = useMemo(
     () => (services || []).filter((service) => serviceAppliesToHost(service, hostId)),
     [services, hostId],
   );
   const serviceIds = useMemo(() => hostServices.map((service) => Number(service.id)).filter(Boolean), [hostServices]);
+  const visibleServices = useMemo(() => {
+    if (selectedServiceIds.size === 0) return hostServices;
+    return hostServices.filter((service) => selectedServiceIds.has(Number(service.id)));
+  }, [hostServices, selectedServiceIds]);
+  const visibleServiceIds = useMemo(() => visibleServices.map((service) => Number(service.id)).filter(Boolean), [visibleServices]);
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
     { serviceIds, hostId, hours: 24 },
     { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: open ? 30000 : false },
   );
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedServiceIds(new Set());
+      return;
+    }
+    setSelectedServiceIds((current) => {
+      if (current.size === 0) return current;
+      const availableIds = new Set(serviceIds);
+      const next = new Set(Array.from(current).filter((id) => availableIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [open, serviceIds]);
+
+  const toggleService = (serviceId: number) => {
+    setSelectedServiceIds((current) => {
+      const next = new Set(current);
+      if (next.has(serviceId)) next.delete(serviceId);
+      else next.add(serviceId);
+      return next;
+    });
+  };
 
   const chart = useMemo(() => {
     const aggregates = new Map<string, { bucket: number; serviceId: number; sum: number; count: number; timeout: number }>();
@@ -105,8 +135,8 @@ export default function HostProbeServiceLatencyDialog({
   }, [data]);
 
   const yMax = useMemo(
-    () => getLatencyYAxisMax(Math.max(0, ...chart.flatMap((point) => serviceIds.map((id) => Number(point[`service_${id}`] || 0)))), 120),
-    [chart, serviceIds],
+    () => getLatencyYAxisMax(Math.max(0, ...chart.flatMap((point) => visibleServiceIds.map((id) => Number(point[`service_${id}`] || 0)))), 120),
+    [chart, visibleServiceIds],
   );
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
@@ -118,13 +148,41 @@ export default function HostProbeServiceLatencyDialog({
           <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
         </DialogHeader>
         {hostServices.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {hostServices.map((service, index) => (
-              <span key={service.id} className="inline-flex max-w-full items-center gap-1.5 rounded border border-border/50 px-2 py-1 text-xs text-muted-foreground">
-                <span className="h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
-                <span className="truncate">{service.name}</span>
-              </span>
-            ))}
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap gap-2">
+              {hostServices.map((service, index) => {
+                const serviceId = Number(service.id);
+                const active = selectedServiceIds.size === 0 || selectedServiceIds.has(serviceId);
+                return (
+                  <button
+                    key={service.id}
+                    type="button"
+                    onClick={() => toggleService(serviceId)}
+                    className={cn(
+                      "inline-flex max-w-full items-center gap-1.5 rounded border px-2 py-1 text-xs transition-colors",
+                      active
+                        ? "border-border/60 bg-background text-foreground shadow-sm"
+                        : "border-border/40 bg-muted/30 text-muted-foreground opacity-55 hover:opacity-85",
+                    )}
+                    aria-pressed={active}
+                    title={service.name}
+                  >
+                    <span className="h-2 w-2 rounded-full" style={{ background: colors[index % colors.length] }} />
+                    <span className="truncate">{service.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 shrink-0 gap-1.5 px-2.5"
+              onClick={() => setSelectedServiceIds(new Set())}
+              disabled={selectedServiceIds.size === 0}
+            >
+              <X className="h-3.5 w-3.5" />
+              清除
+            </Button>
           </div>
         )}
         <div className="h-80 w-full">
@@ -138,10 +196,13 @@ export default function HostProbeServiceLatencyDialog({
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={46} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}ms`} width={52} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
-                <RTooltip content={<ChartTooltip services={hostServices} />} cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }} />
-                {hostServices.map((service, index) => (
-                  <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={colors[index % colors.length]} strokeWidth={2} dot={false} connectNulls={false} activeDot={{ r: 4 }} />
-                ))}
+                <RTooltip content={<ChartTooltip services={visibleServices} allServices={hostServices} />} cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }} />
+                {visibleServices.map((service) => {
+                  const colorIndex = hostServices.findIndex((item) => Number(item.id) === Number(service.id));
+                  return (
+                    <Line key={service.id} type="monotone" dataKey={`service_${service.id}`} name={service.name} stroke={colors[Math.max(colorIndex, 0) % colors.length]} strokeWidth={2} dot={false} connectNulls={false} activeDot={{ r: 4 }} />
+                  );
+                })}
               </LineChart>
             </ResponsiveContainer>
           )}

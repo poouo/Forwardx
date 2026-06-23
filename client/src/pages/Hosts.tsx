@@ -1970,7 +1970,7 @@ function HostsContent() {
                 );
               })}
             </TabsList>
-            <div className="-mx-1.5 mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-1 pr-3 [scrollbar-gutter:stable]">
+            <div className="dialog-scroll-area -mx-1.5 mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-4 pr-5">
               <TabsContent value="basic" className="m-0 space-y-3 !animate-none">
                 <section className="space-y-3">
                   <div className="mb-2 flex items-center justify-between gap-3">
