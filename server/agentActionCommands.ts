@@ -205,8 +205,6 @@ export function buildNftForwardCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const family = nftAddressFamily(targetIp);
   const dnatTarget = family === "ip6" ? `[${targetIp}]:${rule.targetPort}` : `${targetIp}:${rule.targetPort}`;
-  const inChain = nftChain("in", ruleId);
-  const outChain = nftChain("out", ruleId);
   const cmds = [
     `command -v nft >/dev/null 2>&1`,
     `sysctl -w net.ipv4.ip_forward=1 >/dev/null`,
@@ -226,16 +224,12 @@ export function buildNftForwardCmds(rule: any): string[] {
     nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} ${nftTrafficForwardChain} '{ type filter hook forward priority -150; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${inChain}`),
-    nftOptional(`nft add chain inet ${nftTable} ${outChain}`),
-    `nft add rule inet ${nftTable} ${inChain} counter`,
-    `nft add rule inet ${nftTable} ${outChain} counter`,
   ];
   for (const proto of protos) {
     cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
     cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} jump ${inChain} comment "${comment}:in"`);
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} jump ${outChain} comment "${comment}:out"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter comment "${comment}:in"`);
+    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
     cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
     cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}"`);
   }
