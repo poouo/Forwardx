@@ -67,11 +67,13 @@ function TcpingTooltipContent({ active, payload, label }: any) {
 function TcpingDetailDialog({
   ruleId,
   ruleName,
+  isForwardChain = false,
   open,
   onOpenChange,
 }: {
   ruleId: number;
   ruleName: string;
+  isForwardChain?: boolean;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -128,8 +130,12 @@ function TcpingDetailDialog({
         <DialogHeader>
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle className="truncate text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
-              <DialogDescription className="text-xs sm:text-sm">最近 24 小时延迟和丢包。</DialogDescription>
+              <DialogTitle className="truncate text-base sm:text-lg">
+                {isForwardChain ? "转发链路延迟" : "转发链路延迟 (TCPing)"} - {ruleName}
+              </DialogTitle>
+              <DialogDescription className="text-xs sm:text-sm">
+                {isForwardChain ? "最近 24 小时链路汇总延迟和丢包。" : "最近 24 小时延迟和丢包。"}
+              </DialogDescription>
             </div>
             <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>

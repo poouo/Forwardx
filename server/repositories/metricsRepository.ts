@@ -595,6 +595,27 @@ async function getForwardGroupModeMap(groupIds: number[]) {
   return map;
 }
 
+async function getChainGroupIdForTemplateRule(ruleId: number) {
+  const db = await getDb();
+  const id = Number(ruleId || 0);
+  if (!db || !Number.isInteger(id) || id <= 0) return null;
+  const rows = await db
+    .select({
+      forwardGroupId: forwardRules.forwardGroupId,
+      groupMode: forwardGroups.groupMode,
+    })
+    .from(forwardRules)
+    .innerJoin(forwardGroups, eq(forwardGroups.id, forwardRules.forwardGroupId))
+    .where(and(
+      eq(forwardRules.id, id),
+      eq(forwardRules.pendingDelete, false),
+      eq(forwardGroups.groupMode, "chain"),
+    ))
+    .limit(1);
+  const groupId = Number((rows as any[])[0]?.forwardGroupId || 0);
+  return groupId > 0 ? groupId : null;
+}
+
 type ForwardGroupTrafficChildRow = {
   id: number;
   parentId: number;
@@ -1275,6 +1296,11 @@ export async function getTcpingSeriesByRule(
   const since = opts.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const limit = clampPositiveInt(opts.limit, 2880, 10_000); // 24h * 120 per hour max
   const q = quoteIdentifier;
+  const chainGroupId = await getChainGroupIdForTemplateRule(ruleId);
+  if (chainGroupId) {
+    const groupSeries = await getForwardGroupLatencySeries(chainGroupId, { since, limit });
+    if (groupSeries.length > 0) return groupSeries;
+  }
   const childRows = await db
     .select({
       id: forwardRules.id,

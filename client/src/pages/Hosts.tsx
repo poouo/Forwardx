@@ -1570,20 +1570,20 @@ function HostsContent() {
         }}
         className="space-y-4"
       >
-        <TabsList className={`grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto`}>
-          <TabsTrigger value="hosts" className="gap-1.5 px-4">
+        <TabsList className={`host-management-tabs grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-grid sm:w-auto`}>
+          <TabsTrigger value="hosts" className="min-w-0 gap-1.5 px-3 sm:w-32">
             <Server className="h-3.5 w-3.5" />
             主机管理
           </TabsTrigger>
           {user?.role === "admin" && (
-            <TabsTrigger value="tokens" className="gap-1.5 px-4">
+            <TabsTrigger value="tokens" className="min-w-0 gap-1.5 px-3 sm:w-32">
               <Key className="h-3.5 w-3.5" />
               Token 管理
             </TabsTrigger>
           )}
 
           {user?.role === "admin" && (
-            <TabsTrigger value="services" className="gap-1.5 px-4">
+            <TabsTrigger value="services" className="min-w-0 gap-1.5 px-3 sm:w-32">
               <Rows3 className="h-3.5 w-3.5" />
               服务管理
             </TabsTrigger>
@@ -1677,7 +1677,8 @@ function HostsContent() {
           /* ========== 卡片式布局 ========== */
           <AutoAnimateContainer
             duration={160}
-            className={viewMode === "compact-card" ? "standard-card-grid-compact card-mode-transition gap-3" : "standard-card-grid card-mode-transition gap-4"}
+            layout={false}
+            className={viewMode === "compact-card" ? "standard-card-grid-compact host-card-grid-static gap-3" : "standard-card-grid host-card-grid-static gap-4"}
           >
             {pagedHosts.map((host) => (
               <HostCard

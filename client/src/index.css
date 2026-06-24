@@ -524,6 +524,32 @@
     will-change: opacity, transform;
   }
 
+  .host-management-tabs {
+    contain: layout paint;
+  }
+
+  .host-management-tabs [role="tab"] {
+    font-weight: 500;
+  }
+
+  .host-management-tabs [role="tab"][data-state="active"] {
+    font-weight: 500;
+  }
+
+  .host-card-grid-static {
+    animation: host-card-grid-fade-in 120ms ease-out both;
+    backface-visibility: hidden;
+    transform: none !important;
+    will-change: opacity;
+  }
+
+  .host-card-grid-static > * {
+    backface-visibility: hidden;
+    transform: none !important;
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+  }
+
   .group[data-collapsible="icon"] [data-sidebar="menu-button"],
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
     transform-origin: center;
@@ -936,8 +962,18 @@
   }
 }
 
+@keyframes host-card-grid-fade-in {
+  from {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .card-mode-transition {
+  .card-mode-transition,
+  .host-card-grid-static {
     animation: none;
     opacity: 1;
     transform: none;

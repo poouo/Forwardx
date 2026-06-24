@@ -1821,7 +1821,7 @@ function RulesContent() {
 
   const importCreateMutation = trpc.rules.create.useMutation();
 
-  const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string } | null>(null);
+  const [trafficDetailRule, setTrafficDetailRule] = useState<{ id: number; name: string; isForwardChain?: boolean } | null>(null);
   const [selfTestRule, setSelfTestRule] = useState<{ id: number; name: string } | null>(null);
 
   useEffect(() => {
@@ -3750,8 +3750,8 @@ function RulesContent() {
           variant="ghost"
           size="icon"
           className="h-8 w-8"
-          onClick={() => setTrafficDetailRule({ id: rule.id, name: rule.name })}
-          title="查看 TCPing 延迟"
+          onClick={() => setTrafficDetailRule({ id: rule.id, name: rule.name, isForwardChain: getRuleCategory(rule, forwardGroupById) === "chain" })}
+          title={getRuleCategory(rule, forwardGroupById) === "chain" ? "查看链路延迟" : "查看 TCPing 延迟"}
         >
           <Activity className="h-3.5 w-3.5" />
         </Button>
@@ -4500,6 +4500,7 @@ function RulesContent() {
         <TcpingDetailDialog
           ruleId={trafficDetailRule.id}
           ruleName={trafficDetailRule.name}
+          isForwardChain={!!trafficDetailRule.isForwardChain}
           open={!!trafficDetailRule}
           onOpenChange={(v) => {
             if (!v) setTrafficDetailRule(null);
