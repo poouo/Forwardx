@@ -162,6 +162,9 @@ const nftTrafficPreroutingChain = "traffic_prerouting";
 const nftTrafficPostroutingChain = "traffic_postrouting";
 const nftTrafficForwardChain = "traffic_forward";
 const nftDirectionComment = (comment: string, direction: "in" | "out") => `${comment}-${direction}`;
+const nftDnatMasqueradeComment = "fwx-dnat-masquerade";
+const nftIpv6RoutefixChain = "ipv6_routefix";
+const nftIpv6RoutefixComment = "fwx-ipv6-dnat-routefix";
 
 function nftOptional(command: string) {
   return `${command} 2>/dev/null; true`;
@@ -169,6 +172,27 @@ function nftOptional(command: string) {
 
 function nftForwardCounterRuleWithFallback(counterRule: string, alternateCounterRule: string, commentedRule: string, bareRule: string, label: string) {
   return `${counterRule} || { echo "[nftables] counter rule failed, fallback=${label}"; ${alternateCounterRule} || { echo "[nftables] alternate counter rule failed, fallback=${label}:comment"; ${commentedRule} || { echo "[nftables] commented rule failed, fallback=${label}:bare"; ${bareRule} || true; }; }; }`;
+}
+
+function nftEnsureCommentedRuleCmd(chain: string, comment: string, ruleBody: string) {
+  return `if nft list chain inet ${nftTable} ${chain} >/dev/null 2>&1 && nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='comment "${comment}"' 'index($0, c) {found=1} END{exit found ? 0 : 1}'; then :; else nft add rule inet ${nftTable} ${chain} ${ruleBody} comment "${comment}" 2>/dev/null || true; fi; true`;
+}
+
+function nftEnsureDnatMasqueradeCmd() {
+  return nftEnsureCommentedRuleCmd("postrouting", nftDnatMasqueradeComment, "ct status dnat masquerade");
+}
+
+function nftPostroutingRuleWithFallback(ruleCommand: string, label: string) {
+  return `${ruleCommand} || { echo "[nftables] postrouting rule failed, fallback=${label}:ct-status-dnat"; ${nftEnsureDnatMasqueradeCmd()}; }`;
+}
+
+function buildNftIpv6RoutefixCmds(family: string): string[] {
+  if (family !== "ip6") return [];
+  const routeExists = `command -v ip >/dev/null 2>&1 && ip -6 route show table 100 2>/dev/null | grep -q '^default '`;
+  return [
+    `if ${routeExists}; then ip -6 rule show 2>/dev/null | grep -Eq 'fwmark (0x64|100).*lookup 100|fwmark (0x64|100).*table 100' || ip -6 rule add fwmark 100 table 100 pref 100 2>/dev/null || true; fi; true`,
+    `if ${routeExists}; then nft add chain inet ${nftTable} ${nftIpv6RoutefixChain} '{ type filter hook prerouting priority mangle; policy accept; }' 2>/dev/null || true; ${nftEnsureCommentedRuleCmd(nftIpv6RoutefixChain, nftIpv6RoutefixComment, "ct direction reply ct status dnat ct mark 0 meta mark set 0x64")}; fi; true`,
+  ];
 }
 
 function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
@@ -198,6 +222,18 @@ function buildNftForwardTargetCleanupCmds(rule: any): string[] {
   return cmds;
 }
 
+function buildNftPostroutingTargetCleanupCmds(rule: any): string[] {
+  const targetIp = cleanAddress(rule.targetIp);
+  const targetPort = Number(rule.targetPort) || 0;
+  if (!targetIp || targetPort <= 0) return [];
+  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const family = nftAddressFamily(targetIp);
+  return protos.map((proto) => {
+    const awk = `awk -v family='${family}' -v addr='${targetIp}' -v proto='${proto}' -v port='${targetPort}' 'index($0, family " daddr " addr) && index($0, proto " dport " port) && index($0, " masquerade") {print $NF}'`;
+    return `if nft list chain inet ${nftTable} postrouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} postrouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} postrouting handle "$h" 2>/dev/null; true; done; fi; true`;
+  });
+}
+
 function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
   return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v colon='comment "${comment}:' -v dash='comment "${comment}-' 'index($0, exact) || index($0, colon) || index($0, dash) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
@@ -208,6 +244,7 @@ export function buildNftCleanupCmds(rule: any): string[] {
   return [
     ...buildNftPortCleanupCmds(Number(rule.sourcePort)),
     ...buildNftForwardTargetCleanupCmds(rule),
+    ...buildNftPostroutingTargetCleanupCmds(rule),
     nftDeleteCommentedRulesCmd("prerouting", comment),
     nftDeleteCommentedRulesCmd("postrouting", comment),
     nftDeleteCommentedRulesCmd("forward", comment),
@@ -242,12 +279,16 @@ export function buildNftForwardCmds(rule: any): string[] {
     nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
+    ...buildNftIpv6RoutefixCmds(family),
   ];
   for (const proto of protos) {
     const inComment = nftDirectionComment(comment, "in");
     const outComment = nftDirectionComment(comment, "out");
     cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
+    cmds.push(nftPostroutingRuleWithFallback(
+      `nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`,
+      `${comment}:${proto}`,
+    ));
     cmds.push(nftForwardCounterRuleWithFallback(
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment "${inComment}"`,
       `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} comment "${inComment}" counter accept`,
