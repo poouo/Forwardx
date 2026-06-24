@@ -2654,8 +2654,8 @@ function RulesContent() {
     { hours: 24, range: trafficRange, ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: 30000,
-      staleTime: 15000,
+      refetchInterval: 15000,
+      staleTime: 5000,
       refetchOnWindowFocus: false,
     }
   );
@@ -2663,8 +2663,8 @@ function RulesContent() {
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && trafficRange !== "total" && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: 30000,
-      staleTime: 15000,
+      refetchInterval: 15000,
+      staleTime: 5000,
       refetchOnWindowFocus: false,
     }
   );

@@ -57,7 +57,7 @@ export const trafficRulesRouter = router({
       const ruleKey = ruleIds.join(",");
       return trafficQueryCache.get(
         `summary:${ctx.user.id}:${input.range}:${input.hours}:${input.hostId || 0}:${ruleKey}`,
-        { ttlMs: 15_000, staleMs: 2 * 60_000 },
+        { ttlMs: 5_000, staleMs: 0 },
         () => db.getTrafficSummaryByRule({
           userId: isAdmin ? undefined : ctx.user.id,
           hostId: input.hostId,

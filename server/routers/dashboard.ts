@@ -19,7 +19,7 @@ export const dashboardRouter = router({
       );
     }),
     trafficTotals: protectedProcedure.query(async ({ ctx }) => {
-      return cachedDashboardQuery(`trafficTotals:${ctx.user.id}`, 30_000, 5 * 60_000, async () => {
+      return cachedDashboardQuery(`trafficTotals:${ctx.user.id}`, 5_000, 0, async () => {
         const traffic = await db.getTotalTraffic(ctx.user.id);
         return {
           totalTrafficIn: traffic.totalIn,

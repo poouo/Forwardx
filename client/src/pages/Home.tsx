@@ -396,8 +396,8 @@ function DashboardContent() {
   const isAdmin = user?.role === "admin";
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery(undefined, { refetchInterval: 15000 });
   const { data: trafficTotals, isLoading: trafficTotalsLoading } = trpc.dashboard.trafficTotals.useQuery(undefined, {
-    refetchInterval: 60000,
-    staleTime: 55000,
+    refetchInterval: 15000,
+    staleTime: 5000,
   });
   const { data: wallet, isLoading: walletLoading } = trpc.billing.me.useQuery(undefined, { enabled: !isAdmin });
   const { data: trafficBilling, isLoading: trafficBillingLoading } = trpc.trafficBilling.status.useQuery();

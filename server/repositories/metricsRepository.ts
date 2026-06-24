@@ -680,24 +680,6 @@ async function expandTrafficQueryRuleIds(ruleIds: number[]) {
 export async function getTotalTraffic(userId?: number) {
   const db = await getDb();
   if (!db) return { totalIn: 0, totalOut: 0 };
-  const q = quoteIdentifier;
-  if (await trafficBucketsReady()) {
-    const where = userId ? `WHERE ${q("userId")} = ?` : "";
-    const rows = await queryRaw<{ totalIn: number; totalOut: number }>(
-      `SELECT COALESCE(SUM(${q("bytesIn")}), 0) AS ${q("totalIn")},
-              COALESCE(SUM(${q("bytesOut")}), 0) AS ${q("totalOut")}
-         FROM ${q("traffic_stat_buckets")}
-        ${where}`,
-      userId ? [userId] : [],
-    ).catch(() => []);
-    if (rows.length > 0) {
-      return {
-        totalIn: numeric(rows[0]?.totalIn),
-        totalOut: numeric(rows[0]?.totalOut),
-      };
-    }
-  }
-
   if (userId) {
     const r = await db.select({
       totalIn: sql<number>`COALESCE(SUM(${trafficStats.bytesIn}), 0)`,
@@ -739,9 +721,10 @@ export async function getTrafficSummaryByRule(opts: {
   const expandedRuleIds = requestedRuleIds.length > 0
     ? (await expandTrafficQueryRuleIds(requestedRuleIds)).queryRuleIds
     : requestedRuleIds;
-  let result: TrafficSummaryRow[] =
-    await getTrafficSummaryRowsFromBuckets({ ...opts, ruleIds: expandedRuleIds }) ??
-    await getTrafficSummaryRowsFromStats({ ...opts, ruleIds: expandedRuleIds });
+  let result: TrafficSummaryRow[] = opts.since
+    ? await getTrafficSummaryRowsFromBuckets({ ...opts, ruleIds: expandedRuleIds }) ??
+      await getTrafficSummaryRowsFromStats({ ...opts, ruleIds: expandedRuleIds })
+    : await getTrafficSummaryRowsFromStats({ ...opts, ruleIds: expandedRuleIds });
   const groupChildIds = Array.from(new Set(result.map((r) => r.ruleId)));
   if (groupChildIds.length > 0) {
     const childRows = await db
