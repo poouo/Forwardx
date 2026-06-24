@@ -657,15 +657,40 @@ function pushUniqueEntryAddress(rows: EntryAddress[], label: string, value: unkn
   rows.push({ label, value: text });
 }
 
-function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
-  const rows: EntryAddress[] = [];
-  pushUniqueEntryAddress(rows, "入口", host?.entryIp);
-  pushUniqueEntryAddress(rows, "IPv4", host?.ipv4);
-  pushUniqueEntryAddress(rows, "IPv6", host?.ipv6);
-  if (rows.length === 0) pushUniqueEntryAddress(rows, "IP", host?.ip);
-  return rows;
+function hostDdnsDomain(host: any | null | undefined) {
+  return host?.ddnsEnabled ? String(host?.ddnsDomain || "").trim() : "";
 }
 
+function hostAutoIpv4(host: any | null | undefined) {
+  const ipv4 = String(host?.ipv4 || "").trim();
+  if (ipv4) return ipv4;
+  const ip = String(host?.ip || "").trim();
+  return ip && !ip.includes(":") ? ip : "";
+}
+
+function hostAutoIpv6(host: any | null | undefined) {
+  const ipv6 = String(host?.ipv6 || "").trim();
+  if (ipv6) return ipv6;
+  const ip = String(host?.ip || "").trim();
+  return ip && ip.includes(":") ? ip : "";
+}
+
+function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
+  const rows: EntryAddress[] = [];
+  const manualEntry = String(host?.entryIp || "").trim();
+  const ddnsDomain = hostDdnsDomain(host);
+  const ipv4 = hostAutoIpv4(host);
+  const ipv6 = hostAutoIpv6(host);
+  if (manualEntry) {
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
+  } else if (ddnsDomain) {
+    pushUniqueEntryAddress(rows, "DDNS", ddnsDomain);
+  } else {
+    pushUniqueEntryAddress(rows, ipv4 ? "IPv4" : ipv6 ? "IPv6" : "IP", ipv4 || ipv6 || host?.ip);
+  }
+  if (ipv6) pushUniqueEntryAddress(rows, "IPv6", ipv6);
+  return rows;
+}
 function getHostEntryAddress(host: any | null | undefined): string {
   return getHostEntryAddresses(host)[0]?.value || "";
 }
@@ -696,6 +721,222 @@ function isForwardChainGroup(group: any | null | undefined) {
   return normalizeForwardGroupModeForRule(group) === "chain";
 }
 
+
+type AddressFamily = "ipv4" | "ipv6" | "hostname" | "unknown";
+type LiteralAddressFamily = "ipv4" | "ipv6";
+
+function cleanAddressLiteral(value: unknown) {
+  let text = String(value || "").trim();
+  if (!text) return "";
+  text = text.replace(/^tcp:\/\//i, "").trim();
+  if (text.startsWith("[") && text.includes("]")) return text.slice(1, text.indexOf("]")).trim();
+  return text;
+}
+
+function isIpv4Literal(value: string) {
+  const parts = value.split(".");
+  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function addressFamily(value: unknown): AddressFamily {
+  const text = cleanAddressLiteral(value);
+  if (!text) return "unknown";
+  if (isIpv4Literal(text)) return "ipv4";
+  const withoutZone = text.replace(/%.+$/, "");
+  if (withoutZone.includes(":") && /^[0-9a-f:.]+$/i.test(withoutZone)) return "ipv6";
+  if (/^[a-z0-9.-]+$/i.test(text)) return "hostname";
+  return "unknown";
+}
+
+function isKernelForwardType(type: unknown) {
+  const text = String(type || "").trim().toLowerCase();
+  return text === "iptables" || text === "nftables";
+}
+
+function familyLabel(family: AddressFamily) {
+  if (family === "ipv4") return "IPv4";
+  if (family === "ipv6") return "IPv6";
+  if (family === "hostname") return "域名";
+  return "未知协议族";
+}
+
+function literalFamilySet(value: unknown) {
+  const family = addressFamily(value);
+  const families = new Set<LiteralAddressFamily>();
+  if (family === "ipv4" || family === "ipv6") families.add(family);
+  return families;
+}
+
+function addLiteralHostFamily(families: Set<LiteralAddressFamily>, value: unknown) {
+  const family = addressFamily(value);
+  if (family === "ipv4" || family === "ipv6") families.add(family);
+}
+
+function hostDdnsFamily(host: any | null | undefined): LiteralAddressFamily | null {
+  const ipVersion = String(host?.ddnsIpVersion || "").trim().toLowerCase();
+  const recordType = String(host?.ddnsRecordType || "").trim().toUpperCase();
+  if (ipVersion === "ipv6" || recordType === "AAAA") return "ipv6";
+  if (ipVersion === "ipv4" || recordType === "A") return "ipv4";
+  return null;
+}
+
+function hostEntryFamilies(host: any | null | undefined) {
+  const families = new Set<LiteralAddressFamily>();
+  const manualEntry = String(host?.entryIp || "").trim();
+  if (manualEntry) {
+    addLiteralHostFamily(families, manualEntry);
+  } else if (hostDdnsDomain(host)) {
+    const ddnsFamily = hostDdnsFamily(host);
+    if (ddnsFamily) families.add(ddnsFamily);
+  } else {
+    addLiteralHostFamily(families, hostAutoIpv4(host) || hostAutoIpv6(host) || host?.ip);
+  }
+  addLiteralHostFamily(families, hostAutoIpv6(host));
+  return families;
+}
+function warningHostName(host: any | null | undefined, fallback: string) {
+  return String(host?.name || fallback).trim();
+}
+
+function resolveChainConnectHostForWarning(member: any, host: any | null | undefined) {
+  const stored = String(member?.connectHost || "").trim();
+  const publicAddr = getHostEntryAddress(host);
+  const privateAddr = String(host?.tunnelEntryIp || "").trim();
+  const ipv6Addr = String(host?.ipv6 || "").trim();
+  if (stored && privateAddr && stored === privateAddr) return privateAddr;
+  if (stored && ipv6Addr && stored === ipv6Addr) return ipv6Addr;
+  return publicAddr || stored;
+}
+
+function enabledHostMembers(group: any | null | undefined) {
+  return [...(group?.members || [])]
+    .filter((member: any) => member?.memberType !== "tunnel" && member?.isEnabled !== false && Number(member?.hostId || 0) > 0)
+    .sort((a: any, b: any) => Number(a.priority || 0) - Number(b.priority || 0));
+}
+
+function lookupHostForWarning(hosts: any[] | undefined, hostById: Map<number, any> | undefined, hostId: number) {
+  if (!Number.isFinite(hostId) || hostId <= 0) return null;
+  return hostById?.get(hostId) || (hosts || []).find((host: any) => Number(host.id) === hostId) || null;
+}
+
+function kernelFamilyWarning(toolLabel: string, fromLabel: string, sourceFamilies: Set<LiteralAddressFamily>, targetLabel: string, targetFamily: AddressFamily) {
+  if (targetFamily !== "ipv4" && targetFamily !== "ipv6") return null;
+  const families = Array.from(sourceFamilies);
+  if (families.length === 0) return null;
+  if (!families.includes(targetFamily)) {
+    return `${toolLabel} 属于内核 NAT/防火墙规则，不能把 ${familyLabel(families[0])} 入口直接转成 ${familyLabel(targetFamily)} 目标；${fromLabel} 到 ${targetLabel} 需要改用 realm/socat/gost 等用户态转发，或把两端统一到同一协议族。`;
+  }
+  if (families.length > 1) {
+    const otherFamily = families.find((family) => family !== targetFamily);
+    if (otherFamily) {
+      return `${toolLabel} 属于内核 NAT/防火墙规则，${fromLabel} 同时暴露 IPv4/IPv6，但 ${targetLabel} 只明确为 ${familyLabel(targetFamily)}；使用 ${familyLabel(otherFamily)} 入口访问时可能不通，跨 IPv4/IPv6 建议改用用户态转发。`;
+    }
+  }
+  return null;
+}
+
+type KernelForwardWarningInput = {
+  rule: any;
+  host?: any | null;
+  group?: any | null;
+  hosts?: any[];
+  hostById?: Map<number, any>;
+  forwardGroupById?: Map<number, any>;
+};
+
+function buildKernelChainForwardWarning(input: Required<Pick<KernelForwardWarningInput, "rule">> & Omit<KernelForwardWarningInput, "rule"> & { group: any; toolLabel: string }) {
+  const { rule, group, hosts, hostById, forwardGroupById, toolLabel } = input;
+  const members = enabledHostMembers(group);
+  if (members.length === 0) return null;
+  const getHost = (hostId: number) => lookupHostForWarning(hosts, hostById, hostId);
+  const firstMember = members[0];
+  const firstHost = getHost(Number(firstMember.hostId || 0));
+  const entryGroup = Number(group?.entryGroupId || 0) > 0 ? forwardGroupById?.get(Number(group.entryGroupId)) : null;
+  const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry" ? enabledHostMembers(entryGroup) : [];
+  const firstConnectHost = resolveChainConnectHostForWarning(firstMember, firstHost);
+  let inboundFamilies = entryMembers.length > 0 ? literalFamilySet(firstConnectHost) : hostEntryFamilies(firstHost);
+
+  if (entryMembers.length > 0) {
+    const firstConnectFamily = addressFamily(firstConnectHost);
+    const firstName = warningHostName(firstHost, `主机${Number(firstMember.hostId || 0) || ""}`);
+    for (const entryMember of entryMembers) {
+      const entryHost = getHost(Number(entryMember.hostId || 0));
+      const entryName = warningHostName(entryHost, `入口主机${Number(entryMember.hostId || 0) || ""}`);
+      const warning = kernelFamilyWarning(
+        toolLabel,
+        `${entryName} 入口`,
+        hostEntryFamilies(entryHost),
+        `${firstName} 连接地址`,
+        firstConnectFamily,
+      );
+      if (warning) return warning;
+    }
+    if (inboundFamilies.size === 0) inboundFamilies = hostEntryFamilies(firstHost);
+  }
+
+  for (let index = 0; index < members.length - 1; index++) {
+    const current = members[index];
+    const next = members[index + 1];
+    const currentHost = getHost(Number(current.hostId || 0));
+    const nextHost = getHost(Number(next.hostId || 0));
+    const nextConnectHost = resolveChainConnectHostForWarning(next, nextHost);
+    const currentName = warningHostName(currentHost, `主机${Number(current.hostId || 0) || ""}`);
+    const nextName = warningHostName(nextHost, `主机${Number(next.hostId || 0) || ""}`);
+    const warning = kernelFamilyWarning(
+      toolLabel,
+      `${currentName} 入口`,
+      inboundFamilies,
+      `${nextName} 连接地址`,
+      addressFamily(nextConnectHost),
+    );
+    if (warning) return warning;
+    inboundFamilies = literalFamilySet(nextConnectHost);
+    if (inboundFamilies.size === 0) inboundFamilies = hostEntryFamilies(nextHost);
+  }
+
+  const lastMember = members[members.length - 1];
+  const lastHost = getHost(Number(lastMember.hostId || 0));
+  return kernelFamilyWarning(
+    toolLabel,
+    `${warningHostName(lastHost, `主机${Number(lastMember.hostId || 0) || ""}`)} 入口`,
+    inboundFamilies,
+    `最终目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+    addressFamily(rule?.targetIp),
+  );
+}
+
+function buildKernelForwardWarning({ rule, host, group, hosts = [], hostById, forwardGroupById }: KernelForwardWarningInput) {
+  const forwardType = String(rule?.forwardType || "").trim().toLowerCase();
+  if (!isKernelForwardType(forwardType)) return null;
+  const toolLabel = FORWARD_TYPE_LABELS[forwardType as ForwardType] || forwardType;
+  const activeGroup = group || (Number(rule?.forwardGroupId || 0) > 0 ? forwardGroupById?.get(Number(rule.forwardGroupId)) : null);
+  if (activeGroup && isForwardChainGroup(activeGroup)) {
+    return buildKernelChainForwardWarning({ rule, group: activeGroup, hosts, hostById, forwardGroupById, toolLabel });
+  }
+  if (activeGroup && normalizeForwardGroupModeForRule(activeGroup) === "failover" && activeGroup.groupType === "host") {
+    for (const member of enabledHostMembers(activeGroup)) {
+      const memberHost = lookupHostForWarning(hosts, hostById, Number(member.hostId || 0));
+      const warning = kernelFamilyWarning(
+        toolLabel,
+        `${warningHostName(memberHost, `成员主机${Number(member.hostId || 0) || ""}`)} 入口`,
+        hostEntryFamilies(memberHost),
+        `最终目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+        addressFamily(rule?.targetIp),
+      );
+      if (warning) return warning;
+    }
+    return null;
+  }
+  const entryHost = host || lookupHostForWarning(hosts, hostById, Number(rule?.hostId || 0));
+  if (!entryHost) return null;
+  return kernelFamilyWarning(
+    toolLabel,
+    `${warningHostName(entryHost, "入口主机")} 入口`,
+    hostEntryFamilies(entryHost),
+    `目标 ${String(rule?.targetIp || "").trim() || "-"}`,
+    addressFamily(rule?.targetIp),
+  );
+}
 function isSelectableForwardRuleGroup(group: any | null | undefined) {
   const mode = normalizeForwardGroupModeForRule(group);
   return mode === "failover" || mode === "chain";
@@ -1112,6 +1353,11 @@ function buildRuleGlobeData(
   let skipped = 0;
 
   (rules || []).forEach((rule: any) => {
+    const chainGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    const chainEntryGroup = chainGroup && isForwardChainGroup(chainGroup) && Number(chainGroup.entryGroupId || 0) > 0
+      ? forwardGroupById.get(Number(chainGroup.entryGroupId))
+      : null;
+    const chainEntryMembers = chainEntryGroup && normalizeForwardGroupModeForRule(chainEntryGroup) === "entry" ? enabledHostMembers(chainEntryGroup) : [];
     const routeHostIds = ruleGlobeRouteHostIds(rule, tunnelById, forwardGroupById);
     const routePoints = routeHostIds.map((hostId: number) => pointForHostId(hostId)).filter(Boolean) as RuleGlobePoint[];
     if (routePoints.length === 0) {
@@ -2075,6 +2321,11 @@ function RulesContent() {
     (tunnels || []).forEach((tunnel: any) => map.set(Number(tunnel.id), tunnel));
     return map;
   }, [tunnels]);
+  const hostById = useMemo(() => {
+    const map = new Map<number, any>();
+    (hosts || []).forEach((host: any) => map.set(Number(host.id), host));
+    return map;
+  }, [hosts]);
   const selectedTunnelDisplay = useMemo(() => getTunnelDisplay(selectedTunnel), [selectedTunnel]);
   const userById = useMemo(() => {
     const map = new Map<number, any>();
@@ -2234,6 +2485,14 @@ function RulesContent() {
     ? "传输优化仅支持 TCP 协议。"
     : "当前转发工具不支持该优化。";
 
+  const kernelForwardWarning = useMemo(() => buildKernelForwardWarning({
+    rule: form,
+    host: selectedHost,
+    group: selectedForwardGroup,
+    hosts: hosts || [],
+    hostById,
+    forwardGroupById,
+  }), [form, selectedHost, selectedForwardGroup, hosts, hostById, forwardGroupById]);
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
     return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
@@ -2560,6 +2819,9 @@ function RulesContent() {
     if (!editingId && !isForwardGroupRouteMode && form.sourcePort > 0 && portStatus !== "available") {
       toast.error("请等待端口可用后再保存");
       return;
+    }
+    if (kernelForwardWarning) {
+      toast.warning(kernelForwardWarning, { duration: 7000 });
     }
     if (editingId) {
       updateMutation.mutate({
@@ -2914,6 +3176,11 @@ function RulesContent() {
     }
 
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
+    const chainGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    const chainEntryGroup = chainGroup && isForwardChainGroup(chainGroup) && Number(chainGroup.entryGroupId || 0) > 0
+      ? forwardGroupById.get(Number(chainGroup.entryGroupId))
+      : null;
+    const chainEntryMembers = chainEntryGroup && normalizeForwardGroupModeForRule(chainEntryGroup) === "entry" ? enabledHostMembers(chainEntryGroup) : [];
     const routeHostIds = ruleGlobeRouteHostIds(rule, tunnelById, forwardGroupById);
     const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     routeHostIds.forEach((hostId: number, index: number) => {
@@ -2930,6 +3197,15 @@ function RulesContent() {
     const sourceHost = hostById.get(Number(routeHostIds[0] || rule.hostId || 0)) || getRuleEntryHost(rule);
     const exitHost = hostById.get(Number(routeHostIds[routeHostIds.length - 1] || 0));
     if (sourceHost) addHostNodeMeta(meta, sourceHost, ["入口", "源节点"]);
+    chainEntryMembers.forEach((entryMember: any) => {
+      const entryHost = hostById.get(Number(entryMember.hostId || 0));
+      addHostNodeMeta(meta, entryHost, [
+        "入口",
+        "源节点",
+        `主机${entryMember.hostId || ""}`,
+        `主机 #${entryMember.hostId || ""}`,
+      ]);
+    });
     if (exitHost) addHostNodeMeta(meta, exitHost, ["出口"]);
 
     const targetIp = String(rule.targetIp || "").trim();
@@ -2969,6 +3245,18 @@ function RulesContent() {
       .map((hostId: number) => hostById.get(Number(hostId)))
       .filter(Boolean);
     const plannedSegments: LinkTestPlannedSegment[] = [];
+    if (chainEntryMembers.length > 0 && routeHosts[0]) {
+      const firstChainHost = routeHosts[0];
+      chainEntryMembers.forEach((entryMember: any) => {
+        const entryHost = hostById.get(Number(entryMember.hostId || 0));
+        plannedSegments.push({
+          from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
+          to: hostDisplayName(firstChainHost),
+          fromMeta: meta[hostDisplayName(entryHost)] || meta[String(entryMember.hostId || "")],
+          toMeta: meta[hostDisplayName(firstChainHost)],
+        });
+      });
+    }
     const tunnelParsedMessage = tunnel ? parseLinkTestMessage((tunnel as any).lastTestMessage) : null;
     const tunnelDetails = (tunnelParsedMessage?.details || [])
       .filter((detail) => detail.pending || detail.success || detail.message || typeof detail.latencyMs === "number");
@@ -3017,7 +3305,12 @@ function RulesContent() {
 
     return {
       nodeMeta: meta,
-      sourceLabel: hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
+      sourceLabel: chainEntryMembers.length > 0
+        ? chainEntryMembers
+          .map((member: any) => hostDisplayName(hostById.get(Number(member.hostId || 0))) || `入口主机 #${member.hostId || "-"}`)
+          .filter(Boolean)
+          .join(" / ")
+        : hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
       targetLabel: ruleLabel,
       plannedSegments,
     };
@@ -3035,6 +3328,7 @@ function RulesContent() {
     if (type === "local") {
       values.push(
         getHostOptionName(resource),
+        getHostEntryAddressText(resource),
         resource?.name,
         resource?.ip,
         resource?.entryIp,
@@ -3107,7 +3401,7 @@ function RulesContent() {
           />
           <span className="min-w-0 truncate">{getHostOptionName(resource)}</span>
           <span className="min-w-0 truncate text-xs text-muted-foreground">
-            {resource?.entryIp || resource?.ip || resource?.tunnelEntryIp || resource?.internalIp || ""}
+            {getHostEntryAddressText(resource) || resource?.tunnelEntryIp || resource?.internalIp || ""}
           </span>
         </div>
       );
@@ -3641,10 +3935,34 @@ function RulesContent() {
     );
   };
 
+  const getRuleKernelForwardWarning = (rule: any) => buildKernelForwardWarning({
+    rule,
+    host: getRuleEntryHost(rule),
+    group: rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null,
+    hosts: hosts || [],
+    hostById,
+    forwardGroupById,
+  });
+
+  const renderKernelForwardWarningBadge = (warning: string | null) => {
+    if (!warning) return null;
+    return (
+      <Badge
+        variant="outline"
+        className="h-5 w-fit border-amber-500/35 bg-amber-500/10 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
+        title={warning}
+      >
+        <AlertCircle className="mr-1 h-3 w-3" />
+        跨 IPv4/IPv6 风险
+      </Badge>
+    );
+  };
   const renderRouteBadge = (rule: any) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const isChainRoute = !!rule.forwardGroupId && isForwardChainGroup(group);
+    const kernelWarning = getRuleKernelForwardWarning(rule);
+    const warningBadge = renderKernelForwardWarningBadge(kernelWarning);
     const badge = (
       <Badge
         variant="outline"
@@ -3682,10 +4000,18 @@ function RulesContent() {
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           {badge}
           {renderForwardToolBadge(rule)}
+          {warningBadge}
         </div>
       );
     }
-    if (!tunnel) return badge;
+    if (!tunnel) {
+      return warningBadge ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          {badge}
+          {warningBadge}
+        </div>
+      ) : badge;
+    }
     return (
       <div className="flex min-w-0 flex-col gap-1">
         {badge}
@@ -4874,6 +5200,14 @@ function RulesContent() {
                 />
               </div>
             </div>
+            {kernelForwardWarning && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+                <div className="flex min-w-0 items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span className="min-w-0 leading-5">{kernelForwardWarning}</span>
+                </div>
+              </div>
+            )}
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
                 <Label className="text-sm">PROXY Protocol</Label>
@@ -5252,7 +5586,7 @@ function RulesContent() {
                       />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{renderHostStatusLabel(host)}</span>
-                        <span className="mt-1 block truncate text-xs text-muted-foreground">{host.entryIp || host.ip || "-"}</span>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">{getHostEntryAddressText(host) || "-"}</span>
                       </span>
                     </label>
                   )) : (

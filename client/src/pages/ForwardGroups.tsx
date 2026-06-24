@@ -525,8 +525,6 @@ function ForwardGroupSelfTestDialog({
           to: hostDisplayName(firstChainHost) || `主机 #${members[0].hostId || "-"}`,
           fromMeta: meta[hostDisplayName(entryHost)] || meta[String(entryMember.hostId || "")],
           toMeta: meta[hostDisplayName(firstChainHost)] || meta[String(members[0].hostId || "")],
-          groupKey: entryMembers.length > 1 ? `entry-${entryMember.id || entryMember.hostId}` : null,
-          groupLabel: entryMembers.length > 1 ? hostDisplayName(entryHost) || `入口 #${entryMember.hostId || "-"}` : null,
         });
       });
     }
@@ -1123,11 +1121,23 @@ export function ForwardGroupsContent({
 
   const groupStatusMessage = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
+    const templateRuleCount = Number(group.templateRuleCount || 0);
+    if (mode === "chain" && templateRuleCount > 0) return `已被 ${templateRuleCount} 条转发规则引用`;
     if (group.lastMessage) return group.lastMessage;
     if (mode === "chain") return "等待转发规则引用";
     if (mode === "entry") return "等待 DDNS 同步";
     if (mode === "exit") return "出口组已保存，可作为隧道出口使用";
     return "等待故障转移检查";
+  };
+
+  const isGroupMemberActive = (group: any, member: any) => {
+    const mode = normalizeGroupMode(group.groupMode);
+    if (member.isEnabled === false) return false;
+    if (mode === "entry" || mode === "exit" || mode === "chain") {
+      const status = String(member.healthStatus || group.lastStatus || "").toLowerCase();
+      return status !== "unhealthy" && status !== "failed" && status !== "down" && status !== "error";
+    }
+    return Number(group.activeMemberId) === Number(member.id);
   };
 
   const groupDdnsText = (group: any) => {
@@ -1339,7 +1349,7 @@ export function ForwardGroupsContent({
                         <span
                           key={member.id}
                           className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                            Number(group.activeMemberId) === Number(member.id)
+                            isGroupMemberActive(group, member)
                               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                               : "border-border bg-muted/20 text-muted-foreground"
                           }`}
@@ -1416,7 +1426,7 @@ export function ForwardGroupsContent({
                         <span
                           key={member.id}
                           className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                            Number(group.activeMemberId) === Number(member.id)
+                            isGroupMemberActive(group, member)
                               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                               : "border-border bg-muted/20 text-muted-foreground"
                           }`}
@@ -1501,7 +1511,7 @@ export function ForwardGroupsContent({
                             <span
                               key={member.id}
                               className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                                Number(group.activeMemberId) === Number(member.id)
+                                isGroupMemberActive(group, member)
                                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
                                   : "border-border bg-muted/20 text-muted-foreground"
                               }`}
