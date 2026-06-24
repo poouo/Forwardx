@@ -33,6 +33,7 @@ type ProbeSegment = {
   pending?: boolean;
   groupKey?: string | null;
   groupLabel?: string | null;
+  latencyLabel?: string | null;
 };
 
 export type LinkTestPlannedSegment = {
@@ -156,6 +157,86 @@ function withNodeLabel(meta: LinkTestNodeMeta | undefined, fallback: string) {
   const label = String(meta?.label || "").trim();
   return label || fallback;
 }
+function uniqueLabels(values: string[]) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+function mergeSegmentMetaForLabels(segments: ProbeSegment[], key: "fromMeta" | "toMeta") {
+  const metas = segments.map((segment) => segment[key]).filter(Boolean) as LinkTestNodeMeta[];
+  if (metas.length === 0) return undefined;
+  const first = metas[0];
+  const sameCountry = metas.every((meta) => String(meta.countryCode || "") === String(first.countryCode || ""));
+  const sameRegion = metas.every((meta) => String(meta.region || "") === String(first.region || ""));
+  return {
+    ...first,
+    label: "",
+    countryCode: sameCountry ? first.countryCode : undefined,
+    region: sameRegion ? first.region : undefined,
+    address: "",
+  };
+}
+
+function sourceLatencyLabel(segment: ProbeSegment) {
+  const source = shortNodeLabel(segment.from, 10);
+  if (segment.pending) return `${source} 探测中`;
+  if (segment.success && hasUsableLatencyValue(segment.latencyMs)) return `${source} ${formatLatencyMs(segment.latencyMs)}`;
+  if (segment.success) return `${source} 通过`;
+  return `${source} 失败`;
+}
+
+function mergeInitialMultiSourceSegments(segments: ProbeSegment[]) {
+  if (segments.length < 2) return segments;
+  const firstTarget = segments[0]?.to;
+  if (!firstTarget) return segments;
+  const mergeable: ProbeSegment[] = [];
+  for (const segment of segments) {
+    if (segment.to !== firstTarget || segment.groupKey) break;
+    mergeable.push(segment);
+  }
+  const uniqueSources = uniqueLabels(mergeable.map((segment) => segment.from));
+  if (mergeable.length < 2 || uniqueSources.length < 2) return segments;
+
+  const success = mergeable.every((segment) => segment.success);
+  const latencyValues = mergeable
+    .filter((segment) => segment.success && hasUsableLatencyValue(segment.latencyMs))
+    .map((segment) => Number(segment.latencyMs));
+  const message = mergeable.find((segment) => !segment.success && segment.message)?.message
+    || mergeable.find((segment) => segment.message)?.message
+    || null;
+  const pending = mergeable.some((segment) => segment.pending);
+  const merged: ProbeSegment = {
+    ...mergeable[0],
+    from: uniqueSources.join(" / "),
+    fromMeta: mergeSegmentMetaForLabels(mergeable, "fromMeta"),
+    success,
+    latencyMs: success && latencyValues.length === mergeable.length ? Math.max(...latencyValues) : null,
+    latencyLabel: mergeable.map(sourceLatencyLabel).join(" / "),
+    message,
+    pending,
+  };
+  return [merged, ...segments.slice(mergeable.length)];
+}
+
+function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
+  const visibleDetails = (details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
+  if (visibleDetails.length < 2) return null;
+  const firstTarget = parseRouteEndpoints(visibleDetails[0], 0).to;
+  if (!firstTarget) return null;
+  const initialDetails: LinkTestDetail[] = [];
+  for (let index = 0; index < visibleDetails.length; index += 1) {
+    const detail = visibleDetails[index];
+    const endpoints = parseRouteEndpoints(detail, index);
+    if (endpoints.to !== firstTarget || detail.groupKey) break;
+    initialDetails.push(detail);
+  }
+  const uniqueSources = uniqueLabels(initialDetails.map((detail, index) => parseRouteEndpoints(detail, index).from));
+  if (initialDetails.length < 2 || uniqueSources.length < 2) return null;
+  const latencies = visibleDetails.map((detail) => detail.success && hasLatencyValue(detail) ? Number(detail.latencyMs) : null);
+  if (latencies.some((value) => value === null)) return null;
+  const initialLatency = Math.max(...latencies.slice(0, initialDetails.length).map((value) => Number(value)));
+  const restLatency = latencies.slice(initialDetails.length).reduce((sum, value) => sum + Number(value), 0);
+  return initialLatency + restLatency;
+}
 
 function buildProbeSegments(input: {
   parsed: ParsedLinkTestMessage;
@@ -195,7 +276,7 @@ function buildProbeSegments(input: {
     );
 
   if (visibleDetails.length > 0 && !usePlannedSegments) {
-    return visibleDetails.map((detail, index): ProbeSegment => {
+    return mergeInitialMultiSourceSegments(visibleDetails.map((detail, index): ProbeSegment => {
       const endpoints = parseRouteEndpoints(detail, index);
       const fromMeta = lookupNodeMeta(input.nodeMeta, endpoints.from);
       const toMeta = lookupNodeMeta(input.nodeMeta, endpoints.to);
@@ -212,11 +293,11 @@ function buildProbeSegments(input: {
         groupKey: detail.groupKey || null,
         groupLabel: detail.groupLabel || null,
       };
-    });
+    }));
   }
 
   if (plannedSegments.length > 0) {
-    return plannedSegments.map((segment, index): ProbeSegment => {
+    return mergeInitialMultiSourceSegments(plannedSegments.map((segment, index): ProbeSegment => {
       const detail = visibleDetails[index] || (index === plannedSegments.length - 1 ? visibleDetails[visibleDetails.length - 1] : null);
       const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
       const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
@@ -261,7 +342,7 @@ function buildProbeSegments(input: {
         groupKey: segment.groupKey || null,
         groupLabel: segment.groupLabel || null,
       };
-    });
+    }));
   }
 
   const sourceFallback = input.sourceLabel || "源节点";
@@ -288,6 +369,8 @@ export function getLinkTestTotalLatency(input: {
   fallbackLatencyMs?: number | null;
   isSuccess: boolean;
 }) {
+  const adjustedMultiSourceTotal = getMultiSourceAdjustedDetailsTotalLatency(input.parsed.details || []);
+  if (hasUsableLatencyValue(adjustedMultiSourceTotal)) return Number(adjustedMultiSourceTotal);
   if (hasUsableLatencyValue(input.parsed.totalLatencyMs)) return Number(input.parsed.totalLatencyMs);
   const visibleDetails = (input.parsed.details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   if (visibleDetails.length > 0) {
@@ -360,9 +443,11 @@ export function LinkTestProbeView({
       ? "探测中"
       : segment.pending
         ? "探测中"
-        : ok && hasUsableLatencyValue(segment.latencyMs)
-          ? formatLatencyMs(segment.latencyMs)
-          : ok && segments.length === 1
+        : segment.latencyLabel
+          ? segment.latencyLabel
+          : ok && hasUsableLatencyValue(segment.latencyMs)
+            ? formatLatencyMs(segment.latencyMs)
+            : ok && segments.length === 1
             ? "成功"
             : ok
               ? ""
@@ -454,8 +539,8 @@ export function LinkTestProbeView({
           <span
             className={cn(
               mobile
-                ? "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm"
-                : "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
+                ? "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm"
+                : "absolute left-1/2 top-[-2.05rem] max-w-[18rem] -translate-x-1/2 whitespace-normal text-center text-xs font-semibold leading-tight tabular-nums",
               testing ? "text-primary" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
               mobile && (testing ? "border-primary/20" : ok ? "border-emerald-500/20" : "border-destructive/20"),
             )}
@@ -494,7 +579,7 @@ export function LinkTestProbeView({
                     />
                     <span
                       className={cn(
-                        "relative rounded-full border bg-background px-2 py-0.5 text-xs font-semibold tabular-nums shadow-sm",
+                        "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
                         testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
                       )}
                     >
@@ -568,7 +653,7 @@ export function LinkTestProbeView({
                             />
                             <span
                               className={cn(
-                                "absolute left-1/2 top-[-1.65rem] -translate-x-1/2 whitespace-nowrap text-xs font-semibold tabular-nums",
+                                "absolute left-1/2 top-[-2.05rem] max-w-[18rem] -translate-x-1/2 whitespace-normal text-center text-xs font-semibold leading-tight tabular-nums",
                                 segmentTesting ? "text-primary" : segmentOk ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
                               )}
                             >
