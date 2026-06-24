@@ -818,10 +818,11 @@ function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
   const ddnsDomain = hostDdnsDomain(host);
   const ipv4 = hostAutoIpv4(host);
   const ipv6 = hostAutoIpv6(host);
-  if (manualEntry) {
-    pushUniqueEntryAddress(rows, "入口", manualEntry);
-  } else if (ddnsDomain) {
+  if (ddnsDomain) {
     pushUniqueEntryAddress(rows, "DDNS", ddnsDomain);
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
+  } else if (manualEntry) {
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
   } else {
     pushUniqueEntryAddress(rows, ipv4 ? "IPv4" : ipv6 ? "IPv6" : "IP", ipv4 || ipv6 || host?.ip);
   }
@@ -3827,7 +3828,7 @@ function RulesContent() {
     return owner?.name || owner?.username || `用户 #${rule.userId}`;
   };
 
-  /** 获取主机的入口地址：优先用用户自定义的 entryIp，未填则回退 ip */
+  /** 获取主机的入口地址：优先使用 DDNS，其次用户自定义入口，最后回退自动检测 IP */
   const getForwardGroupName = (groupId: number) => {
     return forwardGroupById.get(Number(groupId))?.name || `转发组 #${groupId}`;
   };
@@ -3864,9 +3865,34 @@ function RulesContent() {
   const getForwardChainEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
     if (!group) return [];
     const rows: EntryAddress[] = [];
+    const entryGroup = isForwardChainGroup(group) && group.entryGroupId
+      ? forwardGroupById.get(Number(group.entryGroupId))
+      : null;
     const domain = entryDomainForForwardGroup(group);
-    if (domain) pushUniqueEntryAddress(rows, "域名", domain);
-    if (domain && group.entryGroupId) return rows;
+    if (domain) {
+      pushUniqueEntryAddress(rows, "入口组", domain);
+      return rows;
+    }
+    const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
+      ? enabledHostMembers(entryGroup)
+      : [];
+    if (entryMembers.length > 0) {
+      const memberDdns = entryMembers
+        .map((member: any) => hosts?.find((host: any) => Number(host.id) === Number(member.hostId || 0)))
+        .map((host: any) => hostDdnsDomain(host))
+        .find(Boolean);
+      if (memberDdns) {
+        pushUniqueEntryAddress(rows, "DDNS", memberDdns);
+        return rows;
+      }
+      const firstEntryMember = entryMembers[0];
+      const firstEntryHost = hosts?.find((host: any) => Number(host.id) === Number(firstEntryMember?.hostId || 0));
+      for (const entry of getHostEntryAddresses(firstEntryHost)) {
+        pushUniqueEntryAddress(rows, entry.label, entry.value);
+      }
+      pushUniqueEntryAddress(rows, "入口", firstEntryMember?.entryAddress);
+      return rows;
+    }
     const entryMember = (group.members || [])[0];
     const entryHostId = Number(entryMember?.hostId || 0);
     const entryHost = entryHostId ? hosts?.find((host: any) => Number(host.id) === entryHostId) : null;

@@ -341,10 +341,11 @@ function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
   const ddnsDomain = hostDdnsDomain(host);
   const ipv4 = hostAutoIpv4(host);
   const ipv6 = hostAutoIpv6(host);
-  if (manualEntry) {
-    pushUniqueEntryAddress(rows, "入口", manualEntry);
-  } else if (ddnsDomain) {
+  if (ddnsDomain) {
     pushUniqueEntryAddress(rows, "DDNS", ddnsDomain);
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
+  } else if (manualEntry) {
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
   } else {
     pushUniqueEntryAddress(rows, ipv4 ? "IPv4" : ipv6 ? "IPv6" : "IP", ipv4 || ipv6 || host?.ip);
   }
@@ -1897,7 +1898,7 @@ function TunnelsContent() {
   const getTunnelEntryAddressRows = (tunnel: any): EntryAddress[] => {
     const entryGroup = tunnel?.entryGroupId ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
     const entryMembers = enabledHostGroupMembers(entryGroup);
-    if (entryMembers.length > 1) {
+    if (entryMembers.length > 0) {
       const groupDomain = String(entryGroup?.domain || "").trim();
       if (groupDomain) return [{ label: "入口组", value: groupDomain }];
       const memberDdns = entryMembers

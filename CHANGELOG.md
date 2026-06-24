@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.181] - 2026-06-25
+
+### Fixed and Improved
+
+- Added the post-2.3.180 Telegram AI query updates to this release: DeepSeek settings, read-only natural-language panel queries, permission-scoped results, finer filters for users/hosts/rules/tunnels/groups, and Telegram HTML-formatted replies.
+- Included the post-2.3.180 tunnel latency updates: multi-entry tunnel probing now keeps the outside latency display aligned with the detailed route probe results.
+- Fixed forwarding-rule entry address display so single-port forwarding prefers the host DDNS domain when available, keeps the manually configured entry address visible, and falls back to the automatically detected IP only when neither exists.
+- Fixed forwarding-chain entry display when an entry group is attached but has no group domain: it now falls back to the entry-group member DDNS first, then the member entry address, then the detected IP/IPv6 address.
+- Fixed tunnel entry display for single-member entry groups so the group domain or member DDNS is still preferred instead of falling back directly to the host IP.
+
+### Versions
+
+- Bumped panel version to 2.3.181. Agent target version remains 2.2.114.
+- Bumped Android APP version to 2.3.54 and updated the APK release pointer to 2.3.181 so Android users can receive the latest UI changes.
+
 ## [2.3.180] - 2026-06-24
 
 ### 修复与优化
