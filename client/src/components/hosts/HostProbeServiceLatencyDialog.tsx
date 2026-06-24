@@ -311,7 +311,7 @@ export default function HostProbeServiceLatencyDialog({
                   return (
                     <Line
                       key={service.id}
-                      type="natural"
+                      type="monotone"
                       dataKey={`service_${service.id}`}
                       name={service.name}
                       stroke={colors[Math.max(colorIndex, 0) % colors.length]}

@@ -168,7 +168,7 @@ function TcpingDetailDialog({
                     wrapperStyle={{ pointerEvents: "none" }}
                   />
                   <Area
-                    type="natural"
+                    type="monotone"
                     dataKey="chartLatency"
                     name="延迟"
                     stroke="var(--color-chart-2)"

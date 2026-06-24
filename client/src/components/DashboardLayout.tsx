@@ -86,9 +86,8 @@ type SidebarNavItem = { icon: LucideIcon; label: string; path: string };
 const mainMenuItems: SidebarNavItem[] = [
   { icon: LayoutDashboard, label: "仪表盘", path: "/" },
   { icon: Server, label: "主机管理", path: "/hosts" },
-  { icon: Route, label: "隧道管理", path: "/tunnels" },
+  { icon: Route, label: "链路管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
-  { icon: Network, label: "转发组", path: "/forward-groups" },
 ];
 const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile" };
 const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass" };
@@ -741,7 +740,7 @@ function DashboardLayoutContent({
     setTheme(resolvedTheme === "dark" ? "light" : "dark");
   };
 
-  const hiddenNormalUserMainPaths = ["/hosts", "/tunnels", "/forward-groups"];
+  const hiddenNormalUserMainPaths = ["/hosts", "/tunnels"];
   const visibleMainMenuItems = isAdmin
     ? mainMenuItems
     : mainMenuItems.filter((item) => !hiddenNormalUserMainPaths.includes(item.path));

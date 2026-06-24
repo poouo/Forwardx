@@ -1,6 +1,7 @@
 ﻿import { and, desc, eq } from "drizzle-orm";
 import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { quoteIdentifier } from "../dbCompat";
 
 // ==================== Forward Tests ====================
 
@@ -56,12 +57,21 @@ export async function getLatestTunnelLatency(tunnelId: number) {
 export async function getLatestForwardTest(ruleId: number) {
   const db = await getDb();
   if (!db) return undefined;
-  const rows = await db
-    .select()
-    .from(forwardTests)
-    .where(eq(forwardTests.ruleId, ruleId))
-    .orderBy(desc(forwardTests.createdAt))
-    .limit(1);
+  const table = quoteIdentifier("forward_tests");
+  const ruleCol = quoteIdentifier("ruleId");
+  const statusCol = quoteIdentifier("status");
+  const updatedCol = quoteIdentifier("updatedAt");
+  const createdCol = quoteIdentifier("createdAt");
+  const messageCol = quoteIdentifier("message");
+  const pendingRows = await queryRaw<any>(
+    `SELECT * FROM ${table} WHERE ${ruleCol} = ? AND ${statusCol} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
+    [ruleId],
+  );
+  if (pendingRows[0]) return pendingRows[0];
+  const rows = await queryRaw<any>(
+    `SELECT * FROM ${table} WHERE ${ruleCol} = ? ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    [ruleId],
+  );
   return rows[0];
 }
 

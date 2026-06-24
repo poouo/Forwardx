@@ -356,6 +356,20 @@ export default function MultiHopEditor({
         </div>
       ) : (
         <div className="space-y-1.5 rounded-md border border-border bg-card p-1.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground/70">开关说明</span>
+            <span>内网：使用该主机内网 IP</span>
+            <span>IPv6：使用该主机 IPv6</span>
+            <span>两者互斥，未配置时不可开启</span>
+          </div>
+          <div className="hidden grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_84px] items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid">
+            <span className="col-span-2">顺序</span>
+            <span>主机</span>
+            <span className="text-center">内网</span>
+            <span className="text-center">IPv6</span>
+            <span className="text-center">角色</span>
+            <span className="text-right">操作</span>
+          </div>
           {hops.map((hop, idx) => {
             const role = getRole(idx, hops.length);
             const isFirst = role === "entry";
@@ -389,7 +403,7 @@ export default function MultiHopEditor({
             return (
               <div
                 key={hop.hostId}
-                className={`grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:grid-cols-[auto_auto_minmax(14rem,1fr)_auto_auto_auto_auto_auto_auto] ${
+                className={`flex flex-wrap items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable={!isFixedExit}
@@ -409,11 +423,12 @@ export default function MultiHopEditor({
                 <HostStatusLabel
                   host={host}
                   label={hop.hostName}
-                  className="min-w-0 text-sm font-medium"
+                  className="min-w-[7rem] flex-1 basis-[9rem] text-sm font-medium"
                   labelClassName="truncate"
                 />
 
-                <div className="col-span-full flex h-7 items-center justify-start gap-1.5 sm:col-span-1 sm:w-[54px] sm:justify-end">
+                <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
+                <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
                   {showTunnelEntryIpSwitch ? (
                     <TooltipProvider delayDuration={120}>
                       <Tooltip>
@@ -426,11 +441,11 @@ export default function MultiHopEditor({
                       </Tooltip>
                     </TooltipProvider>
                   ) : (
-                    <span className="hidden text-xs sm:invisible sm:block">占位</span>
+                    <span className="text-[11px] text-muted-foreground/40">--</span>
                   )}
                 </div>
 
-                <div className="col-span-full flex h-7 items-center justify-start gap-1.5 sm:col-span-1 sm:w-[54px] sm:justify-end">
+                <div className="flex h-7 w-[56px] shrink-0 items-center justify-center">
                   {showIpv6Switch ? (
                     <TooltipProvider delayDuration={120}>
                       <Tooltip>
@@ -443,14 +458,15 @@ export default function MultiHopEditor({
                       </Tooltip>
                     </TooltipProvider>
                   ) : (
-                    <span className="hidden text-xs sm:invisible sm:block">占位</span>
+                    <span className="text-[11px] text-muted-foreground/40">--</span>
                   )}
                 </div>
 
-                <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
+                <Badge variant="outline" className={`flex h-6 min-w-[44px] shrink-0 justify-center whitespace-nowrap px-1.5 py-0 text-[10px] ${ROLE_COLORS[role]}`}>
                   {ROLE_LABELS[role]}
                 </Badge>
 
+                <div className="flex h-7 w-[84px] shrink-0 items-center justify-end gap-0.5">
                 <Button
                   variant="ghost"
                   size="icon"
@@ -481,6 +497,8 @@ export default function MultiHopEditor({
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
+                </div>
+                </div>
               </div>
             );
           })}

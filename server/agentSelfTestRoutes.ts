@@ -380,8 +380,8 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
           protocol: method,
           method,
           sourcePort: meta.entrySourcePort || 0,
-          targetIp: meta.entryIp,
-          targetPort: meta.entrySourcePort,
+          targetIp: meta.targetIp || meta.entryIp,
+          targetPort: meta.targetPort || meta.entrySourcePort,
         });
         continue;
       }

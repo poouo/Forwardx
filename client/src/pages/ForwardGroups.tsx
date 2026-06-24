@@ -435,7 +435,7 @@ function ForwardGroupLatencyDialog({
                     );
                   }}
                 />
-                <Area type="natural" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" fill="url(#forwardGroupLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
+                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" fill="url(#forwardGroupLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -1142,11 +1142,21 @@ export function ForwardGroupsContent({
     return group.members?.[0]?.entryAddress || "第一台主机";
   };
 
+  const memberConnectLabel = (member: any) => {
+    const connectHost = String(member.connectHost || "").trim();
+    if (!connectHost || member.memberType !== "host") return "";
+    const host = hostById.get(Number(member.hostId || 0));
+    if (hostPrivateAddress(host) && connectHost === hostPrivateAddress(host)) return "内网";
+    if (hostIpv6Address(host) && connectHost === hostIpv6Address(host)) return "IPv6";
+    return "指定地址";
+  };
+
   const memberDecoratedLabel = (group: any, member: any, index: number) => {
     const prefix = normalizeGroupMode(group.groupMode) === "chain"
       ? `${chainRoleLabel(index, group.members?.length || 0, !!Number(group.entryGroupId || 0))} · `
       : "";
-    const suffix = normalizeGroupMode(group.groupMode) === "exit" && member.connectHost ? " · 内网" : "";
+    const connectLabel = normalizeGroupMode(group.groupMode) === "exit" ? memberConnectLabel(member) : "";
+    const suffix = connectLabel ? ` · ${connectLabel}` : "";
     return `${index + 1}. ${prefix}${memberLabel(member)}${suffix}`;
   };
 

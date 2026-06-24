@@ -480,10 +480,10 @@ export type ForwardGroupChinaHealthProbe = {
   probeType: "china";
 };
 
-export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean } = {}) {
+export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean; templateRule?: any } = {}) {
   const group = await getForwardGroupById(groupId) as any;
   if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
-  const template = await getForwardGroupPrimaryTemplateRule(groupId) as any;
+  const template = options.templateRule || await getForwardGroupPrimaryTemplateRule(groupId) as any;
   const members = sortedMembers(group, true) as any[];
   const entryMembers = await chainEntryMembers(group);
   const hasExternalEntry = entryMembers.length > 0;
@@ -1618,18 +1618,24 @@ export async function syncForwardChainsForHost(hostId: number, previousHost?: an
     if (mode === "entry") await runForwardGroupFailover(groupId);
     if (mode === "chain") {
       const members = sortedMembers(group) as any[];
+      const entryMembers = await chainEntryMembers(group);
+      const hasExternalEntry = entryMembers.length > 0;
       const currentPublic = entryAddressForHost(currentHost);
       const currentPrivate = privateAddressForHost(currentHost);
+      const currentIpv6 = ipv6AddressForConnectHost(currentHost);
       const previousPublic = entryAddressForHost(previousHost);
       const previousPrivate = privateAddressForHost(previousHost);
+      const previousIpv6 = ipv6AddressForConnectHost(previousHost);
       for (const [index, member] of members.entries()) {
         if (Number(member.hostId || 0) !== Number(hostId)) continue;
         const stored = String(member.connectHost || "").trim();
         let nextConnectHost: string | null | undefined;
-        if (index === 0) {
+        if (index === 0 && !hasExternalEntry) {
           nextConnectHost = null;
         } else if (previousPrivate && stored === previousPrivate) {
           nextConnectHost = currentPrivate || null;
+        } else if (previousIpv6 && stored === previousIpv6) {
+          nextConnectHost = currentIpv6 || null;
         } else if (previousPublic && stored === previousPublic) {
           nextConnectHost = null;
         }

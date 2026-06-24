@@ -584,8 +584,8 @@ function getTunnelModeDisplay(mode: unknown) {
 }
 
 type TunnelViewMode = "card" | "table" | "globe";
-type TunnelSection = "tunnels" | "chains" | "entries" | "exits";
-type TunnelGroupMode = "entry" | "exit";
+type TunnelSection = "tunnels" | "chains" | "groups" | "entries" | "exits";
+type TunnelGroupMode = "failover" | "entry" | "exit";
 
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
 const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
@@ -1196,7 +1196,7 @@ function TunnelLatencyDialog({
                 {seriesMeta.map((meta) => (
                   <Line
                     key={meta.key}
-                    type="natural"
+                    type="monotone"
                     dataKey={meta.dataKey}
                     stroke={meta.color}
                     strokeWidth={meta.key === "total" ? 1.8 : 1.35}
@@ -1473,10 +1473,23 @@ function groupMemberHostName(member: any, hosts: any[] | undefined) {
   return (hosts || []).find((host: any) => Number(host.id) === hostId)?.name || `主机 #${hostId}`;
 }
 
+function groupMemberConnectLabel(member: any, hosts: any[] | undefined) {
+  const connectHost = String(member?.connectHost || "").trim();
+  if (!connectHost) return "";
+  const hostId = Number(member?.hostId || 0);
+  const host = (hosts || []).find((item: any) => Number(item.id) === hostId);
+  if (hostPrivateAddress(host) && connectHost === hostPrivateAddress(host)) return "内网";
+  if (hostIpv6Address(host) && connectHost === hostIpv6Address(host)) return "IPv6";
+  return "指定地址";
+}
+
 function groupHostSummary(group: any, hosts: any[] | undefined) {
   const members = enabledHostGroupMembers(group);
   if (members.length === 0) return "无可用主机";
-  return members.map((member: any) => `${groupMemberHostName(member, hosts)}${member.connectHost ? "(内网)" : ""}`).join("、");
+  return members.map((member: any) => {
+    const connectLabel = groupMemberConnectLabel(member, hosts);
+    return `${groupMemberHostName(member, hosts)}${connectLabel ? `(${connectLabel})` : ""}`;
+  }).join("、");
 }
 
 function TunnelsContent() {
@@ -1533,9 +1546,11 @@ function TunnelsContent() {
   };
   const activeCount = useMemo(() => tunnels?.filter((t: any) => t.isRunning && isTunnelSupported(t)).length ?? 0, [forwardProtocolSettings, tunnels]);
   const chainGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "chain"), [forwardGroups]);
+  const failoverGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "failover"), [forwardGroups]);
   const entryGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "entry"), [forwardGroups]);
   const exitGroups = useMemo(() => (forwardGroups || []).filter((group: any) => normalizeForwardGroupMode(group.groupMode) === "exit"), [forwardGroups]);
   const activeChainCount = useMemo(() => chainGroups.filter((group: any) => group.isEnabled).length, [chainGroups]);
+  const activeFailoverGroupCount = useMemo(() => failoverGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [failoverGroups]);
   const activeEntryGroupCount = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && group.lastStatus === "healthy").length, [entryGroups]);
   const usableEntryGroups = useMemo(() => entryGroups.filter((group: any) => group.isEnabled && String(group.domain || "").trim()), [entryGroups]);
   const activeExitGroupCount = useMemo(() => exitGroups.filter((group: any) => group.isEnabled && enabledHostGroupMembers(group).length > 0).length, [exitGroups]);
@@ -2022,18 +2037,22 @@ function TunnelsContent() {
   };
   const activeSectionTransitionKey = activeSection === "chains"
     ? `chains-${chainViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : chainGroups.length > 0 ? "list" : "empty"}`
-    : activeSection === "entries"
-      ? `entries-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : entryGroups.length > 0 ? "list" : "empty"}`
-      : activeSection === "exits"
-        ? `exits-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : exitGroups.length > 0 ? "list" : "empty"}`
-        : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
+    : activeSection === "groups"
+      ? `groups-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : failoverGroups.length > 0 ? "list" : "empty"}`
+      : activeSection === "entries"
+        ? `entries-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : entryGroups.length > 0 ? "list" : "empty"}`
+        : activeSection === "exits"
+          ? `exits-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : exitGroups.length > 0 ? "list" : "empty"}`
+          : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
     ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-sky-500" }
-    : activeSection === "entries"
-      ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
-      : activeSection === "exits"
-        ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-indigo-500" }
-        : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
+    : activeSection === "groups"
+      ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-violet-500" }
+      : activeSection === "entries"
+        ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
+        : activeSection === "exits"
+          ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-indigo-500" }
+          : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
     if (!groupId) return;
@@ -2047,18 +2066,22 @@ function TunnelsContent() {
   const canCreateChain = !!hosts?.length && hosts.length >= 2;
   const canCreateGroup = !!hosts?.length && hosts.length >= 1;
   const canCreateAny = canCreateTunnel || canCreateChain;
-  const canCreateActive = activeSection === "entries" || activeSection === "exits" ? canCreateGroup : canCreateAny;
+  const activeSectionCreatesGroup = activeSection === "groups" || activeSection === "entries" || activeSection === "exits";
+  const canCreateActive = activeSectionCreatesGroup ? canCreateGroup : canCreateAny;
   const createDisabledTitle = !canCreateActive
-    ? (activeSection === "entries" || activeSection === "exits" ? "至少需要 1 台主机" : "至少需要 2 台主机且启用可用隧道协议")
+    ? (activeSectionCreatesGroup ? "至少需要 1 台主机" : "至少需要 2 台主机且启用可用隧道协议")
     : !canCreateTunnel && activeSection === "tunnels"
       ? "隧道链路暂不可创建，可选择端口转发链"
       : !canCreateChain && activeSection === "chains"
         ? "端口转发链暂不可创建，可选择隧道链路"
         : undefined;
   const openCreateTypeDialog = () => {
-    if (activeSection === "entries" || activeSection === "exits") {
+    if (activeSectionCreatesGroup) {
       if (!canCreateGroup) return;
-      setGroupCreateRequest({ mode: activeSection === "entries" ? "entry" : "exit", requestKey: Date.now() });
+      setGroupCreateRequest({
+        mode: activeSection === "entries" ? "entry" : activeSection === "exits" ? "exit" : "failover",
+        requestKey: Date.now(),
+      });
       return;
     }
     if (!canCreateAny) return;
@@ -2098,9 +2121,9 @@ function TunnelsContent() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">隧道管理</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">链路管理</h1>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground">
-            管理 Agent 之间的转发链路
+            管理隧道链路、端口转发链和转发组
           </p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
@@ -2153,7 +2176,7 @@ function TunnelsContent() {
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:grid-cols-4 sm:inline-flex sm:w-auto">
+        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:grid-cols-5 sm:inline-flex sm:w-auto">
           <TabsTrigger value="tunnels" className="gap-1.5 px-4">
             <Network className="h-4 w-4" />
             隧道链路
@@ -2161,6 +2184,10 @@ function TunnelsContent() {
           <TabsTrigger value="chains" className="gap-1.5 px-4">
             <Route className="h-4 w-4" />
             端口转发链
+          </TabsTrigger>
+          <TabsTrigger value="groups" className="gap-1.5 px-4">
+            <ShieldCheck className="h-4 w-4" />
+            转发组
           </TabsTrigger>
           <TabsTrigger value="entries" className="gap-1.5 px-4">
             <LogIn className="h-4 w-4" />
@@ -2513,6 +2540,20 @@ function TunnelsContent() {
           )}
           </TunnelSectionTransition>
         </TabsContent>
+
+        <TabsContent value="groups" className="space-y-4">
+          <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
+            <ForwardGroupsContent
+              mode="failover"
+              embedded
+              viewMode={groupViewMode}
+              onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
+              hideHeaderActions
+              createRequestKey={groupCreateRequest?.mode === "failover" ? groupCreateRequest.requestKey : undefined}
+            />
+          </TunnelSectionTransition>
+        </TabsContent>
+
         <TabsContent value="entries" className="space-y-4">
           <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
             <ForwardGroupsContent

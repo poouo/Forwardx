@@ -199,7 +199,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
 
   await db.syncForwardGroupRules(groupId, { validatePorts: false, createMissing: false });
   const template = await db.getForwardGroupPrimaryTemplateRule(groupId) as any;
-  const probes = await db.getForwardGroupChainProbes(groupId);
+  const probes = await db.getForwardGroupChainProbes(groupId, { includeFinalTarget: true });
   if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
 
   const batchId = createHopTestBatch("fg", groupId);
