@@ -904,6 +904,7 @@ const HOST_DIALOG_TABS = [
   { value: "other", label: "其他配置", icon: Gauge },
 ] as const;
 
+const HOST_MANAGE_TAB_STORAGE_KEY = "forwardx.hosts.manageTab";
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 const HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
@@ -922,6 +923,29 @@ function storeHostViewMode(viewMode: HostViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(HOST_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function normalizeHostManageTab(value: unknown, isAdmin = true): HostManageTab {
+  if (value === "tokens" || value === "services") return isAdmin ? value : "hosts";
+  return "hosts";
+}
+
+function getStoredHostManageTab(isAdmin = true): HostManageTab {
+  if (typeof window === "undefined") return "hosts";
+  try {
+    return normalizeHostManageTab(window.localStorage.getItem(HOST_MANAGE_TAB_STORAGE_KEY), isAdmin);
+  } catch {
+    return "hosts";
+  }
+}
+
+function storeHostManageTab(tab: HostManageTab) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HOST_MANAGE_TAB_STORAGE_KEY, tab);
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
@@ -1012,7 +1036,7 @@ function HostsContent() {
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
-  const [activeManageTab, setActiveManageTab] = useState<HostManageTab>("hosts");
+  const [activeManageTab, setActiveManageTabState] = useState<HostManageTab>(() => getStoredHostManageTab(user?.role === "admin"));
   const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
@@ -1053,6 +1077,16 @@ function HostsContent() {
     setServiceViewMode(mode);
     storeHostProbeServiceViewMode(mode);
   };
+
+  const setActiveManageTab = (tab: HostManageTab) => {
+    const next = normalizeHostManageTab(tab, user?.role === "admin");
+    setActiveManageTabState(next);
+    storeHostManageTab(next);
+  };
+
+  useEffect(() => {
+    if (user?.role !== "admin" && activeManageTab !== "hosts") setActiveManageTab("hosts");
+  }, [activeManageTab, user?.role]);
 
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
@@ -1564,10 +1598,7 @@ function HostsContent() {
 
       <Tabs
         value={activeManageTab}
-        onValueChange={(value) => {
-          if ((value === "tokens" || value === "services") && user?.role !== "admin") return;
-          setActiveManageTab(value as HostManageTab);
-        }}
+        onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
         className="space-y-4"
       >
         <TabsList className={`host-management-tabs grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-grid sm:w-auto`}>

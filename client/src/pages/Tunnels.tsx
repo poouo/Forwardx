@@ -587,6 +587,7 @@ type TunnelViewMode = "card" | "table" | "globe";
 type TunnelSection = "tunnels" | "chains" | "groups" | "entries" | "exits";
 type TunnelGroupMode = "failover" | "entry" | "exit";
 
+const TUNNEL_SECTION_STORAGE_KEY = "forwardx.tunnels.section";
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
 const CHAIN_VIEW_MODE_STORAGE_KEY = "forwardx.forwardGroups.viewMode";
 const MAX_TUNNEL_HOPS = 10;
@@ -629,6 +630,29 @@ function storeChainViewMode(viewMode: TunnelViewMode) {
     // Ignore storage failures so the page still works in restricted browsers.
   }
 }
+
+function normalizeTunnelSection(value: unknown): TunnelSection {
+  return value === "chains" || value === "groups" || value === "entries" || value === "exits" ? value : "tunnels";
+}
+
+function getStoredTunnelSection(): TunnelSection {
+  if (typeof window === "undefined") return "tunnels";
+  try {
+    return normalizeTunnelSection(window.localStorage.getItem(TUNNEL_SECTION_STORAGE_KEY));
+  } catch {
+    return "tunnels";
+  }
+}
+
+function storeTunnelSection(section: TunnelSection) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TUNNEL_SECTION_STORAGE_KEY, section);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
 
 function prefetchReactGlobe() {
   if (reactGlobePrefetchStarted || typeof window === "undefined") return;
@@ -1505,7 +1529,7 @@ function TunnelsContent() {
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
   const [chainViewMode, setChainViewMode] = useState<TunnelViewMode>(() => getStoredChainViewMode());
-  const [activeSection, setActiveSection] = useState<TunnelSection>("tunnels");
+  const [activeSection, setActiveSectionState] = useState<TunnelSection>(() => getStoredTunnelSection());
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
   const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
@@ -1520,6 +1544,12 @@ function TunnelsContent() {
   useEffect(() => {
     prefetchReactGlobe();
   }, []);
+
+  const setActiveSection = (section: TunnelSection) => {
+    const next = normalizeTunnelSection(section);
+    setActiveSectionState(next);
+    storeTunnelSection(next);
+  };
 
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),

@@ -518,8 +518,12 @@ type RuleFilterState = {
   filterUser: string;
   filterHost: string;
   ruleCategory: RuleCategory;
+  searchQuery: string;
   isAdmin: boolean;
   userId?: number | null;
+  hostById: Map<number, any>;
+  tunnelById: Map<number, any>;
+  userById: Map<number, any>;
   forwardGroupById: Map<number, any>;
   getRuleEntryHostId: (rule: any) => number;
 };
@@ -528,17 +532,19 @@ function RuleGroupItems({
   open,
   className,
   children,
+  layout,
 }: {
   open: boolean;
   className: string;
   children: ReactNode;
+  layout?: boolean;
 }) {
   return (
     <div
       aria-hidden={!open}
       className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
     >
-      <AutoAnimateContainer className={`min-h-0 overflow-hidden ${className}`}>
+      <AutoAnimateContainer layout={layout} className={`min-h-0 overflow-hidden ${className}`}>
         {children}
       </AutoAnimateContainer>
     </div>
@@ -605,6 +611,136 @@ function RuleCardModeTransition({
   );
 }
 
+function addRuleSearchPart(parts: string[], value: unknown) {
+  const text = String(value ?? "").trim();
+  if (text) parts.push(text);
+}
+
+function addRuleSearchPort(parts: string[], port: unknown, label: string) {
+  const text = String(port ?? "").trim();
+  if (!text || text === "0") return;
+  addRuleSearchPart(parts, text);
+  addRuleSearchPart(parts, `${label}${text}`);
+  addRuleSearchPart(parts, `:${text}`);
+}
+
+function addRuleSearchHostParts(parts: string[], host: any | null | undefined, port?: number | string) {
+  if (!host) return;
+  addRuleSearchPart(parts, host.name);
+  addRuleSearchPart(parts, host.displayRemark);
+  addRuleSearchPart(parts, host.remark);
+  addRuleSearchPart(parts, host.description);
+  addRuleSearchPart(parts, host.hostname);
+  addRuleSearchPart(parts, host.ip);
+  addRuleSearchPart(parts, host.ipv4);
+  addRuleSearchPart(parts, host.ipv6);
+  addRuleSearchPart(parts, host.entryIp);
+  addRuleSearchPart(parts, host.tunnelEntryIp);
+  addRuleSearchPart(parts, host.ddnsDomain);
+  addRuleSearchPart(parts, host.geoCountryName);
+  addRuleSearchPart(parts, host.geoRegion);
+  getHostEntryAddresses(host).forEach((entry) => {
+    addRuleSearchPart(parts, entry.label);
+    addRuleSearchPart(parts, entry.value);
+    if (port !== undefined) addRuleSearchPart(parts, formatAddressWithPort(entry.value, port));
+  });
+}
+
+function addRuleSearchUserParts(parts: string[], owner: any | null | undefined) {
+  if (!owner) return;
+  addRuleSearchPart(parts, owner.name);
+  addRuleSearchPart(parts, owner.username);
+  addRuleSearchPart(parts, owner.displayRemark);
+  addRuleSearchPart(parts, owner.email);
+  addRuleSearchPart(parts, owner.id ? `用户 #${owner.id}` : "");
+}
+
+function addRuleSearchTunnelParts(parts: string[], tunnel: any | null | undefined, filters: RuleFilterState) {
+  if (!tunnel) return;
+  addRuleSearchPart(parts, tunnel.name);
+  addRuleSearchPart(parts, tunnel.mode);
+  addRuleSearchPart(parts, tunnel.id ? `隧道 #${tunnel.id}` : "");
+  try {
+    addRuleSearchPart(parts, getTunnelRouteText(tunnel, Array.from(filters.hostById.values())));
+  } catch {
+    // Ignore route text failures; individual hop names are still indexed below.
+  }
+  getTunnelHopIds(tunnel).forEach((hostId: number) => {
+    addRuleSearchHostParts(parts, filters.hostById.get(Number(hostId)), undefined);
+  });
+}
+
+function addRuleSearchForwardGroupParts(parts: string[], group: any | null | undefined, filters: RuleFilterState, port?: number | string) {
+  if (!group) return;
+  addRuleSearchPart(parts, group.name);
+  addRuleSearchPart(parts, group.domain);
+  addRuleSearchPart(parts, group.remark);
+  addRuleSearchPart(parts, group.displayRemark);
+  addRuleSearchPart(parts, group.description);
+  addRuleSearchPart(parts, group.id ? `${getForwardGroupKindLabel(group)} #${group.id}` : "");
+  addRuleSearchPart(parts, getForwardGroupKindLabel(group));
+  addRuleSearchPart(parts, desktopRuleTypeLabels[getRuleForwardGroupKind({ forwardGroupId: group.id }, filters.forwardGroupById) || "group"]);
+  if (group.domain && port !== undefined) addRuleSearchPart(parts, formatAddressWithPort(group.domain, port));
+
+  const entryGroup = isForwardChainGroup(group) && Number(group.entryGroupId || 0) > 0
+    ? filters.forwardGroupById.get(Number(group.entryGroupId))
+    : null;
+  if (entryGroup) addRuleSearchForwardGroupParts(parts, entryGroup, filters, port);
+
+  (group.members || []).forEach((member: any) => {
+    addRuleSearchPart(parts, member.entryAddress);
+    addRuleSearchPart(parts, member.connectHost);
+    if (member.entryAddress && port !== undefined) addRuleSearchPart(parts, formatAddressWithPort(member.entryAddress, port));
+    if (Number(member.hostId || 0) > 0) addRuleSearchHostParts(parts, filters.hostById.get(Number(member.hostId)), port);
+    if (Number(member.tunnelId || 0) > 0) addRuleSearchTunnelParts(parts, filters.tunnelById.get(Number(member.tunnelId)), filters);
+  });
+}
+
+function buildRuleSearchText(rule: any, filters: RuleFilterState) {
+  const parts: string[] = [];
+  const sourcePort = Number(rule?.sourcePort || 0);
+  const targetPort = Number(rule?.targetPort || 0);
+  const targetIp = String(rule?.targetIp || "").trim();
+  const category = getRuleCategory(rule, filters.forwardGroupById);
+  const group = rule?.forwardGroupId ? filters.forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+  const tunnel = rule?.tunnelId ? filters.tunnelById.get(Number(rule.tunnelId)) : null;
+  const entryHostId = filters.getRuleEntryHostId(rule);
+
+  addRuleSearchPart(parts, rule?.name);
+  addRuleSearchPart(parts, rule?.id ? `规则 #${rule.id}` : "");
+  addRuleSearchPart(parts, desktopRuleTypeLabels[category]);
+  addRuleSearchPart(parts, ruleTypeDescriptions[category]);
+  addRuleSearchPart(parts, rule?.forwardType);
+  addRuleSearchPart(parts, FORWARD_TYPE_LABELS[rule?.forwardType as ForwardType]);
+  addRuleSearchPart(parts, formatForwardRuleProtocol(rule?.protocol));
+  addRuleSearchPart(parts, rule?.protocol);
+  addRuleSearchPort(parts, sourcePort, "入口端口");
+  addRuleSearchPort(parts, targetPort, "目标端口");
+  addRuleSearchPart(parts, targetIp);
+  if (targetIp && targetPort > 0) addRuleSearchPart(parts, formatAddressWithPort(targetIp, targetPort));
+  if (sourcePort > 0 && targetIp && targetPort > 0) addRuleSearchPart(parts, `${sourcePort}->${formatAddressWithPort(targetIp, targetPort)}`);
+
+  addRuleSearchHostParts(parts, filters.hostById.get(Number(rule?.hostId || 0)), sourcePort);
+  if (entryHostId && entryHostId !== Number(rule?.hostId || 0)) addRuleSearchHostParts(parts, filters.hostById.get(entryHostId), sourcePort);
+  addRuleSearchTunnelParts(parts, tunnel, filters);
+  addRuleSearchForwardGroupParts(parts, group, filters, sourcePort);
+  addRuleSearchUserParts(parts, filters.userById.get(Number(rule?.userId || 0)));
+
+  parseRuleFailoverTargets(rule?.failoverTargets).forEach((target) => {
+    addRuleSearchPart(parts, target.targetIp);
+    addRuleSearchPort(parts, target.targetPort, "备用端口");
+    if (target.targetIp && target.targetPort > 0) addRuleSearchPart(parts, formatAddressWithPort(target.targetIp, target.targetPort));
+  });
+
+  return parts.join("\n").toLowerCase();
+}
+
+function isRuleSearchMatch(rule: any, filters: RuleFilterState) {
+  const tokens = String(filters.searchQuery || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const searchText = buildRuleSearchText(rule, filters);
+  return tokens.every((token) => searchText.includes(token));
+}
 function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
   if (filters.isAdmin) {
     if (filters.filterUser === "self" && Number(rule.userId) !== Number(filters.userId)) {
@@ -620,6 +756,7 @@ function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
   if (filters.ruleCategory !== "all") {
     if (getRuleCategory(rule, filters.forwardGroupById) !== filters.ruleCategory) return false;
   }
+  if (!isRuleSearchMatch(rule, filters)) return false;
   return true;
 }
 
@@ -791,7 +928,6 @@ function hostEntryFamilies(host: any | null | undefined) {
   } else {
     addLiteralHostFamily(families, hostAutoIpv4(host) || hostAutoIpv6(host) || host?.ip);
   }
-  addLiteralHostFamily(families, hostAutoIpv6(host));
   return families;
 }
 function warningHostName(host: any | null | undefined, fallback: string) {
@@ -1966,6 +2102,7 @@ function RulesContent() {
   const [form, setForm] = useState<RuleFormData>(defaultForm);
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
   const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
+  const [ruleSearchQuery, setRuleSearchQuery] = useState("");
   const [ruleCategory, setRuleCategory] = useState<RuleCategory>(() => getStoredRuleCategory());
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
@@ -2870,11 +3007,15 @@ function RulesContent() {
     filterUser,
     filterHost,
     ruleCategory,
+    searchQuery: ruleSearchQuery,
     isAdmin: user?.role === "admin",
     userId: user?.id,
+    hostById,
+    tunnelById,
+    userById,
     forwardGroupById,
     getRuleEntryHostId: getRuleEntryHostIdForSort,
-  }), [filterHost, forwardGroupById, getRuleEntryHostIdForSort, ruleCategory, filterUser, user?.id, user?.role]);
+  }), [filterHost, forwardGroupById, getRuleEntryHostIdForSort, hostById, ruleCategory, ruleSearchQuery, filterUser, tunnelById, user?.id, user?.role, userById]);
   const baseScopedRules = useMemo(() => rules || [], [rules]);
   const selectedScopedRules = selectedScopeQueryEnabled ? selectedScopeRules : undefined;
   const scopedRulesReady = selectedScopeQueryEnabled ? selectedScopedRules !== undefined : !!rules;
@@ -3077,13 +3218,14 @@ function RulesContent() {
       user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
       filterHost,
       ruleCategory,
+      ruleSearchQuery.trim() || "search-all",
       trafficRange,
     ].join("."),
-    [filterHost, ruleCategory, trafficRange, filterUser, user?.id, user?.role],
+    [filterHost, ruleCategory, ruleSearchQuery, trafficRange, filterUser, user?.id, user?.role],
   );
   const trafficTotalsLastCacheScope = `${user?.role === "admin" ? "admin" : `user-${user?.id || "self"}`}.${trafficRange}`;
   const hasActiveUserFilter = user?.role === "admin" && filterUser !== "self";
-  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all";
+  const hasActiveRuleFilter = hasActiveUserFilter || filterHost !== "all" || ruleCategory !== "all" || ruleSearchQuery.trim().length > 0;
   const rulesHeaderLoading = isLoading || !rules || !scopedRulesReady || !filteredRulesPrimed;
   const trafficTotalsLoading = rulesHeaderLoading || (visibleRuleIdsForMetrics.length > 0 && (!secondaryQueriesReady || (!trafficSummary && stableTrafficSummaryRows.length === 0)));
   const activeCount = useMemo(
@@ -3724,9 +3866,8 @@ function RulesContent() {
     const rows: EntryAddress[] = [];
     const domain = entryDomainForForwardGroup(group);
     if (domain) pushUniqueEntryAddress(rows, "域名", domain);
-    const entryMember = domain && group.entryGroupId
-      ? (forwardGroupById.get(Number(group.entryGroupId))?.members || [])[0]
-      : (group.members || [])[0];
+    if (domain && group.entryGroupId) return rows;
+    const entryMember = (group.members || [])[0];
     const entryHostId = Number(entryMember?.hostId || 0);
     const entryHost = entryHostId ? hosts?.find((host: any) => Number(host.id) === entryHostId) : null;
     for (const entry of getHostEntryAddresses(entryHost)) {
@@ -4204,8 +4345,8 @@ function RulesContent() {
   };
 
   const ruleCardGridClass = ruleCardSize === "compact"
-    ? "standard-card-grid-compact gap-3"
-    : "standard-card-grid gap-4";
+    ? "standard-card-grid-compact rule-card-grid-static rule-card-grid-static-compact gap-3"
+    : "standard-card-grid rule-card-grid-static rule-card-grid-static-standard gap-4";
   const ruleContentModeKey = viewMode === "card" ? "card" : displayMode;
   const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
@@ -4561,6 +4702,25 @@ function RulesContent() {
               <Filter className="h-4 w-4 text-muted-foreground" />
               <span className="text-sm text-muted-foreground">筛选:</span>
             </div>
+            <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={ruleSearchQuery}
+                onChange={(event) => setRuleSearchQuery(event.target.value)}
+                placeholder="搜索端口 / IP / 域名 / 备注"
+                className="h-8 w-full pl-8 pr-8 text-xs"
+              />
+              {ruleSearchQuery ? (
+                <button
+                  type="button"
+                  aria-label="清空搜索"
+                  className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  onClick={() => setRuleSearchQuery("")}
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
             {user?.role === "admin" && (
               <Select value={filterUser} onValueChange={handleFilterUserChange}>
                 <SelectTrigger className="h-8 w-full text-xs sm:w-[160px]">
@@ -4738,7 +4898,7 @@ function RulesContent() {
                     return (
                       <section key={group.type} className="space-y-2">
                         {renderRuleGroupHeader(group)}
-                        <RuleGroupItems open={!collapsed} className={ruleCardGridClass}>
+                        <RuleGroupItems open={!collapsed} layout={false} className={ruleCardGridClass}>
                           {group.rules.map((rule: any) => renderRuleCard(rule))}
                         </RuleGroupItems>
                       </section>
@@ -4746,7 +4906,7 @@ function RulesContent() {
                   })}
                 </AutoAnimateContainer>
               ) : (
-                <AutoAnimateContainer className={ruleCardGridClass}>
+                <AutoAnimateContainer layout={false} className={ruleCardGridClass}>
                   {pagedRules.map((rule: any) => renderRuleCard(rule))}
                 </AutoAnimateContainer>
               )}
@@ -4754,14 +4914,14 @@ function RulesContent() {
           ) : (
             <>
               <RuleCardModeTransition mode={ruleCardSize} className="sm:hidden">
-                <AutoAnimateContainer className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                <AutoAnimateContainer layout={false} className={ruleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
                   {shouldGroupRuleCards ? (
                     desktopRuleGroups.map((group) => {
                       const collapsed = !!ruleGroupCollapsed[group.type];
                       return (
                         <section key={group.type} className="space-y-2">
                           {renderRuleGroupHeader(group)}
-                          <RuleGroupItems open={!collapsed} className={ruleCardSize === "compact" ? "grid gap-2" : "grid gap-3"}>
+                          <RuleGroupItems open={!collapsed} layout={false} className={ruleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
                             {group.rules.map((rule: any) => renderRuleCard(rule))}
                           </RuleGroupItems>
                         </section>

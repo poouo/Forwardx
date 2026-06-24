@@ -926,11 +926,13 @@ export async function getTrafficSummaryByRule(opts: {
   const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
   const parentChainChildren = new Map<number, number[]>();
   const parentByChildRule = new Map<number, number>();
+  const chainParentRuleIds = new Set<number>();
   for (const row of childLatencyRows as any[]) {
     const childId = Number(row.id);
     const parentId = Number(row.parentId);
     if (childId <= 0 || parentId <= 0) continue;
     if (latencyGroupModeById.get(Number(row.groupId || 0)) === "chain") {
+      chainParentRuleIds.add(parentId);
       const children = parentChainChildren.get(parentId) || [];
       children.push(childId);
       parentChainChildren.set(parentId, children);
@@ -1000,6 +1002,38 @@ export async function getTrafficSummaryByRule(opts: {
       latencyMs: !isTimeout && hasLatency ? latencySum : null,
       isTimeout,
       recordedAt,
+    });
+  }
+  const chainParentIds = Array.from(chainParentRuleIds);
+  const latestChainTestRows = chainParentIds.length > 0
+    ? await queryRaw<any>(
+      `SELECT ft.${q("ruleId")} AS ${q("ruleId")},
+              ft.${q("latencyMs")} AS ${q("latencyMs")},
+              ft.${q("status")} AS ${q("status")},
+              ft.${q("updatedAt")} AS ${q("updatedAt")},
+              ft.${q("createdAt")} AS ${q("createdAt")}
+         FROM ${q("forward_tests")} ft
+         INNER JOIN (
+           SELECT ${q("ruleId")}, MAX(${q("updatedAt")}) AS ${q("updatedAt")}
+             FROM ${q("forward_tests")}
+            WHERE ${q("ruleId")} IN (${chainParentIds.map(() => "?").join(",")})
+              AND ${q("status")} IN ('success', 'failed', 'timeout')
+            GROUP BY ${q("ruleId")}
+         ) latest ON latest.${q("ruleId")} = ft.${q("ruleId")} AND latest.${q("updatedAt")} = ft.${q("updatedAt")}
+        ORDER BY ft.${q("updatedAt")} DESC, CASE WHEN ft.${q("message")} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ft.${q("createdAt")} DESC`,
+      chainParentIds,
+    )
+    : [];
+  for (const row of latestChainTestRows as any[]) {
+    const ruleId = Number(row.ruleId);
+    if (!chainParentRuleIds.has(ruleId) || latestByRule.get(ruleId)?.source === "forward_test") continue;
+    const status = String(row.status || "").toLowerCase();
+    latestByRule.set(ruleId, {
+      ruleId,
+      latencyMs: status === "success" && row.latencyMs !== null && row.latencyMs !== undefined ? Number(row.latencyMs) : null,
+      isTimeout: status !== "success",
+      recordedAt: rowDate(row.updatedAt || row.createdAt),
+      source: "forward_test",
     });
   }
   return result.map((item) => {

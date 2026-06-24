@@ -524,6 +524,38 @@
     will-change: opacity, transform;
   }
 
+  .rule-card-grid-static {
+    animation: rule-card-grid-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    backface-visibility: hidden;
+    contain: layout paint;
+    transform: none !important;
+    will-change: opacity, clip-path;
+  }
+
+  .rule-card-grid-static > * {
+    animation: rule-card-item-soft-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    backface-visibility: hidden;
+    transform: none !important;
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    will-change: opacity, clip-path;
+  }
+
+  .rule-card-grid-static-standard {
+    animation-name: rule-card-grid-standard-enter;
+  }
+
+  .rule-card-grid-static-compact {
+    animation-name: rule-card-grid-compact-enter;
+  }
+
+  .rule-card-grid-static-standard > * {
+    animation-name: rule-card-item-standard-enter;
+  }
+
+  .rule-card-grid-static-compact > * {
+    animation-name: rule-card-item-compact-enter;
+  }
   .host-management-tabs {
     contain: layout paint;
   }
@@ -999,6 +1031,71 @@
   }
 }
 
+@keyframes rule-card-grid-soft-enter {
+  from {
+    clip-path: inset(0 0 8px 0 round 8px);
+    opacity: 0.9;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes rule-card-grid-standard-enter {
+  from {
+    clip-path: inset(0 0 8px 0 round 8px);
+    opacity: 0.9;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes rule-card-grid-compact-enter {
+  from {
+    clip-path: inset(0 0 6px 0 round 8px);
+    opacity: 0.92;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes rule-card-item-soft-enter {
+  from {
+    clip-path: inset(4px 0 0 0 round 8px);
+    opacity: 0.9;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes rule-card-item-standard-enter {
+  from {
+    clip-path: inset(4px 0 0 0 round 8px);
+    opacity: 0.9;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes rule-card-item-compact-enter {
+  from {
+    clip-path: inset(3px 0 0 0 round 8px);
+    opacity: 0.92;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
 @keyframes host-card-grid-soft-enter {
   from {
     clip-path: inset(0 0 10px 0 round 8px);

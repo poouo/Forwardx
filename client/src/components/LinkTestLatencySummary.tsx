@@ -161,62 +161,6 @@ function uniqueLabels(values: string[]) {
   return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
 }
 
-function mergeSegmentMetaForLabels(segments: ProbeSegment[], key: "fromMeta" | "toMeta") {
-  const metas = segments.map((segment) => segment[key]).filter(Boolean) as LinkTestNodeMeta[];
-  if (metas.length === 0) return undefined;
-  const first = metas[0];
-  const sameCountry = metas.every((meta) => String(meta.countryCode || "") === String(first.countryCode || ""));
-  const sameRegion = metas.every((meta) => String(meta.region || "") === String(first.region || ""));
-  return {
-    ...first,
-    label: "",
-    countryCode: sameCountry ? first.countryCode : undefined,
-    region: sameRegion ? first.region : undefined,
-    address: "",
-  };
-}
-
-function sourceLatencyLabel(segment: ProbeSegment) {
-  const source = shortNodeLabel(segment.from, 10);
-  if (segment.pending) return `${source} 探测中`;
-  if (segment.success && hasUsableLatencyValue(segment.latencyMs)) return `${source} ${formatLatencyMs(segment.latencyMs)}`;
-  if (segment.success) return `${source} 通过`;
-  return `${source} 失败`;
-}
-
-function mergeInitialMultiSourceSegments(segments: ProbeSegment[]) {
-  if (segments.length < 2) return segments;
-  const firstTarget = segments[0]?.to;
-  if (!firstTarget) return segments;
-  const mergeable: ProbeSegment[] = [];
-  for (const segment of segments) {
-    if (segment.to !== firstTarget || segment.groupKey) break;
-    mergeable.push(segment);
-  }
-  const uniqueSources = uniqueLabels(mergeable.map((segment) => segment.from));
-  if (mergeable.length < 2 || uniqueSources.length < 2) return segments;
-
-  const success = mergeable.every((segment) => segment.success);
-  const latencyValues = mergeable
-    .filter((segment) => segment.success && hasUsableLatencyValue(segment.latencyMs))
-    .map((segment) => Number(segment.latencyMs));
-  const message = mergeable.find((segment) => !segment.success && segment.message)?.message
-    || mergeable.find((segment) => segment.message)?.message
-    || null;
-  const pending = mergeable.some((segment) => segment.pending);
-  const merged: ProbeSegment = {
-    ...mergeable[0],
-    from: uniqueSources.join(" / "),
-    fromMeta: mergeSegmentMetaForLabels(mergeable, "fromMeta"),
-    success,
-    latencyMs: success && latencyValues.length === mergeable.length ? Math.max(...latencyValues) : null,
-    latencyLabel: mergeable.map(sourceLatencyLabel).join(" / "),
-    message,
-    pending,
-  };
-  return [merged, ...segments.slice(mergeable.length)];
-}
-
 function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
   const visibleDetails = (details || []).filter((detail) => detail.pending || detail.success || detail.message || hasLatencyValue(detail));
   if (visibleDetails.length < 2) return null;
@@ -276,7 +220,7 @@ function buildProbeSegments(input: {
     );
 
   if (visibleDetails.length > 0 && !usePlannedSegments) {
-    return mergeInitialMultiSourceSegments(visibleDetails.map((detail, index): ProbeSegment => {
+    return visibleDetails.map((detail, index): ProbeSegment => {
       const endpoints = parseRouteEndpoints(detail, index);
       const fromMeta = lookupNodeMeta(input.nodeMeta, endpoints.from);
       const toMeta = lookupNodeMeta(input.nodeMeta, endpoints.to);
@@ -293,11 +237,11 @@ function buildProbeSegments(input: {
         groupKey: detail.groupKey || null,
         groupLabel: detail.groupLabel || null,
       };
-    }));
+    });
   }
 
   if (plannedSegments.length > 0) {
-    return mergeInitialMultiSourceSegments(plannedSegments.map((segment, index): ProbeSegment => {
+    return plannedSegments.map((segment, index): ProbeSegment => {
       const detail = visibleDetails[index] || (index === plannedSegments.length - 1 ? visibleDetails[visibleDetails.length - 1] : null);
       const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
       const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
@@ -342,7 +286,7 @@ function buildProbeSegments(input: {
         groupKey: segment.groupKey || null,
         groupLabel: segment.groupLabel || null,
       };
-    }));
+    });
   }
 
   const sourceFallback = input.sourceLabel || "源节点";
@@ -362,6 +306,25 @@ function buildProbeSegments(input: {
     groupKey: null,
     groupLabel: null,
   }];
+}
+
+function getInitialConvergedEntryView(segments: ProbeSegment[]) {
+  if (segments.length < 2) return null;
+  const firstTarget = segments[0]?.to;
+  if (!firstTarget) return null;
+  const entrySegments: ProbeSegment[] = [];
+  for (const segment of segments) {
+    if (segment.groupKey || segment.to !== firstTarget) break;
+    entrySegments.push(segment);
+  }
+  const uniqueSources = uniqueLabels(entrySegments.map((segment) => segment.from));
+  if (entrySegments.length < 2 || uniqueSources.length < 2) return null;
+  return {
+    entrySegments,
+    restSegments: segments.slice(entrySegments.length),
+    convergenceLabel: firstTarget,
+    convergenceMeta: entrySegments[0]?.toMeta,
+  };
 }
 
 export function getLinkTestTotalLatency(input: {
@@ -419,6 +382,8 @@ export function LinkTestProbeView({
   const branchSegments = branchKey && segments.every((segment) => segment.groupKey === branchKey) ? segments : [];
   const branchLabel = branchSegments[0]?.groupLabel || "同级出口";
   const isBranchView = branchSegments.length > 1;
+  const convergedEntryView = !isBranchView ? getInitialConvergedEntryView(segments) : null;
+  const isConvergedEntryView = !!convergedEntryView;
   const branchLatencyValues = branchSegments
     .filter((segment) => segment.success && hasUsableLatencyValue(segment.latencyMs))
     .map((segment) => Number(segment.latencyMs));
@@ -553,10 +518,162 @@ export function LinkTestProbeView({
     );
   };
 
+  const renderDesktopConnector = (segment: ProbeSegment, key: string, widthClass = "min-w-[88px] flex-1", showLabel = true) => {
+    const { testing, ok, label } = getSegmentState(segment);
+    return (
+      <div key={key} className={cn("relative mt-[45px] h-px bg-border", widthClass)}>
+        <div
+          className={cn(
+            "absolute inset-x-0 top-0 h-px",
+            testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+            testing ? "animate-pulse" : "",
+          )}
+        />
+        {showLabel ? (
+          <span
+            className={cn(
+              "absolute left-1/2 top-[-2rem] max-w-[8rem] -translate-x-1/2 truncate rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
+              testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+            )}
+            title={label || undefined}
+          >
+            {label || "\u00a0"}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderMobileConnector = (segment: ProbeSegment, key: string, showLabel = true) => {
+    const { testing, ok, label } = getSegmentState(segment);
+    return (
+      <div key={key} className="relative mx-auto flex h-12 max-w-[18rem] items-center justify-center">
+        <div
+          className={cn(
+            "absolute bottom-1 top-1 w-px",
+            testing ? "bg-primary/70" : ok ? "bg-emerald-500/70" : "bg-destructive/70",
+            testing ? "animate-pulse" : "",
+          )}
+        />
+        {showLabel ? (
+          <span
+            className={cn(
+              "relative max-w-[16rem] whitespace-normal rounded-full border bg-background px-2 py-0.5 text-center text-xs font-semibold leading-tight tabular-nums shadow-sm",
+              testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
+            )}
+          >
+            {label || "通过"}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderMobileLinearSegments = (linearSegments: ProbeSegment[], keyPrefix: string, showFirstNode = true) => (
+    <div className="space-y-0">
+      {linearSegments.map((segment, index) => {
+        const firstNode = showFirstNode && index === 0;
+        return (
+          <div key={`${keyPrefix}-${segment.from}-${segment.to}-${index}`}>
+            {firstNode ? renderMobileNode(segment.from, segment.fromMeta) : null}
+            {renderMobileConnector(segment, `${keyPrefix}-line-${index}`)}
+            {renderMobileNode(segment.to, segment.toMeta)}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderEntryGroupNode = (entrySegments: ProbeSegment[], mobile = false) => (
+    <div
+      className={cn(
+        "relative z-10 rounded-md border border-border/70 bg-background text-sm font-medium shadow-sm",
+        mobile ? "mx-auto w-full max-w-[18rem] px-3 py-2" : "min-w-[172px] max-w-[228px] px-3 py-2",
+      )}
+      title={entrySegments.map((segment) => segment.from).join(" / ")}
+    >
+      <div className="max-h-[9.5rem] space-y-1 overflow-y-auto pr-1">
+        {entrySegments.map((segment, index) => {
+          const { testing, ok, label } = getSegmentState(segment);
+          const entryLabel = shortNodeLabel(segment.from, mobile ? 18 : 13);
+          return (
+            <div
+              key={`entry-group-${segment.from}-${segment.to}-${index}`}
+              className={cn(
+                "flex min-w-0 items-center justify-between gap-2 rounded-sm px-1 py-0.5 leading-tight",
+                testing ? "text-primary" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+              )}
+              title={segment.message || segment.from}
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="flex h-3.5 w-5 shrink-0 items-center justify-center">{renderFlag(segment.fromMeta)}</span>
+                <span className="min-w-0 truncate">{entryLabel}</span>
+              </span>
+              <span className="shrink-0 text-xs font-semibold tabular-nums">{label || (ok ? "通过" : "失败")}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const renderConvergedEntryView = (mobile = false) => {
+    if (!convergedEntryView) return null;
+    const { entrySegments, restSegments, convergenceLabel, convergenceMeta } = convergedEntryView;
+    const entryStates = entrySegments.map((segment) => getSegmentState(segment));
+    const anyEntryTesting = entryStates.some((state) => state.testing);
+    const anyEntryOk = entryStates.some((state) => state.ok);
+    const entryConnectorSegment: ProbeSegment = {
+      ...entrySegments[0],
+      from: "入口组",
+      to: convergenceLabel,
+      toMeta: convergenceMeta,
+      success: anyEntryOk,
+      latencyMs: null,
+      message: null,
+      method: null,
+      pending: anyEntryTesting,
+      groupKey: null,
+      groupLabel: null,
+      latencyLabel: null,
+    };
+
+    if (mobile) {
+      return (
+        <div className="space-y-0 py-2 sm:hidden">
+          {renderEntryGroupNode(entrySegments, true)}
+          {renderMobileConnector(entryConnectorSegment, "mobile-entry-group-line", false)}
+          {renderMobileNode(convergenceLabel, convergenceMeta)}
+          {restSegments.length > 0 ? renderMobileLinearSegments(restSegments, "mobile-converged-rest", false) : null}
+        </div>
+      );
+    }
+    return (
+      <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+        <div className="mx-auto flex min-w-full w-max items-start justify-center px-2 py-7">
+          {renderEntryGroupNode(entrySegments)}
+          {renderDesktopConnector(entryConnectorSegment, "entry-group-line", "w-[96px] shrink-0 flex-none", false)}
+          {renderNode(convergenceLabel, convergenceMeta)}
+          {restSegments.length > 0 ? (
+            <div className="flex items-start">
+              {restSegments.map((segment, index) => (
+                <div key={`rest-${segment.from}-${segment.to}-${index}`} className="contents">
+                  {renderDesktopConnector(segment, `rest-line-${index}`, index === 0 ? "w-[96px] shrink-0 flex-none" : "min-w-[88px] flex-1")}
+                  {renderNode(segment.to, segment.toMeta)}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
   return (
     <div className={cn("space-y-3", className)}>
       {mobileStacked ? (
-        isBranchView ? (
+        isConvergedEntryView ? (
+          renderConvergedEntryView(true)
+        ) : isBranchView ? (
           <div className="space-y-3 py-2 sm:hidden">
             <div className="text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
             {branchSegments.map((segment, index) => renderBranchLine(segment, index, true))}
@@ -594,7 +711,9 @@ export function LinkTestProbeView({
         )
       ) : null}
 
-      {isBranchView ? (
+      {isConvergedEntryView ? (
+        renderConvergedEntryView(false)
+      ) : isBranchView ? (
         <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
           <div className="mx-auto w-full max-w-[36rem] py-3">
             <div className="mb-1 text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
