@@ -1,4 +1,4 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, hostTrafficCounters, trafficStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
@@ -22,10 +22,10 @@ export async function getHosts(userId?: number) {
   const db = await getDb();
   if (!db) return [];
   if (userId) {
-    const rows = await db.select().from(hosts).where(eq(hosts.userId, userId)).orderBy(desc(hosts.createdAt));
+    const rows = await db.select().from(hosts).where(eq(hosts.userId, userId)).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
     return rows.map(withComputedOnline);
   }
-  const rows = await db.select().from(hosts).orderBy(desc(hosts.createdAt));
+  const rows = await db.select().from(hosts).orderBy(asc(hosts.sortOrder), desc(hosts.createdAt), desc(hosts.id));
   return rows.map(withComputedOnline);
 }
 

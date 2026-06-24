@@ -143,8 +143,9 @@ async function resolveTargetIpCached(ruleId: number, raw: string, force = false)
   const now = Date.now();
   const cachedIp = resolvedIpCache.get(ruleId);
   const checkedAt = resolvedIpCheckedAt.get(ruleId) || 0;
-  if (!force && cachedIp && now - checkedAt < AGENT_DNS_RESOLVE_TTL_MS) return cachedIp;
+  if (!force && cachedIp && cachedIp.raw === trimmed && now - checkedAt < AGENT_DNS_RESOLVE_TTL_MS) return cachedIp.ip;
   const resolved = await resolveTargetIp(trimmed);
+  resolvedIpCache.set(ruleId, { raw: trimmed, ip: resolved });
   resolvedIpCheckedAt.set(ruleId, now);
   return resolved;
 }
@@ -296,12 +297,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const resolved = forcedResolved || await resolveTargetIpCached(Number(rule.id), rawTargetIp);
       if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
       const cachedIp = resolvedIpCache.get(rule.id);
-      if (cachedIp && cachedIp !== resolved) {
+      if (cachedIp && cachedIp.raw === rawTargetIp && cachedIp.ip !== resolved) {
         // IP 变更：标记为需要重新下发
         dnsChangedRuleIds.add(rule.id);
-        dnsPreviousIpByRuleId.set(rule.id, cachedIp);
+        dnsPreviousIpByRuleId.set(rule.id, cachedIp.ip);
       }
-      resolvedIpCache.set(rule.id, resolved);
+      resolvedIpCache.set(rule.id, { raw: rawTargetIp, ip: resolved });
       // 保存原始值（域名），将 rule.targetIp 替换为解析后的 IP
       (rule as any)._originalTargetIp = rule.targetIp;
       rule.targetIp = resolved;
@@ -477,6 +478,19 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     const agentAllRules = await db.getForwardRulesForAgent(undefined);
+    const hydrateRuntimeTarget = async (rule: any) => {
+      if (!rule || !rule.targetIp) return;
+      if (!(rule as any)._originalTargetIp) {
+        (rule as any)._originalTargetIp = rule.targetIp;
+      }
+      const rawTargetIp = String((rule as any)._originalTargetIp || rule.targetIp || "").trim();
+      if (!rawTargetIp) return;
+      const forcedResolved = dnsChangedIpByHost.get(rawTargetIp.toLowerCase());
+      const resolved = forcedResolved || await resolveTargetIpCached(Number(rule.id), rawTargetIp);
+      if (forcedResolved) resolvedIpCheckedAt.set(Number(rule.id), Date.now());
+      rule.targetIp = resolved;
+    };
+    await Promise.all((agentAllRules as any[]).map((rule: any) => hydrateRuntimeTarget(rule)));
     const tunnelById = new Map((hostTunnels as any[]).map((t: any) => [t.id, t]));
     const tunnelHopsByTunnelId = new Map<number, any[]>();
     const tunnelExitNodesByTunnelId = new Map<number, any[]>();
@@ -561,6 +575,28 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     // realm/socat/gost 进程命令使用原始 targetIp（域名形式），以便工具自身解析 DNS，
     // iptables/nftables/计数链使用已解析的 IP（rule.targetIp 已被替换为解析后的值）。
     const processTarget = (rule: any) => (rule as any)._originalTargetIp || rule.targetIp;
+    const proxyDebugBool = (value: unknown) => value ? "true" : "false";
+    const buildProxyRuleDebugCmd = (label: string, rule: any, extra: Record<string, unknown> = {}) => {
+      const fields: Record<string, unknown> = {
+        rule: Number(rule?.id || 0),
+        host: Number(host.id),
+        tunnel: Number(rule?.tunnelId || 0),
+        source: Number(rule?.sourcePort || 0),
+        ruleTargetRaw: String((rule as any)?._originalTargetIp || rule?.targetIp || ""),
+        ruleTargetRuntime: String(rule?.targetIp || ""),
+        runtimeTarget: `${processTarget(rule)}:${Number(rule?.targetPort || 0)}`,
+        protocol: String(rule?.protocol || ""),
+        entryReceive: proxyDebugBool(proxyProtocolEnabled(rule, "entryReceive")),
+        entrySend: proxyDebugBool(proxyProtocolEnabled(rule, "entrySend")),
+        exitReceive: proxyDebugBool(proxyProtocolEnabled(rule, "exitReceive")),
+        exitSend: proxyDebugBool(proxyProtocolEnabled(rule, "exitSend")),
+        ...extra,
+      };
+      const text = Object.entries(fields)
+        .map(([key, value]) => `${key}=${String(value).replace(/[\r\n]/g, " ")}`)
+        .join(" ");
+      return `echo ${shQuote(`proxy-rule-debug ${label} ${text}`)}`;
+    };
     const gostRules = agentHostRules
       .filter((r: any) => {
         if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost") return false;
@@ -729,6 +765,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => (
       proxyProtocolEnabled(rule, direction) ? { proxyProtocol: 1 } : undefined
     );
+    const mergeMetadata = (...items: Array<Record<string, unknown> | undefined>) => {
+      const merged = Object.assign({}, ...items.filter(Boolean));
+      return Object.keys(merged).length > 0 ? merged : undefined;
+    };
     const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
     const hostPublicAddress = (hostLike: any) => {
@@ -1122,7 +1162,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             name: `fwx-${r.id}-${proto}`,
             addr: `:${r.sourcePort}`,
             handler: tunnel
-              ? { type: proto, chain: `chain-tunnel-${r.id}`, ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}) }
+              ? { type: proto, chain: `chain-tunnel-${r.id}` }
               : { type: proto, ...(handlerProxyMetadata ? { metadata: handlerProxyMetadata } : {}) },
             listener: { type: proto },
           };
@@ -1186,8 +1226,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const hopAddr = `${hopDialHost}:${Number(hop.listenPort)}`;
             if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
             routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
+            const relayHopProxyMetadata = maybeProxyProtocolMetadata(r, "entrySend");
             chainHops.push({
               name: `hop-tunnel-${r.id}-${Number(hop.seq)}`,
+              ...(relayHopProxyMetadata ? { metadata: relayHopProxyMetadata } : {}),
               nodes: [gostTunnelNode(
                 `mhop-${r.id}-${Number(hop.seq)}`,
                 hopAddr,
@@ -1238,10 +1280,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostChains = [...tunnelGostChains];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
+      const proxyDebugCmds = gostRules
+        .filter((rule: any) => rule && Number(rule.tunnelId || 0) > 0 && (
+          proxyProtocolEnabled(rule, "entryReceive") ||
+          proxyProtocolEnabled(rule, "entrySend") ||
+          proxyProtocolEnabled(rule, "exitReceive") ||
+          proxyProtocolEnabled(rule, "exitSend")
+        ))
+        .map((rule: any) => buildProxyRuleDebugCmd("entry", rule, {
+          chain: `chain-tunnel-${Number(rule.id || 0)}`,
+        }));
       const cmds = [
         `mkdir -p ${shQuote(RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(RUNTIME_CONFIG_PATH)}`,
         `echo "[runtime-config] ${RUNTIME_SERVICE_NAME} services=${gostServiceConfig.length} chains=${gostChains.length}"`,
+        ...proxyDebugCmds,
         writeManagedServiceCmd(gostServiceName, gostServiceUnit),
         stopManagedServiceCmd(LEGACY_GOST_SERVICE_NAME),
       ];
@@ -1335,6 +1388,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const hostIdx = hops.findIndex((hop: any) => Number(hop.hostId) === Number(host.id));
         if (hostIdx < 0 || hostIdx >= hops.length - 1) return null; // not in chain or exit hop
         const currentHop = hops[hostIdx] as any;
+        const relayRulesForCurrentHop = (agentAllRules as any[]).filter((rule: any) => {
+          if (!rule || rule.pendingDelete || !rule.isEnabled || rule.forwardType !== "gost") return false;
+          if (Number(rule.tunnelId || 0) !== Number(tunnel.id)) return false;
+          if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, tunnel)) return false;
+          return proxyProtocolEnabled(rule, "entrySend");
+        });
+        const relayReceiveProxyMetadata = relayRulesForCurrentHop.length > 0
+          ? { proxyProtocol: 1 }
+          : undefined;
+        const listenerMetadata = mergeMetadata(
+          Number(currentHop.seq) === 0 ? undefined : tunnelProtocolMetadata(tunnel.mode),
+        );
         return {
           name: `fwx-mhop-${tunnel.id}-${Number(currentHop.seq)}`,
           addr: `:${Number(currentHop.listenPort)}`,
@@ -1342,8 +1407,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           listener: {
             // Entry hop receives local plain TCP traffic; relays receive tunneled traffic.
             type: Number(currentHop.seq) === 0 ? "tcp" : tunnelProtocolType(tunnel.mode),
-            ...(Number(currentHop.seq) === 0 ? {} : (tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {})),
+            ...(listenerMetadata ? { metadata: listenerMetadata } : {}),
           },
+          ...(relayReceiveProxyMetadata ? { metadata: relayReceiveProxyMetadata } : {}),
         };
       }));
       const services = [...tunnelProbeServices, ...ruleServices, ...multiHopRelayServices.filter(Boolean)];
@@ -1353,11 +1419,26 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return currentHostTunnelExitPortsForRule(rule, tunnel)
           .flatMap((exitPort) => buildCountingChainCmds(Number(exitPort), rule.targetIp, rule.targetPort, rule.protocol));
       });
+      const proxyDebugCmds = tunnelExitRules.flatMap((rule: any) => {
+        const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
+        if (!tunnel || isForwardXTunnel(tunnel)) return [];
+        if (
+          !proxyProtocolEnabled(rule, "entryReceive") &&
+          !proxyProtocolEnabled(rule, "entrySend") &&
+          !proxyProtocolEnabled(rule, "exitReceive") &&
+          !proxyProtocolEnabled(rule, "exitSend")
+        ) return [];
+        return currentHostTunnelExitPortsForRule(rule, tunnel).map((exitPort) => buildProxyRuleDebugCmd("exit", rule, {
+          exitPort: Number(exitPort),
+          listener: tunnelProtocolType(tunnel.mode),
+        }));
+      });
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       const cmds = [
         `mkdir -p ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH)}`,
         `echo "[runtime-config] ${TUNNEL_RUNTIME_SERVICE_NAME} services=${services.length}"`,
+        ...proxyDebugCmds,
         writeManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME, [
           "[Unit]",
           "Description=ForwardX managed tunnel runtime",
@@ -1829,7 +1910,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const udpFlag = rule.protocol === "udp" || rule.protocol === "both" ? "--udp" : "";
           // 如果主机配置了网卡，realm 使用 --interface 绑定
           const ifaceFlag = hostInterface ? `--interface ${hostInterface}` : "";
-          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${endpointHostPort(processTarget(rule), rule.targetPort)} ${udpFlag} ${ifaceFlag}`.replace(/\s+/g, ' ').trim();
+          const tcpOnlyFlags = String(rule.protocol || "tcp") !== "udp"
+            ? [
+                proxyProtocolEnabled(rule, "receive") ? "--accept-proxy --accept-proxy-timeout 5" : "",
+                proxyProtocolEnabled(rule, "send") ? "--send-proxy --send-proxy-version 1" : "",
+                (rule as any).tcpFastOpen ? "--tfo" : "",
+                (rule as any).zeroCopy ? "--splice" : "",
+              ].filter(Boolean).join(" ")
+            : "";
+          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${endpointHostPort(processTarget(rule), rule.targetPort)} ${udpFlag} ${ifaceFlag} ${tcpOnlyFlags}`.replace(/\s+/g, ' ').trim();
           const unit = [
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -2021,6 +2110,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 proxyProtocolSend: proxyProtocolEnabled(rule, "entrySend"),
                 proxyProtocolExitReceive: proxyProtocolEnabled(rule, "exitReceive"),
                 proxyProtocolExitSend: proxyProtocolEnabled(rule, "exitSend"),
+                tcpFastOpen: !!(rule as any).tcpFastOpen,
               },
               failover: mainBackup,
             });

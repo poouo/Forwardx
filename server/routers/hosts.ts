@@ -48,6 +48,7 @@ const networkInterfaceSchema = z.string().trim().max(32).nullable().optional().r
   (value) => !value || /^[a-zA-Z0-9_.:@-]+$/.test(value),
   "Invalid network interface",
 );
+const hostSortOrderSchema = z.number().int().min(0).max(200).optional();
 
 const optionalDateInputSchema = z.string().trim().max(64).nullable().optional();
 const hostTrafficMeasureModeSchema = z.enum(["outbound", "both", "max"]).default("both");
@@ -397,6 +398,7 @@ export const hostsRouter = router({
         ip: hostAddressSchema,
         hostType: z.enum(["master", "slave"]).default("slave"),
         networkInterface: networkInterfaceSchema,
+        sortOrder: hostSortOrderSchema,
         entryIp: optionalHostAddressSchema,
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -447,6 +449,7 @@ export const hostsRouter = router({
           ...ddnsConfig,
           agentToken,
           networkInterface: input.networkInterface || null,
+          sortOrder: input.sortOrder ?? 0,
           entryIp: input.entryIp || null,
           tunnelEntryIp: input.tunnelEntryIp || null,
           portRangeStart: input.portRangeStart ?? null,
@@ -466,6 +469,7 @@ export const hostsRouter = router({
         ip: hostAddressSchema.optional(),
         hostType: z.enum(["master", "slave"]).optional(),
         networkInterface: networkInterfaceSchema,
+        sortOrder: hostSortOrderSchema,
         entryIp: optionalHostAddressSchema,
         tunnelEntryIp: optionalHostAddressSchema,
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -508,6 +512,7 @@ export const hostsRouter = router({
         const { id, ...data } = input;
         let ddnsConfigChanged = false;
         if (data.networkInterface !== undefined) data.networkInterface = data.networkInterface || null;
+        if ((data as any).sortOrder !== undefined) (data as any).sortOrder = Math.min(200, Math.max(0, Math.floor(Number((data as any).sortOrder) || 0)));
         if (data.entryIp !== undefined) data.entryIp = data.entryIp || null;
         if (data.tunnelEntryIp !== undefined) data.tunnelEntryIp = data.tunnelEntryIp || null;
         if ((data as any).portAllowlist !== undefined) (data as any).portAllowlist = nextPortAllowlist || null;

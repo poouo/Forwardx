@@ -49,11 +49,12 @@ import { trpc } from "@/lib/trpc";
 import {
   Activity,
   ArrowRight,
-  CheckCircle2,
   Globe,
   LayoutGrid,
   List,
   Loader2,
+  LogIn,
+  LogOut,
   Network,
   Pencil,
   Plus,
@@ -2133,11 +2134,11 @@ function TunnelsContent() {
             端口转发链
           </TabsTrigger>
           <TabsTrigger value="entries" className="gap-1.5 px-4">
-            <ShieldCheck className="h-4 w-4" />
+            <LogIn className="h-4 w-4" />
             入口组
           </TabsTrigger>
           <TabsTrigger value="exits" className="gap-1.5 px-4">
-            <CheckCircle2 className="h-4 w-4" />
+            <LogOut className="h-4 w-4" />
             出口组
           </TabsTrigger>
         </TabsList>

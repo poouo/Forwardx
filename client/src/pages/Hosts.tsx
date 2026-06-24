@@ -605,6 +605,7 @@ type HostFormData = {
   ip: string;
   hostType: "master" | "slave";
   networkInterface: string;
+  sortOrder: string;
   entryIp: string;
   tunnelEntryIp: string;
   portRangeStart: number | null;
@@ -633,6 +634,7 @@ const defaultFormData: HostFormData = {
   ip: "",
   hostType: "slave",
   networkInterface: "",
+  sortOrder: "",
   entryIp: "",
   tunnelEntryIp: "",
   portRangeStart: null,
@@ -675,6 +677,12 @@ function parseDateTimeLocal(value: string) {
   const date = new Date(year, month - 1, day, 0, 0, 0, 0);
   if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
   return date;
+}
+
+function normalizeHostSortOrder(value: unknown) {
+  const parsed = Math.floor(Number(value ?? 0));
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(200, Math.max(0, parsed));
 }
 
 function clampMonthlyResetDay(value: number) {
@@ -967,7 +975,20 @@ function HostsContent() {
     refetchOnWindowFocus: true,
   });
   const [cachedHosts, setCachedHosts] = useState<any[]>(() => readCachedHosts());
-  const displayHosts: any[] = (hosts as any[] | undefined) || cachedHosts;
+  const displayHosts = useMemo<any[]>(() => {
+    const source = ((hosts as any[] | undefined) || cachedHosts) as any[];
+    return [...source].sort((a: any, b: any) => {
+      const sortA = normalizeHostSortOrder(a?.sortOrder);
+      const sortB = normalizeHostSortOrder(b?.sortOrder);
+      if (sortA !== sortB) return sortA - sortB;
+      const createdAtA = new Date(a?.createdAt || 0).getTime();
+      const createdAtB = new Date(b?.createdAt || 0).getTime();
+      if (Number.isFinite(createdAtA) && Number.isFinite(createdAtB) && createdAtA !== createdAtB) {
+        return createdAtB - createdAtA;
+      }
+      return Number(b?.id || 0) - Number(a?.id || 0);
+    });
+  }, [hosts, cachedHosts]);
   const hasDisplayHosts = displayHosts.length > 0;
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
@@ -1143,6 +1164,7 @@ function HostsContent() {
       ip: host.ip,
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
+      sortOrder: String(normalizeHostSortOrder(host.sortOrder)),
       entryIp: host.entryIp || "",
       tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
@@ -1195,6 +1217,7 @@ function HostsContent() {
     }
 
     const ni = (form.networkInterface || "").trim();
+    const sortOrder = normalizeHostSortOrder(form.sortOrder);
     const purchasedAt = parseDateTimeLocal(form.purchasedAt);
     const stoppedAt = parseDateTimeLocal(form.stoppedAt);
     if (form.purchasedAt && !purchasedAt) { toast.error("机器购买时间格式不正确"); return; }
@@ -1250,6 +1273,7 @@ function HostsContent() {
         name,
         hostType: form.hostType,
         networkInterface: ni || null,
+        sortOrder,
         entryIp: entry || null,
         tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
@@ -1265,6 +1289,7 @@ function HostsContent() {
         ip,
         hostType: form.hostType,
         networkInterface: ni || undefined,
+        sortOrder,
         entryIp: entry || undefined,
         tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
@@ -2092,14 +2117,29 @@ function HostsContent() {
                       />
                     </div>
                   </div>
-                  <div className="mt-2.5 space-y-1">
-                    <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
-                    <Input
-                      className="h-8"
-                      placeholder="eth0, ens33, bond0"
-                      value={form.networkInterface}
-                      onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
-                    />
+                  <div className="mt-2.5 grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label className="text-sm">网卡名称 <span className="text-xs text-muted-foreground">可选</span></Label>
+                      <Input
+                        className="h-8"
+                        placeholder="eth0, ens33, bond0"
+                        value={form.networkInterface}
+                        onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-sm">排序 <span className="text-xs text-muted-foreground">0-200，可留空</span></Label>
+                      <Input
+                        className="h-8"
+                        type="number"
+                        min={0}
+                        max={200}
+                        step={1}
+                        placeholder="0"
+                        value={form.sortOrder}
+                        onChange={(e) => setForm({ ...form, sortOrder: e.target.value })}
+                      />
+                    </div>
                   </div>
                 </section>
 

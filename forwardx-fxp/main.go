@@ -472,7 +472,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		log.Printf("entry load balance exits=%s strategy=round", formatEndpointList(selector))
 	}
 	if protocolHas(cfg, "tcp") {
-		ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
+		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
 		if err != nil {
 			return fmt.Errorf("entry tcp listen :%d: %w", cfg.ListenPort, err)
 		}
@@ -815,7 +815,7 @@ func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []by
 }
 
 func runExit(done <-chan struct{}, cfg config) error {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
+	ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
 	if err != nil {
 		return fmt.Errorf("exit tcp listen :%d: %w", cfg.ListenPort, err)
 	}
@@ -941,7 +941,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, Key: cfg.RelayKey})
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.ListenPort))
+	ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
 	if err != nil {
 		return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
 	}

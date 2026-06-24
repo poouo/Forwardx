@@ -30,6 +30,7 @@ type config struct {
 	ProxyProtocolSend        bool           `json:"proxyProtocolSend"`
 	ProxyProtocolExitReceive bool           `json:"proxyProtocolExitReceive"`
 	ProxyProtocolExitSend    bool           `json:"proxyProtocolExitSend"`
+	TCPFastOpen              bool           `json:"tcpFastOpen"`
 	PanelURL                 string         `json:"panelUrl"`
 	Token                    string         `json:"token"`
 	RelayExitHost            string         `json:"relayExitHost,omitempty"`

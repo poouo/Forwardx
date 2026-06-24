@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.110"
+var Version = "2.2.111"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -289,6 +289,7 @@ type fxpSpec struct {
 	ProxyProtocolSend        bool              `json:"proxyProtocolSend"`
 	ProxyProtocolExitReceive bool              `json:"proxyProtocolExitReceive"`
 	ProxyProtocolExitSend    bool              `json:"proxyProtocolExitSend"`
+	TCPFastOpen              bool              `json:"tcpFastOpen"`
 	PanelURL                 string            `json:"panelUrl,omitempty"`
 	Token                    string            `json:"token,omitempty"`
 	RelayExitHost            string            `json:"relayExitHost,omitempty"`
@@ -2534,6 +2535,7 @@ func fxpServerSignature(spec fxpSpec) string {
 		strconv.FormatBool(spec.ProxyProtocolSend),
 		strconv.FormatBool(spec.ProxyProtocolExitReceive),
 		strconv.FormatBool(spec.ProxyProtocolExitSend),
+		strconv.FormatBool(spec.TCPFastOpen),
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		spec.RelayKey,
@@ -2692,7 +2694,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.Token = cfg.Token
 	}
 	logf(
-		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
+		"proxy-debug fxp config role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v tcpFastOpen=%v exit=%s:%d relayNext=%s:%d target=%s:%d",
 		spec.Role,
 		spec.TunnelID,
 		spec.RuleID,
@@ -2702,6 +2704,7 @@ func startFXP(cfg Config, spec fxpSpec, actionMessage *actionMessage) bool {
 		spec.ProxyProtocolSend,
 		spec.ProxyProtocolExitReceive,
 		spec.ProxyProtocolExitSend,
+		spec.TCPFastOpen,
 		spec.ExitHost,
 		spec.ExitPort,
 		spec.RelayExitHost,

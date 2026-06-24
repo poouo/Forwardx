@@ -39,6 +39,11 @@ const proxyProtocolInputShape = {
   proxyProtocolExitSend: z.boolean().optional(),
 } as const;
 
+const transportTuningInputShape = {
+  tcpFastOpen: z.boolean().optional(),
+  zeroCopy: z.boolean().optional(),
+} as const;
+
 type FailoverInput = {
   failoverEnabled?: boolean;
   failoverStrategy?: z.infer<typeof failoverStrategySchema>;
@@ -104,12 +109,13 @@ function normalizeProxyProtocolInput(input: {
 }, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean; tunnelRoute?: boolean }) {
   const clearUnsupported = options?.clearUnsupported ?? false;
   const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
-  const forwardTypeSupported = forwardType === "gost";
+  const forwardTypeSupported = forwardType === "gost" || forwardType === "realm";
   const tunnelRoute = !!options?.tunnelRoute;
   const receive = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolReceive;
   const send = !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolSend;
-  const exitReceive = tunnelRoute && !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolExitReceive;
-  const exitSend = tunnelRoute && !isForwardChain && protocolSupported && forwardTypeSupported && !!input.proxyProtocolExitSend;
+  const tunnelProxySupported = tunnelRoute && forwardType === "gost";
+  const exitReceive = tunnelProxySupported && !isForwardChain && protocolSupported && !!input.proxyProtocolExitReceive;
+  const exitSend = tunnelProxySupported && !isForwardChain && protocolSupported && !!input.proxyProtocolExitSend;
   if (!receive && !send && !exitReceive && !exitSend) {
     if (clearUnsupported) return {
       proxyProtocolReceive: false,
@@ -120,7 +126,7 @@ function normalizeProxyProtocolInput(input: {
     if ((input.proxyProtocolReceive || input.proxyProtocolSend || input.proxyProtocolExitReceive || input.proxyProtocolExitSend) && protocol && protocol !== "tcp" && protocol !== "both") {
       throw new Error("PROXY Protocol 仅支持 TCP 协议");
     }
-    if ((input.proxyProtocolReceive || input.proxyProtocolSend || input.proxyProtocolExitReceive || input.proxyProtocolExitSend) && forwardType !== "gost") {
+    if ((input.proxyProtocolReceive || input.proxyProtocolSend || input.proxyProtocolExitReceive || input.proxyProtocolExitSend) && !forwardTypeSupported) {
       throw new Error("PROXY Protocol 仅支持 GOST 端口转发、GOST 隧道和自定义加密隧道");
     }
     return {
@@ -136,6 +142,35 @@ function normalizeProxyProtocolInput(input: {
     proxyProtocolExitReceive: exitReceive,
     proxyProtocolExitSend: exitSend,
   };
+}
+
+function normalizeTransportTuningInput(input: {
+  tcpFastOpen?: boolean;
+  zeroCopy?: boolean;
+}, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean; tunnelRoute?: boolean; forwardxTunnel?: boolean }) {
+  const clearUnsupported = options?.clearUnsupported ?? false;
+  const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
+  const tunnelRoute = !!options?.tunnelRoute;
+  const forwardxTunnel = !!options?.forwardxTunnel;
+  const fastOpenSupported = !isForwardChain && protocolSupported && (
+    forwardType === "realm" || (forwardType === "gost" && tunnelRoute && forwardxTunnel)
+  );
+  const zeroCopySupported = !isForwardChain && protocolSupported && forwardType === "realm" && !tunnelRoute;
+  const tcpFastOpen = fastOpenSupported && !!input.tcpFastOpen;
+  const zeroCopy = zeroCopySupported && !!input.zeroCopy;
+  if (!tcpFastOpen && !zeroCopy) {
+    if (clearUnsupported) return { tcpFastOpen: false, zeroCopy: false };
+    if ((input.tcpFastOpen || input.zeroCopy) && protocol && protocol !== "tcp" && protocol !== "both") {
+      throw new Error("TCP Fast Open 和 zero-copy 仅支持 TCP 协议");
+    }
+    if (input.tcpFastOpen && !fastOpenSupported) {
+      throw new Error("当前转发方式不支持 TCP Fast Open");
+    }
+    if (input.zeroCopy && !zeroCopySupported) {
+      throw new Error("当前转发方式不支持 zero-copy");
+    }
+  }
+  return { tcpFastOpen, zeroCopy };
 }
 
 function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
@@ -299,6 +334,7 @@ export const crudRulesRouter = router({
       blockTls: z.boolean().optional(),
       ...failoverInputShape,
       ...proxyProtocolInputShape,
+      ...transportTuningInputShape,
     }))
     .mutation(async ({ input, ctx }) => {
       // 权限检查：管理员或有 canAddRules 权限的用户
@@ -392,6 +428,13 @@ export const crudRulesRouter = router({
             forwardType,
             isForwardChain,
             { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" },
+          ),
+          ...normalizeTransportTuningInput(
+            input,
+            input.protocol,
+            forwardType,
+            isForwardChain,
+            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", forwardxTunnel: false },
           ),
           ...normalizeFailoverInput(isForwardChain ? { failoverEnabled: false, failoverTargets: [] } : input, input.protocol),
           isRunning: false,
@@ -519,6 +562,7 @@ export const crudRulesRouter = router({
         ...input,
         ...normalizeFailoverInput(input, input.protocol),
         ...normalizeProxyProtocolInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId }),
+        ...normalizeTransportTuningInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" }),
         blockHttp: false,
         blockSocks: false,
         blockTls: false,
@@ -566,6 +610,7 @@ export const crudRulesRouter = router({
       blockTls: z.boolean().optional(),
       ...failoverInputShape,
       ...proxyProtocolInputShape,
+      ...transportTuningInputShape,
       isEnabled: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -636,6 +681,8 @@ export const crudRulesRouter = router({
             input.proxyProtocolSend !== undefined ||
             input.proxyProtocolExitReceive !== undefined ||
             input.proxyProtocolExitSend !== undefined ||
+            input.tcpFastOpen !== undefined ||
+            input.zeroCopy !== undefined ||
             input.protocol !== undefined ||
             input.forwardType !== undefined ||
             input.failoverEnabled !== undefined
@@ -646,6 +693,21 @@ export const crudRulesRouter = router({
                   proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
                   failoverEnabled: nextMainBackupEnabled,
                 }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" })
+              : {}
+          ),
+          ...(
+            input.tcpFastOpen !== undefined ||
+            input.zeroCopy !== undefined ||
+            input.protocol !== undefined ||
+            input.forwardType !== undefined
+              ? normalizeTransportTuningInput({
+                  tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
+                  zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+                }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, {
+                  clearUnsupported: true,
+                  tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
+                  forwardxTunnel: false,
+                })
               : {}
           ),
           gostMode: "direct",
@@ -663,7 +725,7 @@ export const crudRulesRouter = router({
         delete data.blockHttp;
         delete data.blockSocks;
         delete data.blockTls;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "tcpFastOpen", "zeroCopy", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -796,6 +858,8 @@ export const crudRulesRouter = router({
         input.proxyProtocolSend !== undefined ||
         input.proxyProtocolExitReceive !== undefined ||
         input.proxyProtocolExitSend !== undefined ||
+        input.tcpFastOpen !== undefined ||
+        input.zeroCopy !== undefined ||
         input.protocol !== undefined ||
         input.forwardType !== undefined ||
         input.failoverEnabled !== undefined
@@ -808,14 +872,31 @@ export const crudRulesRouter = router({
           failoverEnabled: nextMainBackupEnabled,
         }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, { clearUnsupported: true, tunnelRoute: !!nextTunnelIdForRule }));
       }
+      if (
+        input.tcpFastOpen !== undefined ||
+        input.zeroCopy !== undefined ||
+        input.protocol !== undefined ||
+        input.forwardType !== undefined
+      ) {
+        Object.assign(data as any, normalizeTransportTuningInput({
+          tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
+          zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+        }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, {
+          clearUnsupported: true,
+          tunnelRoute: !!nextTunnelIdForRule,
+          forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx",
+        }));
+      }
       if ((data.forwardType ?? rule.forwardType) !== "gost") {
         (data as any).gostMode = "direct";
         (data as any).gostRelayHost = null;
         (data as any).gostRelayPort = null;
         (data as any).tunnelId = null;
         (data as any).tunnelExitPort = null;
-        (data as any).proxyProtocolReceive = false;
-        (data as any).proxyProtocolSend = false;
+        if ((data.forwardType ?? rule.forwardType) !== "realm") {
+          (data as any).proxyProtocolReceive = false;
+          (data as any).proxyProtocolSend = false;
+        }
         (data as any).proxyProtocolExitReceive = false;
         (data as any).proxyProtocolExitSend = false;
       } else {
@@ -874,6 +955,8 @@ export const crudRulesRouter = router({
         "proxyProtocolSend",
         "proxyProtocolExitReceive",
         "proxyProtocolExitSend",
+        "tcpFastOpen",
+        "zeroCopy",
         "failoverEnabled",
         "failoverStrategy",
         "failoverTargets",

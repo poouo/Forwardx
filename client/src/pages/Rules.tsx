@@ -213,6 +213,8 @@ type RuleFormData = {
   proxyProtocolSend: boolean;
   proxyProtocolExitReceive: boolean;
   proxyProtocolExitSend: boolean;
+  tcpFastOpen: boolean;
+  zeroCopy: boolean;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargetsText: string;
@@ -270,6 +272,8 @@ const defaultForm: RuleFormData = {
   proxyProtocolSend: false,
   proxyProtocolExitReceive: false,
   proxyProtocolExitSend: false,
+  tcpFastOpen: false,
+  zeroCopy: false,
   failoverEnabled: false,
   failoverStrategy: "fallback",
   failoverTargetsText: "",
@@ -332,6 +336,8 @@ type RuleTransferFileRule = {
   proxyProtocolSend: boolean;
   proxyProtocolExitReceive: boolean;
   proxyProtocolExitSend: boolean;
+  tcpFastOpen: boolean;
+  zeroCopy: boolean;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargets: Array<{ targetIp: string; targetPort: number }>;
@@ -1574,6 +1580,8 @@ function exportRuleForTransfer(rule: any): RuleTransferFileRule {
     proxyProtocolSend: Boolean(rule?.proxyProtocolSend),
     proxyProtocolExitReceive: Boolean(rule?.proxyProtocolExitReceive),
     proxyProtocolExitSend: Boolean(rule?.proxyProtocolExitSend),
+    tcpFastOpen: Boolean(rule?.tcpFastOpen),
+    zeroCopy: Boolean(rule?.zeroCopy),
     failoverEnabled: Boolean(rule?.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(rule?.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(rule?.failoverTargets),
@@ -1604,6 +1612,8 @@ function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
     proxyProtocolSend: Boolean(source.proxyProtocolSend),
     proxyProtocolExitReceive: Boolean(source.proxyProtocolExitReceive),
     proxyProtocolExitSend: Boolean(source.proxyProtocolExitSend),
+    tcpFastOpen: Boolean(source.tcpFastOpen),
+    zeroCopy: Boolean(source.zeroCopy),
     failoverEnabled: Boolean(source.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(source.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(source.failoverTargets),
@@ -1946,6 +1956,8 @@ function RulesContent() {
       proxyProtocolSend: !!rule.proxyProtocolSend,
       proxyProtocolExitReceive: !!rule.proxyProtocolExitReceive,
       proxyProtocolExitSend: !!rule.proxyProtocolExitSend,
+      tcpFastOpen: !!rule.tcpFastOpen,
+      zeroCopy: !!rule.zeroCopy,
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
       failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
@@ -2174,21 +2186,29 @@ function RulesContent() {
   const proxyProtocolForwardType = mainBackupForwardType;
   const proxyProtocolProtocolSupported = form.protocol === "tcp" || form.protocol === "both";
   const isTunnelProxyProtocolMode = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
-  const canAutoSwitchProxyProtocolToGost = !selectedForwardGroupIsChain
-    && proxyProtocolProtocolSupported
-    && proxyProtocolForwardType !== "gost"
-    && usableForwardTypes.includes("gost")
-    && (form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host"));
   const canUseProxyProtocol = !selectedForwardGroupIsChain
     && proxyProtocolProtocolSupported
-    && (proxyProtocolForwardType === "gost" || canAutoSwitchProxyProtocolToGost);
+    && (proxyProtocolForwardType === "gost" || proxyProtocolForwardType === "realm");
   const proxyProtocolDisabledText = selectedForwardGroupIsChain
     ? "端口转发链不支持 PROXY Protocol。"
     : !proxyProtocolProtocolSupported
     ? "PROXY Protocol 仅支持 TCP 协议。"
-    : proxyProtocolForwardType !== "gost" && !canAutoSwitchProxyProtocolToGost
-    ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持 PROXY Protocol。"
+    : proxyProtocolForwardType !== "gost" && proxyProtocolForwardType !== "realm"
+    ? "当前转发工具不支持 PROXY Protocol。"
     : "";
+  const isForwardXTunnelMode = isTunnelProxyProtocolMode && String(selectedTunnel?.mode || "").toLowerCase() === "forwardx";
+  const canUseTcpFastOpen = !selectedForwardGroupIsChain
+    && proxyProtocolProtocolSupported
+    && (proxyProtocolForwardType === "realm" || (proxyProtocolForwardType === "gost" && isForwardXTunnelMode));
+  const canUseZeroCopy = !selectedForwardGroupIsChain
+    && proxyProtocolProtocolSupported
+    && proxyProtocolForwardType === "realm"
+    && !isTunnelProxyProtocolMode;
+  const transportTuningDisabledText = selectedForwardGroupIsChain
+    ? "端口转发链不支持传输优化。"
+    : !proxyProtocolProtocolSupported
+    ? "传输优化仅支持 TCP 协议。"
+    : "当前转发工具不支持该优化。";
 
   const copyableSourceRules = useMemo(() => {
     if (!rules || !copySourceHostId) return [];
@@ -2289,6 +2309,15 @@ function RulesContent() {
     }));
   }, [canUseProxyProtocol, form.proxyProtocolExitReceive, form.proxyProtocolExitSend, form.proxyProtocolReceive, form.proxyProtocolSend]);
 
+  useEffect(() => {
+    if ((canUseTcpFastOpen || !form.tcpFastOpen) && (canUseZeroCopy || !form.zeroCopy)) return;
+    setForm((prev) => ({
+      ...prev,
+      tcpFastOpen: canUseTcpFastOpen ? prev.tcpFastOpen : false,
+      zeroCopy: canUseZeroCopy ? prev.zeroCopy : false,
+    }));
+  }, [canUseTcpFastOpen, canUseZeroCopy, form.tcpFastOpen, form.zeroCopy]);
+
   // 随机分配端口
   const handleRandomPort = async () => {
     if (form.routeMode === "group") {
@@ -2340,7 +2369,6 @@ function RulesContent() {
   const setProxyProtocolFlag = (field: ProxyProtocolField, checked: boolean) => {
     setForm((prev) => ({
       ...prev,
-      forwardType: checked && canAutoSwitchProxyProtocolToGost ? "gost" : prev.forwardType,
       [field]: checked,
     }));
   };
@@ -2372,10 +2400,29 @@ function RulesContent() {
     </div>
   );
 
+  const renderTransportTuningSwitch = (
+    label: string,
+    description: string,
+    field: "tcpFastOpen" | "zeroCopy",
+    enabled: boolean,
+  ) => (
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md bg-background/65 px-3 py-2 ring-1 ring-border/40">
+      <div className="min-w-0">
+        <Label className="block truncate text-sm" title={label}>{label}</Label>
+        <p className="truncate text-[11px] text-muted-foreground" title={enabled ? description : transportTuningDisabledText}>
+          {enabled ? description : transportTuningDisabledText}
+        </p>
+      </div>
+      <Switch
+        checked={enabled ? form[field] : false}
+        disabled={!enabled}
+        onCheckedChange={(checked) => setForm((prev) => ({ ...prev, [field]: checked }))}
+      />
+    </div>
+  );
+
   const handleSubmit = () => {
     const submitForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel")
-      ? "gost"
-      : (form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend) && canAutoSwitchProxyProtocolToGost
       ? "gost"
       : form.forwardType;
     if (!form.name || !form.targetIp || !form.targetPort || (form.routeMode !== "group" && !form.hostId)) {
@@ -2464,6 +2511,10 @@ function RulesContent() {
       proxyProtocolExitReceive: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
       proxyProtocolExitSend: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
     };
+    const transportTuningPayload = {
+      tcpFastOpen: canUseTcpFastOpen ? form.tcpFastOpen : false,
+      zeroCopy: canUseZeroCopy ? form.zeroCopy : false,
+    };
     if (form.routeMode !== "group" && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
       return;
@@ -2489,6 +2540,7 @@ function RulesContent() {
         targetIp: form.targetIp,
         targetPort: form.targetPort,
         ...proxyProtocolPayload,
+        ...transportTuningPayload,
         ...failoverPayload,
       });
     } else {
@@ -2506,6 +2558,7 @@ function RulesContent() {
         targetIp: form.targetIp,
         targetPort: form.targetPort,
         ...proxyProtocolPayload,
+        ...transportTuningPayload,
         ...failoverPayload,
       });
     }
@@ -3225,6 +3278,8 @@ function RulesContent() {
       proxyProtocolSend: rule.proxyProtocolSend,
       proxyProtocolExitReceive: rule.proxyProtocolExitReceive,
       proxyProtocolExitSend: rule.proxyProtocolExitSend,
+      tcpFastOpen: rule.tcpFastOpen,
+      zeroCopy: rule.zeroCopy,
       failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
       failoverStrategy: rule.failoverStrategy,
       failoverTargets: importScopeType === "chain" || !rule.failoverEnabled ? [] : rule.failoverTargets,
@@ -4574,6 +4629,8 @@ function RulesContent() {
                     proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
                     proxyProtocolExitReceive: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
                     proxyProtocolExitSend: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
+                    tcpFastOpen: v !== "udp" ? form.tcpFastOpen : false,
+                    zeroCopy: v !== "udp" ? form.zeroCopy : false,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -4619,10 +4676,12 @@ function RulesContent() {
                       gostRelayHost: "",
                       gostRelayPort: 0,
                       tunnelId: null,
-                      proxyProtocolReceive: v === "gost" ? form.proxyProtocolReceive : false,
-                      proxyProtocolSend: v === "gost" ? form.proxyProtocolSend : false,
+                      proxyProtocolReceive: v === "gost" || v === "realm" ? form.proxyProtocolReceive : false,
+                      proxyProtocolSend: v === "gost" || v === "realm" ? form.proxyProtocolSend : false,
                       proxyProtocolExitReceive: false,
                       proxyProtocolExitSend: false,
+                      tcpFastOpen: v === "realm" ? form.tcpFastOpen : false,
+                      zeroCopy: v === "realm" ? form.zeroCopy : false,
                     })}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -4735,6 +4794,18 @@ function RulesContent() {
                   发送到下游时，对端服务需启用 PROXY Protocol 解析。
                 </p>
               )}
+            </div>
+            <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <Label className="text-sm">传输优化</Label>
+                {!canUseTcpFastOpen && !canUseZeroCopy && (
+                  <span className="text-xs text-amber-600">{transportTuningDisabledText}</span>
+                )}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {renderTransportTuningSwitch("TCP Fast Open", "降低 TCP 建连等待", "tcpFastOpen", canUseTcpFastOpen)}
+                {renderTransportTuningSwitch("zero-copy", "减少内核与用户态拷贝", "zeroCopy", canUseZeroCopy)}
+              </div>
             </div>
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
