@@ -176,7 +176,7 @@ function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
 }
 
 function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
-  return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
+  return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v prefix='comment "${comment}:' 'index($0, exact) || index($0, prefix) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
 
 export function buildNftCleanupCmds(rule: any): string[] {
@@ -213,25 +213,17 @@ export function buildNftForwardCmds(rule: any): string[] {
     nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficForwardChain} '{ type filter hook forward priority -150; policy accept; }'`),
     ...buildNftCleanupCmds(rule),
     nftOptional(`nft add table inet ${nftTable}`),
     nftOptional(`nft add chain inet ${nftTable} prerouting '{ type nat hook prerouting priority dstnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} postrouting '{ type nat hook postrouting priority srcnat; policy accept; }'`),
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPreroutingChain} '{ type filter hook prerouting priority -150; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficPostroutingChain} '{ type filter hook postrouting priority -150; policy accept; }'`),
-    nftOptional(`nft add chain inet ${nftTable} ${nftTrafficForwardChain} '{ type filter hook forward priority -150; policy accept; }'`),
   ];
   for (const proto of protos) {
     cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
     cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter comment "${comment}:in"`);
-    cmds.push(`nft add rule inet ${nftTable} ${nftTrafficForwardChain} meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} counter comment "${comment}:out"`);
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}"`);
-    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment "${comment}:in"`);
+    cmds.push(`nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related counter accept comment "${comment}:out"`);
   }
   return cmds;
 }
