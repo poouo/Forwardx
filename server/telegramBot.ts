@@ -42,6 +42,12 @@ type TelegramUpdate = {
   callback_query?: TelegramCallbackQuery;
 };
 
+type AiQueryIntent = {
+  intent: "usage" | "rules" | "rule_detail" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
+  id?: number;
+  keyword?: string;
+};
+
 let pollingStarted = false;
 let pollingAbort = false;
 let updateOffset = 0;
@@ -55,11 +61,17 @@ const BIND_SESSION_TTL_MS = 10 * 60 * 1000;
 const REDEEM_SESSION_TTL_MS = 10 * 60 * 1000;
 const USER_PAGE_SIZE = 10;
 const RULE_PAGE_SIZE = 10;
+const AI_QUERY_RESULT_LIMIT = 10;
+const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
+const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
   { command: "menu", description: "打开功能菜单" },
   { command: "usage", description: "查询流量和额度" },
   { command: "rules", description: "查看和管理转发规则" },
+  { command: "ask", description: "用自然语言查询面板信息" },
   { command: "redeem", description: "兑换余额或套餐兑换码" },
   { command: "bind", description: "使用绑定码绑定后台账号" },
   { command: "login", description: "生成网页登录链接" },
@@ -300,6 +312,7 @@ function helpText(bound: boolean, isAdmin = false) {
       : "请先在面板个人菜单点击 Telegram 绑定按钮生成绑定码，然后在这里完成绑定。",
     "/usage - 查询我的用量",
     "/rules - 查看我的转发规则",
+    "/ask 问题 - 用自然语言查询面板信息",
     "/redeem 兑换码 - 兑换余额或套餐",
     "/login - 生成网页一次性登录链接",
     "/enable 规则ID - 启用规则",
@@ -815,6 +828,445 @@ async function confirmMobileLogin(chatId: number | string, messageId: number, co
   deleteMessageLater(chatId, messageId, LOGIN_SUCCESS_MESSAGE_DELETE_MS);
 }
 
+function normalizeDeepSeekNumber(value: unknown, fallback: number, min: number, max: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+async function getDeepSeekSettings() {
+  const settings = await db.getAllSettings();
+  const apiKey = String(settings.deepseekApiKey || "").trim();
+  const baseUrl = String(settings.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL).trim().replace(/\/+$/, "") || DEFAULT_DEEPSEEK_BASE_URL;
+  return {
+    enabled: settings.deepseekAiEnabled === "true",
+    apiKey,
+    baseUrl,
+    model: String(settings.deepseekModel || DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL,
+    maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
+    temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+  };
+}
+
+function normalizeKeyword(value: unknown) {
+  return String(value || "").trim().slice(0, 80);
+}
+
+function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryIntent {
+  const allowed = new Set<AiQueryIntent["intent"]>([
+    "usage",
+    "rules",
+    "rule_detail",
+    "hosts",
+    "tunnels",
+    "forward_groups",
+    "users",
+    "account",
+    "help",
+    "unsupported",
+  ]);
+  const intent = allowed.has(value?.intent) ? value.intent : fallback.intent;
+  const id = Number(value?.id ?? fallback.id);
+  const keyword = normalizeKeyword(value?.keyword ?? fallback.keyword);
+  return {
+    intent,
+    ...(Number.isFinite(id) && id > 0 ? { id } : {}),
+    ...(keyword ? { keyword } : {}),
+  };
+}
+
+function extractAiJsonObject(content: string) {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractRuleId(text: string) {
+  const match = text.match(/(?:规则|rule)\s*#?\s*(\d+)/i) || text.match(/#(\d+)/);
+  const id = Number(match?.[1]);
+  return Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
+function extractSearchKeyword(text: string) {
+  const trimmed = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  const explicit = trimmed.match(/(?:关键字|关键词|搜索|端口|名称|备注|IP|ip|域名)[:：]?\s*([^\s，,。]+)/);
+  if (explicit?.[1]) return normalizeKeyword(explicit[1]);
+  const cleaned = trimmed
+    .replace(/(帮我|请|一下|查一下|查询|查看|看看|显示|列出|搜索|我的|所有|转发规则|规则详情|规则|主机|机器|节点|隧道|链路|转发组|入口组|用户|账户|账号|信息|状态|详情|列表|有哪些|是多少|多少)/g, " ")
+    .replace(/[，,。？?！!：:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalizeKeyword(cleaned);
+}
+
+function localAiQueryIntent(text: string): AiQueryIntent {
+  const raw = text.trim();
+  const compact = raw.replace(/\s+/g, "");
+  const lower = raw.toLowerCase();
+  const readHint = /(查询|查看|看看|显示|列出|搜索|多少|哪些|哪条|状态|详情|流量|用量|规则|主机|机器|节点|隧道|链路|转发组|入口组|用户|账户|账号|端口|ip|域名)/i.test(raw);
+  const questionHint = /(查询|查看|看看|显示|列出|搜索|多少|哪些|哪条|状态|详情|列表|有哪些|吗|？|\?)/i.test(raw);
+  const writeHint = /(开启|启用|关闭|停用|禁用|删除|移除|重置|续期|兑换|创建|新增|修改|更新|编辑|enable|disable|delete|remove|reset|renew|create|add|update|edit)/i.test(lower);
+  if (writeHint && !readHint) return { intent: "unsupported" };
+  if (!questionHint && /^(帮我|请|给我|把|将)?(开启|启用|关闭|停用|禁用|删除|移除|重置|续期|兑换|创建|新增|修改|更新|编辑)/.test(compact)) {
+    return { intent: "unsupported" };
+  }
+  const id = extractRuleId(raw);
+  if (id && /(详情|状态|detail|规则|rule|#)/i.test(raw)) return { intent: "rule_detail", id };
+  const keyword = extractSearchKeyword(raw);
+  if (/(帮助|怎么用|help)/i.test(raw)) return { intent: "help" };
+  if (/(用量|流量|额度|余额|套餐|usage|traffic)/i.test(raw)) return { intent: "usage", keyword };
+  if (/(我是谁|账户|账号|个人|信息|资料|account|profile)/i.test(raw)) return { intent: "account", keyword };
+  if (/(用户|user)/i.test(raw)) return { intent: "users", keyword };
+  if (/(转发组|入口组|多入口|forward\s*group|group)/i.test(raw)) return { intent: "forward_groups", keyword };
+  if (/(隧道|链路|转发链|tunnel|link)/i.test(raw)) return { intent: "tunnels", keyword };
+  if (/(主机|机器|节点|agent|host|server)/i.test(raw)) return { intent: "hosts", keyword };
+  if (/(规则|端口|转发|rule|port)/i.test(raw) || keyword) return { intent: "rules", keyword };
+  return { intent: "help" };
+}
+
+async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
+  const fallback = localAiQueryIntent(text);
+  if (fallback.intent === "unsupported") return fallback;
+  const settings = await getDeepSeekSettings().catch(() => null);
+  if (!settings?.enabled || !settings.apiKey) return fallback;
+  try {
+    const resp = await fetch(`${settings.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You classify ForwardX Telegram user messages into read-only query intents.",
+              "Return only JSON with keys: intent, id, keyword.",
+              "Allowed intents: usage, rules, rule_detail, hosts, tunnels, forward_groups, users, account, help, unsupported.",
+              "If the user asks to enable, disable, create, update, delete, reset, renew, redeem, or otherwise change data, return unsupported.",
+              "Do not answer the user. Do not include markdown.",
+            ].join(" "),
+          },
+          { role: "user", content: text.slice(0, 500) },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0,
+        max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
+      }),
+    });
+    if (!resp.ok) throw new Error(`DeepSeek HTTP ${resp.status}`);
+    const json = await resp.json().catch(() => null) as any;
+    const content = String(json?.choices?.[0]?.message?.content || "");
+    const parsed = extractAiJsonObject(content);
+    if (!parsed) return fallback;
+    return normalizeAiQueryIntent(parsed, fallback);
+  } catch (error) {
+    console.warn("[TelegramBot] DeepSeek query intent fallback:", error);
+    return fallback;
+  }
+}
+
+function isVisibleForwardGroupRuleForTelegramUser(rule: any, allowedForwardGroupIds: Set<number>) {
+  return !!rule?.isForwardGroupTemplate
+    && !!rule?.forwardGroupId
+    && !rule?.forwardGroupRuleId
+    && !rule?.forwardGroupMemberId
+    && allowedForwardGroupIds.has(Number(rule.forwardGroupId));
+}
+
+async function visibleRulesForTelegramUser(user: any) {
+  const isAdmin = user.role === "admin";
+  const rules = await db.getForwardRules(isAdmin ? undefined : user.id);
+  if (isAdmin) return rules as any[];
+  const allowedForwardGroupIds = new Set(await db.getUserAllowedForwardGroupIds(user.id));
+  return (rules as any[]).filter((rule: any) => {
+    const isForwardGroupRule = !!(rule?.forwardGroupId || rule?.isForwardGroupTemplate || rule?.forwardGroupRuleId || rule?.forwardGroupMemberId);
+    return !isForwardGroupRule || isVisibleForwardGroupRuleForTelegramUser(rule, allowedForwardGroupIds);
+  });
+}
+
+async function visibleHostsForTelegramUser(user: any) {
+  if (user.role === "admin") return db.getHosts() as Promise<any[]>;
+  const [allowedHostIds, billingResourceIds, allHosts] = await Promise.all([
+    db.getUserAllowedHostIds(user.id),
+    db.getUserUsableTrafficBillingResourceIds(user.id),
+    db.getHosts(),
+  ]);
+  const allowedSet = new Set([...(allowedHostIds || []), ...((billingResourceIds as any)?.hostIds || [])].map(Number));
+  return (allHosts as any[]).filter((host: any) => allowedSet.has(Number(host.id)) || Number(host.userId) === Number(user.id));
+}
+
+async function visibleTunnelsForTelegramUser(user: any) {
+  return (user.role === "admin" ? db.getTunnels() : db.getTunnelsForUser(user.id)) as Promise<any[]>;
+}
+
+async function visibleForwardGroupsForTelegramUser(user: any) {
+  if (user.role === "admin") return db.getForwardGroups() as Promise<any[]>;
+  const allowed = new Set((await db.getUserAllowedForwardGroupIds(user.id)).map(Number));
+  const groups = (await db.getForwardGroups()) as any[];
+  return db.filterForwardGroupFieldsForUse(groups.filter((group: any) => allowed.has(Number(group.id)))) as any[];
+}
+
+function searchMatches(keyword: string | undefined, values: unknown[]) {
+  const needle = normalizeKeyword(keyword).toLowerCase();
+  if (!needle) return true;
+  return values.some((value) => String(value ?? "").toLowerCase().includes(needle));
+}
+
+function ruleSearchValues(rule: any) {
+  return [
+    rule.id,
+    rule.name,
+    rule.sourcePort,
+    rule.targetIp,
+    rule.targetPort,
+    rule.forwardType,
+    rule.protocol,
+    rule.hostId,
+    rule.tunnelId,
+    rule.remark,
+    rule.remarks,
+    rule.description,
+    ruleStatusText(rule),
+    rule.entryIp,
+    rule.entryDomain,
+  ];
+}
+
+function hostSearchValues(host: any) {
+  return [
+    host.id,
+    host.name,
+    host.ip,
+    host.ipv4,
+    host.ipv6,
+    host.entryIp,
+    host.tunnelEntryIp,
+    host.networkInterface,
+    host.agentVersion,
+    host.remark,
+    host.remarks,
+    host.description,
+    onlineStatusText(host.isOnline),
+  ];
+}
+
+function tunnelSearchValues(tunnel: any, entryHost?: any, exitHost?: any) {
+  return [
+    tunnel.id,
+    tunnel.name,
+    tunnel.mode,
+    tunnel.listenPort,
+    tunnel.networkType,
+    tunnel.connectHost,
+    tunnel.entryHostId,
+    tunnel.exitHostId,
+    entryHost?.name,
+    entryHost?.ip,
+    entryHost?.entryIp,
+    exitHost?.name,
+    exitHost?.ip,
+    exitHost?.entryIp,
+    tunnel.remark,
+    tunnel.remarks,
+    tunnel.description,
+    runningStatusText(tunnel.isRunning),
+  ];
+}
+
+function forwardGroupSearchValues(group: any) {
+  return [
+    group.id,
+    group.name,
+    group.groupType,
+    group.groupMode,
+    group.remark,
+    group.remarks,
+    group.description,
+    group.isEnabled === false ? "已停用" : "已启用",
+  ];
+}
+
+function ruleStatusText(rule: any) {
+  return rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+}
+
+function runningStatusText(value: unknown) {
+  return value ? "运行中" : "未运行";
+}
+
+function onlineStatusText(value: unknown) {
+  return value ? "在线" : "离线";
+}
+
+function moreText(total: number, shown: number) {
+  return total > shown ? `\n\n还有 ${total - shown} 条未展示，可加关键字缩小范围。` : "";
+}
+
+async function hostNameByIdMap(hostIds: number[]) {
+  const uniqueIds = Array.from(new Set(hostIds.filter((id) => Number.isFinite(id) && id > 0)));
+  const entries = await Promise.all(uniqueIds.map(async (id) => [id, await db.getHostById(id).catch(() => null)] as const));
+  return new Map(entries.filter((entry) => entry[1]).map(([id, host]) => [id, host]));
+}
+
+async function aiRulesText(user: any, keyword?: string) {
+  const rules = await visibleRulesForTelegramUser(user);
+  const matched = rules.filter((rule) => searchMatches(keyword, ruleSearchValues(rule)));
+  if (matched.length === 0) return `<b>转发规则查询</b>\n\n没有找到匹配的规则。`;
+  const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
+  const lines = visible.map((rule: any) => [
+    `#${rule.id} <b>${escapeHtml(shortText(rule.name, 28))}</b>`,
+    `${ruleStatusText(rule)} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
+    `入口端口：${rule.sourcePort} → ${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
+    rule.tunnelId ? `隧道 ID：${rule.tunnelId}` : `主机 ID：${rule.hostId}`,
+  ].join("\n"));
+  return `<b>转发规则查询</b>\n共 ${matched.length}/${rules.length} 条${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+}
+
+async function aiRuleDetailText(user: any, ruleId: number) {
+  const rules = await visibleRulesForTelegramUser(user);
+  const rule = rules.find((item: any) => Number(item.id) === Number(ruleId));
+  if (!rule) return "规则不存在或无权查看。";
+  return [
+    `<b>规则 #${rule.id}</b>`,
+    "",
+    `名称：${escapeHtml(rule.name)}`,
+    `状态：${ruleStatusText(rule)}`,
+    `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
+    `入口端口：${rule.sourcePort}`,
+    `目标：${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
+    rule.tunnelId ? `隧道 ID：${rule.tunnelId}` : `主机 ID：${rule.hostId}`,
+    rule.remark || rule.remarks || rule.description ? `备注：${escapeHtml(rule.remark || rule.remarks || rule.description)}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function aiHostsText(user: any, keyword?: string) {
+  const hosts = await visibleHostsForTelegramUser(user);
+  const matched = hosts.filter((host) => searchMatches(keyword, hostSearchValues(host)));
+  if (matched.length === 0) return `<b>主机查询</b>\n\n没有找到匹配的主机。`;
+  const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
+  const lines = visible.map((host: any) => [
+    `#${host.id} <b>${escapeHtml(shortText(host.name, 28))}</b> · ${onlineStatusText(host.isOnline)}`,
+    `地址：${escapeHtml(host.ip || host.ipv4 || host.ipv6 || "-")}`,
+    host.entryIp ? `入口：${escapeHtml(host.entryIp)}` : "",
+    host.tunnelEntryIp ? `内网入口：${escapeHtml(host.tunnelEntryIp)}` : "",
+    host.agentVersion ? `Agent：${escapeHtml(host.agentVersion)}` : "",
+    host.lastHeartbeat ? `心跳：${escapeHtml(formatDateTime(host.lastHeartbeat))}` : "",
+  ].filter(Boolean).join("\n"));
+  return `<b>主机查询</b>\n共 ${matched.length}/${hosts.length} 台${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+}
+
+async function aiTunnelsText(user: any, keyword?: string) {
+  const tunnels = await visibleTunnelsForTelegramUser(user);
+  const hostIds = tunnels.flatMap((tunnel: any) => [Number(tunnel.entryHostId || 0), Number(tunnel.exitHostId || 0)]);
+  const hostsById = await hostNameByIdMap(hostIds);
+  const matched = tunnels.filter((tunnel: any) => {
+    const entryHost = hostsById.get(Number(tunnel.entryHostId || 0));
+    const exitHost = hostsById.get(Number(tunnel.exitHostId || 0));
+    return searchMatches(keyword, tunnelSearchValues(tunnel, entryHost, exitHost));
+  });
+  if (matched.length === 0) return `<b>链路查询</b>\n\n没有找到匹配的链路。`;
+  const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
+  const lines = visible.map((tunnel: any) => {
+    const entryHost = hostsById.get(Number(tunnel.entryHostId || 0));
+    const exitHost = hostsById.get(Number(tunnel.exitHostId || 0));
+    const latency = tunnel.latestLatencyMs ?? tunnel.lastLatencyMs;
+    return [
+      `#${tunnel.id} <b>${escapeHtml(shortText(tunnel.name, 28))}</b> · ${runningStatusText(tunnel.isRunning)}`,
+      `路径：${escapeHtml(entryHost?.name || tunnel.entryHostId || "-")} → ${escapeHtml(exitHost?.name || tunnel.exitHostId || "-")}`,
+      `模式：${escapeHtml(tunnel.mode || "-")}${tunnel.listenPort ? ` · 出口端口：${tunnel.listenPort}` : ""}`,
+      latency != null ? `延迟：${latency} ms` : "",
+    ].filter(Boolean).join("\n");
+  });
+  return `<b>链路查询</b>\n共 ${matched.length}/${tunnels.length} 条${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+}
+
+async function aiForwardGroupsText(user: any, keyword?: string) {
+  const groups = await visibleForwardGroupsForTelegramUser(user);
+  const matched = groups.filter((group) => searchMatches(keyword, forwardGroupSearchValues(group)));
+  if (matched.length === 0) return `<b>转发组查询</b>\n\n没有找到匹配的转发组。`;
+  const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
+  const lines = visible.map((group: any) => [
+    `#${group.id} <b>${escapeHtml(shortText(group.name, 28))}</b> · ${group.isEnabled === false ? "已停用" : "已启用"}`,
+    `类型：${escapeHtml(group.groupType || "-")} · 模式：${escapeHtml(group.groupMode || "-")}`,
+    group.remark || group.remarks || group.description ? `备注：${escapeHtml(group.remark || group.remarks || group.description)}` : "",
+  ].filter(Boolean).join("\n"));
+  return `<b>转发组查询</b>\n共 ${matched.length}/${groups.length} 个${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+}
+
+async function aiUsersText(user: any, keyword?: string) {
+  if (user.role !== "admin") {
+    return [userInfoText(user), "", await usageText(user)].join("\n");
+  }
+  const users = await db.getUserTrafficSummaries();
+  const matched = (users as any[]).filter((item) => searchMatches(keyword, [item.id, item.name, item.username, item.role, item.email]));
+  if (matched.length === 0) return `<b>用户查询</b>\n\n没有找到匹配的用户。`;
+  const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
+  const lines = visible.map((item: any) => {
+    const limit = Number(item.trafficLimit) || 0;
+    return `#${item.id} <b>${escapeHtml(shortText(item.name || item.username, 22))}</b> · ${item.role === "admin" ? "管理员" : "用户"}\n流量：${escapeHtml(formatBytes(item.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}\n到期：${escapeHtml(formatDate(item.expiresAt))}`;
+  });
+  return `<b>用户查询</b>\n共 ${matched.length}/${users.length} 个${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+}
+
+function aiQueryHelpText() {
+  return [
+    "<b>自然语言查询</b>",
+    "",
+    "可以直接发送：",
+    "我的流量",
+    "查规则 443",
+    "规则 #12 详情",
+    "主机 上海",
+    "链路 东京",
+    "",
+    "当前只支持查询，不会执行开启、关闭、删除等操作。",
+  ].join("\n");
+}
+
+async function aiQueryText(user: any, rawText: string) {
+  const query = rawText.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!query) return aiQueryHelpText();
+  const parsed = await parseAiQueryIntent(query);
+  switch (parsed.intent) {
+    case "usage":
+      return usageText(user);
+    case "account":
+      return userInfoText(user);
+    case "rules":
+      return aiRulesText(user, parsed.keyword);
+    case "rule_detail":
+      return parsed.id ? aiRuleDetailText(user, parsed.id) : aiRulesText(user, parsed.keyword);
+    case "hosts":
+      return aiHostsText(user, parsed.keyword);
+    case "tunnels":
+      return aiTunnelsText(user, parsed.keyword);
+    case "forward_groups":
+      return aiForwardGroupsText(user, parsed.keyword);
+    case "users":
+      return aiUsersText(user, parsed.keyword);
+    case "unsupported":
+      return "当前 AI 助手只支持查询，不会执行开启、关闭、删除、重置等操作。";
+    case "help":
+    default:
+      return aiQueryHelpText();
+  }
+}
+
+async function handleAiQuery(message: TelegramMessage, user: any, rawText: string) {
+  await sendMessage(message.chat.id, await aiQueryText(user, rawText));
+}
 async function handleUsage(message: TelegramMessage, user: any) {
   await sendMessage(message.chat.id, await usageText(user));
 }
@@ -1094,6 +1546,7 @@ async function handleMessage(message: TelegramMessage) {
   if (command === "/menu") return sendMainMenu(message.chat.id, user);
   if (command === "/usage") return handleUsage(message, user);
   if (command === "/rules") return handleRules(message, user);
+  if (command === "/ask") return handleAiQuery(message, user, text);
   if (command === "/redeem") return handleRedeem(message, user, args.join(" "));
   if (command === "/login") return handleLogin(message, user);
   if (command === "/enable") return handleRuleToggle(message, user, args[0], true);
@@ -1106,6 +1559,8 @@ async function handleMessage(message: TelegramMessage) {
   if (user.role === "admin" && command === "/users") return handleUsers(message);
   if (user.role === "admin" && command === "/reset") return handleReset(message, args[0]);
   if (user.role === "admin" && command === "/renew") return handleRenew(message, args[0]);
+
+  if (!text.startsWith("/")) return handleAiQuery(message, user, text);
 
   await sendMessage(message.chat.id, helpText(true, user.role === "admin"));
 }

@@ -77,6 +77,10 @@ const forwardProtocolSettingsSchema = z.object(
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
+const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
+const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const logPageInputSchema = z.object({
   level: panelLogLevelSchema.default("all"),
   limit: z.number().int().min(1).max(500).default(200),
@@ -642,6 +646,12 @@ function normalizeOptionalHttpUrl(value: string) {
   return trimmed.replace(/\/+$/, "");
 }
 
+function normalizeDeepSeekNumber(value: string | null | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function databaseSettingsSummary(all: Record<string, string | null>, exposeDetails = true) {
   const type = all.databaseType || (all.postgresqlConfigured === "true" ? "postgresql" : all.mysqlConfigured === "true" ? "mysql" : "sqlite");
   const configured = all.databaseConfigured === "true" || all.mysqlConfigured === "true" || all.postgresqlConfigured === "true";
@@ -780,6 +790,15 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       trafficReminder: false,
       trafficReminderThreshold: 20,
       hostStatusNotify: false,
+    },
+    deepseek: {
+      enabled: false,
+      configured: false,
+      apiKeyMasked: "",
+      baseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+      model: DEFAULT_DEEPSEEK_MODEL,
+      maxTokens: DEFAULT_DEEPSEEK_MAX_TOKENS,
+      temperature: DEFAULT_DEEPSEEK_TEMPERATURE,
     },
   };
 }
@@ -922,6 +941,15 @@ export const systemRouter = router({
         trafficReminderThreshold: Number(all.telegramTrafficReminderThreshold || 20),
         hostStatusNotify: all.telegramHostStatusNotify === "true",
       },
+      deepseek: {
+        enabled: all.deepseekAiEnabled === "true",
+        configured: !!String(all.deepseekApiKey || "").trim(),
+        apiKeyMasked: maskSecret(all.deepseekApiKey),
+        baseUrl: all.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+        model: all.deepseekModel || DEFAULT_DEEPSEEK_MODEL,
+        maxTokens: normalizeDeepSeekNumber(all.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
+        temperature: normalizeDeepSeekNumber(all.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+      },
     };
   }),
 
@@ -968,6 +996,15 @@ export const systemRouter = router({
           trafficReminder: z.boolean().optional(),
           trafficReminderThreshold: z.number().int().min(1).max(99).optional(),
           hostStatusNotify: z.boolean().optional(),
+        }).optional(),
+        deepseek: z.object({
+          enabled: z.boolean().optional(),
+          apiKey: z.string().max(512).optional(),
+          clearApiKey: z.boolean().optional(),
+          baseUrl: z.string().max(256).optional(),
+          model: z.string().max(128).optional(),
+          maxTokens: z.number().int().min(128).max(8192).optional(),
+          temperature: z.number().min(0).max(2).optional(),
         }).optional(),
         ddns: z.object({
           enabled: z.boolean().optional(),
@@ -1151,6 +1188,34 @@ export const systemRouter = router({
           });
         }
         console.info("[Settings] telegram settings updated");
+      }
+      if (input.deepseek) {
+        const deepseek = input.deepseek;
+        const next: Record<string, string | null> = {};
+        const currentApiKey = String((await db.getSetting("deepseekApiKey")) || "").trim();
+        const submittedApiKey = String(deepseek.apiKey || "").trim();
+        const clearingApiKey = !!deepseek.clearApiKey;
+        const effectiveApiKey = clearingApiKey ? "" : (submittedApiKey || currentApiKey);
+        const currentEnabledSetting = await db.getSetting("deepseekAiEnabled");
+        const nextEnabled = deepseek.enabled !== undefined ? !!deepseek.enabled : currentEnabledSetting === "true";
+
+        if (nextEnabled && !effectiveApiKey) {
+          throw new Error("请先配置 DeepSeek API Key");
+        }
+        if (deepseek.enabled !== undefined) next.deepseekAiEnabled = deepseek.enabled ? "true" : "false";
+        if (deepseek.baseUrl !== undefined) next.deepseekBaseUrl = normalizeOptionalHttpUrl(deepseek.baseUrl) || DEFAULT_DEEPSEEK_BASE_URL;
+        if (deepseek.model !== undefined) next.deepseekModel = deepseek.model.trim() || DEFAULT_DEEPSEEK_MODEL;
+        if (deepseek.maxTokens !== undefined) next.deepseekMaxTokens = String(deepseek.maxTokens);
+        if (deepseek.temperature !== undefined) next.deepseekTemperature = String(deepseek.temperature);
+        if (deepseek.clearApiKey) {
+          next.deepseekApiKey = null;
+          next.deepseekAiEnabled = "false";
+        }
+        if (deepseek.apiKey !== undefined && deepseek.apiKey.trim()) {
+          next.deepseekApiKey = deepseek.apiKey.trim();
+        }
+        await db.setSettings(next);
+        console.info("[Settings] DeepSeek AI settings updated");
       }
       if (input.ddns) {
         const next: Record<string, string | null> = {};

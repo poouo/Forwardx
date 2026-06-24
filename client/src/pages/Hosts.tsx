@@ -1034,6 +1034,7 @@ function HostsContent() {
   const [bulkUpgradeDialogOpen, setBulkUpgradeDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<HostViewMode>(() => getStoredHostViewMode());
+  const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
   const [activeManageTab, setActiveManageTabState] = useState<HostManageTab>(() => getStoredHostManageTab(user?.role === "admin"));
@@ -1064,7 +1065,12 @@ function HostsContent() {
   }, [hosts]);
 
   const handleViewModeChange = (mode: HostViewMode) => {
-    setViewMode(mode);
+    setViewMode((current) => {
+      if ((current === "card" || current === "compact-card") && (mode === "card" || mode === "compact-card") && current !== mode) {
+        setHostCardModeTransitionKey((value) => value + 1);
+      }
+      return mode;
+    });
     storeHostViewMode(mode);
   };
 
@@ -1707,7 +1713,8 @@ function HostsContent() {
         ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
           <AutoAnimateContainer
-            duration={160}
+            key={`host-card-mode-${viewMode}-${hostCardModeTransitionKey}`}
+            duration={220}
             layout={false}
             className={
               viewMode === "compact-card"

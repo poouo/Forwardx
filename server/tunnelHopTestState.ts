@@ -23,7 +23,7 @@ export function recordTunnelHopTestResult(
     successPrefix?: string;
     failurePrefix?: string;
     totalLabel?: string;
-    latencyMode?: "sum" | "max";
+    latencyMode?: "sum" | "max" | "multi-source";
   },
 ): null | (Omit<HopTestAggregate, "ownerId"> & { tunnelId: number }) {
   const aggregate = recordHopTestResult(testId, result, {

@@ -5,7 +5,7 @@ import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
-import { LinkTestProbeView, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
+import { LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -162,6 +162,10 @@ type TunnelLatencySeriesMeta = {
   color: string;
 };
 
+type EntryAddress = {
+  label: string;
+  value: string;
+};
 type TunnelGlobeHostPoint = {
   pointKind?: "host";
   host: any;
@@ -307,6 +311,55 @@ function normalizeHopConnectHosts(
   return next;
 }
 
+function pushUniqueEntryAddress(rows: EntryAddress[], label: string, value: unknown) {
+  const text = String(value || "").trim();
+  if (!text || rows.some((row) => row.value === text)) return;
+  rows.push({ label, value: text });
+}
+
+function hostDdnsDomain(host: any | null | undefined) {
+  return host?.ddnsEnabled ? String(host?.ddnsDomain || "").trim() : "";
+}
+
+function hostAutoIpv4(host: any | null | undefined) {
+  const ipv4 = String(host?.ipv4 || "").trim();
+  if (ipv4) return ipv4;
+  const ip = String(host?.ip || "").trim();
+  return ip && !ip.includes(":") ? ip : "";
+}
+
+function hostAutoIpv6(host: any | null | undefined) {
+  const ipv6 = String(host?.ipv6 || "").trim();
+  if (ipv6) return ipv6;
+  const ip = String(host?.ip || "").trim();
+  return ip && ip.includes(":") ? ip : "";
+}
+
+function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
+  const rows: EntryAddress[] = [];
+  const manualEntry = String(host?.entryIp || "").trim();
+  const ddnsDomain = hostDdnsDomain(host);
+  const ipv4 = hostAutoIpv4(host);
+  const ipv6 = hostAutoIpv6(host);
+  if (manualEntry) {
+    pushUniqueEntryAddress(rows, "入口", manualEntry);
+  } else if (ddnsDomain) {
+    pushUniqueEntryAddress(rows, "DDNS", ddnsDomain);
+  } else {
+    pushUniqueEntryAddress(rows, ipv4 ? "IPv4" : ipv6 ? "IPv6" : "IP", ipv4 || ipv6 || host?.ip);
+  }
+  if (ipv6) pushUniqueEntryAddress(rows, "IPv6", ipv6);
+  return rows;
+}
+
+function formatAddressWithPort(address: string, port: number | string) {
+  const value = String(address || "").trim();
+  if (!value) return "";
+  if (value.includes(":") && !value.startsWith("[") && !value.endsWith("]")) {
+    return `[${value}]:${port}`;
+  }
+  return `${value}:${port}`;
+}
 function hostPublicAddress(host: any) {
   return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
 }
@@ -427,17 +480,57 @@ function hasLatestTunnelLatency(tunnel: any) {
     || tunnel?.latestLatencyIsTimeout === true;
 }
 
+function tunnelManualTestLatencyMs(tunnel: any) {
+  const value = tunnel?.lastLatencyMs;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Number(value) : null;
+}
+
+function tunnelLatestStatLatencyMs(tunnel: any) {
+  const value = tunnel?.latestLatencyMs;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Number(value) : null;
+}
+
+function hasStructuredTunnelTestMessage(parsed: ReturnType<typeof parseLinkTestMessage>) {
+  return !!parsed?.details?.length || typeof parsed?.totalLatencyMs === "number";
+}
+
 function tunnelDisplayLatencyMs(tunnel: any) {
-  return hasLatestTunnelLatency(tunnel) ? tunnel?.latestLatencyMs : tunnel?.lastLatencyMs;
+  const parsed = parseLinkTestMessage(tunnel?.lastTestMessage);
+  const structuredMessage = hasStructuredTunnelTestMessage(parsed);
+  const manualFallback = tunnelManualTestLatencyMs(tunnel);
+  const latestFallback = tunnelLatestStatLatencyMs(tunnel);
+  const status = String(tunnel?.lastTestStatus || "");
+  const isSuccess = status === "success";
+  const isFailed = status === "failed";
+  const latency = getLinkTestTotalLatency({
+    parsed,
+    fallbackLatencyMs: manualFallback,
+    isSuccess: isSuccess || (!structuredMessage && !isFailed && manualFallback !== null),
+  });
+  if (structuredMessage || isSuccess || isFailed || latency !== null) return latency;
+  if (latestFallback !== null) return latestFallback;
+  return manualFallback;
 }
 
 function tunnelLatencyIsTimeout(tunnel: any) {
   const value = tunnelDisplayLatencyMs(tunnel);
   const hasLatency = typeof value === "number" && Number.isFinite(value) && value >= 0;
-  if (hasLatestTunnelLatency(tunnel)) return !!tunnel?.latestLatencyIsTimeout && !hasLatency;
-  return !!tunnel?.latestLatencyIsTimeout || (tunnel?.lastTestStatus === "failed" && !hasLatency);
+  if (hasLatency) return false;
+  const parsed = parseLinkTestMessage(tunnel?.lastTestMessage);
+  const visibleDetails = (parsed.details || []).filter((detail) => (
+    detail.pending
+    || detail.success
+    || detail.message
+    || (typeof detail.latencyMs === "number" && Number.isFinite(detail.latencyMs))
+  ));
+  if (visibleDetails.some((detail) => detail.pending)) return false;
+  if (visibleDetails.length > 0) {
+    return String(tunnel?.lastTestStatus || "") === "failed" || visibleDetails.some((detail) => !detail.success);
+  }
+  if (String(tunnel?.lastTestStatus || "") === "failed") return true;
+  if (hasLatestTunnelLatency(tunnel)) return !!tunnel?.latestLatencyIsTimeout;
+  return !!tunnel?.latestLatencyIsTimeout;
 }
-
 function normalizeLongitude(lng: number) {
   if (lng < -180) return lng + 360;
   if (lng > 180) return lng - 360;
@@ -1262,12 +1355,14 @@ function TunnelSelfTestDialog({
   tunnelId,
   tunnelName,
   hosts,
+  entryGroups,
   open,
   onOpenChange,
 }: {
   tunnelId: number;
   tunnelName: string;
   hosts?: any[];
+  entryGroups?: any[];
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -1322,18 +1417,27 @@ function TunnelSelfTestDialog({
     });
     const hopIds = getTunnelHopIds(tunnel);
     const hostForId = (hostId: number) => fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
-    hopIds.forEach((hostId: number) => {
+    const entryGroup = (entryGroups || []).find((group: any) => Number(group?.id || 0) === Number(tunnel?.entryGroupId || 0));
+    const entryGroupMembers = enabledHostGroupMembers(entryGroup);
+    const addNodeMetaForHostId = (hostId: number) => {
       const host = hostForId(hostId);
       addHostNodeMeta(meta, host, [
         tunnelHopHostName(tunnel, hostId, hosts),
+        hostDisplayName(host),
         `主机${hostId}`,
         `主机 #${hostId}`,
       ]);
+    };
+    hopIds.forEach((hostId: number) => addNodeMetaForHostId(hostId));
+    entryGroupMembers.forEach((member: any) => {
+      const hostId = Number(member?.hostId || 0);
+      if (hostId > 0) addNodeMetaForHostId(hostId);
     });
     const firstHostId = Number(hopIds[0] || 0);
     const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
     const firstHost = hostForId(firstHostId);
     const lastHost = hostForId(lastHostId);
+    const nodeMetaFor = (host: any, hostId: number) => meta[hostDisplayName(host)] || meta[String(hostId)] || undefined;
     let plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
       const nextHostId = Number(hopIds[index + 1] || 0);
       const fromHost = hostForId(Number(hostId));
@@ -1341,16 +1445,46 @@ function TunnelSelfTestDialog({
       return {
         from: hostDisplayName(fromHost) || tunnelHopHostName(tunnel, Number(hostId), hosts),
         to: hostDisplayName(toHost) || tunnelHopHostName(tunnel, nextHostId, hosts),
-        fromMeta: meta[hostDisplayName(fromHost)] || meta[String(hostId)] || undefined,
-        toMeta: meta[hostDisplayName(toHost)] || meta[String(nextHostId)] || undefined,
+        fromMeta: nodeMetaFor(fromHost, Number(hostId)),
+        toMeta: nodeMetaFor(toHost, nextHostId),
       };
     }).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
+    const entryHostIds = Array.from(new Set([
+      firstHostId,
+      ...entryGroupMembers.map((member: any) => Number(member?.hostId || 0)),
+    ].filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)));
+    if (entryHostIds.length > 1 && hopIds.length >= 2) {
+      const nextHostId = Number(hopIds[1] || lastHostId || tunnel?.exitHostId || 0);
+      const nextHost = hostForId(nextHostId);
+      const nextLabel = hostDisplayName(nextHost) || tunnelHopHostName(tunnel, nextHostId, hosts);
+      const entrySegments: LinkTestPlannedSegment[] = entryHostIds.map((entryHostId) => {
+        const entryHost = hostForId(entryHostId);
+        return {
+          from: hostDisplayName(entryHost) || tunnelHopHostName(tunnel, entryHostId, hosts),
+          to: nextLabel,
+          fromMeta: nodeMetaFor(entryHost, entryHostId),
+          toMeta: nodeMetaFor(nextHost, nextHostId),
+        };
+      });
+      const restSegments: LinkTestPlannedSegment[] = hopIds.slice(1, -1).map((hostId: number, index: number) => {
+        const nextRestHostId = Number(hopIds[index + 2] || 0);
+        const fromHost = hostForId(Number(hostId));
+        const toHost = hostForId(nextRestHostId);
+        return {
+          from: hostDisplayName(fromHost) || tunnelHopHostName(tunnel, Number(hostId), hosts),
+          to: hostDisplayName(toHost) || tunnelHopHostName(tunnel, nextRestHostId, hosts),
+          fromMeta: nodeMetaFor(fromHost, Number(hostId)),
+          toMeta: nodeMetaFor(toHost, nextRestHostId),
+        };
+      });
+      plannedSegments = [...entrySegments, ...restSegments].filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
+    }
     const extraExits = Array.isArray(tunnel?.loadBalanceExits)
       ? tunnel.loadBalanceExits
         .filter((exit: any) => Number(exit?.hostId || 0) > 0)
         .sort((a: any, b: any) => Number(a?.seq || 0) - Number(b?.seq || 0))
       : [];
-    if (hopIds.length === 2 && tunnel?.loadBalanceEnabled && extraExits.length > 0) {
+    if (entryHostIds.length <= 1 && hopIds.length === 2 && tunnel?.loadBalanceEnabled && extraExits.length > 0) {
       const entryHost = hostForId(firstHostId);
       const entryLabel = hostDisplayName(entryHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName);
       const branchGroupKey = `tunnel-${tunnel?.id || tunnelName}-load-balance`;
@@ -1384,7 +1518,7 @@ function TunnelSelfTestDialog({
       targetLabel: hostDisplayName(lastHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
       plannedSegments,
     };
-  }, [hosts, tunnel, tunnelName]);
+  }, [entryGroups, hosts, tunnel, tunnelName]);
 
   useEffect(() => {
     if (!open) {
@@ -1752,6 +1886,51 @@ function TunnelsContent() {
     );
   };
 
+  const getTunnelHostForDisplay = (tunnel: any, hostId: number) => {
+    const id = Number(hostId || 0);
+    return (hosts || []).find((host: any) => Number(host.id) === id)
+      || (Array.isArray(tunnel?.hopHosts) ? tunnel.hopHosts.find((host: any) => Number(host?.id) === id) : null)
+      || (Number(tunnel?.entryHost?.id || 0) === id ? tunnel.entryHost : null)
+      || (Number(tunnel?.exitHost?.id || 0) === id ? tunnel.exitHost : null);
+  };
+
+  const getTunnelEntryAddressRows = (tunnel: any): EntryAddress[] => {
+    const entryGroup = tunnel?.entryGroupId ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
+    const entryMembers = enabledHostGroupMembers(entryGroup);
+    if (entryMembers.length > 1) {
+      const groupDomain = String(entryGroup?.domain || "").trim();
+      if (groupDomain) return [{ label: "入口组", value: groupDomain }];
+      const memberDdns = entryMembers
+        .map((member: any) => getTunnelHostForDisplay(tunnel, Number(member.hostId || 0)))
+        .map((host: any) => hostDdnsDomain(host))
+        .find(Boolean);
+      if (memberDdns) return [{ label: "DDNS", value: memberDdns }];
+      const firstHostId = Number(entryMembers[0]?.hostId || tunnel?.entryHostId || 0);
+      const fallback = getHostEntryAddresses(getTunnelHostForDisplay(tunnel, firstHostId))[0];
+      return fallback ? [fallback] : [];
+    }
+    const entryHostId = Number(tunnel?.entryHostId || getTunnelHopIds(tunnel)[0] || 0);
+    return getHostEntryAddresses(getTunnelHostForDisplay(tunnel, entryHostId));
+  };
+
+  const renderTunnelEntryAddress = (tunnel: any, compact = false) => {
+    const port = Number(tunnel?.listenPort || 0) || "-";
+    const rows = getTunnelEntryAddressRows(tunnel);
+    const codeClass = compact
+      ? "inline-flex max-w-full min-w-0 truncate rounded bg-muted/50 px-1.5 py-0.5"
+      : "inline-flex max-w-[18rem] min-w-0 truncate rounded bg-muted/40 px-1.5 py-0.5";
+    if (rows.length === 0) {
+      return <code className={codeClass}>:{port}</code>;
+    }
+    return rows.map((row) => {
+      const value = formatAddressWithPort(row.value, port);
+      return (
+        <code key={`${row.label}-${row.value}`} className={codeClass} title={`${row.label} ${value}`}>
+          {value}
+        </code>
+      );
+    });
+  };
   const resetForm = () => {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
@@ -2293,7 +2472,7 @@ function TunnelsContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {getTunnelModeDisplay(tunnel.mode)}
                         </Badge>
-                        <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
+                        {renderTunnelEntryAddress(tunnel, true)}
                       </div>
                     </div>
 
@@ -2371,7 +2550,7 @@ function TunnelsContent() {
                         <Badge variant="outline" className="text-[10px]">
                           {getTunnelModeDisplay(tunnel.mode)}
                         </Badge>
-                        <code className="rounded bg-muted/50 px-1.5 py-0.5">:{tunnel.listenPort}</code>
+                        {renderTunnelEntryAddress(tunnel, true)}
                       </div>
                     </div>
 
@@ -2446,7 +2625,7 @@ function TunnelsContent() {
                       <TableCell>
                         <div className="flex min-w-0 items-center gap-2 text-xs">
                           {renderTunnelRoute(tunnel)}
-                          <code className="rounded bg-muted/40 px-1.5 py-0.5">:{tunnel.listenPort}</code>
+                          {renderTunnelEntryAddress(tunnel)}
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
@@ -2630,6 +2809,7 @@ function TunnelsContent() {
           tunnelId={testTunnel.id}
           tunnelName={testTunnel.name}
           hosts={hosts || []}
+          entryGroups={entryGroups}
           open={!!testTunnel}
           onOpenChange={(open) => !open && setTestTunnel(null)}
         />

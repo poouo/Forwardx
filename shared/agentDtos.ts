@@ -57,6 +57,9 @@ export type SelfTestMeta =
       hopLabel?: string;
       routeLabel?: string;
       batchId?: string;
+      groupKey?: string;
+      groupLabel?: string;
+      latencyMode?: "sum" | "max" | "multi-source";
     }
   | {
       kind: "forward-via-tunnel";
@@ -85,7 +88,7 @@ export type SelfTestMeta =
       batchId?: string;
       groupKey?: string;
       groupLabel?: string;
-      latencyMode?: "sum" | "max";
+      latencyMode?: "sum" | "max" | "multi-source";
     };
 
 export function isAgentTrafficStat(value: unknown): value is AgentTrafficStat {

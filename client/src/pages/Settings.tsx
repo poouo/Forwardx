@@ -663,6 +663,7 @@ function SettingsContent() {
         {/* Telegram Bot Tab */}
         <TabsContent value="telegram" className="space-y-4">
           <TelegramBotSettingsCard />
+          <DeepSeekSettingsCard />
         </TabsContent>
 
         {/* Email Settings Tab */}
@@ -2054,6 +2055,253 @@ function TelegramBotSettingsCard() {
   );
 }
 
+function DeepSeekSettingsCard() {
+  const utils = trpc.useUtils();
+  const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
+  const [deepseekEnabled, setDeepseekEnabled] = useState(false);
+  const [deepseekApiKeyInput, setDeepseekApiKeyInput] = useState("");
+  const [deepseekBaseUrl, setDeepseekBaseUrl] = useState("https://api.deepseek.com");
+  const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
+  const [deepseekMaxTokens, setDeepseekMaxTokens] = useState(1024);
+  const [deepseekTemperature, setDeepseekTemperature] = useState(0.2);
+  const [showDeleteDeepSeekKey, setShowDeleteDeepSeekKey] = useState(false);
+
+  useEffect(() => {
+    if (settings?.deepseek) {
+      setDeepseekEnabled(!!settings.deepseek.enabled);
+      setDeepseekBaseUrl(settings.deepseek.baseUrl || "https://api.deepseek.com");
+      setDeepseekModel(settings.deepseek.model || "deepseek-chat");
+      setDeepseekMaxTokens(Number(settings.deepseek.maxTokens || 1024));
+      setDeepseekTemperature(Number(settings.deepseek.temperature ?? 0.2));
+    }
+  }, [settings]);
+
+  const updateSettingsMutation = trpc.system.updateSettings.useMutation({
+    onSuccess: () => {
+      utils.system.getSettings.invalidate();
+      setDeepseekApiKeyInput("");
+      toast.success("DeepSeek 配置已保存");
+    },
+    onError: (err) => toast.error(err.message || "保存失败"),
+  });
+
+  const normalizeMaxTokens = () => {
+    const value = Math.floor(Number(deepseekMaxTokens));
+    if (!Number.isFinite(value)) return 1024;
+    return Math.min(8192, Math.max(128, value));
+  };
+
+  const normalizeTemperature = () => {
+    const value = Number(deepseekTemperature);
+    if (!Number.isFinite(value)) return 0.2;
+    return Math.min(2, Math.max(0, value));
+  };
+
+  const handleSaveDeepSeek = () => {
+    const nextApiKey = deepseekApiKeyInput.trim();
+    const hasApiKey = !!settings?.deepseek?.configured || !!nextApiKey;
+    if (deepseekEnabled && !hasApiKey) {
+      toast.error("请先填写 DeepSeek API Key");
+      return;
+    }
+    const maxTokens = normalizeMaxTokens();
+    const temperature = normalizeTemperature();
+    updateSettingsMutation.mutate({
+      deepseek: {
+        enabled: deepseekEnabled,
+        apiKey: !settings?.deepseek?.configured && nextApiKey ? nextApiKey : undefined,
+        baseUrl: deepseekBaseUrl.trim() || "https://api.deepseek.com",
+        model: deepseekModel.trim() || "deepseek-chat",
+        maxTokens,
+        temperature,
+      },
+    });
+    setDeepseekMaxTokens(maxTokens);
+    setDeepseekTemperature(temperature);
+  };
+
+  const handleClearDeepSeekKey = () => {
+    updateSettingsMutation.mutate({
+      deepseek: {
+        enabled: false,
+        clearApiKey: true,
+      },
+    });
+    setDeepseekEnabled(false);
+    setDeepseekApiKeyInput("");
+    setShowDeleteDeepSeekKey(false);
+  };
+
+  const deepseekKeyLocked = !!settings?.deepseek?.configured;
+  const deepseekKeyDisplayValue = deepseekKeyLocked
+    ? settings?.deepseek?.apiKeyMasked || ""
+    : deepseekApiKeyInput;
+  const hasDeepSeekKeyForEnable = !!settings?.deepseek?.configured || !!deepseekApiKeyInput.trim();
+
+  return (
+    <>
+      <Card className="border-emerald-500/25 bg-emerald-500/5 backdrop-blur-md">
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Key className="h-4 w-4 text-emerald-500" />
+                DeepSeek 大模型
+              </CardTitle>
+              <CardDescription className="mt-1">
+                配置 DeepSeek API，供 Telegram AI 指令解析等功能使用。
+              </CardDescription>
+            </div>
+            <Badge variant={settings?.deepseek?.configured ? "default" : "outline"} className="w-fit">
+              {settings?.deepseek?.configured ? "已配置" : "未配置"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isLoading ? (
+            <DataSectionLoading label="正在加载 DeepSeek 配置" minHeight="min-h-[120px]" />
+          ) : (
+            <>
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+                <div className="space-y-2">
+                  <Label>API Key</Label>
+                  <Input
+                    type="text"
+                    placeholder={settings?.deepseek?.apiKeyMasked || "从 DeepSeek 控制台获取，例如 sk-..."}
+                    value={deepseekKeyDisplayValue}
+                    onChange={(e) => {
+                      if (!deepseekKeyLocked) setDeepseekApiKeyInput(e.target.value);
+                    }}
+                    readOnly={deepseekKeyLocked}
+                    onMouseDown={(e) => {
+                      if (deepseekKeyLocked) e.preventDefault();
+                    }}
+                    onSelect={(e) => {
+                      if (deepseekKeyLocked) e.currentTarget.setSelectionRange(0, 0);
+                    }}
+                    className={deepseekKeyLocked ? "select-none font-mono" : "font-mono"}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    当前仅保存模型配置，后续 Telegram 自然语言指令会使用这里的配置。
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">启用 AI 助手</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {settings?.deepseek?.configured ? settings.deepseek.model : "保存 API Key 后启用"}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={deepseekEnabled}
+                      onCheckedChange={(checked) => {
+                        if (checked && !hasDeepSeekKeyForEnable) {
+                          toast.error("请先填写 DeepSeek API Key");
+                          return;
+                        }
+                        setDeepseekEnabled(checked);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                <div className="space-y-2">
+                  <Label>接口地址</Label>
+                  <Input
+                    type="text"
+                    value={deepseekBaseUrl}
+                    onChange={(e) => setDeepseekBaseUrl(e.target.value)}
+                    placeholder="https://api.deepseek.com"
+                    className="font-mono"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>模型</Label>
+                  <Input
+                    type="text"
+                    value={deepseekModel}
+                    onChange={(e) => setDeepseekModel(e.target.value)}
+                    placeholder="deepseek-chat"
+                    className="font-mono"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>最大输出</Label>
+                  <Input
+                    type="number"
+                    min={128}
+                    max={8192}
+                    value={deepseekMaxTokens}
+                    onChange={(e) => setDeepseekMaxTokens(Math.min(8192, Math.max(128, Number(e.target.value) || 1024)))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>温度</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={deepseekTemperature}
+                    onChange={(e) => setDeepseekTemperature(Math.min(2, Math.max(0, Number(e.target.value) || 0)))}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={handleSaveDeepSeek} disabled={updateSettingsMutation.isPending}>
+                  {updateSettingsMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  保存 DeepSeek 配置
+                </Button>
+                {settings?.deepseek?.configured && (
+                  <Button
+                    variant="outline"
+                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => setShowDeleteDeepSeekKey(true)}
+                    disabled={updateSettingsMutation.isPending}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    删除 API Key
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={showDeleteDeepSeekKey} onOpenChange={setShowDeleteDeepSeekKey}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              删除 DeepSeek API Key
+            </DialogTitle>
+            <DialogDescription>
+              删除后会同时关闭 DeepSeek AI 助手，需要重新填写 API Key 后才能启用。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+            <p className="text-xs text-muted-foreground">当前配置</p>
+            <p className="mt-1 font-medium">{settings?.deepseek?.model || "deepseek-chat"}</p>
+            <p className="mt-2 font-mono text-xs text-muted-foreground">{settings?.deepseek?.apiKeyMasked || "-"}</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteDeepSeekKey(false)}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleClearDeepSeekKey} disabled={updateSettingsMutation.isPending}>
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 type SystemSettingsSaveKey =
   | "branding"
   | "panelUrl"
