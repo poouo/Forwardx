@@ -161,13 +161,14 @@ const nftComment = (rule: any) => `fwx-rule-${Number(rule.id) || 0}`;
 const nftTrafficPreroutingChain = "traffic_prerouting";
 const nftTrafficPostroutingChain = "traffic_postrouting";
 const nftTrafficForwardChain = "traffic_forward";
+const nftDirectionComment = (comment: string, direction: "in" | "out") => `${comment}-${direction}`;
 
 function nftOptional(command: string) {
   return `${command} 2>/dev/null; true`;
 }
 
-function nftForwardCounterRuleWithFallback(counterRule: string, fallbackRule: string, label: string) {
-  return `${counterRule} || { echo "[nftables] counter rule failed, fallback=${label}"; ${fallbackRule}; }`;
+function nftForwardCounterRuleWithFallback(counterRule: string, alternateCounterRule: string, commentedRule: string, bareRule: string, label: string) {
+  return `${counterRule} || { echo "[nftables] counter rule failed, fallback=${label}"; ${alternateCounterRule} || { echo "[nftables] alternate counter rule failed, fallback=${label}:comment"; ${commentedRule} || { echo "[nftables] commented rule failed, fallback=${label}:bare"; ${bareRule} || true; }; }; }`;
 }
 
 function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
@@ -179,8 +180,26 @@ function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
   });
 }
 
+function buildNftForwardTargetCleanupCmds(rule: any): string[] {
+  const targetIp = cleanAddress(rule.targetIp);
+  const targetPort = Number(rule.targetPort) || 0;
+  if (!targetIp || targetPort <= 0) return [];
+  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const family = nftAddressFamily(targetIp);
+  const cmds: string[] = [];
+  for (const proto of protos) {
+    const deleteBy = (direction: "daddr" | "saddr", portField: "dport" | "sport") => {
+      const awk = `awk -v family='${family}' -v addr='${targetIp}' -v proto='${proto}' -v port='${targetPort}' 'index($0, family " ${direction} " addr) && index($0, proto " ${portField} " port) {print $NF}'`;
+      return `if nft list chain inet ${nftTable} forward >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} forward 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} forward handle "$h" 2>/dev/null; true; done; fi; true`;
+    };
+    cmds.push(deleteBy("daddr", "dport"));
+    cmds.push(deleteBy("saddr", "sport"));
+  }
+  return cmds;
+}
+
 function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
-  return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v prefix='comment "${comment}:' 'index($0, exact) || index($0, prefix) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
+  return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v colon='comment "${comment}:' -v dash='comment "${comment}-' 'index($0, exact) || index($0, colon) || index($0, dash) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
 
 export function buildNftCleanupCmds(rule: any): string[] {
@@ -188,6 +207,7 @@ export function buildNftCleanupCmds(rule: any): string[] {
   const comment = nftComment(rule);
   return [
     ...buildNftPortCleanupCmds(Number(rule.sourcePort)),
+    ...buildNftForwardTargetCleanupCmds(rule),
     nftDeleteCommentedRulesCmd("prerouting", comment),
     nftDeleteCommentedRulesCmd("postrouting", comment),
     nftDeleteCommentedRulesCmd("forward", comment),
@@ -224,17 +244,23 @@ export function buildNftForwardCmds(rule: any): string[] {
     nftOptional(`nft add chain inet ${nftTable} forward '{ type filter hook forward priority filter; policy accept; }'`),
   ];
   for (const proto of protos) {
+    const inComment = nftDirectionComment(comment, "in");
+    const outComment = nftDirectionComment(comment, "out");
     cmds.push(`nft add rule inet ${nftTable} prerouting meta l4proto ${proto} ${proto} dport ${rule.sourcePort} dnat ${family} to ${dnatTarget} comment "${comment}"`);
     cmds.push(`nft add rule inet ${nftTable} postrouting meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} masquerade comment "${comment}"`);
     cmds.push(nftForwardCounterRuleWithFallback(
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment "${comment}:in"`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept comment "${comment}:in"`,
-      `${comment}:in:${proto}`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} counter accept comment "${inComment}"`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} comment "${inComment}" counter accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} comment "${inComment}" accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} daddr ${targetIp} ${proto} dport ${rule.targetPort} accept`,
+      `${inComment}:${proto}`,
     ));
     cmds.push(nftForwardCounterRuleWithFallback(
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related counter accept comment "${comment}:out"`,
-      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related accept comment "${comment}:out"`,
-      `${comment}:out:${proto}`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related counter accept comment "${outComment}"`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related comment "${outComment}" counter accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} ct state established,related comment "${outComment}" accept`,
+      `nft add rule inet ${nftTable} forward meta l4proto ${proto} ${family} saddr ${targetIp} ${proto} sport ${rule.targetPort} accept`,
+      `${outComment}:${proto}`,
     ));
   }
   return cmds;

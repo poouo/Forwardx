@@ -621,7 +621,7 @@ func nftablesCounterSnapshot() map[int]trafficCounters {
 	if err != nil {
 		return out
 	}
-	commentPattern := regexp.MustCompile(`fwx-rule-([0-9]+):(in|out)`)
+	commentPattern := regexp.MustCompile(`fwx-rule-([0-9]+)(?::|-)(in|out)`)
 	chainPattern := regexp.MustCompile(`^chain\s+(in|out)_([0-9]+)\s+\{`)
 	currentLegacyDirection := ""
 	currentLegacyRuleID := 0
@@ -853,8 +853,9 @@ func nftablesBytes(ruleID int, port string) (uint64, uint64) {
 }
 
 func nftablesRuleBytes(chain string, ruleID int, direction string) uint64 {
-	marker := fmt.Sprintf("fwx-rule-%d:%s", ruleID, direction)
-	cmd := fmt.Sprintf(`nft -a list chain inet forwardx %s 2>/dev/null | awk -v marker=%s '$0 ~ marker && /counter packets/ {for(i=1;i<=NF;i++) if($i=="bytes") {s+=$(i+1)}} END{print s+0}'`, shellQuote(chain), shellQuote(marker))
+	colonMarker := fmt.Sprintf("fwx-rule-%d:%s", ruleID, direction)
+	dashMarker := fmt.Sprintf("fwx-rule-%d-%s", ruleID, direction)
+	cmd := fmt.Sprintf(`nft -a list chain inet forwardx %s 2>/dev/null | awk -v colon=%s -v dash=%s '(index($0, colon) || index($0, dash)) && /counter packets/ {for(i=1;i<=NF;i++) if($i=="bytes") {s+=$(i+1)}} END{print s+0}'`, shellQuote(chain), shellQuote(colonMarker), shellQuote(dashMarker))
 	out, err := exec.Command("sh", "-lc", cmd).Output()
 	if err != nil {
 		return 0
