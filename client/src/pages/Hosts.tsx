@@ -1899,6 +1899,12 @@ function HostsContent() {
 
         {user?.role === "admin" && (
           <TabsContent value="services" className="space-y-4">
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold tracking-tight sm:text-xl">服务管理</h2>
+              <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
+                管理主机 Ping / TCPing 探测服务。
+              </p>
+            </div>
             <HostProbeServiceManager
               createSignal={serviceCreateSignal}
               onCreateSignalHandled={() => setServiceCreateSignal(0)}

@@ -2200,6 +2200,12 @@ function TunnelsContent() {
         </TabsList>
 
         <TabsContent value="tunnels" className="space-y-4">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold tracking-tight sm:text-xl">隧道链路</h2>
+            <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
+              管理通过 GOST / ForwardX 串联主机的隧道链路。
+            </p>
+          </div>
           <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
       {viewMode === "globe" ? (
         (isLoading || forwardGroupsLoading || !tunnels || !forwardGroups || !hosts) ? (
