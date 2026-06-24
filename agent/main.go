@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.113"
+var Version = "2.2.114"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -4248,11 +4248,14 @@ func publicIPs() (string, string) {
 		"https://ipv4.icanhazip.com",
 		"https://v4.ident.me",
 	})
-	ipv6 := fetchPublicIP([]string{
-		"https://api6.ipify.org",
-		"https://ipv6.icanhazip.com",
-		"https://v6.ident.me",
-	})
+	ipv6 := localPublicIPv6()
+	if ipv6 == "" {
+		ipv6 = fetchPublicIP([]string{
+			"https://api6.ipify.org",
+			"https://ipv6.icanhazip.com",
+			"https://v6.ident.me",
+		})
+	}
 	publicIPMu.Lock()
 	if ipv4 != "" || ipv6 != "" {
 		publicIPv4Cache = ipv4
@@ -4278,6 +4281,99 @@ func fetchPublicIP(urls []string) string {
 		}
 	}
 	return ""
+}
+
+func localPublicIPv6() string {
+	if ip := localPublicIPv6FromIPCommand(); ip != "" {
+		return ip
+	}
+	return localPublicIPv6FromInterfaces()
+}
+
+func localPublicIPv6FromIPCommand() string {
+	out, err := exec.Command("ip", "-o", "-6", "addr", "show", "scope", "global").Output()
+	if err != nil {
+		return ""
+	}
+	type candidate struct {
+		ip    string
+		score int
+	}
+	candidates := []candidate{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field != "inet6" || i+1 >= len(fields) {
+				continue
+			}
+			ip := publicIPv6Literal(strings.Split(fields[i+1], "/")[0])
+			if ip == "" {
+				continue
+			}
+			flags := strings.ToLower(strings.Join(fields[i+2:], " "))
+			if strings.Contains(flags, "tentative") || strings.Contains(flags, "dadfailed") {
+				continue
+			}
+			score := 100
+			if strings.Contains(flags, "deprecated") {
+				score -= 40
+			}
+			if strings.Contains(flags, "temporary") {
+				score -= 20
+			}
+			candidates = append(candidates, candidate{ip: ip, score: score})
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	return candidates[0].ip
+}
+
+func localPublicIPv6FromInterfaces() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip := publicIPv6Literal(ip.String()); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+func publicIPv6Literal(value string) string {
+	ip := net.ParseIP(strings.Trim(strings.TrimSpace(value), "[]"))
+	if ip == nil || ip.To4() != nil || !ip.IsGlobalUnicast() || isUniqueLocalIPv6(ip) {
+		return ""
+	}
+	return ip.String()
+}
+
+func isUniqueLocalIPv6(ip net.IP) bool {
+	ip = ip.To16()
+	return ip != nil && ip[0]&0xfe == 0xfc
 }
 
 func readMeminfo() map[string]uint64 {

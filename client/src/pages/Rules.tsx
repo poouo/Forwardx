@@ -3610,9 +3610,41 @@ function RulesContent() {
     );
   };
 
+  const forwardToolBadgeClass = (forwardType: unknown) => {
+    const type = String(forwardType || "");
+    if (type === "iptables" || type === "nftables") return "border-primary/25 bg-primary/5 text-primary";
+    if (type === "socat") return "border-chart-5/25 bg-chart-5/5 text-chart-5";
+    if (type === "gost") return "border-chart-4/25 bg-chart-4/5 text-chart-4";
+    return "border-chart-3/25 bg-chart-3/5 text-chart-3";
+  };
+
+  const renderForwardToolBadge = (rule: any) => {
+    const forwardType = String(rule.forwardType || "");
+    const label = FORWARD_TYPE_LABELS[forwardType as ForwardType] || forwardType || "-";
+    return (
+      <Badge
+        variant="outline"
+        className={`w-fit whitespace-nowrap text-[10px] ${forwardToolBadgeClass(forwardType)}`}
+        title={`转发工具：${label}`}
+      >
+        {forwardType === "iptables" || forwardType === "nftables" ? (
+          <Shield className="mr-1 h-3 w-3" />
+        ) : forwardType === "socat" ? (
+          <ArrowRightLeft className="mr-1 h-3 w-3" />
+        ) : forwardType === "gost" ? (
+          <Network className="mr-1 h-3 w-3" />
+        ) : (
+          <Zap className="mr-1 h-3 w-3" />
+        )}
+        {label}
+      </Badge>
+    );
+  };
+
   const renderRouteBadge = (rule: any) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
+    const isChainRoute = !!rule.forwardGroupId && isForwardChainGroup(group);
     const badge = (
       <Badge
         variant="outline"
@@ -3629,7 +3661,7 @@ function RulesContent() {
         }`}
       >
         {rule.forwardGroupId ? (
-          <><Layers3 className="h-3 w-3 mr-1" />{isForwardChainGroup(group) ? "端口转发链" : "转发组"}</>
+          <><Layers3 className="h-3 w-3 mr-1" />{isChainRoute ? "端口转发链" : "转发组"}</>
         ) : tunnel ? (
           <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel).badgeLabel}</>
         ) : rule.forwardType === "iptables" ? (
@@ -3645,6 +3677,14 @@ function RulesContent() {
         )}
       </Badge>
     );
+    if (isChainRoute) {
+      return (
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          {badge}
+          {renderForwardToolBadge(rule)}
+        </div>
+      );
+    }
     if (!tunnel) return badge;
     return (
       <div className="flex min-w-0 flex-col gap-1">
