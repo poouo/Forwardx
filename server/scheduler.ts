@@ -35,6 +35,38 @@ function structuredLinkTestMessage(input: {
   });
 }
 
+function tunnelHopLatencyMode(meta: any): "sum" | "max" | "multi-source" {
+  const value = String(meta?.latencyMode || "");
+  return value === "max" || value === "multi-source" ? value : "sum";
+}
+
+function tunnelHopModeText(latencyMode: "sum" | "max" | "multi-source") {
+  if (latencyMode === "max") {
+    return {
+      kind: "tunnel-load-balance-summary",
+      label: "多出口负载探测",
+      successPrefix: "多出口负载探测成功",
+      failurePrefix: "多出口负载探测失败",
+      totalLabel: "最大延迟",
+    };
+  }
+  if (latencyMode === "multi-source") {
+    return {
+      kind: "tunnel-entry-group-summary",
+      label: "多入口隧道探测",
+      successPrefix: "多入口隧道探测成功",
+      failurePrefix: "多入口隧道探测失败",
+      totalLabel: "总延迟",
+    };
+  }
+  return {
+    kind: "tunnel-hop-summary",
+    label: "多级隧道逐跳测试",
+    successPrefix: "多级隧道逐跳测试成功",
+    failurePrefix: "多级隧道逐跳测试失败",
+    totalLabel: undefined,
+  };
+}
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
@@ -160,8 +192,9 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
       const groupKey = typeof (meta as any).groupKey === "string" ? (meta as any).groupKey : null;
       const groupLabel = typeof (meta as any).groupLabel === "string" ? (meta as any).groupLabel : null;
-      const latencyMode = (meta as any).latencyMode === "max" ? "max" : "sum";
-      const message = `${latencyMode === "max" ? "多出口负载探测" : "多级隧道逐跳测试"}超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
+      const latencyMode = tunnelHopLatencyMode(meta as any);
+      const modeText = tunnelHopModeText(latencyMode);
+      const message = `${modeText.label}超时：${hopLabel} 未在 ${ttlSeconds} 秒内上报结果`;
       const aggregate = recordTunnelHopTestResult(Number(test.id), {
         success: false,
         latencyMs: null,
@@ -172,13 +205,13 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
         groupLabel,
       }, {
         latencyMode,
-        successPrefix: latencyMode === "max" ? "多出口负载探测成功" : undefined,
-        failurePrefix: latencyMode === "max" ? "多出口负载探测失败" : undefined,
-        totalLabel: latencyMode === "max" ? "最大延迟" : undefined,
+        successPrefix: modeText.successPrefix,
+        failurePrefix: modeText.failurePrefix,
+        totalLabel: modeText.totalLabel,
       });
       if (aggregate) {
         const aggregateMessage = structuredLinkTestMessage({
-          kind: latencyMode === "max" ? "tunnel-load-balance-summary" : "tunnel-hop-summary",
+          kind: modeText.kind,
           tunnelId: aggregate.tunnelId,
           message: aggregate.message,
           details: aggregate.details,

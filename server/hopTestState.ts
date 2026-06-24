@@ -59,6 +59,48 @@ export function registerHopTest(batchId: string, testId: number) {
   testToBatch.set(testId, batchId);
 }
 
+function cleanRouteNodeLabel(value: unknown) {
+  return String(value || "").replace(/^第\s*\d+\s*跳\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+function parseRouteEndpoints(detail: HopTestResult, index: number) {
+  const route = String(detail.routeLabel || "").replace(/\s+/g, " ").trim();
+  const arrowParts = route.split(/\s*(?:->|→|-)\s*/).filter(Boolean);
+  if (arrowParts.length >= 2) {
+    return {
+      from: cleanRouteNodeLabel(arrowParts[0]),
+      to: cleanRouteNodeLabel(arrowParts.slice(1).join(" -> ")),
+    };
+  }
+  const hopLabel = String(detail.hopLabel || "").replace(/\s+/g, " ").trim();
+  const hopMatch = hopLabel.match(/(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
+  if (hopMatch) {
+    return {
+      from: cleanRouteNodeLabel(hopMatch[1]),
+      to: cleanRouteNodeLabel(hopMatch[2]),
+    };
+  }
+  return { from: index === 0 ? "入口" : `节点 ${index + 1}`, to: `节点 ${index + 2}` };
+}
+
+function multiSourceAdjustedLatency(details: HopTestResult[], latencies: number[]) {
+  if (details.length < 2) return null;
+  const firstTarget = parseRouteEndpoints(details[0], 0).to;
+  if (!firstTarget) return null;
+  const initialIndexes: number[] = [];
+  for (let index = 0; index < details.length; index += 1) {
+    const detail = details[index];
+    const endpoints = parseRouteEndpoints(detail, index);
+    if (detail.groupKey || endpoints.to !== firstTarget) break;
+    initialIndexes.push(index);
+  }
+  const uniqueSources = new Set(initialIndexes.map((index) => parseRouteEndpoints(details[index], index).from).filter(Boolean));
+  if (initialIndexes.length < 2 || uniqueSources.size < 2) return null;
+  const initialLatency = Math.max(...initialIndexes.map((index) => latencies[index] || 0));
+  const restLatency = latencies.slice(initialIndexes.length).reduce((sum, value) => sum + value, 0);
+  return initialLatency + restLatency;
+}
+
 export function recordHopTestResult(
   testId: number,
   result: HopTestResult,
@@ -66,7 +108,7 @@ export function recordHopTestResult(
     successPrefix: string;
     failurePrefix: string;
     totalLabel?: string;
-    latencyMode?: "sum" | "max";
+    latencyMode?: "sum" | "max" | "multi-source";
   },
 ): HopTestAggregate | null {
   const batchId = testToBatch.get(testId);
@@ -90,7 +132,9 @@ export function recordHopTestResult(
   const totalLatency = allSuccess
     ? options.latencyMode === "max"
       ? successfulLatencies.reduce((max, value) => Math.max(max, value), 0)
-      : successfulLatencies.reduce((sum, value) => sum + value, 0)
+      : options.latencyMode === "multi-source"
+        ? multiSourceAdjustedLatency(details, successfulLatencies) ?? successfulLatencies.reduce((sum, value) => sum + value, 0)
+        : successfulLatencies.reduce((sum, value) => sum + value, 0)
     : null;
   const detailLines = details.map((value) => {
     const route = String(value.routeLabel || value.hopLabel || "未知链路").trim();

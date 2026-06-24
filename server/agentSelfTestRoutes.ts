@@ -38,6 +38,38 @@ function structuredLinkTestMessage(input: {
   });
 }
 
+function tunnelHopLatencyMode(meta: any): "sum" | "max" | "multi-source" {
+  const value = String(meta?.latencyMode || "");
+  return value === "max" || value === "multi-source" ? value : "sum";
+}
+
+function tunnelHopModeText(latencyMode: "sum" | "max" | "multi-source") {
+  if (latencyMode === "max") {
+    return {
+      kind: "tunnel-load-balance-summary",
+      successPrefix: "多出口负载探测成功",
+      failurePrefix: "多出口负载探测失败",
+      totalLabel: "最大延迟",
+      seriesLabel: "最大延迟",
+    };
+  }
+  if (latencyMode === "multi-source") {
+    return {
+      kind: "tunnel-entry-group-summary",
+      successPrefix: "多入口隧道探测成功",
+      failurePrefix: "多入口隧道探测失败",
+      totalLabel: "总延迟",
+      seriesLabel: "总延迟",
+    };
+  }
+  return {
+    kind: "tunnel-hop-summary",
+    successPrefix: "多级隧道逐跳测试成功",
+    failurePrefix: "多级隧道逐跳测试失败",
+    totalLabel: undefined,
+    seriesLabel: "总延迟",
+  };
+}
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
   try {
@@ -90,7 +122,8 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       const routeLabel = typeof (meta as any).routeLabel === "string" ? (meta as any).routeLabel : null;
       const groupKey = typeof (meta as any).groupKey === "string" ? (meta as any).groupKey : null;
       const groupLabel = typeof (meta as any).groupLabel === "string" ? (meta as any).groupLabel : null;
-      const latencyMode = (meta as any).latencyMode === "max" ? "max" : "sum";
+      const latencyMode = tunnelHopLatencyMode(meta as any);
+      const modeText = tunnelHopModeText(latencyMode);
       const aggregate = recordTunnelHopTestResult(testId, {
         success,
         latencyMs: success ? cleanLatency : null,
@@ -101,9 +134,9 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         groupLabel,
       }, {
         latencyMode,
-        successPrefix: latencyMode === "max" ? "多出口负载探测成功" : undefined,
-        failurePrefix: latencyMode === "max" ? "多出口负载探测失败" : undefined,
-        totalLabel: latencyMode === "max" ? "最大延迟" : undefined,
+        successPrefix: modeText.successPrefix,
+        failurePrefix: modeText.failurePrefix,
+        totalLabel: modeText.totalLabel,
       });
       if (success) {
         console.log(`[TunnelTest] tunnel=${meta.tunnelId} ${hopLabel} success latency=${cleanLatency ?? "-"}ms`);
@@ -112,7 +145,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
       if (aggregate) {
         const aggregateMessage = structuredLinkTestMessage({
-          kind: latencyMode === "max" ? "tunnel-load-balance-summary" : "tunnel-hop-summary",
+          kind: modeText.kind,
           tunnelId: aggregate.tunnelId,
           message: aggregate.message,
           details: aggregate.details,
@@ -147,7 +180,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           latencyMs: aggregate.success ? aggregate.latencyMs : null,
           isTimeout: !aggregate.success,
           seriesKey: "total",
-          seriesLabel: latencyMode === "max" ? "最大延迟" : "总延迟",
+          seriesLabel: modeText.seriesLabel,
           recordedAt,
         }, { message: aggregateMessage });
         if (aggregate.success) {
