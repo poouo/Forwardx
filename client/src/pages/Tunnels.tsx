@@ -1095,7 +1095,6 @@ function TunnelLatencyDialog({
       ]),
     ) as TunnelLatencyPoint[];
   }, [peakCutEnabled, rawChartData, seriesMeta]);
-
   const statsSeries = useMemo(() => {
     if (seriesMeta.length === 0 || chartData.length === 0) return [];
     const meta = seriesMeta.find((item) => item.key === "total") || seriesMeta[0];
@@ -1129,9 +1128,9 @@ function TunnelLatencyDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-3xl">
+      <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle className="text-base sm:text-lg">隧道链路延迟 - {tunnelName}</DialogTitle>
               <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
@@ -1139,14 +1138,15 @@ function TunnelLatencyDialog({
             <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
-        <div className="h-72 w-full">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
+        <div className="h-[42svh] min-h-[220px] w-full sm:h-72">
           {showInitialLoading ? (
             <Skeleton className="h-full w-full" />
           ) : chartData.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无隧道链路延迟数据</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+              <LineChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={60} interval="preserveStartEnd" />
                 <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}ms`} width={50} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
@@ -1185,10 +1185,12 @@ function TunnelLatencyDialog({
                 {seriesMeta.map((meta) => (
                   <Line
                     key={meta.key}
-                    type="monotone"
+                    type="natural"
                     dataKey={meta.dataKey}
                     stroke={meta.color}
-                    strokeWidth={meta.key === "total" ? 2.4 : 1.8}
+                    strokeWidth={meta.key === "total" ? 1.8 : 1.35}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                     dot={(props: any) => props?.payload?.[meta.timeoutKey] ? (
                       <circle cx={props.cx} cy={props.cy} r={3} fill="var(--color-destructive)" stroke="var(--color-background)" strokeWidth={1.5} />
                     ) : false}
@@ -1213,6 +1215,7 @@ function TunnelLatencyDialog({
           </div>
         ) : null}
         <LatencyStabilityStats stats={stats} />
+        </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>

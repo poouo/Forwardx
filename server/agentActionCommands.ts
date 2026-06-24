@@ -61,6 +61,24 @@ function iptablesDnatTarget(targetIp: unknown, targetPort: unknown) {
   return isIpv6Address(host) ? `[${host}]:${Number(targetPort) || 0}` : `${host}:${Number(targetPort) || 0}`;
 }
 
+function iptablesDeleteDnatRulesForPort(binary: IptablesBinary, port: number, protocol?: string) {
+  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const body = protos
+    .map((proto) => {
+      const awk = `awk '/^-A PREROUTING / && / -p ${proto} / && /--dport ${port}( |$)/ && / -j DNAT / {sub(/^-A/, "-D"); print}'`;
+      return `while rule=$(${binary} -t nat -S PREROUTING 2>/dev/null | ${awk} | head -n 1) && [ -n "$rule" ]; do ${binary} -t nat $rule 2>/dev/null || break; done`;
+    })
+    .join("; ");
+  if (binary === "ip6tables") {
+    return `if command -v ip6tables >/dev/null 2>&1; then ${body}; fi; true`;
+  }
+  return ignoreShellFailure(body);
+}
+
+function buildIptablesForwardPortCleanupCmds(port: number, protocol?: string) {
+  return iptablesBinaries.map((binary) => iptablesDeleteDnatRulesForPort(binary, port, protocol));
+}
+
 function nftAddressFamily(targetIp: unknown) {
   return isIpv6Address(targetIp) ? "ip6" : "ip";
 }
@@ -148,6 +166,15 @@ function nftOptional(command: string) {
   return `${command} 2>/dev/null; true`;
 }
 
+function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
+  if (!Number(port)) return [];
+  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  return protos.map((proto) => {
+    const awk = `awk '/ ${proto} dport ${port}( |$)/ && / dnat / {print $NF}'`;
+    return `if nft list chain inet ${nftTable} prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null; true; done; fi; true`;
+  });
+}
+
 function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
   return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v c='"${comment}"' '$0 ~ c {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
@@ -156,6 +183,7 @@ export function buildNftCleanupCmds(rule: any): string[] {
   const ruleId = Number(rule.id) || 0;
   const comment = nftComment(rule);
   return [
+    ...buildNftPortCleanupCmds(Number(rule.sourcePort)),
     nftDeleteCommentedRulesCmd("prerouting", comment),
     nftDeleteCommentedRulesCmd("postrouting", comment),
     nftDeleteCommentedRulesCmd("forward", comment),
@@ -209,6 +237,8 @@ export function buildNftForwardCmds(rule: any): string[] {
 
 export function buildManagedPortCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
   return [
+    ...buildIptablesForwardPortCleanupCmds(port),
+    ...buildNftPortCleanupCmds(port),
     removeManagedServiceCmd(`forwardx-socat-${port}`),
     removeManagedServiceCmd(`forwardx-socat-tcp-${port}`),
     removeManagedServiceCmd(`forwardx-socat-udp-${port}`),
@@ -222,7 +252,7 @@ export function buildIptablesForwardCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
   const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
-  const cmds: string[] = [];
+  const cmds: string[] = buildIptablesForwardPortCleanupCmds(Number(rule.sourcePort));
   for (const proto of protos) {
     cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
     cmds.push(iptablesDelete(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));

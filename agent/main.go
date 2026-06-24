@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.109"
+var Version = "2.2.110"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1159,6 +1159,7 @@ func handleAction(cfg Config, a action) {
 		if preserveRunningFXP {
 			logf("action preserves already-running fxp rule=%d tunnel=%d port=%d; skipping disruptive apply commands", a.RuleID, a.TunnelID, a.SourcePort)
 		} else {
+			cleanupKernelForwardPortBeforeApply(a)
 			for _, cmd := range a.PreCommands {
 				ok = runShell(cmd) && ok
 			}
@@ -1205,6 +1206,21 @@ func handleAction(cfg Config, a action) {
 		logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
 	} else {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
+	}
+}
+
+func cleanupKernelForwardPortBeforeApply(a action) {
+	if a.Op != "apply" || a.SourcePort <= 0 {
+		return
+	}
+	port := strconv.Itoa(a.SourcePort)
+	switch a.ForwardType {
+	case "iptables":
+		for _, binary := range iptablesAgentBinaries() {
+			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
+		}
+	case "nftables":
+		_ = runShell(nftPortCleanupCmd(port, "both"))
 	}
 }
 
@@ -2126,6 +2142,19 @@ func nftRuleCleanupCmd(ruleID int) string {
 	return "if nft list table inet forwardx >/dev/null 2>&1; then for c in prerouting postrouting forward traffic_prerouting traffic_postrouting traffic_forward; do for h in $(nft -a list chain inet forwardx \"$c\" 2>/dev/null | awk -v marker=\"" + comment + "\" '$0 ~ marker {print $NF}'); do nft delete rule inet forwardx \"$c\" handle \"$h\" 2>/dev/null; true; done; done; nft flush chain inet forwardx in_" + id + " 2>/dev/null; true; nft delete chain inet forwardx in_" + id + " 2>/dev/null; true; nft flush chain inet forwardx out_" + id + " 2>/dev/null; true; nft delete chain inet forwardx out_" + id + " 2>/dev/null; true; fi; true"
 }
 
+func nftPortCleanupCmd(port string, protocol string) string {
+	protos := []string{"tcp", "udp"}
+	if protocol == "tcp" || protocol == "udp" {
+		protos = []string{protocol}
+	}
+	parts := make([]string, 0, len(protos))
+	for _, proto := range protos {
+		awk := fmt.Sprintf(`awk '/ %s dport %s( |$)/ && / dnat / {print $NF}'`, proto, port)
+		parts = append(parts, fmt.Sprintf(`if nft list chain inet forwardx prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet forwardx prerouting 2>/dev/null | %s); do nft delete rule inet forwardx prerouting handle "$h" 2>/dev/null; true; done; fi`, awk))
+	}
+	return strings.Join(parts, "; ") + "; true"
+}
+
 func iptablesAgentBinaries() []string {
 	return []string{"iptables", "ip6tables"}
 }
@@ -2198,6 +2227,23 @@ func iptablesAgentDnatTarget(targetIP string, targetPort int) string {
 	return host + ":" + port
 }
 
+func iptablesAgentDeleteDnatRulesForPort(binary string, port string, protocol string) string {
+	protos := []string{"tcp", "udp"}
+	if protocol == "tcp" || protocol == "udp" {
+		protos = []string{protocol}
+	}
+	parts := make([]string, 0, len(protos))
+	for _, proto := range protos {
+		awk := fmt.Sprintf(`awk '/^-A PREROUTING / && / -p %s / && /--dport %s( |$)/ && / -j DNAT / {sub(/^-A/, "-D"); print}'`, proto, port)
+		parts = append(parts, fmt.Sprintf(`while rule=$(%s -t nat -S PREROUTING 2>/dev/null | %s | head -n 1) && [ -n "$rule" ]; do %s -t nat $rule 2>/dev/null || break; done`, binary, awk, binary))
+	}
+	cmd := strings.Join(parts, "; ")
+	if binary == "ip6tables" {
+		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi; true"
+	}
+	return cmd + "; true"
+}
+
 func managedPortCleanupCmds(port string) []string {
 	inMarker := "fwx-stat-" + port + ":in"
 	outMarker := "fwx-stat-" + port + ":out"
@@ -2207,7 +2253,9 @@ func managedPortCleanupCmds(port string) []string {
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
 	)
+	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
 	for _, binary := range iptablesAgentBinaries() {
+		cmds = append(cmds, iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
 		directRules := []string{
 			fmt.Sprintf(`PREROUTING -p tcp --dport %s -m comment --comment %q`, port, inMarker),
 			fmt.Sprintf(`PREROUTING -p udp --dport %s -m comment --comment %q`, port, inMarker),

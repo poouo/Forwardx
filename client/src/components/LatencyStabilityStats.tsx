@@ -1,4 +1,5 @@
 import type { LatencyStabilityStats as LatencyStabilityStatsValue } from "@/lib/latencyChart";
+import type { ReactNode } from "react";
 
 type LatencyStabilityStatsProps = {
   stats: LatencyStabilityStatsValue;
@@ -9,45 +10,46 @@ function formatLatency(value: number | null) {
   return value === null ? "--" : `${value} ms`;
 }
 
+function StatCard({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="latency-stat-card min-w-0 rounded-md border border-border/50 bg-muted/20 px-2 py-1.5 sm:rounded-lg sm:px-3 sm:py-2">
+      <p className="truncate text-[10px] text-muted-foreground sm:text-[11px]">{label}</p>
+      <div className="mt-0.5 min-w-0 sm:mt-1">{children}</div>
+    </div>
+  );
+}
+
 export function LatencyStabilityStats({
   stats,
   sampleLabel = "统计次数",
 }: LatencyStabilityStatsProps) {
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-6" data-latency-stats="true">
-      <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">{sampleLabel}</p>
-        <p className="mt-1 text-sm font-semibold tabular-nums">{stats.total}</p>
-      </div>
-      <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">最大延迟</p>
-        <p className="mt-1 text-sm font-semibold tabular-nums">{formatLatency(stats.max)}</p>
-      </div>
-      <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">丢包率</p>
-        <p className="mt-1 text-sm font-semibold tabular-nums">
+    <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6 sm:gap-2" data-latency-stats="true">
+      <StatCard label={sampleLabel}>
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{stats.total}</p>
+      </StatCard>
+      <StatCard label="最大延迟">
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.max)}</p>
+      </StatCard>
+      <StatCard label="丢包率">
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">
           {stats.total === 0 ? "--" : `${stats.lossRate.toFixed(2)}%`}
         </p>
-      </div>
-      <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">最小延迟</p>
-        <p className="mt-1 text-sm font-semibold tabular-nums">{formatLatency(stats.min)}</p>
-      </div>
-      <div className="latency-stat-card rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
-        <p className="text-[11px] text-muted-foreground">平均延迟</p>
-        <p className="mt-1 text-sm font-semibold tabular-nums">{formatLatency(stats.avg)}</p>
-      </div>
-      <div className="latency-stat-card col-span-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2 sm:col-span-1">
-        <p className="text-[11px] text-muted-foreground">稳定性</p>
-        <div className="mt-1 flex min-w-0 items-baseline gap-2 sm:block">
-          <p className="text-sm font-semibold tabular-nums">
-            {stats.score === null ? "--" : `${stats.score}/100`}
-          </p>
-          <p className={`truncate text-[11px] font-medium ${stats.rating.className}`}>
-            {stats.rating.label}
-          </p>
-        </div>
-      </div>
+      </StatCard>
+      <StatCard label="最小延迟">
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.min)}</p>
+      </StatCard>
+      <StatCard label="平均延迟">
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">{formatLatency(stats.avg)}</p>
+      </StatCard>
+      <StatCard label="稳定性">
+        <p className="truncate text-xs font-semibold tabular-nums sm:text-sm">
+          {stats.score === null ? "--" : `${stats.score}/100`}
+        </p>
+        <p className={`truncate text-[10px] font-medium sm:text-[11px] ${stats.rating.className}`}>
+          {stats.rating.label}
+        </p>
+      </StatCard>
     </div>
   );
 }

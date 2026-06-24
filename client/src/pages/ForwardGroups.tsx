@@ -367,7 +367,6 @@ function ForwardGroupLatencyDialog({
       { dataKey: "chartLatency", timeoutKey: "isTimeout" },
     ]) as GroupLatencyPoint[];
   }, [peakCutEnabled, rawChartData]);
-
   const stats = useMemo(() => {
     return getLatencyStabilityStats(chartData);
   }, [chartData]);
@@ -380,9 +379,9 @@ function ForwardGroupLatencyDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
               <DialogDescription>近 24 小时链路逐跳探测汇总，成员之间使用 Ping，出口到目标使用 TCPing。</DialogDescription>
@@ -390,7 +389,8 @@ function ForwardGroupLatencyDialog({
             <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
-        <div className="h-[260px] rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
+        <div className="h-[42svh] min-h-[220px] rounded-lg border border-border/60 bg-muted/20 p-2 sm:h-[260px] sm:p-3">
           {(isLoading || waitForFreshSeries) && !seriesData ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 正在加载延迟数据
@@ -399,7 +399,7 @@ function ForwardGroupLatencyDialog({
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无延迟数据</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+              <AreaChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
                 <defs>
                   <linearGradient id="forwardGroupLatencyGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.38} />
@@ -423,12 +423,13 @@ function ForwardGroupLatencyDialog({
                     );
                   }}
                 />
-                <Area type="monotone" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#forwardGroupLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
+                <Area type="natural" dataKey="chartLatency" stroke="var(--color-chart-2)" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" fill="url(#forwardGroupLatencyGradient)" dot={false} activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }} isAnimationActive={shouldAnimateChart} animationDuration={shouldAnimateChart ? 500 : 0} />
               </AreaChart>
             </ResponsiveContainer>
           )}
         </div>
         <LatencyStabilityStats stats={stats} />
+        </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
         </DialogFooter>

@@ -224,7 +224,6 @@ export default function HostProbeServiceLatencyDialog({
     () => compactHostServiceChart(processedChart, visibleServiceIds),
     [processedChart, visibleServiceIds],
   );
-
   const yMax = useMemo(() => {
     const maxLatency = Math.max(0, ...chart.flatMap((point) => (
       visibleServiceIds.map((id) => {
@@ -246,9 +245,9 @@ export default function HostProbeServiceLatencyDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-5xl">
+      <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-5xl sm:p-6">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle>服务延迟图表</DialogTitle>
               <DialogDescription>{host?.name ? `${host.name} 最近 24 小时服务探测延迟` : "最近 24 小时服务探测延迟"}</DialogDescription>
@@ -256,6 +255,7 @@ export default function HostProbeServiceLatencyDialog({
             <LatencyPeakCutToggle id={`host-service-peak-cut-${hostId || "current"}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
         {hostServices.length > 0 && (
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 flex-wrap gap-2">
@@ -294,14 +294,14 @@ export default function HostProbeServiceLatencyDialog({
             </Button>
           </div>
         )}
-        <div className="h-80 w-full">
+        <div className="h-[44svh] min-h-[220px] w-full sm:h-80">
           {isLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在加载图表</div>
           ) : chart.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">暂无服务延迟数据</div>
           ) : (
             <ResponsiveContainer key={chartAnimationKey} width="100%" height="100%">
-              <LineChart data={chart} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+              <LineChart data={chart} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} minTickGap={46} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}ms`} width={52} domain={[0, yMax]} ticks={yTicks} allowDecimals={false} />
@@ -311,11 +311,13 @@ export default function HostProbeServiceLatencyDialog({
                   return (
                     <Line
                       key={service.id}
-                      type="monotone"
+                      type="natural"
                       dataKey={`service_${service.id}`}
                       name={service.name}
                       stroke={colors[Math.max(colorIndex, 0) % colors.length]}
-                      strokeWidth={1.15}
+                      strokeWidth={1.05}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                       dot={false}
                       connectNulls={false}
                       activeDot={{ r: 3 }}
@@ -327,6 +329,7 @@ export default function HostProbeServiceLatencyDialog({
               </LineChart>
             </ResponsiveContainer>
           )}
+        </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>

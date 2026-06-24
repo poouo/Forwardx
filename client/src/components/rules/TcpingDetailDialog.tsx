@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
 import { Skeleton } from "@/components/ui/skeleton";
-import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
+import {
+  applyLatencyPeakCut,
+  clipLatencyForChart,
+  getLatencyStabilityStats,
+  getLatencyYAxisMax,
+  getLatencyYAxisTicks,
+  isLatencySeriesCacheFresh,
+} from "@/lib/latencyChart";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -25,7 +31,6 @@ type TcpingSeriesDatum = {
 const tcpingSeriesCache = new Map<number, TcpingSeriesDatum[]>();
 const tcpingAnimatedKeys = new Set<number>();
 
-/** 格式化时间标签：显示 MM/DD HH:mm */
 function formatTcpingTime(dateStr: string | Date): string {
   const d = new Date(dateStr);
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -35,16 +40,15 @@ function formatTcpingTime(dateStr: string | Date): string {
   return `${month}/${day} ${hour}:${minute}`;
 }
 
-/** TCPing Tooltip */
 function TcpingTooltipContent({ active, payload, label }: any) {
   if (!active || !payload || payload.length === 0) return null;
   const data = payload[0]?.payload;
   if (!data) return null;
-  const latency = data.latency;
-  const isTimeout = data.isTimeout;
+  const latency = Number(data.latency || 0);
+  const isTimeout = !!data.isTimeout;
   return (
     <div className="pointer-events-none rounded-lg border border-border bg-card px-3 py-2 shadow-md">
-      <p className="text-xs text-muted-foreground mb-1">{data.fullLabel || label}</p>
+      <p className="mb-1 text-xs text-muted-foreground">{data.fullLabel || label}</p>
       {isTimeout ? (
         <p className="text-sm font-semibold text-destructive">超时</p>
       ) : latency > 0 ? (
@@ -74,7 +78,7 @@ function TcpingDetailDialog({
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
+    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" },
   );
   const cachedData = tcpingSeriesCache.get(ruleId);
   const rawSeriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;
@@ -83,9 +87,7 @@ function TcpingDetailDialog({
   const showInitialLoading = (isLoading || waitForFreshSeries) && !seriesData;
 
   useEffect(() => {
-    if (data) {
-      tcpingSeriesCache.set(ruleId, data as TcpingSeriesDatum[]);
-    }
+    if (data) tcpingSeriesCache.set(ruleId, data as TcpingSeriesDatum[]);
   }, [data, ruleId]);
 
   const rawChartData = useMemo<TcpingChartPoint[]>(() => {
@@ -98,6 +100,7 @@ function TcpingDetailDialog({
       isTimeout: !!d.isTimeout,
     }));
   }, [seriesData]);
+
   const chartData = useMemo<TcpingChartPoint[]>(() => {
     if (!peakCutEnabled) return rawChartData;
     return applyLatencyPeakCut(rawChartData, [
@@ -107,95 +110,86 @@ function TcpingDetailDialog({
   }, [peakCutEnabled, rawChartData]);
 
   const yMax = useMemo(() => {
-    if (!chartData || chartData.length === 0) return 120;
+    if (!chartData.length) return 120;
     return getLatencyYAxisMax(Math.max(...chartData.map((d) => d.chartLatency)), 120);
   }, [chartData]);
   const yTicks = useMemo(() => getLatencyYAxisTicks(yMax), [yMax]);
 
-  const tcpingStats = useMemo(() => {
-    return getLatencyStabilityStats(chartData);
-  }, [chartData]);
+  const tcpingStats = useMemo(() => getLatencyStabilityStats(chartData), [chartData]);
   const shouldAnimateChart = open && chartData.length > 0 && !tcpingAnimatedKeys.has(ruleId);
 
   useEffect(() => {
-    if (shouldAnimateChart) {
-      tcpingAnimatedKeys.add(ruleId);
-    }
+    if (shouldAnimateChart) tcpingAnimatedKeys.add(ruleId);
   }, [shouldAnimateChart, ruleId]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-3xl">
+      <DialogContent className="flex max-h-[96svh] w-[calc(100vw-0.75rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-3 sm:max-w-3xl sm:p-6">
         <DialogHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
+          <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle className="text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
-              <DialogDescription>最近 24 小时延迟和丢包。</DialogDescription>
+              <DialogTitle className="truncate text-base sm:text-lg">转发链路延迟 (TCPing) - {ruleName}</DialogTitle>
+              <DialogDescription className="text-xs sm:text-sm">最近 24 小时延迟和丢包。</DialogDescription>
             </div>
             <LatencyPeakCutToggle id={`tcping-peak-cut-${ruleId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
-        <div className="h-72 w-full">
-          {showInitialLoading ? (
-            <Skeleton className="h-full w-full" />
-          ) : chartData.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-              暂无 TCPing 数据
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="tcpingGradientRule" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 9 }}
-                  minTickGap={60}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  tick={{ fontSize: 9 }}
-                  tickFormatter={(v) => `${v}ms`}
-                  width={50}
-                  domain={[0, yMax]}
-                  allowDecimals={false}
-                  ticks={yTicks}
-                />
-                <RTooltip
-                  content={<TcpingTooltipContent />}
-                  cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
-                  offset={12}
-                  wrapperStyle={{ pointerEvents: "none" }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="chartLatency"
-                  name="延迟"
-                  stroke="var(--color-chart-2)"
-                  strokeWidth={2}
-                  fill="url(#tcpingGradientRule)"
-                  dot={false}
-                  activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }}
-                  isAnimationActive={shouldAnimateChart}
-                  animationDuration={shouldAnimateChart ? 500 : 0}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
+          <div className="h-[42svh] min-h-[220px] w-full sm:h-72">
+            {showInitialLoading ? (
+              <Skeleton className="h-full w-full" />
+            ) : chartData.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                暂无 TCPing 数据
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 8, right: 10, left: -8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="tcpingGradientRule" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--color-chart-2)" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="var(--color-chart-2)" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                  <XAxis dataKey="label" tick={{ fontSize: 9 }} minTickGap={48} interval="preserveStartEnd" />
+                  <YAxis
+                    tick={{ fontSize: 9 }}
+                    tickFormatter={(v) => `${v}ms`}
+                    width={44}
+                    domain={[0, yMax]}
+                    allowDecimals={false}
+                    ticks={yTicks}
+                  />
+                  <RTooltip
+                    content={<TcpingTooltipContent />}
+                    cursor={{ stroke: "var(--color-muted-foreground)", strokeDasharray: "3 3" }}
+                    offset={12}
+                    wrapperStyle={{ pointerEvents: "none" }}
+                  />
+                  <Area
+                    type="natural"
+                    dataKey="chartLatency"
+                    name="延迟"
+                    stroke="var(--color-chart-2)"
+                    strokeWidth={1.6}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="url(#tcpingGradientRule)"
+                    dot={false}
+                    activeDot={{ r: 4, fill: "var(--color-chart-2)", stroke: "var(--color-background)", strokeWidth: 2 }}
+                    isAnimationActive={shouldAnimateChart}
+                    animationDuration={shouldAnimateChart ? 500 : 0}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+          <LatencyStabilityStats stats={tcpingStats} />
         </div>
-        <LatencyStabilityStats stats={tcpingStats} />
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
-
 
 export { TcpingDetailDialog };

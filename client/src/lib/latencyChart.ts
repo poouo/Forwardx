@@ -52,13 +52,13 @@ export function isLatencySeriesCacheFresh<T extends { recordedAt: string | Date 
 
 export function clipLatencyForChart(latency: number) {
   if (!Number.isFinite(latency) || latency <= 0) return 0;
-  return Math.min(MAX_LATENCY_CHART_MS, latency);
+  return latency;
 }
 
 export function getLatencyYAxisMax(maxLatency: number, fallback = 120) {
   if (!Number.isFinite(maxLatency) || maxLatency <= 0) return fallback;
 
-  const clipped = clipLatencyForChart(maxLatency);
+  const clipped = Math.max(0, maxLatency);
   const padding =
     clipped < 20 ? 1.35
       : clipped < 50 ? 1.25
@@ -68,7 +68,7 @@ export function getLatencyYAxisMax(maxLatency: number, fallback = 120) {
   const padded = Math.max(clipped + 1, clipped * padding);
   const step = getNiceLatencyStep(padded / 5);
   const rounded = Math.ceil(padded / step) * step;
-  return Math.min(MAX_LATENCY_CHART_MS, Math.max(1, Math.ceil(rounded)));
+  return Math.max(1, Math.ceil(rounded));
 }
 
 export function getLatencyYAxisTicks(yMax: number) {

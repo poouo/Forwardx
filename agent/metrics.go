@@ -86,7 +86,7 @@ func collectTraffic(cfg Config) {
 		}
 		counters := iptablesCounters[state.Port]
 		if state.ForwardType == "nftables" {
-			if nft := nftCounters[state.RuleID]; nft.In > 0 || nft.Out > 0 {
+			if nft, ok := nftCounters[state.RuleID]; ok {
 				counters = nft
 			}
 		}
@@ -697,8 +697,7 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 	if state.ForwardType == "nftables" {
 		nftMarker = nftRuleMarkerSeen(state.RuleID)
 	}
-	nft := nftCounters[state.RuleID]
-	nftCounter := nft.In > 0 || nft.Out > 0
+	_, nftCounter := nftCounters[state.RuleID]
 	if counters.In == 0 && counters.Out == 0 && connections > 0 {
 		logf("traffic diag missing counters rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v hint=traffic-is-flowing-but-counter-rule-did-not-match", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 		return
