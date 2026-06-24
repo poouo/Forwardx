@@ -537,17 +537,54 @@
   }
 
   .host-card-grid-static {
-    animation: host-card-grid-fade-in 120ms ease-out both;
+    animation: host-card-grid-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
     backface-visibility: hidden;
+    contain: layout paint;
     transform: none !important;
-    will-change: opacity;
+    will-change: opacity, clip-path;
   }
 
   .host-card-grid-static > * {
+    animation: host-card-item-soft-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
     backface-visibility: hidden;
     transform: none !important;
     text-rendering: geometricPrecision;
     -webkit-font-smoothing: antialiased;
+    will-change: opacity, clip-path;
+  }
+
+  .host-card-grid-static-standard {
+    animation-name: host-card-grid-standard-enter;
+  }
+
+  .host-card-grid-static-compact {
+    animation-name: host-card-grid-compact-enter;
+  }
+
+  .host-card-grid-static-standard > * {
+    animation-name: host-card-item-standard-enter;
+  }
+
+  .host-card-grid-static-compact > * {
+    animation-name: host-card-item-compact-enter;
+  }
+
+  .host-card-shell {
+    transform: none !important;
+  }
+
+  .host-card-mode-content {
+    animation: host-card-content-soft-enter 190ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    transform: none !important;
+    will-change: opacity, clip-path;
+  }
+
+  .host-card-mode-content-standard {
+    animation-name: host-card-content-standard-enter;
+  }
+
+  .host-card-mode-content-compact {
+    animation-name: host-card-content-compact-enter;
   }
 
   .group[data-collapsible="icon"] [data-sidebar="menu-button"],
@@ -962,19 +999,112 @@
   }
 }
 
-@keyframes host-card-grid-fade-in {
+@keyframes host-card-grid-soft-enter {
   from {
+    clip-path: inset(0 0 10px 0 round 8px);
+    opacity: 0.88;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-grid-standard-enter {
+  from {
+    clip-path: inset(0 0 10px 0 round 8px);
+    opacity: 0.88;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-grid-compact-enter {
+  from {
+    clip-path: inset(0 0 8px 0 round 8px);
     opacity: 0.9;
   }
   to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-item-soft-enter {
+  from {
+    clip-path: inset(6px 0 0 0 round 8px);
+    opacity: 0.86;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-item-standard-enter {
+  from {
+    clip-path: inset(6px 0 0 0 round 8px);
+    opacity: 0.86;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-item-compact-enter {
+  from {
+    clip-path: inset(5px 0 0 0 round 8px);
+    opacity: 0.88;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-content-soft-enter {
+  from {
+    clip-path: inset(8px 0 0 0 round 8px);
+    opacity: 0.82;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-content-standard-enter {
+  from {
+    clip-path: inset(8px 0 0 0 round 8px);
+    opacity: 0.82;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
+    opacity: 1;
+  }
+}
+
+@keyframes host-card-content-compact-enter {
+  from {
+    clip-path: inset(6px 0 0 0 round 8px);
+    opacity: 0.84;
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 8px);
     opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .card-mode-transition,
-  .host-card-grid-static {
+  .host-card-grid-static,
+  .host-card-grid-static > *,
+  .host-card-mode-content {
     animation: none;
+    clip-path: none;
     opacity: 1;
     transform: none;
   }

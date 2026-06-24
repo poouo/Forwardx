@@ -325,18 +325,18 @@ export default function HostProbeServiceManager({
               <p className="text-sm">暂无服务</p>
             </div>
           ) : viewMode === "card" ? (
-            <AutoAnimateContainer className="standard-card-grid gap-4 p-3">
+            <AutoAnimateContainer key="host-probe-service-card-view" className="standard-card-grid card-mode-transition gap-4 p-3" duration={220}>
               {(services as any[]).map((service) => (
                 <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
               ))}
             </AutoAnimateContainer>
           ) : (
-            <>
-            <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
+            <div key="host-probe-service-table-view" className="card-mode-transition">
+            <AutoAnimateContainer className="grid grid-cols-1 gap-4 p-3 sm:hidden" duration={220}>
               {(services as any[]).map((service) => (
                 <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
               ))}
-            </div>
+            </AutoAnimateContainer>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -371,7 +371,7 @@ export default function HostProbeServiceManager({
                 </TableBody>
               </Table>
             </div>
-            </>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -221,7 +221,7 @@ export default function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`${cardMinHeightClass} backdrop-blur-md transition-[border-color,background-color,box-shadow,opacity] duration-150 ease-out ${
+    <Card className={`${cardMinHeightClass} host-card-shell backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,opacity] duration-200 ease-out ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
@@ -304,7 +304,7 @@ export default function HostCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className={`${compact ? "space-y-2 px-3.5 pb-3.5" : "space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
+      <CardContent className={`host-card-mode-content ${compact ? "host-card-mode-content-compact space-y-2 px-3.5 pb-3.5" : "host-card-mode-content-standard space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
         <div className={compact ? "space-y-1.5" : "space-y-2"}>
           <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
             <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>

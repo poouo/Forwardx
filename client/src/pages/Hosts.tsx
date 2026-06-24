@@ -1678,7 +1678,11 @@ function HostsContent() {
           <AutoAnimateContainer
             duration={160}
             layout={false}
-            className={viewMode === "compact-card" ? "standard-card-grid-compact host-card-grid-static gap-3" : "standard-card-grid host-card-grid-static gap-4"}
+            className={
+              viewMode === "compact-card"
+                ? "standard-card-grid-compact host-card-grid-static host-card-grid-static-compact gap-3"
+                : "standard-card-grid host-card-grid-static host-card-grid-static-standard gap-4"
+            }
           >
             {pagedHosts.map((host) => (
               <HostCard
