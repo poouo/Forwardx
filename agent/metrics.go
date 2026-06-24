@@ -110,7 +110,7 @@ func collectTraffic(cfg Config) {
 			if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
 				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 			}
-		} else if len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
+		} else if agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
 			logf("traffic report ok watched=%d stats=%d", watched, len(stats))
 		}
 	}
@@ -227,7 +227,7 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			if shouldLogAgentReport("tcping-report-failed", agentReportLogInterval) {
 				logf("tcping report failed rules=%d tunnels=%d groups=%d services=%d: %v", len(results), len(tunnels), len(forwardGroups), len(services), err)
 			}
-		} else if len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
+		} else if agentVerboseLogs && (len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0) {
 			total, timeouts, avgLatency := summarizeTCPingReport(results, tunnels, forwardGroups, services)
 			if shouldLogAgentReport("tcping-report-ok", agentReportLogInterval) {
 				logf("tcping report ok rules=%d tunnels=%d groups=%d services=%d timeouts=%d/%d avg=%s", len(results), len(tunnels), len(forwardGroups), len(services), timeouts, total, avgLatency)
@@ -702,11 +702,11 @@ func logTrafficCounterDiagnostic(state localRuleState, counters trafficCounters,
 		logf("traffic diag missing counters rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v hint=traffic-is-flowing-but-counter-rule-did-not-match", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 		return
 	}
-	if counters.In == 0 && counters.Out == 0 && connections == 0 {
+	if agentVerboseLogs && counters.In == 0 && counters.Out == 0 && connections == 0 {
 		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=0/0 delta=0/0 conns=0 iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 		return
 	}
-	if din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables" {
+	if agentVerboseLogs && (din > 0 || dout > 0 || connections > 0 || targetIPv6 || state.ForwardType == "nftables" || state.ForwardType == "iptables") {
 		logf("traffic diag rule=%d port=%s type=%s target=%s:%d targetIPv6=%v counters=%d/%d delta=%d/%d conns=%d iptablesMarker=%v ip6tablesMarker=%v nftMarker=%v nftCounter=%v", state.RuleID, state.Port, state.ForwardType, target, state.TargetPort, targetIPv6, counters.In, counters.Out, din, dout, connections, iptablesMarker, ip6tablesMarker, nftMarker, nftCounter)
 	}
 }

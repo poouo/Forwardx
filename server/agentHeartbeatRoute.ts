@@ -3,7 +3,7 @@ import * as db from "./db";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { clearHostTcpingRequest, hasHostTcpingRequest, isHostMetricsWatching } from "./agentEvents";
 import { isAgentVersionAtLeast, parseSelfTestMeta, tunnelSecretSeed } from "./agentRouteUtils";
-import { resolvePanelUrl } from "./agentPanelUrl";
+import { resolveAgentAdvertisedPanelUrl } from "./agentPanelUrl";
 import * as hopRepo from "./repositories/tunnelRepository";
 import crypto from "crypto";
 import {
@@ -45,6 +45,7 @@ const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
 const resolvedIpCache = new Map<number, { raw: string; ip: string }>();
 const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
+const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
 const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
@@ -53,12 +54,53 @@ const TUNNEL_RUNTIME_CONFIG_PATH = "/etc/forwardx-tunnel-runtime/config.json";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
+const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
+const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 
 type AgentDnsWatch = {
   host: string;
   scope: string;
   refId?: number;
 };
+
+function stableActionSignature(actions: any[]) {
+  return JSON.stringify(actions.map((action: any) => ({
+    op: action?.op || "",
+    statusType: action?.statusType || "",
+    ruleId: Number(action?.ruleId || 0),
+    tunnelId: Number(action?.tunnelId || 0),
+    forwardType: action?.forwardType || "",
+    sourcePort: Number(action?.sourcePort || 0),
+    targetIp: String(action?.targetIp || ""),
+    targetPort: Number(action?.targetPort || 0),
+    protocol: action?.protocol || "",
+    commands: action?.commands || [],
+    preCommands: action?.preCommands || [],
+    postCommands: action?.postCommands || [],
+    serviceName: action?.serviceName || action?.svcName || "",
+    serviceNameExtra: action?.serviceNameExtra || "",
+    unit: action?.unit || "",
+    unitExtra: action?.unitExtra || "",
+    fxp: action?.fxp || null,
+    failover: action?.failover || null,
+  })));
+}
+
+function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssuedAt: number) {
+  if (actions.length === 0) {
+    agentActionBatchCache.delete(hostId);
+    return fallbackIssuedAt;
+  }
+  const now = Date.now();
+  const signature = stableActionSignature(actions);
+  const cached = agentActionBatchCache.get(hostId);
+  if (cached && cached.signature === signature && now - cached.seenAt < AGENT_ACTION_BATCH_REUSE_MS) {
+    cached.seenAt = now;
+    return cached.issuedAt;
+  }
+  agentActionBatchCache.set(hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now });
+  return fallbackIssuedAt;
+}
 
 function cleanEndpointHost(value: unknown) {
   return String(value || "").trim().replace(/^\[([^\]]+)\]$/, "$1");
@@ -309,17 +351,23 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }
 
     // DNS 变更的规则：生成清理旧 IP 规则的动作
-    const buildDnsChangeCleanup = (rule: any, oldIp: string): string[] => {
+    const buildForwardTargetCleanup = (rule: any, targetIp: string, targetPort: number): string[] => {
       const port = rule.sourcePort;
+      const cleanupRule = { ...rule, targetIp, targetPort };
       const cmds: string[] = [];
       if (rule.forwardType === "iptables") {
-        cmds.push(...buildIptablesForwardCleanupCmds({ ...rule, targetIp: oldIp }));
+        cmds.push(...buildIptablesForwardCleanupCmds(cleanupRule));
       } else if (rule.forwardType === "nftables") {
-        cmds.push(...buildNftCleanupCmds(rule));
+        cmds.push(...buildNftCleanupCmds(cleanupRule));
+      } else {
+        cmds.push(...buildManagedPortCleanupCmds(Number(port), targetIp, targetPort, rule.protocol));
       }
-      cmds.push(...buildCountingCleanupCmds(port, oldIp, rule.targetPort, rule.protocol));
+      if (rule.forwardType === "iptables") cmds.push(...buildCountingCleanupCmds(port, targetIp, targetPort, rule.protocol));
       return cmds;
     };
+    const buildDnsChangeCleanup = (rule: any, oldIp: string): string[] => (
+      buildForwardTargetCleanup(rule, oldIp, Number(rule.targetPort) || 0)
+    );
     const failoverProxyHandlesTargetDns = (rule: any) => (
       !!rule?.failoverEnabled
       && rule.forwardType === "gost"
@@ -452,7 +500,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: oldTargetPort,
           protocol: rule.protocol,
           networkInterface: hostInterface,
-          commands: buildManagedPortCleanupCmds(Number(rule.sourcePort), oldTargetIp, oldTargetPort, rule.protocol),
+          commands: buildForwardTargetCleanup(rule, oldTargetIp, oldTargetPort),
         } as any);
         rule.isRunning = false;
       }
@@ -725,7 +773,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const failoverTargetAddr = (rule: any) => {
       const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
-      return failover ? `127.0.0.1:${failover.listenPort}` : `${processTarget(rule)}:${rule.targetPort}`;
+      return failover ? endpointHostPort("127.0.0.1", failover.listenPort) : endpointHostPort(processTarget(rule), rule.targetPort);
     };
     const failoverTargetEndpoint = (rule: any) => {
       const failover = actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" });
@@ -1125,7 +1173,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const exitKey = endpoint.primary ? 0 : (endpoint.exitSeq || endpoint.exitNodeId);
         nodes.push(gostTunnelNode(
           `exit-${rule.id}-${exitKey}`,
-          `${exitHost}:${endpoint.listenPort}`,
+          endpointHostPort(exitHost, endpoint.listenPort),
           tunnelProtocolType(tunnel.mode),
           tunnel,
           "forward",
@@ -1223,8 +1271,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           for (let i = 1; i < tunnelHops.length - 1; i++) {
             const hop = tunnelHops[i] as any;
             const hopDialHost = await getHopDialAddress(hop);
-            const hopAddr = `${hopDialHost}:${Number(hop.listenPort)}`;
-            if (!hopAddr || hopAddr.startsWith(":") || !Number(hop.listenPort)) return null;
+            if (!hopDialHost || !Number(hop.listenPort)) return null;
+            const hopAddr = endpointHostPort(hopDialHost, hop.listenPort);
             routeParts.push(`hop#${Number(hop.hostId)}@${hopAddr}`);
             const relayHopProxyMetadata = maybeProxyProtocolMetadata(r, "entrySend");
             chainHops.push({
@@ -1252,14 +1300,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           routeParts.push(`exit#${Number(exitHop.hostId)}@${exitNodes.map((node: any) => node.addr).join(",")}`);
           const route = routeParts.join(" -> ");
           const routeKey = `${tunnel.id}:${r.id}:${host.id}`;
-          tunnelRouteLogCache.set(routeKey, route);
-          appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxyEntrySend=${proxyProtocolEnabled(r, "entrySend")} route=${route}`);
+          if (tunnelRouteLogCache.get(routeKey) !== route) {
+            tunnelRouteLogCache.set(routeKey, route);
+            appendPanelLog("info", `[TunnelRoute] gost multi-hop tunnel=${tunnel.id} rule=${r.id} host=${host.id} proxyEntrySend=${proxyProtocolEnabled(r, "entrySend")} route=${route}`);
+          }
           return { name: `chain-tunnel-${r.id}`, hops: chainHops };
         }
         const firstExitEndpoint = tunnelExitEndpointsForRule(r, tunnel)[0];
         const chainTargetAddr = useMultiHopEntry
-          ? `127.0.0.1:${Number(firstHop.listenPort)}`
-          : `${tunnelExitHost}:${Number(firstExitEndpoint?.listenPort || 0)}`;
+          ? endpointHostPort("127.0.0.1", firstHop.listenPort)
+          : endpointHostPort(tunnelExitHost, firstExitEndpoint?.listenPort || 0);
         const chainNodeName = useMultiHopEntry ? `mhop-entry-${r.id}` : `exit-${r.id}`;
         const exitNodes = !useMultiHopEntry ? await buildLoadBalancedExitNodes(r, tunnel) : [];
         return {
@@ -1280,7 +1330,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostChains = [...tunnelGostChains];
     const buildGostReloadCmds = () => {
       const encodedConfig = Buffer.from(JSON.stringify({ services: gostServiceConfig, chains: gostChains, limiters: gostRateLimiters }, null, 2), "utf8").toString("base64");
-      const proxyDebugCmds = gostRules
+      const proxyDebugCmds = VERBOSE_AGENT_ACTIONS ? gostRules
         .filter((rule: any) => rule && Number(rule.tunnelId || 0) > 0 && (
           proxyProtocolEnabled(rule, "entryReceive") ||
           proxyProtocolEnabled(rule, "entrySend") ||
@@ -1289,11 +1339,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ))
         .map((rule: any) => buildProxyRuleDebugCmd("entry", rule, {
           chain: `chain-tunnel-${Number(rule.id || 0)}`,
-        }));
+        })) : [];
       const cmds = [
         `mkdir -p ${shQuote(RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(RUNTIME_CONFIG_PATH)}`,
-        `echo "[runtime-config] ${RUNTIME_SERVICE_NAME} services=${gostServiceConfig.length} chains=${gostChains.length}"`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(gostServiceName, gostServiceUnit),
         stopManagedServiceCmd(LEGACY_GOST_SERVICE_NAME),
@@ -1419,7 +1468,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         return currentHostTunnelExitPortsForRule(rule, tunnel)
           .flatMap((exitPort) => buildCountingChainCmds(Number(exitPort), rule.targetIp, rule.targetPort, rule.protocol));
       });
-      const proxyDebugCmds = tunnelExitRules.flatMap((rule: any) => {
+      const proxyDebugCmds = VERBOSE_AGENT_ACTIONS ? tunnelExitRules.flatMap((rule: any) => {
         const tunnel = tunnelById.get(Number(rule.tunnelId)) as any;
         if (!tunnel || isForwardXTunnel(tunnel)) return [];
         if (
@@ -1432,12 +1481,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           exitPort: Number(exitPort),
           listener: tunnelProtocolType(tunnel.mode),
         }));
-      });
+      }) : [];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       const cmds = [
         `mkdir -p ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH)}`,
-        `echo "[runtime-config] ${TUNNEL_RUNTIME_SERVICE_NAME} services=${services.length}"`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME, [
           "[Unit]",
@@ -2437,15 +2485,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (agentUpgradeCompleted) {
       await db.clearHostAgentUpgradeRequest(host.id);
     }
-    const panelUrl = await resolvePanelUrl(req);
+    const panelUrl = await resolveAgentAdvertisedPanelUrl();
     const agentUpgrade = (host as any).agentUpgradeRequested && !agentUpgradeCompleted ? {
       targetVersion: requestedTargetVersion,
       panelUrl,
     } : null;
 
+    const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), actions, responseIssuedAt);
     const normalizedActions = actions.map((action: any) => ({
       ...action,
-      issuedAt: Number(action.issuedAt) || responseIssuedAt,
+      issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
     const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));

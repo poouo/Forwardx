@@ -2,6 +2,8 @@ import type { Response } from "express";
 import { AGENT_VERSION } from "./_core/systemRouter";
 import { encryptPayload } from "./agentCrypto";
 
+const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
+
 type AgentEventClient = {
   hostId: number;
   token: string;
@@ -11,6 +13,8 @@ type AgentEventClient = {
 const agentEventClients = new Map<number, AgentEventClient>();
 const hostMetricsWatchUntil = new Map<number, number>();
 const hostTcpingRequestUntil = new Map<number, number>();
+const hostRefreshPushedAt = new Map<number, number>();
+const AGENT_REFRESH_COALESCE_MS = 1500;
 
 export function registerAgentEventClient(hostId: number, token: string, res: Response) {
   const previous = agentEventClients.get(hostId);
@@ -28,16 +32,30 @@ export function unregisterAgentEventClient(hostId: number, res: Response) {
 function sendAgentEvent(hostId: number, event: string, data: any) {
   const client = agentEventClients.get(hostId);
   if (!client) {
-    console.warn(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
+    if (event !== "agent-refresh" && VERBOSE_AGENT_EVENTS) {
+      console.warn(`[AgentEvent] host=${hostId} event=${event} no active event stream`);
+    }
     return false;
   }
   client.res.write(`event: message\n`);
   client.res.write(`data: ${JSON.stringify(encryptPayload({ type: event, data }, client.token))}\n\n`);
-  console.info(`[AgentEvent] host=${hostId} event=${event} pushed`);
+  if (event !== "agent-refresh" || VERBOSE_AGENT_EVENTS) {
+    console.info(`[AgentEvent] host=${hostId} event=${event} pushed`);
+  }
   return true;
 }
 
 export function pushAgentRefresh(hostId: number, reason: string) {
+  const id = Number(hostId);
+  const now = Date.now();
+  const last = hostRefreshPushedAt.get(id) || 0;
+  if (now - last < AGENT_REFRESH_COALESCE_MS) {
+    if (VERBOSE_AGENT_EVENTS) {
+      console.info(`[AgentEvent] host=${id} event=agent-refresh coalesced reason=${reason}`);
+    }
+    return true;
+  }
+  hostRefreshPushedAt.set(id, now);
   return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now() });
 }
 

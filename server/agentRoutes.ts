@@ -21,6 +21,7 @@ import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 
 const agentRouter = Router();
 const agentApiRouter = Router();
+const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
@@ -117,7 +118,7 @@ async function openAgentEventStream(input: {
   };
 
   registerAgentEventClient(host.id, token, res);
-  console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
+  if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} connected${agentVersion ? ` version=${agentVersion}` : ""}`);
   writeEncryptedEvent("ready", { success: true });
 
   const heartbeat = setInterval(() => {
@@ -127,7 +128,7 @@ async function openAgentEventStream(input: {
   req.on("close", () => {
     clearInterval(heartbeat);
     unregisterAgentEventClient(host.id, res);
-    console.info(`[AgentEvent] host=${host.id} disconnected`);
+    if (VERBOSE_AGENT_EVENTS) console.info(`[AgentEvent] host=${host.id} disconnected`);
   });
 }
 

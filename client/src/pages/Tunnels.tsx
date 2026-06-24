@@ -315,6 +315,20 @@ function hostPrivateAddress(host: any) {
   return String(host?.tunnelEntryIp || "").trim();
 }
 
+function hostIpv6Address(host: any) {
+  return String(host?.ipv6 || "").trim();
+}
+
+function normalizeConnectHostForHost(value: unknown, host: any, fallback: string | null = null) {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const privateAddr = hostPrivateAddress(host);
+  const ipv6Addr = hostIpv6Address(host);
+  if (privateAddr && text === privateAddr) return privateAddr;
+  if (ipv6Addr && text === ipv6Addr) return ipv6Addr;
+  return fallback;
+}
+
 function normalizeHopConnectHostsForHosts(
   raw: Array<string | null>,
   hopHostIds: number[],
@@ -328,9 +342,7 @@ function normalizeHopConnectHostsForHosts(
     if (idx === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hopHostIds[idx] || 0));
     const publicAddr = hostPublicAddress(host);
-    const privateAddr = hostPrivateAddress(host);
-    const text = String(value || "").trim();
-    return privateAddr && text === privateAddr ? privateAddr : (publicAddr || null);
+    return normalizeConnectHostForHost(value, host, publicAddr || null);
   });
 }
 
@@ -346,9 +358,7 @@ function normalizeChainConnectHostsForHosts(
   return base.map((value, idx) => {
     if (idx === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hopHostIds[idx] || 0));
-    const privateAddr = hostPrivateAddress(host);
-    const text = String(value || "").trim();
-    return privateAddr && text === privateAddr ? privateAddr : null;
+    return normalizeConnectHostForHost(value, host, null);
   });
 }
 
@@ -1737,10 +1747,11 @@ function TunnelsContent() {
         const hostId = Number(exit.hostId) || null;
         const host = hosts?.find((item: any) => Number(item.id) === Number(hostId));
         const privateAddr = hostPrivateAddress(host);
+        const ipv6Addr = hostIpv6Address(host);
         const connectHost = String(exit.connectHost || "").trim();
         return {
           hostId,
-          connectHost: privateAddr && connectHost === privateAddr ? privateAddr : "",
+          connectHost: (privateAddr && connectHost === privateAddr) || (ipv6Addr && connectHost === ipv6Addr) ? connectHost : "",
         };
       }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
       : [];
@@ -1866,14 +1877,27 @@ function TunnelsContent() {
       const hopHostId = Number(orderedHopHostIds[i] || 0);
       const hopHost = hosts?.find((h: any) => Number(h.id) === hopHostId);
       const privateAddr = String((hopHost as any)?.tunnelEntryIp || "").trim();
-      if (privateAddr && value === privateAddr) hasPrivateHop = true;
+      if (privateAddr && value === privateAddr) {
+        hasPrivateHop = true;
+        continue;
+      }
+      const ipv6Addr = hostIpv6Address(hopHost);
+      if (ipv6Addr && value === ipv6Addr) continue;
+      const publicAddr = hostPublicAddress(hopHost);
+      if (publicAddr && value === publicAddr) continue;
+      toast.error(`第 ${i + 1} 跳只能使用入口地址、内网IP或IPv6地址`);
+      return;
     }
     const isMultiHopTunnel = orderedHopHostIds.length >= 3;
     const exitHost = hosts?.find((h: any) => Number(h.id) === exitHostId);
     const exitPrivateAddr = hostPrivateAddress(exitHost);
+    const exitIpv6Addr = hostIpv6Address(exitHost);
     const regularConnectHost = String(orderedHopConnectHosts[1] || "").trim();
     const regularPrivateConnectHost = !isMultiHopTunnel && exitPrivateAddr && regularConnectHost === exitPrivateAddr
       ? exitPrivateAddr
+      : null;
+    const regularIpv6ConnectHost = !isMultiHopTunnel && exitIpv6Addr && regularConnectHost === exitIpv6Addr
+      ? exitIpv6Addr
       : null;
     const loadBalanceExits = submitForm.loadBalanceExits
       .map((exit) => ({ hostId: Number(exit.hostId || 0), connectHost: String(exit.connectHost || "").trim() }))
@@ -1895,6 +1919,11 @@ function TunnelsContent() {
           return;
         }
         usedExitIds.add(exit.hostId);
+        const exitHost = hosts?.find((h: any) => Number(h.id) === exit.hostId);
+        if (exit.connectHost && !normalizeConnectHostForHost(exit.connectHost, exitHost, null)) {
+          toast.error("出口组连接地址只能使用内网IP或IPv6地址");
+          return;
+        }
         if (exit.connectHost && !isValidConnectHost(exit.connectHost)) {
           toast.error("出口组连接地址格式无效");
           return;
@@ -1908,7 +1937,7 @@ function TunnelsContent() {
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
-      connectHost: isMultiHopTunnel ? null : regularPrivateConnectHost,
+      connectHost: isMultiHopTunnel ? null : (regularPrivateConnectHost || regularIpv6ConnectHost),
       entryGroupId: submitForm.entryGroupId || null,
       entryHostId,
       exitHostId,

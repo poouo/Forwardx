@@ -26,9 +26,20 @@ function stringifyArg(arg: unknown) {
   }
 }
 
+function isNoisyPanelLog(message: string) {
+  return (
+    /^\[AgentEvent\].*event=agent-refresh\b/.test(message) ||
+    /^\[AgentEvent\].*\bconnected\b/.test(message) ||
+    /^\[AgentEvent\].*\bdisconnected\b/.test(message) ||
+    /^\[Agent TCPing\]/.test(message) ||
+    /^\[(TunnelTraffic|Traffic)\]/.test(message)
+  );
+}
+
 export function appendPanelLog(level: PanelLogLevel, ...args: unknown[]) {
   const message = args.map(stringifyArg).join(" ").trim();
   if (!message) return;
+  if (level !== "warn" && level !== "error" && isNoisyPanelLog(message)) return;
   appendJsonLog(PANEL_LOG_FILE, {
     id: `${Date.now()}-${nextLogId++}`,
     level,

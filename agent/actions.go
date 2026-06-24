@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,6 +13,18 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 		close(done)
 		return done
 	}
+	if key := actionQueueKey(a); key != "" && a.IssuedAt > 0 {
+		queuedActionMu.Lock()
+		existing := queuedActionKeys[key]
+		if existing == a.IssuedAt {
+			queuedActionMu.Unlock()
+			close(done)
+			return done
+		}
+		queuedActionKeys[key] = a.IssuedAt
+		queuedActionMu.Unlock()
+	}
+	atomic.AddInt64(&actionPendingCount, 1)
 	actionQueue <- actionJob{cfg: cfg, action: a, done: done}
 	return done
 }
@@ -22,6 +35,8 @@ func actionWorker() {
 			if job.done != nil {
 				defer close(job.done)
 			}
+			defer atomic.AddInt64(&actionPendingCount, -1)
+			defer releaseQueuedAction(job.action)
 			if isOlderAction(job.action, false) {
 				return
 			}
@@ -98,8 +113,31 @@ func isOlderAction(a action, remember bool) bool {
 	}
 	actionEpochMu.Unlock()
 	if a.IssuedAt < latest {
-		logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d latest=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, latest)
+		key := fmt.Sprintf("action-stale:%s", strings.Join(keys, ","))
+		if shouldLogAgentReport(key, agentReportLogInterval) {
+			logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d latest=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, latest)
+		}
 		return true
 	}
 	return false
+}
+
+func actionQueueKey(a action) string {
+	keys := actionStaleKeys(a)
+	if len(keys) == 0 {
+		return ""
+	}
+	return strings.Join(keys, "|")
+}
+
+func releaseQueuedAction(a action) {
+	key := actionQueueKey(a)
+	if key == "" || a.IssuedAt <= 0 {
+		return
+	}
+	queuedActionMu.Lock()
+	if queuedActionKeys[key] == a.IssuedAt {
+		delete(queuedActionKeys, key)
+	}
+	queuedActionMu.Unlock()
 }

@@ -158,6 +158,10 @@ function privateAddressForHost(host: any) {
   return String(host?.tunnelEntryIp || "").trim();
 }
 
+function ipv6AddressForConnectHost(host: any) {
+  return String(host?.ipv6 || "").trim();
+}
+
 function isSafeHostAddress(value: string) {
   const text = value.trim();
   return !!text && text.length <= 253 && !/[\s'"<>]/.test(text);
@@ -197,19 +201,23 @@ function normalizeStoredChainConnectHost(rawConnectHost: string | null | undefin
   const raw = String(rawConnectHost || "").trim();
   const publicAddr = entryAddressForHost(host);
   const privateAddr = privateAddressForHost(host);
+  const ipv6Addr = ipv6AddressForConnectHost(host);
   if (!raw) return null;
   if (!isSafeHostAddress(raw)) throw new Error("Chain host connect address is invalid");
   if (privateAddr && raw === privateAddr) return privateAddr;
+  if (ipv6Addr && raw === ipv6Addr) return ipv6Addr;
   if (publicAddr && raw === publicAddr) return null;
-  if (!privateAddr) return null;
-  throw new Error("Chain host connect address must use entry address or configured private IP");
+  if (!privateAddr && !ipv6Addr) return null;
+  throw new Error("Chain host connect address must use entry address, configured private IP or IPv6");
 }
 
 function resolveChainConnectHost(member: any, host: any) {
   const stored = String(member?.connectHost || "").trim();
   const publicAddr = entryAddressForHost(host);
   const privateAddr = privateAddressForHost(host);
-  if (privateAddr && stored && stored !== publicAddr) return privateAddr;
+  const ipv6Addr = ipv6AddressForConnectHost(host);
+  if (stored && privateAddr && stored === privateAddr) return privateAddr;
+  if (stored && ipv6Addr && stored === ipv6Addr) return ipv6Addr;
   return publicAddr || stored;
 }
 
@@ -224,9 +232,14 @@ async function normalizeForwardGroupMemberInput(
     if (!host) throw new Error("Host does not exist");
     const requested = String(member.connectHost || "").trim();
     const privateAddr = privateAddressForHost(host);
+    const ipv6Addr = ipv6AddressForConnectHost(host);
     return {
       ...member,
-      connectHost: requested && privateAddr && requested === privateAddr ? privateAddr : null,
+      connectHost: requested && privateAddr && requested === privateAddr
+        ? privateAddr
+        : requested && ipv6Addr && requested === ipv6Addr
+          ? ipv6Addr
+          : null,
     };
   }
   if (groupMode !== "chain") return { ...member, connectHost: null };

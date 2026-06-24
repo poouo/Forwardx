@@ -14,6 +14,18 @@ function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
 
+const statusLogCache = new Map<string, string>();
+
+function shouldLogStatus(key: string, value: string, important = false) {
+  if (important) {
+    statusLogCache.set(key, value);
+    return true;
+  }
+  if (statusLogCache.get(key) === value) return false;
+  statusLogCache.set(key, value);
+  return true;
+}
+
 function hostBlocksProtocol(host: any, protocol: string) {
   if (!host) return false;
   if (protocol === "http") return !!(host as any).blockHttp;
@@ -170,10 +182,12 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         : [];
       if (isExtraExit) {
         recordTunnelRuntimeHostStatus(tunnelId, host.id, !!isRunning);
-        appendPanelLog(
-          !!isRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} extraExit=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-        );
+        if (shouldLogStatus(`tunnel:${tunnelId}:extra:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
+          appendPanelLog(
+            !!isRunning ? "info" : "warn",
+            `[Tunnel] status tunnel=${tunnelId} extraExit=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+          );
+        }
         res.json({ success: true });
         return;
       }
@@ -192,15 +206,19 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
             }
           }
         }
-        appendPanelLog(
-          !!isRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
-        );
+        if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:ready=${readyCount}/${hopHostIds.length}`, !isRunning || !!message)) {
+          appendPanelLog(
+            !!isRunning ? "info" : "warn",
+            `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
+          );
+        }
         res.json({ success: true });
         return;
       }
       if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
-        appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+        if (shouldLogStatus(`tunnel:${tunnelId}:ignored:${host.id}`, `running=${!!isRunning}`, !!message)) {
+          appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+        }
         res.json({ success: true, ignored: true });
         return;
       }
@@ -208,10 +226,12 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       if (nextRunning) {
         requestTunnelTcpingRefresh(tunnelEntryHostIds, "tunnel-tcping-refresh");
       }
-      appendPanelLog(
-        nextRunning ? "info" : "warn",
-        `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
-      );
+      if (shouldLogStatus(`tunnel:${tunnelId}:direct:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}`, !nextRunning || !!message)) {
+        appendPanelLog(
+          nextRunning ? "info" : "warn",
+          `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
+        );
+      }
       res.json({ success: true });
       return;
     }
@@ -259,10 +279,12 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         await maybeMarkForwardXTunnelRunningFromRule(ruleTunnel);
       }
     }
-    appendPanelLog(
-      !!isRunning ? "info" : "warn",
-      `[Rule] status rule=${ruleId} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
-    );
+    if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
+      appendPanelLog(
+        !!isRunning ? "info" : "warn",
+        `[Rule] status rule=${ruleId} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+      );
+    }
     res.json({ success: true });
   } catch (error) {
     console.error("[Agent Rule Status] Error:", error);

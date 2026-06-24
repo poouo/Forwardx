@@ -653,10 +653,8 @@ function pushUniqueEntryAddress(rows: EntryAddress[], label: string, value: unkn
 }
 
 function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
-  const customEntry = String(host?.entryIp || "").trim();
-  if (customEntry) return [{ label: "入口", value: customEntry }];
-
   const rows: EntryAddress[] = [];
+  pushUniqueEntryAddress(rows, "入口", host?.entryIp);
   pushUniqueEntryAddress(rows, "IPv4", host?.ipv4);
   pushUniqueEntryAddress(rows, "IPv6", host?.ipv6);
   if (rows.length === 0) pushUniqueEntryAddress(rows, "IP", host?.ip);
@@ -3387,12 +3385,29 @@ function RulesContent() {
     return getHostEntryAddresses(getRuleEntryHost(rule));
   };
 
+  const getForwardChainEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
+    if (!group) return [];
+    const rows: EntryAddress[] = [];
+    const domain = entryDomainForForwardGroup(group);
+    if (domain) pushUniqueEntryAddress(rows, "域名", domain);
+    const entryMember = domain && group.entryGroupId
+      ? (forwardGroupById.get(Number(group.entryGroupId))?.members || [])[0]
+      : (group.members || [])[0];
+    const entryHostId = Number(entryMember?.hostId || 0);
+    const entryHost = entryHostId ? hosts?.find((host: any) => Number(host.id) === entryHostId) : null;
+    for (const entry of getHostEntryAddresses(entryHost)) {
+      pushUniqueEntryAddress(rows, entry.label, entry.value);
+    }
+    pushUniqueEntryAddress(rows, "入口", entryMember?.entryAddress);
+    return rows;
+  };
+
   /** 复制入口 IP:端口 到剪贴板 */
   const copyEntryAddress = async (rule: any, entryValue?: string) => {
     if (rule.forwardGroupId) {
       const group = forwardGroupById.get(Number(rule.forwardGroupId));
       if (isForwardChainGroup(group)) {
-        const entry = String(entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || "").trim();
+        const entry = String(entryValue || getForwardChainEntryAddresses(group)[0]?.value || "").trim();
         if (!entry) {
           toast.error("该端口转发链未配置可用入口地址");
           return;
@@ -3479,8 +3494,9 @@ function RulesContent() {
     const groupEntry = isForwardChainGroup(group)
       ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
       : (group?.domain || getForwardGroupName(rule.forwardGroupId));
+    const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group) : [];
     const entryItems = rule.forwardGroupId
-      ? [{ label: isForwardChainGroup(group) ? "转发链" : "转发组", value: groupEntry }]
+      ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : [{ label: "转发组", value: groupEntry }])
       : (getRuleEntries(rule).length > 0
         ? getRuleEntries(rule)
         : [{ label: "入口", value: getRuleEntryHostName(rule) }]);

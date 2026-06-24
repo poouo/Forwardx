@@ -21,6 +21,8 @@ import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, typ
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest } from "./agentAuth";
 
+const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
+
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
@@ -87,6 +89,7 @@ const trafficReportLogBuckets = new Map<string, TrafficReportLogBucket>();
 const reportLogTimes = new Map<string, number>();
 
 function logTrafficReportSample(key: string, label: string, bytesIn: number, bytesOut: number, connections: number) {
+  if (!VERBOSE_AGENT_REPORTS) return;
   const now = Date.now();
   const bucket = trafficReportLogBuckets.get(key) || {
     lastLoggedAt: 0,
@@ -128,6 +131,7 @@ function logTcpingReportSummary(
   forwardGroupResults: AgentForwardGroupLatencyResult[],
   serviceResults: AgentHostProbeServiceResult[],
 ) {
+  if (!VERBOSE_AGENT_REPORTS) return;
   if (!shouldLogReport(`tcping:${hostId}`, tcpingReportLogIntervalMs)) return;
   const all = [...results, ...tunnelResults, ...forwardGroupResults, ...serviceResults] as Array<{ latencyMs?: unknown; isTimeout?: unknown }>;
   const timeouts = all.filter((item) => !!item.isTimeout).length;

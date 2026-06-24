@@ -2726,6 +2726,9 @@ function SystemInfoSection() {
             <p className="text-xs text-muted-foreground">
               留空使用当前访问地址。需以 http:// 或 https:// 开头。
             </p>
+            <p className="text-xs leading-relaxed text-amber-600 dark:text-amber-300">
+              如果通过 HTTPS 反代、Cloudflare 或域名访问面板，请填写外部可访问的 https:// 域名。留空时面板只能根据请求头推断地址，Docker/反代环境可能生成 http://容器地址:端口，导致 Agent 通讯地址被覆盖后离线。
+            </p>
           </CardContent>
         </Card>
 

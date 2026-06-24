@@ -29,6 +29,7 @@ interface HopEntry {
   hostId: number;
   hostName: string;
   useTunnelEntryIp: boolean;
+  useIpv6: boolean;
 }
 
 type HopRole = "entry" | "mid" | "exit";
@@ -47,6 +48,7 @@ interface MultiHopEditorProps {
 }
 
 const missingTunnelEntryIpTip = "请先配置内网IP";
+const missingIpv6Tip = "该主机暂无IPv6";
 const DRAG_GHOST_OFFSET = { x: 14, y: 14 };
 
 const ROLE_COLORS: Record<HopRole, string> = {
@@ -112,7 +114,10 @@ export default function MultiHopEditor({
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      return hop.useTunnelEntryIp && privateAddr ? privateAddr : (publicAddr || null);
+      const ipv6Addr = String(host?.ipv6 || "").trim();
+      if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
+      if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
+      return publicAddr || null;
     }),
   );
 
@@ -130,6 +135,13 @@ export default function MultiHopEditor({
             const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
             const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
             return !!initialConnectHost && !!tunnelEntryIp && initialConnectHost === tunnelEntryIp;
+          })(),
+          useIpv6: (() => {
+            if (idx === 0 && !externalEntry) return false;
+            const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
+            const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
+            const ipv6Addr = String(host.ipv6 || "").trim();
+            return !!initialConnectHost && !!ipv6Addr && initialConnectHost === ipv6Addr && initialConnectHost !== tunnelEntryIp;
           })(),
         };
       })
@@ -181,7 +193,10 @@ export default function MultiHopEditor({
       const host = hostById.get(hop.hostId);
       const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      return hop.useTunnelEntryIp && privateAddr ? privateAddr : (publicAddr || null);
+      const ipv6Addr = String(host?.ipv6 || "").trim();
+      if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
+      if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
+      return publicAddr || null;
     });
     const connectText = JSON.stringify(connectHosts);
     if (connectText !== prevConnectRef.current) {
@@ -222,7 +237,7 @@ export default function MultiHopEditor({
     if (!id || selectedIds.has(id)) return;
     const host = hostById.get(id);
     if (!host) return;
-    setHops((prev) => [...prev, { hostId: host.id, hostName: host.name, useTunnelEntryIp: false }]);
+    setHops((prev) => [...prev, { hostId: host.id, hostName: host.name, useTunnelEntryIp: false, useIpv6: false }]);
   };
 
   const removeHop = (idx: number) => {
@@ -244,7 +259,16 @@ export default function MultiHopEditor({
       if (i !== idx) return hop;
       const host = hostById.get(hop.hostId);
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
-      return { ...hop, useTunnelEntryIp: !!enabled && !!privateAddr };
+      return { ...hop, useTunnelEntryIp: !!enabled && !!privateAddr, useIpv6: enabled ? false : hop.useIpv6 };
+    }));
+  };
+
+  const updateUseIpv6 = (idx: number, enabled: boolean) => {
+    setHops((prev) => prev.map((hop, i) => {
+      if (i !== idx) return hop;
+      const host = hostById.get(hop.hostId);
+      const ipv6Addr = String(host?.ipv6 || "").trim();
+      return { ...hop, useIpv6: !!enabled && !!ipv6Addr, useTunnelEntryIp: enabled ? false : hop.useTunnelEntryIp };
     }));
   };
 
@@ -340,9 +364,12 @@ export default function MultiHopEditor({
             const isDropTarget = dragSourceIdx !== null && dragOverIdx === idx;
             const host = hostById.get(hop.hostId);
             const hasTunnelEntryIp = !!String(host?.tunnelEntryIp || "").trim();
+            const hasIpv6 = !!String(host?.ipv6 || "").trim();
             const useTunnelEntryIp = hop.useTunnelEntryIp && hasTunnelEntryIp;
+            const useIpv6 = hop.useIpv6 && hasIpv6;
             const isFixedExit = fixedExitIds.has(hop.hostId);
             const showTunnelEntryIpSwitch = !isFirst && !isFixedExit;
+            const showIpv6Switch = !isFirst && !isFixedExit;
             const tunnelEntrySwitch = (
               <Switch
                 checked={useTunnelEntryIp}
@@ -351,10 +378,18 @@ export default function MultiHopEditor({
                 aria-label={`为${hop.hostName}使用内网IP`}
               />
             );
+            const ipv6Switch = (
+              <Switch
+                checked={useIpv6}
+                disabled={!hasIpv6}
+                onCheckedChange={(checked) => updateUseIpv6(idx, !!checked)}
+                aria-label={`为${hop.hostName}使用IPv6转发`}
+              />
+            );
             return (
               <div
                 key={hop.hostId}
-                className={`grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:grid-cols-[auto_auto_minmax(14rem,1fr)_auto_auto_auto_auto_auto] ${
+                className={`grid grid-cols-[auto_auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-1.5 rounded-md border border-border/50 bg-background px-2.5 py-1.5 transition-colors duration-150 sm:grid-cols-[auto_auto_minmax(14rem,1fr)_auto_auto_auto_auto_auto_auto] ${
                   isDragging ? "opacity-55" : "opacity-100"
                 } ${isDropTarget ? "ring-1 ring-primary/40" : ""}`}
                 draggable={!isFixedExit}
@@ -388,6 +423,23 @@ export default function MultiHopEditor({
                           </span>
                         </TooltipTrigger>
                         <TooltipContent>{hasTunnelEntryIp ? "使用内网IP" : missingTunnelEntryIpTip}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <span className="hidden text-xs sm:invisible sm:block">占位</span>
+                  )}
+                </div>
+
+                <div className="col-span-full flex h-7 items-center justify-start gap-1.5 sm:col-span-1 sm:w-[54px] sm:justify-end">
+                  {showIpv6Switch ? (
+                    <TooltipProvider delayDuration={120}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className={hasIpv6 ? "inline-flex" : "inline-flex cursor-not-allowed"}>
+                            {ipv6Switch}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>{hasIpv6 ? "使用IPv6转发" : missingIpv6Tip}</TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
                   ) : (

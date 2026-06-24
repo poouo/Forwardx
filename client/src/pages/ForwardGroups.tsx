@@ -265,6 +265,20 @@ function hostPrivateAddress(host: any) {
   return String(host?.tunnelEntryIp || "").trim();
 }
 
+function hostIpv6Address(host: any) {
+  return String(host?.ipv6 || "").trim();
+}
+
+function normalizeConnectHostForHost(value: unknown, host: any, fallback: string | null = null) {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const privateAddr = hostPrivateAddress(host);
+  const ipv6Addr = hostIpv6Address(host);
+  if (privateAddr && text === privateAddr) return privateAddr;
+  if (ipv6Addr && text === ipv6Addr) return ipv6Addr;
+  return fallback;
+}
+
 function normalizeChainConnectHostsForHosts(
   raw: Array<string | null>,
   hostIds: number[],
@@ -278,9 +292,7 @@ function normalizeChainConnectHostsForHosts(
   return base.map((value, index) => {
     if (index === 0 && !externalEntry) return null;
     const host = hostById.get(Number(hostIds[index] || 0));
-    const privateAddr = hostPrivateAddress(host);
-    const text = String(value || "").trim();
-    return privateAddr && text === privateAddr ? privateAddr : null;
+    return normalizeConnectHostForHost(value, host, null);
   });
 }
 
@@ -899,6 +911,22 @@ export function ForwardGroupsContent({
           return member;
         }
         return { ...member, connectHost: checked ? privateAddr : null };
+      }),
+    }));
+  };
+
+  const updateExitMemberUseIpv6 = (key: string, checked: boolean) => {
+    setForm((prev) => ({
+      ...prev,
+      members: prev.members.map((member) => {
+        if (member.key !== key) return member;
+        const host = hostById.get(Number(member.hostId || 0));
+        const ipv6Addr = hostIpv6Address(host);
+        if (checked && !ipv6Addr) {
+          toast.error("该主机暂无IPv6");
+          return member;
+        }
+        return { ...member, connectHost: checked ? ipv6Addr : null };
       }),
     }));
   };
@@ -1755,14 +1783,24 @@ export function ForwardGroupsContent({
                           </>
                         )}
                         {form.groupMode === "exit" && member.memberType === "host" && (
-                          <label className="flex shrink-0 items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
-                            <span>内网IP</span>
-                            <Switch
-                              checked={!!member.connectHost}
-                              disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
-                              onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
-                            />
-                          </label>
+                          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                            <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
+                              <span>内网</span>
+                              <Switch
+                                checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && member.connectHost === hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
+                                disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
+                                onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
+                              />
+                            </label>
+                            <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
+                              <span>IPv6</span>
+                              <Switch
+                                checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && member.connectHost === hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
+                                disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
+                                onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
+                              />
+                            </label>
+                          </div>
                         )}
                         <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
                           setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });

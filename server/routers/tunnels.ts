@@ -1,7 +1,6 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
-const isValidHostOrIp = (value: string) => /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(value) && value.length <= 253;
 import * as db from "../db";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
@@ -13,6 +12,14 @@ import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
 import { createQueryCache } from "../queryCache";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
+import { isIP } from "net";
+
+const isValidHostOrIp = (value: string) => {
+  const text = String(value || "").trim();
+  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+  if (isIP(unwrapped)) return true;
+  return /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(text) && text.length <= 253;
+};
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
@@ -65,6 +72,9 @@ const getTunnelDialHost = (tunnel: any, exit: any) => {
 const getHostPublicAddress = (host: any) =>
   String((host as any)?.entryIp || (host as any)?.ipv4 || (host as any)?.ipv6 || host?.ip || "").trim();
 
+const getHostIpv6Address = (host: any) =>
+  String((host as any)?.ipv6 || "").trim();
+
 const tunnelLoadBalanceExitSchema = z.object({
   hostId: z.number(),
   connectHost: z.string().max(128).nullable().optional(),
@@ -99,12 +109,32 @@ function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, h
   const raw = String(rawConnectHost || "").trim();
   const publicAddr = getHostPublicAddress(host);
   const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  const ipv6Addr = getHostIpv6Address(host);
   if (!raw) return publicAddr || null;
   const normalized = normalizeTunnelConnect(raw);
   if (privateAddr && normalized === privateAddr) return privateAddr;
+  if (ipv6Addr && normalized === ipv6Addr) return ipv6Addr;
   if (publicAddr && normalized === publicAddr) return publicAddr;
-  if (!privateAddr) return publicAddr || null;
-  throw new Error(`主机 ${host?.name || host?.id || ""} 的连接地址只能使用入口地址或已配置的内网IP`);
+  if (!privateAddr && !ipv6Addr) return publicAddr || null;
+  throw new Error(`主机 ${host?.name || host?.id || ""} 的连接地址只能使用入口地址、已配置的内网IP或IPv6地址`);
+}
+
+function normalizeOptionalConnectForHost(rawConnectHost: string | null | undefined, host: any) {
+  const raw = String(rawConnectHost || "").trim();
+  if (!raw) return null;
+  const publicAddr = getHostPublicAddress(host);
+  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  const ipv6Addr = getHostIpv6Address(host);
+  const normalized = normalizeTunnelConnect(raw);
+  if (privateAddr && normalized === privateAddr) return privateAddr;
+  if (ipv6Addr && normalized === ipv6Addr) return ipv6Addr;
+  if (publicAddr && normalized === publicAddr) return null;
+  throw new Error(`主机 ${host?.name || host?.id || ""} 的连接地址只能使用入口地址、已配置的内网IP或IPv6地址`);
+}
+
+function isHostPrivateConnectHost(connectHost: string | null | undefined, host: any) {
+  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  return !!privateAddr && String(connectHost || "").trim() === privateAddr;
 }
 
 async function normalizeHopConnectHostsForHosts(hopHostIds: number[], hopConnectHosts: Array<string | null>) {
@@ -149,7 +179,7 @@ async function buildExtraExitNodes(ctx: any, options: {
     if (seen.has(hostId)) throw new Error("多出口负载中的出口 Agent 不能重复");
     seen.add(hostId);
     const host = await requireHostAccess(ctx, hostId);
-    const connectHost = normalizeTunnelConnect(raw[i]?.connectHost ?? null);
+    const connectHost = normalizeOptionalConnectForHost(raw[i]?.connectHost ?? null, host);
     const explicitListenPort = Number(options.explicitListenPort || 0);
     let listenPort = explicitListenPort > 0 ? explicitListenPort : Number(existingByHost.get(hostId)?.listenPort || 0);
     if (explicitListenPort > 0) {
@@ -422,7 +452,7 @@ export const tunnelsRouter = router({
           exitHostId,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
-          networkType: connectHost ? "private" : "public",
+          networkType: isHostPrivateConnectHost(connectHost, exitHostForConnect) ? "private" : "public",
           connectHost,
           blockHttp: false,
           blockSocks: false,
@@ -559,7 +589,7 @@ export const tunnelsRouter = router({
           const normalizedConnectHost = isMultiHopAfterUpdate
             ? normalizeTunnelConnect(nextConnectHost)
             : normalizeTunnelConnectForEndpoint(nextConnectHost, nextNetworkType, exit);
-          (data as any).networkType = normalizedConnectHost ? "private" : "public";
+          (data as any).networkType = isHostPrivateConnectHost(normalizedConnectHost, exit) ? "private" : "public";
           (data as any).connectHost = normalizedConnectHost;
         }
         (data as any).entryHostId = entryHostId;

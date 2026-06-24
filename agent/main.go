@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.112"
+var Version = "2.2.113"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -49,6 +49,9 @@ const runtimeActionRefreshInterval = 5 * time.Minute
 const agentLogRetention = 72 * time.Hour
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
+const actionBacklogHeartbeatDelay = 30 * time.Second
+const actionShellTimeout = 90 * time.Second
+const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
 const agentLogPath = agentLogDir + "/agent-go.log"
@@ -99,6 +102,11 @@ var runtimeProxyLogSignatures = map[string]string{}
 var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
 var agentReportLogMu sync.Mutex
 var agentReportLogAt = map[string]time.Time{}
+var actionPendingCount int64
+var heartbeatWakeCh = make(chan struct{}, 1)
+var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
+var queuedActionMu sync.Mutex
+var queuedActionKeys = map[string]int64{}
 
 type actionJob struct {
 	cfg    Config
@@ -348,6 +356,22 @@ func main() {
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
 	for {
+		if pending := atomic.LoadInt64(&actionPendingCount); pending > 0 {
+			delay := actionBacklogHeartbeatDelay
+			if pending <= 3 {
+				delay = 5 * time.Second
+			}
+			if shouldLogAgentReport("heartbeat-backlog", agentReportLogInterval) {
+				logf("heartbeat delayed pendingActions=%d delay=%s", pending, delay)
+			}
+			select {
+			case <-heartbeatWakeCh:
+			case <-time.After(delay):
+			}
+			if atomic.LoadInt64(&actionPendingCount) > 0 {
+				continue
+			}
+		}
 		nextInterval, err := heartbeat(cfg)
 		if err != nil && shouldLogAgentReport("heartbeat-error", agentReportLogInterval) {
 			logf("heartbeat error: %v", err)
@@ -358,7 +382,10 @@ func main() {
 		if nextInterval < 2 {
 			nextInterval = 2
 		}
-		time.Sleep(time.Duration(nextInterval) * time.Second)
+		select {
+		case <-heartbeatWakeCh:
+		case <-time.After(time.Duration(nextInterval) * time.Second):
+		}
 	}
 }
 
@@ -1104,11 +1131,10 @@ func runAgentEventStream(cfg Config) error {
 						go selfUpgrade(cfg, &up)
 					}
 				} else if msg.Type == "agent-refresh" {
-					go func() {
-						if _, err := heartbeat(cfg); err != nil {
-							logf("agent refresh heartbeat error: %v", err)
-						}
-					}()
+					select {
+					case heartbeatWakeCh <- struct{}{}:
+					default:
+					}
 				}
 			}
 			data.Reset()
@@ -1143,16 +1169,18 @@ func handleAction(cfg Config, a action) {
 		if shouldSkipRuntimeAction(a) {
 			return
 		}
-		logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
+		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 		for _, cmd := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
 			ok = runShell(cmd) && ok
 		}
 		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
-		logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
+		if !ok || agentVerboseLogs {
+			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
+		}
 		return
 	}
-	logf("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
+	logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logIPv6ActionDiagnostic(a)
 	logActionPortHandoff(a)
 	if a.Op == "apply" {
@@ -1176,12 +1204,16 @@ func handleAction(cfg Config, a action) {
 		}
 		if a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
-			logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
+			if !fxpOK || agentVerboseLogs {
+				logf("action fxp role=%s tunnel=%d rule=%d listen=%d protocol=%s proxyReceive=%v proxySend=%v ok=%v", a.Fxp.Role, a.Fxp.TunnelID, a.Fxp.RuleID, a.Fxp.ListenPort, a.Fxp.Protocol, a.Fxp.ProxyProtocolReceive, a.Fxp.ProxyProtocolSend, fxpOK)
+			}
 			ok = fxpOK && ok
 		}
 		if a.Failover != nil && a.Failover.Enabled {
 			failoverOK := startFailoverProxy(a.RuleID, a.SourcePort, *a.Failover, actionMessage)
-			logf("action failover rule=%d listen=%d targets=%d ok=%v", a.RuleID, a.Failover.ListenPort, len(a.Failover.Targets), failoverOK)
+			if !failoverOK || agentVerboseLogs {
+				logf("action failover rule=%d listen=%d targets=%d ok=%v", a.RuleID, a.Failover.ListenPort, len(a.Failover.Targets), failoverOK)
+			}
 			ok = failoverOK && ok
 		}
 		runPostCommands(a.PostCommands, actionMessage)
@@ -1205,7 +1237,7 @@ func handleAction(cfg Config, a action) {
 	var out map[string]any
 	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
 		logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
-	} else {
+	} else if !running || agentVerboseLogs {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
 }
@@ -1366,12 +1398,12 @@ func logGostRuntimeProxySummary(path string, label string) {
 	runtimeProxyLogSignatures[label] = signature
 	runtimeProxyLogMu.Unlock()
 	if len(lines) == 0 {
-		logf("proxy-debug %s no proxyProtocol entries services=%d chains=%d path=%s", label, len(cfg.Services), len(cfg.Chains), path)
+		logVerbosef("proxy-debug %s no proxyProtocol entries services=%d chains=%d path=%s", label, len(cfg.Services), len(cfg.Chains), path)
 		return
 	}
-	logf("proxy-debug %s proxyProtocol summary entries=%d path=%s", label, len(lines), path)
+	logVerbosef("proxy-debug %s proxyProtocol summary entries=%d path=%s", label, len(lines), path)
 	for _, line := range lines {
-		logf("proxy-debug %s %s", label, line)
+		logVerbosef("proxy-debug %s %s", label, line)
 	}
 }
 
@@ -2107,7 +2139,9 @@ func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
 			if protectedPorts[port] {
-				logf("reconcile skip pending action port=%s", port)
+				if shouldLogAgentReport("reconcile-pending:"+port, agentReportLogInterval) {
+					logf("reconcile skip pending action port=%s", port)
+				}
 				continue
 			}
 			reconcileRemovePort(port)
@@ -4089,11 +4123,17 @@ func calcMAC(key, iv, ct []byte, ts int64) []byte {
 }
 
 func runShell(cmd string) bool {
-	logf("exec: %s", cmd)
-	c := exec.Command("sh", "-lc", cmd)
+	logVerbosef("exec: %s", cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), actionShellTimeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, "sh", "-lc", cmd)
 	out, err := c.CombinedOutput()
-	if len(out) > 0 {
+	if len(out) > 0 && (err != nil || ctx.Err() == context.DeadlineExceeded || agentVerboseLogs) {
 		logf("%s", strings.TrimSpace(string(out)))
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		logf("exec failed: command timeout after %s", actionShellTimeout)
+		return false
 	}
 	if err != nil {
 		logf("exec failed: %v", err)
@@ -4371,6 +4411,22 @@ func shouldLogAgentReport(key string, interval time.Duration) bool {
 	agentReportLogAt[key] = now
 	return true
 }
+
+func isEnvTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func logVerbosef(format string, args ...any) {
+	if agentVerboseLogs {
+		logf(format, args...)
+	}
+}
+
 func logf(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	createdAt := time.Now().Format(time.RFC3339)
