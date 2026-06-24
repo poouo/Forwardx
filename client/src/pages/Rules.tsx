@@ -818,12 +818,17 @@ function getHostEntryAddresses(host: any | null | undefined): EntryAddress[] {
   const ddnsDomain = hostDdnsDomain(host);
   const ipv4 = hostAutoIpv4(host);
   const ipv6 = hostAutoIpv6(host);
+  const manualIsDomain = addressFamily(manualEntry) === "hostname";
+  if (manualEntry && manualIsDomain) {
+    pushUniqueEntryAddress(rows, "自定义", manualEntry);
+  }
   if (ddnsDomain) {
     pushUniqueEntryAddress(rows, "DDNS", ddnsDomain);
+  }
+  if (manualEntry && !manualIsDomain) {
     pushUniqueEntryAddress(rows, "入口", manualEntry);
-  } else if (manualEntry) {
-    pushUniqueEntryAddress(rows, "入口", manualEntry);
-  } else {
+  }
+  if (!manualEntry && !ddnsDomain) {
     pushUniqueEntryAddress(rows, ipv4 ? "IPv4" : ipv6 ? "IPv6" : "IP", ipv4 || ipv6 || host?.ip);
   }
   if (ipv6) pushUniqueEntryAddress(rows, "IPv6", ipv6);
@@ -3828,7 +3833,7 @@ function RulesContent() {
     return owner?.name || owner?.username || `用户 #${rule.userId}`;
   };
 
-  /** 获取主机的入口地址：优先使用 DDNS，其次用户自定义入口，最后回退自动检测 IP */
+  /** 获取主机入口展示地址：优先展示自定义域名 / DDNS，最后回退自动检测 IP */
   const getForwardGroupName = (groupId: number) => {
     return forwardGroupById.get(Number(groupId))?.name || `转发组 #${groupId}`;
   };
@@ -3862,6 +3867,53 @@ function RulesContent() {
     return getHostEntryAddresses(getRuleEntryHost(rule));
   };
 
+  const getMemberEntryHost = (member: any | null | undefined) => {
+    const hostId = Number(member?.hostId || 0);
+    if (hostId > 0) return hosts?.find((host: any) => Number(host.id) === hostId) || null;
+    const tunnelId = Number(member?.tunnelId || 0);
+    if (tunnelId > 0) {
+      const tunnel = tunnelById.get(tunnelId);
+      const entryHostId = Number(tunnel?.entryHostId || 0);
+      return entryHostId > 0
+        ? hosts?.find((host: any) => Number(host.id) === entryHostId) || tunnel?.entryHost || null
+        : tunnel?.entryHost || null;
+    }
+    return null;
+  };
+
+  const pushMemberEntryAddresses = (rows: EntryAddress[], member: any | null | undefined) => {
+    const entryHost = getMemberEntryHost(member);
+    for (const entry of getHostEntryAddresses(entryHost)) {
+      pushUniqueEntryAddress(rows, entry.label, entry.value);
+    }
+    pushUniqueEntryAddress(rows, "入口", member?.entryAddress);
+  };
+
+  const getForwardGroupEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
+    if (!group) return [];
+    const rows: EntryAddress[] = [];
+    const domain = String(group?.domain || "").trim();
+    if (domain) {
+      pushUniqueEntryAddress(rows, "转发组", domain);
+      return rows;
+    }
+    const activeMemberId = Number(group?.activeMemberId || 0);
+    const members = [...(group?.members || [])]
+      .filter((member: any) => member?.isEnabled !== false)
+      .sort((a: any, b: any) => {
+        if (activeMemberId > 0) {
+          if (Number(a.id) === activeMemberId) return -1;
+          if (Number(b.id) === activeMemberId) return 1;
+        }
+        return Number(a.priority || 0) - Number(b.priority || 0);
+      });
+    for (const member of members) {
+      pushMemberEntryAddresses(rows, member);
+      if (rows.length > 0) return rows;
+    }
+    return rows;
+  };
+
   const getForwardChainEntryAddresses = (group: any | null | undefined): EntryAddress[] => {
     if (!group) return [];
     const rows: EntryAddress[] = [];
@@ -3877,29 +3929,19 @@ function RulesContent() {
       ? enabledHostMembers(entryGroup)
       : [];
     if (entryMembers.length > 0) {
-      const memberDdns = entryMembers
-        .map((member: any) => hosts?.find((host: any) => Number(host.id) === Number(member.hostId || 0)))
-        .map((host: any) => hostDdnsDomain(host))
+      const memberDomain = entryMembers
+        .map((member: any) => getHostEntryAddresses(getMemberEntryHost(member)).find((entry) => addressFamily(entry.value) === "hostname"))
         .find(Boolean);
-      if (memberDdns) {
-        pushUniqueEntryAddress(rows, "DDNS", memberDdns);
+      if (memberDomain) {
+        pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
         return rows;
       }
       const firstEntryMember = entryMembers[0];
-      const firstEntryHost = hosts?.find((host: any) => Number(host.id) === Number(firstEntryMember?.hostId || 0));
-      for (const entry of getHostEntryAddresses(firstEntryHost)) {
-        pushUniqueEntryAddress(rows, entry.label, entry.value);
-      }
-      pushUniqueEntryAddress(rows, "入口", firstEntryMember?.entryAddress);
+      pushMemberEntryAddresses(rows, firstEntryMember);
       return rows;
     }
     const entryMember = (group.members || [])[0];
-    const entryHostId = Number(entryMember?.hostId || 0);
-    const entryHost = entryHostId ? hosts?.find((host: any) => Number(host.id) === entryHostId) : null;
-    for (const entry of getHostEntryAddresses(entryHost)) {
-      pushUniqueEntryAddress(rows, entry.label, entry.value);
-    }
-    pushUniqueEntryAddress(rows, "入口", entryMember?.entryAddress);
+    pushMemberEntryAddresses(rows, entryMember);
     return rows;
   };
 
@@ -3922,12 +3964,12 @@ function RulesContent() {
         }
         return;
       }
-      const domain = String(group?.domain || "").trim();
-      if (!domain) {
-        toast.error("该转发组未配置 DDNS 域名");
+      const entry = String(entryValue || getForwardGroupEntryAddresses(group)[0]?.value || "").trim();
+      if (!entry) {
+        toast.error("该转发组未配置可用入口地址");
         return;
       }
-      const text = formatAddressWithPort(domain, rule.sourcePort);
+      const text = formatAddressWithPort(entry, rule.sourcePort);
       try {
         await navigator.clipboard.writeText(text);
         toast.success(`已复制入口地址: ${text}`);
@@ -3996,8 +4038,9 @@ function RulesContent() {
       ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
       : (group?.domain || getForwardGroupName(rule.forwardGroupId));
     const chainEntryItems = isForwardChainGroup(group) ? getForwardChainEntryAddresses(group) : [];
+    const groupEntryItems = rule.forwardGroupId && !isForwardChainGroup(group) ? getForwardGroupEntryAddresses(group) : [];
     const entryItems = rule.forwardGroupId
-      ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : [{ label: "转发组", value: groupEntry }])
+      ? (isForwardChainGroup(group) ? (chainEntryItems.length > 0 ? chainEntryItems : [{ label: "转发链", value: groupEntry }]) : (groupEntryItems.length > 0 ? groupEntryItems : [{ label: "转发组", value: groupEntry }]))
       : (getRuleEntries(rule).length > 0
         ? getRuleEntries(rule)
         : [{ label: "入口", value: getRuleEntryHostName(rule) }]);
