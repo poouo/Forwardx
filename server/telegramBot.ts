@@ -43,7 +43,7 @@ type TelegramUpdate = {
 };
 
 type AiQueryIntent = {
-  intent: "usage" | "rules" | "rule_detail" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
+  intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
   id?: number;
   keyword?: string;
 };
@@ -66,6 +66,7 @@ const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
 const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
 const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
+const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪条|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|的|吗)+$/;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
   { command: "menu", description: "打开功能菜单" },
@@ -852,11 +853,37 @@ function normalizeKeyword(value: unknown) {
   return String(value || "").trim().slice(0, 80);
 }
 
+function isGenericAiQueryKeyword(value: unknown) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/^\/ask(?:@\w+)?\s*/i, "")
+    .replace(/[\s，,。？?！!：:、的]+/g, "");
+  if (!normalized) return true;
+  if (/^\d+$/.test(normalized)) return false;
+  return GENERIC_AI_QUERY_KEYWORD_RE.test(normalized);
+}
+
+function normalizeAiQueryKeyword(value: unknown) {
+  const keyword = normalizeKeyword(value);
+  return isGenericAiQueryKeyword(keyword) ? "" : keyword;
+}
+
+function textAsksRuleUsage(text: string) {
+  return /(规则|rule|#)/i.test(text) && /(流量|用量|用了|使用|消耗|traffic|usage)/i.test(text);
+}
+
+function textAsksRuleDetail(text: string) {
+  return /(详情|状态|detail|status)/i.test(text)
+    || /#\s*\d+/.test(text)
+    || /\d+\s*(?:号|#)\s*(?:规则|rule)/i.test(text);
+}
+
 function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryIntent {
   const allowed = new Set<AiQueryIntent["intent"]>([
     "usage",
     "rules",
     "rule_detail",
+    "rule_usage",
     "hosts",
     "tunnels",
     "forward_groups",
@@ -865,9 +892,11 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
     "help",
     "unsupported",
   ]);
-  const intent = allowed.has(value?.intent) ? value.intent : fallback.intent;
+  const modelIntent = allowed.has(value?.intent) ? value.intent : undefined;
+  let intent = modelIntent || fallback.intent;
+  if (["rule_usage", "rule_detail", "rules"].includes(fallback.intent)) intent = fallback.intent;
   const id = Number(value?.id ?? fallback.id);
-  const keyword = normalizeKeyword(value?.keyword ?? fallback.keyword);
+  const keyword = normalizeAiQueryKeyword(value?.keyword ?? fallback.keyword);
   return {
     intent,
     ...(Number.isFinite(id) && id > 0 ? { id } : {}),
@@ -891,45 +920,85 @@ function extractAiJsonObject(content: string) {
 }
 
 function extractRuleId(text: string) {
-  const match = text.match(/(?:规则|rule)\s*#?\s*(\d+)/i) || text.match(/#(\d+)/);
+  const match = text.match(/(?:规则|rule)\s*#?\s*(\d+)/i)
+    || text.match(/(\d+)\s*(?:号|#)?\s*(?:规则|rule)/i)
+    || text.match(/#(\d+)/);
   const id = Number(match?.[1]);
   return Number.isFinite(id) && id > 0 ? id : undefined;
 }
 
-function extractSearchKeyword(text: string) {
+function extractExplicitSearchKeyword(text: string) {
   const trimmed = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   const explicit = trimmed.match(/(?:关键字|关键词|搜索|端口|名称|备注|IP|ip|域名)[:：]?\s*([^\s，,。]+)/);
-  if (explicit?.[1]) return normalizeKeyword(explicit[1]);
-  const cleaned = trimmed
-    .replace(/(帮我|请|一下|查一下|查询|查看|看看|显示|列出|搜索|我的|所有|转发规则|规则详情|规则|主机|机器|节点|隧道|链路|转发组|入口组|用户|账户|账号|信息|状态|详情|列表|有哪些|是多少|多少)/g, " ")
-    .replace(/[，,。？?！!：:]/g, " ")
+  return normalizeAiQueryKeyword(explicit?.[1]);
+}
+
+function cleanAiEntityKeyword(value: unknown) {
+  return normalizeAiQueryKeyword(String(value || "")
+    .replace(/^(帮我|请|给我|把|将|列出|显示|查看|查询|看看|看下|看一下|现在|当前|目前|已有|有的|所有|全部)+/g, "")
+    .replace(/(的|下|一下)$/g, ""));
+}
+
+function extractUserFilterKeyword(text: string) {
+  const before = text.match(/([^\s，,。？?！!：:、的]+?)\s*(?:用户|账户|账号|user)(?=主机|机器|节点|规则|转发|端口|$|[\s，,。？?！!：:、的])/i);
+  const beforeKeyword = cleanAiEntityKeyword(before?.[1]);
+  if (beforeKeyword) return beforeKeyword;
+  const after = text.match(/(?:用户|账户|账号|user)\s*[:：]?\s*([^\s，,。？?！!：:、的]+?)(?=主机|机器|节点|规则|转发|端口|$|[\s，,。？?！!：:、的])/i);
+  return cleanAiEntityKeyword(after?.[1]);
+}
+
+function extractHostFilterKeyword(text: string) {
+  const cleanHostKeyword = (value: unknown) => cleanAiEntityKeyword(String(value || "").replace(/^.*(?:用户|账户|账号|user)/i, ""));
+  const before = text.match(/([^\s，,。？?！!：:、的]+?)\s*(?:主机|机器|节点|agent|host|server)(?=规则|转发|端口|$|[\s，,。？?！!：:、的])/i);
+  const beforeKeyword = cleanHostKeyword(before?.[1]);
+  if (beforeKeyword) return beforeKeyword;
+  const after = text.match(/(?:主机|机器|节点|agent|host|server)\s*[:：]?\s*([^\s，,。？?！!：:、的]+?)(?=规则|转发|端口|$|[\s，,。？?！!：:、的])/i);
+  return cleanHostKeyword(after?.[1]);
+}
+
+function stripAiEntityClauses(text: string) {
+  return text
+    .replace(/(?:用户|账户|账号|user)\s*[:：]?\s*[^\s，,。？?！!：:、的]+/gi, " ")
+    .replace(/[^\s，,。？?！!：:、]+\s*(?:用户|账户|账号|user)/gi, " ")
+    .replace(/(?:主机|机器|节点|agent|host|server)\s*[:：]?\s*[^\s，,。？?！!：:、的]+/gi, " ")
+    .replace(/[^\s，,。？?！!：:、]+\s*(?:主机|机器|节点|agent|host|server)/gi, " ");
+}
+
+function extractSearchKeyword(text: string) {
+  const explicit = extractExplicitSearchKeyword(text);
+  if (explicit) return explicit;
+  const cleaned = stripAiEntityClauses(text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim())
+    .replace(/(帮我|请|给我|一下|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有哪些|有|转发规则|规则详情|规则|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|信息|状态|详情|列表|哪些|哪条|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐)/g, " ")
+    .replace(/[，,。？?！!：:、]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return normalizeKeyword(cleaned);
+  return normalizeAiQueryKeyword(cleaned);
 }
 
 function localAiQueryIntent(text: string): AiQueryIntent {
   const raw = text.trim();
   const compact = raw.replace(/\s+/g, "");
   const lower = raw.toLowerCase();
-  const readHint = /(查询|查看|看看|显示|列出|搜索|多少|哪些|哪条|状态|详情|流量|用量|规则|主机|机器|节点|隧道|链路|转发组|入口组|用户|账户|账号|端口|ip|域名)/i.test(raw);
-  const questionHint = /(查询|查看|看看|显示|列出|搜索|多少|哪些|哪条|状态|详情|列表|有哪些|吗|？|\?)/i.test(raw);
+  const readHint = /(查询|查看|看看|看下|看一下|显示|列出|搜索|多少|哪些|哪条|状态|详情|流量|用量|规则|主机|机器|节点|隧道|链路|转发组|入口组|用户|账户|账号|端口|ip|域名)/i.test(raw);
+  const questionHint = /(查询|查看|看看|看下|看一下|显示|列出|搜索|多少|哪些|哪条|状态|详情|列表|有哪些|有的|吗|？|\?)/i.test(raw);
   const writeHint = /(开启|启用|关闭|停用|禁用|删除|移除|重置|续期|兑换|创建|新增|修改|更新|编辑|enable|disable|delete|remove|reset|renew|create|add|update|edit)/i.test(lower);
   if (writeHint && !readHint) return { intent: "unsupported" };
   if (!questionHint && /^(帮我|请|给我|把|将)?(开启|启用|关闭|停用|禁用|删除|移除|重置|续期|兑换|创建|新增|修改|更新|编辑)/.test(compact)) {
     return { intent: "unsupported" };
   }
   const id = extractRuleId(raw);
-  if (id && /(详情|状态|detail|规则|rule|#)/i.test(raw)) return { intent: "rule_detail", id };
   const keyword = extractSearchKeyword(raw);
   if (/(帮助|怎么用|help)/i.test(raw)) return { intent: "help" };
+  if (textAsksRuleUsage(raw)) return id ? { intent: "rule_usage", id } : { intent: "rules", keyword };
+  if (id && textAsksRuleDetail(raw)) return { intent: "rule_detail", id };
   if (/(用量|流量|额度|余额|套餐|usage|traffic)/i.test(raw)) return { intent: "usage", keyword };
   if (/(我是谁|账户|账号|个人|信息|资料|account|profile)/i.test(raw)) return { intent: "account", keyword };
-  if (/(用户|user)/i.test(raw)) return { intent: "users", keyword };
   if (/(转发组|入口组|多入口|forward\s*group|group)/i.test(raw)) return { intent: "forward_groups", keyword };
   if (/(隧道|链路|转发链|tunnel|link)/i.test(raw)) return { intent: "tunnels", keyword };
+  if (/(规则|端口|转发|rule|port)/i.test(raw)) return { intent: "rules", keyword };
+  if (/(用户|user)/i.test(raw)) return { intent: "users", keyword };
   if (/(主机|机器|节点|agent|host|server)/i.test(raw)) return { intent: "hosts", keyword };
-  if (/(规则|端口|转发|rule|port)/i.test(raw) || keyword) return { intent: "rules", keyword };
+  if (keyword) return { intent: "rules", keyword };
   return { intent: "help" };
 }
 
@@ -953,7 +1022,11 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
             content: [
               "You classify ForwardX Telegram user messages into read-only query intents.",
               "Return only JSON with keys: intent, id, keyword.",
-              "Allowed intents: usage, rules, rule_detail, hosts, tunnels, forward_groups, users, account, help, unsupported.",
+              "Allowed intents: usage, rules, rule_detail, rule_usage, hosts, tunnels, forward_groups, users, account, help, unsupported.",
+              "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
+              "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
+              "If the message asks for rules filtered by a user or host, classify it as rules, not users or hosts.",
+              "Do not use vague words like now/current/all/my as keyword; leave keyword empty for list-all queries.",
               "If the user asks to enable, disable, create, update, delete, reset, renew, redeem, or otherwise change data, return unsupported.",
               "Do not answer the user. Do not include markdown.",
             ].join(" "),
@@ -1111,7 +1184,23 @@ function onlineStatusText(value: unknown) {
 }
 
 function moreText(total: number, shown: number) {
-  return total > shown ? `\n\n还有 ${total - shown} 条未展示，可加关键字缩小范围。` : "";
+  return total > shown ? `\n\n<i>还有 ${total - shown} 条未展示，可加关键字缩小范围。</i>` : "";
+}
+
+function aiCode(value: unknown) {
+  return `<code>${escapeHtml(value ?? "-")}</code>`;
+}
+
+function aiFilterPart(label: string, value: unknown) {
+  return `${escapeHtml(label)} ${aiCode(value)}`;
+}
+
+function aiResultHeader(title: string, matched: number, total: number, unit: string, filterText = "") {
+  return [
+    `<b>${escapeHtml(title)}</b>`,
+    `结果：<b>${matched}</b> / ${total} ${escapeHtml(unit)}`,
+    filterText ? `筛选：${filterText}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 async function hostNameByIdMap(hostIds: number[]) {
@@ -1120,104 +1209,250 @@ async function hostNameByIdMap(hostIds: number[]) {
   return new Map(entries.filter((entry) => entry[1]).map(([id, host]) => [id, host]));
 }
 
-async function aiRulesText(user: any, keyword?: string) {
+type AiRuleTrafficSummary = {
+  bytesIn: number;
+  bytesOut: number;
+  connections: number;
+};
+
+type AiRuleFilters = {
+  keyword?: string;
+  userKeyword?: string;
+  hostKeyword?: string;
+};
+
+function emptyAiRuleTrafficSummary(): AiRuleTrafficSummary {
+  return { bytesIn: 0, bytesOut: 0, connections: 0 };
+}
+
+function formatRuleTrafficSummary(summary: AiRuleTrafficSummary | undefined, compact = false) {
+  const bytesIn = Math.max(0, Number(summary?.bytesIn || 0));
+  const bytesOut = Math.max(0, Number(summary?.bytesOut || 0));
+  const connections = Math.max(0, Number(summary?.connections || 0));
+  const total = bytesIn + bytesOut;
+  const line = compact
+    ? `流量：<b>${escapeHtml(formatBytes(total))}</b>（入 ${escapeHtml(formatBytes(bytesIn))} / 出 ${escapeHtml(formatBytes(bytesOut))}）`
+    : `已用流量：<b>${escapeHtml(formatBytes(total))}</b>\n入站：${escapeHtml(formatBytes(bytesIn))}\n出站：${escapeHtml(formatBytes(bytesOut))}`;
+  return connections > 0 ? `${line}\n连接：${connections}` : line;
+}
+
+async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[]) {
+  const ids = Array.from(new Set(ruleIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
+  const map = new Map<number, AiRuleTrafficSummary>();
+  if (ids.length === 0) return map;
+  const rows = await db.getTrafficSummaryByRule({
+    userId: user.role === "admin" ? undefined : user.id,
+    ruleIds: ids,
+    includeLatency: false,
+  }).catch(() => [] as any[]);
+  for (const row of rows as any[]) {
+    const ruleId = Number(row?.ruleId || 0);
+    if (!ruleId) continue;
+    const prev = map.get(ruleId) || emptyAiRuleTrafficSummary();
+    prev.bytesIn += Math.max(0, Number(row?.bytesIn || 0));
+    prev.bytesOut += Math.max(0, Number(row?.bytesOut || 0));
+    prev.connections += Math.max(0, Number(row?.connections || 0));
+    map.set(ruleId, prev);
+  }
+  for (const id of ids) if (!map.has(id)) map.set(id, emptyAiRuleTrafficSummary());
+  return map;
+}
+
+function userSearchValues(user: any) {
+  return [user.id, user.name, user.username, user.email, user.telegramUsername, user.role];
+}
+
+async function aiRulesWithFilters(user: any, filters: AiRuleFilters = {}) {
   const rules = await visibleRulesForTelegramUser(user);
-  const matched = rules.filter((rule) => searchMatches(keyword, ruleSearchValues(rule)));
-  if (matched.length === 0) return `<b>转发规则查询</b>\n\n没有找到匹配的规则。`;
+  const keyword = normalizeAiQueryKeyword(filters.keyword);
+  const requestedUserKeyword = normalizeAiQueryKeyword(filters.userKeyword);
+  const userKeyword = user.role === "admin" ? requestedUserKeyword : "";
+  const hostKeyword = normalizeAiQueryKeyword(filters.hostKeyword);
+  const userIds = new Set<number>();
+  if (userKeyword) {
+    const users = await db.getUserTrafficSummaries().catch(() => [] as any[]);
+    for (const item of users as any[]) {
+      if (searchMatches(userKeyword, userSearchValues(item))) userIds.add(Number(item.id));
+    }
+  }
+  const hosts = await visibleHostsForTelegramUser(user).catch(() => [] as any[]);
+  const hostById = new Map((hosts as any[]).map((host: any) => [Number(host.id), host]));
+  const hostIds = new Set<number>();
+  if (hostKeyword) {
+    for (const host of hosts as any[]) {
+      if (searchMatches(hostKeyword, hostSearchValues(host))) hostIds.add(Number(host.id));
+    }
+  }
+  const matched = (rules as any[]).filter((rule: any) => {
+    if (keyword && !searchMatches(keyword, ruleSearchValues(rule))) return false;
+    if (userKeyword && !userIds.has(Number(rule.userId))) return false;
+    if (hostKeyword && !hostIds.has(Number(rule.hostId))) return false;
+    return true;
+  });
+  return { rules, matched, hostById, keyword, userKeyword, hostKeyword };
+}
+
+function aiRuleFilterSuffix(filters: { keyword?: string; userKeyword?: string; hostKeyword?: string }) {
+  return [
+    filters.userKeyword ? aiFilterPart("用户", filters.userKeyword) : "",
+    filters.hostKeyword ? aiFilterPart("主机", filters.hostKeyword) : "",
+    filters.keyword ? aiFilterPart("关键字", filters.keyword) : "",
+  ].filter(Boolean).join("，");
+}
+
+async function aiRulesText(user: any, keywordOrFilters?: string | AiRuleFilters) {
+  const filters: AiRuleFilters = typeof keywordOrFilters === "string" ? { keyword: keywordOrFilters } : (keywordOrFilters || {});
+  const { rules, matched, hostById, keyword, userKeyword, hostKeyword } = await aiRulesWithFilters(user, filters);
+  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword });
+  const header = aiResultHeader("转发规则查询", matched.length, rules.length, "条", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到匹配的规则。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
-  const lines = visible.map((rule: any) => [
-    `#${rule.id} <b>${escapeHtml(shortText(rule.name, 28))}</b>`,
-    `${ruleStatusText(rule)} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
-    `入口端口：${rule.sourcePort} → ${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
-    rule.tunnelId ? `隧道 ID：${rule.tunnelId}` : `主机 ID：${rule.hostId}`,
-  ].join("\n"));
-  return `<b>转发规则查询</b>\n共 ${matched.length}/${rules.length} 条${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+  const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)));
+  const lines = visible.map((rule: any) => {
+    const host = hostById.get(Number(rule.hostId));
+    return [
+      `<b>#${rule.id} ${escapeHtml(shortText(rule.name, 28))}</b>`,
+      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b> · 类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
+      `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)} → 目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
+      rule.tunnelId ? `所属：隧道 ${aiCode(`#${rule.tunnelId}`)}` : `所属：主机 ${aiCode(`#${rule.hostId}`)}${host?.name ? `（${escapeHtml(shortText(host.name, 18))}）` : ""}`,
+      formatRuleTrafficSummary(trafficByRuleId.get(Number(rule.id)), true),
+      rule.remark || rule.remarks || rule.description ? `备注：${escapeHtml(shortText(rule.remark || rule.remarks || rule.description, 32))}` : "",
+    ].filter(Boolean).join("\n");
+  });
+  return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
 async function aiRuleDetailText(user: any, ruleId: number) {
   const rules = await visibleRulesForTelegramUser(user);
   const rule = rules.find((item: any) => Number(item.id) === Number(ruleId));
   if (!rule) return "规则不存在或无权查看。";
+  const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)])).get(Number(rule.id));
   return [
     `<b>规则 #${rule.id}</b>`,
     "",
     `名称：${escapeHtml(rule.name)}`,
-    `状态：${ruleStatusText(rule)}`,
-    `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
-    `入口端口：${rule.sourcePort}`,
-    `目标：${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
-    rule.tunnelId ? `隧道 ID：${rule.tunnelId}` : `主机 ID：${rule.hostId}`,
+    `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+    `类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
+    `入口端口：${aiCode(`:${rule.sourcePort ?? "-"}`)}`,
+    `目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
+    rule.tunnelId ? `隧道：${aiCode(`#${rule.tunnelId}`)}` : `主机：${aiCode(`#${rule.hostId}`)}`,
+    formatRuleTrafficSummary(traffic),
     rule.remark || rule.remarks || rule.description ? `备注：${escapeHtml(rule.remark || rule.remarks || rule.description)}` : "",
   ].filter(Boolean).join("\n");
 }
 
+async function aiRuleUsageText(user: any, ruleId: number) {
+  const rules = await visibleRulesForTelegramUser(user);
+  const rule = rules.find((item: any) => Number(item.id) === Number(ruleId));
+  if (!rule) return "规则不存在或无权查看。";
+  const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)])).get(Number(rule.id));
+  return [
+    `<b>规则 #${rule.id} 流量</b>`,
+    "",
+    `名称：${escapeHtml(rule.name)}`,
+    `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)} → 目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
+    formatRuleTrafficSummary(traffic),
+  ].filter(Boolean).join("\n");
+}
+
 async function aiHostsText(user: any, keyword?: string) {
+  const safeKeyword = normalizeAiQueryKeyword(keyword);
   const hosts = await visibleHostsForTelegramUser(user);
-  const matched = hosts.filter((host) => searchMatches(keyword, hostSearchValues(host)));
-  if (matched.length === 0) return `<b>主机查询</b>\n\n没有找到匹配的主机。`;
+  const matched = hosts.filter((host) => searchMatches(safeKeyword, hostSearchValues(host)));
+  const filterText = safeKeyword ? aiFilterPart("关键字", safeKeyword) : "";
+  const header = aiResultHeader("主机查询", matched.length, hosts.length, "台", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到匹配的主机。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
-  const lines = visible.map((host: any) => [
-    `#${host.id} <b>${escapeHtml(shortText(host.name, 28))}</b> · ${onlineStatusText(host.isOnline)}`,
-    `地址：${escapeHtml(host.ip || host.ipv4 || host.ipv6 || "-")}`,
-    host.entryIp ? `入口：${escapeHtml(host.entryIp)}` : "",
-    host.tunnelEntryIp ? `内网入口：${escapeHtml(host.tunnelEntryIp)}` : "",
-    host.agentVersion ? `Agent：${escapeHtml(host.agentVersion)}` : "",
-    host.lastHeartbeat ? `心跳：${escapeHtml(formatDateTime(host.lastHeartbeat))}` : "",
-  ].filter(Boolean).join("\n"));
-  return `<b>主机查询</b>\n共 ${matched.length}/${hosts.length} 台${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+  const lines = visible.map((host: any) => {
+    const address = host.ip || host.ipv4 || host.ipv6 || "-";
+    return [
+      `<b>#${host.id} ${escapeHtml(shortText(host.name, 28))}</b>`,
+      `状态：<b>${escapeHtml(onlineStatusText(host.isOnline))}</b>`,
+      `地址：${aiCode(address)}`,
+      host.ipv4 && host.ipv4 !== address ? `IPv4：${aiCode(host.ipv4)}` : "",
+      host.ipv6 && host.ipv6 !== address ? `IPv6：${aiCode(host.ipv6)}` : "",
+      host.entryIp ? `入口：${aiCode(host.entryIp)}` : "",
+      host.tunnelEntryIp ? `内网入口：${aiCode(host.tunnelEntryIp)}` : "",
+      host.agentVersion ? `Agent：${aiCode(host.agentVersion)}` : "",
+      host.lastHeartbeat ? `心跳：${escapeHtml(formatDateTime(host.lastHeartbeat))}` : "",
+    ].filter(Boolean).join("\n");
+  });
+  return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
 async function aiTunnelsText(user: any, keyword?: string) {
+  const safeKeyword = normalizeAiQueryKeyword(keyword);
   const tunnels = await visibleTunnelsForTelegramUser(user);
   const hostIds = tunnels.flatMap((tunnel: any) => [Number(tunnel.entryHostId || 0), Number(tunnel.exitHostId || 0)]);
   const hostsById = await hostNameByIdMap(hostIds);
   const matched = tunnels.filter((tunnel: any) => {
     const entryHost = hostsById.get(Number(tunnel.entryHostId || 0));
     const exitHost = hostsById.get(Number(tunnel.exitHostId || 0));
-    return searchMatches(keyword, tunnelSearchValues(tunnel, entryHost, exitHost));
+    return searchMatches(safeKeyword, tunnelSearchValues(tunnel, entryHost, exitHost));
   });
-  if (matched.length === 0) return `<b>链路查询</b>\n\n没有找到匹配的链路。`;
+  const filterText = safeKeyword ? aiFilterPart("关键字", safeKeyword) : "";
+  const header = aiResultHeader("链路查询", matched.length, tunnels.length, "条", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到匹配的链路。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
   const lines = visible.map((tunnel: any) => {
     const entryHost = hostsById.get(Number(tunnel.entryHostId || 0));
     const exitHost = hostsById.get(Number(tunnel.exitHostId || 0));
     const latency = tunnel.latestLatencyMs ?? tunnel.lastLatencyMs;
     return [
-      `#${tunnel.id} <b>${escapeHtml(shortText(tunnel.name, 28))}</b> · ${runningStatusText(tunnel.isRunning)}`,
-      `路径：${escapeHtml(entryHost?.name || tunnel.entryHostId || "-")} → ${escapeHtml(exitHost?.name || tunnel.exitHostId || "-")}`,
-      `模式：${escapeHtml(tunnel.mode || "-")}${tunnel.listenPort ? ` · 出口端口：${tunnel.listenPort}` : ""}`,
-      latency != null ? `延迟：${latency} ms` : "",
+      `<b>#${tunnel.id} ${escapeHtml(shortText(tunnel.name, 28))}</b>`,
+      `状态：<b>${escapeHtml(runningStatusText(tunnel.isRunning))}</b>`,
+      `路径：${aiCode(entryHost?.name || tunnel.entryHostId || "-")} → ${aiCode(exitHost?.name || tunnel.exitHostId || "-")}`,
+      `模式：${aiCode(tunnel.mode || "-")}${tunnel.networkType ? ` · 网络：${aiCode(tunnel.networkType)}` : ""}`,
+      tunnel.listenPort ? `出口端口：${aiCode(tunnel.listenPort)}` : "",
+      tunnel.connectHost ? `连接地址：${aiCode(tunnel.connectHost)}` : "",
+      latency != null ? `延迟：<b>${escapeHtml(`${latency} ms`)}</b>` : "",
+      tunnel.remark || tunnel.remarks || tunnel.description ? `备注：${escapeHtml(shortText(tunnel.remark || tunnel.remarks || tunnel.description, 32))}` : "",
     ].filter(Boolean).join("\n");
   });
-  return `<b>链路查询</b>\n共 ${matched.length}/${tunnels.length} 条${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+  return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
 async function aiForwardGroupsText(user: any, keyword?: string) {
+  const safeKeyword = normalizeAiQueryKeyword(keyword);
   const groups = await visibleForwardGroupsForTelegramUser(user);
-  const matched = groups.filter((group) => searchMatches(keyword, forwardGroupSearchValues(group)));
-  if (matched.length === 0) return `<b>转发组查询</b>\n\n没有找到匹配的转发组。`;
+  const matched = groups.filter((group) => searchMatches(safeKeyword, forwardGroupSearchValues(group)));
+  const filterText = safeKeyword ? aiFilterPart("关键字", safeKeyword) : "";
+  const header = aiResultHeader("转发组查询", matched.length, groups.length, "个", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到匹配的转发组。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
   const lines = visible.map((group: any) => [
-    `#${group.id} <b>${escapeHtml(shortText(group.name, 28))}</b> · ${group.isEnabled === false ? "已停用" : "已启用"}`,
-    `类型：${escapeHtml(group.groupType || "-")} · 模式：${escapeHtml(group.groupMode || "-")}`,
-    group.remark || group.remarks || group.description ? `备注：${escapeHtml(group.remark || group.remarks || group.description)}` : "",
+    `<b>#${group.id} ${escapeHtml(shortText(group.name, 28))}</b>`,
+    `状态：<b>${group.isEnabled === false ? "已停用" : "已启用"}</b>`,
+    `类型：${aiCode(`${group.groupType || "-"} / ${group.groupMode || "-"}`)}`,
+    group.remark || group.remarks || group.description ? `备注：${escapeHtml(shortText(group.remark || group.remarks || group.description, 32))}` : "",
   ].filter(Boolean).join("\n"));
-  return `<b>转发组查询</b>\n共 ${matched.length}/${groups.length} 个${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+  return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
 async function aiUsersText(user: any, keyword?: string) {
+  const safeKeyword = normalizeAiQueryKeyword(keyword);
   if (user.role !== "admin") {
     return [userInfoText(user), "", await usageText(user)].join("\n");
   }
   const users = await db.getUserTrafficSummaries();
-  const matched = (users as any[]).filter((item) => searchMatches(keyword, [item.id, item.name, item.username, item.role, item.email]));
-  if (matched.length === 0) return `<b>用户查询</b>\n\n没有找到匹配的用户。`;
+  const matched = (users as any[]).filter((item) => searchMatches(safeKeyword, [item.id, item.name, item.username, item.role, item.email, item.telegramUsername]));
+  const filterText = safeKeyword ? aiFilterPart("关键字", safeKeyword) : "";
+  const header = aiResultHeader("用户查询", matched.length, users.length, "个", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到匹配的用户。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
   const lines = visible.map((item: any) => {
     const limit = Number(item.trafficLimit) || 0;
-    return `#${item.id} <b>${escapeHtml(shortText(item.name || item.username, 22))}</b> · ${item.role === "admin" ? "管理员" : "用户"}\n流量：${escapeHtml(formatBytes(item.trafficUsed))}/${limit > 0 ? escapeHtml(formatBytes(limit)) : "不限"}\n到期：${escapeHtml(formatDate(item.expiresAt))}`;
+    const trafficUsed = escapeHtml(formatBytes(item.trafficUsed));
+    const trafficLimit = limit > 0 ? escapeHtml(formatBytes(limit)) : "不限";
+    return [
+      `<b>#${item.id} ${escapeHtml(shortText(item.name || item.username, 22))}</b>`,
+      `角色：<b>${item.role === "admin" ? "管理员" : "用户"}</b> · 用户名：${aiCode(item.username || "-")}`,
+      item.telegramUsername ? `TG：${aiCode(item.telegramUsername)}` : "",
+      `流量：<b>${trafficUsed}</b> / ${trafficLimit}`,
+      `到期：${escapeHtml(formatDate(item.expiresAt))}`,
+    ].filter(Boolean).join("\n");
   });
-  return `<b>用户查询</b>\n共 ${matched.length}/${users.length} 个${keyword ? `，关键字：${escapeHtml(keyword)}` : ""}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
+  return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
 function aiQueryHelpText() {
@@ -1225,13 +1460,16 @@ function aiQueryHelpText() {
     "<b>自然语言查询</b>",
     "",
     "可以直接发送：",
-    "我的流量",
-    "查规则 443",
-    "规则 #12 详情",
-    "主机 上海",
-    "链路 东京",
+    `${aiCode("我的流量")}`,
+    `${aiCode("查规则 443")}`,
+    `${aiCode("规则 #12 详情")}`,
+    `${aiCode("9号规则用了多少流量")}`,
+    `${aiCode("列出张三用户上海主机的规则")}`,
+    `${aiCode("现在有哪些用户")}`,
+    `${aiCode("主机 上海")}`,
+    `${aiCode("链路 东京")}`,
     "",
-    "当前只支持查询，不会执行开启、关闭、删除等操作。",
+    "<i>当前只支持查询，不会执行开启、关闭、删除等操作。</i>",
   ].join("\n");
 }
 
@@ -1244,10 +1482,21 @@ async function aiQueryText(user: any, rawText: string) {
       return usageText(user);
     case "account":
       return userInfoText(user);
-    case "rules":
-      return aiRulesText(user, parsed.keyword);
+    case "rules": {
+      return aiRulesText(user, {
+        keyword: parsed.keyword,
+        userKeyword: extractUserFilterKeyword(query),
+        hostKeyword: extractHostFilterKeyword(query),
+      });
+    }
     case "rule_detail":
       return parsed.id ? aiRuleDetailText(user, parsed.id) : aiRulesText(user, parsed.keyword);
+    case "rule_usage":
+      return parsed.id ? aiRuleUsageText(user, parsed.id) : aiRulesText(user, {
+        keyword: parsed.keyword,
+        userKeyword: extractUserFilterKeyword(query),
+        hostKeyword: extractHostFilterKeyword(query),
+      });
     case "hosts":
       return aiHostsText(user, parsed.keyword);
     case "tunnels":
