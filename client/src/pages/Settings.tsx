@@ -2314,28 +2314,19 @@ function DeepSeekSettingsCard() {
             <DataSectionLoading label="正在加载 AI 配置" minHeight="min-h-[120px]" />
           ) : (
             <>
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
                 <div className="space-y-2">
-                  <Label>API Key</Label>
-                  <Input
-                    type="text"
-                    placeholder={activeProviderConfig.apiKeyMasked || "从提供商控制台获取，例如 sk-..."}
-                    value={deepseekKeyDisplayValue}
-                    onChange={(e) => {
-                      if (!deepseekKeyLocked) updateActiveProviderConfig({ apiKeyInput: e.target.value });
-                    }}
-                    readOnly={deepseekKeyLocked}
-                    onMouseDown={(e) => {
-                      if (deepseekKeyLocked) e.preventDefault();
-                    }}
-                    onSelect={(e) => {
-                      if (deepseekKeyLocked) e.currentTarget.setSelectionRange(0, 0);
-                    }}
-                    className={deepseekKeyLocked ? "select-none font-mono" : "font-mono"}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    当前仅保存模型配置，后续 Telegram 自然语言指令会使用这里的配置。
-                  </p>
+                  <Label>提供商</Label>
+                  <Select value={deepseekProvider} onValueChange={handleProviderChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择提供商" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {aiProviderOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                   <div className="flex items-center justify-between gap-3">
@@ -2362,18 +2353,27 @@ function DeepSeekSettingsCard() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
-                <div className="space-y-2">
-                  <Label>提供商</Label>
-                  <Select value={deepseekProvider} onValueChange={handleProviderChange}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择提供商" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {aiProviderOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <div className="space-y-2 lg:col-span-2">
+                  <Label>API Key</Label>
+                  <Input
+                    type="text"
+                    placeholder={activeProviderConfig.apiKeyMasked || "从提供商控制台获取，例如 sk-..."}
+                    value={deepseekKeyDisplayValue}
+                    onChange={(e) => {
+                      if (!deepseekKeyLocked) updateActiveProviderConfig({ apiKeyInput: e.target.value });
+                    }}
+                    readOnly={deepseekKeyLocked}
+                    onMouseDown={(e) => {
+                      if (deepseekKeyLocked) e.preventDefault();
+                    }}
+                    onSelect={(e) => {
+                      if (deepseekKeyLocked) e.currentTarget.setSelectionRange(0, 0);
+                    }}
+                    className={deepseekKeyLocked ? "select-none font-mono" : "font-mono"}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    按提供商分别保存 API Key，切换提供商时会自动带出对应配置。
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>接口地址</Label>
@@ -2421,7 +2421,7 @@ function DeepSeekSettingsCard() {
                           {models.map((item: any) => (
                             <SelectItem key={String(item?.id || "")} value={String(item?.id || "")}>
                               {String(item?.id || "")}
-                              {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : " · ?")}
+                              {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : "")}
                             </SelectItem>
                           ))}
                         </SelectContent>
