@@ -666,7 +666,7 @@ export function LinkTestProbeView({
       );
     }
     return (
-      <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+      <div className={cn("min-w-0 max-w-full overflow-x-auto overscroll-x-contain pb-1", mobileStacked ? "hidden sm:block" : "")}>
         <div className="mx-auto flex min-w-full w-max items-start justify-center px-2 py-7">
           {renderEntryGroupNode(entrySegments)}
           {renderDesktopConnector(entryConnectorSegment, "entry-group-line", "w-[96px] shrink-0 flex-none", false)}
@@ -686,7 +686,7 @@ export function LinkTestProbeView({
     );
   };
   return (
-    <div className={cn("space-y-3", className)}>
+    <div className={cn("min-w-0 space-y-3", className)}>
       {mobileStacked ? (
         isConvergedEntryView ? (
           renderConvergedEntryView(true)
@@ -731,7 +731,7 @@ export function LinkTestProbeView({
       {isConvergedEntryView ? (
         renderConvergedEntryView(false)
       ) : isBranchView ? (
-        <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+        <div className={cn("min-w-0 max-w-full overflow-x-auto overscroll-x-contain pb-1", mobileStacked ? "hidden sm:block" : "")}>
           <div className="mx-auto w-full max-w-[36rem] py-3">
             <div className="mb-1 text-center text-xs font-medium text-muted-foreground">{branchLabel}</div>
             <div className="space-y-0">
@@ -740,7 +740,7 @@ export function LinkTestProbeView({
           </div>
         </div>
       ) : (
-        <div className={cn("max-w-full overflow-x-auto pb-1", mobileStacked ? "hidden sm:block" : "")}>
+        <div className={cn("min-w-0 max-w-full overflow-x-auto overscroll-x-contain pb-1", mobileStacked ? "hidden sm:block" : "")}>
           <div className={cn(shouldWrapDesktopRows ? "space-y-0" : "")}>
             {desktopRows.map((rowSegments, rowIndex) => {
               const nextRow = desktopRows[rowIndex + 1];

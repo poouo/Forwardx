@@ -31,7 +31,7 @@ type PlanForm = {
   durationDays: string;
   portCount: string;
   trafficGB: string;
-  rateLimitMB: string;
+  rateLimitMbps: string;
   maxRules: string;
   maxConnections: string;
   maxIPs: string;
@@ -65,7 +65,7 @@ const emptyForm: PlanForm = {
   durationDays: "30",
   portCount: "20",
   trafficGB: "0",
-  rateLimitMB: "0",
+  rateLimitMbps: "0",
   maxRules: "20",
   maxConnections: "2000",
   maxIPs: "10",
@@ -115,7 +115,8 @@ function bytes(size?: number | null) {
 }
 
 function speed(value?: number | null) {
-  return value ? `${bytes(value)}/s` : "不限";
+  const num = Number(value || 0);
+  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : "不限";
 }
 
 const durationOptions = [
@@ -322,7 +323,7 @@ function toForm(plan: any): PlanForm {
     durationDays: String(plan.durationDays ?? 30),
     portCount: String(plan.portCount ?? 20),
     trafficGB: String(Number(plan.trafficLimit || 0) / 1024 / 1024 / 1024 || 0),
-    rateLimitMB: String(Number(plan.rateLimitMbps || 0) / 1024 / 1024 || 0),
+    rateLimitMbps: String(Number(plan.rateLimitMbps || 0) || 0),
     maxRules: String(plan.maxRules ?? 20),
     maxConnections: String(plan.maxConnections ?? 2000),
     maxIPs: String(plan.maxIPs ?? 10),
@@ -351,7 +352,7 @@ function payload(form: PlanForm) {
     durationDays: ([30, 90, 180, 365, 730].includes(durationDays) ? durationDays : 30) as PlanDurationDays,
     portCount: Math.max(1, Math.floor(Number(form.portCount || 1))),
     trafficLimit: Math.max(0, Math.floor(Number(form.trafficGB || 0) * 1024 * 1024 * 1024)),
-    rateLimitMbps: Math.max(0, Math.floor(Number(form.rateLimitMB || 0) * 1024 * 1024)),
+    rateLimitMbps: Math.max(0, Math.floor(Number(form.rateLimitMbps || 0))),
     maxRules: Math.max(0, Math.floor(Number(form.maxRules || 0))),
     maxConnections: Math.max(0, Math.floor(Number(form.maxConnections || 0))),
     maxIPs: Math.max(0, Math.floor(Number(form.maxIPs || 0))),
@@ -858,8 +859,8 @@ export default function Plans() {
               <Input type="number" min={0} value={form.trafficGB} onChange={(e) => setForm({ ...form, trafficGB: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>限速（MB/s，0 为不限）</Label>
-              <Input type="number" min={0} value={form.rateLimitMB} onChange={(e) => setForm({ ...form, rateLimitMB: e.target.value })} />
+              <Label>限速（Mbps，0 为不限）</Label>
+              <Input type="number" min={0} step={1} value={form.rateLimitMbps} onChange={(e) => setForm({ ...form, rateLimitMbps: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label>最大规则数（0 为不限）</Label>

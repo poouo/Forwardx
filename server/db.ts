@@ -11,7 +11,7 @@ import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
 import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
-import { boolLiteral, quoteIdentifier } from "./dbCompat";
+import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomMultiavatarValue } from "../shared/avatar";
@@ -55,6 +55,32 @@ async function backfillTunnelProxyProtocolSplit() {
   console.log("[Database] Backfilled split PROXY Protocol settings for tunnel rules");
 }
 
+function legacyRateLimitMbpsExpr(column: string) {
+  const q = quoteIdentifier;
+  const col = q(column);
+  const rounded = castInteger(`ROUND(${col} / 1048576.0)`);
+  return `CASE WHEN ${col} >= 10240 THEN CASE WHEN ${rounded} < 1 THEN 1 ELSE ${rounded} END ELSE ${col} END`;
+}
+
+async function backfillRateLimitsToMbps() {
+  const marker = "rate-limit-mbps-v1";
+  if (await getSetting(marker)) return;
+  const q = quoteIdentifier;
+  await executeRaw(
+    `UPDATE ${q("users")}
+        SET ${q("gostRateLimitIn")} = ${legacyRateLimitMbpsExpr("gostRateLimitIn")},
+            ${q("gostRateLimitOut")} = ${legacyRateLimitMbpsExpr("gostRateLimitOut")}
+      WHERE ${q("gostRateLimitIn")} >= 10240 OR ${q("gostRateLimitOut")} >= 10240`,
+  );
+  await executeRaw(
+    `UPDATE ${q("subscription_plans")}
+        SET ${q("rateLimitMbps")} = ${legacyRateLimitMbpsExpr("rateLimitMbps")}
+      WHERE ${q("rateLimitMbps")} >= 10240`,
+  );
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  console.log("[Database] Backfilled tunnel rate limits from legacy byte-rate storage to Mbps values");
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -67,6 +93,9 @@ export async function initDatabase() {
     await ensureDatabaseSchema();
     await backfillTunnelProxyProtocolSplit().catch((error) => {
       console.warn("[Database] PROXY Protocol split backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillRateLimitsToMbps().catch((error) => {
+      console.warn("[Database] Rate limit unit backfill skipped:", error instanceof Error ? error.message : String(error));
     });
     await ensureTrafficStatBucketsBackfilled().catch((error) => {
       console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));

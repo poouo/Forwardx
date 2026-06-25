@@ -912,6 +912,18 @@ export async function getTrafficSummaryByRule(opts: {
   }
 
   const ruleIds = Array.from(new Set(result.map((r) => r.ruleId)));
+  const ruleLatencyRows = ruleIds.length > 0
+    ? await db
+      .select({
+        id: forwardRules.id,
+        tunnelId: forwardRules.tunnelId,
+      })
+      .from(forwardRules)
+      .where(sql`${forwardRules.id} IN (${sql.join(ruleIds.map(id => sql`${id}`), sql`, `)}) AND ${forwardRules.pendingDelete} = ${sqlBool(false)}`)
+    : [];
+  const tunnelRuleIds = new Set((ruleLatencyRows as any[])
+    .filter((row: any) => Number(row.tunnelId || 0) > 0)
+    .map((row: any) => Number(row.id)));
   const childLatencyRows = ruleIds.length > 0
     ? await db
       .select({
@@ -1027,6 +1039,41 @@ export async function getTrafficSummaryByRule(opts: {
   for (const row of latestChainTestRows as any[]) {
     const ruleId = Number(row.ruleId);
     if (!chainParentRuleIds.has(ruleId) || latestByRule.get(ruleId)?.source === "forward_test") continue;
+    const status = String(row.status || "").toLowerCase();
+    latestByRule.set(ruleId, {
+      ruleId,
+      latencyMs: status === "success" && row.latencyMs !== null && row.latencyMs !== undefined ? Number(row.latencyMs) : null,
+      isTimeout: status !== "success",
+      recordedAt: rowDate(row.updatedAt || row.createdAt),
+      source: "forward_test",
+    });
+  }
+  const tunnelRuleIdsForTests = Array.from(tunnelRuleIds);
+  const latestTunnelTestRows = tunnelRuleIdsForTests.length > 0
+    ? await queryRaw<any>(
+      `SELECT ft.${q("ruleId")} AS ${q("ruleId")},
+              ft.${q("latencyMs")} AS ${q("latencyMs")},
+              ft.${q("status")} AS ${q("status")},
+              ft.${q("updatedAt")} AS ${q("updatedAt")},
+              ft.${q("createdAt")} AS ${q("createdAt")}
+         FROM ${q("forward_tests")} ft
+         INNER JOIN (
+           SELECT ${q("ruleId")}, MAX(${q("updatedAt")}) AS ${q("updatedAt")}
+             FROM ${q("forward_tests")}
+            WHERE ${q("ruleId")} IN (${tunnelRuleIdsForTests.map(() => "?").join(",")})
+              AND ${q("status")} IN ('success', 'failed', 'timeout')
+              AND ${q("message")} LIKE '%"kind":"forward-via-tunnel"%'
+            GROUP BY ${q("ruleId")}
+         ) latest ON latest.${q("ruleId")} = ft.${q("ruleId")} AND latest.${q("updatedAt")} = ft.${q("updatedAt")}
+        WHERE ft.${q("status")} IN ('success', 'failed', 'timeout')
+          AND ft.${q("message")} LIKE '%"kind":"forward-via-tunnel"%'
+        ORDER BY ft.${q("updatedAt")} DESC, ft.${q("createdAt")} DESC`,
+      tunnelRuleIdsForTests,
+    )
+    : [];
+  for (const row of latestTunnelTestRows as any[]) {
+    const ruleId = Number(row.ruleId);
+    if (!tunnelRuleIds.has(ruleId) || latestByRule.get(ruleId)?.source === "forward_test") continue;
     const status = String(row.status || "").toLowerCase();
     latestByRule.set(ruleId, {
       ruleId,

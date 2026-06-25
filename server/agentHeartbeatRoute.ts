@@ -56,6 +56,7 @@ const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
+const BYTES_PER_MEGABIT = 1_000_000 / 8;
 
 type AgentDnsWatch = {
   host: string;
@@ -119,6 +120,23 @@ function socatDialEndpoint(protocol: "TCP" | "UDP", host: unknown, port: unknown
   const clean = cleanEndpointHost(host);
   const dialProtocol = isIpv6Literal(clean) ? `${protocol}6` : protocol;
   return `${dialProtocol}:${endpointHostPort(clean, port)}`;
+}
+
+function normalizeRateLimitMbps(value: unknown) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.max(0, Math.floor(num));
+}
+
+function userTunnelRateLimitMbps(user: any) {
+  return Math.max(
+    normalizeRateLimitMbps(user?.gostRateLimitIn),
+    normalizeRateLimitMbps(user?.gostRateLimitOut),
+  );
+}
+
+function mbpsToBytesPerSecond(mbps: unknown) {
+  return Math.max(0, Math.floor(normalizeRateLimitMbps(mbps) * BYTES_PER_MEGABIT));
 }
 
 function isHostnameAddress(value: string) {
@@ -655,23 +673,27 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostUsers = await Promise.all(gostRuleUserIds.map((id) => db.getUserById(id)));
     const gostUserById = new Map(gostUsers.filter(Boolean).map((u: any) => [u.id, u]));
     const gostRateLimiters = gostUsers
-      .filter((u: any) => u && (Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0))
-      .map((u: any) => ({
-        name: `fwx-user-${u.id}`,
-        limits: [`$ ${Math.max(0, Number(u.gostRateLimitIn) || 0)}B ${Math.max(0, Number(u.gostRateLimitOut) || 0)}B`],
-      }));
+      .filter((u: any) => u && userTunnelRateLimitMbps(u) > 0)
+      .map((u: any) => {
+        const bytesPerSecond = mbpsToBytesPerSecond(userTunnelRateLimitMbps(u));
+        return {
+          name: `fwx-user-${u.id}`,
+          limits: [`$ ${bytesPerSecond}B ${bytesPerSecond}B`],
+        };
+      });
     const applyGostLimiter = (service: any, userId: number) => {
       const user = gostUserById.get(userId) as any;
-      if (user && (Number(user.gostRateLimitIn) > 0 || Number(user.gostRateLimitOut) > 0)) {
+      if (user && userTunnelRateLimitMbps(user) > 0) {
         service.limiter = `fwx-user-${user.id}`;
       }
       return service;
     };
     const userRateLimits = (userId: number) => {
       const user = gostUserById.get(userId) as any;
+      const bytesPerSecond = mbpsToBytesPerSecond(userTunnelRateLimitMbps(user));
       return {
-        limitIn: Math.max(0, Number(user?.gostRateLimitIn) || 0),
-        limitOut: Math.max(0, Number(user?.gostRateLimitOut) || 0),
+        limitIn: bytesPerSecond,
+        limitOut: bytesPerSecond,
       };
     };
     const userAccessLimits = (userId: number) => {

@@ -5997,7 +5997,7 @@ function SelfTestDialog({
   const isFailed = !!latest && !isTesting && !isSuccess && !isTimeout;
   const parsedMessage = useMemo(() => parseLinkTestMessage(latest?.message), [latest?.message]);
   const plannedSegmentCount = plannedSegments?.length || 0;
-  const probeDialogSizeClass = plannedSegmentCount >= 3 ? "sm:max-w-2xl" : "sm:max-w-xl";
+  const probeDialogSizeClass = plannedSegmentCount >= 3 ? "sm:max-w-4xl" : plannedSegmentCount >= 2 ? "sm:max-w-3xl" : "sm:max-w-xl";
   const lastFailureToastKey = useRef("");
   useEffect(() => {
     if (!open) {
@@ -6015,7 +6015,7 @@ function SelfTestDialog({
   }, [open, isTesting, isSuccess, isTimeout, latest, latest?.updatedAt, parsedMessage.message, ruleId, status]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={probeDialogSizeClass}>
+      <DialogContent className={`${probeDialogSizeClass} min-w-0`}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
