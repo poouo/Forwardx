@@ -774,6 +774,15 @@ function normalizeAiProvider(value: unknown): AiProvider {
   return DEFAULT_AI_PROVIDER;
 }
 
+function normalizeAiApiKey(value: unknown) {
+  let raw = String(value || "").trim();
+  if (!raw) return "";
+  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
+  raw = raw.replace(/^bearer\s+/i, "").trim();
+  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
+  return raw;
+}
+
 function getAiProviderDefaultBaseUrl(provider: AiProvider) {
   if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
   if (provider === "custom") return DEFAULT_DEEPSEEK_BASE_URL;
@@ -824,10 +833,10 @@ function readAiProviderConfig(all: Record<string, string | null>, provider: AiPr
   const providerKeys = getAiProviderSettingKeys(provider);
   const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
   const defaultModel = getAiProviderDefaultModel(provider);
-  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekApiKey || "").trim() : "";
+  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? normalizeAiApiKey(all.deepseekApiKey) : "";
   const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekBaseUrl || "").trim() : "";
   const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekModel || "").trim() : "";
-  const apiKey = String(all[providerKeys.apiKey] || "").trim() || legacyApiKey;
+  const apiKey = normalizeAiApiKey(all[providerKeys.apiKey]) || legacyApiKey;
   const baseUrl = String(all[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
   const model = String(all[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
   return {
@@ -858,9 +867,10 @@ function toAiProviderConfigView(config: AiProviderConfigRuntime): AiProviderConf
   };
 }
 
-function buildAiModelsEndpoint(baseUrl: string, chatOnly: boolean) {
+function buildAiModelsEndpoint(provider: AiProvider, baseUrl: string, chatOnly: boolean) {
   const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
   const modelPath = /\/models$/i.test(normalized) ? normalized : `${normalized}/models`;
+  if (provider === "siliconflow") return modelPath;
   if (!chatOnly) return modelPath;
   return `${modelPath}${modelPath.includes("?") ? "&" : "?"}type=chat`;
 }
@@ -1368,13 +1378,13 @@ export const systemRouter = router({
         };
       }
 
-      const endpoint = buildAiModelsEndpoint(baseUrl, chatOnly);
+      const endpoint = buildAiModelsEndpoint(provider, baseUrl, chatOnly);
       try {
         const resp = await fetch(endpoint, {
           method: "GET",
           cache: "no-store",
           headers: {
-            "Content-Type": "application/json",
+            Accept: "application/json",
             Authorization: `Bearer ${apiKey}`,
           },
         });
@@ -1675,7 +1685,7 @@ export const systemRouter = router({
         const providerConfig = readAiProviderConfig(allSettings, nextProvider);
         const providerDefaultBaseUrl = getAiProviderDefaultBaseUrl(nextProvider);
         const providerDefaultModel = getAiProviderDefaultModel(nextProvider);
-        const submittedApiKey = String(deepseek.apiKey || "").trim();
+        const submittedApiKey = normalizeAiApiKey(deepseek.apiKey);
         const clearingApiKey = !!deepseek.clearApiKey;
         const effectiveApiKey = clearingApiKey ? "" : (submittedApiKey || providerConfig.apiKey);
         const currentEnabledSetting = allSettings.deepseekAiEnabled;
