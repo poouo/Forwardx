@@ -2314,11 +2314,11 @@ function DeepSeekSettingsCard() {
             <DataSectionLoading label="正在加载 AI 配置" minHeight="min-h-[120px]" />
           ) : (
             <>
-              <div className="grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+              <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>提供商</Label>
                   <Select value={deepseekProvider} onValueChange={handleProviderChange}>
-                    <SelectTrigger>
+                    <SelectTrigger className="h-10">
                       <SelectValue placeholder="选择提供商" />
                     </SelectTrigger>
                     <SelectContent>
@@ -2328,16 +2328,14 @@ function DeepSeekSettingsCard() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="rounded-lg border border-border/40 bg-background/50 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">启用 AI 助手</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {providerConfigured
-                          ? `${providerLabel} · ${deepseekModel}${selectedModelMeta?.isFree === true ? " · Free" : (selectedModelMeta?.isFree === false ? " · Paid" : "")}`
-                          : "保存 API Key 后启用"}
-                      </p>
-                    </div>
+                <div className="space-y-2">
+                  <Label>启用 AI 助手</Label>
+                  <div className="flex h-10 items-center justify-between rounded-md border border-border/40 bg-background/50 px-3">
+                    <p className="min-w-0 flex-1 truncate pr-3 text-sm text-muted-foreground">
+                      {providerConfigured
+                        ? `${providerLabel} · ${deepseekModel}${selectedModelMeta?.isFree === true ? " · Free" : (selectedModelMeta?.isFree === false ? " · Paid" : "")}`
+                        : "保存 API Key 后启用"}
+                    </p>
                     <Switch
                       checked={deepseekEnabled}
                       onCheckedChange={(checked) => {
@@ -2352,8 +2350,8 @@ function DeepSeekSettingsCard() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
-                <div className="space-y-2 lg:col-span-2">
+              <div className="grid gap-3 lg:grid-cols-12">
+                <div className="space-y-2 lg:col-span-5">
                   <Label>API Key</Label>
                   <Input
                     type="text"
@@ -2375,7 +2373,7 @@ function DeepSeekSettingsCard() {
                     按提供商分别保存 API Key，切换提供商时会自动带出对应配置。
                   </p>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-2 lg:col-span-3">
                   <Label>接口地址</Label>
                   <Input
                     type="text"
@@ -2385,7 +2383,7 @@ function DeepSeekSettingsCard() {
                     className="font-mono"
                   />
                 </div>
-                <div className="space-y-2 lg:col-span-2">
+                <div className="space-y-2 lg:col-span-4">
                   <Label>模型</Label>
                   <Input
                     type="text"
@@ -2394,52 +2392,56 @@ function DeepSeekSettingsCard() {
                     placeholder={activeProviderDefaults.model}
                     className="font-mono"
                   />
-                  <div className="rounded-lg border border-border/40 bg-background/50 p-2">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground">可用聊天模型（支持展示 Free 状态）</p>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => aiModelsQuery.refetch()}
-                        disabled={!providerConfigured || aiModelsQuery.isFetching}
-                      >
-                        {aiModelsQuery.isFetching && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-                        刷新
-                      </Button>
-                    </div>
-                    {!!providerConfigured && models.length > 0 && (
-                      <Select
-                        value={models.some((item: any) => String(item?.id || "") === deepseekModel) ? deepseekModel : undefined}
-                        onValueChange={(value) => updateActiveProviderConfig({ model: value })}
-                      >
-                        <SelectTrigger className="h-8">
-                          <SelectValue placeholder="从列表选择模型" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-72">
-                          {models.map((item: any) => (
-                            <SelectItem key={String(item?.id || "")} value={String(item?.id || "")}>
-                              {String(item?.id || "")}
-                              {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : "")}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                    {!!providerConfigured && models.length > 0 ? (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        共 {models.length} 个，Free {knownFreeCount} 个，付费 {knownPaidCount} 个，未知 {unknownFreeCount} 个。
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        {providerConfigured
-                          ? (aiModelsQuery.data?.error || "暂未获取到模型列表，可手动输入模型名称。")
-                          : "保存 API Key 后可拉取模型列表。"}
-                      </p>
-                    )}
-                  </div>
                 </div>
+              </div>
+
+              <div className="rounded-lg border border-border/40 bg-background/50 p-2.5">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">可用聊天模型（支持展示 Free 状态）</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => aiModelsQuery.refetch()}
+                    disabled={!providerConfigured || aiModelsQuery.isFetching}
+                  >
+                    {aiModelsQuery.isFetching && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                    刷新
+                  </Button>
+                </div>
+                {!!providerConfigured && models.length > 0 && (
+                  <Select
+                    value={models.some((item: any) => String(item?.id || "") === deepseekModel) ? deepseekModel : undefined}
+                    onValueChange={(value) => updateActiveProviderConfig({ model: value })}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="从列表选择模型" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {models.map((item: any) => (
+                        <SelectItem key={String(item?.id || "")} value={String(item?.id || "")}>
+                          {String(item?.id || "")}
+                          {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : "")}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {!!providerConfigured && models.length > 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    共 {models.length} 个，Free {knownFreeCount} 个，付费 {knownPaidCount} 个，未知 {unknownFreeCount} 个。
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {providerConfigured
+                      ? (aiModelsQuery.data?.error || "暂未获取到模型列表，可手动输入模型名称。")
+                      : "保存 API Key 后可拉取模型列表。"}
+                  </p>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:max-w-[560px] sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>最大输出</Label>
                   <Input
