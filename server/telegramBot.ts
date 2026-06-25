@@ -48,10 +48,16 @@ type TelegramUpdate = {
 };
 
 type AiQueryIntent = {
-  intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
+  intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "rule_rank" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
   id?: number;
   keyword?: string;
+  rankMetric?: AiRuleRankMetric;
+  rankOrder?: AiRuleRankOrder;
+  limit?: number;
 };
+
+type AiRuleRankMetric = "traffic" | "connections" | "latency";
+type AiRuleRankOrder = "desc" | "asc";
 
 type ManageActionKind =
   | "none"
@@ -215,7 +221,7 @@ const MANAGE_CODE_DISPLAY_LIMIT = 60;
 const UPDATE_ACTION_CONFIRM_TTL_MS = 5 * 60 * 1000;
 const UPDATE_COMMAND_COOLDOWN_MS = 60 * 1000;
 const UPDATE_AGENT_PREVIEW_LIMIT = 15;
-const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪条|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|的|吗)+$/;
+const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪个|哪一个|哪条|哪一条|谁|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|连接|连接数|延迟|速度|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|排行|排名|最多|最少|最高|最低|最大|最小|最快|最慢|最卡|第一|top|前|的|吗)+$/;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
   { command: "menu", description: "打开功能菜单" },
@@ -1582,12 +1588,75 @@ function textAsksRuleDetail(text: string) {
     || /\d+\s*(?:号|#)\s*(?:规则|rule)/i.test(text);
 }
 
+function normalizeAiRuleRankMetric(value: unknown): AiRuleRankMetric | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (/(traffic|usage|bytes|流量|用量|消耗|占用|使用)/i.test(raw)) return "traffic";
+  if (/(connection|connections|conn|连接|连接数|会话)/i.test(raw)) return "connections";
+  if (/(latency|delay|ping|tcping|延迟|耗时|响应|速度|快|慢|卡)/i.test(raw)) return "latency";
+  return undefined;
+}
+
+function normalizeAiRuleRankOrder(value: unknown, metric?: AiRuleRankMetric): AiRuleRankOrder | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (/(asc|lowest|least|min|bottom|最少|最低|最小|少|低|小|最快|快)/i.test(raw)) return "asc";
+  if (/(desc|highest|most|max|top|最多|最高|最大|多|高|大|最慢|最卡|慢|卡|排行|排名|第一)/i.test(raw)) return "desc";
+  return metric ? "desc" : undefined;
+}
+
+function normalizeAiRuleRankLimit(value: unknown) {
+  const parsed = parseNumericToken(value);
+  const numeric = Number.isFinite(parsed as number) ? Number(parsed) : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  return Math.min(AI_QUERY_RESULT_LIMIT, Math.max(1, Math.floor(numeric)));
+}
+
+function extractAiRuleRankLimit(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  const match = raw.match(/(?:top|前)\s*([0-9零〇一二两三四五六七八九十百千]+)/i)
+    || raw.match(/([0-9零〇一二两三四五六七八九十百千]+)\s*(?:条|个)?\s*(?:规则)?(?:流量|连接数?|延迟)?(?:排行|排名)/i);
+  return normalizeAiRuleRankLimit(match?.[1]);
+}
+
+function extractRuleRankKeyword(text: string) {
+  const cleaned = stripAiEntityClauses(text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim())
+    .replace(/(?:top|前)\s*[0-9零〇一二两三四五六七八九十百千]*/gi, " ")
+    .replace(/(帮我|请|给我|一下|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有哪些|有|哪个|哪一个|哪条|哪一条|谁|转发规则|规则详情|规则|rule|端口|port|转发|信息|状态|详情|列表|哪些|是多少|多少|用了|使用|消耗|占用|用量|流量|连接数|连接|会话|延迟|耗时|响应|速度|排行|排名|最多|最少|最高|最低|最大|最小|最快|最慢|最卡|第一|额度|余额|套餐|的|条|个|项|名)/gi, " ")
+    .replace(/[，,。？?！!：:、]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalizeAiQueryKeyword(cleaned);
+}
+
+function parseAiRuleRankIntent(text: string): AiQueryIntent | null {
+  const raw = text.trim();
+  if (!raw) return null;
+  const mentionsRule = /(规则|转发|端口|rule|port)/i.test(raw);
+  if (!mentionsRule) return null;
+  const metric = normalizeAiRuleRankMetric(raw);
+  if (!metric) return null;
+  const compact = raw.replace(/\s+/g, "");
+  const rankHint = /(排行|排名|top|前\s*[0-9零〇一二两三四五六七八九十百千]*|最多|最少|最高|最低|最大|最小|最快|最慢|最卡|第一|哪(?:个|一个|条|一条)?.*(?:多|少|高|低|快|慢|卡)|谁.*最)/i.test(compact);
+  if (!rankHint) return null;
+  const rankOrder = normalizeAiRuleRankOrder(raw, metric) || "desc";
+  const keyword = extractRuleRankKeyword(raw);
+  const limit = extractAiRuleRankLimit(raw);
+  return {
+    intent: "rule_rank",
+    rankMetric: metric,
+    rankOrder,
+    ...(limit ? { limit } : {}),
+    ...(keyword ? { keyword } : {}),
+  };
+}
 function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryIntent {
   const allowed = new Set<AiQueryIntent["intent"]>([
     "usage",
     "rules",
     "rule_detail",
     "rule_usage",
+    "rule_rank",
     "hosts",
     "tunnels",
     "forward_groups",
@@ -1598,7 +1667,7 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
   ]);
   const modelIntent = allowed.has(value?.intent) ? value.intent : undefined;
   let intent = modelIntent || fallback.intent;
-  if (["rule_usage", "rule_detail", "rules"].includes(fallback.intent)) intent = fallback.intent;
+  if (["rule_usage", "rule_detail", "rules", "rule_rank"].includes(fallback.intent)) intent = fallback.intent;
   const modelId = Number(value?.id);
   const fallbackId = Number(fallback.id);
   const id = Number.isFinite(modelId) && modelId > 0
@@ -1611,10 +1680,16 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
     ? normalizeUserLookupKeyword(fallback.keyword)
     : normalizeAiQueryKeyword(fallback.keyword);
   const keyword = modelKeyword || fallbackKeyword;
+  const rankMetric = normalizeAiRuleRankMetric(value?.rankMetric || value?.metric) || fallback.rankMetric;
+  const rankOrder = normalizeAiRuleRankOrder(value?.rankOrder || value?.order, rankMetric) || fallback.rankOrder;
+  const limit = normalizeAiRuleRankLimit(value?.limit) || normalizeAiRuleRankLimit(fallback.limit);
   return {
     intent,
     ...(id ? { id } : {}),
     ...(keyword ? { keyword } : {}),
+    ...(intent === "rule_rank" && rankMetric ? { rankMetric } : {}),
+    ...(intent === "rule_rank" && rankOrder ? { rankOrder } : {}),
+    ...(intent === "rule_rank" && limit ? { limit } : {}),
   };
 }
 
@@ -1709,9 +1784,11 @@ function localAiQueryIntent(text: string): AiQueryIntent {
     return { intent: "unsupported" };
   }
   const id = extractRuleId(raw);
+  const rankIntent = parseAiRuleRankIntent(raw);
   const keyword = extractSearchKeyword(raw);
   const userKeyword = normalizeUserLookupKeyword(extractUserFilterKeyword(raw) || keyword);
   if (/(帮助|怎么用|help)/i.test(raw)) return { intent: "help" };
+  if (rankIntent) return rankIntent;
   if (textAsksRuleUsage(raw)) return id ? { intent: "rule_usage", id } : { intent: "rules", keyword };
   if (id && textAsksRuleDetail(raw)) return { intent: "rule_detail", id };
   if (/(用户|user)/i.test(raw) && /(详情|明细|使用|用了|流量|用量|到期|角色|usage|traffic)/i.test(raw)) {
@@ -1747,10 +1824,12 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
             role: "system",
             content: [
               "You classify ForwardX Telegram user messages into read-only query intents.",
-              "Return only JSON with keys: intent, id, keyword.",
-              "Allowed intents: usage, rules, rule_detail, rule_usage, hosts, tunnels, forward_groups, users, account, help, unsupported.",
+              "Return only JSON with keys: intent, id, keyword, rankMetric, rankOrder, limit.",
+              "Allowed intents: usage, rules, rule_detail, rule_usage, rule_rank, hosts, tunnels, forward_groups, users, account, help, unsupported.",
               "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
               "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
+              "Use rule_rank when the user asks which rules rank highest/lowest by traffic, connections, or latency; set rankMetric to traffic/connections/latency and rankOrder to desc/asc.",
+              "For examples like 哪个规则流量最多 or 规则延迟最高的前5条, classify as rule_rank, not rules.",
               "Recognize rule id formats such as 第9条规则 / 9号规则 / 规则#9 and include id.",
               "If the message asks for rules filtered by a user or host, classify it as rules, not users or hosts.",
               "For user detail queries like 用户1/用户一的使用详情, classify as users and return keyword as the precise user token (for example 1).",
@@ -4127,6 +4206,100 @@ async function aiRulesText(user: any, keywordOrFilters?: string | AiRuleFilters)
   return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
 
+function aiRuleRankTitle(metric: AiRuleRankMetric, order: AiRuleRankOrder) {
+  if (metric === "traffic") return order === "asc" ? "转发规则流量最少排行" : "转发规则流量最多排行";
+  if (metric === "connections") return order === "asc" ? "转发规则连接最少排行" : "转发规则连接最多排行";
+  return order === "asc" ? "转发规则延迟最低排行" : "转发规则延迟最高排行";
+}
+
+function aiRuleRankMetricLabel(metric: AiRuleRankMetric, order: AiRuleRankOrder) {
+  if (metric === "traffic") return order === "asc" ? "总流量从少到多" : "总流量从多到少";
+  if (metric === "connections") return order === "asc" ? "连接数从少到多" : "连接数从多到少";
+  return order === "asc" ? "最近延迟从低到高" : "最近延迟从高到低";
+}
+
+function aiRuleRankValueText(metric: AiRuleRankMetric, summary: AiRuleTrafficSummary & { latestLatencyMs?: number | null; latestLatencyIsTimeout?: boolean }) {
+  if (metric === "traffic") return `<b>${escapeHtml(formatBytes(summary.bytesIn + summary.bytesOut))}</b>`;
+  if (metric === "connections") return `<b>${Math.max(0, Number(summary.connections || 0))}</b> 次`;
+  if (summary.latestLatencyIsTimeout) return "<b>超时</b>";
+  return summary.latestLatencyMs == null ? "暂无延迟" : `<b>${escapeHtml(`${summary.latestLatencyMs} ms`)}</b>`;
+}
+
+function aiRuleRankSortValue(metric: AiRuleRankMetric, summary: AiRuleTrafficSummary & { latestLatencyMs?: number | null; latestLatencyIsTimeout?: boolean }, order: AiRuleRankOrder) {
+  if (metric === "traffic") return Math.max(0, Number(summary.bytesIn || 0)) + Math.max(0, Number(summary.bytesOut || 0));
+  if (metric === "connections") return Math.max(0, Number(summary.connections || 0));
+  if (summary.latestLatencyIsTimeout) return Number.POSITIVE_INFINITY;
+  if (summary.latestLatencyMs == null) return order === "asc" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+  return Math.max(0, Number(summary.latestLatencyMs || 0));
+}
+
+async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; order?: AiRuleRankOrder; keyword?: string; userKeyword?: string; hostKeyword?: string; limit?: number }) {
+  const metric = options.metric || "traffic";
+  const order = options.order || "desc";
+  const limit = normalizeAiRuleRankLimit(options.limit) || 5;
+  const { rules, matched, hostById, keyword, userKeyword, hostKeyword } = await aiRulesWithFilters(user, {
+    keyword: options.keyword,
+    userKeyword: options.userKeyword,
+    hostKeyword: options.hostKeyword,
+  });
+  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword });
+  const header = aiResultHeader(aiRuleRankTitle(metric, order), matched.length, rules.length, "条", filterText);
+  if (matched.length === 0) return `${header}\n\n没有找到可排行的规则。`;
+
+  const ids = matched.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isFinite(id) && id > 0);
+  const summaryByRuleId = new Map<number, AiRuleTrafficSummary & { latestLatencyMs?: number | null; latestLatencyIsTimeout?: boolean }>();
+  for (const id of ids) summaryByRuleId.set(id, emptyAiRuleTrafficSummary());
+  const rows = await db.getTrafficSummaryByRule({
+    userId: user.role === "admin" ? undefined : user.id,
+    ruleIds: ids,
+    includeLatency: metric === "latency",
+  }).catch(() => [] as any[]);
+  for (const row of rows as any[]) {
+    const ruleId = Number(row?.ruleId || 0);
+    if (!ruleId) continue;
+    const prev = summaryByRuleId.get(ruleId) || emptyAiRuleTrafficSummary();
+    prev.bytesIn += Math.max(0, Number(row?.bytesIn || 0));
+    prev.bytesOut += Math.max(0, Number(row?.bytesOut || 0));
+    prev.connections += Math.max(0, Number(row?.connections || 0));
+    if (metric === "latency") {
+      prev.latestLatencyIsTimeout = !!row?.latestLatencyIsTimeout;
+      prev.latestLatencyMs = row?.latestLatencyMs == null ? null : Number(row.latestLatencyMs);
+    }
+    summaryByRuleId.set(ruleId, prev);
+  }
+
+  const ranked = (matched as any[])
+    .map((rule: any) => ({ rule, summary: summaryByRuleId.get(Number(rule.id)) || emptyAiRuleTrafficSummary() }))
+    .sort((a, b) => {
+      const av = aiRuleRankSortValue(metric, a.summary);
+      const bv = aiRuleRankSortValue(metric, b.summary);
+      if (av === bv) return Number(a.rule.id || 0) - Number(b.rule.id || 0);
+      return order === "asc" ? av - bv : bv - av;
+    });
+  const visible = ranked.slice(0, limit);
+  const lines = visible.map((item, index) => {
+    const rule = item.rule;
+    const summary = item.summary;
+    const host = hostById.get(Number(rule.hostId));
+    const note = String(rule.remark || rule.remarks || rule.description || "").trim();
+    const title = shortText(note || rule.name || `规则 #${rule.id}`, 30);
+    const location = rule.tunnelId
+      ? `归属：隧道 ${aiCode(`#${rule.tunnelId}`)}`
+      : `归属：主机 ${aiCode(`#${rule.hostId}`)}${host?.name ? `（${escapeHtml(shortText(host.name, 18))}）` : ""}`;
+    const details = [
+      `排名值：${aiRuleRankValueText(metric, summary)}`,
+      metric !== "traffic" ? `流量：${aiCode(formatBytes(summary.bytesIn + summary.bytesOut))}` : `入 / 出：${aiCode(formatBytes(summary.bytesIn))} / ${aiCode(formatBytes(summary.bytesOut))}`,
+      metric !== "connections" && summary.connections > 0 ? `连接：<b>${summary.connections}</b>` : "",
+      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+      `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)} → 目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
+      location,
+      note && note !== rule.name ? `备注：${escapeHtml(shortText(note, 32))}` : "",
+    ];
+    return [`<b>${index + 1}. #${rule.id} ${escapeHtml(title)}</b>`, aiBlockquote(details)].join("\n");
+  });
+  const shownText = ranked.length > visible.length ? `\n\n<i>已按${escapeHtml(aiRuleRankMetricLabel(metric, order))}展示前 ${visible.length} 条，还有 ${ranked.length - visible.length} 条未展示。</i>` : `\n\n<i>已按${escapeHtml(aiRuleRankMetricLabel(metric, order))}排序。</i>`;
+  return `${header}\n\n${lines.join("\n\n")}${shownText}`;
+}
 async function aiRuleDetailText(user: any, ruleId: number) {
   const rules = await visibleRulesForTelegramUser(user);
   const rule = rules.find((item: any) => Number(item.id) === Number(ruleId));
@@ -4273,6 +4446,8 @@ function aiQueryHelpText() {
     `${aiCode("查规则 443")}`,
     `${aiCode("规则 #12 详情")}`,
     `${aiCode("第9条规则用了多少流量")}`,
+    `${aiCode("哪个规则流量最多")}`,
+    `${aiCode("规则延迟最高的前 5 条")}`,
     `${aiCode("9号规则用了多少流量")}`,
     `${aiCode("用户1的使用详情")}`,
     `${aiCode("列出张三用户上海主机的规则")}`,
@@ -4338,6 +4513,15 @@ async function aiQueryText(user: any, rawText: string) {
         hostKeyword: extractHostFilterKeyword(query),
       });
     }
+    case "rule_rank":
+      return aiRuleRankText(user, {
+        metric: parsed.rankMetric,
+        order: parsed.rankOrder,
+        keyword: parsed.keyword,
+        userKeyword: extractUserFilterKeyword(query),
+        hostKeyword: extractHostFilterKeyword(query),
+        limit: parsed.limit,
+      });
     case "hosts":
       return aiHostsText(user, parsed.keyword);
     case "tunnels":

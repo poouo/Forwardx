@@ -31,7 +31,8 @@ function bytes(size?: number | null) {
 }
 
 function speed(value?: number | null) {
-  return value ? `${bytes(value)}/s` : "不限";
+  const num = Number(value || 0);
+  return num > 0 ? `${parseFloat(num.toFixed(2))} Mbps` : "不限";
 }
 
 function dateTime(value?: string | Date | null) {

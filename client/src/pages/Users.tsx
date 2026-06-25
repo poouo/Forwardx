@@ -92,16 +92,21 @@ function parseTrafficInputGB(value: string): number {
   return Math.floor(num * 1024 * 1024 * 1024);
 }
 
-function parseSpeedInputMB(value: string): number {
+function parseSpeedInputMbps(value: string): number {
   const num = parseFloat(String(value).trim());
   if (isNaN(num) || num <= 0) return 0;
-  return Math.floor(num * 1024 * 1024);
+  return Math.floor(num);
 }
 
-function formatSpeed(bytesPerSecond: number | string | null | undefined): string {
-  const num = Number(bytesPerSecond);
-  if (!num || isNaN(num) || num <= 0) return "0 MB/s";
-  return `${parseFloat((num / 1024 / 1024).toFixed(2))} MB/s`;
+function formatSpeedMbps(mbps: number | string | null | undefined): string {
+  const num = Number(mbps);
+  if (!num || isNaN(num) || num <= 0) return "不限";
+  return `${parseFloat(num.toFixed(2))} Mbps`;
+}
+
+function formatTunnelRateLimit(inMbps: unknown, outMbps: unknown): string {
+  const speed = Math.max(0, Math.floor(Number(inMbps) || 0), Math.floor(Number(outMbps) || 0));
+  return speed > 0 ? `上下行 ${formatSpeedMbps(speed)}` : "不限";
 }
 
 function userLabel(user: any) {
@@ -708,8 +713,8 @@ function UsersContent() {
     const gostIn = Number(u.gostRateLimitIn) || 0;
     const gostOut = Number(u.gostRateLimitOut) || 0;
     const unifiedRateLimit = Math.max(gostIn, gostOut);
-    setGostRateLimitInInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
-    setGostRateLimitOutInput(unifiedRateLimit > 0 ? parseFloat((unifiedRateLimit / 1024 / 1024).toFixed(2)).toString() : "0");
+    setGostRateLimitInInput(unifiedRateLimit > 0 ? String(unifiedRateLimit) : "0");
+    setGostRateLimitOutInput(unifiedRateLimit > 0 ? String(unifiedRateLimit) : "0");
     setMaxRules(u.maxRules || 0);
     setMaxPorts(u.maxPorts || 0);
     setMaxConnections(u.maxConnections || 0);
@@ -748,7 +753,7 @@ function UsersContent() {
     if (allowSocat) allowed.push("socat");
     if (allowGost) allowed.push("gost");
     const allowedForwardTypes = allowed.length === FORWARD_TYPES.length ? null : allowed.join(",");
-    const unifiedRateLimit = parseSpeedInputMB(gostRateLimitInInput);
+    const unifiedRateLimit = parseSpeedInputMbps(gostRateLimitInInput);
     const displayRemark = trafficDisplayRemark.trim().slice(0, 24);
     updateTrafficMutation.mutate({
       userId: trafficUserId,
@@ -1158,7 +1163,7 @@ function UsersContent() {
                     <span>端口: {u.maxPorts ? `${u.maxPorts} 个` : "不限"}</span>
                     <span>连接: {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
                     <span>单 IP: {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
-                    {speedLimit > 0 && <span className="col-span-2">限速: {formatSpeed(speedLimit)}</span>}
+                    {speedLimit > 0 && <span className="col-span-2">隧道限速: {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>}
                   </div>
 
                   <div className="grid gap-2">
@@ -1358,7 +1363,7 @@ function UsersContent() {
                             <span>连接: {u.maxConnections ? `最多 ${u.maxConnections}` : "不限"}</span>
                             <span>单 IP: {u.maxIPs ? `最多 ${u.maxIPs}` : "不限"}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
-                              <span>隧道限速: {formatSpeed(Math.max(Number(u.gostRateLimitIn) || 0, Number(u.gostRateLimitOut) || 0))}</span>
+                              <span>隧道限速: {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
                             )}
                           </div>
                         </TableCell>
@@ -2001,7 +2006,7 @@ function UsersContent() {
                     隧道限速
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    对隧道转发生效。
+                    对隧道转发的上下行同时生效。
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -2011,7 +2016,7 @@ function UsersContent() {
                       type="number"
                       inputMode="decimal"
                       min={0}
-                      step="0.1"
+                      step="1"
                       value={gostRateLimitInInput}
                       onChange={(e) => {
                         setGostRateLimitInInput(e.target.value);
@@ -2019,10 +2024,10 @@ function UsersContent() {
                       }}
                       placeholder="0"
                     />
-                    <span className="text-xs text-muted-foreground select-none whitespace-nowrap">MB/s</span>
+                    <span className="text-xs text-muted-foreground select-none whitespace-nowrap">Mbps</span>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后 Agent 刷新隧道配置时生效。</p>
+                <p className="text-xs text-muted-foreground">填 0 表示不限速。保存后会同时限制入站和出站，Agent 刷新隧道配置时生效。</p>
               </div>
 
               <Separator />
