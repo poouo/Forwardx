@@ -1116,6 +1116,12 @@ function getAiProviderDefaultModel(provider: AiProvider) {
   return DEFAULT_DEEPSEEK_MODEL;
 }
 
+function buildAiChatCompletionsUrl(baseUrl: string) {
+  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
 function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
   const numeric = Math.floor(Number(value));
   if (!Number.isFinite(numeric)) return 60;
@@ -1134,6 +1140,7 @@ async function getDeepSeekSettings() {
     enabled: settings.deepseekAiEnabled === "true",
     apiKey,
     baseUrl,
+    chatCompletionsUrl: buildAiChatCompletionsUrl(baseUrl),
     model: String(settings.deepseekModel || defaultModel).trim() || defaultModel,
     maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
     temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
@@ -1405,7 +1412,7 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
   const settings = await getDeepSeekSettings().catch(() => null);
   if (!settings?.enabled || !settings.apiKey) return fallback;
   try {
-    const resp = await fetch(`${settings.baseUrl}/chat/completions`, {
+    const resp = await fetch(settings.chatCompletionsUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1438,14 +1445,14 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
         max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
       }),
     });
-    if (!resp.ok) throw new Error(`DeepSeek HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`AI HTTP ${resp.status}`);
     const json = await resp.json().catch(() => null) as any;
     const content = String(json?.choices?.[0]?.message?.content || "");
     const parsed = extractAiJsonObject(content);
     if (!parsed) return fallback;
     return normalizeAiQueryIntent(parsed, fallback);
   } catch (error) {
-    console.warn("[TelegramBot] DeepSeek query intent fallback:", error);
+    console.warn("[TelegramBot] AI query intent fallback:", error);
     return fallback;
   }
 }
@@ -1669,7 +1676,7 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
   const settings = await getDeepSeekSettings().catch(() => null);
   if (!settings?.enabled || !settings.apiKey) return fallback;
   try {
-    const resp = await fetch(`${settings.baseUrl}/chat/completions`, {
+    const resp = await fetch(settings.chatCompletionsUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1702,7 +1709,7 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
         max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
       }),
     });
-    if (!resp.ok) throw new Error(`DeepSeek HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`AI HTTP ${resp.status}`);
     const json = await resp.json().catch(() => null) as any;
     const content = String(json?.choices?.[0]?.message?.content || "");
     const parsed = extractAiJsonObject(content);
@@ -1713,7 +1720,7 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
       writeLike: Boolean(parsed?.writeLike) || fallback.writeLike || intent.action !== "none",
     };
   } catch (error) {
-    console.warn("[TelegramBot] DeepSeek manage intent fallback:", error);
+    console.warn("[TelegramBot] AI manage intent fallback:", error);
     return fallback;
   }
 }

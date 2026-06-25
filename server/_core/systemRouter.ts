@@ -786,6 +786,13 @@ function getAiProviderDefaultModel(provider: AiProvider) {
   return DEFAULT_DEEPSEEK_MODEL;
 }
 
+function buildAiModelsEndpoint(baseUrl: string, chatOnly: boolean) {
+  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const modelPath = /\/models$/i.test(normalized) ? normalized : `${normalized}/models`;
+  if (!chatOnly) return modelPath;
+  return `${modelPath}${modelPath.includes("?") ? "&" : "?"}type=chat`;
+}
+
 function pickPathValue(input: unknown, pathKey: string): unknown {
   const source = input && typeof input === "object" ? input as Record<string, unknown> : null;
   if (!source) return undefined;
@@ -1283,7 +1290,7 @@ export const systemRouter = router({
         };
       }
 
-      const endpoint = `${baseUrl}/models${chatOnly ? "?type=chat" : ""}`;
+      const endpoint = buildAiModelsEndpoint(baseUrl, chatOnly);
       try {
         const resp = await fetch(endpoint, {
           method: "GET",

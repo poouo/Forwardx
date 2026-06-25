@@ -2199,6 +2199,7 @@ function DeepSeekSettingsCard() {
     ? settings?.deepseek?.apiKeyMasked || ""
     : deepseekApiKeyInput;
   const hasDeepSeekKeyForEnable = !!settings?.deepseek?.configured || !!deepseekApiKeyInput.trim();
+  const activeProviderDefaults = aiProviderDefaults[deepseekProvider];
   const providerLabel = aiProviderOptions.find((item) => item.value === deepseekProvider)?.label || deepseekProvider;
   const models = Array.isArray(aiModelsQuery.data?.models) ? aiModelsQuery.data.models : [];
   const knownFreeCount = Number(aiModelsQuery.data?.freeCount || 0);
@@ -2226,7 +2227,7 @@ function DeepSeekSettingsCard() {
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoading ? (
-            <DataSectionLoading label="正在加载 DeepSeek 配置" minHeight="min-h-[120px]" />
+            <DataSectionLoading label="正在加载 AI 配置" minHeight="min-h-[120px]" />
           ) : (
             <>
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
@@ -2296,7 +2297,7 @@ function DeepSeekSettingsCard() {
                     type="text"
                     value={deepseekBaseUrl}
                     onChange={(e) => setDeepseekBaseUrl(e.target.value)}
-                    placeholder="https://api.deepseek.com"
+                    placeholder={activeProviderDefaults.baseUrl}
                     className="font-mono"
                   />
                 </div>
@@ -2306,7 +2307,7 @@ function DeepSeekSettingsCard() {
                     type="text"
                     value={deepseekModel}
                     onChange={(e) => setDeepseekModel(e.target.value)}
-                    placeholder="deepseek-chat"
+                    placeholder={activeProviderDefaults.model}
                     className="font-mono"
                   />
                   <div className="rounded-lg border border-border/40 bg-background/50 p-2">
@@ -2441,7 +2442,8 @@ function DeepSeekSettingsCard() {
           </DialogHeader>
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
             <p className="text-xs text-muted-foreground">当前配置</p>
-            <p className="mt-1 font-medium">{settings?.deepseek?.model || "deepseek-chat"}</p>
+            <p className="mt-1 font-medium">{providerLabel}</p>
+            <p className="mt-1 font-medium">{settings?.deepseek?.model || activeProviderDefaults.model}</p>
             <p className="mt-2 font-mono text-xs text-muted-foreground">{settings?.deepseek?.apiKeyMasked || "-"}</p>
           </div>
           <DialogFooter>
