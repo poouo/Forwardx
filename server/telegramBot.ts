@@ -51,11 +51,13 @@ type AiQueryIntent = {
   intent: "usage" | "rules" | "rule_detail" | "rule_usage" | "rule_rank" | "hosts" | "tunnels" | "forward_groups" | "users" | "account" | "help" | "unsupported";
   id?: number;
   keyword?: string;
+  ruleStatus?: AiRuleStatusFilter;
   rankMetric?: AiRuleRankMetric;
   rankOrder?: AiRuleRankOrder;
   limit?: number;
 };
 
+type AiRuleStatusFilter = "running" | "pending" | "disabled" | "abnormal";
 type AiRuleRankMetric = "traffic" | "connections" | "latency";
 type AiRuleRankOrder = "desc" | "asc";
 
@@ -1588,6 +1590,33 @@ function textAsksRuleDetail(text: string) {
     || /\d+\s*(?:号|#)\s*(?:规则|rule)/i.test(text);
 }
 
+function normalizeAiRuleStatusFilter(value: unknown): AiRuleStatusFilter | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (/(abnormal|problem|error|failed|fail|invalid|异常|不正常|有问题|出问题|故障|失效|不通)/i.test(raw)) return "abnormal";
+  if (/(pending|waiting|sync|not\s*running|stopped|等待同步|待同步|未同步|没同步|未运行|没运行|不运行|已停止|停止)/i.test(raw)) return "pending";
+  if (/(disabled|disable|off|closed|已停用|停用|禁用|关闭|未启用)/i.test(raw)) return "disabled";
+  if (/(running|enabled|online|normal|ok|运行中|正在运行|已运行|正常|可用|启用中)/i.test(raw)) return "running";
+  return undefined;
+}
+
+function extractAiRuleStatusFilter(text: string) {
+  return normalizeAiRuleStatusFilter(text);
+}
+
+function stripAiRuleStatusKeyword(value: unknown, status?: AiRuleStatusFilter) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (!status) return normalizeAiQueryKeyword(raw);
+  const cleaned = raw
+    .replace(/(abnormal|problem|error|failed|fail|invalid|pending|waiting|sync|not\s*running|stopped|disabled|disable|off|closed|running|enabled|online|normal|ok|异常|不正常|有问题|出问题|故障|失效|不通|等待同步|待同步|未同步|没同步|未运行|没运行|不运行|已停止|停止|已停用|停用|禁用|关闭|未启用|运行中|正在运行|已运行|正常|可用|启用中)/gi, " ")
+    .replace(/(有没有|没有|有无|是否|是不是|有|没|哪些|哪条|哪个|转发规则|规则|端口|转发|状态|查询|查看|看下|看看|帮我|请|给我|的|吗)/gi, " ")
+    .replace(/[，,。？?！!：:、]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalizeAiQueryKeyword(cleaned);
+}
+
 function normalizeAiRuleRankMetric(value: unknown): AiRuleRankMetric | undefined {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return undefined;
@@ -1679,7 +1708,8 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
   const fallbackKeyword = intent === "users"
     ? normalizeUserLookupKeyword(fallback.keyword)
     : normalizeAiQueryKeyword(fallback.keyword);
-  const keyword = modelKeyword || fallbackKeyword;
+  const ruleStatus = normalizeAiRuleStatusFilter(value?.ruleStatus || value?.status || value?.state) || fallback.ruleStatus;
+  const keyword = ruleStatus ? stripAiRuleStatusKeyword(modelKeyword || fallbackKeyword, ruleStatus) : (modelKeyword || fallbackKeyword);
   const rankMetric = normalizeAiRuleRankMetric(value?.rankMetric || value?.metric) || fallback.rankMetric;
   const rankOrder = normalizeAiRuleRankOrder(value?.rankOrder || value?.order, rankMetric) || fallback.rankOrder;
   const limit = normalizeAiRuleRankLimit(value?.limit) || normalizeAiRuleRankLimit(fallback.limit);
@@ -1687,6 +1717,7 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
     intent,
     ...(id ? { id } : {}),
     ...(keyword ? { keyword } : {}),
+    ...(ruleStatus ? { ruleStatus } : {}),
     ...(intent === "rule_rank" && rankMetric ? { rankMetric } : {}),
     ...(intent === "rule_rank" && rankOrder ? { rankOrder } : {}),
     ...(intent === "rule_rank" && limit ? { limit } : {}),
@@ -1785,11 +1816,12 @@ function localAiQueryIntent(text: string): AiQueryIntent {
   }
   const id = extractRuleId(raw);
   const rankIntent = parseAiRuleRankIntent(raw);
-  const keyword = extractSearchKeyword(raw);
+  const ruleStatus = extractAiRuleStatusFilter(raw);
+  const keyword = stripAiRuleStatusKeyword(extractSearchKeyword(raw), ruleStatus);
   const userKeyword = normalizeUserLookupKeyword(extractUserFilterKeyword(raw) || keyword);
   if (/(帮助|怎么用|help)/i.test(raw)) return { intent: "help" };
   if (rankIntent) return rankIntent;
-  if (textAsksRuleUsage(raw)) return id ? { intent: "rule_usage", id } : { intent: "rules", keyword };
+  if (textAsksRuleUsage(raw)) return id ? { intent: "rule_usage", id } : { intent: "rules", keyword, ...(ruleStatus ? { ruleStatus } : {}) };
   if (id && textAsksRuleDetail(raw)) return { intent: "rule_detail", id };
   if (/(用户|user)/i.test(raw) && /(详情|明细|使用|用了|流量|用量|到期|角色|usage|traffic)/i.test(raw)) {
     return { intent: "users", ...(userKeyword ? { keyword: userKeyword } : {}) };
@@ -1798,7 +1830,7 @@ function localAiQueryIntent(text: string): AiQueryIntent {
   if (/(我是谁|账户|账号|个人|信息|资料|account|profile)/i.test(raw)) return { intent: "account", keyword };
   if (/(转发组|入口组|多入口|forward\s*group|group)/i.test(raw)) return { intent: "forward_groups", keyword };
   if (/(隧道|链路|转发链|tunnel|link)/i.test(raw)) return { intent: "tunnels", keyword };
-  if (/(规则|端口|转发|rule|port)/i.test(raw)) return { intent: "rules", keyword };
+  if (/(规则|端口|转发|rule|port)/i.test(raw)) return { intent: "rules", keyword, ...(ruleStatus ? { ruleStatus } : {}) };
   if (/(用户|user)/i.test(raw)) return { intent: "users", ...(userKeyword ? { keyword: userKeyword } : {}) };
   if (/(主机|机器|节点|agent|host|server)/i.test(raw)) return { intent: "hosts", keyword };
   if (keyword) return { intent: "rules", keyword };
@@ -1824,8 +1856,9 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
             role: "system",
             content: [
               "You classify ForwardX Telegram user messages into read-only query intents.",
-              "Return only JSON with keys: intent, id, keyword, rankMetric, rankOrder, limit.",
+              "Return only JSON with keys: intent, id, keyword, ruleStatus, rankMetric, rankOrder, limit.",
               "Allowed intents: usage, rules, rule_detail, rule_usage, rule_rank, hosts, tunnels, forward_groups, users, account, help, unsupported.",
+              "For rule status queries such as 异常规则有没有 / 未运行规则 / 等待同步规则 / 停用规则 / 运行中的规则, classify as rules and set ruleStatus to abnormal/pending/disabled/running.",
               "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
               "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
               "Use rule_rank when the user asks which rules rank highest/lowest by traffic, connections, or latency; set rankMetric to traffic/connections/latency and rankOrder to desc/asc.",
@@ -4022,6 +4055,20 @@ function ruleStatusText(rule: any) {
   return rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
 }
 
+function aiRuleStatusFilterLabel(status: AiRuleStatusFilter) {
+  if (status === "running") return "运行中";
+  if (status === "pending") return "等待同步";
+  if (status === "disabled") return "已停用";
+  return "异常/非运行中";
+}
+
+function ruleMatchesStatusFilter(rule: any, status: AiRuleStatusFilter) {
+  if (status === "running") return !!rule.isEnabled && !!rule.isRunning;
+  if (status === "pending") return !!rule.isEnabled && !rule.isRunning;
+  if (status === "disabled") return !rule.isEnabled;
+  return !rule.isEnabled || !rule.isRunning;
+}
+
 function runningStatusText(value: unknown) {
   return value ? "运行中" : "未运行";
 }
@@ -4071,6 +4118,7 @@ type AiRuleFilters = {
   keyword?: string;
   userKeyword?: string;
   hostKeyword?: string;
+  ruleStatus?: AiRuleStatusFilter;
 };
 
 function emptyAiRuleTrafficSummary(): AiRuleTrafficSummary {
@@ -4137,7 +4185,8 @@ async function aiMatchingUserIds(keyword: string) {
 
 async function aiRulesWithFilters(user: any, filters: AiRuleFilters = {}) {
   const rules = await visibleRulesForTelegramUser(user);
-  let keyword = normalizeAiQueryKeyword(filters.keyword);
+  const ruleStatus = normalizeAiRuleStatusFilter(filters.ruleStatus);
+  let keyword = stripAiRuleStatusKeyword(filters.keyword, ruleStatus);
   const requestedUserKeyword = normalizeAiQueryKeyword(filters.userKeyword);
   let userKeyword = user.role === "admin" ? requestedUserKeyword : "";
   const hostKeyword = normalizeAiQueryKeyword(filters.hostKeyword);
@@ -4161,26 +4210,28 @@ async function aiRulesWithFilters(user: any, filters: AiRuleFilters = {}) {
     }
   }
   const matched = (rules as any[]).filter((rule: any) => {
+    if (ruleStatus && !ruleMatchesStatusFilter(rule, ruleStatus)) return false;
     if (keyword && !searchMatches(keyword, ruleSearchValues(rule))) return false;
     if (userKeyword && !userIds.has(Number(rule.userId))) return false;
     if (hostKeyword && !hostIds.has(Number(rule.hostId))) return false;
     return true;
   });
-  return { rules, matched, hostById, keyword, userKeyword, hostKeyword };
+  return { rules, matched, hostById, keyword, userKeyword, hostKeyword, ruleStatus };
 }
 
-function aiRuleFilterSuffix(filters: { keyword?: string; userKeyword?: string; hostKeyword?: string }) {
+function aiRuleFilterSuffix(filters: { keyword?: string; userKeyword?: string; hostKeyword?: string; ruleStatus?: AiRuleStatusFilter }) {
   return [
     filters.userKeyword ? aiFilterPart("用户", filters.userKeyword) : "",
     filters.hostKeyword ? aiFilterPart("主机", filters.hostKeyword) : "",
+    filters.ruleStatus ? aiFilterPart("状态", aiRuleStatusFilterLabel(filters.ruleStatus)) : "",
     filters.keyword ? aiFilterPart("关键字", filters.keyword) : "",
   ].filter(Boolean).join("，");
 }
 
 async function aiRulesText(user: any, keywordOrFilters?: string | AiRuleFilters) {
   const filters: AiRuleFilters = typeof keywordOrFilters === "string" ? { keyword: keywordOrFilters } : (keywordOrFilters || {});
-  const { rules, matched, hostById, keyword, userKeyword, hostKeyword } = await aiRulesWithFilters(user, filters);
-  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword });
+  const { rules, matched, hostById, keyword, userKeyword, hostKeyword, ruleStatus } = await aiRulesWithFilters(user, filters);
+  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword, ruleStatus });
   const header = aiResultHeader("转发规则查询", matched.length, rules.length, "条", filterText);
   if (matched.length === 0) return `${header}\n\n没有找到匹配的规则。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
@@ -4233,16 +4284,17 @@ function aiRuleRankSortValue(metric: AiRuleRankMetric, summary: AiRuleTrafficSum
   return Math.max(0, Number(summary.latestLatencyMs || 0));
 }
 
-async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; order?: AiRuleRankOrder; keyword?: string; userKeyword?: string; hostKeyword?: string; limit?: number }) {
+async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; order?: AiRuleRankOrder; keyword?: string; userKeyword?: string; hostKeyword?: string; ruleStatus?: AiRuleStatusFilter; limit?: number }) {
   const metric = options.metric || "traffic";
   const order = options.order || "desc";
   const limit = normalizeAiRuleRankLimit(options.limit) || 5;
-  const { rules, matched, hostById, keyword, userKeyword, hostKeyword } = await aiRulesWithFilters(user, {
+  const { rules, matched, hostById, keyword, userKeyword, hostKeyword, ruleStatus } = await aiRulesWithFilters(user, {
     keyword: options.keyword,
     userKeyword: options.userKeyword,
     hostKeyword: options.hostKeyword,
+    ruleStatus: options.ruleStatus,
   });
-  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword });
+  const filterText = aiRuleFilterSuffix({ keyword, userKeyword, hostKeyword, ruleStatus });
   const header = aiResultHeader(aiRuleRankTitle(metric, order), matched.length, rules.length, "条", filterText);
   if (matched.length === 0) return `${header}\n\n没有找到可排行的规则。`;
 
@@ -4444,6 +4496,7 @@ function aiQueryHelpText() {
     "可以直接发送：",
     `${aiCode("我的流量")}`,
     `${aiCode("查规则 443")}`,
+    `${aiCode("异常规则有没有")}`,
     `${aiCode("规则 #12 详情")}`,
     `${aiCode("第9条规则用了多少流量")}`,
     `${aiCode("哪个规则流量最多")}`,
@@ -4499,11 +4552,15 @@ async function aiQueryText(user: any, rawText: string) {
         keyword: parsed.keyword,
         userKeyword: extractUserFilterKeyword(query),
         hostKeyword: extractHostFilterKeyword(query),
+        ruleStatus: parsed.ruleStatus || extractAiRuleStatusFilter(query),
       });
     }
     case "rule_detail": {
       const ruleId = parsed.id || extractRuleId(query);
-      return ruleId ? aiRuleDetailText(user, ruleId) : aiRulesText(user, parsed.keyword);
+      return ruleId ? aiRuleDetailText(user, ruleId) : aiRulesText(user, {
+        keyword: parsed.keyword,
+        ruleStatus: parsed.ruleStatus || extractAiRuleStatusFilter(query),
+      });
     }
     case "rule_usage": {
       const ruleId = parsed.id || extractRuleId(query);
@@ -4511,6 +4568,7 @@ async function aiQueryText(user: any, rawText: string) {
         keyword: parsed.keyword,
         userKeyword: extractUserFilterKeyword(query),
         hostKeyword: extractHostFilterKeyword(query),
+        ruleStatus: parsed.ruleStatus || extractAiRuleStatusFilter(query),
       });
     }
     case "rule_rank":
@@ -4520,6 +4578,7 @@ async function aiQueryText(user: any, rawText: string) {
         keyword: parsed.keyword,
         userKeyword: extractUserFilterKeyword(query),
         hostKeyword: extractHostFilterKeyword(query),
+        ruleStatus: parsed.ruleStatus || extractAiRuleStatusFilter(query),
         limit: parsed.limit,
       });
     case "hosts":
