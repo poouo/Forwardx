@@ -1392,6 +1392,28 @@ function getAiProviderDefaultModel(provider: AiProvider) {
   return DEFAULT_DEEPSEEK_MODEL;
 }
 
+const AI_PROVIDER_SETTING_KEYS: Record<AiProvider, { apiKey: string; baseUrl: string; model: string }> = {
+  deepseek: {
+    apiKey: "deepseekApiKeyDeepseek",
+    baseUrl: "deepseekBaseUrlDeepseek",
+    model: "deepseekModelDeepseek",
+  },
+  siliconflow: {
+    apiKey: "deepseekApiKeySiliconflow",
+    baseUrl: "deepseekBaseUrlSiliconflow",
+    model: "deepseekModelSiliconflow",
+  },
+  custom: {
+    apiKey: "deepseekApiKeyCustom",
+    baseUrl: "deepseekBaseUrlCustom",
+    model: "deepseekModelCustom",
+  },
+};
+
+function getAiProviderSettingKeys(provider: AiProvider) {
+  return AI_PROVIDER_SETTING_KEYS[provider];
+}
+
 function buildAiChatCompletionsUrl(baseUrl: string) {
   const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
   if (/\/chat\/completions$/i.test(normalized)) return normalized;
@@ -1407,17 +1429,22 @@ function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
 async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
   const settings = await db.getAllSettings();
   const provider = normalizeAiProvider(settings.deepseekProvider);
+  const providerKeys = getAiProviderSettingKeys(provider);
   const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
   const defaultModel = getAiProviderDefaultModel(provider);
-  const apiKey = String(settings.deepseekApiKey || "").trim();
-  const baseUrl = String(settings.deepseekBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
+  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekApiKey || "").trim() : "";
+  const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekBaseUrl || "").trim() : "";
+  const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekModel || "").trim() : "";
+  const apiKey = String(settings[providerKeys.apiKey] || "").trim() || legacyApiKey;
+  const baseUrl = String(settings[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
+  const model = String(settings[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
   return {
     provider,
     enabled: settings.deepseekAiEnabled === "true",
     apiKey,
     baseUrl,
     chatCompletionsUrl: buildAiChatCompletionsUrl(baseUrl),
-    model: String(settings.deepseekModel || defaultModel).trim() || defaultModel,
+    model,
     maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
     temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
     telegramUserManageEnabled: settings.telegramAiUserManageEnabled !== "false",

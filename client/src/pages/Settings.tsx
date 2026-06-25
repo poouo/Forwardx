@@ -155,6 +155,56 @@ const aiProviderDefaults: Record<AiProvider, { baseUrl: string; model: string }>
     model: "deepseek-chat",
   },
 };
+type AiProviderServerConfig = {
+  provider?: AiProvider;
+  configured?: boolean;
+  apiKeyMasked?: string;
+  baseUrl?: string;
+  model?: string;
+};
+type AiProviderLocalConfig = {
+  configured: boolean;
+  apiKeyMasked: string;
+  apiKeyInput: string;
+  baseUrl: string;
+  model: string;
+};
+type AiProviderLocalConfigMap = Record<AiProvider, AiProviderLocalConfig>;
+
+function createDefaultAiProviderConfig(provider: AiProvider): AiProviderLocalConfig {
+  return {
+    configured: false,
+    apiKeyMasked: "",
+    apiKeyInput: "",
+    baseUrl: aiProviderDefaults[provider].baseUrl,
+    model: aiProviderDefaults[provider].model,
+  };
+}
+
+function createDefaultAiProviderConfigMap(): AiProviderLocalConfigMap {
+  return {
+    deepseek: createDefaultAiProviderConfig("deepseek"),
+    siliconflow: createDefaultAiProviderConfig("siliconflow"),
+    custom: createDefaultAiProviderConfig("custom"),
+  };
+}
+
+function normalizeAiProviderValue(value: unknown): AiProvider {
+  const raw = String(value || "").trim();
+  return aiProviderOptions.some((item) => item.value === raw)
+    ? (raw as AiProvider)
+    : "deepseek";
+}
+
+function toLocalAiProviderConfig(provider: AiProvider, source?: AiProviderServerConfig): AiProviderLocalConfig {
+  return {
+    configured: !!source?.configured,
+    apiKeyMasked: String(source?.apiKeyMasked || ""),
+    apiKeyInput: "",
+    baseUrl: String(source?.baseUrl || "").trim() || aiProviderDefaults[provider].baseUrl,
+    model: String(source?.model || "").trim() || aiProviderDefaults[provider].model,
+  };
+}
 type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
 const ddnsProviders: DdnsProvider[] = ["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"];
 
@@ -2080,15 +2130,17 @@ function DeepSeekSettingsCard() {
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const [deepseekProvider, setDeepseekProvider] = useState<AiProvider>("deepseek");
   const [deepseekEnabled, setDeepseekEnabled] = useState(false);
-  const [deepseekApiKeyInput, setDeepseekApiKeyInput] = useState("");
-  const [deepseekBaseUrl, setDeepseekBaseUrl] = useState("https://api.deepseek.com");
-  const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
+  const [providerConfigs, setProviderConfigs] = useState<AiProviderLocalConfigMap>(() => createDefaultAiProviderConfigMap());
   const [deepseekMaxTokens, setDeepseekMaxTokens] = useState(1024);
   const [deepseekTemperature, setDeepseekTemperature] = useState(0.2);
   const [deepseekTelegramUserManageEnabled, setDeepseekTelegramUserManageEnabled] = useState(true);
   const [deepseekTelegramAutoRecallEnabled, setDeepseekTelegramAutoRecallEnabled] = useState(false);
   const [deepseekTelegramAutoRecallSeconds, setDeepseekTelegramAutoRecallSeconds] = useState(60);
   const [showDeleteDeepSeekKey, setShowDeleteDeepSeekKey] = useState(false);
+  const activeProviderConfig = providerConfigs[deepseekProvider] || createDefaultAiProviderConfig(deepseekProvider);
+  const deepseekBaseUrl = activeProviderConfig.baseUrl;
+  const deepseekModel = activeProviderConfig.model;
+  const providerConfigured = !!activeProviderConfig.configured;
   const aiModelsQuery = trpc.system.listAiModels.useQuery(
     {
       provider: deepseekProvider,
@@ -2096,7 +2148,7 @@ function DeepSeekSettingsCard() {
       chatOnly: true,
     },
     {
-      enabled: !!settings?.deepseek?.configured,
+      enabled: providerConfigured,
       staleTime: 60_000,
       refetchOnWindowFocus: false,
     },
@@ -2104,12 +2156,22 @@ function DeepSeekSettingsCard() {
 
   useEffect(() => {
     if (settings?.deepseek) {
-      const rawProvider = String(settings.deepseek.provider || "deepseek") as AiProvider;
-      const provider = aiProviderOptions.some((item) => item.value === rawProvider) ? rawProvider : "deepseek";
+      const provider = normalizeAiProviderValue(settings.deepseek.provider);
+      const serverProviders = (settings.deepseek as any).providers || {};
+      const activeServerConfig = settings.deepseek as AiProviderServerConfig;
+      const deepseekServerConfig = (serverProviders.deepseek as AiProviderServerConfig | undefined)
+        || (provider === "deepseek" ? activeServerConfig : undefined);
+      const siliconflowServerConfig = (serverProviders.siliconflow as AiProviderServerConfig | undefined)
+        || (provider === "siliconflow" ? activeServerConfig : undefined);
+      const customServerConfig = (serverProviders.custom as AiProviderServerConfig | undefined)
+        || (provider === "custom" ? activeServerConfig : undefined);
+      setProviderConfigs({
+        deepseek: toLocalAiProviderConfig("deepseek", deepseekServerConfig),
+        siliconflow: toLocalAiProviderConfig("siliconflow", siliconflowServerConfig),
+        custom: toLocalAiProviderConfig("custom", customServerConfig),
+      });
       setDeepseekProvider(provider);
       setDeepseekEnabled(!!settings.deepseek.enabled);
-      setDeepseekBaseUrl(settings.deepseek.baseUrl || aiProviderDefaults[provider].baseUrl);
-      setDeepseekModel(settings.deepseek.model || aiProviderDefaults[provider].model);
       setDeepseekMaxTokens(Number(settings.deepseek.maxTokens || 1024));
       setDeepseekTemperature(Number(settings.deepseek.temperature ?? 0.2));
       setDeepseekTelegramUserManageEnabled(settings.deepseek.telegramUserManageEnabled !== false);
@@ -2122,7 +2184,11 @@ function DeepSeekSettingsCard() {
     onSuccess: () => {
       utils.system.getSettings.invalidate();
       utils.system.listAiModels.invalidate();
-      setDeepseekApiKeyInput("");
+      setProviderConfigs((prev) => ({
+        deepseek: { ...prev.deepseek, apiKeyInput: "" },
+        siliconflow: { ...prev.siliconflow, apiKeyInput: "" },
+        custom: { ...prev.custom, apiKeyInput: "" },
+      }));
       toast.success("AI 配置已保存");
     },
     onError: (err) => toast.error(err.message || "保存失败"),
@@ -2133,13 +2199,23 @@ function DeepSeekSettingsCard() {
     return models.find((item: any) => String(item?.id || "") === deepseekModel.trim()) || null;
   }, [aiModelsQuery.data?.models, deepseekModel]);
 
+  const updateProviderConfig = (provider: AiProvider, patch: Partial<AiProviderLocalConfig>) => {
+    setProviderConfigs((prev) => ({
+      ...prev,
+      [provider]: {
+        ...(prev[provider] || createDefaultAiProviderConfig(provider)),
+        ...patch,
+      },
+    }));
+  };
+
+  const updateActiveProviderConfig = (patch: Partial<AiProviderLocalConfig>) => {
+    updateProviderConfig(deepseekProvider, patch);
+  };
+
   const handleProviderChange = (value: string) => {
-    const provider = aiProviderOptions.some((item) => item.value === value)
-      ? (value as AiProvider)
-      : "deepseek";
+    const provider = normalizeAiProviderValue(value);
     setDeepseekProvider(provider);
-    setDeepseekBaseUrl(aiProviderDefaults[provider].baseUrl);
-    setDeepseekModel(aiProviderDefaults[provider].model);
   };
 
   const normalizeMaxTokens = () => {
@@ -2161,8 +2237,8 @@ function DeepSeekSettingsCard() {
   };
 
   const handleSaveDeepSeek = () => {
-    const nextApiKey = deepseekApiKeyInput.trim();
-    const hasApiKey = !!settings?.deepseek?.configured || !!nextApiKey;
+    const nextApiKey = activeProviderConfig.apiKeyInput.trim();
+    const hasApiKey = providerConfigured || !!nextApiKey;
     if (deepseekEnabled && !hasApiKey) {
       toast.error("请先填写 AI API Key");
       return;
@@ -2174,7 +2250,7 @@ function DeepSeekSettingsCard() {
       deepseek: {
         provider: deepseekProvider,
         enabled: deepseekEnabled,
-        apiKey: !settings?.deepseek?.configured && nextApiKey ? nextApiKey : undefined,
+        apiKey: !providerConfigured && nextApiKey ? nextApiKey : undefined,
         baseUrl: deepseekBaseUrl.trim() || aiProviderDefaults[deepseekProvider].baseUrl,
         model: deepseekModel.trim() || aiProviderDefaults[deepseekProvider].model,
         maxTokens,
@@ -2192,20 +2268,21 @@ function DeepSeekSettingsCard() {
   const handleClearDeepSeekKey = () => {
     updateSettingsMutation.mutate({
       deepseek: {
+        provider: deepseekProvider,
         enabled: false,
         clearApiKey: true,
       },
     });
     setDeepseekEnabled(false);
-    setDeepseekApiKeyInput("");
+    updateActiveProviderConfig({ apiKeyInput: "" });
     setShowDeleteDeepSeekKey(false);
   };
 
-  const deepseekKeyLocked = !!settings?.deepseek?.configured;
+  const deepseekKeyLocked = providerConfigured;
   const deepseekKeyDisplayValue = deepseekKeyLocked
-    ? settings?.deepseek?.apiKeyMasked || ""
-    : deepseekApiKeyInput;
-  const hasDeepSeekKeyForEnable = !!settings?.deepseek?.configured || !!deepseekApiKeyInput.trim();
+    ? activeProviderConfig.apiKeyMasked || ""
+    : activeProviderConfig.apiKeyInput;
+  const hasDeepSeekKeyForEnable = providerConfigured || !!activeProviderConfig.apiKeyInput.trim();
   const activeProviderDefaults = aiProviderDefaults[deepseekProvider];
   const providerLabel = aiProviderOptions.find((item) => item.value === deepseekProvider)?.label || deepseekProvider;
   const models = Array.isArray(aiModelsQuery.data?.models) ? aiModelsQuery.data.models : [];
@@ -2227,8 +2304,8 @@ function DeepSeekSettingsCard() {
                 支持 DeepSeek / SiliconFlow / 自定义 OpenAI 兼容接口，用于 Telegram AI 指令解析。
               </CardDescription>
             </div>
-            <Badge variant={settings?.deepseek?.configured ? "default" : "outline"} className="w-fit">
-              {settings?.deepseek?.configured ? "已配置" : "未配置"}
+            <Badge variant={providerConfigured ? "default" : "outline"} className="w-fit">
+              {providerConfigured ? "已配置" : "未配置"}
             </Badge>
           </div>
         </CardHeader>
@@ -2242,10 +2319,10 @@ function DeepSeekSettingsCard() {
                   <Label>API Key</Label>
                   <Input
                     type="text"
-                    placeholder={settings?.deepseek?.apiKeyMasked || "从提供商控制台获取，例如 sk-..."}
+                    placeholder={activeProviderConfig.apiKeyMasked || "从提供商控制台获取，例如 sk-..."}
                     value={deepseekKeyDisplayValue}
                     onChange={(e) => {
-                      if (!deepseekKeyLocked) setDeepseekApiKeyInput(e.target.value);
+                      if (!deepseekKeyLocked) updateActiveProviderConfig({ apiKeyInput: e.target.value });
                     }}
                     readOnly={deepseekKeyLocked}
                     onMouseDown={(e) => {
@@ -2265,7 +2342,7 @@ function DeepSeekSettingsCard() {
                     <div>
                       <p className="text-sm font-medium">启用 AI 助手</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {settings?.deepseek?.configured
+                        {providerConfigured
                           ? `${providerLabel} · ${deepseekModel}${selectedModelMeta?.isFree === true ? " · Free" : (selectedModelMeta?.isFree === false ? " · Paid" : "")}`
                           : "保存 API Key 后启用"}
                       </p>
@@ -2303,7 +2380,7 @@ function DeepSeekSettingsCard() {
                   <Input
                     type="text"
                     value={deepseekBaseUrl}
-                    onChange={(e) => setDeepseekBaseUrl(e.target.value)}
+                    onChange={(e) => updateActiveProviderConfig({ baseUrl: e.target.value })}
                     placeholder={activeProviderDefaults.baseUrl}
                     className="font-mono"
                   />
@@ -2313,7 +2390,7 @@ function DeepSeekSettingsCard() {
                   <Input
                     type="text"
                     value={deepseekModel}
-                    onChange={(e) => setDeepseekModel(e.target.value)}
+                    onChange={(e) => updateActiveProviderConfig({ model: e.target.value })}
                     placeholder={activeProviderDefaults.model}
                     className="font-mono"
                   />
@@ -2326,16 +2403,16 @@ function DeepSeekSettingsCard() {
                         size="sm"
                         className="h-7 px-2 text-xs"
                         onClick={() => aiModelsQuery.refetch()}
-                        disabled={!settings?.deepseek?.configured || aiModelsQuery.isFetching}
+                        disabled={!providerConfigured || aiModelsQuery.isFetching}
                       >
                         {aiModelsQuery.isFetching && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
                         刷新
                       </Button>
                     </div>
-                    {!!settings?.deepseek?.configured && models.length > 0 && (
+                    {!!providerConfigured && models.length > 0 && (
                       <Select
                         value={models.some((item: any) => String(item?.id || "") === deepseekModel) ? deepseekModel : undefined}
-                        onValueChange={setDeepseekModel}
+                        onValueChange={(value) => updateActiveProviderConfig({ model: value })}
                       >
                         <SelectTrigger className="h-8">
                           <SelectValue placeholder="从列表选择模型" />
@@ -2350,13 +2427,13 @@ function DeepSeekSettingsCard() {
                         </SelectContent>
                       </Select>
                     )}
-                    {!!settings?.deepseek?.configured && models.length > 0 ? (
+                    {!!providerConfigured && models.length > 0 ? (
                       <p className="mt-2 text-xs text-muted-foreground">
                         共 {models.length} 个，Free {knownFreeCount} 个，付费 {knownPaidCount} 个，未知 {unknownFreeCount} 个。
                       </p>
                     ) : (
                       <p className="text-xs text-muted-foreground">
-                        {settings?.deepseek?.configured
+                        {providerConfigured
                           ? (aiModelsQuery.data?.error || "暂未获取到模型列表，可手动输入模型名称。")
                           : "保存 API Key 后可拉取模型列表。"}
                       </p>
@@ -2433,7 +2510,7 @@ function DeepSeekSettingsCard() {
                   {updateSettingsMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   保存 AI 配置
                 </Button>
-                {settings?.deepseek?.configured && (
+                {providerConfigured && (
                   <Button
                     variant="outline"
                     className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -2464,8 +2541,8 @@ function DeepSeekSettingsCard() {
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
             <p className="text-xs text-muted-foreground">当前配置</p>
             <p className="mt-1 font-medium">{providerLabel}</p>
-            <p className="mt-1 font-medium">{settings?.deepseek?.model || activeProviderDefaults.model}</p>
-            <p className="mt-2 font-mono text-xs text-muted-foreground">{settings?.deepseek?.apiKeyMasked || "-"}</p>
+            <p className="mt-1 font-medium">{deepseekModel || activeProviderDefaults.model}</p>
+            <p className="mt-2 font-mono text-xs text-muted-foreground">{activeProviderConfig.apiKeyMasked || "-"}</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDeleteDeepSeekKey(false)}>

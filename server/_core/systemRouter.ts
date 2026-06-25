@@ -786,6 +786,78 @@ function getAiProviderDefaultModel(provider: AiProvider) {
   return DEFAULT_DEEPSEEK_MODEL;
 }
 
+type AiProviderConfigView = {
+  provider: AiProvider;
+  configured: boolean;
+  apiKeyMasked: string;
+  baseUrl: string;
+  model: string;
+};
+
+type AiProviderConfigRuntime = AiProviderConfigView & {
+  apiKey: string;
+};
+
+const AI_PROVIDER_SETTING_KEYS: Record<AiProvider, { apiKey: string; baseUrl: string; model: string }> = {
+  deepseek: {
+    apiKey: "deepseekApiKeyDeepseek",
+    baseUrl: "deepseekBaseUrlDeepseek",
+    model: "deepseekModelDeepseek",
+  },
+  siliconflow: {
+    apiKey: "deepseekApiKeySiliconflow",
+    baseUrl: "deepseekBaseUrlSiliconflow",
+    model: "deepseekModelSiliconflow",
+  },
+  custom: {
+    apiKey: "deepseekApiKeyCustom",
+    baseUrl: "deepseekBaseUrlCustom",
+    model: "deepseekModelCustom",
+  },
+};
+
+function getAiProviderSettingKeys(provider: AiProvider) {
+  return AI_PROVIDER_SETTING_KEYS[provider];
+}
+
+function readAiProviderConfig(all: Record<string, string | null>, provider: AiProvider): AiProviderConfigRuntime {
+  const providerKeys = getAiProviderSettingKeys(provider);
+  const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
+  const defaultModel = getAiProviderDefaultModel(provider);
+  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekApiKey || "").trim() : "";
+  const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekBaseUrl || "").trim() : "";
+  const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(all.deepseekModel || "").trim() : "";
+  const apiKey = String(all[providerKeys.apiKey] || "").trim() || legacyApiKey;
+  const baseUrl = String(all[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
+  const model = String(all[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
+  return {
+    provider,
+    apiKey,
+    configured: !!apiKey,
+    apiKeyMasked: maskSecret(apiKey),
+    baseUrl,
+    model,
+  };
+}
+
+function buildAiProviderConfigMap(all: Record<string, string | null>): Record<AiProvider, AiProviderConfigRuntime> {
+  return {
+    deepseek: readAiProviderConfig(all, "deepseek"),
+    siliconflow: readAiProviderConfig(all, "siliconflow"),
+    custom: readAiProviderConfig(all, "custom"),
+  };
+}
+
+function toAiProviderConfigView(config: AiProviderConfigRuntime): AiProviderConfigView {
+  return {
+    provider: config.provider,
+    configured: config.configured,
+    apiKeyMasked: config.apiKeyMasked,
+    baseUrl: config.baseUrl,
+    model: config.model,
+  };
+}
+
 function buildAiModelsEndpoint(baseUrl: string, chatOnly: boolean) {
   const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
   const modelPath = /\/models$/i.test(normalized) ? normalized : `${normalized}/models`;
@@ -972,8 +1044,8 @@ function databaseSettingsSummary(all: Record<string, string | null>, exposeDetai
 
 function publicSystemSettings(all: Record<string, string | null>, activeProtocol: string) {
   const aiProvider = normalizeAiProvider(all.deepseekProvider);
-  const aiDefaultBaseUrl = getAiProviderDefaultBaseUrl(aiProvider);
-  const aiDefaultModel = getAiProviderDefaultModel(aiProvider);
+  const aiProviderConfigs = buildAiProviderConfigMap(all);
+  const aiActiveConfig = aiProviderConfigs[aiProvider];
   return {
     repoUrl: REPO_URL,
     telegramBotUrl: TELEGRAM_BOT_URL,
@@ -1092,8 +1164,8 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       enabled: false,
       configured: false,
       apiKeyMasked: "",
-      baseUrl: all.deepseekBaseUrl || aiDefaultBaseUrl,
-      model: all.deepseekModel || aiDefaultModel,
+      baseUrl: aiActiveConfig.baseUrl,
+      model: aiActiveConfig.model,
       maxTokens: DEFAULT_DEEPSEEK_MAX_TOKENS,
       temperature: DEFAULT_DEEPSEEK_TEMPERATURE,
       telegramUserManageEnabled: true,
@@ -1128,8 +1200,8 @@ export const systemRouter = router({
   getSettings: publicProcedure.query(async ({ ctx }) => {
     const all = await db.getAllSettings();
     const aiProvider = normalizeAiProvider(all.deepseekProvider);
-    const aiDefaultBaseUrl = getAiProviderDefaultBaseUrl(aiProvider);
-    const aiDefaultModel = getAiProviderDefaultModel(aiProvider);
+    const aiProviderConfigs = buildAiProviderConfigMap(all);
+    const aiActiveConfig = aiProviderConfigs[aiProvider];
     const panelSsl = readPanelSslSettings(all);
     const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const safeSettings = publicSystemSettings(all, activeProtocol);
@@ -1247,10 +1319,15 @@ export const systemRouter = router({
       deepseek: {
         provider: aiProvider,
         enabled: all.deepseekAiEnabled === "true",
-        configured: !!String(all.deepseekApiKey || "").trim(),
-        apiKeyMasked: maskSecret(all.deepseekApiKey),
-        baseUrl: all.deepseekBaseUrl || aiDefaultBaseUrl,
-        model: all.deepseekModel || aiDefaultModel,
+        configured: aiActiveConfig.configured,
+        apiKeyMasked: aiActiveConfig.apiKeyMasked,
+        baseUrl: aiActiveConfig.baseUrl,
+        model: aiActiveConfig.model,
+        providers: {
+          deepseek: toAiProviderConfigView(aiProviderConfigs.deepseek),
+          siliconflow: toAiProviderConfigView(aiProviderConfigs.siliconflow),
+          custom: toAiProviderConfigView(aiProviderConfigs.custom),
+        },
         maxTokens: normalizeDeepSeekNumber(all.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
         temperature: normalizeDeepSeekNumber(all.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
         telegramUserManageEnabled: all.telegramAiUserManageEnabled !== "false",
@@ -1269,9 +1346,10 @@ export const systemRouter = router({
     .query(async ({ input }) => {
       const all = await db.getAllSettings();
       const provider = normalizeAiProvider(input?.provider || all.deepseekProvider);
+      const providerConfig = readAiProviderConfig(all, provider);
       const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
-      const baseUrl = (normalizeOptionalHttpUrl(input?.baseUrl || all.deepseekBaseUrl || defaultBaseUrl) || defaultBaseUrl).replace(/\/+$/, "");
-      const apiKey = String(all.deepseekApiKey || "").trim();
+      const baseUrl = (normalizeOptionalHttpUrl(input?.baseUrl || providerConfig.baseUrl || defaultBaseUrl) || defaultBaseUrl).replace(/\/+$/, "");
+      const apiKey = providerConfig.apiKey;
       const checkedAt = new Date().toISOString();
       const chatOnly = input?.chatOnly !== false;
 
@@ -1588,17 +1666,19 @@ export const systemRouter = router({
       if (input.deepseek) {
         const deepseek = input.deepseek;
         const next: Record<string, string | null> = {};
-        const currentProvider = normalizeAiProvider(await db.getSetting("deepseekProvider"));
+        const allSettings = await db.getAllSettings();
+        const currentProvider = normalizeAiProvider(allSettings.deepseekProvider);
         const nextProvider = deepseek.provider !== undefined
           ? normalizeAiProvider(deepseek.provider)
           : currentProvider;
+        const providerKeys = getAiProviderSettingKeys(nextProvider);
+        const providerConfig = readAiProviderConfig(allSettings, nextProvider);
         const providerDefaultBaseUrl = getAiProviderDefaultBaseUrl(nextProvider);
         const providerDefaultModel = getAiProviderDefaultModel(nextProvider);
-        const currentApiKey = String((await db.getSetting("deepseekApiKey")) || "").trim();
         const submittedApiKey = String(deepseek.apiKey || "").trim();
         const clearingApiKey = !!deepseek.clearApiKey;
-        const effectiveApiKey = clearingApiKey ? "" : (submittedApiKey || currentApiKey);
-        const currentEnabledSetting = await db.getSetting("deepseekAiEnabled");
+        const effectiveApiKey = clearingApiKey ? "" : (submittedApiKey || providerConfig.apiKey);
+        const currentEnabledSetting = allSettings.deepseekAiEnabled;
         const nextEnabled = deepseek.enabled !== undefined ? !!deepseek.enabled : currentEnabledSetting === "true";
 
         if (nextEnabled && !effectiveApiKey) {
@@ -1607,14 +1687,14 @@ export const systemRouter = router({
         if (deepseek.provider !== undefined) next.deepseekProvider = nextProvider;
         if (deepseek.enabled !== undefined) next.deepseekAiEnabled = deepseek.enabled ? "true" : "false";
         if (deepseek.baseUrl !== undefined) {
-          next.deepseekBaseUrl = normalizeOptionalHttpUrl(deepseek.baseUrl) || providerDefaultBaseUrl;
-        } else if (deepseek.provider !== undefined) {
-          next.deepseekBaseUrl = providerDefaultBaseUrl;
+          const normalizedBaseUrl = normalizeOptionalHttpUrl(deepseek.baseUrl) || providerDefaultBaseUrl;
+          next[providerKeys.baseUrl] = normalizedBaseUrl;
+          if (nextProvider === DEFAULT_AI_PROVIDER) next.deepseekBaseUrl = normalizedBaseUrl;
         }
         if (deepseek.model !== undefined) {
-          next.deepseekModel = deepseek.model.trim() || providerDefaultModel;
-        } else if (deepseek.provider !== undefined) {
-          next.deepseekModel = providerDefaultModel;
+          const normalizedModel = deepseek.model.trim() || providerDefaultModel;
+          next[providerKeys.model] = normalizedModel;
+          if (nextProvider === DEFAULT_AI_PROVIDER) next.deepseekModel = normalizedModel;
         }
         if (deepseek.maxTokens !== undefined) next.deepseekMaxTokens = String(deepseek.maxTokens);
         if (deepseek.temperature !== undefined) next.deepseekTemperature = String(deepseek.temperature);
@@ -1624,11 +1704,13 @@ export const systemRouter = router({
         if (deepseek.telegramAutoRecallEnabled !== undefined) next.telegramAiAutoRecallEnabled = deepseek.telegramAutoRecallEnabled ? "true" : "false";
         if (deepseek.telegramAutoRecallSeconds !== undefined) next.telegramAiAutoRecallSeconds = String(deepseek.telegramAutoRecallSeconds);
         if (deepseek.clearApiKey) {
-          next.deepseekApiKey = null;
+          next[providerKeys.apiKey] = null;
+          if (nextProvider === DEFAULT_AI_PROVIDER) next.deepseekApiKey = null;
           next.deepseekAiEnabled = "false";
         }
-        if (deepseek.apiKey !== undefined && deepseek.apiKey.trim()) {
-          next.deepseekApiKey = deepseek.apiKey.trim();
+        if (submittedApiKey) {
+          next[providerKeys.apiKey] = submittedApiKey;
+          if (nextProvider === DEFAULT_AI_PROVIDER) next.deepseekApiKey = submittedApiKey;
         }
         await db.setSettings(next);
         console.info("[Settings] AI model settings updated");
