@@ -870,7 +870,10 @@ function toAiProviderConfigView(config: AiProviderConfigRuntime): AiProviderConf
 function buildAiModelsEndpoint(provider: AiProvider, baseUrl: string, chatOnly: boolean) {
   const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
   const modelPath = /\/models$/i.test(normalized) ? normalized : `${normalized}/models`;
-  if (provider === "siliconflow") return modelPath;
+  if (provider === "siliconflow") {
+    if (!chatOnly) return modelPath;
+    return `${modelPath}${modelPath.includes("?") ? "&" : "?"}sub_type=chat`;
+  }
   if (!chatOnly) return modelPath;
   return `${modelPath}${modelPath.includes("?") ? "&" : "?"}type=chat`;
 }
