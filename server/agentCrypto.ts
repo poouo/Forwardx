@@ -24,6 +24,7 @@ const KEY_SALT_AUTH = "forwardx-agent-auth";
 const KEY_SALT_AUTH_ID = "forwardx-agent-auth-id";
 const IV_LEN = 16;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const LEGACY_UNIX_SECONDS_THRESHOLD = 10_000_000_000;
 const seenEnvelopeMacs = new Map<string, number>();
 const seenAuthProofs = new Map<string, number>();
 
@@ -90,6 +91,13 @@ function authInput(method: string, path: string, bodyText: string, ts: number, n
   return ["v1", method.toUpperCase(), path, String(ts), nonce, bodyHash].join("\n");
 }
 
+function normalizeUnixTimestampMs(raw: number): number {
+  if (!Number.isFinite(raw)) return NaN;
+  // 兼容早期秒级时间戳（10 位），统一折算为毫秒进行窗口判断。
+  if (raw > 0 && raw < LEGACY_UNIX_SECONDS_THRESHOLD) return raw * 1000;
+  return raw;
+}
+
 export function signAgentAuthProof(input: {
   token: string;
   method: string;
@@ -129,7 +137,8 @@ export function verifyAgentAuthProof(input: {
 }): string | null {
   const proof = parseAgentAuthProof(input.raw);
   if (!proof || !Number.isFinite(proof.ts)) return null;
-  if (Math.abs(Date.now() - proof.ts) > REPLAY_WINDOW_MS) return null;
+  const proofTsMs = normalizeUnixTimestampMs(proof.ts);
+  if (!Number.isFinite(proofTsMs) || Math.abs(Date.now() - proofTsMs) > REPLAY_WINDOW_MS) return null;
 
   const token = input.candidateTokens.find((item) => agentTokenFingerprint(item) === proof.fingerprint);
   if (!token) return null;
@@ -180,8 +189,10 @@ export function decryptPayload(envelope: EncryptedEnvelope, token: string, optio
   const ct = Buffer.from(envelope.ct, "hex");
   const macReceived = Buffer.from(envelope.mac, "hex");
   if (iv.length !== IV_LEN) throw new Error("Invalid IV length");
+  if (!Number.isInteger(envelope.ts) || envelope.ts < 0) throw new Error("Invalid timestamp");
 
-  if (Math.abs(Date.now() - envelope.ts) > REPLAY_WINDOW_MS) {
+  const envelopeTsMs = normalizeUnixTimestampMs(envelope.ts);
+  if (!Number.isFinite(envelopeTsMs) || Math.abs(Date.now() - envelopeTsMs) > REPLAY_WINDOW_MS) {
     throw new Error("Request timestamp out of window (replay protection)");
   }
 

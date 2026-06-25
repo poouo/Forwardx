@@ -61,12 +61,26 @@ function iptablesDnatTarget(targetIp: unknown, targetPort: unknown) {
   return isIpv6Address(host) ? `[${host}]:${Number(targetPort) || 0}` : `${host}:${Number(targetPort) || 0}`;
 }
 
+function iptablesDnatMarker(port: number) {
+  return `fwx-dnat-${Number(port) || 0}`;
+}
+
+function iptablesSnatMarker(port: number) {
+  return `fwx-snat-${Number(port) || 0}`;
+}
+
 function iptablesDeleteDnatRulesForPort(binary: IptablesBinary, port: number, protocol?: string) {
   const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const dnatMarker = iptablesDnatMarker(port);
+  const snatMarker = iptablesSnatMarker(port);
   const body = protos
     .map((proto) => {
-      const awk = `awk '/^-A PREROUTING / && / -p ${proto} / && /--dport ${port}( |$)/ && / -j DNAT / {sub(/^-A/, "-D"); print}'`;
-      return `while rule=$(${binary} -t nat -S PREROUTING 2>/dev/null | ${awk} | head -n 1) && [ -n "$rule" ]; do ${binary} -t nat $rule 2>/dev/null || break; done`;
+      const dnatAwk = `awk '/^-A PREROUTING / && / -p ${proto} / && /--dport ${port}( |$)/ && / -j DNAT / && /--comment "${dnatMarker}"/ {sub(/^-A/, "-D"); print}'`;
+      const snatAwk = `awk '/^-A POSTROUTING / && / -p ${proto} / && / -j MASQUERADE / && /--comment "${snatMarker}"/ {sub(/^-A/, "-D"); print}'`;
+      return [
+        `while rule=$(${binary} -t nat -S PREROUTING 2>/dev/null | ${dnatAwk} | head -n 1) && [ -n "$rule" ]; do ${binary} -t nat $rule 2>/dev/null || break; done`,
+        `while rule=$(${binary} -t nat -S POSTROUTING 2>/dev/null | ${snatAwk} | head -n 1) && [ -n "$rule" ]; do ${binary} -t nat $rule 2>/dev/null || break; done`,
+      ].join("; ");
     })
     .join("; ");
   if (binary === "ip6tables") {
@@ -199,7 +213,7 @@ function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
   if (!Number(port)) return [];
   const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
   return protos.map((proto) => {
-    const awk = `awk '/ ${proto} dport ${port}( |$)/ && / dnat / {print $NF}'`;
+    const awk = `awk '/ ${proto} dport ${port}( |$)/ && / dnat / && / comment "fwx-rule-/ {print $NF}'`;
     return `if nft list chain inet ${nftTable} prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null; true; done; fi; true`;
   });
 }
@@ -329,8 +343,12 @@ export function buildIptablesForwardCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
   const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const dnatMarker = iptablesDnatMarker(Number(rule.sourcePort));
+  const snatMarker = iptablesSnatMarker(Number(rule.sourcePort));
   const cmds: string[] = buildIptablesForwardPortCleanupCmds(Number(rule.sourcePort));
   for (const proto of protos) {
+    cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -m comment --comment "${dnatMarker}" -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
+    cmds.push(iptablesDelete(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -m comment --comment "${snatMarker}" -j MASQUERADE`));
     cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
     cmds.push(iptablesDelete(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
     cmds.push(iptablesDelete(binary, null, `FORWARD -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j ACCEPT`));
@@ -343,6 +361,8 @@ export function buildIptablesForwardCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
   const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const dnatMarker = iptablesDnatMarker(Number(rule.sourcePort));
+  const snatMarker = iptablesSnatMarker(Number(rule.sourcePort));
   const cmds = [
     binary === "ip6tables"
       ? `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null`
@@ -350,8 +370,8 @@ export function buildIptablesForwardCmds(rule: any): string[] {
     ...buildIptablesForwardCleanupCmds(rule),
   ];
   for (const proto of protos) {
-    cmds.push(iptablesEnsure(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
-    cmds.push(iptablesEnsure(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j MASQUERADE`));
+    cmds.push(iptablesEnsure(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -m comment --comment "${dnatMarker}" -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
+    cmds.push(iptablesEnsure(binary, "nat", `POSTROUTING -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -m comment --comment "${snatMarker}" -j MASQUERADE`));
     cmds.push(iptablesEnsure(binary, null, `FORWARD -p ${proto} -d ${targetIp} --dport ${rule.targetPort} -j ACCEPT`));
     cmds.push(iptablesEnsure(binary, null, `FORWARD -p ${proto} -s ${targetIp} --sport ${rule.targetPort} ${proto === "tcp" ? "-m state --state ESTABLISHED,RELATED " : ""}-j ACCEPT`));
   }
