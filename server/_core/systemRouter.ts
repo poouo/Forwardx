@@ -949,6 +949,8 @@ export const systemRouter = router({
         model: all.deepseekModel || DEFAULT_DEEPSEEK_MODEL,
         maxTokens: normalizeDeepSeekNumber(all.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
         temperature: normalizeDeepSeekNumber(all.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+        telegramAutoRecallEnabled: all.telegramAiAutoRecallEnabled === "true",
+        telegramAutoRecallSeconds: normalizeDeepSeekNumber(all.telegramAiAutoRecallSeconds, 60, 30, 1200),
       },
     };
   }),
@@ -1005,6 +1007,8 @@ export const systemRouter = router({
           model: z.string().max(128).optional(),
           maxTokens: z.number().int().min(128).max(8192).optional(),
           temperature: z.number().min(0).max(2).optional(),
+          telegramAutoRecallEnabled: z.boolean().optional(),
+          telegramAutoRecallSeconds: z.number().int().min(30).max(1200).optional(),
         }).optional(),
         ddns: z.object({
           enabled: z.boolean().optional(),
@@ -1207,6 +1211,8 @@ export const systemRouter = router({
         if (deepseek.model !== undefined) next.deepseekModel = deepseek.model.trim() || DEFAULT_DEEPSEEK_MODEL;
         if (deepseek.maxTokens !== undefined) next.deepseekMaxTokens = String(deepseek.maxTokens);
         if (deepseek.temperature !== undefined) next.deepseekTemperature = String(deepseek.temperature);
+        if (deepseek.telegramAutoRecallEnabled !== undefined) next.telegramAiAutoRecallEnabled = deepseek.telegramAutoRecallEnabled ? "true" : "false";
+        if (deepseek.telegramAutoRecallSeconds !== undefined) next.telegramAiAutoRecallSeconds = String(deepseek.telegramAutoRecallSeconds);
         if (deepseek.clearApiKey) {
           next.deepseekApiKey = null;
           next.deepseekAiEnabled = "false";

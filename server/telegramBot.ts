@@ -58,6 +58,10 @@ type ManageActionKind =
   | "account_disable"
   | "forward_enable"
   | "forward_disable"
+  | "rule_enable"
+  | "rule_disable"
+  | "tunnel_rules_enable"
+  | "tunnel_rules_disable"
   | "traffic_reset";
 
 type ManageDurationUnit = "day" | "month" | "year";
@@ -68,6 +72,8 @@ type ManageActionIntent = {
   amountYuan?: number;
   durationValue?: number;
   durationUnit?: ManageDurationUnit;
+  ruleId?: number;
+  tunnel?: string;
 };
 
 type PendingManageAction = {
@@ -75,10 +81,15 @@ type PendingManageAction = {
   actorUserId: number;
   actorRole: "admin" | "user";
   action: Exclude<ManageActionKind, "none">;
-  targetUserId: number;
+  targetUserId?: number;
   amountCents?: number;
   durationValue?: number;
   durationUnit?: ManageDurationUnit;
+  ruleId?: number;
+  ruleIds?: number[];
+  rulePreview?: string[];
+  tunnelId?: number;
+  tunnelName?: string;
   sourceText: string;
   createdAt: number;
   expiresAt: number;
@@ -86,7 +97,7 @@ type PendingManageAction = {
 
 type PreparedManageAction = {
   pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt">;
-  target: any;
+  target?: any;
   actor: any;
 };
 
@@ -213,6 +224,14 @@ function formatManageDuration(value: number, unit: ManageDurationUnit) {
   if (unit === "day") return `${safeValue} 天`;
   if (unit === "year") return `${safeValue} 年`;
   return `${safeValue} 个月`;
+}
+
+function formatManageRulePreview(rule: any) {
+  const name = shortText(rule?.name || "-", 24);
+  const sourcePort = rule?.sourcePort ?? "-";
+  const targetIp = rule?.targetIp || "-";
+  const targetPort = rule?.targetPort ?? "-";
+  return `#${Number(rule?.id || 0)} ${name} :${sourcePort} -> ${targetIp}:${targetPort}`;
 }
 
 function cleanupExpiredPendingManageActions() {
@@ -345,8 +364,12 @@ type InlineKeyboardMarkup = {
   inline_keyboard: Array<Array<InlineKeyboardButton>>;
 };
 
+type TelegramSentMessage = {
+  message_id: number;
+};
+
 async function sendMessage(chatId: number | string, text: string, replyMarkup?: InlineKeyboardMarkup) {
-  await telegramApi("sendMessage", {
+  return telegramApi<TelegramSentMessage>("sendMessage", {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
@@ -445,7 +468,7 @@ function helpText(bound: boolean, isAdmin = false) {
 function bindPromptKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "绑定 Telegram", callback_data: "fx:bind:start" }],
+      [{ text: "🔗 绑定 Telegram", callback_data: "fx:bind:start" }],
     ],
   };
 }
@@ -453,7 +476,7 @@ function bindPromptKeyboard(): InlineKeyboardMarkup {
 function bindCancelKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "取消绑定", callback_data: "fx:bind:cancel" }],
+      [{ text: "❌ 取消绑定", callback_data: "fx:bind:cancel" }],
     ],
   };
 }
@@ -461,8 +484,8 @@ function bindCancelKeyboard(): InlineKeyboardMarkup {
 function redeemCancelKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "取消兑换", callback_data: "fx:redeem:cancel" }],
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "❌ 取消兑换", callback_data: "fx:redeem:cancel" }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -471,8 +494,8 @@ function unbindConfirmKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
-        { text: "确认解除绑定", callback_data: "fx:unbind:confirm" },
-        { text: "取消", callback_data: "fx:menu" },
+        { text: "⚠️ 确认解除绑定", callback_data: "fx:unbind:confirm" },
+        { text: "❌ 取消", callback_data: "fx:menu" },
       ],
     ],
   };
@@ -482,8 +505,8 @@ function mobileLoginConfirmKeyboard(code: string): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
-        { text: "确认登录", callback_data: `fx:app-login:${code}` },
-        { text: "取消", callback_data: `fx:app-login-cancel:${code}` },
+        { text: "✅ 确认登录", callback_data: `fx:app-login:${code}` },
+        { text: "❌ 取消", callback_data: `fx:app-login-cancel:${code}` },
       ],
     ],
   };
@@ -578,8 +601,10 @@ function buildTelegramWebAppUrl(panelPublicUrl: string, challenge?: string) {
 function webAppOpenKeyboard(url: string): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "打开 ForwardX 面板", web_app: { url } }],
-      [{ text: "浏览器打开", url }],
+      [
+        { text: "🌐 打开面板", web_app: { url } },
+        { text: "🔗 浏览器", url },
+      ],
     ],
   };
 }
@@ -587,28 +612,28 @@ function webAppOpenKeyboard(url: string): InlineKeyboardMarkup {
 function mainMenuKeyboard(user: any, webAppUrl?: string): InlineKeyboardMarkup {
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [
     [
-      { text: "用户信息", callback_data: "fx:user" },
-      { text: "流量用量", callback_data: "fx:usage" },
-    ],
-    [
-      { text: "转发规则", callback_data: "fx:rules" },
-      ...(user?.role === "admin" ? [] : [{ text: "兑换码", callback_data: "fx:redeem" }]),
+      { text: "👤 账户", callback_data: "fx:user" },
+      { text: "📊 流量", callback_data: "fx:usage" },
+      { text: "⚙️ 规则", callback_data: "fx:rules" },
     ],
   ];
-  if (webAppUrl) {
-    rows.push([{ text: "打开面板", web_app: { url: webAppUrl } }]);
-  }
+  const secondaryRow: InlineKeyboardButton[] = [];
   if (user?.role === "admin") {
-    rows.push([{ text: "用户管理", callback_data: "fx:users:0" }]);
+    secondaryRow.push({ text: "👥 用户", callback_data: "fx:users:0" });
+  } else {
+    secondaryRow.push({ text: "🎟 兑换", callback_data: "fx:redeem" });
   }
-  rows.push([{ text: "解除绑定", callback_data: "fx:unbind" }]);
+  if (webAppUrl) {
+    secondaryRow.push({ text: "🌐 面板", web_app: { url: webAppUrl } });
+  }
+  rows.push(secondaryRow);
   return { inline_keyboard: rows };
 }
 
 function backMenuKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -616,8 +641,8 @@ function backMenuKeyboard(): InlineKeyboardMarkup {
 function userManageBackKeyboard(page = 0): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "返回用户列表", callback_data: `fx:users:${page}` }],
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "👥 返回用户列表", callback_data: `fx:users:${page}` }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -626,10 +651,10 @@ function renewalConfirmKeyboard(userId: number, page = 0): InlineKeyboardMarkup 
   return {
     inline_keyboard: [
       [
-        { text: "确认续期 1 个月", callback_data: `fx:admin:renew:confirm:${userId}:${page}` },
-        { text: "取消", callback_data: `fx:admin:user:${userId}:${page}` },
+        { text: "✅ 确认续期 1 个月", callback_data: `fx:admin:renew:confirm:${userId}:${page}` },
+        { text: "❌ 取消", callback_data: `fx:admin:user:${userId}:${page}` },
       ],
-      [{ text: "返回用户详情", callback_data: `fx:admin:user:${userId}:${page}` }],
+      [{ text: "👤 返回用户详情", callback_data: `fx:admin:user:${userId}:${page}` }],
     ],
   };
 }
@@ -638,10 +663,10 @@ function manageActionConfirmKeyboard(actionKey: string): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
-        { text: "确认执行", callback_data: `fx:op:confirm:${actionKey}` },
-        { text: "取消", callback_data: `fx:op:cancel:${actionKey}` },
+        { text: "✅ 确认执行", callback_data: `fx:op:confirm:${actionKey}` },
+        { text: "❌ 取消", callback_data: `fx:op:cancel:${actionKey}` },
       ],
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -649,8 +674,8 @@ function manageActionConfirmKeyboard(actionKey: string): InlineKeyboardMarkup {
 function ruleListBackKeyboard(page = 0): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: "返回规则列表", callback_data: `fx:rules:${page}` }],
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "⚙️ 返回规则列表", callback_data: `fx:rules:${page}` }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -737,17 +762,17 @@ async function rulesView(user: any, page = 0) {
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   for (const rule of visible) {
     rows.push([
-      { text: `${rule.isEnabled ? "停用" : "启用"} #${rule.id}`, callback_data: `fx:rule:toggle:${rule.id}:${safePage}` },
-      { text: `详情 #${rule.id}`, callback_data: `fx:rule:view:${rule.id}:${safePage}` },
+      { text: `${rule.isEnabled ? "⛔ 停用" : "✅ 启用"} #${rule.id}`, callback_data: `fx:rule:toggle:${rule.id}:${safePage}` },
+      { text: `📄 详情 #${rule.id}`, callback_data: `fx:rule:view:${rule.id}:${safePage}` },
     ]);
   }
   if (totalPages > 1) {
     rows.push([
-      { text: "上一页", callback_data: `fx:rules:${Math.max(0, safePage - 1)}` },
-      { text: "下一页", callback_data: `fx:rules:${Math.min(totalPages - 1, safePage + 1)}` },
+      { text: "⬅️ 上一页", callback_data: `fx:rules:${Math.max(0, safePage - 1)}` },
+      { text: "➡️ 下一页", callback_data: `fx:rules:${Math.min(totalPages - 1, safePage + 1)}` },
     ]);
   }
-  rows.push([{ text: "返回菜单", callback_data: "fx:menu" }]);
+  rows.push([{ text: "🏠 返回菜单", callback_data: "fx:menu" }]);
   return { text, keyboard: { inline_keyboard: rows } };
 }
 
@@ -796,15 +821,15 @@ async function usersView(page = 0) {
       ].join("\n\n");
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   for (const user of visible) {
-    rows.push([{ text: `管理 #${user.id} ${shortText(user.name || user.username, 14)}`, callback_data: `fx:admin:user:${user.id}:${safePage}` }]);
+    rows.push([{ text: `🛠 管理 #${user.id} ${shortText(user.name || user.username, 14)}`, callback_data: `fx:admin:user:${user.id}:${safePage}` }]);
   }
   if (totalPages > 1) {
     rows.push([
-      { text: "上一页", callback_data: `fx:users:${Math.max(0, safePage - 1)}` },
-      { text: "下一页", callback_data: `fx:users:${Math.min(totalPages - 1, safePage + 1)}` },
+      { text: "⬅️ 上一页", callback_data: `fx:users:${Math.max(0, safePage - 1)}` },
+      { text: "➡️ 下一页", callback_data: `fx:users:${Math.min(totalPages - 1, safePage + 1)}` },
     ]);
   }
-  rows.push([{ text: "返回菜单", callback_data: "fx:menu" }]);
+  rows.push([{ text: "🏠 返回菜单", callback_data: "fx:menu" }]);
   return { text, keyboard: { inline_keyboard: rows } };
 }
 
@@ -843,13 +868,13 @@ async function adminUserKeyboard(userId: number, page = 0): Promise<InlineKeyboa
   return {
     inline_keyboard: [
       [
-        { text: "重置流量", callback_data: `fx:admin:reset:${userId}:${page}` },
-        { text: accessEnabled ? "停用转发" : "启用转发", callback_data: `fx:admin:access:${userId}:${accessEnabled ? "0" : "1"}:${page}` },
+        { text: "🔄 重置流量", callback_data: `fx:admin:reset:${userId}:${page}` },
+        { text: accessEnabled ? "⛔ 停用转发" : "✅ 启用转发", callback_data: `fx:admin:access:${userId}:${accessEnabled ? "0" : "1"}:${page}` },
       ],
-      [{ text: "续期 1 个月", callback_data: `fx:admin:renew:${userId}:${page}` }],
-      [{ text: "刷新详情", callback_data: `fx:admin:user:${userId}:${page}` }],
-      [{ text: "返回用户列表", callback_data: `fx:users:${page}` }],
-      [{ text: "返回菜单", callback_data: "fx:menu" }],
+      [{ text: "📆 续期 1 个月", callback_data: `fx:admin:renew:${userId}:${page}` }],
+      [{ text: "🔄 刷新详情", callback_data: `fx:admin:user:${userId}:${page}` }],
+      [{ text: "👥 返回用户列表", callback_data: `fx:users:${page}` }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -998,6 +1023,12 @@ function normalizeDeepSeekNumber(value: unknown, fallback: number, min: number, 
   return Math.min(max, Math.max(min, numeric));
 }
 
+function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
+  const numeric = Math.floor(Number(value));
+  if (!Number.isFinite(numeric)) return 60;
+  return Math.min(1200, Math.max(30, numeric));
+}
+
 async function getDeepSeekSettings() {
   const settings = await db.getAllSettings();
   const apiKey = String(settings.deepseekApiKey || "").trim();
@@ -1009,7 +1040,33 @@ async function getDeepSeekSettings() {
     model: String(settings.deepseekModel || DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL,
     maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
     temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+    telegramAutoRecallEnabled: settings.telegramAiAutoRecallEnabled === "true",
+    telegramAutoRecallSeconds: normalizeTelegramAiAutoRecallSeconds(settings.telegramAiAutoRecallSeconds),
   };
+}
+
+async function getTelegramAiAutoRecallConfig() {
+  const deepseek = await getDeepSeekSettings();
+  const seconds = normalizeTelegramAiAutoRecallSeconds(deepseek.telegramAutoRecallSeconds);
+  return {
+    enabled: !!deepseek.telegramAutoRecallEnabled,
+    delayMs: seconds * 1000,
+  };
+}
+
+async function scheduleAiMessageAutoRecall(chatId: number | string, sourceMessageId?: number, botMessage?: { message_id?: number } | number | null) {
+  const config = await getTelegramAiAutoRecallConfig().catch(() => ({ enabled: false, delayMs: 60_000 }));
+  if (!config.enabled) return;
+  const sourceId = Number(sourceMessageId);
+  if (Number.isFinite(sourceId) && sourceId > 0) {
+    deleteMessageLater(chatId, sourceId, config.delayMs);
+  }
+  const botMessageId = typeof botMessage === "number"
+    ? Number(botMessage)
+    : Number(botMessage?.message_id || 0);
+  if (Number.isFinite(botMessageId) && botMessageId > 0) {
+    deleteMessageLater(chatId, botMessageId, config.delayMs);
+  }
 }
 
 function normalizeKeyword(value: unknown) {
@@ -1359,6 +1416,44 @@ function extractManageDuration(text: string): { value: number; unit: ManageDurat
   return { value: Math.max(1, Math.floor(Number(value))), unit };
 }
 
+function extractManageRuleId(text: string) {
+  return extractRuleId(text);
+}
+
+function normalizeManageTunnelKeyword(value: unknown) {
+  let keyword = String(value || "")
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/^目标[:：]?\s*/i, "")
+    .replace(/^(?:隧道|链路|tunnel|link)\s*/i, "")
+    .replace(/\s*(?:隧道|链路|tunnel|link)\s*$/i, "")
+    .replace(/\s*(?:的)?\s*(?:规则|rule)\s*$/i, "")
+    .trim();
+  if (!keyword) return "";
+  const parsed = parseNumericToken(keyword.replace(/^#/, ""));
+  if (parsed) return String(parsed);
+  return keyword.slice(0, 80);
+}
+
+function extractManageTunnelKeyword(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return "";
+
+  const byEntity = raw.match(/(?:隧道|链路|tunnel|link)\s*[:：#]?\s*([^\s，,。；;！？!?]+)/i);
+  if (byEntity?.[1]) return normalizeManageTunnelKeyword(byEntity[1]);
+
+  const byVerbBefore = raw.match(/(?:关闭|停用|禁用|开启|启用|恢复)\s*([^\s，,。；;！？!?]+)\s*(?:隧道|链路|tunnel|link)(?:的)?规则/i);
+  if (byVerbBefore?.[1]) return normalizeManageTunnelKeyword(byVerbBefore[1]);
+
+  const byVerbAfter = raw.match(/(?:关闭|停用|禁用|开启|启用|恢复)\s*(?:隧道|链路|tunnel|link)\s*([^\s，,。；;！？!?]+)(?:的)?规则/i);
+  if (byVerbAfter?.[1]) return normalizeManageTunnelKeyword(byVerbAfter[1]);
+
+  const byHashId = raw.match(/#\s*([0-9]+)\s*(?:隧道|链路|tunnel|link)/i);
+  if (byHashId?.[1]) return normalizeManageTunnelKeyword(byHashId[1]);
+
+  return "";
+}
+
 function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): ManageActionIntent {
   const allowed = new Set<ManageActionKind>([
     "none",
@@ -1369,6 +1464,10 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     "account_disable",
     "forward_enable",
     "forward_disable",
+    "rule_enable",
+    "rule_disable",
+    "tunnel_rules_enable",
+    "tunnel_rules_disable",
     "traffic_reset",
   ]);
   const action = allowed.has(value?.action as ManageActionKind)
@@ -1390,21 +1489,41 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     durationUnitRaw === "day" || durationUnitRaw === "month" || durationUnitRaw === "year"
       ? (durationUnitRaw as ManageDurationUnit)
       : undefined;
+  const modelRuleId = parseNumericToken(value?.ruleId);
+  const fallbackRuleId = parseNumericToken(fallback.ruleId);
+  const ruleId = modelRuleId || fallbackRuleId;
+  const tunnel = normalizeManageTunnelKeyword(value?.tunnel || fallback.tunnel);
   return {
     action,
     ...(target ? { target } : {}),
     ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
     ...(durationValue ? { durationValue } : {}),
     ...(durationUnit ? { durationUnit } : {}),
+    ...(ruleId ? { ruleId } : {}),
+    ...(tunnel ? { tunnel } : {}),
   };
 }
 
 function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
   const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!raw) return { intent: { action: "none" }, writeLike: false };
-  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|调整)/i.test(raw);
+  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|调整|规则)/i.test(raw);
+  const enableVerb = /(开启|启用|恢复|打开)/i.test(raw);
+  const disableVerb = /(关闭|停用|禁用|暂停)/i.test(raw);
+  const hasRuleWord = /(规则|rule)/i.test(raw);
+  const hasTunnelWord = /(隧道|链路|tunnel|link)/i.test(raw);
+  const ruleId = extractManageRuleId(raw);
+  const tunnelKeyword = normalizeManageTunnelKeyword(extractManageTunnelKeyword(raw));
   let action: ManageActionKind = "none";
-  if (/(重置|清零).*(流量|用量|traffic)|(?:流量|用量).*(重置|清零)/i.test(raw)) {
+  if (hasRuleWord && hasTunnelWord && disableVerb) {
+    action = "tunnel_rules_disable";
+  } else if (hasRuleWord && hasTunnelWord && enableVerb) {
+    action = "tunnel_rules_enable";
+  } else if (hasRuleWord && ruleId && disableVerb) {
+    action = "rule_disable";
+  } else if (hasRuleWord && ruleId && enableVerb) {
+    action = "rule_enable";
+  } else if (/(重置|清零).*(流量|用量|traffic)|(?:流量|用量).*(重置|清零)/i.test(raw)) {
     action = "traffic_reset";
   } else if (/(停用|禁用|关闭|封禁).*(账号|账户|用户)|(?:账号|账户|用户).*(停用|禁用|关闭|封禁)/i.test(raw)) {
     action = "account_disable";
@@ -1440,6 +1559,8 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
       ...(target ? { target } : {}),
       ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
       ...(duration ? { durationValue: duration.value, durationUnit: duration.unit } : {}),
+      ...(ruleId ? { ruleId } : {}),
+      ...(tunnelKeyword ? { tunnel: tunnelKeyword } : {}),
     },
   };
 }
@@ -1463,10 +1584,13 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
             role: "system",
             content: [
               "You classify ForwardX Telegram write-operation intents.",
-              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,writeLike.",
-              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,traffic_reset.",
+              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,ruleId,tunnel,writeLike.",
+              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,tunnel_rules_enable,tunnel_rules_disable,traffic_reset.",
               "target should be user id/username/email/remark keyword when possible.",
               "durationUnit must be one of day,month,year.",
+              "Use rule_enable/rule_disable when user asks to enable/disable a specific rule by id.",
+              "Use tunnel_rules_enable/tunnel_rules_disable when user asks to batch enable/disable rules in a tunnel, and include tunnel keyword.",
+              "ruleId should be numeric when available.",
               "For recharge/add/subtract balance use balance_adjust.",
               "For set balance directly use balance_set.",
               "If message is not a write operation, action should be none and writeLike false.",
@@ -1499,7 +1623,12 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
 function isManageActionAllowedForRole(role: unknown, action: ManageActionKind) {
   if (action === "none") return false;
   if (String(role) === "admin") return true;
-  return action === "forward_enable" || action === "forward_disable";
+  return action === "forward_enable"
+    || action === "forward_disable"
+    || action === "rule_enable"
+    || action === "rule_disable"
+    || action === "tunnel_rules_enable"
+    || action === "tunnel_rules_disable";
 }
 
 function manageRoleLabel(role: unknown) {
@@ -1515,6 +1644,10 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
     account_disable: "停用账号",
     forward_enable: "启用转发",
     forward_disable: "关闭转发",
+    rule_enable: "启用规则",
+    rule_disable: "关闭规则",
+    tunnel_rules_enable: "启用隧道规则",
+    tunnel_rules_disable: "关闭隧道规则",
     traffic_reset: "重置流量",
   };
   return mapping[action];
@@ -1522,9 +1655,9 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
 
 function manageActionPermissionHint(isAdmin: boolean) {
   if (isAdmin) {
-    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、重置流量。";
+    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、按规则启停、按隧道批量启停规则、重置流量。";
   }
-  return "普通用户仅可操作自己的转发开关，例如“关闭我的转发”。";
+  return "普通用户仅可操作自己的转发开关与可见规则（单条或按隧道批量），例如“关闭我的转发”、“关闭第12条规则”。";
 }
 
 function isSelfTargetForUser(actor: any, keyword: string) {
@@ -1576,6 +1709,35 @@ async function resolveManageTargetUser(actor: any, rawKeyword: string) {
   return { target: matched[0] };
 }
 
+function isRuleManageAction(action: ManageActionKind) {
+  return action === "rule_enable"
+    || action === "rule_disable"
+    || action === "tunnel_rules_enable"
+    || action === "tunnel_rules_disable";
+}
+
+async function resolveManageTunnel(actor: any, rawKeyword: string) {
+  const keyword = normalizeManageTunnelKeyword(rawKeyword);
+  if (!keyword) return { error: "请指定隧道（ID 或名称），例如：关闭 2 号隧道的规则。" };
+  const tunnels = await visibleTunnelsForTelegramUser(actor);
+  const numericId = parseNumericToken(keyword.replace(/^#/, ""));
+  const matchedById = numericId ? (tunnels as any[]).filter((item) => Number(item.id) === Number(numericId)) : [];
+  const matched = matchedById.length > 0
+    ? matchedById
+    : (tunnels as any[]).filter((item: any) => searchMatches(keyword, tunnelSearchValues(item)));
+  if (matched.length === 0) {
+    return { error: `没有找到匹配隧道：${escapeHtml(keyword)}` };
+  }
+  if (matched.length > 1) {
+    const preview = matched
+      .slice(0, 5)
+      .map((item: any) => `#${item.id} ${item.name || "-"}`)
+      .join("、");
+    return { error: `匹配到多个隧道：${escapeHtml(preview)}。请补充更精确的隧道 ID。` };
+  }
+  return { tunnel: matched[0] };
+}
+
 async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent) {
   if (!intent || intent.action === "none") return { error: "未识别到可执行的管理操作。" };
   const action = intent.action as Exclude<ManageActionKind, "none">;
@@ -1584,6 +1746,60 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   if (!isManageActionAllowedForRole(actor?.role, action)) {
     return { error: `你没有执行「${manageActionLabel(action)}」的权限。\n${manageActionPermissionHint(isAdmin)}` };
   }
+
+  if (isRuleManageAction(action)) {
+    const rules = await visibleRulesForTelegramUser(actor);
+    if (action === "rule_enable" || action === "rule_disable") {
+      const ruleId = parseNumericToken(intent.ruleId) || extractManageRuleId(sourceText);
+      if (!ruleId) {
+        return {
+          error: action === "rule_enable"
+            ? "请提供规则 ID，例如：开启第 12 条规则。"
+            : "请提供规则 ID，例如：关闭 #12 号规则。",
+        };
+      }
+      const targetRule = (rules as any[]).find((item: any) => Number(item.id) === Number(ruleId));
+      if (!targetRule) return { error: `规则 #${ruleId} 不存在或无权操作。` };
+      const targetUserId = Number((targetRule as any).userId || 0);
+      const targetUser = targetUserId > 0 ? await db.getUserById(targetUserId).catch(() => null) : null;
+      const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+        actorUserId: Number(actor.id),
+        actorRole: isAdmin ? "admin" : "user",
+        action,
+        ...(targetUserId > 0 ? { targetUserId } : {}),
+        ruleId: Number((targetRule as any).id),
+        rulePreview: [formatManageRulePreview(targetRule)],
+        ...(Number((targetRule as any).tunnelId || 0) > 0 ? { tunnelId: Number((targetRule as any).tunnelId) } : {}),
+        sourceText: sourceText.slice(0, 500),
+      };
+      return { prepared: { pending, target: targetUser || undefined, actor } as PreparedManageAction };
+    }
+
+    const tunnelKeyword = normalizeManageTunnelKeyword(intent.tunnel || extractManageTunnelKeyword(sourceText));
+    const resolvedTunnel = await resolveManageTunnel(actor, tunnelKeyword);
+    if (!resolvedTunnel.tunnel) return { error: resolvedTunnel.error || "隧道不存在或无权操作。" };
+    const tunnel = resolvedTunnel.tunnel as any;
+    const tunnelId = Number(tunnel.id || 0);
+    if (!tunnelId) return { error: "隧道 ID 无效，无法执行批量规则操作。" };
+    const tunnelRules = (rules as any[])
+      .filter((item: any) => Number(item.tunnelId || 0) === tunnelId)
+      .sort((a: any, b: any) => Number(a.id) - Number(b.id));
+    if (tunnelRules.length === 0) {
+      return { error: `隧道 #${tunnelId} ${escapeHtml(tunnel.name || "-")} 下没有可操作的规则。` };
+    }
+    const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+      actorUserId: Number(actor.id),
+      actorRole: isAdmin ? "admin" : "user",
+      action,
+      tunnelId,
+      tunnelName: String(tunnel.name || `隧道 #${tunnelId}`).slice(0, 80),
+      ruleIds: tunnelRules.map((item: any) => Number(item.id)).filter((id: number) => Number.isFinite(id) && id > 0),
+      rulePreview: tunnelRules.map((item: any) => formatManageRulePreview(item)),
+      sourceText: sourceText.slice(0, 500),
+    };
+    return { prepared: { pending, actor } as PreparedManageAction };
+  }
+
   const targetKeyword = normalizeManageTargetKeyword(intent.target || extractManageTargetKeyword(sourceText));
   const resolved = await resolveManageTargetUser(actor, targetKeyword);
   if (!resolved.target) {
@@ -1650,13 +1866,13 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   return { prepared: { pending, target, actor } as PreparedManageAction };
 }
 
-function manageActionConfirmText(pending: PendingManageAction, actor: any, target: any) {
+function manageActionConfirmText(pending: PendingManageAction, actor: any, target?: any) {
   const action = pending.action as Exclude<ManageActionKind, "none">;
   const lines: string[] = [
     "<b>操作确认</b>",
     "",
     `发起人：${formatUserLabel(actor)}（${manageRoleLabel(actor?.role)}）`,
-    `目标用户：${formatUserLabel(target)}`,
+    ...(target ? [`目标用户：${formatUserLabel(target)}`] : []),
     `操作类型：<b>${escapeHtml(manageActionLabel(action))}</b>`,
   ];
   if (action === "balance_set") {
@@ -1682,6 +1898,28 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
     lines.push("将关闭该用户转发权限，并暂停其转发规则。");
   } else if (action === "forward_enable") {
     lines.push("将启用该用户转发权限。");
+  } else if (action === "rule_disable" || action === "rule_enable") {
+    const ruleText = pending.rulePreview?.[0] || (pending.ruleId ? `#${pending.ruleId}` : "未指定");
+    lines.push(`目标规则：${aiCode(ruleText)}`);
+    lines.push(action === "rule_disable" ? "将停用该规则。" : "将启用该规则。");
+  } else if (action === "tunnel_rules_disable" || action === "tunnel_rules_enable") {
+    const tunnelLabel = pending.tunnelId
+      ? `#${pending.tunnelId} ${pending.tunnelName || ""}`.trim()
+      : (pending.tunnelName || "-");
+    const previews = pending.rulePreview || [];
+    lines.push(`目标隧道：${aiCode(tunnelLabel)}`);
+    lines.push(`包含规则：<b>${previews.length}</b> 条`);
+    if (previews.length > 0) {
+      lines.push("规则清单：");
+      const limit = 20;
+      for (const item of previews.slice(0, limit)) {
+        lines.push(`- ${aiCode(item)}`);
+      }
+      if (previews.length > limit) {
+        lines.push(`- 其余 ${previews.length - limit} 条将一并执行`);
+      }
+    }
+    lines.push(action === "tunnel_rules_disable" ? "确认后将批量停用以上规则。" : "确认后将批量启用以上规则。");
   } else if (action === "traffic_reset") {
     lines.push("将清零该用户当前统计流量。");
   }
@@ -1695,15 +1933,80 @@ async function executePendingManageAction(pending: PendingManageAction, callback
   if (Number(actor?.id || 0) !== Number(pending.actorUserId || 0)) {
     throw new Error("只有原发起人可以确认该操作。");
   }
-  const target = await db.getUserById(Number(pending.targetUserId || 0));
-  if (!target) throw new Error("目标用户不存在或已被删除。");
   if (!isManageActionAllowedForRole(actor?.role, pending.action)) {
     throw new Error("当前账户已无该操作权限。");
   }
+  const sourceText = shortText(pending.sourceText || "", 180);
+
+  if (isRuleManageAction(pending.action)) {
+    if (pending.action === "rule_enable" || pending.action === "rule_disable") {
+      const enabled = pending.action === "rule_enable";
+      const ruleId = Number(pending.ruleId || 0);
+      if (!Number.isFinite(ruleId) || ruleId <= 0) throw new Error("规则 ID 无效。");
+      const rule = await toggleRuleForUser(actor, ruleId, enabled);
+      const targetUser = Number((rule as any)?.userId || 0) > 0
+        ? await db.getUserById(Number((rule as any).userId)).catch(() => null)
+        : null;
+      return [
+        "<b>执行成功</b>",
+        targetUser ? `用户：${formatUserLabel(targetUser)}` : "",
+        `规则：${aiCode(formatManageRulePreview(rule))}`,
+        `操作：${enabled ? "启用规则" : "关闭规则"}`,
+      ].filter(Boolean).join("\n");
+    }
+
+    const enabled = pending.action === "tunnel_rules_enable";
+    const ruleIds = Array.from(new Set((pending.ruleIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)));
+    if (ruleIds.length === 0) throw new Error("未找到可操作的规则。");
+
+    const successRules: any[] = [];
+    const failedRules: Array<{ id: number; reason: string }> = [];
+    for (const ruleId of ruleIds) {
+      try {
+        const rule = await toggleRuleForUser(actor, ruleId, enabled);
+        successRules.push(rule);
+      } catch (error: any) {
+        failedRules.push({ id: ruleId, reason: String(error?.message || "执行失败") });
+      }
+    }
+    if (successRules.length === 0) {
+      throw new Error(`批量操作失败：${failedRules[0]?.reason || "没有可操作规则"}`);
+    }
+    const lines = [
+      "<b>批量执行完成</b>",
+      `隧道：${aiCode(pending.tunnelId ? `#${pending.tunnelId} ${pending.tunnelName || ""}`.trim() : (pending.tunnelName || "-"))}`,
+      `操作：${enabled ? "启用隧道规则" : "关闭隧道规则"}`,
+      `成功：<b>${successRules.length}</b> / ${ruleIds.length}`,
+      failedRules.length > 0 ? `失败：<b>${failedRules.length}</b>` : "",
+    ].filter(Boolean);
+    if (successRules.length > 0) {
+      lines.push("成功规则：");
+      for (const rule of successRules.slice(0, 15)) {
+        lines.push(`- ${aiCode(formatManageRulePreview(rule))}`);
+      }
+      if (successRules.length > 15) lines.push(`- 其余 ${successRules.length - 15} 条已执行`);
+    }
+    if (failedRules.length > 0) {
+      lines.push("失败详情：");
+      for (const item of failedRules.slice(0, 8)) {
+        lines.push(`- #${item.id} ${escapeHtml(shortText(item.reason, 36))}`);
+      }
+      if (failedRules.length > 8) lines.push(`- 其余 ${failedRules.length - 8} 条请在面板查看`);
+    }
+    return lines.join("\n");
+  }
+
+  const targetUserId = Number(pending.targetUserId || 0);
+  if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
+    throw new Error("目标用户无效。");
+  }
+  const target = await db.getUserById(targetUserId);
+  if (!target) throw new Error("目标用户不存在或已被删除。");
   if (String(actor?.role) !== "admin" && Number(target.id) !== Number(actor.id)) {
     throw new Error("普通用户仅可操作自己的账号。");
   }
-  const sourceText = shortText(pending.sourceText || "", 180);
 
   switch (pending.action) {
     case "balance_set": {
@@ -1832,15 +2135,17 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
   if (!writeLike || intent.action === "none") return false;
   const prepared = await prepareManageAction(user, query, intent);
   if (!prepared.prepared) {
-    await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
+    const sent = await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
     return true;
   }
   const pending = createPendingManageAction(prepared.prepared.pending);
-  await sendMessage(
+  const sent = await sendMessage(
     message.chat.id,
     manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
     manageActionConfirmKeyboard(pending.key),
   );
+  await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
   return true;
 }
 
@@ -2277,6 +2582,10 @@ function aiQueryHelpText() {
     `${aiCode("启用用户 #5")}`,
     `${aiCode("关闭用户1转发")}`,
     `${aiCode("启用 test111 转发")}`,
+    `${aiCode("关闭第 12 条规则")}`,
+    `${aiCode("开启 #9 号规则")}`,
+    `${aiCode("关闭 东京 隧道 的规则")}`,
+    `${aiCode("开启 2 号隧道的规则")}`,
     `${aiCode("重置用户 1 流量")}`,
     "",
     "<b>普通用户可用操作（仅限自己）</b>",
@@ -2334,7 +2643,8 @@ async function aiQueryText(user: any, rawText: string) {
 }
 
 async function handleAiQuery(message: TelegramMessage, user: any, rawText: string) {
-  await sendMessage(message.chat.id, await aiQueryText(user, rawText));
+  const sent = await sendMessage(message.chat.id, await aiQueryText(user, rawText));
+  await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
 }
 async function handleUsage(message: TelegramMessage, user: any) {
   await sendMessage(message.chat.id, await usageText(user));
@@ -2861,19 +3171,23 @@ async function handleCallback(query: TelegramCallbackQuery) {
     const pending = getPendingManageAction(actionKey);
     if (!pending) {
       await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     if (Number(pending.actorUserId) !== Number(user.id)) {
       await editMessage(chatId, messageId, "只有原发起人才可以确认执行该操作。", manageActionConfirmKeyboard(pending.key));
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     const consumed = consumePendingManageAction(actionKey);
     if (!consumed) {
       await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     const result = await executePendingManageAction(consumed, user);
     await editMessage(chatId, messageId, result, backMenuKeyboard());
+    await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
     return;
   }
   if (data.startsWith("fx:op:cancel:")) {
@@ -2881,14 +3195,17 @@ async function handleCallback(query: TelegramCallbackQuery) {
     const pending = getPendingManageAction(actionKey);
     if (!pending) {
       await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     if (Number(pending.actorUserId) !== Number(user.id)) {
       await editMessage(chatId, messageId, "只有原发起人才可以取消该操作。", manageActionConfirmKeyboard(pending.key));
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
       return;
     }
     consumePendingManageAction(actionKey);
     await editMessage(chatId, messageId, "已取消本次操作。", backMenuKeyboard());
+    await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
     return;
   }
   switch (data) {

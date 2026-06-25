@@ -2064,6 +2064,8 @@ function DeepSeekSettingsCard() {
   const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
   const [deepseekMaxTokens, setDeepseekMaxTokens] = useState(1024);
   const [deepseekTemperature, setDeepseekTemperature] = useState(0.2);
+  const [deepseekTelegramAutoRecallEnabled, setDeepseekTelegramAutoRecallEnabled] = useState(false);
+  const [deepseekTelegramAutoRecallSeconds, setDeepseekTelegramAutoRecallSeconds] = useState(60);
   const [showDeleteDeepSeekKey, setShowDeleteDeepSeekKey] = useState(false);
 
   useEffect(() => {
@@ -2073,6 +2075,8 @@ function DeepSeekSettingsCard() {
       setDeepseekModel(settings.deepseek.model || "deepseek-chat");
       setDeepseekMaxTokens(Number(settings.deepseek.maxTokens || 1024));
       setDeepseekTemperature(Number(settings.deepseek.temperature ?? 0.2));
+      setDeepseekTelegramAutoRecallEnabled(!!settings.deepseek.telegramAutoRecallEnabled);
+      setDeepseekTelegramAutoRecallSeconds(Math.min(1200, Math.max(30, Number(settings.deepseek.telegramAutoRecallSeconds || 60))));
     }
   }, [settings]);
 
@@ -2097,6 +2101,12 @@ function DeepSeekSettingsCard() {
     return Math.min(2, Math.max(0, value));
   };
 
+  const normalizeTelegramAutoRecallSeconds = () => {
+    const value = Math.floor(Number(deepseekTelegramAutoRecallSeconds));
+    if (!Number.isFinite(value)) return 60;
+    return Math.min(1200, Math.max(30, value));
+  };
+
   const handleSaveDeepSeek = () => {
     const nextApiKey = deepseekApiKeyInput.trim();
     const hasApiKey = !!settings?.deepseek?.configured || !!nextApiKey;
@@ -2106,6 +2116,7 @@ function DeepSeekSettingsCard() {
     }
     const maxTokens = normalizeMaxTokens();
     const temperature = normalizeTemperature();
+    const telegramAutoRecallSeconds = normalizeTelegramAutoRecallSeconds();
     updateSettingsMutation.mutate({
       deepseek: {
         enabled: deepseekEnabled,
@@ -2114,10 +2125,13 @@ function DeepSeekSettingsCard() {
         model: deepseekModel.trim() || "deepseek-chat",
         maxTokens,
         temperature,
+        telegramAutoRecallEnabled: deepseekTelegramAutoRecallEnabled,
+        telegramAutoRecallSeconds,
       },
     });
     setDeepseekMaxTokens(maxTokens);
     setDeepseekTemperature(temperature);
+    setDeepseekTelegramAutoRecallSeconds(telegramAutoRecallSeconds);
   };
 
   const handleClearDeepSeekKey = () => {
@@ -2248,6 +2262,34 @@ function DeepSeekSettingsCard() {
                     value={deepseekTemperature}
                     onChange={(e) => setDeepseekTemperature(Math.min(2, Math.max(0, Number(e.target.value) || 0)))}
                   />
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
+                <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">机器人信息自动撤回</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        仅对 AI 相关聊天内容生效，默认关闭。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={deepseekTelegramAutoRecallEnabled}
+                      onCheckedChange={setDeepseekTelegramAutoRecallEnabled}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2 rounded-lg border border-border/40 bg-background/50 p-3">
+                  <Label className="text-xs text-muted-foreground">撤回时间（秒）</Label>
+                  <Input
+                    type="number"
+                    min={30}
+                    max={1200}
+                    value={deepseekTelegramAutoRecallSeconds}
+                    onChange={(e) => setDeepseekTelegramAutoRecallSeconds(Math.min(1200, Math.max(30, Number(e.target.value) || 60)))}
+                  />
+                  <p className="text-xs text-muted-foreground">范围 30-1200 秒，默认 60 秒。</p>
                 </div>
               </div>
 

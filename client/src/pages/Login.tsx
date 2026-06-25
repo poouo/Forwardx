@@ -59,9 +59,17 @@ function getTelegramWebAppChallenge() {
   return String(new URLSearchParams(window.location.search).get("wa") || "").trim();
 }
 
+function isTelegramWebAppRequested() {
+  if (typeof window === "undefined") return false;
+  const value = String(new URLSearchParams(window.location.search).get("tgWebApp") || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
 const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
 const DISPLAY_NAME_MAX_LENGTH = 24;
+const TELEGRAM_WEBAPP_INIT_WAIT_MS = 6000;
+const TELEGRAM_WEBAPP_INIT_POLL_MS = 250;
 const authHighlights = [
   { title: "多节点管理", text: "统一管理分散在不同服务器的转发节点", icon: Server },
   { title: "安全可靠", text: "TLS 加密传输，权限精细控制", icon: ShieldCheck },
@@ -361,23 +369,52 @@ export default function Login() {
 
   useEffect(() => {
     if (telegramWebAppAutoLoginTriedRef.current || telegramWebAppLoginMutation.isPending) return;
-    const initData = getTelegramWebAppInitData();
-    if (!initData) return;
-    telegramWebAppAutoLoginTriedRef.current = true;
+    if (!isTelegramWebAppRequested()) return;
+
     const challenge = getTelegramWebAppChallenge();
-    if (!challenge) {
-      toast.info("请从机器人消息里的“打开面板”按钮进入，以完成安全登录。");
-      return;
+    let cancelled = false;
+    let intervalId: number | null = null;
+    let timeoutId: number | null = null;
+
+    const tryAutoLogin = () => {
+      if (cancelled || telegramWebAppAutoLoginTriedRef.current || telegramWebAppLoginMutation.isPending) return true;
+      const initData = getTelegramWebAppInitData();
+      if (!initData) return false;
+      telegramWebAppAutoLoginTriedRef.current = true;
+      const webApp = getTelegramWebAppBridge();
+      try {
+        webApp?.ready?.();
+        webApp?.expand?.();
+      } catch {
+        // no-op
+      }
+      telegramWebAppLoginMutation.mutate({
+        initData,
+        ...(challenge ? { challenge } : {}),
+        mobile: mobileAuth.isNative,
+      });
+      return true;
+    };
+
+    if (!tryAutoLogin()) {
+      intervalId = window.setInterval(() => {
+        if (!tryAutoLogin()) return;
+        if (intervalId) window.clearInterval(intervalId);
+        if (timeoutId) window.clearTimeout(timeoutId);
+      }, TELEGRAM_WEBAPP_INIT_POLL_MS);
+      timeoutId = window.setTimeout(() => {
+        if (cancelled || telegramWebAppAutoLoginTriedRef.current) return;
+        if (intervalId) window.clearInterval(intervalId);
+        toast.info("未获取到 Telegram 登录凭证，请返回机器人重新点击“打开面板”。");
+      }, TELEGRAM_WEBAPP_INIT_WAIT_MS);
     }
-    const webApp = getTelegramWebAppBridge();
-    try {
-      webApp?.ready?.();
-      webApp?.expand?.();
-    } catch {
-      // no-op
-    }
-    telegramWebAppLoginMutation.mutate({ initData, challenge, mobile: mobileAuth.isNative });
-  }, [telegramWebAppLoginMutation]);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) window.clearInterval(intervalId);
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
+  }, [telegramWebAppLoginMutation.isPending, telegramWebAppLoginMutation.mutate]);
 
   useEffect(() => {
     if (getTelegramWebAppInitData()) return;

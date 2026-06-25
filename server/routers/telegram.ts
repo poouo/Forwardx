@@ -68,7 +68,7 @@ const telegramWidgetLoginSchema = z.object({
 
 const telegramWebAppLoginSchema = z.object({
   initData: z.string().min(16).max(8192),
-  challenge: z.string().min(16).max(192),
+  challenge: z.string().min(16).max(192).optional(),
   mobile: z.boolean().optional(),
 });
 
@@ -358,9 +358,11 @@ export const telegramRouter = router({
       if (!payload) {
         throw new Error("TELEGRAM_WEBAPP_VERIFY_FAILED");
       }
-      const challengeResult = consumeTelegramWebAppLoginChallenge(input.challenge, payload.telegramId);
-      if (challengeResult !== "ok") {
-        throw new Error("TELEGRAM_WEBAPP_CHALLENGE_INVALID");
+      if (input.challenge) {
+        const challengeResult = consumeTelegramWebAppLoginChallenge(input.challenge, payload.telegramId);
+        if (challengeResult !== "ok") {
+          throw new Error("TELEGRAM_WEBAPP_CHALLENGE_INVALID");
+        }
       }
       const replayKey = `${payload.queryId}:${payload.hash}`;
       if (!consumeTelegramWebAppLoginOnce(replayKey)) {

@@ -11,6 +11,11 @@
 - Improved Telegram natural-language action recognition and management workflow:
   - Supports admin-side operations from plain language (balance set/adjust, renew, account enable/disable, forwarding enable/disable, traffic reset).
   - Added unified confirmation buttons before execution and stricter permission checks for admin/user scopes.
+  - Added rule-level operations: enable/disable by rule ID (for example, "关闭第 12 条规则").
+  - Added tunnel-level batch rule operations: enable/disable all visible rules under a tunnel, with pre-execution rule list confirmation.
+- Added Telegram AI message auto-recall controls in DeepSeek settings:
+  - New switch to auto-recall AI-related Telegram chat content (default off).
+  - Configurable recall delay from 30s to 1200s (default 60s).
 - Improved forwarding-chain latency probe visualization for multi-entry routes:
   - Uses endpoint remark labels as target names instead of raw IP display when available.
   - Better grouped multi-entry layout alignment and node truncation/visibility handling on smaller screens.
