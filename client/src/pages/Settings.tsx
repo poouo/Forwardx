@@ -2145,7 +2145,7 @@ function DeepSeekSettingsCard() {
     {
       provider: deepseekProvider,
       baseUrl: deepseekBaseUrl.trim() || undefined,
-      chatOnly: true,
+      chatOnly: deepseekProvider === "deepseek",
     },
     {
       enabled: providerConfigured,

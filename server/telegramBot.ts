@@ -1382,6 +1382,15 @@ function normalizeAiProvider(value: unknown): AiProvider {
   return DEFAULT_AI_PROVIDER;
 }
 
+function normalizeAiApiKey(value: unknown) {
+  let raw = String(value || "").trim();
+  if (!raw) return "";
+  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
+  raw = raw.replace(/^bearer\s+/i, "").trim();
+  raw = raw.replace(/^["'`]+|["'`]+$/g, "").trim();
+  return raw;
+}
+
 function getAiProviderDefaultBaseUrl(provider: AiProvider) {
   if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
   return DEFAULT_DEEPSEEK_BASE_URL;
@@ -1432,10 +1441,10 @@ async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
   const providerKeys = getAiProviderSettingKeys(provider);
   const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
   const defaultModel = getAiProviderDefaultModel(provider);
-  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekApiKey || "").trim() : "";
+  const legacyApiKey = provider === DEFAULT_AI_PROVIDER ? normalizeAiApiKey(settings.deepseekApiKey) : "";
   const legacyBaseUrl = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekBaseUrl || "").trim() : "";
   const legacyModel = provider === DEFAULT_AI_PROVIDER ? String(settings.deepseekModel || "").trim() : "";
-  const apiKey = String(settings[providerKeys.apiKey] || "").trim() || legacyApiKey;
+  const apiKey = normalizeAiApiKey(settings[providerKeys.apiKey]) || legacyApiKey;
   const baseUrl = String(settings[providerKeys.baseUrl] || legacyBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
   const model = String(settings[providerKeys.model] || legacyModel || defaultModel).trim() || defaultModel;
   return {
