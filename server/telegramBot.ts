@@ -70,7 +70,9 @@ type ManageActionKind =
   | "tunnel_rules_disable"
   | "traffic_reset"
   | "redeem_code_generate_balance"
-  | "discount_code_generate_percent";
+  | "discount_code_generate_percent"
+  | "registration_enable"
+  | "registration_disable";
 
 type ManageDurationUnit = "day" | "month" | "year";
 type ManageForwardMode = "host" | "tunnel";
@@ -334,6 +336,11 @@ function formatManageRulePreview(rule: any) {
   const targetIp = rule?.targetIp || "-";
   const targetPort = rule?.targetPort ?? "-";
   return `#${Number(rule?.id || 0)} ${name} :${sourcePort} -> ${targetIp}:${targetPort}`;
+}
+
+function formatRuleButtonLabel(rule: any) {
+  const label = String(rule?.remark || rule?.remarks || rule?.description || rule?.name || "").trim();
+  return shortText(label || `规则 #${Number(rule?.id || 0)}`, 16);
 }
 
 function manageForwardModeLabel(mode?: ManageForwardMode | null) {
@@ -1113,9 +1120,10 @@ async function rulesView(user: any, page = 0) {
       ].join("\n\n");
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   for (const rule of visible) {
+    const label = formatRuleButtonLabel(rule);
     rows.push([
-      { text: `${rule.isEnabled ? "⛔ 停用" : "✅ 启用"} #${rule.id}`, callback_data: `fx:rule:toggle:${rule.id}:${safePage}` },
-      { text: `📄 详情 #${rule.id}`, callback_data: `fx:rule:view:${rule.id}:${safePage}` },
+      { text: `${rule.isEnabled ? "⛔ 停用" : "✅ 启用"} ${label}`, callback_data: `fx:rule:toggle:${rule.id}:${safePage}` },
+      { text: `📄 详情 ${label}`, callback_data: `fx:rule:view:${rule.id}:${safePage}` },
     ]);
   }
   if (totalPages > 1) {
@@ -2101,6 +2109,8 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     "traffic_reset",
     "redeem_code_generate_balance",
     "discount_code_generate_percent",
+    "registration_enable",
+    "registration_disable",
   ]);
   const action = allowed.has(value?.action as ManageActionKind)
     ? (value.action as ManageActionKind)
@@ -2244,7 +2254,7 @@ function mergeManageActionIntent(base: ManageActionIntent, patch: Partial<Manage
 function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
   const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!raw) return { intent: { action: "none" }, writeLike: false };
-  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|新增|添加|创建|删除|移除|调整|规则|转发|折扣码|优惠码|兑换码|代金码)/i.test(raw);
+  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|新增|添加|创建|删除|移除|调整|规则|转发|注册|开放注册|自助注册|折扣码|优惠码|兑换码|代金码)/i.test(raw);
   const enableVerb = /(开启|启用|恢复|打开)/i.test(raw);
   const disableVerb = /(关闭|停用|禁用|暂停)/i.test(raw);
   const createVerb = /(新增|添加|增加|创建|加一个|开一个|新建)/i.test(raw);
@@ -2255,6 +2265,7 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
   const hasTunnelWord = /(隧道|链路|tunnel|link)/i.test(raw);
   const hasDiscountCodeWord = /(折扣码|优惠码|优惠券|折扣券|discount\s*code)/i.test(raw);
   const hasRedeemCodeWord = /(兑换码|余额码|代金码|redeem\s*code)/i.test(raw);
+  const hasRegistrationWord = /(开放注册|自助注册|用户注册|注册入口|注册开关|注册功能|新用户注册|注册)/i.test(raw);
   const codeCount = extractManageCodeCount(raw);
   const discountPercent = extractManageDiscountPercent(raw);
   const ruleId = extractManageRuleId(raw);
@@ -2264,7 +2275,11 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
   const tunnelKeyword = normalizeManageTunnelKeyword(extractManageTunnelKeyword(raw));
   const hostKeyword = normalizeManageHostKeyword(extractManageHostKeyword(raw));
   let action: ManageActionKind = "none";
-  if ((createVerb || generateVerb) && hasDiscountCodeWord) {
+  if (hasRegistrationWord && disableVerb) {
+    action = "registration_disable";
+  } else if (hasRegistrationWord && enableVerb) {
+    action = "registration_enable";
+  } else if ((createVerb || generateVerb) && hasDiscountCodeWord) {
     action = "discount_code_generate_percent";
   } else if ((createVerb || generateVerb) && hasRedeemCodeWord) {
     action = "redeem_code_generate_balance";
@@ -2363,7 +2378,7 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
             content: [
               "You classify ForwardX Telegram write-operation intents.",
               "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,ruleId,tunnel,host,forwardMode,sourcePort,targetIp,targetPort,codeCount,discountPercent,writeLike.",
-              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,rule_create,rule_delete,tunnel_rules_enable,tunnel_rules_disable,traffic_reset,redeem_code_generate_balance,discount_code_generate_percent.",
+              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,rule_create,rule_delete,tunnel_rules_enable,tunnel_rules_disable,traffic_reset,redeem_code_generate_balance,discount_code_generate_percent,registration_enable,registration_disable.",
               "target should be user id/username/email/remark keyword when possible.",
               "durationUnit must be one of day,month,year.",
               "Use rule_enable/rule_disable when user asks to enable/disable a specific rule by id.",
@@ -2377,6 +2392,7 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
               "For recharge/add/subtract balance use balance_adjust.",
               "For set balance directly use balance_set.",
               "Use redeem_code_generate_balance when user asks to create/generate balance redemption codes; include amountYuan (face value in CNY) and codeCount when available.",
+              "Use registration_enable/registration_disable when user asks to enable/disable public/self-service user registration.",
               "Use discount_code_generate_percent when user asks to create/generate discount codes; discountPercent means off-percent (e.g. 20 means 20% off, equivalent to 8-zhe), include codeCount when available.",
               "If message is not a write operation, action should be none and writeLike false.",
               "Do not answer user; do not use markdown.",
@@ -2440,13 +2456,15 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
     traffic_reset: "重置流量",
     redeem_code_generate_balance: "生成余额兑换码",
     discount_code_generate_percent: "生成折扣码",
+    registration_enable: "开启开放注册",
+    registration_disable: "关闭开放注册",
   };
   return mapping[action];
 }
 
 function manageActionPermissionHint(isAdmin: boolean) {
   if (isAdmin) {
-    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、规则新增/删除/启停、按隧道批量启停规则、重置流量、生成兑换码与折扣码。";
+    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、规则新增/删除/启停、按隧道批量启停规则、重置流量、生成兑换码与折扣码、开启/关闭开放注册。";
   }
   return "普通用户仅可操作自己的转发开关与可见规则（新增/删除/单条启停/按隧道批量启停），例如“新增转发到 10.10.0.1:5151”、“删除第12条规则”。";
 }
@@ -2560,6 +2578,19 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   const isAdmin = String(actor?.role) === "admin";
   if (!isManageActionAllowedForRole(actor?.role, action)) {
     return { error: `你没有执行「${manageActionLabel(action)}」的权限。\n${manageActionPermissionHint(isAdmin)}` };
+  }
+
+  if (action === "registration_enable" || action === "registration_disable") {
+    if (!isAdmin) {
+      return { error: "只有管理员可以调整开放注册。" };
+    }
+    const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+      actorUserId: Number(actor.id),
+      actorRole: "admin",
+      action,
+      sourceText: sourceText.slice(0, 500),
+    };
+    return { prepared: { pending, actor } as PreparedManageAction };
   }
 
   if (action === "redeem_code_generate_balance" || action === "discount_code_generate_percent") {
@@ -3111,6 +3142,10 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
     lines.push(action === "tunnel_rules_disable" ? "确认后将批量停用以上规则。" : "确认后将批量启用以上规则。");
   } else if (action === "traffic_reset") {
     lines.push("将清零该用户当前统计流量。");
+  } else if (action === "registration_disable") {
+    lines.push("确认后将关闭新用户自助注册，现有用户不受影响。");
+  } else if (action === "registration_enable") {
+    lines.push("确认后将开放新用户自助注册。");
   } else if (action === "redeem_code_generate_balance") {
     const count = Math.max(1, Math.floor(Number(pending.codeCount || 1)));
     const amountCents = Math.round(Number(pending.amountCents || 0));
@@ -3143,6 +3178,18 @@ async function executePendingManageAction(pending: PendingManageAction, callback
     throw new Error("当前账户已无该操作权限。");
   }
   const sourceText = shortText(pending.sourceText || "", 180);
+
+  if (pending.action === "registration_enable" || pending.action === "registration_disable") {
+    if (String(actor?.role) !== "admin") throw new Error("只有管理员可以调整开放注册。");
+    const enabled = pending.action === "registration_enable";
+    await db.setSetting("registrationEnabled", enabled ? "true" : "false");
+    console.info(`[TelegramBot] public registration ${enabled ? "enabled" : "disabled"} by user ${Number(actor.id || 0)}`);
+    return [
+      "<b>执行成功</b>",
+      `操作：${enabled ? "开启开放注册" : "关闭开放注册"}`,
+      `当前状态：<b>${enabled ? "已开放" : "已关闭"}</b>`,
+    ].join("\n");
+  }
 
   if (isRuleManageAction(pending.action)) {
     if (pending.action === "rule_enable" || pending.action === "rule_disable") {
@@ -3912,6 +3959,11 @@ function aiCode(value: unknown) {
   return `<code>${escapeHtml(value ?? "-")}</code>`;
 }
 
+
+function aiBlockquote(lines: string[]) {
+  const body = lines.filter(Boolean).join("\n");
+  return body ? `<blockquote>${body}</blockquote>` : "";
+}
 function aiFilterPart(label: string, value: unknown) {
   return `${escapeHtml(label)} ${aiCode(value)}`;
 }
@@ -3957,6 +4009,17 @@ function formatRuleTrafficSummary(summary: AiRuleTrafficSummary | undefined, com
   return connections > 0 ? `${line}\n连接：${connections}` : line;
 }
 
+
+function formatRuleTrafficSummaryLines(summary: AiRuleTrafficSummary | undefined) {
+  const bytesIn = Math.max(0, Number(summary?.bytesIn || 0));
+  const bytesOut = Math.max(0, Number(summary?.bytesOut || 0));
+  const connections = Math.max(0, Number(summary?.connections || 0));
+  return [
+    `流量：<b>${escapeHtml(formatBytes(bytesIn + bytesOut))}</b>`,
+    `入 / 出：${aiCode(formatBytes(bytesIn))} / ${aiCode(formatBytes(bytesOut))}`,
+    connections > 0 ? `连接：<b>${connections}</b>` : "",
+  ].filter(Boolean);
+}
 async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[]) {
   const ids = Array.from(new Set(ruleIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
   const map = new Map<number, AiRuleTrafficSummary>();
@@ -3980,20 +4043,34 @@ async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[]) {
 }
 
 function userSearchValues(user: any) {
-  return [user.id, user.name, user.username, user.email, user.telegramUsername, user.role];
+  return [user.id, user.name, user.username, user.email, user.telegramUsername, user.displayRemark, user.remark, user.remarks, user.role];
+}
+
+async function aiMatchingUserIds(keyword: string) {
+  const userIds = new Set<number>();
+  if (!keyword) return userIds;
+  const users = await db.getUserTrafficSummaries().catch(() => [] as any[]);
+  for (const item of users as any[]) {
+    if (searchMatches(keyword, userSearchValues(item))) userIds.add(Number(item.id));
+  }
+  return userIds;
 }
 
 async function aiRulesWithFilters(user: any, filters: AiRuleFilters = {}) {
   const rules = await visibleRulesForTelegramUser(user);
-  const keyword = normalizeAiQueryKeyword(filters.keyword);
+  let keyword = normalizeAiQueryKeyword(filters.keyword);
   const requestedUserKeyword = normalizeAiQueryKeyword(filters.userKeyword);
-  const userKeyword = user.role === "admin" ? requestedUserKeyword : "";
+  let userKeyword = user.role === "admin" ? requestedUserKeyword : "";
   const hostKeyword = normalizeAiQueryKeyword(filters.hostKeyword);
-  const userIds = new Set<number>();
+  let userIds = new Set<number>();
   if (userKeyword) {
-    const users = await db.getUserTrafficSummaries().catch(() => [] as any[]);
-    for (const item of users as any[]) {
-      if (searchMatches(userKeyword, userSearchValues(item))) userIds.add(Number(item.id));
+    userIds = await aiMatchingUserIds(userKeyword);
+  } else if (user.role === "admin" && keyword && !hostKeyword) {
+    const inferredUserIds = await aiMatchingUserIds(keyword);
+    if (inferredUserIds.size > 0) {
+      userKeyword = keyword;
+      userIds = inferredUserIds;
+      keyword = "";
     }
   }
   const hosts = await visibleHostsForTelegramUser(user).catch(() => [] as any[]);
@@ -4031,14 +4108,21 @@ async function aiRulesText(user: any, keywordOrFilters?: string | AiRuleFilters)
   const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)));
   const lines = visible.map((rule: any) => {
     const host = hostById.get(Number(rule.hostId));
-    return [
-      `<b>#${rule.id} ${escapeHtml(shortText(rule.name, 28))}</b>`,
-      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b> · 类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
-      `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)} → 目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
-      rule.tunnelId ? `所属：隧道 ${aiCode(`#${rule.tunnelId}`)}` : `所属：主机 ${aiCode(`#${rule.hostId}`)}${host?.name ? `（${escapeHtml(shortText(host.name, 18))}）` : ""}`,
-      formatRuleTrafficSummary(trafficByRuleId.get(Number(rule.id)), true),
-      rule.remark || rule.remarks || rule.description ? `备注：${escapeHtml(shortText(rule.remark || rule.remarks || rule.description, 32))}` : "",
-    ].filter(Boolean).join("\n");
+    const note = String(rule.remark || rule.remarks || rule.description || "").trim();
+    const title = shortText(note || rule.name || `规则 #${rule.id}`, 30);
+    const location = rule.tunnelId
+      ? `归属：隧道 ${aiCode(`#${rule.tunnelId}`)}`
+      : `归属：主机 ${aiCode(`#${rule.hostId}`)}${host?.name ? `（${escapeHtml(shortText(host.name, 18))}）` : ""}`;
+    const details = [
+      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+      `类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
+      `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)}`,
+      `目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
+      location,
+      ...formatRuleTrafficSummaryLines(trafficByRuleId.get(Number(rule.id))),
+      note && note !== rule.name ? `备注：${escapeHtml(shortText(note, 32))}` : "",
+    ];
+    return [`<b>#${rule.id} ${escapeHtml(title)}</b>`, aiBlockquote(details)].filter(Boolean).join("\n");
   });
   return `${header}\n\n${lines.join("\n\n")}${moreText(matched.length, visible.length)}`;
 }
@@ -4346,6 +4430,7 @@ async function refreshRuleEndpoint(rule: any, reason: string) {
 
 async function refreshUserForwardEndpoints(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
+  await db.resetForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
   const tunnelIds = new Set<number>();
   for (const rule of rules as any[]) {

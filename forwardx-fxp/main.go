@@ -348,7 +348,7 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 	log.Printf(
-		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v limits=maxConnections:%d,maxIPs:%d",
+		"forwardx-fxp runtime version=%s role=%s tunnel=%d rule=%d listen=:%d protocol=%s exit=%s:%d relayNext=%s:%d target=%s:%d proxyReceive=%v proxySend=%v proxyExitReceive=%v proxyExitSend=%v limits=maxConnections:%d,maxIPs:%d,limitIn:%d,limitOut:%d",
 		fxpRuntimeVersion,
 		cfg.Role,
 		cfg.TunnelID,
@@ -367,6 +367,8 @@ func main() {
 		cfg.ProxyProtocolExitSend,
 		cfg.MaxConnections,
 		cfg.MaxIPs,
+		cfg.LimitIn,
+		cfg.LimitOut,
 	)
 	ctx := shutdownContext()
 	switch strings.ToLower(cfg.Role) {
@@ -468,6 +470,8 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	errCh := make(chan error, 2)
 	gate := newConnGate(cfg.MaxConnections, cfg.MaxIPs)
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.ExitHost, Port: cfg.ExitPort, Key: cfg.Key})
+	inLimiter := newLimiter(cfg.LimitIn)
+	outLimiter := newLimiter(cfg.LimitOut)
 	if selector.count() > 1 {
 		log.Printf("entry load balance exits=%s strategy=round", formatEndpointList(selector))
 	}
@@ -486,7 +490,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- acceptEntryTCP(ln, cfg, gate, selector)
+			errCh <- acceptEntryTCP(ln, cfg, gate, selector, inLimiter, outLimiter)
 		}()
 	}
 	if protocolHas(cfg, "udp") {
@@ -508,7 +512,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- serveEntryUDP(udpConn, cfg, selector)
+			errCh <- serveEntryUDP(udpConn, cfg, selector, inLimiter, outLimiter)
 		}()
 	}
 	wg.Wait()
@@ -523,7 +527,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 	}
 }
 
-func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector) error {
+func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
@@ -539,14 +543,14 @@ func acceptEntryTCP(ln net.Listener, cfg config, gate *connGate, selector *exitE
 		}
 		go func() {
 			defer release()
-			if err := handleEntryTCP(client, cfg, selector); err != nil && !isClosedErr(err) {
+			if err := handleEntryTCP(client, cfg, selector, inLimiter, outLimiter); err != nil && !isClosedErr(err) {
 				log.Printf("entry tcp session error: %v", err)
 			}
 		}()
 	}
 }
 
-func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector) error {
+func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
 	defer client.Close()
 	var first []byte
 	proxyInfo := proxyProtocolInfoFromConn(client)
@@ -622,6 +626,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector)
 	}
 	log.Printf("entry tcp routed tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, client.RemoteAddr(), endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
 	if len(first) > 0 {
+		inLimiter.wait(len(first))
 		if err := sec.writeFrame(first); err != nil {
 			return err
 		}
@@ -630,7 +635,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector)
 	counter.in.Add(uint64(len(first)))
 	stopReporting := startTrafficReporter(cfg, counter)
 	defer stopReporting()
-	return proxyPlainSecure(client, sec, cfg.LimitIn, cfg.LimitOut, counter)
+	return proxyPlainSecure(client, sec, inLimiter, outLimiter, counter)
 }
 
 func readInitialTCPPayload(conn net.Conn, timeout time.Duration) ([]byte, error) {
@@ -765,7 +770,7 @@ func formatProxyProtocolV1(hello helloFrame) string {
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
 }
 
-func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector) error {
+func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
 	buf := make([]byte, 65535)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
@@ -774,7 +779,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 		}
 		payload := append([]byte(nil), buf[:n]...)
 		go func() {
-			resp, err := udpRoundTripToExit(cfg, selector, payload)
+			resp, err := udpRoundTripToExit(cfg, selector, payload, inLimiter, outLimiter)
 			if err != nil || len(resp) == 0 {
 				if err != nil && !isClosedErr(err) {
 					log.Printf("entry udp session error: %v", err)
@@ -786,7 +791,7 @@ func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector
 	}
 }
 
-func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []byte) ([]byte, error) {
+func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []byte, inLimiter, outLimiter *limiter) ([]byte, error) {
 	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
 	if err != nil {
 		return nil, err
@@ -802,6 +807,7 @@ func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []by
 	if err := sec.writeFrame(hello); err != nil {
 		return nil, err
 	}
+	inLimiter.wait(len(payload))
 	if err := sec.writeFrame(payload); err != nil {
 		return nil, err
 	}
@@ -809,6 +815,7 @@ func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []by
 	_ = exit.SetReadDeadline(time.Now().Add(8 * time.Second))
 	resp, err := sec.readFrame()
 	if err == nil {
+		outLimiter.wait(len(resp))
 		reportTraffic(cfg, uint64(len(payload)), uint64(len(resp)))
 	}
 	return resp, err
@@ -903,7 +910,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 		log.Printf("exit proxy protocol skipped tunnel=%d rule=%d target=%s:%d missingSource=%v", hello.TunnelID, hello.RuleID, hello.TargetIP, hello.TargetPort, hello.ProxySourceIP == "" || hello.ProxySourcePort <= 0)
 	}
 	log.Printf("exit tcp routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
-	return proxyPlainSecure(target, sec, 0, 0, nil)
+	return proxyPlainSecure(target, sec, nil, nil, nil)
 }
 
 func handleExitUDP(sec *secureConn, hello helloFrame) error {
@@ -1045,15 +1052,15 @@ func relayCopy(src, dst *secureConn) error {
 	}
 }
 
-func proxyPlainSecure(plain net.Conn, sec *secureConn, inLimit, outLimit int64, counter *trafficCounter) error {
+func proxyPlainSecure(plain net.Conn, sec *secureConn, inLimiter, outLimiter *limiter, counter *trafficCounter) error {
 	errCh := make(chan error, 2)
 	var inCounter, outCounter *atomic.Uint64
 	if counter != nil {
 		inCounter = &counter.in
 		outCounter = &counter.out
 	}
-	go func() { errCh <- copyPlainToSecure(sec, plain, inLimit, inCounter) }()
-	go func() { errCh <- copySecureToPlain(plain, sec, outLimit, outCounter) }()
+	go func() { errCh <- copyPlainToSecure(sec, plain, inLimiter, inCounter) }()
+	go func() { errCh <- copySecureToPlain(plain, sec, outLimiter, outCounter) }()
 	return waitBidirectional(errCh, func() {
 		_ = plain.Close()
 		_ = sec.conn.Close()
@@ -1084,9 +1091,8 @@ func waitBidirectional(errCh <-chan error, closeAll func()) error {
 	}
 }
 
-func copyPlainToSecure(dst *secureConn, src net.Conn, bytesPerSecond int64, counter *atomic.Uint64) error {
+func copyPlainToSecure(dst *secureConn, src net.Conn, limiter *limiter, counter *atomic.Uint64) error {
 	buf := make([]byte, 32*1024)
-	limiter := newLimiter(bytesPerSecond)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -1107,8 +1113,7 @@ func copyPlainToSecure(dst *secureConn, src net.Conn, bytesPerSecond int64, coun
 	}
 }
 
-func copySecureToPlain(dst net.Conn, src *secureConn, bytesPerSecond int64, counter *atomic.Uint64) error {
-	limiter := newLimiter(bytesPerSecond)
+func copySecureToPlain(dst net.Conn, src *secureConn, limiter *limiter, counter *atomic.Uint64) error {
 	for {
 		frame, err := src.readFrame()
 		if err != nil {
@@ -1133,6 +1138,7 @@ func copySecureToPlain(dst net.Conn, src *secureConn, bytesPerSecond int64, coun
 
 type limiter struct {
 	rate int64
+	mu   sync.Mutex
 	next time.Time
 }
 
@@ -1148,12 +1154,14 @@ func (l *limiter) wait(n int) {
 	if delay <= 0 {
 		return
 	}
+	l.mu.Lock()
 	now := time.Now()
 	if l.next.IsZero() || l.next.Before(now) {
 		l.next = now
 	}
 	l.next = l.next.Add(delay)
 	sleepFor := time.Until(l.next)
+	l.mu.Unlock()
 	if sleepFor > 0 {
 		time.Sleep(sleepFor)
 	}

@@ -286,7 +286,13 @@ export const usersRouter = router({
           data.forwardAccessPauseReason = input.canAddRules ? null : "manual";
           data.allowForwardXTunnel = input.canAddRules ? (data.allowForwardXTunnel ?? true) : false;
         }
+        const shouldRefreshRuntime = ["gostRateLimitIn", "gostRateLimitOut", "maxConnections", "maxIPs"].some((key) =>
+          Object.prototype.hasOwnProperty.call(data, key)
+        );
         await db.updateUserTrafficSettings(userId, data);
+        if (shouldRefreshRuntime) {
+          await refreshUserForwardEndpoints(userId, "user-runtime-limits-updated");
+        }
         console.info(`[Users] Updated traffic settings userId=${userId} keys=${Object.keys(data).join(",") || "none"} ${actorLabel(ctx)}`);
         return { success: true };
       }),

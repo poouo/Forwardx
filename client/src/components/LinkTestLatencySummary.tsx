@@ -122,6 +122,16 @@ function cleanNodeLabel(value: string) {
     .trim();
 }
 
+function normalizeEndpointLabel(value: string) {
+  return cleanNodeLabel(value).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isSelfLoopEndpoint(from: string, to: string) {
+  const fromKey = normalizeEndpointLabel(from);
+  const toKey = normalizeEndpointLabel(to);
+  return !!fromKey && fromKey === toKey;
+}
+
 function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   const route = formatLinkTestRoute(detail).replace(/\s+/g, " ").trim();
   const arrowParts = route.split(/\s*(?:->|→|=>|至|到)\s*/).map((item) => item.trim()).filter(Boolean);
@@ -150,7 +160,10 @@ function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
 function lookupNodeMeta(meta: Record<string, LinkTestNodeMeta | undefined> | undefined, label: string) {
   if (!meta) return undefined;
   const clean = cleanNodeLabel(label);
-  return meta[label] || meta[clean] || meta[clean.toLowerCase()];
+  const cleanLower = clean.toLowerCase();
+  const targetAlias = clean.replace(/^目标\s+/i, "").trim();
+  const targetAliasLower = targetAlias.toLowerCase();
+  return meta[label] || meta[clean] || meta[cleanLower] || meta[targetAlias] || meta[targetAliasLower];
 }
 
 function withNodeLabel(meta: LinkTestNodeMeta | undefined, fallback: string) {
@@ -170,7 +183,7 @@ function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
   for (let index = 0; index < visibleDetails.length; index += 1) {
     const detail = visibleDetails[index];
     const endpoints = parseRouteEndpoints(detail, index);
-    if (endpoints.to !== firstTarget || detail.groupKey) break;
+    if (endpoints.to !== firstTarget || detail.groupKey || isSelfLoopEndpoint(endpoints.from, endpoints.to)) break;
     initialDetails.push(detail);
   }
   const uniqueSources = uniqueLabels(initialDetails.map((detail, index) => parseRouteEndpoints(detail, index).from));
@@ -208,7 +221,7 @@ function buildProbeSegments(input: {
       groupKey: segment.groupKey || null,
       groupLabel: segment.groupLabel || null,
     }))
-    .filter((segment) => segment.from && segment.to);
+    .filter((segment) => segment.from && segment.to && !isSelfLoopEndpoint(segment.from, segment.to));
 
   const hasGroupedPlannedSegments = plannedSegments.some((segment) => !!segment.groupKey);
   const usePlannedSegments = plannedSegments.length > 0
@@ -313,7 +326,7 @@ function getInitialConvergedEntryView(segments: ProbeSegment[]) {
   if (!firstTarget) return null;
   const entrySegments: ProbeSegment[] = [];
   for (const segment of segments) {
-    if (segment.groupKey || segment.to !== firstTarget) break;
+    if (segment.groupKey || segment.to !== firstTarget || isSelfLoopEndpoint(segment.from, segment.to)) break;
     entrySegments.push(segment);
   }
   const uniqueSources = uniqueLabels(entrySegments.map((segment) => segment.from));

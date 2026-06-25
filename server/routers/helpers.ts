@@ -135,6 +135,7 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
 
 export async function refreshUserForwardEndpoints(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
+  await db.resetForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
   const tunnelIds = new Set<number>();
   for (const rule of rules as any[]) {

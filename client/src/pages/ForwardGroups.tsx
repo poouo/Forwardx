@@ -556,7 +556,7 @@ function ForwardGroupSelfTestDialog({
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstEntryHost) || hostDisplayName(firstHost) || groupName,
       targetLabel,
-      plannedSegments: plannedSegments.filter((segment) => segment.from && segment.to),
+      plannedSegments: plannedSegments.filter((segment) => segment.from && segment.to && segment.from.trim().toLowerCase() !== segment.to.trim().toLowerCase()),
     };
   }, [entryGroup?.members, group?.members, group?.remark, groupName, hostById]);
 

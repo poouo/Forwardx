@@ -135,6 +135,20 @@ export async function updateForwardRule(id: number, data: Partial<InsertForwardR
   await db.update(forwardRules).set({ ...data, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
 }
 
+export async function resetForwardRulesForUserSync(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(forwardRules).set({
+    isRunning: false,
+    updatedAt: nowDate(),
+  }).where(and(
+    eq(forwardRules.userId, userId),
+    eq(forwardRules.isEnabled, true),
+    eq(forwardRules.pendingDelete, false),
+    eq(forwardRules.isForwardGroupTemplate, false),
+  ));
+}
+
 export async function deleteForwardRule(id: number) {
   const db = await getDb();
   if (!db) return;

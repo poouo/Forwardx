@@ -3860,11 +3860,58 @@ function RulesContent() {
   };
 
   const getRuleEntry = (rule: any): string => {
-    return getHostEntryAddress(getRuleEntryHost(rule));
+    return getRuleEntries(rule)[0]?.value || getHostEntryAddress(getRuleEntryHost(rule));
   };
 
   const getRuleEntries = (rule: any): EntryAddress[] => {
+    const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    const tunnelEntries = getTunnelEntryAddresses(tunnel);
+    if (tunnelEntries.length > 0) return tunnelEntries;
     return getHostEntryAddresses(getRuleEntryHost(rule));
+  };
+
+  const getTunnelEntryHostForDisplay = (tunnel: any | null | undefined, hostId: number) => {
+    const id = Number(hostId || 0);
+    return (hosts || []).find((host: any) => Number(host.id) === id)
+      || (Array.isArray(tunnel?.hopHosts) ? tunnel.hopHosts.find((host: any) => Number(host?.id) === id) : null)
+      || (Number(tunnel?.entryHost?.id || 0) === id ? tunnel.entryHost : null)
+      || (Number(tunnel?.exitHost?.id || 0) === id ? tunnel.exitHost : null);
+  };
+
+  const getTunnelEntryAddresses = (tunnel: any | null | undefined): EntryAddress[] => {
+    if (!tunnel) return [];
+    const rows: EntryAddress[] = [];
+    const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? forwardGroupById.get(Number(tunnel.entryGroupId)) : null;
+    const entryGroupDomain = String(entryGroup?.domain || "").trim();
+    if (entryGroupDomain) {
+      pushUniqueEntryAddress(rows, "入口组", entryGroupDomain);
+      return rows;
+    }
+    const entryMembers = entryGroup && normalizeForwardGroupModeForRule(entryGroup) === "entry"
+      ? enabledHostMembers(entryGroup)
+      : [];
+    if (entryMembers.length > 0) {
+      const memberEntries = entryMembers.flatMap((member: any) => {
+        const host = getTunnelEntryHostForDisplay(tunnel, Number(member.hostId || 0));
+        return getHostEntryAddresses(host);
+      });
+      const memberDomain = memberEntries.find((entry) => entry.label === "DDNS")
+        || memberEntries.find((entry) => addressFamily(entry.value) === "hostname");
+      if (memberDomain) {
+        pushUniqueEntryAddress(rows, memberDomain.label, memberDomain.value);
+        return rows;
+      }
+      const firstEntryHost = getTunnelEntryHostForDisplay(tunnel, Number(entryMembers[0]?.hostId || 0));
+      for (const entry of getHostEntryAddresses(firstEntryHost)) {
+        pushUniqueEntryAddress(rows, entry.label, entry.value);
+      }
+      return rows;
+    }
+    const entryHostId = Number(tunnel?.entryHostId || getTunnelHopIds(tunnel)[0] || 0);
+    for (const entry of getHostEntryAddresses(getTunnelEntryHostForDisplay(tunnel, entryHostId))) {
+      pushUniqueEntryAddress(rows, entry.label, entry.value);
+    }
+    return rows;
   };
 
   const getMemberEntryHost = (member: any | null | undefined) => {
@@ -3882,6 +3929,14 @@ function RulesContent() {
   };
 
   const pushMemberEntryAddresses = (rows: EntryAddress[], member: any | null | undefined) => {
+    const tunnelId = Number(member?.tunnelId || 0);
+    if (tunnelId > 0) {
+      const tunnelRows = getTunnelEntryAddresses(tunnelById.get(tunnelId));
+      for (const entry of tunnelRows) {
+        pushUniqueEntryAddress(rows, entry.label, entry.value);
+      }
+      if (tunnelRows.length > 0) return;
+    }
     const entryHost = getMemberEntryHost(member);
     for (const entry of getHostEntryAddresses(entryHost)) {
       pushUniqueEntryAddress(rows, entry.label, entry.value);

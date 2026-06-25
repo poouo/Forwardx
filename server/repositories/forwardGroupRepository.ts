@@ -22,7 +22,7 @@ import {
   markForwardRulePendingDelete,
   updateForwardRule,
 } from "./forwardRuleRepository";
-import { getHostById } from "./hostRepository";
+import { getHostById, getHosts } from "./hostRepository";
 import { findAvailableTunnelExitPort, getTunnelById, getTunnelExitNodes, getTunnelHops, getTunnels, reconcileForwardRuleTunnelExits, resetForwardRulesByTunnel, updateTunnel } from "./tunnelRepository";
 import { setUserForwardAccess } from "./userRepository";
 import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
@@ -106,6 +106,37 @@ function normalizeIpCandidate(value: unknown) {
   const text = String(value || "").trim();
   if (text.startsWith("[") && text.endsWith("]")) return text.slice(1, -1).trim();
   return text;
+}
+
+function normalizeHostAddressKey(value: unknown) {
+  return normalizeIpCandidate(value).toLowerCase();
+}
+
+function hostAddressCandidates(host: any) {
+  return [host?.entryIp, host?.ipv4, host?.ipv6, host?.ip, host?.tunnelEntryIp]
+    .map((value) => normalizeHostAddressKey(value))
+    .filter(Boolean);
+}
+
+function hostDisplayLabel(host: any, fallback = "") {
+  const id = Number(host?.id || 0);
+  return String(host?.name || fallback || (id > 0 ? `主机${id}` : "")).trim();
+}
+
+async function findHostByAddress(address: unknown) {
+  const key = normalizeHostAddressKey(address);
+  if (!key) return null;
+  const hosts = await getHosts().catch(() => [] as any[]);
+  return (hosts as any[]).find((host) => hostAddressCandidates(host).includes(key)) || null;
+}
+
+async function forwardChainTargetLabel(template: any) {
+  const targetIp = String(template?.targetIp || "").trim();
+  const targetPort = Number(template?.targetPort || 0);
+  const targetHost = await findHostByAddress(targetIp);
+  const hostLabel = hostDisplayLabel(targetHost);
+  const ruleLabel = String(template?.name || "").trim();
+  return hostLabel || ruleLabel || (targetIp && targetPort > 0 ? `目标 ${targetIp}:${targetPort}` : "目标");
 }
 
 function ipv4AddressForHost(host: any) {
@@ -427,6 +458,31 @@ export async function getForwardGroupEvents(groupId: number, limit = 50) {
     .limit(limit);
 }
 
+async function withForwardChainTargetLabel(test: any, template: any) {
+  if (!test?.message || !template) return test;
+  const targetIp = String(template?.targetIp || "").trim();
+  const targetPort = Number(template?.targetPort || 0);
+  if (!targetIp || targetPort <= 0) return test;
+  const targetLabel = await forwardChainTargetLabel(template);
+  const oldTarget = `目标 ${targetIp}:${targetPort}`;
+  if (!targetLabel || targetLabel === oldTarget || !String(test.message).includes(oldTarget)) return test;
+  try {
+    const parsed = JSON.parse(String(test.message));
+    if (Array.isArray(parsed?.details)) {
+      parsed.details = parsed.details.map((detail: any) => ({
+        ...detail,
+        routeLabel: typeof detail?.routeLabel === "string" ? detail.routeLabel.replace(oldTarget, targetLabel) : detail?.routeLabel,
+        hopLabel: typeof detail?.hopLabel === "string" ? detail.hopLabel.replace(oldTarget, targetLabel) : detail?.hopLabel,
+      }));
+      if (typeof parsed.message === "string") parsed.message = parsed.message.replaceAll(oldTarget, targetLabel);
+      return { ...test, message: JSON.stringify(parsed) };
+    }
+  } catch {
+    // Older records may be plain text; fall back to a direct replacement.
+  }
+  return { ...test, message: String(test.message).replaceAll(oldTarget, targetLabel) };
+}
+
 export async function getLatestForwardGroupTest(groupId: number) {
   const templates = await getForwardGroupTemplateRules(groupId);
   const templateIds = (templates as any[]).map((rule: any) => Number(rule.id)).filter((id: number) => id > 0);
@@ -445,12 +501,13 @@ export async function getLatestForwardGroupTest(groupId: number) {
     `SELECT * FROM ${table} WHERE ${filterSql} AND ${quoteIdentifier("status")} IN ('pending', 'running') ORDER BY ${updatedCol} DESC, ${createdCol} DESC LIMIT 1`,
     filterArgs,
   );
-  if (pendingRows[0]) return pendingRows[0];
+  const template = (templates as any[])[0] || null;
+  if (pendingRows[0]) return withForwardChainTargetLabel(pendingRows[0], template);
   const rows = await queryRaw<any>(
     `SELECT * FROM ${table} WHERE ${filterSql} ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
     filterArgs,
   );
-  return rows[0];
+  return withForwardChainTargetLabel(rows[0], template);
 }
 
 export async function getForwardGroupPrimaryTemplateRule(groupId: number) {
@@ -565,6 +622,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     const targetIp = String(template.targetIp || "").trim();
     const targetPort = Number(template.targetPort || 0);
     if (lastHostId > 0 && targetIp && targetPort > 0) {
+      const targetLabel = await forwardChainTargetLabel(template);
       probes.push({
         groupId,
         fromHostId: lastHostId,
@@ -574,7 +632,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
         hopIndex,
         hopCount,
         hopLabel: `${hopIndex + 1}/${hopCount} ${lastHostId}->target`,
-        routeLabel: `${String(lastHost?.name || `主机${lastHostId}`)} -> 目标 ${targetIp}:${targetPort}`,
+        routeLabel: `${hostDisplayLabel(lastHost, `主机${lastHostId}`)} -> ${targetLabel}`,
       });
     }
   }
