@@ -135,6 +135,26 @@ const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/m
 const panelLocalCommandPrefix = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s --`;
 const panelDockerCommandPrefix = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s --`;
 const defaultGithubAcceleratorUrl = "https://git.poouo.com";
+type AiProvider = "deepseek" | "siliconflow" | "custom";
+const aiProviderOptions: Array<{ value: AiProvider; label: string }> = [
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "siliconflow", label: "SiliconFlow（聚合平台）" },
+  { value: "custom", label: "自定义 OpenAI 兼容" },
+];
+const aiProviderDefaults: Record<AiProvider, { baseUrl: string; model: string }> = {
+  deepseek: {
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-chat",
+  },
+  siliconflow: {
+    baseUrl: "https://api.siliconflow.cn/v1",
+    model: "Qwen/Qwen3-8B",
+  },
+  custom: {
+    baseUrl: "https://api.deepseek.com",
+    model: "deepseek-chat",
+  },
+};
 type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
 const ddnsProviders: DdnsProvider[] = ["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"];
 
@@ -2058,6 +2078,7 @@ function TelegramBotSettingsCard() {
 function DeepSeekSettingsCard() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
+  const [deepseekProvider, setDeepseekProvider] = useState<AiProvider>("deepseek");
   const [deepseekEnabled, setDeepseekEnabled] = useState(false);
   const [deepseekApiKeyInput, setDeepseekApiKeyInput] = useState("");
   const [deepseekBaseUrl, setDeepseekBaseUrl] = useState("https://api.deepseek.com");
@@ -2067,12 +2088,23 @@ function DeepSeekSettingsCard() {
   const [deepseekTelegramAutoRecallEnabled, setDeepseekTelegramAutoRecallEnabled] = useState(false);
   const [deepseekTelegramAutoRecallSeconds, setDeepseekTelegramAutoRecallSeconds] = useState(60);
   const [showDeleteDeepSeekKey, setShowDeleteDeepSeekKey] = useState(false);
+  const aiModelsQuery = trpc.system.listAiModels.useQuery(
+    { provider: deepseekProvider, chatOnly: true },
+    {
+      enabled: !!settings?.deepseek?.configured,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    },
+  );
 
   useEffect(() => {
     if (settings?.deepseek) {
+      const rawProvider = String(settings.deepseek.provider || "deepseek") as AiProvider;
+      const provider = aiProviderOptions.some((item) => item.value === rawProvider) ? rawProvider : "deepseek";
+      setDeepseekProvider(provider);
       setDeepseekEnabled(!!settings.deepseek.enabled);
-      setDeepseekBaseUrl(settings.deepseek.baseUrl || "https://api.deepseek.com");
-      setDeepseekModel(settings.deepseek.model || "deepseek-chat");
+      setDeepseekBaseUrl(settings.deepseek.baseUrl || aiProviderDefaults[provider].baseUrl);
+      setDeepseekModel(settings.deepseek.model || aiProviderDefaults[provider].model);
       setDeepseekMaxTokens(Number(settings.deepseek.maxTokens || 1024));
       setDeepseekTemperature(Number(settings.deepseek.temperature ?? 0.2));
       setDeepseekTelegramAutoRecallEnabled(!!settings.deepseek.telegramAutoRecallEnabled);
@@ -2083,11 +2115,26 @@ function DeepSeekSettingsCard() {
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
     onSuccess: () => {
       utils.system.getSettings.invalidate();
+      utils.system.listAiModels.invalidate();
       setDeepseekApiKeyInput("");
-      toast.success("DeepSeek 配置已保存");
+      toast.success("AI 配置已保存");
     },
     onError: (err) => toast.error(err.message || "保存失败"),
   });
+
+  const selectedModelMeta = useMemo(() => {
+    const models = Array.isArray(aiModelsQuery.data?.models) ? aiModelsQuery.data.models : [];
+    return models.find((item: any) => String(item?.id || "") === deepseekModel.trim()) || null;
+  }, [aiModelsQuery.data?.models, deepseekModel]);
+
+  const handleProviderChange = (value: string) => {
+    const provider = aiProviderOptions.some((item) => item.value === value)
+      ? (value as AiProvider)
+      : "deepseek";
+    setDeepseekProvider(provider);
+    setDeepseekBaseUrl(aiProviderDefaults[provider].baseUrl);
+    setDeepseekModel(aiProviderDefaults[provider].model);
+  };
 
   const normalizeMaxTokens = () => {
     const value = Math.floor(Number(deepseekMaxTokens));
@@ -2111,7 +2158,7 @@ function DeepSeekSettingsCard() {
     const nextApiKey = deepseekApiKeyInput.trim();
     const hasApiKey = !!settings?.deepseek?.configured || !!nextApiKey;
     if (deepseekEnabled && !hasApiKey) {
-      toast.error("请先填写 DeepSeek API Key");
+      toast.error("请先填写 AI API Key");
       return;
     }
     const maxTokens = normalizeMaxTokens();
@@ -2119,10 +2166,11 @@ function DeepSeekSettingsCard() {
     const telegramAutoRecallSeconds = normalizeTelegramAutoRecallSeconds();
     updateSettingsMutation.mutate({
       deepseek: {
+        provider: deepseekProvider,
         enabled: deepseekEnabled,
         apiKey: !settings?.deepseek?.configured && nextApiKey ? nextApiKey : undefined,
-        baseUrl: deepseekBaseUrl.trim() || "https://api.deepseek.com",
-        model: deepseekModel.trim() || "deepseek-chat",
+        baseUrl: deepseekBaseUrl.trim() || aiProviderDefaults[deepseekProvider].baseUrl,
+        model: deepseekModel.trim() || aiProviderDefaults[deepseekProvider].model,
         maxTokens,
         temperature,
         telegramAutoRecallEnabled: deepseekTelegramAutoRecallEnabled,
@@ -2151,6 +2199,11 @@ function DeepSeekSettingsCard() {
     ? settings?.deepseek?.apiKeyMasked || ""
     : deepseekApiKeyInput;
   const hasDeepSeekKeyForEnable = !!settings?.deepseek?.configured || !!deepseekApiKeyInput.trim();
+  const providerLabel = aiProviderOptions.find((item) => item.value === deepseekProvider)?.label || deepseekProvider;
+  const models = Array.isArray(aiModelsQuery.data?.models) ? aiModelsQuery.data.models : [];
+  const knownFreeCount = Number(aiModelsQuery.data?.freeCount || 0);
+  const knownPaidCount = Number(aiModelsQuery.data?.paidCount || 0);
+  const unknownFreeCount = Number(aiModelsQuery.data?.unknownCount || 0);
 
   return (
     <>
@@ -2160,10 +2213,10 @@ function DeepSeekSettingsCard() {
             <div>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Key className="h-4 w-4 text-emerald-500" />
-                DeepSeek 大模型
+                AI 助手模型
               </CardTitle>
               <CardDescription className="mt-1">
-                配置 DeepSeek API，供 Telegram AI 指令解析等功能使用。
+                支持 DeepSeek / SiliconFlow / 自定义 OpenAI 兼容接口，用于 Telegram AI 指令解析。
               </CardDescription>
             </div>
             <Badge variant={settings?.deepseek?.configured ? "default" : "outline"} className="w-fit">
@@ -2181,7 +2234,7 @@ function DeepSeekSettingsCard() {
                   <Label>API Key</Label>
                   <Input
                     type="text"
-                    placeholder={settings?.deepseek?.apiKeyMasked || "从 DeepSeek 控制台获取，例如 sk-..."}
+                    placeholder={settings?.deepseek?.apiKeyMasked || "从提供商控制台获取，例如 sk-..."}
                     value={deepseekKeyDisplayValue}
                     onChange={(e) => {
                       if (!deepseekKeyLocked) setDeepseekApiKeyInput(e.target.value);
@@ -2204,14 +2257,16 @@ function DeepSeekSettingsCard() {
                     <div>
                       <p className="text-sm font-medium">启用 AI 助手</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {settings?.deepseek?.configured ? settings.deepseek.model : "保存 API Key 后启用"}
+                        {settings?.deepseek?.configured
+                          ? `${providerLabel} · ${deepseekModel}${selectedModelMeta?.isFree === true ? " · Free" : (selectedModelMeta?.isFree === false ? " · Paid" : "")}`
+                          : "保存 API Key 后启用"}
                       </p>
                     </div>
                     <Switch
                       checked={deepseekEnabled}
                       onCheckedChange={(checked) => {
                         if (checked && !hasDeepSeekKeyForEnable) {
-                          toast.error("请先填写 DeepSeek API Key");
+                          toast.error("请先填写 AI API Key");
                           return;
                         }
                         setDeepseekEnabled(checked);
@@ -2221,7 +2276,20 @@ function DeepSeekSettingsCard() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+                <div className="space-y-2">
+                  <Label>提供商</Label>
+                  <Select value={deepseekProvider} onValueChange={handleProviderChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择提供商" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {aiProviderOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-2">
                   <Label>接口地址</Label>
                   <Input
@@ -2232,7 +2300,7 @@ function DeepSeekSettingsCard() {
                     className="font-mono"
                   />
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-2 lg:col-span-2">
                   <Label>模型</Label>
                   <Input
                     type="text"
@@ -2241,6 +2309,51 @@ function DeepSeekSettingsCard() {
                     placeholder="deepseek-chat"
                     className="font-mono"
                   />
+                  <div className="rounded-lg border border-border/40 bg-background/50 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs text-muted-foreground">可用聊天模型（支持展示 Free 状态）</p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => aiModelsQuery.refetch()}
+                        disabled={!settings?.deepseek?.configured || aiModelsQuery.isFetching}
+                      >
+                        {aiModelsQuery.isFetching && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                        刷新
+                      </Button>
+                    </div>
+                    {!!settings?.deepseek?.configured && models.length > 0 && (
+                      <Select
+                        value={models.some((item: any) => String(item?.id || "") === deepseekModel) ? deepseekModel : undefined}
+                        onValueChange={setDeepseekModel}
+                      >
+                        <SelectTrigger className="h-8">
+                          <SelectValue placeholder="从列表选择模型" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-72">
+                          {models.map((item: any) => (
+                            <SelectItem key={String(item?.id || "")} value={String(item?.id || "")}>
+                              {String(item?.id || "")}
+                              {item?.isFree === true ? " · 🆓free" : (item?.isFree === false ? " · 💳paid" : " · ?")}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {!!settings?.deepseek?.configured && models.length > 0 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        共 {models.length} 个，Free {knownFreeCount} 个，付费 {knownPaidCount} 个，未知 {unknownFreeCount} 个。
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {settings?.deepseek?.configured
+                          ? (aiModelsQuery.data?.error || "暂未获取到模型列表，可手动输入模型名称。")
+                          : "保存 API Key 后可拉取模型列表。"}
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>最大输出</Label>
@@ -2296,7 +2409,7 @@ function DeepSeekSettingsCard() {
               <div className="flex flex-wrap gap-2">
                 <Button onClick={handleSaveDeepSeek} disabled={updateSettingsMutation.isPending}>
                   {updateSettingsMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  保存 DeepSeek 配置
+                  保存 AI 配置
                 </Button>
                 {settings?.deepseek?.configured && (
                   <Button
@@ -2320,10 +2433,10 @@ function DeepSeekSettingsCard() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="h-5 w-5" />
-              删除 DeepSeek API Key
+              删除 AI API Key
             </DialogTitle>
             <DialogDescription>
-              删除后会同时关闭 DeepSeek AI 助手，需要重新填写 API Key 后才能启用。
+              删除后会同时关闭 AI 助手，需要重新填写 API Key 后才能启用。
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">

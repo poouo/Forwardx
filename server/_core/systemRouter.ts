@@ -77,8 +77,13 @@ const forwardProtocolSettingsSchema = z.object(
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
+const aiProviderSchema = z.enum(["deepseek", "siliconflow", "custom"]);
+type AiProvider = z.infer<typeof aiProviderSchema>;
+const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1";
+const DEFAULT_SILICONFLOW_MODEL = "Qwen/Qwen3-8B";
 const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
 const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const logPageInputSchema = z.object({
@@ -525,6 +530,10 @@ async function getLatestUpdateInfoCached(force = false): Promise<UpdateInfo> {
   return updateCheckInFlight;
 }
 
+export async function checkPanelUpdateTask(force = false): Promise<UpdateInfo> {
+  return getLatestUpdateInfoCached(!!force);
+}
+
 function appendUpgradeLog(line: string) {
   const text = line.trimEnd();
   if (!text) return;
@@ -566,6 +575,112 @@ function setUpgradeWaitingForAssets(targetVersion: string, reason: string) {
     ],
     error: reason,
   };
+}
+
+export function getPanelUpgradeRuntimeStatus() {
+  return {
+    currentVersion: APP_VERSION,
+    repoUrl: REPO_URL,
+    update: lastUpdateInfo,
+    job: upgradeJob,
+    upgradeEnabled: !!ENV.upgradeCommand.trim(),
+    ...getDeploymentInfo(),
+  };
+}
+
+export async function startPanelUpgradeTask(targetVersionInput?: string | null) {
+  const command = normalizeUpgradeCommand(ENV.upgradeCommand);
+  if (!command) {
+    console.warn("[Upgrade] Start requested but FORWARDX_UPGRADE_COMMAND is not configured");
+    throw new Error("未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查更新，不能自动升级");
+  }
+  if (upgradeJob.status === "running") {
+    console.warn("[Upgrade] Start requested while another upgrade is running");
+    throw new Error("已有升级任务正在执行");
+  }
+
+  let update = await fetchLatestUpdateInfo();
+  if (update.error && lastUpdateInfo) {
+    update = lastUpdateInfo;
+  }
+  lastUpdateInfo = update;
+  const requestedVersion = String(targetVersionInput || "").trim();
+  const targetVersion =
+    update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
+      ? update.latestVersion
+      : requestedVersion;
+  if (!targetVersion) throw new Error("No upgrade target version found");
+  if (compareVersions(targetVersion, APP_VERSION) <= 0) {
+    throw new Error("Already on the latest version");
+  }
+  if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
+    const reason = update.pendingReason || "新版本发布资产尚未构建完成，请稍后重试。";
+    setUpgradeWaitingForAssets(targetVersion, reason);
+    return { success: false, targetVersion, pendingReason: reason };
+  }
+  const pendingReason = await getUpgradeAssetsPendingReason(targetVersion);
+  if (pendingReason) {
+    setUpgradeWaitingForAssets(targetVersion, pendingReason);
+    return { success: false, targetVersion, pendingReason };
+  }
+  console.info(`[Upgrade] Starting panel upgrade current=v${APP_VERSION} target=${targetVersion}`);
+
+  upgradeJob = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    targetVersion,
+    logs: [
+      `[ForwardX] Current version v${APP_VERSION}`,
+      `[ForwardX] Selected latest upgrade target ${targetVersion}`,
+      `[ForwardX] Starting upgrade to ${targetVersion}`,
+    ],
+    error: null,
+  };
+  const child = spawn(command, {
+    shell: true,
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      FORWARDX_TARGET_VERSION: targetVersion,
+      FORWARDX_CURRENT_VERSION: APP_VERSION,
+      FORWARDX_REPO_URL: REPO_URL,
+    },
+    windowsHide: true,
+  });
+
+  child.stdout?.on("data", (chunk) => appendUpgradeLog(String(chunk)));
+  child.stderr?.on("data", (chunk) => appendUpgradeLog(String(chunk)));
+  child.on("error", (err) => {
+    upgradeJob.status = "error";
+    upgradeJob.error = `${err.message}. Please run the one-click script manually.`;
+    upgradeJob.finishedAt = new Date().toISOString();
+    console.error(`[Upgrade] Failed to start upgrade command: ${err.message}`);
+    appendUpgradeLog(`[ForwardX] Upgrade command failed to start: ${err.message}`);
+    appendManualUpgradeHint();
+  });
+  child.on("close", (code) => {
+    upgradeJob.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      upgradeJob.status = "success";
+      console.info(`[Upgrade] Panel upgrade command completed target=${targetVersion}`);
+      appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
+    } else if (code === UPGRADE_ASSETS_PENDING_EXIT_CODE) {
+      const reason = `v${normalizeVersion(targetVersion)} 的发布资产仍在 GitHub Actions 构建或上传中，请稍后重新检查更新。`;
+      upgradeJob.status = "waiting_assets";
+      upgradeJob.error = reason;
+      console.warn(`[Upgrade] Panel upgrade assets pending target=${targetVersion} exitCode=${code}`);
+      appendUpgradeLog(`[ForwardX] ${reason}`);
+    } else {
+      upgradeJob.status = "error";
+      upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;
+      console.error(`[Upgrade] Panel upgrade failed target=${targetVersion} exitCode=${code}`);
+      appendUpgradeLog(`[ForwardX] Upgrade failed, exit code: ${code}`);
+      appendManualUpgradeHint();
+    }
+  });
+
+  return { success: true, targetVersion };
 }
 
 function getDeploymentInfo(): DeploymentInfo {
@@ -652,6 +767,177 @@ function normalizeDeepSeekNumber(value: string | null | undefined, fallback: num
   return Math.min(max, Math.max(min, parsed));
 }
 
+function normalizeAiProvider(value: unknown): AiProvider {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "siliconflow") return "siliconflow";
+  if (raw === "custom") return "custom";
+  return DEFAULT_AI_PROVIDER;
+}
+
+function getAiProviderDefaultBaseUrl(provider: AiProvider) {
+  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
+  if (provider === "custom") return DEFAULT_DEEPSEEK_BASE_URL;
+  return DEFAULT_DEEPSEEK_BASE_URL;
+}
+
+function getAiProviderDefaultModel(provider: AiProvider) {
+  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_MODEL;
+  if (provider === "custom") return DEFAULT_DEEPSEEK_MODEL;
+  return DEFAULT_DEEPSEEK_MODEL;
+}
+
+function pickPathValue(input: unknown, pathKey: string): unknown {
+  const source = input && typeof input === "object" ? input as Record<string, unknown> : null;
+  if (!source) return undefined;
+  const pathSegments = pathKey.split(".").filter(Boolean);
+  let current: unknown = source;
+  for (const segment of pathSegments) {
+    if (!current || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function normalizeOptionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return undefined;
+  }
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (["1", "true", "yes", "y", "on", "free"].includes(raw)) return true;
+  if (["0", "false", "no", "n", "off", "paid"].includes(raw)) return false;
+  return undefined;
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  const raw = String(value || "").trim();
+  if (!raw) return undefined;
+  const normalized = raw.replace(/[, ]/g, "");
+  if (!/^[-+]?\d+(\.\d+)?$/.test(normalized)) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function detectAiModelFree(raw: unknown): { isFree: boolean | null; reason: string } {
+  const freeFlagPaths = [
+    "isFree",
+    "is_free",
+    "free",
+    "freeModel",
+    "free_model",
+    "isFreeTier",
+    "is_free_tier",
+    "billing.isFree",
+    "billing.is_free",
+    "pricing.isFree",
+    "pricing.is_free",
+  ];
+  for (const pathKey of freeFlagPaths) {
+    const parsed = normalizeOptionalBoolean(pickPathValue(raw, pathKey));
+    if (parsed !== undefined) return { isFree: parsed, reason: pathKey };
+  }
+
+  const inputPricePaths = [
+    "pricing.input",
+    "pricing.prompt",
+    "pricing.inputPrice",
+    "pricing.input_price",
+    "pricing.inputTokenPrice",
+    "pricing.input_token_price",
+    "price.input",
+    "price.prompt",
+    "price.inputPrice",
+    "price.input_price",
+    "inputPrice",
+    "input_price",
+    "promptPrice",
+    "prompt_price",
+  ];
+  const outputPricePaths = [
+    "pricing.output",
+    "pricing.completion",
+    "pricing.outputPrice",
+    "pricing.output_price",
+    "pricing.outputTokenPrice",
+    "pricing.output_token_price",
+    "price.output",
+    "price.completion",
+    "price.outputPrice",
+    "price.output_price",
+    "outputPrice",
+    "output_price",
+    "completionPrice",
+    "completion_price",
+  ];
+  let inputPrice: number | undefined;
+  let outputPrice: number | undefined;
+  for (const pathKey of inputPricePaths) {
+    const parsed = normalizeOptionalNumber(pickPathValue(raw, pathKey));
+    if (parsed !== undefined) {
+      inputPrice = parsed;
+      break;
+    }
+  }
+  for (const pathKey of outputPricePaths) {
+    const parsed = normalizeOptionalNumber(pickPathValue(raw, pathKey));
+    if (parsed !== undefined) {
+      outputPrice = parsed;
+      break;
+    }
+  }
+  if (inputPrice !== undefined && outputPrice !== undefined) {
+    return { isFree: inputPrice <= 0 && outputPrice <= 0, reason: "pricing" };
+  }
+  if ((inputPrice ?? 0) > 0 || (outputPrice ?? 0) > 0) {
+    return { isFree: false, reason: "pricing" };
+  }
+  return { isFree: null, reason: "unknown" };
+}
+
+type NormalizedAiModelItem = {
+  id: string;
+  ownedBy: string;
+  type: string;
+  subType: string;
+  contextLength: number | null;
+  maxOutputTokens: number | null;
+  isFree: boolean | null;
+  freeReason: string;
+};
+
+function normalizeAiModelItem(raw: unknown): NormalizedAiModelItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const id = String(item.id || item.model || item.name || "").trim();
+  if (!id) return null;
+  const ownedBy = String(item.owned_by || item.ownedBy || item.owner || "").trim();
+  const type = String(item.type || "").trim();
+  const subType = String(item.sub_type || item.subType || "").trim();
+  const contextLength = normalizeOptionalNumber(item.context_length ?? item.contextLength ?? item.max_context_length ?? item.maxContextLength);
+  const maxOutputTokens = normalizeOptionalNumber(item.max_output_tokens ?? item.maxOutputTokens ?? item.max_tokens ?? item.maxTokens);
+  const { isFree, reason } = detectAiModelFree(item);
+  return {
+    id,
+    ownedBy,
+    type,
+    subType,
+    contextLength: contextLength === undefined ? null : Math.floor(contextLength),
+    maxOutputTokens: maxOutputTokens === undefined ? null : Math.floor(maxOutputTokens),
+    isFree,
+    freeReason: reason,
+  };
+}
+
+function aiModelFreeSortRank(value: boolean | null) {
+  if (value === true) return 0;
+  if (value === null) return 1;
+  return 2;
+}
+
 function databaseSettingsSummary(all: Record<string, string | null>, exposeDetails = true) {
   const type = all.databaseType || (all.postgresqlConfigured === "true" ? "postgresql" : all.mysqlConfigured === "true" ? "mysql" : "sqlite");
   const configured = all.databaseConfigured === "true" || all.mysqlConfigured === "true" || all.postgresqlConfigured === "true";
@@ -678,6 +964,9 @@ function databaseSettingsSummary(all: Record<string, string | null>, exposeDetai
 }
 
 function publicSystemSettings(all: Record<string, string | null>, activeProtocol: string) {
+  const aiProvider = normalizeAiProvider(all.deepseekProvider);
+  const aiDefaultBaseUrl = getAiProviderDefaultBaseUrl(aiProvider);
+  const aiDefaultModel = getAiProviderDefaultModel(aiProvider);
   return {
     repoUrl: REPO_URL,
     telegramBotUrl: TELEGRAM_BOT_URL,
@@ -792,13 +1081,17 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       hostStatusNotify: false,
     },
     deepseek: {
+      provider: aiProvider,
       enabled: false,
       configured: false,
       apiKeyMasked: "",
-      baseUrl: DEFAULT_DEEPSEEK_BASE_URL,
-      model: DEFAULT_DEEPSEEK_MODEL,
+      baseUrl: all.deepseekBaseUrl || aiDefaultBaseUrl,
+      model: all.deepseekModel || aiDefaultModel,
       maxTokens: DEFAULT_DEEPSEEK_MAX_TOKENS,
       temperature: DEFAULT_DEEPSEEK_TEMPERATURE,
+      telegramUserManageEnabled: true,
+      telegramAutoRecallEnabled: false,
+      telegramAutoRecallSeconds: 60,
     },
   };
 }
@@ -827,6 +1120,9 @@ export const systemRouter = router({
   /** 获取系统设置（包含开源地址、版本、面板公开 URL 等元信息） */
   getSettings: publicProcedure.query(async ({ ctx }) => {
     const all = await db.getAllSettings();
+    const aiProvider = normalizeAiProvider(all.deepseekProvider);
+    const aiDefaultBaseUrl = getAiProviderDefaultBaseUrl(aiProvider);
+    const aiDefaultModel = getAiProviderDefaultModel(aiProvider);
     const panelSsl = readPanelSslSettings(all);
     const activeProtocol = ctx.req.secure || ctx.req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
     const safeSettings = publicSystemSettings(all, activeProtocol);
@@ -942,18 +1238,105 @@ export const systemRouter = router({
         hostStatusNotify: all.telegramHostStatusNotify === "true",
       },
       deepseek: {
+        provider: aiProvider,
         enabled: all.deepseekAiEnabled === "true",
         configured: !!String(all.deepseekApiKey || "").trim(),
         apiKeyMasked: maskSecret(all.deepseekApiKey),
-        baseUrl: all.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
-        model: all.deepseekModel || DEFAULT_DEEPSEEK_MODEL,
+        baseUrl: all.deepseekBaseUrl || aiDefaultBaseUrl,
+        model: all.deepseekModel || aiDefaultModel,
         maxTokens: normalizeDeepSeekNumber(all.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
         temperature: normalizeDeepSeekNumber(all.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+        telegramUserManageEnabled: all.telegramAiUserManageEnabled !== "false",
         telegramAutoRecallEnabled: all.telegramAiAutoRecallEnabled === "true",
         telegramAutoRecallSeconds: normalizeDeepSeekNumber(all.telegramAiAutoRecallSeconds, 60, 30, 1200),
       },
     };
   }),
+
+  listAiModels: adminProcedure
+    .input(z.object({
+      provider: aiProviderSchema.optional(),
+      baseUrl: z.string().max(256).optional(),
+      chatOnly: z.boolean().optional(),
+    }).optional())
+    .query(async ({ input }) => {
+      const all = await db.getAllSettings();
+      const provider = normalizeAiProvider(input?.provider || all.deepseekProvider);
+      const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
+      const baseUrl = (normalizeOptionalHttpUrl(input?.baseUrl || all.deepseekBaseUrl || defaultBaseUrl) || defaultBaseUrl).replace(/\/+$/, "");
+      const apiKey = String(all.deepseekApiKey || "").trim();
+      const checkedAt = new Date().toISOString();
+      const chatOnly = input?.chatOnly !== false;
+
+      if (!apiKey) {
+        return {
+          provider,
+          baseUrl,
+          endpoint: "",
+          configured: false,
+          checkedAt,
+          error: "请先保存 AI API Key 后再获取模型列表。",
+          models: [] as NormalizedAiModelItem[],
+          freeCount: 0,
+          paidCount: 0,
+          unknownCount: 0,
+        };
+      }
+
+      const endpoint = `${baseUrl}/models${chatOnly ? "?type=chat" : ""}`;
+      try {
+        const resp = await fetch(endpoint, {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+        });
+        if (!resp.ok) {
+          const message = await resp.text().catch(() => "");
+          throw new Error(`HTTP ${resp.status}${message ? `: ${message.slice(0, 120)}` : ""}`);
+        }
+        const payload = await resp.json().catch(() => null) as { data?: unknown };
+        const models = (Array.isArray(payload?.data) ? payload.data : [])
+          .map((item) => normalizeAiModelItem(item))
+          .filter((item): item is NormalizedAiModelItem => !!item)
+          .sort((a, b) => {
+            const freeRank = aiModelFreeSortRank(a.isFree) - aiModelFreeSortRank(b.isFree);
+            if (freeRank !== 0) return freeRank;
+            return a.id.localeCompare(b.id, "en");
+          });
+        const freeCount = models.filter((item) => item.isFree === true).length;
+        const paidCount = models.filter((item) => item.isFree === false).length;
+        return {
+          provider,
+          baseUrl,
+          endpoint,
+          configured: true,
+          checkedAt,
+          error: "",
+          models,
+          freeCount,
+          paidCount,
+          unknownCount: Math.max(0, models.length - freeCount - paidCount),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[AI] list models failed provider=${provider}: ${message}`);
+        return {
+          provider,
+          baseUrl,
+          endpoint,
+          configured: true,
+          checkedAt,
+          error: `获取模型列表失败：${message}`,
+          models: [] as NormalizedAiModelItem[],
+          freeCount: 0,
+          paidCount: 0,
+          unknownCount: 0,
+        };
+      }
+    }),
 
   /** 管理员更新系统设置 */
   updateSettings: adminProcedure
@@ -1000,6 +1383,7 @@ export const systemRouter = router({
           hostStatusNotify: z.boolean().optional(),
         }).optional(),
         deepseek: z.object({
+          provider: aiProviderSchema.optional(),
           enabled: z.boolean().optional(),
           apiKey: z.string().max(512).optional(),
           clearApiKey: z.boolean().optional(),
@@ -1007,6 +1391,7 @@ export const systemRouter = router({
           model: z.string().max(128).optional(),
           maxTokens: z.number().int().min(128).max(8192).optional(),
           temperature: z.number().min(0).max(2).optional(),
+          telegramUserManageEnabled: z.boolean().optional(),
           telegramAutoRecallEnabled: z.boolean().optional(),
           telegramAutoRecallSeconds: z.number().int().min(30).max(1200).optional(),
         }).optional(),
@@ -1196,6 +1581,12 @@ export const systemRouter = router({
       if (input.deepseek) {
         const deepseek = input.deepseek;
         const next: Record<string, string | null> = {};
+        const currentProvider = normalizeAiProvider(await db.getSetting("deepseekProvider"));
+        const nextProvider = deepseek.provider !== undefined
+          ? normalizeAiProvider(deepseek.provider)
+          : currentProvider;
+        const providerDefaultBaseUrl = getAiProviderDefaultBaseUrl(nextProvider);
+        const providerDefaultModel = getAiProviderDefaultModel(nextProvider);
         const currentApiKey = String((await db.getSetting("deepseekApiKey")) || "").trim();
         const submittedApiKey = String(deepseek.apiKey || "").trim();
         const clearingApiKey = !!deepseek.clearApiKey;
@@ -1204,13 +1595,25 @@ export const systemRouter = router({
         const nextEnabled = deepseek.enabled !== undefined ? !!deepseek.enabled : currentEnabledSetting === "true";
 
         if (nextEnabled && !effectiveApiKey) {
-          throw new Error("请先配置 DeepSeek API Key");
+          throw new Error("请先配置 AI API Key");
         }
+        if (deepseek.provider !== undefined) next.deepseekProvider = nextProvider;
         if (deepseek.enabled !== undefined) next.deepseekAiEnabled = deepseek.enabled ? "true" : "false";
-        if (deepseek.baseUrl !== undefined) next.deepseekBaseUrl = normalizeOptionalHttpUrl(deepseek.baseUrl) || DEFAULT_DEEPSEEK_BASE_URL;
-        if (deepseek.model !== undefined) next.deepseekModel = deepseek.model.trim() || DEFAULT_DEEPSEEK_MODEL;
+        if (deepseek.baseUrl !== undefined) {
+          next.deepseekBaseUrl = normalizeOptionalHttpUrl(deepseek.baseUrl) || providerDefaultBaseUrl;
+        } else if (deepseek.provider !== undefined) {
+          next.deepseekBaseUrl = providerDefaultBaseUrl;
+        }
+        if (deepseek.model !== undefined) {
+          next.deepseekModel = deepseek.model.trim() || providerDefaultModel;
+        } else if (deepseek.provider !== undefined) {
+          next.deepseekModel = providerDefaultModel;
+        }
         if (deepseek.maxTokens !== undefined) next.deepseekMaxTokens = String(deepseek.maxTokens);
         if (deepseek.temperature !== undefined) next.deepseekTemperature = String(deepseek.temperature);
+        if (deepseek.telegramUserManageEnabled !== undefined) {
+          next.telegramAiUserManageEnabled = deepseek.telegramUserManageEnabled ? "true" : "false";
+        }
         if (deepseek.telegramAutoRecallEnabled !== undefined) next.telegramAiAutoRecallEnabled = deepseek.telegramAutoRecallEnabled ? "true" : "false";
         if (deepseek.telegramAutoRecallSeconds !== undefined) next.telegramAiAutoRecallSeconds = String(deepseek.telegramAutoRecallSeconds);
         if (deepseek.clearApiKey) {
@@ -1221,7 +1624,7 @@ export const systemRouter = router({
           next.deepseekApiKey = deepseek.apiKey.trim();
         }
         await db.setSettings(next);
-        console.info("[Settings] DeepSeek AI settings updated");
+        console.info("[Settings] AI model settings updated");
       }
       if (input.ddns) {
         const next: Record<string, string | null> = {};
@@ -1498,7 +1901,7 @@ export const systemRouter = router({
     .query(async ({ input }) => {
     const force = !!input?.force;
     console.info(`[Update] Checking latest version${force ? " (force)" : ""}`);
-    const info = await getLatestUpdateInfoCached(force);
+    const info = await checkPanelUpdateTask(force);
     if (info.error) {
       console.warn(`[Update] Check failed: ${info.error}`);
     } else {

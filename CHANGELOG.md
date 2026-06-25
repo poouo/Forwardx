@@ -16,6 +16,12 @@
 - Added Telegram AI message auto-recall controls in DeepSeek settings:
   - New switch to auto-recall AI-related Telegram chat content (default off).
   - Configurable recall delay from 30s to 1200s (default 60s).
+- Added multi-provider AI backend support in panel settings:
+  - Provider selector for DeepSeek / SiliconFlow / custom OpenAI-compatible endpoints.
+  - Provider-aware default base URL and model presets to reduce manual setup errors.
+- Added AI model discovery and free-tier visibility in settings:
+  - New admin model list query endpoint and UI quick-select model dropdown.
+  - Shows inferred `free` / `paid` / `unknown` status with counts when the provider returns model metadata.
 - Improved forwarding-chain latency probe visualization for multi-entry routes:
   - Uses endpoint remark labels as target names instead of raw IP display when available.
   - Better grouped multi-entry layout alignment and node truncation/visibility handling on smaller screens.

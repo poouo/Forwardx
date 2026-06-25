@@ -62,7 +62,9 @@ type ManageActionKind =
   | "rule_disable"
   | "tunnel_rules_enable"
   | "tunnel_rules_disable"
-  | "traffic_reset";
+  | "traffic_reset"
+  | "redeem_code_generate_balance"
+  | "discount_code_generate_percent";
 
 type ManageDurationUnit = "day" | "month" | "year";
 
@@ -74,6 +76,8 @@ type ManageActionIntent = {
   durationUnit?: ManageDurationUnit;
   ruleId?: number;
   tunnel?: string;
+  codeCount?: number;
+  discountPercent?: number;
 };
 
 type PendingManageAction = {
@@ -90,6 +94,8 @@ type PendingManageAction = {
   rulePreview?: string[];
   tunnelId?: number;
   tunnelName?: string;
+  codeCount?: number;
+  discountPercent?: number;
   sourceText: string;
   createdAt: number;
   expiresAt: number;
@@ -101,6 +107,19 @@ type PreparedManageAction = {
   actor: any;
 };
 
+type ManageClarifyField = "target" | "amountYuan" | "codeCount" | "discountPercent";
+
+type PendingManageClarifySession = {
+  actorUserId: number;
+  actorRole: "admin" | "user";
+  action: Exclude<ManageActionKind, "none">;
+  intent: ManageActionIntent;
+  sourceText: string;
+  missingFields: ManageClarifyField[];
+  createdAt: number;
+  expiresAt: number;
+};
+
 let pollingStarted = false;
 let pollingAbort = false;
 let updateOffset = 0;
@@ -108,6 +127,7 @@ let activeTokenKey = "";
 const pendingBindChats = new Map<string, number>();
 const pendingRedeemChats = new Map<string, number>();
 const pendingManageActions = new Map<string, PendingManageAction>();
+const pendingManageClarifySessions = new Map<string, PendingManageClarifySession>();
 
 const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_SUCCESS_MESSAGE_DELETE_MS = 60 * 1000;
@@ -116,11 +136,16 @@ const REDEEM_SESSION_TTL_MS = 10 * 60 * 1000;
 const USER_PAGE_SIZE = 10;
 const RULE_PAGE_SIZE = 10;
 const AI_QUERY_RESULT_LIMIT = 10;
+type AiProvider = "deepseek" | "siliconflow" | "custom";
+const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
+const DEFAULT_SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1";
+const DEFAULT_SILICONFLOW_MODEL = "Qwen/Qwen3-8B";
 const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
 const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const MANAGE_ACTION_CONFIRM_TTL_MS = 10 * 60 * 1000;
+const MANAGE_CLARIFY_TTL_MS = 60 * 1000;
 const MANAGE_BALANCE_MAX_CENTS = 100_000_000;
 const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪条|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|的|吗)+$/;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
@@ -273,6 +298,57 @@ function consumePendingManageAction(actionKey: string) {
   if (!pending) return null;
   pendingManageActions.delete(pending.key);
   return pending;
+}
+
+function getManageClarifySessionKey(chatId: number | string, actorUserId: number | string) {
+  return `${chatId}:${actorUserId}`;
+}
+
+function cleanupExpiredPendingManageClarifySessions() {
+  const now = Date.now();
+  for (const [key, item] of pendingManageClarifySessions.entries()) {
+    if (!item.expiresAt || item.expiresAt <= now) pendingManageClarifySessions.delete(key);
+  }
+}
+
+function createPendingManageClarifySession(
+  chatId: number | string,
+  actor: any,
+  sourceText: string,
+  intent: ManageActionIntent,
+  missingFields: ManageClarifyField[],
+) {
+  cleanupExpiredPendingManageClarifySessions();
+  const now = Date.now();
+  const key = getManageClarifySessionKey(chatId, Number(actor?.id || 0));
+  const session: PendingManageClarifySession = {
+    actorUserId: Number(actor?.id || 0),
+    actorRole: String(actor?.role) === "admin" ? "admin" : "user",
+    action: intent.action as Exclude<ManageActionKind, "none">,
+    intent,
+    sourceText: sourceText.slice(0, 500),
+    missingFields,
+    createdAt: now,
+    expiresAt: now + MANAGE_CLARIFY_TTL_MS,
+  };
+  pendingManageClarifySessions.set(key, session);
+  return session;
+}
+
+function getPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
+  cleanupExpiredPendingManageClarifySessions();
+  const key = getManageClarifySessionKey(chatId, actorUserId);
+  const session = pendingManageClarifySessions.get(key);
+  if (!session) return null;
+  if (!session.expiresAt || session.expiresAt <= Date.now()) {
+    pendingManageClarifySessions.delete(key);
+    return null;
+  }
+  return session;
+}
+
+function clearPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
+  pendingManageClarifySessions.delete(getManageClarifySessionKey(chatId, actorUserId));
 }
 
 function getBindSessionKey(chatId: number | string, telegramId: string | number) {
@@ -1023,6 +1099,23 @@ function normalizeDeepSeekNumber(value: unknown, fallback: number, min: number, 
   return Math.min(max, Math.max(min, numeric));
 }
 
+function normalizeAiProvider(value: unknown): AiProvider {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "siliconflow") return "siliconflow";
+  if (raw === "custom") return "custom";
+  return DEFAULT_AI_PROVIDER;
+}
+
+function getAiProviderDefaultBaseUrl(provider: AiProvider) {
+  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_BASE_URL;
+  return DEFAULT_DEEPSEEK_BASE_URL;
+}
+
+function getAiProviderDefaultModel(provider: AiProvider) {
+  if (provider === "siliconflow") return DEFAULT_SILICONFLOW_MODEL;
+  return DEFAULT_DEEPSEEK_MODEL;
+}
+
 function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
   const numeric = Math.floor(Number(value));
   if (!Number.isFinite(numeric)) return 60;
@@ -1031,15 +1124,20 @@ function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
 
 async function getDeepSeekSettings() {
   const settings = await db.getAllSettings();
+  const provider = normalizeAiProvider(settings.deepseekProvider);
+  const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
+  const defaultModel = getAiProviderDefaultModel(provider);
   const apiKey = String(settings.deepseekApiKey || "").trim();
-  const baseUrl = String(settings.deepseekBaseUrl || DEFAULT_DEEPSEEK_BASE_URL).trim().replace(/\/+$/, "") || DEFAULT_DEEPSEEK_BASE_URL;
+  const baseUrl = String(settings.deepseekBaseUrl || defaultBaseUrl).trim().replace(/\/+$/, "") || defaultBaseUrl;
   return {
+    provider,
     enabled: settings.deepseekAiEnabled === "true",
     apiKey,
     baseUrl,
-    model: String(settings.deepseekModel || DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL,
+    model: String(settings.deepseekModel || defaultModel).trim() || defaultModel,
     maxTokens: normalizeDeepSeekNumber(settings.deepseekMaxTokens, DEFAULT_DEEPSEEK_MAX_TOKENS, 128, 8192),
     temperature: normalizeDeepSeekNumber(settings.deepseekTemperature, DEFAULT_DEEPSEEK_TEMPERATURE, 0, 2),
+    telegramUserManageEnabled: settings.telegramAiUserManageEnabled !== "false",
     telegramAutoRecallEnabled: settings.telegramAiAutoRecallEnabled === "true",
     telegramAutoRecallSeconds: normalizeTelegramAiAutoRecallSeconds(settings.telegramAiAutoRecallSeconds),
   };
@@ -1649,6 +1747,8 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
     tunnel_rules_enable: "启用隧道规则",
     tunnel_rules_disable: "关闭隧道规则",
     traffic_reset: "重置流量",
+    redeem_code_generate_balance: "生成余额兑换码",
+    discount_code_generate_percent: "生成折扣码",
   };
   return mapping[action];
 }
@@ -1933,6 +2033,10 @@ async function executePendingManageAction(pending: PendingManageAction, callback
   if (Number(actor?.id || 0) !== Number(pending.actorUserId || 0)) {
     throw new Error("只有原发起人可以确认该操作。");
   }
+  const deepseekSettings = await getDeepSeekSettings().catch(() => null);
+  if (String(actor?.role) !== "admin" && deepseekSettings?.telegramUserManageEnabled === false) {
+    throw new Error("当前仅管理员可使用 AI 对话管理功能。");
+  }
   if (!isManageActionAllowedForRole(actor?.role, pending.action)) {
     throw new Error("当前账户已无该操作权限。");
   }
@@ -2133,6 +2237,12 @@ async function tryHandleManageAction(message: TelegramMessage, user: any, rawTex
   if (!query) return false;
   const { intent, writeLike } = await parseManageActionIntent(query);
   if (!writeLike || intent.action === "none") return false;
+  const deepseekSettings = await getDeepSeekSettings().catch(() => null);
+  if (String(user?.role) !== "admin" && deepseekSettings?.telegramUserManageEnabled === false) {
+    const sent = await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return true;
+  }
   const prepared = await prepareManageAction(user, query, intent);
   if (!prepared.prepared) {
     const sent = await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
