@@ -2,13 +2,17 @@
 import { requireMainBackupAllowed } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
-import { pushAgentRefresh } from "./agentEvents";
-import { pushTunnelEndpointRefresh } from "./routers/helpers";
+import { pushAgentRefresh, pushAgentUpgrade } from "./agentEvents";
+import { pushTunnelEndpointRefresh, requireHostUseAccess, requireTunnelUseOrTrafficBillingAccess } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
 import { createTelegramWebAppLoginChallenge } from "./telegramWebAppLogin";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "./portPolicy";
+import { isAgentVersionAtLeast } from "./agentRouteUtils";
+import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
+import { checkPanelUpdateTask, startPanelUpgradeTask } from "./_core/systemRouter";
+import { requireRuleProtocolEnabled } from "./forwardProtocolSettings";
 
 type TelegramUser = {
   id: number;
@@ -60,6 +64,8 @@ type ManageActionKind =
   | "forward_disable"
   | "rule_enable"
   | "rule_disable"
+  | "rule_create"
+  | "rule_delete"
   | "tunnel_rules_enable"
   | "tunnel_rules_disable"
   | "traffic_reset"
@@ -67,6 +73,7 @@ type ManageActionKind =
   | "discount_code_generate_percent";
 
 type ManageDurationUnit = "day" | "month" | "year";
+type ManageForwardMode = "host" | "tunnel";
 
 type ManageActionIntent = {
   action: ManageActionKind;
@@ -76,6 +83,11 @@ type ManageActionIntent = {
   durationUnit?: ManageDurationUnit;
   ruleId?: number;
   tunnel?: string;
+  host?: string;
+  forwardMode?: ManageForwardMode;
+  sourcePort?: number;
+  targetIp?: string;
+  targetPort?: number;
   codeCount?: number;
   discountPercent?: number;
 };
@@ -94,6 +106,12 @@ type PendingManageAction = {
   rulePreview?: string[];
   tunnelId?: number;
   tunnelName?: string;
+  hostId?: number;
+  hostName?: string;
+  forwardMode?: ManageForwardMode;
+  sourcePort?: number;
+  targetIp?: string;
+  targetPort?: number;
   codeCount?: number;
   discountPercent?: number;
   sourceText: string;
@@ -107,7 +125,21 @@ type PreparedManageAction = {
   actor: any;
 };
 
-type ManageClarifyField = "target" | "amountYuan" | "codeCount" | "discountPercent";
+type ManageClarifyPrompt = {
+  actor: any;
+  intent: ManageActionIntent;
+  missingFields: ManageClarifyField[];
+  text: string;
+  keyboard?: InlineKeyboardMarkup;
+};
+
+type ManageActionPrepareResult = {
+  prepared?: PreparedManageAction;
+  clarify?: ManageClarifyPrompt;
+  error?: string;
+};
+
+type ManageClarifyField = "target" | "amountYuan" | "codeCount" | "discountPercent" | "forwardMode" | "tunnel" | "host" | "ruleId";
 
 type PendingManageClarifySession = {
   actorUserId: number;
@@ -120,6 +152,18 @@ type PendingManageClarifySession = {
   expiresAt: number;
 };
 
+type UpdateCommandKind = "panel" | "agent";
+
+type PendingUpdateAction = {
+  key: string;
+  actorUserId: number;
+  kind: UpdateCommandKind;
+  targetVersion?: string;
+  hostIds?: number[];
+  createdAt: number;
+  expiresAt: number;
+};
+
 let pollingStarted = false;
 let pollingAbort = false;
 let updateOffset = 0;
@@ -128,6 +172,8 @@ const pendingBindChats = new Map<string, number>();
 const pendingRedeemChats = new Map<string, number>();
 const pendingManageActions = new Map<string, PendingManageAction>();
 const pendingManageClarifySessions = new Map<string, PendingManageClarifySession>();
+const pendingUpdateActions = new Map<string, PendingUpdateAction>();
+const updateCommandRateLimit = new Map<string, number>();
 
 const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_SUCCESS_MESSAGE_DELETE_MS = 60 * 1000;
@@ -137,6 +183,21 @@ const USER_PAGE_SIZE = 10;
 const RULE_PAGE_SIZE = 10;
 const AI_QUERY_RESULT_LIMIT = 10;
 type AiProvider = "deepseek" | "siliconflow" | "custom";
+type DeepSeekSettings = {
+  provider: AiProvider;
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  chatCompletionsUrl: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  telegramUserManageEnabled: boolean;
+  telegramAutoRecallEnabled: boolean;
+  telegramAutoRecallSeconds: number;
+  redemptionEnabled: boolean;
+  discountEnabled: boolean;
+};
 const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
 const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
@@ -147,6 +208,11 @@ const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
 const MANAGE_ACTION_CONFIRM_TTL_MS = 10 * 60 * 1000;
 const MANAGE_CLARIFY_TTL_MS = 60 * 1000;
 const MANAGE_BALANCE_MAX_CENTS = 100_000_000;
+const MANAGE_CODE_MAX_COUNT = 500;
+const MANAGE_CODE_DISPLAY_LIMIT = 60;
+const UPDATE_ACTION_CONFIRM_TTL_MS = 5 * 60 * 1000;
+const UPDATE_COMMAND_COOLDOWN_MS = 60 * 1000;
+const UPDATE_AGENT_PREVIEW_LIMIT = 15;
 const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪条|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|的|吗)+$/;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
@@ -162,6 +228,8 @@ const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "users", description: "管理员用户管理" },
   { command: "reset", description: "管理员重置用户流量" },
   { command: "renew", description: "管理员续期用户套餐" },
+  { command: "updatepanel", description: "管理员更新面板（需确认）" },
+  { command: "updateagent", description: "管理员更新 Agent（需确认）" },
   { command: "help", description: "查看帮助" },
 ];
 
@@ -251,12 +319,65 @@ function formatManageDuration(value: number, unit: ManageDurationUnit) {
   return `${safeValue} 个月`;
 }
 
+function formatDiscountPercentLabel(discountPercent: number | string | null | undefined) {
+  const offPercent = Math.max(1, Math.min(100, Math.round(Number(discountPercent || 0))));
+  const payPercent = Math.max(0, 100 - offPercent);
+  const zheText = payPercent % 10 === 0
+    ? String(payPercent / 10)
+    : (payPercent / 10).toFixed(1).replace(/\.0$/, "");
+  return `${zheText} 折（减 ${offPercent}%）`;
+}
+
 function formatManageRulePreview(rule: any) {
   const name = shortText(rule?.name || "-", 24);
   const sourcePort = rule?.sourcePort ?? "-";
   const targetIp = rule?.targetIp || "-";
   const targetPort = rule?.targetPort ?? "-";
   return `#${Number(rule?.id || 0)} ${name} :${sourcePort} -> ${targetIp}:${targetPort}`;
+}
+
+function manageForwardModeLabel(mode?: ManageForwardMode | null) {
+  return mode === "tunnel" ? "隧道转发" : "端口转发";
+}
+
+const MANAGE_RULE_TARGET_HOST_RE = /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/;
+
+function isValidManageRuleTargetHost(value: unknown) {
+  const host = String(value || "").trim();
+  return !!host && MANAGE_RULE_TARGET_HOST_RE.test(host);
+}
+
+function pickManageRuleForwardType(actor: any, mode: ManageForwardMode) {
+  const preferred = mode === "tunnel"
+    ? ["gost"]
+    : ["iptables", "realm", "socat", "gost"];
+  if (String(actor?.role) === "admin") return preferred[0];
+  const allowedRaw = (actor as any)?.allowedForwardTypes as string | null | undefined;
+  if (allowedRaw === null || allowedRaw === undefined) return preferred[0];
+  const allowedSet = new Set(String(allowedRaw).split(",").map((item) => item.trim()).filter(Boolean));
+  if (allowedSet.size === 0) return preferred[0];
+  const selected = preferred.find((type) => allowedSet.has(type));
+  if (!selected) {
+    throw new Error(mode === "tunnel"
+      ? "当前账户没有使用隧道转发（gost）的权限，请联系管理员授权。"
+      : "当前账户没有可用的端口转发类型权限，请联系管理员授权。");
+  }
+  return selected;
+}
+
+async function settleTrafficBillingForDeletedRuleByTelegram(rule: any) {
+  const tunnelId = Number(rule?.tunnelId || 0);
+  const billed = await db.settleTrafficBillingRuleOnDelete({
+    userId: Number(rule?.userId || 0),
+    ruleId: Number(rule?.id || 0),
+    resourceType: tunnelId > 0 ? "tunnel" : "host",
+    resourceId: tunnelId > 0 ? tunnelId : Number(rule?.hostId || 0),
+  });
+  if (billed && Number((billed as any).balanceAfterCents) < 0) {
+    await db.setUserForwardAccess(Number(rule?.userId || 0), false, "traffic_billing_balance");
+    await refreshUserForwardEndpoints(Number(rule?.userId || 0), "telegram-traffic-billing-delete-balance-negative");
+  }
+  return billed;
 }
 
 function cleanupExpiredPendingManageActions() {
@@ -349,6 +470,69 @@ function getPendingManageClarifySession(chatId: number | string, actorUserId: nu
 
 function clearPendingManageClarifySession(chatId: number | string, actorUserId: number | string) {
   pendingManageClarifySessions.delete(getManageClarifySessionKey(chatId, actorUserId));
+}
+
+function getUpdateRateLimitKey(actorUserId: number | string, kind: UpdateCommandKind) {
+  return `${Number(actorUserId) || 0}:${kind}`;
+}
+
+function cleanupExpiredUpdateRateLimits() {
+  const now = Date.now();
+  for (const [key, ts] of updateCommandRateLimit.entries()) {
+    if (!Number.isFinite(ts) || now - ts > UPDATE_COMMAND_COOLDOWN_MS * 3) updateCommandRateLimit.delete(key);
+  }
+}
+
+function takeUpdateCommandCooldown(actorUserId: number | string, kind: UpdateCommandKind) {
+  cleanupExpiredUpdateRateLimits();
+  const key = getUpdateRateLimitKey(actorUserId, kind);
+  const now = Date.now();
+  const lastAt = updateCommandRateLimit.get(key) || 0;
+  const waitMs = UPDATE_COMMAND_COOLDOWN_MS - (now - lastAt);
+  if (waitMs > 0) return waitMs;
+  updateCommandRateLimit.set(key, now);
+  return 0;
+}
+
+function cleanupExpiredPendingUpdateActions() {
+  const now = Date.now();
+  for (const [key, item] of pendingUpdateActions.entries()) {
+    if (!item.expiresAt || item.expiresAt <= now) pendingUpdateActions.delete(key);
+  }
+}
+
+function createPendingUpdateAction(action: Omit<PendingUpdateAction, "key" | "createdAt" | "expiresAt">) {
+  cleanupExpiredPendingUpdateActions();
+  const now = Date.now();
+  const key = randomCode(18).toLowerCase();
+  const pending: PendingUpdateAction = {
+    ...action,
+    key,
+    createdAt: now,
+    expiresAt: now + UPDATE_ACTION_CONFIRM_TTL_MS,
+  };
+  pendingUpdateActions.set(key, pending);
+  return pending;
+}
+
+function getPendingUpdateAction(actionKey: string) {
+  cleanupExpiredPendingUpdateActions();
+  const key = String(actionKey || "").trim().toLowerCase();
+  if (!key) return null;
+  const pending = pendingUpdateActions.get(key);
+  if (!pending) return null;
+  if (!pending.expiresAt || pending.expiresAt <= Date.now()) {
+    pendingUpdateActions.delete(key);
+    return null;
+  }
+  return pending;
+}
+
+function consumePendingUpdateAction(actionKey: string) {
+  const pending = getPendingUpdateAction(actionKey);
+  if (!pending) return null;
+  pendingUpdateActions.delete(pending.key);
+  return pending;
 }
 
 function getBindSessionKey(chatId: number | string, telegramId: string | number) {
@@ -536,7 +720,15 @@ function helpText(bound: boolean, isAdmin = false) {
     "/unbind - 解除当前 Telegram 绑定（需要确认）",
   ];
   if (isAdmin) {
-    base.push("", "管理员命令：", "/users - 查看用户管理", "/reset 用户ID - 重置用户流量", "/renew 用户ID - 续期用户一个月");
+    base.push(
+      "",
+      "管理员命令：",
+      "/users - 查看用户管理",
+      "/reset 用户ID - 重置用户流量",
+      "/renew 用户ID - 续期用户一个月",
+      "/updatepanel - 检查并更新面板（60 秒限流）",
+      "/updateagent - 检查并更新 Agent（60 秒限流）",
+    );
   }
   return base.map(escapeHtml).join("\n");
 }
@@ -741,6 +933,90 @@ function manageActionConfirmKeyboard(actionKey: string): InlineKeyboardMarkup {
       [
         { text: "✅ 确认执行", callback_data: `fx:op:confirm:${actionKey}` },
         { text: "❌ 取消", callback_data: `fx:op:cancel:${actionKey}` },
+      ],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
+}
+
+function manageClarifyCancelKeyboard(): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "❌ 取消本次操作", callback_data: "fx:op:clarify:cancel" }],
+      [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
+    ],
+  };
+}
+
+function manageClarifyModeKeyboard(): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🖥 端口转发", callback_data: "fx:op:clarify:mode:host" },
+        { text: "🔗 隧道转发", callback_data: "fx:op:clarify:mode:tunnel" },
+      ],
+      [{ text: "❌ 取消", callback_data: "fx:op:clarify:cancel" }],
+    ],
+  };
+}
+
+function manageClarifyTunnelKeyboard(tunnels: any[]): InlineKeyboardMarkup {
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  const max = 12;
+  let row: InlineKeyboardButton[] = [];
+  for (const tunnel of tunnels.slice(0, max)) {
+    const id = Number(tunnel?.id || 0);
+    if (!id) continue;
+    const label = `#${id} ${shortText(tunnel?.name || "-", 10)}`;
+    row.push({ text: label, callback_data: `fx:op:clarify:tunnel:${id}` });
+    if (row.length >= 2) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length > 0) rows.push(row);
+  rows.push([{ text: "❌ 取消", callback_data: "fx:op:clarify:cancel" }]);
+  return { inline_keyboard: rows };
+}
+
+function manageClarifyHostKeyboard(hosts: any[]): InlineKeyboardMarkup {
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  const max = 12;
+  let row: InlineKeyboardButton[] = [];
+  for (const host of hosts.slice(0, max)) {
+    const id = Number(host?.id || 0);
+    if (!id) continue;
+    const label = `#${id} ${shortText(host?.name || host?.ip || "-", 10)}`;
+    row.push({ text: label, callback_data: `fx:op:clarify:host:${id}` });
+    if (row.length >= 2) {
+      rows.push(row);
+      row = [];
+    }
+  }
+  if (row.length > 0) rows.push(row);
+  rows.push([{ text: "❌ 取消", callback_data: "fx:op:clarify:cancel" }]);
+  return { inline_keyboard: rows };
+}
+
+function manageClarifyRuleKeyboard(rules: any[]): InlineKeyboardMarkup {
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  for (const rule of rules.slice(0, 10)) {
+    const id = Number(rule?.id || 0);
+    if (!id) continue;
+    const target = `${shortText(rule?.targetIp || "-", 10)}:${rule?.targetPort ?? "-"}`;
+    rows.push([{ text: `#${id} ${target}`, callback_data: `fx:op:clarify:rule:${id}` }]);
+  }
+  rows.push([{ text: "❌ 取消", callback_data: "fx:op:clarify:cancel" }]);
+  return { inline_keyboard: rows };
+}
+
+function updateActionConfirmKeyboard(kind: UpdateCommandKind, actionKey: string): InlineKeyboardMarkup {
+  const confirmText = kind === "panel" ? "✅ 确认更新面板" : "✅ 确认更新 Agent";
+  return {
+    inline_keyboard: [
+      [
+        { text: confirmText, callback_data: `fx:update:${kind}:confirm:${actionKey}` },
+        { text: "❌ 取消", callback_data: `fx:update:${kind}:cancel:${actionKey}` },
       ],
       [{ text: "🏠 返回菜单", callback_data: "fx:menu" }],
     ],
@@ -1128,7 +1404,7 @@ function normalizeTelegramAiAutoRecallSeconds(value: unknown) {
   return Math.min(1200, Math.max(30, numeric));
 }
 
-async function getDeepSeekSettings() {
+async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
   const settings = await db.getAllSettings();
   const provider = normalizeAiProvider(settings.deepseekProvider);
   const defaultBaseUrl = getAiProviderDefaultBaseUrl(provider);
@@ -1147,6 +1423,8 @@ async function getDeepSeekSettings() {
     telegramUserManageEnabled: settings.telegramAiUserManageEnabled !== "false",
     telegramAutoRecallEnabled: settings.telegramAiAutoRecallEnabled === "true",
     telegramAutoRecallSeconds: normalizeTelegramAiAutoRecallSeconds(settings.telegramAiAutoRecallSeconds),
+    redemptionEnabled: settings.redemptionEnabled !== "false",
+    discountEnabled: settings.discountEnabled !== "false",
   };
 }
 
@@ -1509,6 +1787,95 @@ function extractManageAmountYuan(text: string) {
   return undefined;
 }
 
+function parseManageCodeCount(value: unknown) {
+  const parsed = parseNumericToken(value);
+  if (!Number.isFinite(parsed as number)) return undefined;
+  const count = Math.floor(Number(parsed));
+  if (!Number.isFinite(count) || count <= 0) return undefined;
+  return count;
+}
+
+function normalizeManageDiscountPercent(value: unknown) {
+  const numeric = Math.round(Number(value));
+  if (!Number.isFinite(numeric) || numeric <= 0 || numeric > 100) return undefined;
+  return numeric;
+}
+
+function extractManageCodeCount(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return undefined;
+
+  const byCountAndCode = raw.match(
+    /([0-9零〇一二两三四五六七八九十百千]+)\s*(?:个|张|份|组)\s*(?:[0-9]+(?:\.\d+)?\s*(?:元|块|¥|￥)?\s*)?(?:余额|充值|折扣|优惠)?(?:兑换码|折扣码|优惠码|代金码)/i,
+  );
+  if (byCountAndCode?.[1]) {
+    return parseManageCodeCount(byCountAndCode[1]);
+  }
+
+  const byGenerateCount = raw.match(
+    /(?:生成|创建|新增|来|发|做|弄)\s*([0-9零〇一二两三四五六七八九十百千]+)\s*(?:个|张|份|组)/i,
+  );
+  if (byGenerateCount?.[1]) {
+    return parseManageCodeCount(byGenerateCount[1]);
+  }
+
+  const byDirectCount = raw.match(
+    /(?:生成|创建|新增|来|发|做|弄|给我)\s*([0-9零〇一二两三四五六七八九十百千]+)\s*(?:个|张|份|组)?\s*(?:余额|充值|折扣|优惠)?(?:兑换码|折扣码|优惠码|代金码)/i,
+  );
+  if (byDirectCount?.[1]) {
+    return parseManageCodeCount(byDirectCount[1]);
+  }
+  return undefined;
+}
+
+function extractManageRedeemAmountYuan(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return undefined;
+
+  const byCountThenAmount = raw.match(
+    /(?:[0-9零〇一二两三四五六七八九十百千]+)\s*(?:个|张|份|组)\s*([+-]?\d+(?:\.\d+)?)\s*(?:元|块|¥|￥)?\s*(?:余额|充值)?(?:兑换码|代金码)/i,
+  );
+  if (byCountThenAmount?.[1]) {
+    const amount = Number(byCountThenAmount[1]);
+    if (Number.isFinite(amount)) return amount;
+  }
+
+  const byPer = raw.match(/(?:每个|每张|单个|面额|金额|额度)\s*[:：]?\s*([+-]?\d+(?:\.\d+)?)\s*(?:元|块|¥|￥)?/i);
+  if (byPer?.[1]) {
+    const amount = Number(byPer[1]);
+    if (Number.isFinite(amount)) return amount;
+  }
+
+  const byCodeAmount = raw.match(/([+-]?\d+(?:\.\d+)?)\s*(?:元|块|¥|￥)?\s*(?:的)?\s*(?:余额|充值)?(?:兑换码|代金码)/i);
+  if (byCodeAmount?.[1]) {
+    const amount = Number(byCodeAmount[1]);
+    if (Number.isFinite(amount)) return amount;
+  }
+  return undefined;
+}
+
+function extractManageDiscountPercent(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return undefined;
+
+  const byZhe = raw.match(/([0-9]+(?:\.\d+)?)\s*折/);
+  if (byZhe?.[1]) {
+    const zhe = Number(byZhe[1]);
+    if (Number.isFinite(zhe) && zhe > 0 && zhe <= 10) {
+      return normalizeManageDiscountPercent(Math.round((10 - zhe) * 10));
+    }
+  }
+
+  const byPercent = raw.match(/([1-9]\d{0,2})\s*%\s*(?:off|折扣|优惠|折)?/i)
+    || raw.match(/(?:减|优惠|折扣)\s*([1-9]\d{0,2})\s*%/i)
+    || raw.match(/(?:减|优惠|折扣)\s*([1-9]\d{0,2})\s*(?:个点|百分点)/i)
+    || raw.match(/^([1-9]\d{0,2})\s*%?$/i);
+  if (byPercent?.[1]) {
+    return normalizeManageDiscountPercent(byPercent[1]);
+  }
+  return undefined;
+}
+
 function extractManageDuration(text: string): { value: number; unit: ManageDurationUnit } | null {
   const hit = text.match(/([0-9零〇一二两三四五六七八九十百千]+)\s*(天|日|个月|月|年)/);
   if (!hit) return null;
@@ -1559,6 +1926,126 @@ function extractManageTunnelKeyword(text: string) {
   return "";
 }
 
+function normalizeManageHostKeyword(value: unknown) {
+  let keyword = String(value || "")
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/^目标[:：]?\s*/i, "")
+    .replace(/^(?:主机|机器|节点|agent|host|server)\s*/i, "")
+    .replace(/\s*(?:主机|机器|节点|agent|host|server)\s*$/i, "")
+    .trim();
+  if (!keyword) return "";
+  const parsed = parseNumericToken(keyword.replace(/^#/, ""));
+  if (parsed) return String(parsed);
+  return keyword.slice(0, 80);
+}
+
+function extractManageHostKeyword(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return "";
+
+  const byEntity = raw.match(/(?:主机|机器|节点|agent|host|server)\s*[:：#]?\s*([^\s，,。；;！？!?]+)/i);
+  if (byEntity?.[1]) return normalizeManageHostKeyword(byEntity[1]);
+
+  const byVerb = raw.match(/(?:添加|新增|增加|创建|删除|移除)\s*([^\s，,。；;！？!?]+)\s*(?:主机|机器|节点|agent|host|server)/i);
+  if (byVerb?.[1]) return normalizeManageHostKeyword(byVerb[1]);
+
+  const byHashId = raw.match(/#\s*([0-9]+)\s*(?:主机|机器|节点|agent|host|server)/i);
+  if (byHashId?.[1]) return normalizeManageHostKeyword(byHashId[1]);
+
+  return "";
+}
+
+function normalizeManageForwardMode(value: unknown): ManageForwardMode | undefined {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (/(隧道|链路|tunnel|link)/i.test(raw)) return "tunnel";
+  if (/(端口|主机|host|server|machine|节点|直连|普通转发)/i.test(raw)) return "host";
+  return undefined;
+}
+
+function extractManageForwardMode(text: string): ManageForwardMode | undefined {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return undefined;
+  const hasTunnel = /(隧道转发|隧道规则|隧道|链路|tunnel|link)/i.test(raw);
+  const hasHost = /(端口转发|主机转发|主机|机器|节点|host|server|普通转发|直连)/i.test(raw);
+  if (hasTunnel && !hasHost) return "tunnel";
+  if (hasHost && !hasTunnel) return "host";
+  if (/(加入|添加到|走)\s*(?:隧道|链路)/i.test(raw)) return "tunnel";
+  if (/(端口转发|普通转发|直连)/i.test(raw)) return "host";
+  return undefined;
+}
+
+function normalizeManageTargetIp(value: unknown) {
+  let host = String(value || "")
+    .trim()
+    .replace(/^目标[:：]?\s*/i, "")
+    .replace(/^到\s*/i, "")
+    .replace(/^转发到\s*/i, "")
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+  if (!host) return "";
+  if (/^https?:\/\//i.test(host)) {
+    try {
+      host = new URL(host).hostname || host;
+    } catch {
+      // ignore invalid URL parsing
+    }
+  }
+  host = host.replace(/^\[+|\]+$/g, "").trim();
+  return host.slice(0, 253);
+}
+
+function parseManagePort(value: unknown) {
+  const port = Math.floor(Number(value));
+  if (!Number.isFinite(port) || port < 1 || port > 65535) return undefined;
+  return port;
+}
+
+function extractManageTargetEndpoint(text: string): { targetIp?: string; targetPort?: number } {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return {};
+
+  const bracketHost = raw.match(/\[\s*([0-9a-fA-F:]+)\s*]\s*[:：]\s*(\d{1,5})/);
+  if (bracketHost?.[1] && bracketHost?.[2]) {
+    const targetPort = parseManagePort(bracketHost[2]);
+    const targetIp = normalizeManageTargetIp(bracketHost[1]);
+    if (targetIp && targetPort) return { targetIp, targetPort };
+  }
+
+  const toPort = raw.match(/(?:目标|转发到|到)\s*([A-Za-z0-9._:\-\[\]]+)\s*(?:的)?\s*(\d{1,5})\s*端口/i);
+  if (toPort?.[1] && toPort?.[2]) {
+    const targetPort = parseManagePort(toPort[2]);
+    const targetIp = normalizeManageTargetIp(toPort[1]);
+    if (targetIp && targetPort) return { targetIp, targetPort };
+  }
+
+  const hostPort = raw.match(/([A-Za-z0-9][A-Za-z0-9._:-]{1,252})\s*[:：]\s*(\d{1,5})/);
+  if (hostPort?.[1] && hostPort?.[2]) {
+    const targetPort = parseManagePort(hostPort[2]);
+    const targetIp = normalizeManageTargetIp(hostPort[1]);
+    if (targetIp && targetPort) return { targetIp, targetPort };
+  }
+
+  return {};
+}
+
+function extractManageSourcePort(text: string): number | undefined {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return undefined;
+  if (/(随机(?:源)?端口|自动(?:分配)?端口|auto\s*port)/i.test(raw)) return 0;
+
+  const byName = raw.match(/(?:源端口|入口端口|监听端口|本地端口|source\s*port|listen\s*port)\s*[:：]?\s*(\d{1,5})/i);
+  if (byName?.[1]) return parseManagePort(byName[1]);
+
+  const byFrom = raw.match(/从\s*(\d{1,5})\s*端口/i);
+  if (byFrom?.[1]) return parseManagePort(byFrom[1]);
+
+  const byEntry = raw.match(/入口\s*[:：]?\s*(\d{1,5})/i);
+  if (byEntry?.[1]) return parseManagePort(byEntry[1]);
+
+  return undefined;
+}
+
 function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): ManageActionIntent {
   const allowed = new Set<ManageActionKind>([
     "none",
@@ -1571,9 +2058,13 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     "forward_disable",
     "rule_enable",
     "rule_disable",
+    "rule_create",
+    "rule_delete",
     "tunnel_rules_enable",
     "tunnel_rules_disable",
     "traffic_reset",
+    "redeem_code_generate_balance",
+    "discount_code_generate_percent",
   ]);
   const action = allowed.has(value?.action as ManageActionKind)
     ? (value.action as ManageActionKind)
@@ -1598,6 +2089,29 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
   const fallbackRuleId = parseNumericToken(fallback.ruleId);
   const ruleId = modelRuleId || fallbackRuleId;
   const tunnel = normalizeManageTunnelKeyword(value?.tunnel || fallback.tunnel);
+  const host = normalizeManageHostKeyword(value?.host || fallback.host);
+  const forwardMode = normalizeManageForwardMode(value?.forwardMode || fallback.forwardMode);
+  const modelTargetIp = normalizeManageTargetIp(value?.targetIp);
+  const fallbackTargetIp = normalizeManageTargetIp(fallback.targetIp);
+  const targetIp = modelTargetIp || fallbackTargetIp;
+  const modelTargetPort = parseManagePort(value?.targetPort);
+  const fallbackTargetPort = parseManagePort(fallback.targetPort);
+  const targetPort = modelTargetPort || fallbackTargetPort;
+  const sourceModelRaw = value?.sourcePort;
+  const sourceFallbackRaw = fallback.sourcePort;
+  const sourcePortModel = sourceModelRaw === 0 || String(sourceModelRaw || "").trim() === "0"
+    ? 0
+    : parseManagePort(sourceModelRaw);
+  const sourcePortFallback = sourceFallbackRaw === 0 || String(sourceFallbackRaw || "").trim() === "0"
+    ? 0
+    : parseManagePort(sourceFallbackRaw);
+  const sourcePort = sourcePortModel ?? sourcePortFallback;
+  const codeCountModel = parseManageCodeCount(value?.codeCount);
+  const codeCountFallback = parseManageCodeCount(fallback.codeCount);
+  const codeCount = codeCountModel || codeCountFallback;
+  const discountPercentModel = normalizeManageDiscountPercent(value?.discountPercent);
+  const discountPercentFallback = normalizeManageDiscountPercent(fallback.discountPercent);
+  const discountPercent = discountPercentModel || discountPercentFallback;
   return {
     action,
     ...(target ? { target } : {}),
@@ -1606,21 +2120,133 @@ function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): 
     ...(durationUnit ? { durationUnit } : {}),
     ...(ruleId ? { ruleId } : {}),
     ...(tunnel ? { tunnel } : {}),
+    ...(host ? { host } : {}),
+    ...(forwardMode ? { forwardMode } : {}),
+    ...(targetIp ? { targetIp } : {}),
+    ...(targetPort ? { targetPort } : {}),
+    ...(sourcePort !== undefined ? { sourcePort } : {}),
+    ...(codeCount ? { codeCount } : {}),
+    ...(discountPercent ? { discountPercent } : {}),
   };
+}
+
+function extractManageIntentPatchFromText(text: string, missingFields: ManageClarifyField[] = []): Partial<ManageActionIntent> {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return {};
+  const expectAmount = missingFields.includes("amountYuan");
+  const expectCodeCount = missingFields.includes("codeCount");
+  const expectDiscountPercent = missingFields.includes("discountPercent");
+  const plainNumberMatch = raw.match(/^([+-]?\d+(?:\.\d+)?)$/);
+  const hasCountUnit = /(?:个|张|份|组)/i.test(raw);
+  const target = normalizeManageTargetKeyword(extractManageTargetKeyword(raw));
+  const amountRaw = extractManageAmountYuan(raw);
+  const redeemAmountRaw = extractManageRedeemAmountYuan(raw);
+  let amountYuan = Number.isFinite(Number(amountRaw)) ? Number(amountRaw) : undefined;
+  if (!Number.isFinite(amountYuan as number) && Number.isFinite(Number(redeemAmountRaw))) {
+    amountYuan = Number(redeemAmountRaw);
+  }
+  if (!Number.isFinite(amountYuan as number) && expectAmount) {
+    if (plainNumberMatch?.[1]) {
+      const parsed = Number(plainNumberMatch[1]);
+      if (Number.isFinite(parsed)) amountYuan = parsed;
+    }
+  }
+  let codeCount = extractManageCodeCount(raw);
+  if (!Number.isFinite(codeCount as number) && expectCodeCount) {
+    const shouldDeferCodeCountForSingleNumber = !!plainNumberMatch?.[1] && !hasCountUnit && (expectAmount || expectDiscountPercent);
+    if (!shouldDeferCodeCountForSingleNumber) {
+      codeCount = parseManageCodeCount(raw);
+    }
+  }
+  let discountPercent = extractManageDiscountPercent(raw);
+  if (!Number.isFinite(discountPercent as number) && expectDiscountPercent) {
+    const unsignedNumber = plainNumberMatch?.[1]?.startsWith("+")
+      ? plainNumberMatch[1].slice(1)
+      : plainNumberMatch?.[1];
+    if (unsignedNumber && /^[0-9]+(?:\.\d+)?$/.test(unsignedNumber)) {
+      const numeric = Number(unsignedNumber);
+      if (Number.isFinite(numeric)) {
+        discountPercent = numeric > 0 && numeric <= 10
+          ? normalizeManageDiscountPercent(Math.round((10 - numeric) * 10))
+          : normalizeManageDiscountPercent(Math.round(numeric));
+      }
+    }
+  }
+  const duration = extractManageDuration(raw);
+  const ruleId = extractManageRuleId(raw);
+  const tunnel = normalizeManageTunnelKeyword(extractManageTunnelKeyword(raw));
+  const host = normalizeManageHostKeyword(extractManageHostKeyword(raw));
+  const forwardMode = normalizeManageForwardMode(extractManageForwardMode(raw));
+  const endpoint = extractManageTargetEndpoint(raw);
+  const targetIp = normalizeManageTargetIp(endpoint.targetIp || "");
+  const targetPort = parseManagePort(endpoint.targetPort);
+  const sourceRaw = extractManageSourcePort(raw);
+  const sourcePort = sourceRaw === 0 ? 0 : parseManagePort(sourceRaw);
+  const patch: Partial<ManageActionIntent> = {};
+  if (target) patch.target = target;
+  if (Number.isFinite(amountYuan as number)) patch.amountYuan = Number(amountYuan);
+  if (duration) {
+    patch.durationValue = duration.value;
+    patch.durationUnit = duration.unit;
+  }
+  if (ruleId) patch.ruleId = ruleId;
+  if (tunnel) patch.tunnel = tunnel;
+  if (host) patch.host = host;
+  if (forwardMode) patch.forwardMode = forwardMode;
+  if (sourcePort !== undefined) patch.sourcePort = sourcePort;
+  if (targetIp) patch.targetIp = targetIp;
+  if (targetPort) patch.targetPort = targetPort;
+  if (Number.isFinite(codeCount as number)) patch.codeCount = Number(codeCount);
+  if (Number.isFinite(discountPercent as number)) patch.discountPercent = Number(discountPercent);
+  return patch;
+}
+
+function mergeManageActionIntent(base: ManageActionIntent, patch: Partial<ManageActionIntent>) {
+  return normalizeManageActionIntent({ ...base, ...patch, action: base.action }, base);
 }
 
 function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
   const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!raw) return { intent: { action: "none" }, writeLike: false };
-  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|调整|规则)/i.test(raw);
+  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|新增|添加|创建|删除|移除|调整|规则|转发|折扣码|优惠码|兑换码|代金码)/i.test(raw);
   const enableVerb = /(开启|启用|恢复|打开)/i.test(raw);
   const disableVerb = /(关闭|停用|禁用|暂停)/i.test(raw);
+  const createVerb = /(新增|添加|增加|创建|加一个|开一个|新建)/i.test(raw);
+  const generateVerb = /(?:生成|给我生成|来|发我|发我点|做|弄)/i.test(raw);
+  const deleteVerb = /(删除|移除|去掉|取消|删掉)/i.test(raw);
+  const hasForwardWord = /(转发|规则|rule|port|端口)/i.test(raw);
   const hasRuleWord = /(规则|rule)/i.test(raw);
   const hasTunnelWord = /(隧道|链路|tunnel|link)/i.test(raw);
+  const hasDiscountCodeWord = /(折扣码|优惠码|优惠券|折扣券|discount\s*code)/i.test(raw);
+  const hasRedeemCodeWord = /(兑换码|余额码|代金码|redeem\s*code)/i.test(raw);
+  const codeCount = extractManageCodeCount(raw);
+  const discountPercent = extractManageDiscountPercent(raw);
   const ruleId = extractManageRuleId(raw);
+  const endpoint = extractManageTargetEndpoint(raw);
+  const sourcePort = extractManageSourcePort(raw);
+  const forwardMode = extractManageForwardMode(raw);
   const tunnelKeyword = normalizeManageTunnelKeyword(extractManageTunnelKeyword(raw));
+  const hostKeyword = normalizeManageHostKeyword(extractManageHostKeyword(raw));
   let action: ManageActionKind = "none";
-  if (hasRuleWord && hasTunnelWord && disableVerb) {
+  if ((createVerb || generateVerb) && hasDiscountCodeWord) {
+    action = "discount_code_generate_percent";
+  } else if ((createVerb || generateVerb) && hasRedeemCodeWord) {
+    action = "redeem_code_generate_balance";
+  } else if (
+    (/(?:折扣|优惠).*(?:码|code)|(?:码|code).*(?:折扣|优惠)/i.test(raw))
+    && /(?:生成|创建|新增|来|发|做|弄)/i.test(raw)
+  ) {
+    action = "discount_code_generate_percent";
+  } else if (
+    (/(?:余额|充值|兑换|代金).*(?:码|code)|(?:码|code).*(?:余额|充值|兑换|代金)/i.test(raw))
+    && /(?:生成|创建|新增|来|发|做|弄)/i.test(raw)
+  ) {
+    action = "redeem_code_generate_balance";
+  } else if (deleteVerb && (hasForwardWord || ruleId || endpoint.targetPort)) {
+    action = "rule_delete";
+  } else if (createVerb && (hasForwardWord || endpoint.targetPort)) {
+    action = "rule_create";
+  } else if (hasRuleWord && hasTunnelWord && disableVerb) {
     action = "tunnel_rules_disable";
   } else if (hasRuleWord && hasTunnelWord && enableVerb) {
     action = "tunnel_rules_enable";
@@ -1650,7 +2276,11 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
 
   const target = normalizeManageTargetKeyword(extractManageTargetKeyword(raw));
   const amountRaw = extractManageAmountYuan(raw);
+  const redeemAmountRaw = extractManageRedeemAmountYuan(raw);
   let amountYuan = Number.isFinite(amountRaw as number) ? Number(amountRaw) : undefined;
+  if (!Number.isFinite(amountYuan as number) && Number.isFinite(redeemAmountRaw as number)) {
+    amountYuan = Number(redeemAmountRaw);
+  }
   if (Number.isFinite(amountYuan as number) && action === "balance_adjust") {
     if (/(扣除|扣减|减少|减去|下调)/.test(raw) && (amountYuan as number) > 0) amountYuan = -Math.abs(amountYuan as number);
     if (/(充值|充钱|加钱|增加|补款|上调)/.test(raw) && (amountYuan as number) < 0) amountYuan = Math.abs(amountYuan as number);
@@ -1666,6 +2296,13 @@ function localManageActionIntent(text: string): { intent: ManageActionIntent; wr
       ...(duration ? { durationValue: duration.value, durationUnit: duration.unit } : {}),
       ...(ruleId ? { ruleId } : {}),
       ...(tunnelKeyword ? { tunnel: tunnelKeyword } : {}),
+      ...(hostKeyword ? { host: hostKeyword } : {}),
+      ...(forwardMode ? { forwardMode } : {}),
+      ...(sourcePort !== undefined ? { sourcePort } : {}),
+      ...(endpoint.targetIp ? { targetIp: endpoint.targetIp } : {}),
+      ...(endpoint.targetPort ? { targetPort: endpoint.targetPort } : {}),
+      ...(Number.isFinite(codeCount as number) ? { codeCount: Number(codeCount) } : {}),
+      ...(Number.isFinite(discountPercent as number) ? { discountPercent: Number(discountPercent) } : {}),
     },
   };
 }
@@ -1689,15 +2326,22 @@ async function parseManageActionIntent(text: string): Promise<{ intent: ManageAc
             role: "system",
             content: [
               "You classify ForwardX Telegram write-operation intents.",
-              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,ruleId,tunnel,writeLike.",
-              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,tunnel_rules_enable,tunnel_rules_disable,traffic_reset.",
+              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,ruleId,tunnel,host,forwardMode,sourcePort,targetIp,targetPort,codeCount,discountPercent,writeLike.",
+              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,rule_enable,rule_disable,rule_create,rule_delete,tunnel_rules_enable,tunnel_rules_disable,traffic_reset,redeem_code_generate_balance,discount_code_generate_percent.",
               "target should be user id/username/email/remark keyword when possible.",
               "durationUnit must be one of day,month,year.",
               "Use rule_enable/rule_disable when user asks to enable/disable a specific rule by id.",
+              "Use rule_create for add/create forwarding rule requests.",
+              "Use rule_delete for delete/remove forwarding rule requests.",
+              "forwardMode should be host or tunnel when user states port-forward/tunnel-forward explicitly.",
+              "sourcePort can be 0 when user asks random source port.",
+              "targetIp and targetPort should be extracted when user provides destination endpoint.",
               "Use tunnel_rules_enable/tunnel_rules_disable when user asks to batch enable/disable rules in a tunnel, and include tunnel keyword.",
               "ruleId should be numeric when available.",
               "For recharge/add/subtract balance use balance_adjust.",
               "For set balance directly use balance_set.",
+              "Use redeem_code_generate_balance when user asks to create/generate balance redemption codes; include amountYuan (face value in CNY) and codeCount when available.",
+              "Use discount_code_generate_percent when user asks to create/generate discount codes; discountPercent means off-percent (e.g. 20 means 20% off, equivalent to 8-zhe), include codeCount when available.",
               "If message is not a write operation, action should be none and writeLike false.",
               "Do not answer user; do not use markdown.",
             ].join(" "),
@@ -1730,6 +2374,8 @@ function isManageActionAllowedForRole(role: unknown, action: ManageActionKind) {
   if (String(role) === "admin") return true;
   return action === "forward_enable"
     || action === "forward_disable"
+    || action === "rule_create"
+    || action === "rule_delete"
     || action === "rule_enable"
     || action === "rule_disable"
     || action === "tunnel_rules_enable"
@@ -1751,6 +2397,8 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
     forward_disable: "关闭转发",
     rule_enable: "启用规则",
     rule_disable: "关闭规则",
+    rule_create: "新增转发规则",
+    rule_delete: "删除转发规则",
     tunnel_rules_enable: "启用隧道规则",
     tunnel_rules_disable: "关闭隧道规则",
     traffic_reset: "重置流量",
@@ -1762,9 +2410,9 @@ function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
 
 function manageActionPermissionHint(isAdmin: boolean) {
   if (isAdmin) {
-    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、按规则启停、按隧道批量启停规则、重置流量。";
+    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、规则新增/删除/启停、按隧道批量启停规则、重置流量、生成兑换码与折扣码。";
   }
-  return "普通用户仅可操作自己的转发开关与可见规则（单条或按隧道批量），例如“关闭我的转发”、“关闭第12条规则”。";
+  return "普通用户仅可操作自己的转发开关与可见规则（新增/删除/单条启停/按隧道批量启停），例如“新增转发到 10.10.0.1:5151”、“删除第12条规则”。";
 }
 
 function isSelfTargetForUser(actor: any, keyword: string) {
@@ -1819,6 +2467,8 @@ async function resolveManageTargetUser(actor: any, rawKeyword: string) {
 function isRuleManageAction(action: ManageActionKind) {
   return action === "rule_enable"
     || action === "rule_disable"
+    || action === "rule_create"
+    || action === "rule_delete"
     || action === "tunnel_rules_enable"
     || action === "tunnel_rules_disable";
 }
@@ -1845,7 +2495,29 @@ async function resolveManageTunnel(actor: any, rawKeyword: string) {
   return { tunnel: matched[0] };
 }
 
-async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent) {
+async function resolveManageHost(actor: any, rawKeyword: string) {
+  const keyword = normalizeManageHostKeyword(rawKeyword);
+  if (!keyword) return { error: "请指定主机（ID 或名称），例如：添加到上海主机。" };
+  const hosts = await visibleHostsForTelegramUser(actor);
+  const numericId = parseNumericToken(keyword.replace(/^#/, ""));
+  const matchedById = numericId ? (hosts as any[]).filter((item) => Number(item.id) === Number(numericId)) : [];
+  const matched = matchedById.length > 0
+    ? matchedById
+    : (hosts as any[]).filter((item: any) => searchMatches(keyword, hostSearchValues(item)));
+  if (matched.length === 0) {
+    return { error: `没有找到匹配主机：${escapeHtml(keyword)}` };
+  }
+  if (matched.length > 1) {
+    const preview = matched
+      .slice(0, 5)
+      .map((item: any) => `#${item.id} ${item.name || item.ip || "-"}`)
+      .join("、");
+    return { error: `匹配到多个主机：${escapeHtml(preview)}。请补充更精确的主机 ID。` };
+  }
+  return { host: matched[0] };
+}
+
+async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent): Promise<ManageActionPrepareResult> {
   if (!intent || intent.action === "none") return { error: "未识别到可执行的管理操作。" };
   const action = intent.action as Exclude<ManageActionKind, "none">;
   const actor = (await db.getUserById(Number(user?.id || 0)).catch(() => null)) || user;
@@ -1854,19 +2526,228 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
     return { error: `你没有执行「${manageActionLabel(action)}」的权限。\n${manageActionPermissionHint(isAdmin)}` };
   }
 
+  if (action === "redeem_code_generate_balance" || action === "discount_code_generate_percent") {
+    const deepseekSettings = await getDeepSeekSettings().catch(() => null);
+    if (!isAdmin) {
+      return { error: "只有管理员可以生成兑换码或折扣码。" };
+    }
+
+    const askCountHint = /(几[个张份组]?|多少[个张份组]?|一批|批量|若干|一些)/i.test(sourceText);
+    let codeCount = parseManageCodeCount(intent.codeCount ?? extractManageCodeCount(sourceText));
+    if (!codeCount && !askCountHint) codeCount = 1;
+
+    if (action === "redeem_code_generate_balance") {
+      if (deepseekSettings?.redemptionEnabled === false) {
+        return { error: "兑换码功能当前已关闭，请在设置中启用后再试。" };
+      }
+      const parsedAmount = Number.isFinite(Number(intent.amountYuan))
+        ? Number(intent.amountYuan)
+        : Number(extractManageRedeemAmountYuan(sourceText));
+      const amountYuan = Number.isFinite(parsedAmount) ? parsedAmount : undefined;
+
+      const missingFields: ManageClarifyField[] = [];
+      if (!Number.isFinite(amountYuan as number)) missingFields.push("amountYuan");
+      if (!codeCount) missingFields.push("codeCount");
+      if (missingFields.length > 0) {
+        const nextIntent: ManageActionIntent = {
+          ...intent,
+          action,
+          ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
+          ...(codeCount ? { codeCount } : {}),
+        };
+        let text = `请补充余额兑换码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        if (missingFields.includes("amountYuan") && missingFields.includes("codeCount")) {
+          text = `请补充兑换码面额和数量，例如“50 元 20 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        } else if (missingFields.includes("amountYuan")) {
+          text = `请补充每个兑换码金额（单位：元），例如“50”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        } else if (missingFields.includes("codeCount")) {
+          text = `请补充要生成的兑换码数量，例如“20 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+        }
+        return {
+          clarify: {
+            actor,
+            intent: nextIntent,
+            missingFields,
+            text,
+            keyboard: manageClarifyCancelKeyboard(),
+          },
+        };
+      }
+      const amountCents = Math.round(Number(amountYuan) * 100);
+      if (!Number.isFinite(amountCents) || amountCents <= 0) {
+        return { error: "兑换码金额必须大于 0。" };
+      }
+      if (amountCents > MANAGE_BALANCE_MAX_CENTS) {
+        return { error: "兑换码金额超出允许范围，请控制在 1,000,000 元以内。" };
+      }
+      if (!codeCount || codeCount <= 0 || codeCount > MANAGE_CODE_MAX_COUNT) {
+        return { error: `兑换码数量必须在 1-${MANAGE_CODE_MAX_COUNT} 之间。` };
+      }
+      const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+        actorUserId: Number(actor.id),
+        actorRole: "admin",
+        action,
+        amountCents,
+        codeCount,
+        sourceText: sourceText.slice(0, 500),
+      };
+      return { prepared: { pending, actor } as PreparedManageAction };
+    }
+
+    if (deepseekSettings?.discountEnabled === false) {
+      return { error: "折扣码功能当前已关闭，请在设置中启用后再试。" };
+    }
+    const discountPercent = normalizeManageDiscountPercent(
+      intent.discountPercent ?? extractManageDiscountPercent(sourceText),
+    );
+    const missingFields: ManageClarifyField[] = [];
+    if (!discountPercent) missingFields.push("discountPercent");
+    if (!codeCount) missingFields.push("codeCount");
+    if (missingFields.length > 0) {
+      const nextIntent: ManageActionIntent = {
+        ...intent,
+        action,
+        ...(discountPercent ? { discountPercent } : {}),
+        ...(codeCount ? { codeCount } : {}),
+      };
+      let text = `请补充折扣码信息（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+      if (missingFields.includes("discountPercent") && missingFields.includes("codeCount")) {
+        text = `请补充折扣力度和数量，例如“8 折 10 个”或“减 20% 10 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+      } else if (missingFields.includes("discountPercent")) {
+        text = `请补充折扣力度，例如“8 折”或“减 20%”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+      } else if (missingFields.includes("codeCount")) {
+        text = `请补充要生成的折扣码数量，例如“10 个”（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`;
+      }
+      return {
+        clarify: {
+          actor,
+          intent: nextIntent,
+          missingFields,
+          text,
+          keyboard: manageClarifyCancelKeyboard(),
+        },
+      };
+    }
+    if (!codeCount || codeCount <= 0 || codeCount > MANAGE_CODE_MAX_COUNT) {
+      return { error: `折扣码数量必须在 1-${MANAGE_CODE_MAX_COUNT} 之间。` };
+    }
+    const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+      actorUserId: Number(actor.id),
+      actorRole: "admin",
+      action,
+      codeCount,
+      discountPercent,
+      sourceText: sourceText.slice(0, 500),
+    };
+    return { prepared: { pending, actor } as PreparedManageAction };
+  }
+
   if (isRuleManageAction(action)) {
     const rules = await visibleRulesForTelegramUser(actor);
-    if (action === "rule_enable" || action === "rule_disable") {
+    if (action === "rule_enable" || action === "rule_disable" || action === "rule_delete") {
       const ruleId = parseNumericToken(intent.ruleId) || extractManageRuleId(sourceText);
-      if (!ruleId) {
+      if (ruleId) {
+        const targetRule = (rules as any[]).find((item: any) => Number(item.id) === Number(ruleId));
+        if (!targetRule) return { error: `规则 #${ruleId} 不存在或无权操作。` };
+        const targetUserId = Number((targetRule as any).userId || 0);
+        const targetUser = targetUserId > 0 ? await db.getUserById(targetUserId).catch(() => null) : null;
+        const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+          actorUserId: Number(actor.id),
+          actorRole: isAdmin ? "admin" : "user",
+          action,
+          ...(targetUserId > 0 ? { targetUserId } : {}),
+          ruleId: Number((targetRule as any).id),
+          rulePreview: [formatManageRulePreview(targetRule)],
+          ...(Number((targetRule as any).hostId || 0) > 0 ? { hostId: Number((targetRule as any).hostId) } : {}),
+          ...(Number((targetRule as any).tunnelId || 0) > 0 ? { tunnelId: Number((targetRule as any).tunnelId) } : {}),
+          sourceText: sourceText.slice(0, 500),
+        };
+        return { prepared: { pending, target: targetUser || undefined, actor } as PreparedManageAction };
+      }
+
+      if (action !== "rule_delete") {
         return {
           error: action === "rule_enable"
             ? "请提供规则 ID，例如：开启第 12 条规则。"
             : "请提供规则 ID，例如：关闭 #12 号规则。",
         };
       }
-      const targetRule = (rules as any[]).find((item: any) => Number(item.id) === Number(ruleId));
-      if (!targetRule) return { error: `规则 #${ruleId} 不存在或无权操作。` };
+
+      const endpoint = extractManageTargetEndpoint(sourceText);
+      const targetIp = normalizeManageTargetIp(intent.targetIp || endpoint.targetIp || "");
+      const targetPort = parseManagePort(intent.targetPort ?? endpoint.targetPort);
+      const sourcePortRaw = intent.sourcePort === 0 || String(intent.sourcePort || "").trim() === "0"
+        ? 0
+        : parseManagePort(intent.sourcePort);
+      const sourcePort = sourcePortRaw === 0 ? undefined : sourcePortRaw;
+      const forwardMode = normalizeManageForwardMode(intent.forwardMode || extractManageForwardMode(sourceText));
+      const tunnelKeyword = normalizeManageTunnelKeyword(intent.tunnel || extractManageTunnelKeyword(sourceText));
+      const hostKeyword = normalizeManageHostKeyword(intent.host || extractManageHostKeyword(sourceText));
+
+      let tunnel: any = null;
+      if (tunnelKeyword) {
+        const resolvedTunnel = await resolveManageTunnel(actor, tunnelKeyword);
+        if (!resolvedTunnel.tunnel) return { error: resolvedTunnel.error || "隧道不存在或无权操作。" };
+        tunnel = resolvedTunnel.tunnel;
+      }
+      let host: any = null;
+      if (hostKeyword) {
+        const resolvedHost = await resolveManageHost(actor, hostKeyword);
+        if (!resolvedHost.host) return { error: resolvedHost.error || "主机不存在或无权操作。" };
+        host = resolvedHost.host;
+      }
+
+      const hasFilter = !!targetIp
+        || Number.isFinite(targetPort as number)
+        || Number.isFinite(sourcePort as number)
+        || !!forwardMode
+        || !!tunnel
+        || !!host;
+      if (!hasFilter) {
+        return { error: "请提供要删除的规则信息，例如：删除第12条规则，或删除转发到 10.10.0.1:5151 的规则。" };
+      }
+
+      let matchedRules = [...(rules as any[])];
+      if (forwardMode === "host") matchedRules = matchedRules.filter((item: any) => Number(item.tunnelId || 0) <= 0);
+      if (forwardMode === "tunnel") matchedRules = matchedRules.filter((item: any) => Number(item.tunnelId || 0) > 0);
+      if (tunnel) matchedRules = matchedRules.filter((item: any) => Number(item.tunnelId || 0) === Number((tunnel as any).id || 0));
+      if (host) matchedRules = matchedRules.filter((item: any) => Number(item.hostId || 0) === Number((host as any).id || 0));
+      if (targetIp) {
+        const needle = targetIp.toLowerCase();
+        matchedRules = matchedRules.filter((item: any) => String(item.targetIp || "").trim().toLowerCase() === needle);
+      }
+      if (Number.isFinite(targetPort as number)) {
+        matchedRules = matchedRules.filter((item: any) => Number(item.targetPort || 0) === Number(targetPort));
+      }
+      if (Number.isFinite(sourcePort as number)) {
+        matchedRules = matchedRules.filter((item: any) => Number(item.sourcePort || 0) === Number(sourcePort));
+      }
+      matchedRules = matchedRules.sort((a: any, b: any) => Number(a.id) - Number(b.id));
+      if (matchedRules.length === 0) {
+        return { error: "没有找到可删除的匹配规则，请补充规则 ID、隧道/主机、目标地址端口等信息。" };
+      }
+      if (matchedRules.length > 1) {
+        const nextIntent: ManageActionIntent = {
+          ...intent,
+          action,
+          ...(targetIp ? { targetIp } : {}),
+          ...(Number.isFinite(targetPort as number) ? { targetPort } : {}),
+          ...(Number.isFinite(sourcePort as number) ? { sourcePort } : {}),
+          ...(forwardMode ? { forwardMode } : {}),
+          ...(tunnel ? { tunnel: String((tunnel as any).id || "") } : {}),
+          ...(host ? { host: String((host as any).id || "") } : {}),
+        };
+        return {
+          clarify: {
+            actor,
+            intent: nextIntent,
+            missingFields: ["ruleId"],
+            text: `匹配到 ${matchedRules.length} 条规则，请选择要删除的规则（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+            keyboard: manageClarifyRuleKeyboard(matchedRules),
+          },
+        };
+      }
+      const targetRule = matchedRules[0];
       const targetUserId = Number((targetRule as any).userId || 0);
       const targetUser = targetUserId > 0 ? await db.getUserById(targetUserId).catch(() => null) : null;
       const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
@@ -1876,10 +2757,141 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
         ...(targetUserId > 0 ? { targetUserId } : {}),
         ruleId: Number((targetRule as any).id),
         rulePreview: [formatManageRulePreview(targetRule)],
+        ...(Number((targetRule as any).hostId || 0) > 0 ? { hostId: Number((targetRule as any).hostId) } : {}),
         ...(Number((targetRule as any).tunnelId || 0) > 0 ? { tunnelId: Number((targetRule as any).tunnelId) } : {}),
         sourceText: sourceText.slice(0, 500),
       };
       return { prepared: { pending, target: targetUser || undefined, actor } as PreparedManageAction };
+    }
+
+    if (action === "rule_create") {
+      const endpoint = extractManageTargetEndpoint(sourceText);
+      const targetIp = normalizeManageTargetIp(intent.targetIp || endpoint.targetIp || "");
+      const targetPort = parseManagePort(intent.targetPort ?? endpoint.targetPort);
+      if (!targetIp || !targetPort) {
+        return { error: "请提供目标地址和端口，例如：增加一个转发到 10.10.0.1 的 5151 端口。" };
+      }
+
+      let sourcePort: number | undefined;
+      if (intent.sourcePort === 0 || String(intent.sourcePort || "").trim() === "0") {
+        sourcePort = 0;
+      } else if (intent.sourcePort !== undefined && intent.sourcePort !== null && String(intent.sourcePort).trim() !== "") {
+        const parsed = parseManagePort(intent.sourcePort);
+        if (!parsed) return { error: "源端口无效，请输入 1-65535，或省略源端口使用随机端口。" };
+        sourcePort = parsed;
+      } else {
+        const extracted = extractManageSourcePort(sourceText);
+        if (extracted === 0) sourcePort = 0;
+        else if (Number.isFinite(extracted as number)) sourcePort = extracted;
+      }
+      if (!Number.isFinite(sourcePort as number)) sourcePort = 0;
+
+      const forwardMode = normalizeManageForwardMode(intent.forwardMode || extractManageForwardMode(sourceText));
+      if (!forwardMode) {
+        const nextIntent: ManageActionIntent = {
+          ...intent,
+          action,
+          targetIp,
+          targetPort,
+          sourcePort,
+        };
+        return {
+          clarify: {
+            actor,
+            intent: nextIntent,
+            missingFields: ["forwardMode"],
+            text: `请先选择要新增为哪种转发方式（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+            keyboard: manageClarifyModeKeyboard(),
+          },
+        };
+      }
+
+      let host: any = null;
+      let tunnel: any = null;
+      if (forwardMode === "tunnel") {
+        const tunnelKeyword = normalizeManageTunnelKeyword(intent.tunnel || extractManageTunnelKeyword(sourceText));
+        if (tunnelKeyword) {
+          const resolvedTunnel = await resolveManageTunnel(actor, tunnelKeyword);
+          if (!resolvedTunnel.tunnel) return { error: resolvedTunnel.error || "隧道不存在或无权操作。" };
+          tunnel = resolvedTunnel.tunnel;
+        } else {
+          const tunnels = await visibleTunnelsForTelegramUser(actor);
+          if ((tunnels as any[]).length === 0) return { error: "当前没有可用隧道，无法新增隧道转发规则。" };
+          if ((tunnels as any[]).length === 1) {
+            tunnel = (tunnels as any[])[0];
+          } else {
+            const nextIntent: ManageActionIntent = {
+              ...intent,
+              action,
+              forwardMode: "tunnel",
+              targetIp,
+              targetPort,
+              sourcePort,
+            };
+            return {
+              clarify: {
+                actor,
+                intent: nextIntent,
+                missingFields: ["tunnel"],
+                text: `请选择要添加到哪个隧道（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+                keyboard: manageClarifyTunnelKeyboard(tunnels as any[]),
+              },
+            };
+          }
+        }
+        const hostIdFromTunnel = Number((tunnel as any)?.entryHostId || 0);
+        if (!hostIdFromTunnel) return { error: "所选隧道入口主机无效，无法创建规则。" };
+        host = await db.getHostById(hostIdFromTunnel).catch(() => null);
+      } else {
+        const hostKeyword = normalizeManageHostKeyword(intent.host || extractManageHostKeyword(sourceText));
+        if (hostKeyword) {
+          const resolvedHost = await resolveManageHost(actor, hostKeyword);
+          if (!resolvedHost.host) return { error: resolvedHost.error || "主机不存在或无权操作。" };
+          host = resolvedHost.host;
+        } else {
+          const hosts = await visibleHostsForTelegramUser(actor);
+          if ((hosts as any[]).length === 0) return { error: "当前没有可用主机，无法新增端口转发规则。" };
+          if ((hosts as any[]).length === 1) {
+            host = (hosts as any[])[0];
+          } else {
+            const nextIntent: ManageActionIntent = {
+              ...intent,
+              action,
+              forwardMode: "host",
+              targetIp,
+              targetPort,
+              sourcePort,
+            };
+            return {
+              clarify: {
+                actor,
+                intent: nextIntent,
+                missingFields: ["host"],
+                text: `请选择要添加到哪个主机（${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效）。`,
+                keyboard: manageClarifyHostKeyboard(hosts as any[]),
+              },
+            };
+          }
+        }
+      }
+      if (!host) return { error: "没有可用的入口主机，无法新增规则。" };
+      const hostId = Number((host as any).id || 0);
+      const tunnelId = forwardMode === "tunnel" ? Number((tunnel as any)?.id || 0) : 0;
+      if (!hostId) return { error: "入口主机无效，无法新增规则。" };
+      const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+        actorUserId: Number(actor.id),
+        actorRole: isAdmin ? "admin" : "user",
+        action,
+        forwardMode,
+        hostId,
+        hostName: String((host as any).name || (host as any).ip || `主机 #${hostId}`).slice(0, 80),
+        ...(tunnelId > 0 ? { tunnelId, tunnelName: String((tunnel as any).name || `隧道 #${tunnelId}`).slice(0, 80) } : {}),
+        sourcePort,
+        targetIp,
+        targetPort,
+        sourceText: sourceText.slice(0, 500),
+      };
+      return { prepared: { pending, actor } as PreparedManageAction };
     }
 
     const tunnelKeyword = normalizeManageTunnelKeyword(intent.tunnel || extractManageTunnelKeyword(sourceText));
@@ -1908,6 +2920,17 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
   }
 
   const targetKeyword = normalizeManageTargetKeyword(intent.target || extractManageTargetKeyword(sourceText));
+  if (isAdmin && !targetKeyword) {
+    return {
+      clarify: {
+        actor,
+        intent: { ...intent, action },
+        missingFields: ["target"],
+        text: `请补充要操作的目标用户（用户ID/用户名/邮箱），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+        keyboard: manageClarifyCancelKeyboard(),
+      },
+    };
+  }
   const resolved = await resolveManageTargetUser(actor, targetKeyword);
   if (!resolved.target) {
     return { error: `${resolved.error || "目标用户不存在。"}\n${manageActionPermissionHint(isAdmin)}` };
@@ -1934,9 +2957,15 @@ async function prepareManageAction(user: any, sourceText: string, intent: Manage
     const amountYuan = Number(intent.amountYuan);
     if (!Number.isFinite(amountYuan)) {
       return {
-        error: action === "balance_set"
-          ? "请提供要设置的余额金额，例如：把用户1余额设置为100元。"
-          : "请提供调整金额，例如：给用户1充值50元，或扣除用户1 5元。",
+        clarify: {
+          actor,
+          intent: { ...intent, action, target: targetKeyword || intent.target },
+          missingFields: ["amountYuan"],
+          text: action === "balance_set"
+            ? `请补充要设置的余额金额（单位：元），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`
+            : `请补充要调整的金额（单位：元，可正可负），${Math.round(MANAGE_CLARIFY_TTL_MS / 1000)} 秒内有效。`,
+          keyboard: manageClarifyCancelKeyboard(),
+        },
       };
     }
     amountCents = Math.round(amountYuan * 100);
@@ -2009,6 +3038,23 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
     const ruleText = pending.rulePreview?.[0] || (pending.ruleId ? `#${pending.ruleId}` : "未指定");
     lines.push(`目标规则：${aiCode(ruleText)}`);
     lines.push(action === "rule_disable" ? "将停用该规则。" : "将启用该规则。");
+  } else if (action === "rule_create") {
+    const hostLabel = pending.hostId
+      ? `#${pending.hostId} ${pending.hostName || ""}`.trim()
+      : (pending.hostName || "-");
+    const tunnelLabel = pending.tunnelId
+      ? `#${pending.tunnelId} ${pending.tunnelName || ""}`.trim()
+      : "";
+    lines.push(`转发方式：<b>${escapeHtml(manageForwardModeLabel(pending.forwardMode))}</b>`);
+    lines.push(`入口主机：${aiCode(hostLabel)}`);
+    if (tunnelLabel) lines.push(`所属隧道：${aiCode(tunnelLabel)}`);
+    lines.push(`入口端口：${pending.sourcePort === 0 ? "<b>随机分配</b>" : aiCode(`:${pending.sourcePort ?? "-"}`)}`);
+    lines.push(`目标地址：${aiCode(`${pending.targetIp || "-"}:${pending.targetPort ?? "-"}`)}`);
+    lines.push("确认后将创建新规则并下发到对应节点。");
+  } else if (action === "rule_delete") {
+    const ruleText = pending.rulePreview?.[0] || (pending.ruleId ? `#${pending.ruleId}` : "未指定");
+    lines.push(`目标规则：${aiCode(ruleText)}`);
+    lines.push("确认后将删除该规则，并同步刷新对应节点。");
   } else if (action === "tunnel_rules_disable" || action === "tunnel_rules_enable") {
     const tunnelLabel = pending.tunnelId
       ? `#${pending.tunnelId} ${pending.tunnelName || ""}`.trim()
@@ -2029,6 +3075,19 @@ function manageActionConfirmText(pending: PendingManageAction, actor: any, targe
     lines.push(action === "tunnel_rules_disable" ? "确认后将批量停用以上规则。" : "确认后将批量启用以上规则。");
   } else if (action === "traffic_reset") {
     lines.push("将清零该用户当前统计流量。");
+  } else if (action === "redeem_code_generate_balance") {
+    const count = Math.max(1, Math.floor(Number(pending.codeCount || 1)));
+    const amountCents = Math.round(Number(pending.amountCents || 0));
+    lines.push(`生成数量：<b>${count}</b>`);
+    lines.push(`面额：<b>${formatMoneyCny(amountCents)}</b>/个`);
+    lines.push(`总面额：<b>${formatMoneyCny(amountCents * count)}</b>`);
+    lines.push("确认后将立即生成余额兑换码。");
+  } else if (action === "discount_code_generate_percent") {
+    const count = Math.max(1, Math.floor(Number(pending.codeCount || 1)));
+    const discountPercent = normalizeManageDiscountPercent(pending.discountPercent);
+    lines.push(`生成数量：<b>${count}</b>`);
+    lines.push(`折扣力度：<b>${escapeHtml(discountPercent ? formatDiscountPercentLabel(discountPercent) : "-")}</b>`);
+    lines.push("确认后将立即生成折扣码（默认不限次数，可在后台调整限制）。");
   }
   lines.push("", `原始指令：${aiCode(shortText(pending.sourceText, 120))}`);
   lines.push(`请在 ${Math.round(MANAGE_ACTION_CONFIRM_TTL_MS / 60000)} 分钟内点击「确认执行」。`);
@@ -2063,6 +3122,265 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         targetUser ? `用户：${formatUserLabel(targetUser)}` : "",
         `规则：${aiCode(formatManageRulePreview(rule))}`,
         `操作：${enabled ? "启用规则" : "关闭规则"}`,
+      ].filter(Boolean).join("\n");
+    }
+
+    if (pending.action === "rule_create") {
+      const mode: ManageForwardMode = pending.forwardMode === "tunnel" ? "tunnel" : "host";
+      const hostId = Number(pending.hostId || 0);
+      const tunnelId = mode === "tunnel" ? Number(pending.tunnelId || 0) : 0;
+      const targetIp = normalizeManageTargetIp(pending.targetIp || "");
+      const targetPort = parseManagePort(pending.targetPort);
+      let sourcePort = Number(pending.sourcePort ?? 0);
+      if (!Number.isFinite(hostId) || hostId <= 0) throw new Error("入口主机无效。");
+      if (!targetIp || !isValidManageRuleTargetHost(targetIp)) throw new Error("目标地址格式无效，请输入 IP 或域名。");
+      if (!targetPort) throw new Error("目标端口无效，请输入 1-65535。");
+      if (!(sourcePort === 0 || parseManagePort(sourcePort))) {
+        throw new Error("源端口无效，请输入 1-65535，或省略源端口使用随机端口。");
+      }
+
+      let host = await db.getHostById(hostId).catch(() => null);
+      if (!host) throw new Error("入口主机不存在。");
+
+      let tunnel: any = null;
+      let isTrafficBillingRule = false;
+      if (tunnelId > 0) {
+        const access = await requireTunnelUseOrTrafficBillingAccess(
+          { user: { id: Number(actor.id), role: String(actor.role || "user") } },
+          tunnelId,
+        );
+        tunnel = access.tunnel;
+        isTrafficBillingRule = !!access.isTrafficBillingResource;
+        if (!(tunnel as any)?.isEnabled) throw new Error("所选隧道已停用。");
+        if (Number((tunnel as any)?.entryHostId || 0) !== hostId) {
+          throw new Error("所选隧道入口主机与规则入口主机不一致。");
+        }
+      } else {
+        const access = await requireHostUseAccess(
+          { user: { id: Number(actor.id), role: String(actor.role || "user") } },
+          hostId,
+        );
+        host = access.host;
+        isTrafficBillingRule = !!access.isTrafficBillingResource;
+      }
+
+      if (String(actor?.role) !== "admin") {
+        const check = await db.ensureUserForwardAccessReady(Number(actor.id), { allowTrafficBillingRecovery: isTrafficBillingRule });
+        if (!check.allowed) throw new Error(check.message || "转发权限已暂停，请续费后再添加规则。");
+        const owner = check.user || await db.getUserById(Number(actor.id));
+        if (owner?.expiresAt && new Date(owner.expiresAt) <= new Date()) {
+          throw new Error("账户已到期，无法添加规则。");
+        }
+        if (Number((owner as any)?.maxRules || 0) > 0) {
+          const ruleCount = await db.getUserRuleCount(Number(actor.id));
+          if (ruleCount >= Number((owner as any).maxRules)) {
+            throw new Error(`你已达到最大规则数量限制（${Number((owner as any).maxRules)} 条）。`);
+          }
+        }
+        if (Number((owner as any)?.maxPorts || 0) > 0) {
+          const portCount = await db.getUserPortCount(Number(actor.id));
+          if (portCount >= Number((owner as any).maxPorts)) {
+            throw new Error(`你已达到最大端口数量限制（${Number((owner as any).maxPorts)} 个）。`);
+          }
+        }
+        if (isTrafficBillingRule && Number((owner as any)?.balanceCents || 0) <= 0) {
+          throw new Error("流量计费余额不足，请充值后再使用该计费资源。");
+        }
+        if (!isTrafficBillingRule && Number((owner as any)?.trafficLimit || 0) > 0) {
+          if (Number((owner as any)?.trafficUsed || 0) >= Number((owner as any)?.trafficLimit || 0)) {
+            throw new Error("流量已用完，无法添加规则。");
+          }
+        }
+      }
+
+      const forwardType = pickManageRuleForwardType(actor, mode);
+      await requireRuleProtocolEnabled({ forwardType, tunnelId: tunnelId || null }, tunnel || undefined);
+
+      const entryPolicy = tunnelId > 0
+        ? combinePortPolicies(
+            portPolicyFrom(host as any),
+            portPolicyFrom({
+              portRangeStart: (tunnel as any)?.portRangeStart,
+              portRangeEnd: (tunnel as any)?.portRangeEnd,
+            }),
+          )
+        : portPolicyFrom(host as any);
+      const planRange = String(actor?.role) !== "admin"
+        ? await db.getUserPlanPortRange(Number(actor.id), hostId, tunnelId || undefined)
+        : null;
+      const effectivePolicy = planRange
+        ? combinePortPolicies(
+            entryPolicy,
+            portPolicyFrom({
+              portRangeStart: planRange.start,
+              portRangeEnd: planRange.end,
+            }),
+          )
+        : entryPolicy;
+
+      if (sourcePort === 0) {
+        let randomRangeStart = tunnelId > 0 ? Number((tunnel as any)?.portRangeStart || 0) || null : null;
+        let randomRangeEnd = tunnelId > 0 ? Number((tunnel as any)?.portRangeEnd || 0) || null : null;
+        if (planRange) {
+          randomRangeStart = Math.max(Number(randomRangeStart || planRange.start), planRange.start);
+          randomRangeEnd = Math.min(Number(randomRangeEnd || planRange.end), planRange.end);
+        }
+        const randomPort = await db.findAvailablePort(hostId, randomRangeStart, randomRangeEnd);
+        if (!randomPort) throw new Error("该主机端口范围内暂无可用入口端口。");
+        sourcePort = Number(randomPort);
+      } else {
+        if (!isPortAllowedByPolicy(sourcePort, effectivePolicy)) {
+          throw new Error(portPolicyErrorMessage(effectivePolicy, "入口端口"));
+        }
+        const used = await db.isPortUsedOnHost(hostId, sourcePort);
+        if (used) throw new Error(`端口 ${sourcePort} 已被占用，请更换端口后再试。`);
+      }
+
+      let tunnelExitPort: number | null = null;
+      if (tunnelId > 0) {
+        const exitHost = await db.getHostById(Number((tunnel as any)?.exitHostId || 0));
+        tunnelExitPort = await db.findAvailableTunnelExitPort(
+          Number((tunnel as any)?.exitHostId || 0),
+          (exitHost as any)?.portRangeStart,
+          (exitHost as any)?.portRangeEnd,
+        );
+        if (!tunnelExitPort) throw new Error("隧道出口主机没有可用出口端口。");
+      }
+
+      const ruleName = `TG-${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${sourcePort}`;
+      const id = await db.createForwardRule({
+        hostId,
+        name: shortText(ruleName, 64),
+        forwardType,
+        protocol: "both",
+        gostMode: "direct",
+        gostRelayHost: null,
+        gostRelayPort: null,
+        tunnelId: tunnelId || null,
+        tunnelExitPort: tunnelExitPort ?? null,
+        forwardGroupId: null,
+        forwardGroupRuleId: null,
+        forwardGroupMemberId: null,
+        isForwardGroupTemplate: false,
+        sourcePort,
+        targetIp,
+        targetPort,
+        blockHttp: false,
+        blockSocks: false,
+        blockTls: false,
+        proxyProtocolReceive: false,
+        proxyProtocolSend: false,
+        proxyProtocolExitReceive: false,
+        proxyProtocolExitSend: false,
+        tcpFastOpen: false,
+        zeroCopy: false,
+        failoverEnabled: false,
+        failoverStrategy: "fallback",
+        failoverTargets: null,
+        failoverSeconds: 60,
+        recoverSeconds: 120,
+        autoFailback: true,
+        isEnabled: true,
+        isRunning: false,
+        userId: Number(actor.id),
+      } as any);
+
+      if (tunnelId > 0) {
+        const tunnelForSync = tunnel || await db.getTunnelById(tunnelId);
+        if (tunnelForSync) {
+          await db.reconcileForwardRuleTunnelExits(
+            { id, hostId, tunnelId, sourcePort, targetIp, targetPort, tunnelExitPort },
+            tunnelForSync,
+          );
+          await db.updateTunnel(tunnelId, { isRunning: false } as any);
+          await pushTunnelEndpointRefresh(tunnelForSync, "telegram-rule-created");
+        } else {
+          pushAgentRefresh(hostId, "telegram-rule-created");
+        }
+      } else {
+        pushAgentRefresh(hostId, "telegram-rule-created");
+      }
+
+      const createdRule = await db.getForwardRuleById(Number(id)).catch(() => null);
+      return [
+        "<b>执行成功</b>",
+        `操作：新增转发规则`,
+        `规则：${aiCode(createdRule ? formatManageRulePreview(createdRule) : `#${id} :${sourcePort} -> ${targetIp}:${targetPort}`)}`,
+        `转发方式：${escapeHtml(manageForwardModeLabel(mode))}`,
+        `入口端口：${aiCode(`:${sourcePort}`)}`,
+        tunnelId > 0 ? `隧道：${aiCode(`#${tunnelId} ${(tunnel as any)?.name || ""}`.trim())}` : "",
+      ].filter(Boolean).join("\n");
+    }
+
+    if (pending.action === "rule_delete") {
+      const ruleId = Number(pending.ruleId || 0);
+      if (!Number.isFinite(ruleId) || ruleId <= 0) throw new Error("规则 ID 无效。");
+      const rule = await db.getForwardRuleById(ruleId);
+      if (!rule || (rule as any)?.pendingDelete) throw new Error("规则不存在或已删除。");
+      if (String(actor?.role) !== "admin" && Number((rule as any).userId) !== Number(actor.id)) {
+        throw new Error("规则不存在或无权操作。");
+      }
+      if ((rule as any).forwardGroupRuleId) {
+        throw new Error("转发组成员规则由系统维护，不支持在机器人中直接删除。");
+      }
+
+      let chargedCents = 0;
+      let balanceAfterCents: number | null = null;
+      const collectBilling = (billed: any) => {
+        if (!billed) return;
+        chargedCents += Math.max(0, Number((billed as any).amountCents || 0));
+        if (Number.isFinite(Number((billed as any).balanceAfterCents))) {
+          balanceAfterCents = Number((billed as any).balanceAfterCents);
+        }
+      };
+
+      if ((rule as any).isForwardGroupTemplate) {
+        const childRules = await db.getForwardGroupChildRulesForTemplate(ruleId);
+        for (const child of childRules as any[]) {
+          collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(child));
+          const childTunnelId = Number((child as any).tunnelId || 0);
+          if (childTunnelId > 0) {
+            const tunnel = await db.getTunnelById(childTunnelId);
+            await db.updateTunnel(childTunnelId, { isRunning: false } as any);
+            if (tunnel) await pushTunnelEndpointRefresh(tunnel, "telegram-forward-group-rule-deleted");
+          }
+          await db.markForwardRulePendingDelete(Number((child as any).id || 0));
+          pushAgentRefresh(Number((child as any).hostId || 0), "telegram-forward-group-rule-deleted");
+        }
+        collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(rule));
+        await db.markForwardRulePendingDelete(ruleId);
+        const groupId = Number((rule as any).forwardGroupId || 0);
+        if (groupId > 0) await db.runForwardGroupFailover(groupId);
+        return [
+          "<b>执行成功</b>",
+          `操作：删除转发规则`,
+          `规则：${aiCode(formatManageRulePreview(rule))}`,
+          `已联动删除子规则：<b>${(childRules as any[]).length}</b> 条`,
+          chargedCents > 0 ? `删除结算扣费：<b>${formatMoneyCny(chargedCents)}</b>` : "",
+          balanceAfterCents !== null ? `当前余额：<b>${formatMoneyCny(balanceAfterCents)}</b>` : "",
+        ].filter(Boolean).join("\n");
+      }
+
+      collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(rule));
+      const tunnelId = Number((rule as any).tunnelId || 0);
+      if (tunnelId > 0) {
+        const tunnel = await db.getTunnelById(tunnelId);
+        await db.updateTunnel(tunnelId, { isRunning: false } as any);
+        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "telegram-rule-deleted");
+      }
+      await db.markForwardRulePendingDelete(ruleId);
+      pushAgentRefresh(Number((rule as any).hostId || 0), "telegram-rule-deleted");
+
+      const targetUser = Number((rule as any).userId || 0) > 0
+        ? await db.getUserById(Number((rule as any).userId)).catch(() => null)
+        : null;
+      return [
+        "<b>执行成功</b>",
+        `操作：删除转发规则`,
+        targetUser ? `用户：${formatUserLabel(targetUser)}` : "",
+        `规则：${aiCode(formatManageRulePreview(rule))}`,
+        chargedCents > 0 ? `删除结算扣费：<b>${formatMoneyCny(chargedCents)}</b>` : "",
+        balanceAfterCents !== null ? `当前余额：<b>${formatMoneyCny(balanceAfterCents)}</b>` : "",
       ].filter(Boolean).join("\n");
     }
 
@@ -2105,6 +3423,85 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         lines.push(`- #${item.id} ${escapeHtml(shortText(item.reason, 36))}`);
       }
       if (failedRules.length > 8) lines.push(`- 其余 ${failedRules.length - 8} 条请在面板查看`);
+    }
+    return lines.join("\n");
+  }
+
+  if (pending.action === "redeem_code_generate_balance") {
+    if (String(actor?.role) !== "admin") throw new Error("只有管理员可以生成兑换码。");
+    if (deepseekSettings?.redemptionEnabled === false) throw new Error("兑换码功能当前已关闭。");
+    const codeCount = parseManageCodeCount(pending.codeCount) || 1;
+    if (codeCount <= 0 || codeCount > MANAGE_CODE_MAX_COUNT) {
+      throw new Error(`兑换码数量必须在 1-${MANAGE_CODE_MAX_COUNT} 之间。`);
+    }
+    const amountCents = Math.round(Number(pending.amountCents || 0));
+    if (!Number.isFinite(amountCents) || amountCents <= 0) throw new Error("兑换码金额无效。");
+    if (amountCents > MANAGE_BALANCE_MAX_CENTS) {
+      throw new Error("兑换码金额超出允许范围，请控制在 1,000,000 元以内。");
+    }
+    const codes = await db.createRedemptionCodes({
+      type: "balance",
+      planId: null,
+      durationDays: null,
+      amountCents,
+      startsAt: null,
+      expiresAt: null,
+      isActive: true,
+      createdByUserId: Number(actor.id),
+    } as any, codeCount);
+    const createdCodes = (codes || []).map((item: any) => String(item || "").trim()).filter(Boolean);
+    if (createdCodes.length === 0) throw new Error("兑换码生成失败，请稍后重试。");
+    const preview = createdCodes.slice(0, MANAGE_CODE_DISPLAY_LIMIT);
+    const lines: string[] = [
+      "<b>执行成功</b>",
+      "操作：生成余额兑换码",
+      `数量：<b>${createdCodes.length}</b>`,
+      `面额：<b>${formatMoneyCny(amountCents)}</b>/个`,
+      `总面额：<b>${formatMoneyCny(amountCents * createdCodes.length)}</b>`,
+      "兑换码：",
+      ...preview.map((code) => `- ${aiCode(code)}`),
+    ];
+    if (createdCodes.length > preview.length) {
+      lines.push(`- 其余 ${createdCodes.length - preview.length} 个请到后台账单页面查看`);
+    }
+    return lines.join("\n");
+  }
+
+  if (pending.action === "discount_code_generate_percent") {
+    if (String(actor?.role) !== "admin") throw new Error("只有管理员可以生成折扣码。");
+    if (deepseekSettings?.discountEnabled === false) throw new Error("折扣码功能当前已关闭。");
+    const codeCount = parseManageCodeCount(pending.codeCount) || 1;
+    if (codeCount <= 0 || codeCount > MANAGE_CODE_MAX_COUNT) {
+      throw new Error(`折扣码数量必须在 1-${MANAGE_CODE_MAX_COUNT} 之间。`);
+    }
+    const discountPercent = normalizeManageDiscountPercent(pending.discountPercent);
+    if (!discountPercent) throw new Error("折扣力度无效，请输入 1-100% 或 1-10 折。");
+    const createdCodes: string[] = [];
+    for (let i = 0; i < codeCount; i++) {
+      const code = await db.createDiscountCode({
+        discountType: "percent",
+        discountValue: discountPercent,
+        maxUses: 0,
+        startsAt: null,
+        expiresAt: null,
+        isActive: true,
+        createdByUserId: Number(actor.id),
+      } as any, []);
+      const codeText = String((code as any)?.code || "").trim();
+      if (codeText) createdCodes.push(codeText);
+    }
+    if (createdCodes.length === 0) throw new Error("折扣码生成失败，请稍后重试。");
+    const preview = createdCodes.slice(0, MANAGE_CODE_DISPLAY_LIMIT);
+    const lines: string[] = [
+      "<b>执行成功</b>",
+      "操作：生成折扣码",
+      `数量：<b>${createdCodes.length}</b>`,
+      `折扣力度：<b>${escapeHtml(formatDiscountPercentLabel(discountPercent))}</b>`,
+      "折扣码：",
+      ...preview.map((code) => `- ${aiCode(code)}`),
+    ];
+    if (createdCodes.length > preview.length) {
+      lines.push(`- 其余 ${createdCodes.length - preview.length} 个请到后台账单页面查看`);
     }
     return lines.join("\n");
   }
@@ -2242,15 +3639,87 @@ async function executePendingManageAction(pending: PendingManageAction, callback
 async function tryHandleManageAction(message: TelegramMessage, user: any, rawText: string) {
   const query = rawText.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
   if (!query) return false;
+  const deepseekSettings = await getDeepSeekSettings().catch(() => null);
+  const userManageDisabled = String(user?.role) !== "admin" && deepseekSettings?.telegramUserManageEnabled === false;
+  const activeClarify = getPendingManageClarifySession(message.chat.id, user.id);
+  if (activeClarify) {
+    if (/^(取消|放弃|算了|退出|cancel)$/i.test(query)) {
+      clearPendingManageClarifySession(message.chat.id, user.id);
+      const sent = await sendMessage(message.chat.id, "已取消本次操作。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+      return true;
+    }
+    if (userManageDisabled) {
+      const sent = await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
+      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+      return true;
+    }
+    const mergedIntent = mergeManageActionIntent(
+      activeClarify.intent,
+      extractManageIntentPatchFromText(query, activeClarify.missingFields || []),
+    );
+    const mergedSourceText = `${activeClarify.sourceText}\n补充：${query}`.slice(0, 500);
+    const prepared = await prepareManageAction(user, mergedSourceText, mergedIntent);
+    if (prepared.clarify) {
+      createPendingManageClarifySession(
+        message.chat.id,
+        prepared.clarify.actor || user,
+        mergedSourceText,
+        prepared.clarify.intent,
+        prepared.clarify.missingFields,
+      );
+      const sent = await sendMessage(
+        message.chat.id,
+        prepared.clarify.text,
+        prepared.clarify.keyboard || manageClarifyCancelKeyboard(),
+      );
+      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+      return true;
+    }
+    if (!prepared.prepared) {
+      const sent = await sendMessage(
+        message.chat.id,
+        `${prepared.error || "信息仍不完整，请继续补充。"}\n\n可继续补充信息，或发送“取消”结束本次操作。`,
+        manageClarifyCancelKeyboard(),
+      );
+      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+      return true;
+    }
+    clearPendingManageClarifySession(message.chat.id, user.id);
+    const pending = createPendingManageAction(prepared.prepared.pending);
+    const sent = await sendMessage(
+      message.chat.id,
+      manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
+      manageActionConfirmKeyboard(pending.key),
+    );
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return true;
+  }
+
   const { intent, writeLike } = await parseManageActionIntent(query);
   if (!writeLike || intent.action === "none") return false;
-  const deepseekSettings = await getDeepSeekSettings().catch(() => null);
-  if (String(user?.role) !== "admin" && deepseekSettings?.telegramUserManageEnabled === false) {
+  if (userManageDisabled) {
     const sent = await sendMessage(message.chat.id, "当前仅管理员可使用 AI 对话管理功能。");
     await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
     return true;
   }
   const prepared = await prepareManageAction(user, query, intent);
+  if (prepared.clarify) {
+    createPendingManageClarifySession(
+      message.chat.id,
+      prepared.clarify.actor || user,
+      query,
+      prepared.clarify.intent,
+      prepared.clarify.missingFields,
+    );
+    const sent = await sendMessage(
+      message.chat.id,
+      prepared.clarify.text,
+      prepared.clarify.keyboard || manageClarifyCancelKeyboard(),
+    );
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    return true;
+  }
   if (!prepared.prepared) {
     const sent = await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
     await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
@@ -2693,6 +4162,7 @@ function aiQueryHelpText() {
     "",
     "<b>管理操作（需要点击确认后才会执行）</b>",
     `${aiCode("给用户 1 充值 50")}`,
+    `${aiCode("给我充点钱（会继续追问金额）")}`,
     `${aiCode("把用户 test111 余额设置为 88")}`,
     `${aiCode("给用户1续费 3 个月")}`,
     `${aiCode("停用用户 3937064828@qq.com")}`,
@@ -2703,11 +4173,18 @@ function aiQueryHelpText() {
     `${aiCode("开启 #9 号规则")}`,
     `${aiCode("关闭 东京 隧道 的规则")}`,
     `${aiCode("开启 2 号隧道的规则")}`,
+    `${aiCode("给我增加一个转发到 10.10.0.1 的 5151 端口")}`,
+    `${aiCode("给我加一个端口转发到 1.1.1.1:443，源端口随机")}`,
+    `${aiCode("给我增加一个隧道转发到 10.10.0.1:5151，隧道 东京01")}`,
+    `${aiCode("删除转发到 10.10.0.1:5151 的规则")}`,
+    `${aiCode("删除第 12 条规则")}`,
     `${aiCode("重置用户 1 流量")}`,
     "",
     "<b>普通用户可用操作（仅限自己）</b>",
     `${aiCode("关闭我的转发")}`,
     `${aiCode("启用我的转发")}`,
+    "",
+    "<i>新增转发时，若未说明“端口转发/隧道转发”会先弹出选择；未提供源端口时默认随机分配。</i>",
     "",
     "<i>所有写操作都会先生成确认卡片，点击“确认执行”后才会生效。</i>",
   ].join("\n");
@@ -3005,6 +4482,202 @@ async function handleRenew(message: TelegramMessage, userIdRaw: string | undefin
   await sendMessage(message.chat.id, detail.text, detail.target ? renewalConfirmKeyboard(userId, 0) : undefined);
 }
 
+async function handleUpdatePanel(message: TelegramMessage, user: any) {
+  const waitMs = takeUpdateCommandCooldown(user.id, "panel");
+  if (waitMs > 0) {
+    await sendMessage(message.chat.id, `操作太频繁，请 ${Math.max(1, Math.ceil(waitMs / 1000))} 秒后再试。`);
+    return;
+  }
+  const info = await checkPanelUpdateTask(true);
+  if (info.error) {
+    await sendMessage(message.chat.id, `检查面板更新失败：${escapeHtml(info.error)}`);
+    return;
+  }
+  const currentVersion = String(info.currentVersion || APP_VERSION).trim() || APP_VERSION;
+  const latestVersion = String(info.latestVersion || "").trim();
+  if (!latestVersion) {
+    await sendMessage(message.chat.id, "暂时未获取到最新面板版本，请稍后重试。");
+    return;
+  }
+  if (!info.hasUpdate) {
+    if (info.pendingReason) {
+      await sendMessage(
+        message.chat.id,
+        [
+          "<b>面板更新检查</b>",
+          `当前版本：<b>v${escapeHtml(currentVersion)}</b>`,
+          `最新版本：<b>v${escapeHtml(latestVersion)}</b>`,
+          "",
+          escapeHtml(info.pendingReason),
+        ].join("\n"),
+      );
+      return;
+    }
+    await sendMessage(
+      message.chat.id,
+      [
+        "<b>面板更新检查</b>",
+        `当前版本：<b>v${escapeHtml(currentVersion)}</b>`,
+        `最新版本：<b>v${escapeHtml(latestVersion)}</b>`,
+        "",
+        "当前已经是最新版本。",
+      ].join("\n"),
+    );
+    return;
+  }
+  const pending = createPendingUpdateAction({
+    actorUserId: Number(user.id),
+    kind: "panel",
+    targetVersion: latestVersion,
+  });
+  await sendMessage(
+    message.chat.id,
+    [
+      "<b>检测到面板新版本</b>",
+      `当前版本：<b>v${escapeHtml(currentVersion)}</b>`,
+      `目标版本：<b>v${escapeHtml(latestVersion)}</b>`,
+      "",
+      "确认后将开始后台升级任务，期间面板可能短暂重启。",
+      `请在 ${Math.round(UPDATE_ACTION_CONFIRM_TTL_MS / 60000)} 分钟内确认。`,
+    ].join("\n"),
+    updateActionConfirmKeyboard("panel", pending.key),
+  );
+}
+
+async function handleUpdateAgent(message: TelegramMessage, user: any) {
+  const waitMs = takeUpdateCommandCooldown(user.id, "agent");
+  if (waitMs > 0) {
+    await sendMessage(message.chat.id, `操作太频繁，请 ${Math.max(1, Math.ceil(waitMs / 1000))} 秒后再试。`);
+    return;
+  }
+  const hosts = await db.getHosts() as any[];
+  if (hosts.length === 0) {
+    await sendMessage(message.chat.id, "当前没有可升级的 Agent 主机。");
+    return;
+  }
+  const targetVersion = String(AGENT_VERSION || "").trim() || "latest";
+  const outdated = hosts.filter((host) => {
+    const current = String(host?.agentVersion || "").trim();
+    if (!current) return true;
+    return !isAgentVersionAtLeast(current, targetVersion);
+  });
+  if (outdated.length === 0) {
+    await sendMessage(
+      message.chat.id,
+      [
+        "<b>Agent 更新检查</b>",
+        `目标版本：<b>v${escapeHtml(targetVersion)}</b>`,
+        `主机数量：${hosts.length}`,
+        "",
+        "所有主机的 Agent 已是最新版本。",
+      ].join("\n"),
+    );
+    return;
+  }
+  const hostIds = outdated
+    .map((host) => Number(host?.id || 0))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const preview = outdated.slice(0, UPDATE_AGENT_PREVIEW_LIMIT).map((host) => {
+    const hostId = Number(host?.id || 0);
+    const hostName = shortText(host?.name || host?.ip || host?.entryIp || `主机${hostId}`, 20);
+    const current = String(host?.agentVersion || "").trim() || "未知";
+    return `- #${hostId} ${escapeHtml(hostName)} · v${escapeHtml(current)} -> v${escapeHtml(targetVersion)}`;
+  });
+  if (outdated.length > UPDATE_AGENT_PREVIEW_LIMIT) {
+    preview.push(`- 其余 ${outdated.length - UPDATE_AGENT_PREVIEW_LIMIT} 台主机将一并下发升级`);
+  }
+  const pending = createPendingUpdateAction({
+    actorUserId: Number(user.id),
+    kind: "agent",
+    targetVersion,
+    hostIds,
+  });
+  await sendMessage(
+    message.chat.id,
+    [
+      "<b>检测到可升级 Agent</b>",
+      `目标版本：<b>v${escapeHtml(targetVersion)}</b>`,
+      `可升级主机：<b>${outdated.length}</b> / ${hosts.length}`,
+      "",
+      ...preview,
+      "",
+      `请在 ${Math.round(UPDATE_ACTION_CONFIRM_TTL_MS / 60000)} 分钟内确认执行。`,
+    ].join("\n"),
+    updateActionConfirmKeyboard("agent", pending.key),
+  );
+}
+
+async function executePendingUpdateAction(pending: PendingUpdateAction) {
+  if (pending.kind === "panel") {
+    const targetVersion = String(pending.targetVersion || "").trim() || undefined;
+    const result = await startPanelUpgradeTask(targetVersion || null);
+    if (!result?.success) {
+      return [
+        "<b>面板升级暂未开始</b>",
+        targetVersion ? `目标版本：<b>v${escapeHtml(targetVersion)}</b>` : "",
+        "",
+        escapeHtml(result?.pendingReason || "发布资产仍在构建中，请稍后重新检查更新。"),
+      ].filter(Boolean).join("\n");
+    }
+    return [
+      "<b>面板升级任务已启动</b>",
+      `目标版本：<b>v${escapeHtml(result?.targetVersion || targetVersion || "latest")}</b>`,
+      "",
+      "可在网页后台的系统设置中查看升级状态和日志。",
+    ].join("\n");
+  }
+
+  const targetVersion = String(pending.targetVersion || AGENT_VERSION || "").trim() || String(AGENT_VERSION || "latest");
+  const hostIds = Array.from(new Set((pending.hostIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0)));
+  if (hostIds.length === 0) {
+    return "没有可执行更新的 Agent 主机，请重新检查。";
+  }
+  const configuredPanelUrl = String((await db.getSetting("panelPublicUrl")) || "").trim();
+  const panelUrl = /^https?:\/\//i.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
+  let requested = 0;
+  let pushed = 0;
+  let skippedLatest = 0;
+  let missing = 0;
+  let failed = 0;
+  const failedHostIds: number[] = [];
+  for (const hostId of hostIds) {
+    const host = await db.getHostById(hostId);
+    if (!host) {
+      missing += 1;
+      continue;
+    }
+    const currentVersion = String((host as any)?.agentVersion || "").trim();
+    if (currentVersion && isAgentVersionAtLeast(currentVersion, targetVersion)) {
+      skippedLatest += 1;
+      continue;
+    }
+    try {
+      await db.requestHostAgentUpgrade(hostId, targetVersion);
+      requested += 1;
+      if (pushAgentUpgrade(hostId, targetVersion, panelUrl)) pushed += 1;
+    } catch {
+      failed += 1;
+      failedHostIds.push(hostId);
+    }
+  }
+  const failedText = failedHostIds.length
+    ? `失败主机：${failedHostIds.slice(0, 10).map((id) => `#${id}`).join(" ")}${failedHostIds.length > 10 ? " ..." : ""}`
+    : "";
+  return [
+    "<b>Agent 升级任务已处理</b>",
+    `目标版本：<b>v${escapeHtml(targetVersion)}</b>`,
+    `待升级目标：${hostIds.length}`,
+    `已下发升级：${requested}`,
+    `已在线推送：${pushed}`,
+    skippedLatest > 0 ? `已是最新：${skippedLatest}` : "",
+    missing > 0 ? `主机不存在：${missing}` : "",
+    failed > 0 ? `下发失败：${failed}` : "",
+    failedText ? escapeHtml(failedText) : "",
+  ].filter(Boolean).join("\n");
+}
+
 async function handleMessage(message: TelegramMessage) {
   const text = message.text?.trim();
   if (!text) return;
@@ -3093,6 +4766,8 @@ async function handleMessage(message: TelegramMessage) {
   if (user.role === "admin" && command === "/users") return handleUsers(message);
   if (user.role === "admin" && command === "/reset") return handleReset(message, args[0]);
   if (user.role === "admin" && command === "/renew") return handleRenew(message, args[0]);
+  if (user.role === "admin" && command === "/updatepanel") return handleUpdatePanel(message, user);
+  if (user.role === "admin" && command === "/updateagent") return handleUpdateAgent(message, user);
 
   if (!text.startsWith("/")) {
     if (await tryHandleManageAction(message, user, text)) return;
@@ -3144,6 +4819,44 @@ async function handleCallback(query: TelegramCallbackQuery) {
   if (data.startsWith("fx:app-login-cancel:")) {
     clearMobileTelegramLoginChallenge(data.slice("fx:app-login-cancel:".length));
     await editMessage(chatId, messageId, "已取消本次登录。");
+    return;
+  }
+
+  if (data.startsWith("fx:update:")) {
+    if (user.role !== "admin") {
+      await editMessage(chatId, messageId, "你没有管理员权限。", backMenuKeyboard());
+      return;
+    }
+    const [, , kindRaw, opRaw, actionKeyRaw] = data.split(":");
+    const kind: UpdateCommandKind | null = kindRaw === "panel" || kindRaw === "agent" ? kindRaw : null;
+    const op = opRaw === "confirm" || opRaw === "cancel" ? opRaw : null;
+    const actionKey = String(actionKeyRaw || "").trim().toLowerCase();
+    if (!kind || !op || !actionKey) {
+      await editMessage(chatId, messageId, "无法识别该更新操作，请重新执行命令。", backMenuKeyboard());
+      return;
+    }
+    const pending = getPendingUpdateAction(actionKey);
+    if (!pending || pending.kind !== kind) {
+      await editMessage(chatId, messageId, "更新操作已超时或已被处理，请重新执行命令。", backMenuKeyboard());
+      return;
+    }
+    if (Number(pending.actorUserId) !== Number(user.id)) {
+      await editMessage(chatId, messageId, "只有原发起人才可以确认或取消该更新操作。", updateActionConfirmKeyboard(kind, pending.key));
+      return;
+    }
+    if (op === "cancel") {
+      consumePendingUpdateAction(actionKey);
+      await editMessage(chatId, messageId, "已取消本次更新操作。", backMenuKeyboard());
+      return;
+    }
+    const consumed = consumePendingUpdateAction(actionKey);
+    if (!consumed || consumed.kind !== kind) {
+      await editMessage(chatId, messageId, "更新操作已超时或已被处理，请重新执行命令。", backMenuKeyboard());
+      return;
+    }
+    const result = await executePendingUpdateAction(consumed)
+      .catch((error) => `执行更新失败：${escapeHtml(error instanceof Error ? error.message : String(error))}`);
+    await editMessage(chatId, messageId, result, backMenuKeyboard());
     return;
   }
 
@@ -3280,6 +4993,97 @@ async function handleCallback(query: TelegramCallbackQuery) {
     const page = Number(pageRaw || 0);
     const detail = await renewalConfirmText(userId);
     await editMessage(chatId, messageId, detail.text, detail.target ? renewalConfirmKeyboard(userId, page) : userManageBackKeyboard(page));
+    return;
+  }
+
+  if (data.startsWith("fx:op:clarify:")) {
+    const session = getPendingManageClarifySession(chatId, user.id);
+    if (!session) {
+      await editMessage(chatId, messageId, "补充信息会话已超时，请重新发送操作指令。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+    const action = data.slice("fx:op:clarify:".length);
+    if (action === "cancel") {
+      clearPendingManageClarifySession(chatId, user.id);
+      await editMessage(chatId, messageId, "已取消本次操作。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+
+    const nextIntent: ManageActionIntent = { ...session.intent };
+    if (action.startsWith("mode:")) {
+      const modeRaw = action.slice("mode:".length);
+      if (modeRaw !== "host" && modeRaw !== "tunnel") {
+        await editMessage(chatId, messageId, "转发模式选项无效，请重新选择。", manageClarifyModeKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      nextIntent.forwardMode = modeRaw as ManageForwardMode;
+      if (modeRaw === "host") delete nextIntent.tunnel;
+      if (modeRaw === "tunnel") delete nextIntent.host;
+    } else if (action.startsWith("tunnel:")) {
+      const tunnelId = Number(action.slice("tunnel:".length));
+      if (!Number.isFinite(tunnelId) || tunnelId <= 0) {
+        await editMessage(chatId, messageId, "隧道选项无效，请重新选择。", manageClarifyCancelKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      nextIntent.forwardMode = "tunnel";
+      nextIntent.tunnel = String(tunnelId);
+      delete nextIntent.host;
+    } else if (action.startsWith("host:")) {
+      const hostId = Number(action.slice("host:".length));
+      if (!Number.isFinite(hostId) || hostId <= 0) {
+        await editMessage(chatId, messageId, "主机选项无效，请重新选择。", manageClarifyCancelKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      nextIntent.forwardMode = "host";
+      nextIntent.host = String(hostId);
+      delete nextIntent.tunnel;
+    } else if (action.startsWith("rule:")) {
+      const ruleId = Number(action.slice("rule:".length));
+      if (!Number.isFinite(ruleId) || ruleId <= 0) {
+        await editMessage(chatId, messageId, "规则选项无效，请重新选择。", manageClarifyCancelKeyboard());
+        await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+        return;
+      }
+      nextIntent.ruleId = ruleId;
+    } else {
+      await editMessage(chatId, messageId, "无法识别该补充操作，请重新发送指令。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+
+    const prepared = await prepareManageAction(user, session.sourceText, nextIntent);
+    if (prepared.clarify) {
+      createPendingManageClarifySession(
+        chatId,
+        prepared.clarify.actor || user,
+        session.sourceText,
+        prepared.clarify.intent,
+        prepared.clarify.missingFields,
+      );
+      await editMessage(chatId, messageId, prepared.clarify.text, prepared.clarify.keyboard || manageClarifyCancelKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+
+    clearPendingManageClarifySession(chatId, user.id);
+    if (!prepared.prepared) {
+      await editMessage(chatId, messageId, prepared.error || "未识别到可执行的管理操作。", backMenuKeyboard());
+      await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
+      return;
+    }
+    const actionPending = createPendingManageAction(prepared.prepared.pending);
+    await editMessage(
+      chatId,
+      messageId,
+      manageActionConfirmText(actionPending, prepared.prepared.actor, prepared.prepared.target),
+      manageActionConfirmKeyboard(actionPending.key),
+    );
+    await scheduleAiMessageAutoRecall(chatId, undefined, messageId);
     return;
   }
 

@@ -2,34 +2,38 @@
 
 ## [2.3.182] - 2026-06-25
 
-### Added and Improved
+### 新增与优化
 
-- Added Telegram WebApp entry support in bot menus and commands (`/webapp`), allowing users to open the panel directly inside Telegram.
-- Added secure Telegram WebApp auto-login flow with dual validation:
-  - Telegram `initData` signature verification and replay protection.
-  - One-time WebApp challenge token bound to Telegram identity, consumed on successful login.
-- Improved Telegram natural-language action recognition and management workflow:
-  - Supports admin-side operations from plain language (balance set/adjust, renew, account enable/disable, forwarding enable/disable, traffic reset).
-  - Added unified confirmation buttons before execution and stricter permission checks for admin/user scopes.
-  - Added rule-level operations: enable/disable by rule ID (for example, "关闭第 12 条规则").
-  - Added tunnel-level batch rule operations: enable/disable all visible rules under a tunnel, with pre-execution rule list confirmation.
-- Added Telegram AI message auto-recall controls in DeepSeek settings:
-  - New switch to auto-recall AI-related Telegram chat content (default off).
-  - Configurable recall delay from 30s to 1200s (default 60s).
-- Added multi-provider AI backend support in panel settings:
-  - Provider selector for DeepSeek / SiliconFlow / custom OpenAI-compatible endpoints.
-  - Provider-aware default base URL and model presets to reduce manual setup errors.
-- Added AI model discovery and free-tier visibility in settings:
-  - New admin model list query endpoint and UI quick-select model dropdown.
-  - Shows inferred `free` / `paid` / `unknown` status with counts when the provider returns model metadata.
-- Improved forwarding-chain latency probe visualization for multi-entry routes:
-  - Uses endpoint remark labels as target names instead of raw IP display when available.
-  - Better grouped multi-entry layout alignment and node truncation/visibility handling on smaller screens.
+- Telegram WebApp 接入增强：
+  - 机器人菜单与命令支持 `/webapp`，可在 Telegram 内直接拉起面板。
+  - WebApp 自动登录链路加入 `initData` 验签、防重放与一次性挑战令牌校验，避免被非 Telegram 场景滥用。
+  - 修复重复使用旧入口导致“登录入口失效”的稳定性问题，提升二次打开成功率。
+- Telegram 管理指令增强：
+  - 新增 `/updatepanel` 与 `/updateagent`（仅命令可见，不进主菜单），执行前确认，并增加与 Web 端一致的短时限流。
+  - 管理写操作统一“先确认再执行”，降低误操作风险。
+- AI 管理意图增强（DeepSeek）：
+  - 增强模糊写操作识别与二次追问（60 秒内补全），例如“给我充点钱”会继续询问金额后再确认执行。
+  - 新增折扣码与余额兑换码生成能力，支持自然语言数量/金额/折扣解析与补问，生成结果回传 Telegram 并可在后台管理。
+  - 新增普通用户 AI 管理开关：关闭后仅管理员可执行 AI 管理写操作（查询不受影响）。
+- 转发规则 AI 管理增强：
+  - 支持自然语言新增/删除转发规则。
+  - 当未明确“端口转发/隧道转发”时，弹出选择；隧道模式可继续选择具体隧道；主机模式可选择主机。
+  - 未指定源端口时支持随机端口并进入确认流程后执行。
+  - 支持按规则号与条件筛选删除，多条命中时先展示候选规则供确认。
+- Telegram 机器人信息自动撤回：
+  - 新增 AI 相关聊天内容自动撤回开关（默认关闭）。
+  - 撤回时间可配置为 30-1200 秒，默认 60 秒。
+- AI 聚合平台支持（SiliconFlow 等 OpenAI 兼容接口）：
+  - 后台可选择 AI 提供方、Base URL 与模型。
+  - 支持从 API 拉取模型列表并展示 `free/paid/unknown` 状态，便于优先选择免费模型。
+- 端口转发链路探测 UI 优化：
+  - 多入口链路目标节点优先展示落地备注名，不再优先展示 IP。
+  - 修复多入口首块居中与小屏显示不全问题，提升整体可读性。
 
-### Versions
+### 版本说明
 
-- Prepared changelog for 2.3.182, but **did not bump** runtime/package versions in this push.
-- Panel version remains 2.3.181 for now. Agent target version remains 2.2.114.
+- 本次仅推送功能与体验优化，不提升运行版本号。
+- 面板版本保持 `2.3.181`，Agent 目标版本保持 `2.2.114`。
 
 ## [2.3.181] - 2026-06-25
 

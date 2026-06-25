@@ -2085,11 +2085,16 @@ function DeepSeekSettingsCard() {
   const [deepseekModel, setDeepseekModel] = useState("deepseek-chat");
   const [deepseekMaxTokens, setDeepseekMaxTokens] = useState(1024);
   const [deepseekTemperature, setDeepseekTemperature] = useState(0.2);
+  const [deepseekTelegramUserManageEnabled, setDeepseekTelegramUserManageEnabled] = useState(true);
   const [deepseekTelegramAutoRecallEnabled, setDeepseekTelegramAutoRecallEnabled] = useState(false);
   const [deepseekTelegramAutoRecallSeconds, setDeepseekTelegramAutoRecallSeconds] = useState(60);
   const [showDeleteDeepSeekKey, setShowDeleteDeepSeekKey] = useState(false);
   const aiModelsQuery = trpc.system.listAiModels.useQuery(
-    { provider: deepseekProvider, chatOnly: true },
+    {
+      provider: deepseekProvider,
+      baseUrl: deepseekBaseUrl.trim() || undefined,
+      chatOnly: true,
+    },
     {
       enabled: !!settings?.deepseek?.configured,
       staleTime: 60_000,
@@ -2107,6 +2112,7 @@ function DeepSeekSettingsCard() {
       setDeepseekModel(settings.deepseek.model || aiProviderDefaults[provider].model);
       setDeepseekMaxTokens(Number(settings.deepseek.maxTokens || 1024));
       setDeepseekTemperature(Number(settings.deepseek.temperature ?? 0.2));
+      setDeepseekTelegramUserManageEnabled(settings.deepseek.telegramUserManageEnabled !== false);
       setDeepseekTelegramAutoRecallEnabled(!!settings.deepseek.telegramAutoRecallEnabled);
       setDeepseekTelegramAutoRecallSeconds(Math.min(1200, Math.max(30, Number(settings.deepseek.telegramAutoRecallSeconds || 60))));
     }
@@ -2173,6 +2179,7 @@ function DeepSeekSettingsCard() {
         model: deepseekModel.trim() || aiProviderDefaults[deepseekProvider].model,
         maxTokens,
         temperature,
+        telegramUserManageEnabled: deepseekTelegramUserManageEnabled,
         telegramAutoRecallEnabled: deepseekTelegramAutoRecallEnabled,
         telegramAutoRecallSeconds,
       },
@@ -2379,7 +2386,21 @@ function DeepSeekSettingsCard() {
                 </div>
               </div>
 
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_180px]">
+                <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">普通用户可用 AI 管理</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        关闭后仅管理员可执行 AI 对话管理写操作（查询不受影响）。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={deepseekTelegramUserManageEnabled}
+                      onCheckedChange={setDeepseekTelegramUserManageEnabled}
+                    />
+                  </div>
+                </div>
                 <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
