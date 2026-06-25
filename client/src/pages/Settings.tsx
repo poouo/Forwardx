@@ -148,7 +148,7 @@ const aiProviderDefaults: Record<AiProvider, { baseUrl: string; model: string }>
   },
   siliconflow: {
     baseUrl: "https://api.siliconflow.cn/v1",
-    model: "Qwen/Qwen3-8B",
+    model: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
   },
   custom: {
     baseUrl: "https://api.deepseek.com",
