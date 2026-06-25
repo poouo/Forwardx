@@ -1252,6 +1252,21 @@ func cleanupKernelForwardPortBeforeApply(a action) {
 		for _, binary := range iptablesAgentBinaries() {
 			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
 		}
+		if targetIP, targetPort, ok := readTargetInfo(port); ok {
+			target := iptablesAgentAddress(targetIP)
+			targetBinary := iptablesAgentBinaryForTarget(target)
+			tp := strconv.Itoa(targetPort)
+			dnatTarget := iptablesAgentDnatTarget(targetIP, targetPort)
+			dnatMarker := iptablesAgentDnatMarker(port)
+			snatMarker := iptablesAgentSnatMarker(port)
+			for _, proto := range []string{"tcp", "udp"} {
+				_ = runShell(iptablesAgentDelete(targetBinary, "nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -m comment --comment %q -j DNAT --to-destination %s`, proto, port, dnatMarker, dnatTarget)))
+				_ = runShell(iptablesAgentDelete(targetBinary, "nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q -j MASQUERADE`, proto, target, tp, snatMarker)))
+				// Legacy compatibility: older versions did not add comment markers.
+				_ = runShell(iptablesAgentDelete(targetBinary, "nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -j DNAT --to-destination %s`, proto, port, dnatTarget)))
+				_ = runShell(iptablesAgentDelete(targetBinary, "nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j MASQUERADE`, proto, target, tp)))
+			}
+		}
 	case "nftables":
 		_ = runShell(nftPortCleanupCmd(port, "both"))
 	}
@@ -2184,7 +2199,7 @@ func nftPortCleanupCmd(port string, protocol string) string {
 	}
 	parts := make([]string, 0, len(protos))
 	for _, proto := range protos {
-		awk := fmt.Sprintf(`awk '/ %s dport %s( |$)/ && / dnat / {print $NF}'`, proto, port)
+		awk := fmt.Sprintf(`awk '/ %s dport %s( |$)/ && / dnat / && / comment "fwx-rule-/ {print $NF}'`, proto, port)
 		parts = append(parts, fmt.Sprintf(`if nft list chain inet forwardx prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet forwardx prerouting 2>/dev/null | %s); do nft delete rule inet forwardx prerouting handle "$h" 2>/dev/null; true; done; fi`, awk))
 	}
 	return strings.Join(parts, "; ") + "; true"
@@ -2262,15 +2277,27 @@ func iptablesAgentDnatTarget(targetIP string, targetPort int) string {
 	return host + ":" + port
 }
 
+func iptablesAgentDnatMarker(port string) string {
+	return "fwx-dnat-" + port
+}
+
+func iptablesAgentSnatMarker(port string) string {
+	return "fwx-snat-" + port
+}
+
 func iptablesAgentDeleteDnatRulesForPort(binary string, port string, protocol string) string {
 	protos := []string{"tcp", "udp"}
 	if protocol == "tcp" || protocol == "udp" {
 		protos = []string{protocol}
 	}
+	dnatMarker := iptablesAgentDnatMarker(port)
+	snatMarker := iptablesAgentSnatMarker(port)
 	parts := make([]string, 0, len(protos))
 	for _, proto := range protos {
-		awk := fmt.Sprintf(`awk '/^-A PREROUTING / && / -p %s / && /--dport %s( |$)/ && / -j DNAT / {sub(/^-A/, "-D"); print}'`, proto, port)
-		parts = append(parts, fmt.Sprintf(`while rule=$(%s -t nat -S PREROUTING 2>/dev/null | %s | head -n 1) && [ -n "$rule" ]; do %s -t nat $rule 2>/dev/null || break; done`, binary, awk, binary))
+		dnatAwk := fmt.Sprintf(`awk '/^-A PREROUTING / && / -p %s / && /--dport %s( |$)/ && / -j DNAT / && /--comment "%s"/ {sub(/^-A/, "-D"); print}'`, proto, port, dnatMarker)
+		snatAwk := fmt.Sprintf(`awk '/^-A POSTROUTING / && / -p %s / && / -j MASQUERADE / && /--comment "%s"/ {sub(/^-A/, "-D"); print}'`, proto, snatMarker)
+		parts = append(parts, fmt.Sprintf(`while rule=$(%s -t nat -S PREROUTING 2>/dev/null | %s | head -n 1) && [ -n "$rule" ]; do %s -t nat $rule 2>/dev/null || break; done`, binary, dnatAwk, binary))
+		parts = append(parts, fmt.Sprintf(`while rule=$(%s -t nat -S POSTROUTING 2>/dev/null | %s | head -n 1) && [ -n "$rule" ]; do %s -t nat $rule 2>/dev/null || break; done`, binary, snatAwk, binary))
 	}
 	cmd := strings.Join(parts, "; ")
 	if binary == "ip6tables" {
@@ -2333,7 +2360,9 @@ func managedPortCleanupCmds(port string) []string {
 		target := iptablesAgentAddress(targetIP)
 		tp := strconv.Itoa(targetPort)
 		binary := iptablesAgentBinaryForTarget(target)
-		dnatTarget := iptablesAgentDnatTarget(target, targetPort)
+		dnatTarget := iptablesAgentDnatTarget(targetIP, targetPort)
+		dnatMarker := iptablesAgentDnatMarker(port)
+		snatMarker := iptablesAgentSnatMarker(port)
 		targetCmds := []string{}
 		for _, proto := range []string{"tcp", "udp"} {
 			stateMatch := ""
@@ -2344,6 +2373,8 @@ func managedPortCleanupCmds(port string) []string {
 				table string
 				rule  string
 			}{
+				{"nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -m comment --comment %q -j DNAT --to-destination %s`, proto, port, dnatMarker, dnatTarget)},
+				{"nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q -j MASQUERADE`, proto, target, tp, snatMarker)},
 				{"nat", fmt.Sprintf(`PREROUTING -p %s --dport %s -j DNAT --to-destination %s`, proto, port, dnatTarget)},
 				{"nat", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -j MASQUERADE`, proto, target, tp)},
 				{"", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j ACCEPT`, proto, target, tp)},

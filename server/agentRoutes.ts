@@ -25,6 +25,12 @@ const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWAR
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
+const AGENT_STREAM_AUTH_ERROR_PATTERN = /(timestamp|replay protection|encrypted request replay|agent auth replay|mac verification failed|invalid iv length|invalid timestamp|no token candidates available)/i;
+
+function isAgentStreamAuthError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return AGENT_STREAM_AUTH_ERROR_PATTERN.test(message);
+}
 
 function migratedAgentPayload(panelUrl: string) {
   return {
@@ -153,7 +159,13 @@ agentApiRouter.use(rejectAgentWhenPanelMigrated);
 agentRouter.get("/api/stream", async (req: Request, res: Response) => {
   try {
     const rawEnvelope = String(req.query.e || "");
-    const envelope = rawEnvelope ? JSON.parse(rawEnvelope) : null;
+    let envelope: any = null;
+    try {
+      envelope = rawEnvelope ? JSON.parse(rawEnvelope) : null;
+    } catch {
+      res.status(401).json({ error: "Unauthorized", message: "Invalid encrypted request" });
+      return;
+    }
     if (!isEncryptedEnvelope(envelope)) {
       res.status(401).json({ error: "Unauthorized" });
       return;
@@ -167,6 +179,13 @@ agentRouter.get("/api/stream", async (req: Request, res: Response) => {
       agentVersion: resolved.payload?.agentVersion,
     });
   } catch (error) {
+    if (isAgentStreamAuthError(error)) {
+      res.status(401).json({
+        error: "Unauthorized",
+        message: error instanceof Error ? error.message : String(error || "Unauthorized"),
+      });
+      return;
+    }
     console.error("[Agent Stream] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
