@@ -107,6 +107,10 @@ export default function Login() {
   const { resolvedTheme, setTheme } = useTheme();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
   const telegramWebAppAutoLoginTriedRef = useRef(false);
+  const telegramWebAppChallengeRetriedRef = useRef(false);
+  const telegramWebAppLoginRetryMutateRef = useRef((payload: { initData: string; challenge?: string; mobile?: boolean }) => {
+    void payload;
+  });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -227,7 +231,7 @@ export default function Login() {
       utils.auth.me.invalidate();
       window.location.href = "/";
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       const msg = error.message || "";
       if (msg === "TELEGRAM_NOT_BOUND") {
@@ -239,6 +243,16 @@ export default function Login() {
         return;
       }
       if (msg === "TELEGRAM_WEBAPP_CHALLENGE_INVALID") {
+        const initData = String((variables as any)?.initData || "").trim();
+        const hasChallenge = !!String((variables as any)?.challenge || "").trim();
+        if (initData && hasChallenge && !telegramWebAppChallengeRetriedRef.current) {
+          telegramWebAppChallengeRetriedRef.current = true;
+          telegramWebAppLoginRetryMutateRef.current({
+            initData,
+            mobile: !!(variables as any)?.mobile,
+          });
+          return;
+        }
         toast.info("登录入口已失效，请返回机器人重新点击“打开面板”。");
         return;
       }
@@ -253,6 +267,10 @@ export default function Login() {
       toast.error(msg || "Telegram 自动登录失败，请使用账号密码登录。");
     },
   });
+
+  useEffect(() => {
+    telegramWebAppLoginRetryMutateRef.current = telegramWebAppLoginMutation.mutate;
+  }, [telegramWebAppLoginMutation.mutate]);
 
   const mobileTelegramStatusMutation = trpc.telegram.mobileLoginStatus.useMutation({
     onSuccess: (data) => {
@@ -388,6 +406,7 @@ export default function Login() {
       } catch {
         // no-op
       }
+      telegramWebAppChallengeRetriedRef.current = false;
       telegramWebAppLoginMutation.mutate({
         initData,
         ...(challenge ? { challenge } : {}),

@@ -360,7 +360,7 @@ export const telegramRouter = router({
       }
       if (input.challenge) {
         const challengeResult = consumeTelegramWebAppLoginChallenge(input.challenge, payload.telegramId);
-        if (challengeResult !== "ok") {
+        if (challengeResult === "mismatch") {
           throw new Error("TELEGRAM_WEBAPP_CHALLENGE_INVALID");
         }
       }
