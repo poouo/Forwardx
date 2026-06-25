@@ -215,8 +215,7 @@ function buildProbeSegments(input: {
     && (
       hasGroupedPlannedSegments
       || visibleDetails.length === 0
-      || visibleDetails.length < plannedSegments.length
-      || (visibleDetails.length === 1 && plannedSegments.length > 1)
+      || visibleDetails.length <= plannedSegments.length
     );
 
   if (visibleDetails.length > 0 && !usePlannedSegments) {
@@ -441,11 +440,14 @@ export function LinkTestProbeView({
       </>
     );
   };
-  const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta) => {
+  const renderNode = (label: string, segmentMeta?: LinkTestNodeMeta, options?: { wide?: boolean }) => {
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
-    const nodeWidthClass = shouldStretchDesktopPath
+    const preferWideNode = options?.wide === true;
+    const nodeWidthClass = preferWideNode
+      ? roomyNodes ? "max-w-[228px]" : "max-w-[208px]"
+      : shouldStretchDesktopPath
       ? segments.length >= 3
         ? "max-w-[104px]"
         : segments.length >= 2
@@ -456,7 +458,9 @@ export function LinkTestProbeView({
       : roomyNodes
         ? shouldWrapDesktopRows ? "max-w-[128px]" : densePath ? "max-w-[128px]" : compactPath ? "max-w-[160px]" : "max-w-[176px]"
         : densePath ? "max-w-[88px]" : compactPath ? "max-w-[104px]" : "max-w-[128px]";
-    const labelMaxLength = shouldStretchDesktopPath
+    const labelMaxLength = preferWideNode
+      ? roomyNodes ? 28 : 24
+      : shouldStretchDesktopPath
       ? segments.length >= 3 ? 11 : segments.length >= 2 ? 14 : roomyNodes ? 18 : 14
       : shouldWrapDesktopRows ? 15 : roomyNodes ? 18 : 14;
     return (
@@ -588,14 +592,14 @@ export function LinkTestProbeView({
     <div
       className={cn(
         "relative z-10 rounded-md border border-border/70 bg-background text-sm font-medium shadow-sm",
-        mobile ? "mx-auto w-full max-w-[18rem] px-3 py-2" : "min-w-[172px] max-w-[228px] px-3 py-2",
+        mobile ? "mx-auto w-full max-w-[18rem] px-3 py-2" : "mt-[9px] h-[72px] min-w-[188px] max-w-[248px] px-3 py-2",
       )}
       title={entrySegments.map((segment) => segment.from).join(" / ")}
     >
       <div className="max-h-[9.5rem] space-y-1 overflow-y-auto pr-1">
         {entrySegments.map((segment, index) => {
           const { testing, ok, label } = getSegmentState(segment);
-          const entryLabel = shortNodeLabel(segment.from, mobile ? 18 : 13);
+          const entryLabel = shortNodeLabel(segment.from, mobile ? 18 : 18);
           return (
             <div
               key={`entry-group-${segment.from}-${segment.to}-${index}`}
@@ -653,13 +657,13 @@ export function LinkTestProbeView({
         <div className="mx-auto flex min-w-full w-max items-start justify-center px-2 py-7">
           {renderEntryGroupNode(entrySegments)}
           {renderDesktopConnector(entryConnectorSegment, "entry-group-line", "w-[96px] shrink-0 flex-none", false)}
-          {renderNode(convergenceLabel, convergenceMeta)}
+          {renderNode(convergenceLabel, convergenceMeta, { wide: true })}
           {restSegments.length > 0 ? (
             <div className="flex items-start">
               {restSegments.map((segment, index) => (
                 <div key={`rest-${segment.from}-${segment.to}-${index}`} className="contents">
                   {renderDesktopConnector(segment, `rest-line-${index}`, index === 0 ? "w-[96px] shrink-0 flex-none" : "min-w-[88px] flex-1")}
-                  {renderNode(segment.to, segment.toMeta)}
+                  {renderNode(segment.to, segment.toMeta, { wide: true })}
                 </div>
               ))}
             </div>

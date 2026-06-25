@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.182] - 2026-06-25
+
+### Added and Improved
+
+- Added Telegram WebApp entry support in bot menus and commands (`/webapp`), allowing users to open the panel directly inside Telegram.
+- Added secure Telegram WebApp auto-login flow with dual validation:
+  - Telegram `initData` signature verification and replay protection.
+  - One-time WebApp challenge token bound to Telegram identity, consumed on successful login.
+- Improved Telegram natural-language action recognition and management workflow:
+  - Supports admin-side operations from plain language (balance set/adjust, renew, account enable/disable, forwarding enable/disable, traffic reset).
+  - Added unified confirmation buttons before execution and stricter permission checks for admin/user scopes.
+- Improved forwarding-chain latency probe visualization for multi-entry routes:
+  - Uses endpoint remark labels as target names instead of raw IP display when available.
+  - Better grouped multi-entry layout alignment and node truncation/visibility handling on smaller screens.
+
+### Versions
+
+- Prepared changelog for 2.3.182, but **did not bump** runtime/package versions in this push.
+- Panel version remains 2.3.181 for now. Agent target version remains 2.2.114.
+
 ## [2.3.181] - 2026-06-25
 
 ### Fixed and Improved

@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME } from "../../shared/const";
@@ -9,9 +9,13 @@ import { TRPCError } from "@trpc/server";
 import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
+import { consumeTelegramWebAppLoginChallenge } from "../telegramWebAppLogin";
 
 const BIND_CODE_TTL_MS = 5 * 60 * 1000;
 const MOBILE_LOGIN_TTL_MS = 5 * 60 * 1000;
+const TELEGRAM_WEBAPP_LOGIN_MAX_AGE_SECONDS = 5 * 60;
+const TELEGRAM_WEBAPP_REPLAY_TTL_MS = 10 * 60 * 1000;
+const usedTelegramWebAppLogins = new Map<string, number>();
 
 function randomCode(length = 24) {
   let out = "";
@@ -61,6 +65,91 @@ const telegramWidgetLoginSchema = z.object({
   auth_date: z.union([z.string(), z.number()]),
   hash: z.string().min(1),
 }).passthrough();
+
+const telegramWebAppLoginSchema = z.object({
+  initData: z.string().min(16).max(8192),
+  challenge: z.string().min(16).max(192),
+  mobile: z.boolean().optional(),
+});
+
+type TelegramWebAppAuthPayload = {
+  hash: string;
+  authDate: number;
+  queryId: string;
+  telegramId: string;
+  username: string | null;
+  firstName: string | null;
+  lastName: string | null;
+};
+
+function pruneUsedTelegramWebAppLogins(now = Date.now()) {
+  for (const [key, expiresAt] of usedTelegramWebAppLogins.entries()) {
+    if (!expiresAt || expiresAt <= now) usedTelegramWebAppLogins.delete(key);
+  }
+}
+
+function consumeTelegramWebAppLoginOnce(replayKey: string, ttlMs = TELEGRAM_WEBAPP_REPLAY_TTL_MS) {
+  const normalized = String(replayKey || "").trim().toLowerCase();
+  if (!normalized) return false;
+  pruneUsedTelegramWebAppLogins();
+  if (usedTelegramWebAppLogins.has(normalized)) return false;
+  usedTelegramWebAppLogins.set(normalized, Date.now() + ttlMs);
+  return true;
+}
+
+function parseTelegramWebAppUser(rawUser: string | null) {
+  if (!rawUser) return null;
+  let parsed: any = null;
+  try {
+    parsed = JSON.parse(rawUser);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const telegramId = String(parsed.id ?? "").trim();
+  if (!telegramId) return null;
+  return {
+    telegramId,
+    username: parsed.username ? String(parsed.username) : null,
+    firstName: parsed.first_name ? String(parsed.first_name) : null,
+    lastName: parsed.last_name ? String(parsed.last_name) : null,
+  };
+}
+
+function verifyTelegramWebAppLogin(initData: string, token: string): TelegramWebAppAuthPayload | null {
+  const normalized = String(initData || "").trim();
+  if (!normalized) return null;
+  const params = new URLSearchParams(normalized);
+  const hash = String(params.get("hash") || "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) return null;
+  const queryId = String(params.get("query_id") || "").trim();
+  if (!/^[a-z0-9_-]{8,128}$/i.test(queryId)) return null;
+  const authDate = Number(params.get("auth_date") || 0);
+  if (!Number.isFinite(authDate) || authDate <= 0) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (authDate > now + 30) return null;
+  if (now - authDate > TELEGRAM_WEBAPP_LOGIN_MAX_AGE_SECONDS) return null;
+  const parsedUser = parseTelegramWebAppUser(params.get("user"));
+  if (!parsedUser) return null;
+
+  const dataCheckString = Array.from(params.entries())
+    .filter(([key]) => key !== "hash")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(token).digest();
+  const actual = createHmac("sha256", secret).update(dataCheckString).digest("hex").toLowerCase();
+  const expected = Buffer.from(hash, "hex");
+  const current = Buffer.from(actual, "hex");
+  if (expected.length !== current.length || !timingSafeEqual(expected, current)) return null;
+
+  return {
+    hash,
+    authDate,
+    queryId,
+    ...parsedUser,
+  };
+}
 
 function verifyTelegramWidgetLogin(payload: z.infer<typeof telegramWidgetLoginSchema>, token: string) {
   const authDate = Number(payload.auth_date);
@@ -239,7 +328,7 @@ export const telegramRouter = router({
     .mutation(async ({ input, ctx }) => {
       const settings = await getTelegramRuntimeSettings();
       if (!settings.enabled || !settings.configured || !settings.token) {
-        throw new Error("Telegram 登录尚未启用");
+        throw new Error("TELEGRAM_LOGIN_DISABLED");
       }
       if (!verifyTelegramWidgetLogin(input, settings.token)) {
         throw new Error("Telegram 登录验证失败，请重新尝试");
@@ -257,4 +346,37 @@ export const telegramRouter = router({
       });
       return setLoginCookie(ctx, user);
     }),
+
+  loginWithWebApp: publicProcedure
+    .input(telegramWebAppLoginSchema)
+    .mutation(async ({ input, ctx }) => {
+      const settings = await getTelegramRuntimeSettings();
+      if (!settings.enabled || !settings.configured || !settings.token) {
+        throw new Error("TELEGRAM_LOGIN_DISABLED");
+      }
+      const payload = verifyTelegramWebAppLogin(input.initData, settings.token);
+      if (!payload) {
+        throw new Error("TELEGRAM_WEBAPP_VERIFY_FAILED");
+      }
+      const challengeResult = consumeTelegramWebAppLoginChallenge(input.challenge, payload.telegramId);
+      if (challengeResult !== "ok") {
+        throw new Error("TELEGRAM_WEBAPP_CHALLENGE_INVALID");
+      }
+      const replayKey = `${payload.queryId}:${payload.hash}`;
+      if (!consumeTelegramWebAppLoginOnce(replayKey)) {
+        throw new Error("TELEGRAM_WEBAPP_REPLAYED");
+      }
+
+      const user = await db.getUserByTelegramId(payload.telegramId);
+      if (!user) {
+        throw new Error("TELEGRAM_NOT_BOUND");
+      }
+      await db.updateTelegramLastSeen(payload.telegramId, {
+        username: payload.username,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+      });
+      return setLoginCookie(ctx, user, { mobile: input.mobile });
+    }),
 });
+

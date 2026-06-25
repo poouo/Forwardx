@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+﻿import { useState, useCallback, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,28 @@ type TwoFactorChallengeState = {
   username: string;
   expiresAt: number;
 };
+
+type TelegramWebAppBridge = {
+  initData?: string;
+  ready?: () => void;
+  expand?: () => void;
+};
+
+function getTelegramWebAppBridge(): TelegramWebAppBridge | null {
+  if (typeof window === "undefined") return null;
+  return ((window as any).Telegram?.WebApp as TelegramWebAppBridge | undefined) || null;
+}
+
+function getTelegramWebAppInitData() {
+  const webApp = getTelegramWebAppBridge();
+  const initData = typeof webApp?.initData === "string" ? webApp.initData.trim() : "";
+  return initData;
+}
+
+function getTelegramWebAppChallenge() {
+  if (typeof window === "undefined") return "";
+  return String(new URLSearchParams(window.location.search).get("wa") || "").trim();
+}
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
 const LOGIN_NOTICE_TOAST_KEY = "forwardx.loginNotice";
@@ -76,6 +98,7 @@ export default function Login() {
   const [showPanelSettings, setShowPanelSettings] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
+  const telegramWebAppAutoLoginTriedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -184,6 +207,42 @@ export default function Login() {
     onError: (error) => {
       if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
       toast.error(error.message || "Telegram 登录失败");
+    },
+  });
+
+  const telegramWebAppLoginMutation = trpc.telegram.loginWithWebApp.useMutation({
+    onSuccess: (data) => {
+      if (mobileAuth.isNative) {
+        mobileAuth.setToken(data.mobileToken);
+      }
+      rememberLoginWelcome(data);
+      utils.auth.me.invalidate();
+      window.location.href = "/";
+    },
+    onError: (error) => {
+      if (error.message === ACCOUNT_DISABLED_ERR_MSG && mobileAuth.isNative) mobileAuth.clear();
+      const msg = error.message || "";
+      if (msg === "TELEGRAM_NOT_BOUND") {
+        toast.info("当前 Telegram 未绑定面板账号，请先使用账号密码登录并在面板完成绑定。");
+        return;
+      }
+      if (msg === "TELEGRAM_WEBAPP_REPLAYED") {
+        toast.info("自动登录请求已失效，请返回机器人重新打开 WebApp。");
+        return;
+      }
+      if (msg === "TELEGRAM_WEBAPP_CHALLENGE_INVALID") {
+        toast.info("登录入口已失效，请返回机器人重新点击“打开面板”。");
+        return;
+      }
+      if (msg === "TELEGRAM_WEBAPP_VERIFY_FAILED") {
+        toast.error("Telegram 自动登录校验失败，请在机器人中重新打开 WebApp。");
+        return;
+      }
+      if (msg === "TELEGRAM_LOGIN_DISABLED") {
+        toast.error("Telegram 登录未启用，请改用账号密码登录。");
+        return;
+      }
+      toast.error(msg || "Telegram 自动登录失败，请使用账号密码登录。");
     },
   });
 
@@ -301,6 +360,27 @@ export default function Login() {
   }, [mode, registrationEnabled]);
 
   useEffect(() => {
+    if (telegramWebAppAutoLoginTriedRef.current || telegramWebAppLoginMutation.isPending) return;
+    const initData = getTelegramWebAppInitData();
+    if (!initData) return;
+    telegramWebAppAutoLoginTriedRef.current = true;
+    const challenge = getTelegramWebAppChallenge();
+    if (!challenge) {
+      toast.info("请从机器人消息里的“打开面板”按钮进入，以完成安全登录。");
+      return;
+    }
+    const webApp = getTelegramWebAppBridge();
+    try {
+      webApp?.ready?.();
+      webApp?.expand?.();
+    } catch {
+      // no-op
+    }
+    telegramWebAppLoginMutation.mutate({ initData, challenge, mobile: mobileAuth.isNative });
+  }, [telegramWebAppLoginMutation]);
+
+  useEffect(() => {
+    if (getTelegramWebAppInitData()) return;
     const code = new URLSearchParams(location.split("?")[1] || "").get("tg");
     if (!code || telegramLoginCode === code || telegramLoginMutation.isPending) return;
     setTelegramLoginCode(code);
@@ -480,11 +560,11 @@ export default function Login() {
     setPassword("");
   };
 
-  const isPending = loginMutation.isPending || registerMutation.isPending;
+  const isPending = loginMutation.isPending || registerMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
-  const isTelegramPending = telegramLoginMutation.isPending;
+  const isTelegramPending = telegramLoginMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
-  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && (!telegramLoginStatus || showTelegramLogin);
+  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && !getTelegramWebAppInitData() && (!telegramLoginStatus || showTelegramLogin);
 
   return (
     <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
@@ -592,7 +672,7 @@ export default function Login() {
           {isTelegramPending ? (
             <div className="flex flex-col items-center justify-center gap-3 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <span>正在验证一次性登录码...</span>
+              <span>{telegramWebAppLoginMutation.isPending ? "正在校验 Telegram WebApp 安全登录..." : "正在验证一次性登录码..."}</span>
             </div>
           ) : mode === "login" ? (
             <form onSubmit={handleLogin} className="space-y-4">
@@ -1025,3 +1105,4 @@ export default function Login() {
     </div>
   );
 }
+

@@ -70,7 +70,7 @@ import {
   YAxis,
 } from "recharts";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
-import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import { addHostNodeMeta, addNodeMetaAliases, hostDisplayName } from "@/lib/linkTestNodeMeta";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "failover" | "chain" | "entry" | "exit";
@@ -515,6 +515,12 @@ function ForwardGroupSelfTestDialog({
     const firstEntryHost = hostById?.get(Number(entryMembers[0]?.hostId || 0));
     const firstHost = hostById?.get(Number(members[0]?.hostId || 0));
     const lastHost = hostById?.get(Number(members[members.length - 1]?.hostId || 0));
+    const targetRemark = String(group?.remark || "").trim();
+    const targetLabel = targetRemark || hostDisplayName(lastHost) || groupName;
+    const targetMeta = targetLabel ? { label: targetLabel } : undefined;
+    if (targetMeta) {
+      addNodeMetaAliases(meta, [targetLabel, "目标", "目的节点"], targetMeta);
+    }
     const plannedSegments: LinkTestPlannedSegment[] = [];
     if (entryMembers.length > 0 && members[0]) {
       const firstChainHost = hostById?.get(Number(members[0].hostId || 0));
@@ -538,13 +544,21 @@ function ForwardGroupSelfTestDialog({
         toMeta: meta[hostDisplayName(toHost)] || meta[String(members[index + 1]?.hostId || "")],
       });
     });
+    if (members.length > 0) {
+      plannedSegments.push({
+        from: hostDisplayName(lastHost) || `主机 #${members[members.length - 1]?.hostId || "-"}`,
+        to: targetLabel,
+        fromMeta: meta[hostDisplayName(lastHost)] || meta[String(members[members.length - 1]?.hostId || "")],
+        toMeta: meta[targetLabel] || targetMeta,
+      });
+    }
     return {
       nodeMeta: meta,
       sourceLabel: hostDisplayName(firstEntryHost) || hostDisplayName(firstHost) || groupName,
-      targetLabel: hostDisplayName(lastHost) || groupName,
+      targetLabel,
       plannedSegments: plannedSegments.filter((segment) => segment.from && segment.to),
     };
-  }, [entryGroup?.members, group?.members, groupName, hostById]);
+  }, [entryGroup?.members, group?.members, group?.remark, groupName, hostById]);
 
   useEffect(() => {
     if (!open) {

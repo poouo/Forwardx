@@ -1,4 +1,4 @@
-import * as db from "./db";
+﻿import * as db from "./db";
 import { requireMainBackupAllowed } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
@@ -6,6 +6,7 @@ import { pushAgentRefresh } from "./agentEvents";
 import { pushTunnelEndpointRefresh } from "./routers/helpers";
 import { addMonthsClamped } from "./repositories/repositoryUtils";
 import { clearMobileTelegramLoginChallenge, hasMobileTelegramLoginChallenge } from "./telegramMobileLogin";
+import { createTelegramWebAppLoginChallenge } from "./telegramWebAppLogin";
 import { formatForwardRuleProtocol } from "../shared/forwardTypes";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "./portPolicy";
 
@@ -48,12 +49,54 @@ type AiQueryIntent = {
   keyword?: string;
 };
 
+type ManageActionKind =
+  | "none"
+  | "balance_set"
+  | "balance_adjust"
+  | "renew"
+  | "account_enable"
+  | "account_disable"
+  | "forward_enable"
+  | "forward_disable"
+  | "traffic_reset";
+
+type ManageDurationUnit = "day" | "month" | "year";
+
+type ManageActionIntent = {
+  action: ManageActionKind;
+  target?: string;
+  amountYuan?: number;
+  durationValue?: number;
+  durationUnit?: ManageDurationUnit;
+};
+
+type PendingManageAction = {
+  key: string;
+  actorUserId: number;
+  actorRole: "admin" | "user";
+  action: Exclude<ManageActionKind, "none">;
+  targetUserId: number;
+  amountCents?: number;
+  durationValue?: number;
+  durationUnit?: ManageDurationUnit;
+  sourceText: string;
+  createdAt: number;
+  expiresAt: number;
+};
+
+type PreparedManageAction = {
+  pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt">;
+  target: any;
+  actor: any;
+};
+
 let pollingStarted = false;
 let pollingAbort = false;
 let updateOffset = 0;
 let activeTokenKey = "";
 const pendingBindChats = new Map<string, number>();
 const pendingRedeemChats = new Map<string, number>();
+const pendingManageActions = new Map<string, PendingManageAction>();
 
 const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_SUCCESS_MESSAGE_DELETE_MS = 60 * 1000;
@@ -66,20 +109,23 @@ const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat";
 const DEFAULT_DEEPSEEK_MAX_TOKENS = 1024;
 const DEFAULT_DEEPSEEK_TEMPERATURE = 0.2;
+const MANAGE_ACTION_CONFIRM_TTL_MS = 10 * 60 * 1000;
+const MANAGE_BALANCE_MAX_CENTS = 100_000_000;
 const GENERIC_AI_QUERY_KEYWORD_RE = /^(帮我|请|给我|查|查下|查一下|查询|查看|看看|看下|看一下|显示|列出|搜索|我的|我|全部|所有|当前|现在|目前|已有|有的|有|哪些|哪条|列表|信息|状态|详情|是多少|多少|用了|使用|消耗|占用|用量|流量|额度|余额|套餐|转发规则|规则|端口|转发|主机|机器|节点|隧道|链路|转发链|转发组|入口组|用户|账户|账号|的|吗)+$/;
 const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "打开菜单或完成账号绑定" },
   { command: "menu", description: "打开功能菜单" },
   { command: "usage", description: "查询流量和额度" },
   { command: "rules", description: "查看和管理转发规则" },
-  { command: "ask", description: "用自然语言查询面板信息" },
+  { command: "ask", description: "自然语言查询面板信息" },
   { command: "redeem", description: "兑换余额或套餐兑换码" },
   { command: "bind", description: "使用绑定码绑定后台账号" },
   { command: "login", description: "生成网页登录链接" },
+  { command: "webapp", description: "在 Telegram 内打开面板" },
   { command: "unbind", description: "解除 Telegram 绑定" },
   { command: "users", description: "管理员用户管理" },
   { command: "reset", description: "管理员重置用户流量" },
-  { command: "renew", description: "管理员续期用户一个月" },
+  { command: "renew", description: "管理员续期用户套餐" },
   { command: "help", description: "查看帮助" },
 ];
 
@@ -146,6 +192,68 @@ function getRenewalDates(user: any, months = 1) {
   const now = new Date();
   const base = currentExpiresAt && currentExpiresAt.getTime() > now.getTime() ? currentExpiresAt : now;
   return { base, nextExpiresAt: addMonthsClamped(base, months) };
+}
+
+function getRenewalDatesByDuration(user: any, value: number, unit: ManageDurationUnit) {
+  const safeValue = Math.max(1, Math.floor(value || 1));
+  const currentExpiresAt = user?.expiresAt ? new Date(user.expiresAt) : null;
+  const now = new Date();
+  const base = currentExpiresAt && currentExpiresAt.getTime() > now.getTime() ? currentExpiresAt : now;
+  if (unit === "month") return { base, nextExpiresAt: addMonthsClamped(base, safeValue) };
+  if (unit === "year") return { base, nextExpiresAt: addMonthsClamped(base, safeValue * 12) };
+  return { base, nextExpiresAt: new Date(base.getTime() + safeValue * 24 * 3600 * 1000) };
+}
+
+function formatUserLabel(user: any) {
+  return `#${Number(user?.id || 0)} ${escapeHtml(user?.name || user?.username || "-")}`;
+}
+
+function formatManageDuration(value: number, unit: ManageDurationUnit) {
+  const safeValue = Math.max(1, Math.floor(value || 1));
+  if (unit === "day") return `${safeValue} 天`;
+  if (unit === "year") return `${safeValue} 年`;
+  return `${safeValue} 个月`;
+}
+
+function cleanupExpiredPendingManageActions() {
+  const now = Date.now();
+  for (const [key, item] of pendingManageActions.entries()) {
+    if (!item.expiresAt || item.expiresAt <= now) pendingManageActions.delete(key);
+  }
+}
+
+function createPendingManageAction(action: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt">) {
+  cleanupExpiredPendingManageActions();
+  const now = Date.now();
+  const key = randomCode(18).toLowerCase();
+  const pending: PendingManageAction = {
+    ...action,
+    key,
+    createdAt: now,
+    expiresAt: now + MANAGE_ACTION_CONFIRM_TTL_MS,
+  };
+  pendingManageActions.set(key, pending);
+  return pending;
+}
+
+function getPendingManageAction(actionKey: string) {
+  cleanupExpiredPendingManageActions();
+  const key = String(actionKey || "").trim().toLowerCase();
+  if (!key) return null;
+  const pending = pendingManageActions.get(key);
+  if (!pending) return null;
+  if (!pending.expiresAt || pending.expiresAt <= Date.now()) {
+    pendingManageActions.delete(key);
+    return null;
+  }
+  return pending;
+}
+
+function consumePendingManageAction(actionKey: string) {
+  const pending = getPendingManageAction(actionKey);
+  if (!pending) return null;
+  pendingManageActions.delete(pending.key);
+  return pending;
 }
 
 function getBindSessionKey(chatId: number | string, telegramId: string | number) {
@@ -226,8 +334,15 @@ async function telegramApi<T = any>(method: string, body?: Record<string, unknow
   return json.result as T;
 }
 
+type InlineKeyboardButton = {
+  text: string;
+  callback_data?: string;
+  url?: string;
+  web_app?: { url: string };
+};
+
 type InlineKeyboardMarkup = {
-  inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+  inline_keyboard: Array<Array<InlineKeyboardButton>>;
 };
 
 async function sendMessage(chatId: number | string, text: string, replyMarkup?: InlineKeyboardMarkup) {
@@ -316,6 +431,7 @@ function helpText(bound: boolean, isAdmin = false) {
     "/ask 问题 - 用自然语言查询面板信息",
     "/redeem 兑换码 - 兑换余额或套餐",
     "/login - 生成网页一次性登录链接",
+    "/webapp - 在 Telegram 内打开面板",
     "/enable 规则ID - 启用规则",
     "/disable 规则ID - 停用规则",
     "/unbind - 解除当前 Telegram 绑定（需要确认）",
@@ -450,7 +566,25 @@ function parseCommand(text: string) {
   return { command, args: parts };
 }
 
-function mainMenuKeyboard(user: any): InlineKeyboardMarkup {
+function buildTelegramWebAppUrl(panelPublicUrl: string, challenge?: string) {
+  const base = String(panelPublicUrl || "").trim().replace(/\/+$/, "");
+  if (!base) return "";
+  const params = new URLSearchParams({ tgWebApp: "1" });
+  const normalizedChallenge = String(challenge || "").trim().toLowerCase();
+  if (normalizedChallenge) params.set("wa", normalizedChallenge);
+  return `${base}/login?${params.toString()}`;
+}
+
+function webAppOpenKeyboard(url: string): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "打开 ForwardX 面板", web_app: { url } }],
+      [{ text: "浏览器打开", url }],
+    ],
+  };
+}
+
+function mainMenuKeyboard(user: any, webAppUrl?: string): InlineKeyboardMarkup {
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [
     [
       { text: "用户信息", callback_data: "fx:user" },
@@ -461,6 +595,9 @@ function mainMenuKeyboard(user: any): InlineKeyboardMarkup {
       ...(user?.role === "admin" ? [] : [{ text: "兑换码", callback_data: "fx:redeem" }]),
     ],
   ];
+  if (webAppUrl) {
+    rows.push([{ text: "打开面板", web_app: { url: webAppUrl } }]);
+  }
   if (user?.role === "admin") {
     rows.push([{ text: "用户管理", callback_data: "fx:users:0" }]);
   }
@@ -493,6 +630,18 @@ function renewalConfirmKeyboard(userId: number, page = 0): InlineKeyboardMarkup 
         { text: "取消", callback_data: `fx:admin:user:${userId}:${page}` },
       ],
       [{ text: "返回用户详情", callback_data: `fx:admin:user:${userId}:${page}` }],
+    ],
+  };
+}
+
+function manageActionConfirmKeyboard(actionKey: string): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: "确认执行", callback_data: `fx:op:confirm:${actionKey}` },
+        { text: "取消", callback_data: `fx:op:cancel:${actionKey}` },
+      ],
+      [{ text: "返回菜单", callback_data: "fx:menu" }],
     ],
   };
 }
@@ -750,11 +899,25 @@ async function loginText(user: any) {
 }
 
 async function sendMainMenu(chatId: number | string, user: any) {
-  await sendMessage(chatId, menuText(user), mainMenuKeyboard(user));
+  const settings = await getTelegramSettings();
+  const webAppUrl = settings.panelPublicUrl
+    ? buildTelegramWebAppUrl(
+      settings.panelPublicUrl,
+      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
+    )
+    : "";
+  await sendMessage(chatId, menuText(user), mainMenuKeyboard(user, webAppUrl || undefined));
 }
 
 async function editMainMenu(chatId: number | string, messageId: number, user: any) {
-  await editMessage(chatId, messageId, menuText(user), mainMenuKeyboard(user));
+  const settings = await getTelegramSettings();
+  const webAppUrl = settings.panelPublicUrl
+    ? buildTelegramWebAppUrl(
+      settings.panelPublicUrl,
+      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || null }),
+    )
+    : "";
+  await editMessage(chatId, messageId, menuText(user), mainMenuKeyboard(user, webAppUrl || undefined));
 }
 
 async function handleBind(message: TelegramMessage, code: string) {
@@ -863,8 +1026,65 @@ function isGenericAiQueryKeyword(value: unknown) {
   return GENERIC_AI_QUERY_KEYWORD_RE.test(normalized);
 }
 
+function parseChineseNumeralToken(raw: string) {
+  const normalized = String(raw || "").trim();
+  if (!normalized) return undefined;
+  if (!/^[零〇一二两三四五六七八九十百千]+$/.test(normalized)) return undefined;
+  const digitMap: Record<string, number> = {
+    零: 0,
+    〇: 0,
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  const unitMap: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
+  let section = 0;
+  let current = 0;
+  for (const ch of normalized) {
+    if (Object.prototype.hasOwnProperty.call(digitMap, ch)) {
+      current = digitMap[ch];
+      continue;
+    }
+    const unit = unitMap[ch];
+    if (!unit) return undefined;
+    if (current === 0) current = 1;
+    section += current * unit;
+    current = 0;
+  }
+  const result = section + current;
+  return Number.isFinite(result) && result > 0 ? result : undefined;
+}
+
+function parseNumericToken(value: unknown) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/^第/, "")
+    .replace(/[号条个]$/, "");
+  if (!normalized) return undefined;
+  if (/^\d+$/.test(normalized)) {
+    const id = Number(normalized);
+    return Number.isFinite(id) && id > 0 ? id : undefined;
+  }
+  return parseChineseNumeralToken(normalized);
+}
+
+function normalizeNumericKeyword(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const parsed = parseNumericToken(raw);
+  return parsed ? String(parsed) : raw;
+}
+
 function normalizeAiQueryKeyword(value: unknown) {
-  const keyword = normalizeKeyword(value);
+  const keyword = normalizeNumericKeyword(normalizeKeyword(value));
   return isGenericAiQueryKeyword(keyword) ? "" : keyword;
 }
 
@@ -895,11 +1115,21 @@ function normalizeAiQueryIntent(value: any, fallback: AiQueryIntent): AiQueryInt
   const modelIntent = allowed.has(value?.intent) ? value.intent : undefined;
   let intent = modelIntent || fallback.intent;
   if (["rule_usage", "rule_detail", "rules"].includes(fallback.intent)) intent = fallback.intent;
-  const id = Number(value?.id ?? fallback.id);
-  const keyword = normalizeAiQueryKeyword(value?.keyword ?? fallback.keyword);
+  const modelId = Number(value?.id);
+  const fallbackId = Number(fallback.id);
+  const id = Number.isFinite(modelId) && modelId > 0
+    ? modelId
+    : (Number.isFinite(fallbackId) && fallbackId > 0 ? fallbackId : undefined);
+  const modelKeyword = intent === "users"
+    ? normalizeUserLookupKeyword(value?.keyword)
+    : normalizeAiQueryKeyword(value?.keyword);
+  const fallbackKeyword = intent === "users"
+    ? normalizeUserLookupKeyword(fallback.keyword)
+    : normalizeAiQueryKeyword(fallback.keyword);
+  const keyword = modelKeyword || fallbackKeyword;
   return {
     intent,
-    ...(Number.isFinite(id) && id > 0 ? { id } : {}),
+    ...(id ? { id } : {}),
     ...(keyword ? { keyword } : {}),
   };
 }
@@ -920,11 +1150,11 @@ function extractAiJsonObject(content: string) {
 }
 
 function extractRuleId(text: string) {
-  const match = text.match(/(?:规则|rule)\s*#?\s*(\d+)/i)
-    || text.match(/(\d+)\s*(?:号|#)?\s*(?:规则|rule)/i)
-    || text.match(/#(\d+)/);
-  const id = Number(match?.[1]);
-  return Number.isFinite(id) && id > 0 ? id : undefined;
+  const match = text.match(/(?:规则|rule)\s*#?\s*([0-9零〇一二两三四五六七八九十百千]+)/i)
+    || text.match(/第\s*([0-9零〇一二两三四五六七八九十百千]+)\s*条?\s*(?:规则|rule)/i)
+    || text.match(/([0-9零〇一二两三四五六七八九十百千]+)\s*(?:号|条|#)?\s*(?:规则|rule)/i)
+    || text.match(/#\s*([0-9]+)/);
+  return parseNumericToken(match?.[1]);
 }
 
 function extractExplicitSearchKeyword(text: string) {
@@ -934,9 +1164,17 @@ function extractExplicitSearchKeyword(text: string) {
 }
 
 function cleanAiEntityKeyword(value: unknown) {
-  return normalizeAiQueryKeyword(String(value || "")
+  const cleaned = String(value || "")
     .replace(/^(帮我|请|给我|把|将|列出|显示|查看|查询|看看|看下|看一下|现在|当前|目前|已有|有的|所有|全部)+/g, "")
-    .replace(/(的|下|一下)$/g, ""));
+    .replace(/(的|下|一下)$/g, "");
+  return normalizeAiQueryKeyword(cleaned);
+}
+
+function normalizeUserLookupKeyword(value: unknown) {
+  const cleaned = String(value || "")
+    .replace(/^(?:用户|账户|账号|user)\s*/i, "")
+    .trim();
+  return cleanAiEntityKeyword(cleaned);
 }
 
 function extractUserFilterKeyword(text: string) {
@@ -988,15 +1226,19 @@ function localAiQueryIntent(text: string): AiQueryIntent {
   }
   const id = extractRuleId(raw);
   const keyword = extractSearchKeyword(raw);
+  const userKeyword = normalizeUserLookupKeyword(extractUserFilterKeyword(raw) || keyword);
   if (/(帮助|怎么用|help)/i.test(raw)) return { intent: "help" };
   if (textAsksRuleUsage(raw)) return id ? { intent: "rule_usage", id } : { intent: "rules", keyword };
   if (id && textAsksRuleDetail(raw)) return { intent: "rule_detail", id };
+  if (/(用户|user)/i.test(raw) && /(详情|明细|使用|用了|流量|用量|到期|角色|usage|traffic)/i.test(raw)) {
+    return { intent: "users", ...(userKeyword ? { keyword: userKeyword } : {}) };
+  }
   if (/(用量|流量|额度|余额|套餐|usage|traffic)/i.test(raw)) return { intent: "usage", keyword };
   if (/(我是谁|账户|账号|个人|信息|资料|account|profile)/i.test(raw)) return { intent: "account", keyword };
   if (/(转发组|入口组|多入口|forward\s*group|group)/i.test(raw)) return { intent: "forward_groups", keyword };
   if (/(隧道|链路|转发链|tunnel|link)/i.test(raw)) return { intent: "tunnels", keyword };
   if (/(规则|端口|转发|rule|port)/i.test(raw)) return { intent: "rules", keyword };
-  if (/(用户|user)/i.test(raw)) return { intent: "users", keyword };
+  if (/(用户|user)/i.test(raw)) return { intent: "users", ...(userKeyword ? { keyword: userKeyword } : {}) };
   if (/(主机|机器|节点|agent|host|server)/i.test(raw)) return { intent: "hosts", keyword };
   if (keyword) return { intent: "rules", keyword };
   return { intent: "help" };
@@ -1025,8 +1267,11 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
               "Allowed intents: usage, rules, rule_detail, rule_usage, hosts, tunnels, forward_groups, users, account, help, unsupported.",
               "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
               "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
+              "Recognize rule id formats such as 第9条规则 / 9号规则 / 规则#9 and include id.",
               "If the message asks for rules filtered by a user or host, classify it as rules, not users or hosts.",
+              "For user detail queries like 用户1/用户一的使用详情, classify as users and return keyword as the precise user token (for example 1).",
               "Do not use vague words like now/current/all/my as keyword; leave keyword empty for list-all queries.",
+              "Do not erase explicit ids or keywords from the user message.",
               "If the user asks to enable, disable, create, update, delete, reset, renew, redeem, or otherwise change data, return unsupported.",
               "Do not answer the user. Do not include markdown.",
             ].join(" "),
@@ -1048,6 +1293,555 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
     console.warn("[TelegramBot] DeepSeek query intent fallback:", error);
     return fallback;
   }
+}
+
+function normalizeManageTargetKeyword(value: unknown) {
+  let keyword = String(value || "")
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/^目标[:：]?\s*/i, "")
+    .replace(/^用户[:：]?\s*/i, "")
+    .replace(/^账号[:：]?\s*/i, "")
+    .replace(/^账户[:：]?\s*/i, "")
+    .trim();
+  if (!keyword) return "";
+  const parsed = parseNumericToken(keyword.replace(/^#/, ""));
+  if (parsed) return String(parsed);
+  return keyword.slice(0, 80);
+}
+
+function extractManageTargetKeyword(text: string) {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return "";
+  if (/(我的|我自己|本人|self|me)/i.test(raw)) return "self";
+
+  const explicit = raw.match(/(?:用户|账号|账户|user)\s*[:：#]?\s*([^\s，,。；;！？!?]+)/i);
+  if (explicit?.[1]) return normalizeManageTargetKeyword(explicit[1]);
+
+  const email = raw.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  if (email?.[0]) return normalizeManageTargetKeyword(email[0]);
+
+  const hashId = raw.match(/#\s*([0-9]+)/);
+  if (hashId?.[1]) return normalizeManageTargetKeyword(hashId[1]);
+
+  const viaVerb = raw.match(/(?:给|把|将|帮(?:我)?|为)\s*([^\s，,。；;！？!?]+)\s*(?:充值|续费|停用|启用|关闭|开启|重置|设置|调整|转发|流量|账号|账户|用户)/i);
+  if (viaVerb?.[1]) return normalizeManageTargetKeyword(viaVerb[1]);
+
+  return "";
+}
+
+function extractManageAmountYuan(text: string) {
+  const cleaned = text
+    .replace(/(?:用户|账号|账户|user)\s*#?\s*[0-9零〇一二两三四五六七八九十百千]+/gi, " ")
+    .replace(/#\s*[0-9]+/g, " ");
+  const withCurrency = cleaned.match(/([+-]?\d+(?:\.\d+)?)\s*(?:元|块|rmb|RMB|¥|￥)/);
+  if (withCurrency?.[1]) {
+    const amount = Number(withCurrency[1]);
+    return Number.isFinite(amount) ? amount : undefined;
+  }
+  const nearVerb = cleaned.match(/(?:充值|充|加钱|加|增加|补款|退款|扣除|扣减|扣|减少|减去|调整(?:余额|金额)?|设置(?:余额)?(?:为|成)?|设为|改为|改成|变成)\s*([+-]?\d+(?:\.\d+)?)/);
+  if (nearVerb?.[1]) {
+    const amount = Number(nearVerb[1]);
+    return Number.isFinite(amount) ? amount : undefined;
+  }
+  return undefined;
+}
+
+function extractManageDuration(text: string): { value: number; unit: ManageDurationUnit } | null {
+  const hit = text.match(/([0-9零〇一二两三四五六七八九十百千]+)\s*(天|日|个月|月|年)/);
+  if (!hit) return null;
+  const value = parseNumericToken(hit[1]) || Number(hit[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const rawUnit = hit[2];
+  const unit: ManageDurationUnit = rawUnit === "年"
+    ? "year"
+    : (rawUnit === "天" || rawUnit === "日" ? "day" : "month");
+  return { value: Math.max(1, Math.floor(Number(value))), unit };
+}
+
+function normalizeManageActionIntent(value: any, fallback: ManageActionIntent): ManageActionIntent {
+  const allowed = new Set<ManageActionKind>([
+    "none",
+    "balance_set",
+    "balance_adjust",
+    "renew",
+    "account_enable",
+    "account_disable",
+    "forward_enable",
+    "forward_disable",
+    "traffic_reset",
+  ]);
+  const action = allowed.has(value?.action as ManageActionKind)
+    ? (value.action as ManageActionKind)
+    : fallback.action;
+  const target = normalizeManageTargetKeyword(value?.target || fallback.target);
+  const amountModel = Number(value?.amountYuan);
+  const amountFallback = Number(fallback.amountYuan);
+  const amountYuan = Number.isFinite(amountModel)
+    ? amountModel
+    : (Number.isFinite(amountFallback) ? amountFallback : undefined);
+  const durationModel = Math.floor(Number(value?.durationValue));
+  const durationFallback = Math.floor(Number(fallback.durationValue));
+  const durationValue = Number.isFinite(durationModel) && durationModel > 0
+    ? durationModel
+    : (Number.isFinite(durationFallback) && durationFallback > 0 ? durationFallback : undefined);
+  const durationUnitRaw = String(value?.durationUnit || fallback.durationUnit || "").toLowerCase();
+  const durationUnit: ManageDurationUnit | undefined =
+    durationUnitRaw === "day" || durationUnitRaw === "month" || durationUnitRaw === "year"
+      ? (durationUnitRaw as ManageDurationUnit)
+      : undefined;
+  return {
+    action,
+    ...(target ? { target } : {}),
+    ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
+    ...(durationValue ? { durationValue } : {}),
+    ...(durationUnit ? { durationUnit } : {}),
+  };
+}
+
+function localManageActionIntent(text: string): { intent: ManageActionIntent; writeLike: boolean } {
+  const raw = text.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!raw) return { intent: { action: "none" }, writeLike: false };
+  const writeLike = /(充值|充钱|余额|续费|续期|延期|停用|禁用|启用|恢复|关闭|开启|重置|清零|扣除|扣减|减少|增加|调整)/i.test(raw);
+  let action: ManageActionKind = "none";
+  if (/(重置|清零).*(流量|用量|traffic)|(?:流量|用量).*(重置|清零)/i.test(raw)) {
+    action = "traffic_reset";
+  } else if (/(停用|禁用|关闭|封禁).*(账号|账户|用户)|(?:账号|账户|用户).*(停用|禁用|关闭|封禁)/i.test(raw)) {
+    action = "account_disable";
+  } else if (/(启用|恢复|解封).*(账号|账户|用户)|(?:账号|账户|用户).*(启用|恢复|解封)/i.test(raw)) {
+    action = "account_enable";
+  } else if (/(关闭|停用|禁用).*(转发|转发权限|规则权限)|(?:转发|转发权限|规则权限).*(关闭|停用|禁用)/i.test(raw)) {
+    action = "forward_disable";
+  } else if (/(开启|启用|恢复).*(转发|转发权限|规则权限)|(?:转发|转发权限|规则权限).*(开启|启用|恢复)/i.test(raw)) {
+    action = "forward_enable";
+  } else if (/(续费|续期|延期|延长)/i.test(raw)) {
+    action = "renew";
+  } else if (/(余额|余款).*(设置|设为|改为|改成|变成)|(?:设置|设为|改为|改成|变成).*(余额|余款)/i.test(raw)) {
+    action = "balance_set";
+  } else if (/(充值|充钱|加钱|加余额|扣除|扣减|扣|减少|减去|增减|调整(?:余额|金额)?|补款|退款)/i.test(raw)) {
+    action = "balance_adjust";
+  } else if (/^(给|把|将|帮(?:我)?|为).*(\d+(?:\.\d+)?)(?:元|块|¥|￥)?/.test(raw)) {
+    action = "balance_adjust";
+  }
+
+  const target = normalizeManageTargetKeyword(extractManageTargetKeyword(raw));
+  const amountRaw = extractManageAmountYuan(raw);
+  let amountYuan = Number.isFinite(amountRaw as number) ? Number(amountRaw) : undefined;
+  if (Number.isFinite(amountYuan as number) && action === "balance_adjust") {
+    if (/(扣除|扣减|减少|减去|下调)/.test(raw) && (amountYuan as number) > 0) amountYuan = -Math.abs(amountYuan as number);
+    if (/(充值|充钱|加钱|增加|补款|上调)/.test(raw) && (amountYuan as number) < 0) amountYuan = Math.abs(amountYuan as number);
+  }
+
+  const duration = extractManageDuration(raw);
+  return {
+    writeLike: writeLike || action !== "none",
+    intent: {
+      action,
+      ...(target ? { target } : {}),
+      ...(Number.isFinite(amountYuan as number) ? { amountYuan } : {}),
+      ...(duration ? { durationValue: duration.value, durationUnit: duration.unit } : {}),
+    },
+  };
+}
+
+async function parseManageActionIntent(text: string): Promise<{ intent: ManageActionIntent; writeLike: boolean }> {
+  const fallback = localManageActionIntent(text);
+  if (!fallback.writeLike) return fallback;
+  const settings = await getDeepSeekSettings().catch(() => null);
+  if (!settings?.enabled || !settings.apiKey) return fallback;
+  try {
+    const resp = await fetch(`${settings.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You classify ForwardX Telegram write-operation intents.",
+              "Return only JSON keys: action,target,amountYuan,durationValue,durationUnit,writeLike.",
+              "Allowed action: none,balance_set,balance_adjust,renew,account_enable,account_disable,forward_enable,forward_disable,traffic_reset.",
+              "target should be user id/username/email/remark keyword when possible.",
+              "durationUnit must be one of day,month,year.",
+              "For recharge/add/subtract balance use balance_adjust.",
+              "For set balance directly use balance_set.",
+              "If message is not a write operation, action should be none and writeLike false.",
+              "Do not answer user; do not use markdown.",
+            ].join(" "),
+          },
+          { role: "user", content: text.slice(0, 500) },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0,
+        max_tokens: Math.min(512, Math.max(128, Math.floor(settings.maxTokens || DEFAULT_DEEPSEEK_MAX_TOKENS))),
+      }),
+    });
+    if (!resp.ok) throw new Error(`DeepSeek HTTP ${resp.status}`);
+    const json = await resp.json().catch(() => null) as any;
+    const content = String(json?.choices?.[0]?.message?.content || "");
+    const parsed = extractAiJsonObject(content);
+    if (!parsed) return fallback;
+    const intent = normalizeManageActionIntent(parsed, fallback.intent);
+    return {
+      intent,
+      writeLike: Boolean(parsed?.writeLike) || fallback.writeLike || intent.action !== "none",
+    };
+  } catch (error) {
+    console.warn("[TelegramBot] DeepSeek manage intent fallback:", error);
+    return fallback;
+  }
+}
+
+function isManageActionAllowedForRole(role: unknown, action: ManageActionKind) {
+  if (action === "none") return false;
+  if (String(role) === "admin") return true;
+  return action === "forward_enable" || action === "forward_disable";
+}
+
+function manageRoleLabel(role: unknown) {
+  return String(role) === "admin" ? "管理员" : "用户";
+}
+
+function manageActionLabel(action: Exclude<ManageActionKind, "none">) {
+  const mapping: Record<Exclude<ManageActionKind, "none">, string> = {
+    balance_set: "设置余额",
+    balance_adjust: "调整余额",
+    renew: "续费",
+    account_enable: "启用账号",
+    account_disable: "停用账号",
+    forward_enable: "启用转发",
+    forward_disable: "关闭转发",
+    traffic_reset: "重置流量",
+  };
+  return mapping[action];
+}
+
+function manageActionPermissionHint(isAdmin: boolean) {
+  if (isAdmin) {
+    return "管理员可执行：余额设置/调整、续费、启停账号、启停转发、重置流量。";
+  }
+  return "普通用户仅可操作自己的转发开关，例如“关闭我的转发”。";
+}
+
+function isSelfTargetForUser(actor: any, keyword: string) {
+  const raw = normalizeManageTargetKeyword(keyword).toLowerCase();
+  if (!raw) return true;
+  if (["我", "我的", "我自己", "本人", "self", "me"].includes(raw)) return true;
+  const actorId = String(actor?.id || "");
+  if (raw === actorId || raw === `#${actorId}`) return true;
+  const userTokens = [actor?.username, actor?.email, actor?.name]
+    .map((v) => String(v || "").trim().toLowerCase())
+    .filter(Boolean);
+  if (userTokens.includes(raw)) return true;
+  const numeric = parseNumericToken(raw.replace(/^#/, "").replace(/^(用户|账号|账户|user)/i, ""));
+  return Number.isFinite(numeric as number) && Number(numeric) === Number(actor?.id || 0);
+}
+
+async function resolveManageTargetUser(actor: any, rawKeyword: string) {
+  const keyword = normalizeManageTargetKeyword(rawKeyword);
+  const isAdmin = String(actor?.role) === "admin";
+  if (!isAdmin) {
+    if (isSelfTargetForUser(actor, keyword)) return { target: actor };
+    return { error: "普通用户仅可操作自己的账号。可使用“关闭我的转发”或“启用我的转发”。" };
+  }
+  if (!keyword) return { error: "请指定目标用户（ID、用户名、邮箱或备注名）。" };
+  if (["我", "我的", "我自己", "本人", "self", "me"].includes(keyword.toLowerCase())) return { target: actor };
+
+  const users = await db.getUserTrafficSummaries();
+  const normalizedIdKeyword = keyword
+    .replace(/^#/, "")
+    .replace(/^(用户|账号|账户|user)\s*/i, "");
+  const numericId = parseNumericToken(normalizedIdKeyword);
+  const matchedById = numericId ? (users as any[]).filter((item) => Number(item.id) === Number(numericId)) : [];
+  const matched = matchedById.length > 0
+    ? matchedById
+    : (users as any[]).filter((item) => {
+      const variants = [keyword, normalizedIdKeyword].filter(Boolean);
+      return variants.some((needle) => searchMatches(needle, userSearchValues(item)));
+    });
+  if (matched.length === 0) {
+    return { error: `没有找到匹配用户：${escapeHtml(keyword)}` };
+  }
+  if (matched.length > 1) {
+    const preview = matched
+      .slice(0, 5)
+      .map((item: any) => `#${item.id} ${item.name || item.username}`)
+      .join("、");
+    return { error: `匹配到多个用户：${escapeHtml(preview)}。请补充更精确的用户ID或邮箱。` };
+  }
+  return { target: matched[0] };
+}
+
+async function prepareManageAction(user: any, sourceText: string, intent: ManageActionIntent) {
+  if (!intent || intent.action === "none") return { error: "未识别到可执行的管理操作。" };
+  const action = intent.action as Exclude<ManageActionKind, "none">;
+  const actor = (await db.getUserById(Number(user?.id || 0)).catch(() => null)) || user;
+  const isAdmin = String(actor?.role) === "admin";
+  if (!isManageActionAllowedForRole(actor?.role, action)) {
+    return { error: `你没有执行「${manageActionLabel(action)}」的权限。\n${manageActionPermissionHint(isAdmin)}` };
+  }
+  const targetKeyword = normalizeManageTargetKeyword(intent.target || extractManageTargetKeyword(sourceText));
+  const resolved = await resolveManageTargetUser(actor, targetKeyword);
+  if (!resolved.target) {
+    return { error: `${resolved.error || "目标用户不存在。"}\n${manageActionPermissionHint(isAdmin)}` };
+  }
+  const target = resolved.target as any;
+  if (!isAdmin && Number(target.id) !== Number(actor.id)) {
+    return { error: "普通用户只允许操作自己的账号。" };
+  }
+  if (action === "forward_disable" && String(target.role) === "admin") {
+    return { error: "管理员账号不能在机器人中关闭转发权限。" };
+  }
+  if (action === "forward_enable" && String(target.role) === "admin") {
+    return { error: "管理员账号默认拥有转发权限，无需启用。" };
+  }
+  if (action === "account_disable" && Number(target.id) === Number(actor.id)) {
+    return { error: "不能停用当前登录账号。" };
+  }
+  if (action === "account_disable" && String(target.role) === "admin") {
+    return { error: "管理员账号不能通过机器人停用。" };
+  }
+
+  let amountCents: number | undefined;
+  if (action === "balance_set" || action === "balance_adjust") {
+    const amountYuan = Number(intent.amountYuan);
+    if (!Number.isFinite(amountYuan)) {
+      return {
+        error: action === "balance_set"
+          ? "请提供要设置的余额金额，例如：把用户1余额设置为100元。"
+          : "请提供调整金额，例如：给用户1充值50元，或扣除用户1 5元。",
+      };
+    }
+    amountCents = Math.round(amountYuan * 100);
+    if (action === "balance_set" && amountCents < 0) return { error: "余额不能小于 0。" };
+    if (action === "balance_adjust" && amountCents === 0) return { error: "调整金额不能为 0。" };
+    if (Math.abs(amountCents) > MANAGE_BALANCE_MAX_CENTS) {
+      return { error: "金额超出允许范围，请控制在 1,000,000 元以内。" };
+    }
+    if (action === "balance_adjust" && Number(target.balanceCents || 0) + amountCents < 0) {
+      return { error: "扣减后余额不能小于 0。" };
+    }
+  }
+
+  let durationValue: number | undefined;
+  let durationUnit: ManageDurationUnit | undefined;
+  if (action === "renew") {
+    durationValue = Math.max(1, Math.floor(Number(intent.durationValue || 1)));
+    const rawUnit = String(intent.durationUnit || "month");
+    durationUnit = rawUnit === "day" || rawUnit === "year" || rawUnit === "month"
+      ? (rawUnit as ManageDurationUnit)
+      : "month";
+  }
+
+  const pending: Omit<PendingManageAction, "key" | "createdAt" | "expiresAt"> = {
+    actorUserId: Number(actor.id),
+    actorRole: isAdmin ? "admin" : "user",
+    action,
+    targetUserId: Number(target.id),
+    ...(Number.isFinite(amountCents as number) ? { amountCents } : {}),
+    ...(durationValue ? { durationValue } : {}),
+    ...(durationUnit ? { durationUnit } : {}),
+    sourceText: sourceText.slice(0, 500),
+  };
+  return { prepared: { pending, target, actor } as PreparedManageAction };
+}
+
+function manageActionConfirmText(pending: PendingManageAction, actor: any, target: any) {
+  const action = pending.action as Exclude<ManageActionKind, "none">;
+  const lines: string[] = [
+    "<b>操作确认</b>",
+    "",
+    `发起人：${formatUserLabel(actor)}（${manageRoleLabel(actor?.role)}）`,
+    `目标用户：${formatUserLabel(target)}`,
+    `操作类型：<b>${escapeHtml(manageActionLabel(action))}</b>`,
+  ];
+  if (action === "balance_set") {
+    lines.push(`当前余额：${formatMoneyCny(target?.balanceCents)}`);
+    lines.push(`设置为：<b>${formatMoneyCny(pending.amountCents)}</b>`);
+  } else if (action === "balance_adjust") {
+    const delta = Number(pending.amountCents || 0);
+    lines.push(`当前余额：${formatMoneyCny(target?.balanceCents)}`);
+    lines.push(`变更金额：<b>${delta >= 0 ? "+" : ""}${formatMoneyCny(delta)}</b>`);
+    lines.push(`预计余额：<b>${formatMoneyCny(Number(target?.balanceCents || 0) + delta)}</b>`);
+  } else if (action === "renew") {
+    const durationValue = Math.max(1, Math.floor(Number(pending.durationValue || 1)));
+    const durationUnit = pending.durationUnit || "month";
+    const { nextExpiresAt } = getRenewalDatesByDuration(target, durationValue, durationUnit);
+    lines.push(`续费时长：<b>${escapeHtml(formatManageDuration(durationValue, durationUnit))}</b>`);
+    lines.push(`当前到期：${escapeHtml(formatDateTime(target?.expiresAt))}`);
+    lines.push(`续费后到期：<b>${escapeHtml(formatDateTime(nextExpiresAt))}</b>`);
+  } else if (action === "account_disable") {
+    lines.push("将停用该用户账号，用户将无法登录和使用机器人。");
+  } else if (action === "account_enable") {
+    lines.push("将启用该用户账号。");
+  } else if (action === "forward_disable") {
+    lines.push("将关闭该用户转发权限，并暂停其转发规则。");
+  } else if (action === "forward_enable") {
+    lines.push("将启用该用户转发权限。");
+  } else if (action === "traffic_reset") {
+    lines.push("将清零该用户当前统计流量。");
+  }
+  lines.push("", `原始指令：${aiCode(shortText(pending.sourceText, 120))}`);
+  lines.push(`请在 ${Math.round(MANAGE_ACTION_CONFIRM_TTL_MS / 60000)} 分钟内点击「确认执行」。`);
+  return lines.join("\n");
+}
+
+async function executePendingManageAction(pending: PendingManageAction, callbackUser: any) {
+  const actor = (await db.getUserById(Number(callbackUser?.id || 0)).catch(() => null)) || callbackUser;
+  if (Number(actor?.id || 0) !== Number(pending.actorUserId || 0)) {
+    throw new Error("只有原发起人可以确认该操作。");
+  }
+  const target = await db.getUserById(Number(pending.targetUserId || 0));
+  if (!target) throw new Error("目标用户不存在或已被删除。");
+  if (!isManageActionAllowedForRole(actor?.role, pending.action)) {
+    throw new Error("当前账户已无该操作权限。");
+  }
+  if (String(actor?.role) !== "admin" && Number(target.id) !== Number(actor.id)) {
+    throw new Error("普通用户仅可操作自己的账号。");
+  }
+  const sourceText = shortText(pending.sourceText || "", 180);
+
+  switch (pending.action) {
+    case "balance_set": {
+      const amountCents = Math.round(Number(pending.amountCents || 0));
+      if (!Number.isFinite(amountCents) || amountCents < 0) throw new Error("余额金额无效。");
+      const result = await db.setUserBalance(Number(target.id), amountCents, {
+        type: "admin_adjust",
+        description: `Telegram 余额设置：${sourceText}`,
+        operatorUserId: Number(actor.id),
+      } as any);
+      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-set-forward-restored");
+      } else if (recovery.reason === "traffic_billing_balance") {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-set-forward-paused");
+      }
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：设置余额",
+        `当前余额：<b>${formatMoneyCny(result.balanceCents)}</b>`,
+      ].join("\n");
+    }
+    case "balance_adjust": {
+      const amountCents = Math.round(Number(pending.amountCents || 0));
+      if (!Number.isFinite(amountCents) || amountCents === 0) throw new Error("调整金额无效。");
+      const result = await db.addUserBalance(Number(target.id), amountCents, {
+        type: amountCents > 0 ? "admin_recharge" : "admin_adjust",
+        description: `Telegram 余额调整：${sourceText}`,
+        operatorUserId: Number(actor.id),
+      } as any);
+      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-adjust-forward-restored");
+      } else if (recovery.reason === "traffic_billing_balance") {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-balance-adjust-forward-paused");
+      }
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：调整余额",
+        `变更金额：<b>${amountCents >= 0 ? "+" : ""}${formatMoneyCny(amountCents)}</b>`,
+        `当前余额：<b>${formatMoneyCny(result.balanceCents)}</b>`,
+      ].join("\n");
+    }
+    case "renew": {
+      const durationValue = Math.max(1, Math.floor(Number(pending.durationValue || 1)));
+      const durationUnit: ManageDurationUnit = pending.durationUnit || "month";
+      const { nextExpiresAt } = getRenewalDatesByDuration(target, durationValue, durationUnit);
+      await db.updateUserTrafficSettings(Number(target.id), { expiresAt: nextExpiresAt });
+      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-renewed-forward-restored");
+      }
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        `操作：续费 ${escapeHtml(formatManageDuration(durationValue, durationUnit))}`,
+        `新到期时间：<b>${escapeHtml(formatDateTime(nextExpiresAt))}</b>`,
+      ].join("\n");
+    }
+    case "account_disable": {
+      if (Number(target.id) === Number(actor.id)) throw new Error("不能停用当前登录账号。");
+      if (String(target.role) === "admin") throw new Error("管理员账号不能通过机器人停用。");
+      await db.setUserAccountEnabled(Number(target.id), false);
+      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-account-disabled");
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：停用账号",
+      ].join("\n");
+    }
+    case "account_enable": {
+      await db.setUserAccountEnabled(Number(target.id), true);
+      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-account-enabled-forward-restored");
+      }
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：启用账号",
+      ].join("\n");
+    }
+    case "forward_disable": {
+      if (String(target.role) === "admin") throw new Error("管理员账号不能关闭转发权限。");
+      await db.setUserForwardAccess(Number(target.id), false, "manual");
+      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-forward-disabled");
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：关闭转发",
+      ].join("\n");
+    }
+    case "forward_enable": {
+      if (String(target.role) === "admin") throw new Error("管理员账号默认拥有转发权限。");
+      await db.setUserForwardAccess(Number(target.id), true);
+      await refreshUserForwardEndpoints(Number(target.id), "telegram-user-forward-enabled");
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：启用转发",
+      ].join("\n");
+    }
+    case "traffic_reset": {
+      await db.resetUserTraffic(Number(target.id));
+      const recovery = await db.recoverUserForwardAccessIfEligible(Number(target.id));
+      if (recovery.restored) {
+        await refreshUserForwardEndpoints(Number(target.id), "telegram-user-traffic-reset-forward-restored");
+      }
+      return [
+        "<b>执行成功</b>",
+        `用户：${formatUserLabel(target)}`,
+        "操作：重置流量",
+      ].join("\n");
+    }
+    default:
+      throw new Error("暂不支持的管理操作。");
+  }
+}
+
+async function tryHandleManageAction(message: TelegramMessage, user: any, rawText: string) {
+  const query = rawText.replace(/^\/ask(?:@\w+)?\s*/i, "").trim();
+  if (!query) return false;
+  const { intent, writeLike } = await parseManageActionIntent(query);
+  if (!writeLike || intent.action === "none") return false;
+  const prepared = await prepareManageAction(user, query, intent);
+  if (!prepared.prepared) {
+    await sendMessage(message.chat.id, prepared.error || "未识别到可执行的管理操作。");
+    return true;
+  }
+  const pending = createPendingManageAction(prepared.prepared.pending);
+  await sendMessage(
+    message.chat.id,
+    manageActionConfirmText(pending, prepared.prepared.actor, prepared.prepared.target),
+    manageActionConfirmKeyboard(pending.key),
+  );
+  return true;
 }
 
 function isVisibleForwardGroupRuleForTelegramUser(rule: any, allowedForwardGroupIds: Set<number>) {
@@ -1435,7 +2229,11 @@ async function aiUsersText(user: any, keyword?: string) {
     return [userInfoText(user), "", await usageText(user)].join("\n");
   }
   const users = await db.getUserTrafficSummaries();
-  const matched = (users as any[]).filter((item) => searchMatches(safeKeyword, [item.id, item.name, item.username, item.role, item.email, item.telegramUsername]));
+  const exactUserId = /^\d+$/.test(safeKeyword) ? Number(safeKeyword) : undefined;
+  const matchedById = exactUserId ? (users as any[]).filter((item) => Number(item.id) === exactUserId) : [];
+  const matched = matchedById.length > 0
+    ? matchedById
+    : (users as any[]).filter((item) => searchMatches(safeKeyword, [item.id, item.name, item.username, item.role, item.email, item.telegramUsername]));
   const filterText = safeKeyword ? aiFilterPart("关键字", safeKeyword) : "";
   const header = aiResultHeader("用户查询", matched.length, users.length, "个", filterText);
   if (matched.length === 0) return `${header}\n\n没有找到匹配的用户。`;
@@ -1463,13 +2261,29 @@ function aiQueryHelpText() {
     `${aiCode("我的流量")}`,
     `${aiCode("查规则 443")}`,
     `${aiCode("规则 #12 详情")}`,
+    `${aiCode("第9条规则用了多少流量")}`,
     `${aiCode("9号规则用了多少流量")}`,
+    `${aiCode("用户1的使用详情")}`,
     `${aiCode("列出张三用户上海主机的规则")}`,
     `${aiCode("现在有哪些用户")}`,
     `${aiCode("主机 上海")}`,
     `${aiCode("链路 东京")}`,
     "",
-    "<i>当前只支持查询，不会执行开启、关闭、删除等操作。</i>",
+    "<b>管理操作（需要点击确认后才会执行）</b>",
+    `${aiCode("给用户 1 充值 50")}`,
+    `${aiCode("把用户 test111 余额设置为 88")}`,
+    `${aiCode("给用户1续费 3 个月")}`,
+    `${aiCode("停用用户 3937064828@qq.com")}`,
+    `${aiCode("启用用户 #5")}`,
+    `${aiCode("关闭用户1转发")}`,
+    `${aiCode("启用 test111 转发")}`,
+    `${aiCode("重置用户 1 流量")}`,
+    "",
+    "<b>普通用户可用操作（仅限自己）</b>",
+    `${aiCode("关闭我的转发")}`,
+    `${aiCode("启用我的转发")}`,
+    "",
+    "<i>所有写操作都会先生成确认卡片，点击“确认执行”后才会生效。</i>",
   ].join("\n");
 }
 
@@ -1489,24 +2303,30 @@ async function aiQueryText(user: any, rawText: string) {
         hostKeyword: extractHostFilterKeyword(query),
       });
     }
-    case "rule_detail":
-      return parsed.id ? aiRuleDetailText(user, parsed.id) : aiRulesText(user, parsed.keyword);
-    case "rule_usage":
-      return parsed.id ? aiRuleUsageText(user, parsed.id) : aiRulesText(user, {
+    case "rule_detail": {
+      const ruleId = parsed.id || extractRuleId(query);
+      return ruleId ? aiRuleDetailText(user, ruleId) : aiRulesText(user, parsed.keyword);
+    }
+    case "rule_usage": {
+      const ruleId = parsed.id || extractRuleId(query);
+      return ruleId ? aiRuleUsageText(user, ruleId) : aiRulesText(user, {
         keyword: parsed.keyword,
         userKeyword: extractUserFilterKeyword(query),
         hostKeyword: extractHostFilterKeyword(query),
       });
+    }
     case "hosts":
       return aiHostsText(user, parsed.keyword);
     case "tunnels":
       return aiTunnelsText(user, parsed.keyword);
     case "forward_groups":
       return aiForwardGroupsText(user, parsed.keyword);
-    case "users":
-      return aiUsersText(user, parsed.keyword);
+    case "users": {
+      const userKeyword = parsed.keyword || normalizeUserLookupKeyword(extractUserFilterKeyword(query));
+      return aiUsersText(user, userKeyword);
+    }
     case "unsupported":
-      return "当前 AI 助手只支持查询，不会执行开启、关闭、删除、重置等操作。";
+      return "未识别到可执行的指令。可以先发查询，或直接说明要调整什么（例如：给用户1充值50、关闭我的转发），系统会先要求二次确认。";
     case "help":
     default:
       return aiQueryHelpText();
@@ -1698,6 +2518,36 @@ async function handleLogin(message: TelegramMessage, user: any) {
   await sendMessage(message.chat.id, await loginText(user));
 }
 
+async function handleWebApp(message: TelegramMessage, user?: any | null) {
+  if (user && (user as any).accountEnabled === false) {
+    await sendMessage(message.chat.id, ACCOUNT_DISABLED_ERR_MSG);
+    return;
+  }
+  const settings = await getTelegramSettings();
+  const webAppUrl = settings.panelPublicUrl
+    ? buildTelegramWebAppUrl(
+      settings.panelPublicUrl,
+      createTelegramWebAppLoginChallenge({ telegramId: user?.telegramId || message.from?.id || null }),
+    )
+    : "";
+  if (!webAppUrl) {
+    await sendMessage(message.chat.id, "管理员尚未配置可公开访问的面板地址，暂时无法在 Telegram 内打开面板。");
+    return;
+  }
+  await sendMessage(
+    message.chat.id,
+    [
+      "<b>ForwardX WebApp</b>",
+      "",
+      user
+        ? "点击下方按钮可在 Telegram 内打开面板，已绑定账号会自动登录。"
+        : "点击下方按钮打开面板后，请先用账号密码登录并在个人设置完成 Telegram 绑定。",
+      "为保障安全，请勿将入口链接分享给他人。",
+    ].join("\n"),
+    webAppOpenKeyboard(webAppUrl),
+  );
+}
+
 async function handleUsers(message: TelegramMessage) {
   const view = await usersView(0);
   await sendMessage(message.chat.id, view.text, view.keyboard);
@@ -1770,6 +2620,10 @@ async function handleMessage(message: TelegramMessage) {
     else await sendBindCodePrompt(message.chat.id, identity.telegramId);
     return;
   }
+  if (command === "/webapp") {
+    await handleWebApp(message, identity.user);
+    return;
+  }
 
   const user = identity.user;
   if (!user) {
@@ -1795,9 +2649,13 @@ async function handleMessage(message: TelegramMessage) {
   if (command === "/menu") return sendMainMenu(message.chat.id, user);
   if (command === "/usage") return handleUsage(message, user);
   if (command === "/rules") return handleRules(message, user);
-  if (command === "/ask") return handleAiQuery(message, user, text);
+  if (command === "/ask") {
+    if (await tryHandleManageAction(message, user, text)) return;
+    return handleAiQuery(message, user, text);
+  }
   if (command === "/redeem") return handleRedeem(message, user, args.join(" "));
   if (command === "/login") return handleLogin(message, user);
+  if (command === "/webapp") return handleWebApp(message, user);
   if (command === "/enable") return handleRuleToggle(message, user, args[0], true);
   if (command === "/disable") return handleRuleToggle(message, user, args[0], false);
   if (command === "/unbind") {
@@ -1809,7 +2667,10 @@ async function handleMessage(message: TelegramMessage) {
   if (user.role === "admin" && command === "/reset") return handleReset(message, args[0]);
   if (user.role === "admin" && command === "/renew") return handleRenew(message, args[0]);
 
-  if (!text.startsWith("/")) return handleAiQuery(message, user, text);
+  if (!text.startsWith("/")) {
+    if (await tryHandleManageAction(message, user, text)) return;
+    return handleAiQuery(message, user, text);
+  }
 
   await sendMessage(message.chat.id, helpText(true, user.role === "admin"));
 }
@@ -1995,6 +2856,41 @@ async function handleCallback(query: TelegramCallbackQuery) {
     return;
   }
 
+  if (data.startsWith("fx:op:confirm:")) {
+    const actionKey = data.slice("fx:op:confirm:".length).trim().toLowerCase();
+    const pending = getPendingManageAction(actionKey);
+    if (!pending) {
+      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      return;
+    }
+    if (Number(pending.actorUserId) !== Number(user.id)) {
+      await editMessage(chatId, messageId, "只有原发起人才可以确认执行该操作。", manageActionConfirmKeyboard(pending.key));
+      return;
+    }
+    const consumed = consumePendingManageAction(actionKey);
+    if (!consumed) {
+      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      return;
+    }
+    const result = await executePendingManageAction(consumed, user);
+    await editMessage(chatId, messageId, result, backMenuKeyboard());
+    return;
+  }
+  if (data.startsWith("fx:op:cancel:")) {
+    const actionKey = data.slice("fx:op:cancel:".length).trim().toLowerCase();
+    const pending = getPendingManageAction(actionKey);
+    if (!pending) {
+      await editMessage(chatId, messageId, "操作已超时或已被处理，请重新发送指令。", backMenuKeyboard());
+      return;
+    }
+    if (Number(pending.actorUserId) !== Number(user.id)) {
+      await editMessage(chatId, messageId, "只有原发起人才可以取消该操作。", manageActionConfirmKeyboard(pending.key));
+      return;
+    }
+    consumePendingManageAction(actionKey);
+    await editMessage(chatId, messageId, "已取消本次操作。", backMenuKeyboard());
+    return;
+  }
   switch (data) {
     case "fx:menu":
       await editMainMenu(chatId, messageId, user);
@@ -2117,3 +3013,4 @@ export function resetTelegramBotPolling() {
   updateOffset = 0;
   activeTokenKey = "";
 }
+
