@@ -29,6 +29,7 @@ import EmailSettings from "./pages/EmailSettings";
 import HomepagePreview from "./pages/HomepagePreview";
 import LookingGlass from "./pages/LookingGlass";
 import TrafficBilling from "./pages/TrafficBilling";
+import PersonalizationLayer from "./components/PersonalizationLayer";
 
 function AdminRoute({ component: Component }: { component: ComponentType }) {
   const { user, loading } = useAuth();
@@ -117,6 +118,7 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider defaultTheme="light">
         <TooltipProvider>
+          <PersonalizationLayer />
           <Toaster />
           <SetupGate />
         </TooltipProvider>

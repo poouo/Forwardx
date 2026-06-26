@@ -235,6 +235,8 @@ function UsersContent() {
   const [newUserName, setNewUserName] = useState("");
   // 出于安全考虑，后台创建的用户一律为普通用户
   const [newCanAddRules, setNewCanAddRules] = useState(true);
+  const [forwardAccessPendingUserId, setForwardAccessPendingUserId] = useState<number | null>(null);
+  const [accountEnabledPendingUserId, setAccountEnabledPendingUserId] = useState<number | null>(null);
 
   // Reset password dialog
   const [showResetPassword, setShowResetPassword] = useState(false);
@@ -385,6 +387,15 @@ function UsersContent() {
     enabled: currentUser?.role === "admin",
   });
 
+  const patchCachedUser = (userId: number, patch: Record<string, unknown>) => {
+    const current = utils.users.list.getData();
+    if (!Array.isArray(current)) return;
+    utils.users.list.setData(
+      undefined,
+      current.map((user: any) => (Number(user.id) === Number(userId) ? { ...user, ...patch } : user)),
+    );
+  };
+
   const createUserMutation = trpc.users.create.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
@@ -463,21 +474,49 @@ function UsersContent() {
   });
 
   const updateForwardAccessMutation = trpc.users.setForwardAccess.useMutation({
-    onSuccess: () => {
-      utils.users.list.invalidate();
+    onMutate: async (variables) => {
+      setForwardAccessPendingUserId(variables.userId);
+      await utils.users.list.cancel();
+      const previousUsers = utils.users.list.getData();
+      patchCachedUser(variables.userId, { canAddRules: variables.enabled });
+      return { previousUsers };
+    },
+    onSuccess: (_, variables) => {
+      patchCachedUser(variables.userId, { canAddRules: variables.enabled });
       utils.rules.list.invalidate();
       toast.success("用户转发权限已更新");
     },
-    onError: (err) => toast.error(err.message || "更新转发权限失败"),
+    onError: (err, _variables, context) => {
+      if (context?.previousUsers) utils.users.list.setData(undefined, context.previousUsers);
+      toast.error(err.message || "更新转发权限失败");
+    },
+    onSettled: (_data, _error, variables) => {
+      setForwardAccessPendingUserId((current) => (current === variables?.userId ? null : current));
+      utils.users.list.invalidate();
+    },
   });
 
   const updateAccountEnabledMutation = trpc.users.setAccountEnabled.useMutation({
+    onMutate: async (variables) => {
+      setAccountEnabledPendingUserId(variables.userId);
+      await utils.users.list.cancel();
+      const previousUsers = utils.users.list.getData();
+      patchCachedUser(variables.userId, { accountEnabled: variables.enabled });
+      return { previousUsers };
+    },
     onSuccess: (_, variables) => {
-      utils.users.list.invalidate();
+      patchCachedUser(variables.userId, { accountEnabled: variables.enabled });
       utils.rules.list.invalidate();
       toast.success(variables.enabled ? "账户已启用" : "账户已禁用，已有规则已失效");
     },
-    onError: (err) => toast.error(err.message || "更新账户状态失败"),
+    onError: (err, _variables, context) => {
+      if (context?.previousUsers) utils.users.list.setData(undefined, context.previousUsers);
+      toast.error(err.message || "更新账户状态失败");
+    },
+    onSettled: (_data, _error, variables) => {
+      setAccountEnabledPendingUserId((current) => (current === variables?.userId ? null : current));
+      utils.users.list.invalidate();
+    },
   });
 
   const adminRechargeMutation = trpc.billing.adminRecharge.useMutation({
@@ -910,7 +949,7 @@ function UsersContent() {
         {compact && <span className="min-w-0 truncate text-xs text-muted-foreground">账户</span>}
         <Switch
           checked={enabled}
-          disabled={isSelf || updateAccountEnabledMutation.isPending}
+          disabled={isSelf || accountEnabledPendingUserId === Number(u.id)}
           onCheckedChange={(checked) => updateAccountEnabledMutation.mutate({ userId: u.id, enabled: checked })}
           className="shrink-0"
         />
@@ -1171,7 +1210,7 @@ function UsersContent() {
                       <span className="text-xs text-muted-foreground">转发</span>
                       <Switch
                         checked={u.role === "admin" || !!u.canAddRules}
-                        disabled={u.role === "admin" || updateForwardAccessMutation.isPending}
+                        disabled={u.role === "admin" || forwardAccessPendingUserId === Number(u.id)}
                         onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
                       />
                     </div>
@@ -1261,7 +1300,7 @@ function UsersContent() {
                                 <div className="mt-2 flex w-fit items-center gap-2 rounded-md border border-border/50 bg-muted/20 px-2 py-1 lg:hidden">
                                   <Switch
                                     checked={!!u.canAddRules}
-                                    disabled={updateForwardAccessMutation.isPending}
+                                    disabled={forwardAccessPendingUserId === Number(u.id)}
                                     onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
                                     className="shrink-0"
                                   />
@@ -1335,7 +1374,7 @@ function UsersContent() {
                             <div className="flex items-center gap-2 whitespace-nowrap">
                               <Switch
                                 checked={u.role === "admin" || !!u.canAddRules}
-                                disabled={u.role === "admin" || updateForwardAccessMutation.isPending}
+                                disabled={u.role === "admin" || forwardAccessPendingUserId === Number(u.id)}
                                 onCheckedChange={(checked) => updateForwardAccessMutation.mutate({ userId: u.id, enabled: checked })}
                                 className="shrink-0"
                               />

@@ -33,6 +33,8 @@ export default function PublicHome() {
   const { resolvedTheme } = useTheme();
   const { data: info } = trpc.system.publicInfo.useQuery(undefined, { refetchOnWindowFocus: false });
   const registrationEnabled = info?.registrationEnabled !== false;
+  const siteTitle = (info?.siteTitle || "ForwardX").trim() || "ForwardX";
+  const logoSrc = info?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
 
   const handleRegisterClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (registrationEnabled) return;
@@ -44,8 +46,8 @@ export default function PublicHome() {
     <div className="public-home-shell min-h-screen text-foreground">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-5">
         <Link href="/" className="flex items-center gap-3">
-          <img src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"} alt="ForwardX" className="h-9 w-9 object-contain" />
-          <span className="text-lg font-semibold tracking-tight">ForwardX</span>
+          <img src={logoSrc} alt={siteTitle} className="h-9 w-9 object-contain" />
+          <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
         </Link>
         <div className="flex items-center gap-2">
           <Button variant="ghost" asChild>
@@ -65,7 +67,7 @@ export default function PublicHome() {
               面向 Linux 服务器的转发管理面板
             </Badge>
             <div className="space-y-4">
-              <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">ForwardX</h1>
+              <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">{siteTitle}</h1>
               <p className="max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
                 统一管理转发、隧道、用户和流量。
               </p>

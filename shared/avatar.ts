@@ -1,5 +1,7 @@
 export const AVATAR_MAX_BYTES = 50 * 1024;
 export const AVATAR_MAX_DATA_URL_LENGTH = 90 * 1024;
+export const BRAND_LOGO_MAX_BYTES = 100 * 1024;
+export const BRAND_LOGO_MAX_DATA_URL_LENGTH = 150 * 1024;
 export const MULTIAVATAR_PREFIX = "multiavatar:";
 export const LEGACY_AVATAR_PRESET_PREFIX = "preset:";
 export const AVATAR_DAILY_CHANGE_LIMIT = 3;
@@ -81,7 +83,7 @@ export function normalizeAvatarValue(value?: string | null) {
 export function isValidBrandLogoValue(value?: string | null) {
   const text = String(value || "").trim();
   if (!text) return true;
-  if (text.length > AVATAR_MAX_DATA_URL_LENGTH) return false;
+  if (text.length > BRAND_LOGO_MAX_DATA_URL_LENGTH) return false;
   if (!IMAGE_DATA_URL_RE.test(text)) return false;
-  return getAvatarDataUrlByteLength(text) <= AVATAR_MAX_BYTES;
+  return getAvatarDataUrlByteLength(text) <= BRAND_LOGO_MAX_BYTES;
 }

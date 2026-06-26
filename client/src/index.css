@@ -236,6 +236,7 @@
 
   body {
     @apply bg-background text-foreground;
+    position: relative;
     background:
       radial-gradient(circle at 18% -10%, color-mix(in oklch, var(--chart-1) 16%, transparent) 0, transparent 34rem),
       radial-gradient(circle at 92% 8%, color-mix(in oklch, var(--chart-2) 14%, transparent) 0, transparent 30rem),
@@ -243,7 +244,49 @@
     min-height: 100vh;
   }
 
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: var(--personalization-bg-image);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    filter: blur(var(--personalization-bg-blur, 0px));
+    transform: scale(var(--personalization-bg-scale, 1));
+    opacity: 0;
+    transition:
+      opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      filter 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  html[data-personalization-background="image"] body::before {
+    opacity: var(--personalization-bg-opacity, 0.22);
+  }
+
+  .personalization-video-background {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    pointer-events: none;
+    filter: blur(var(--personalization-bg-blur, 0px));
+    transform: scale(var(--personalization-bg-scale, 1));
+    opacity: var(--personalization-bg-opacity, 0.22);
+    transition:
+      opacity 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      filter 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
   #root {
+    position: relative;
+    z-index: 1;
     min-height: 100vh;
     background-color: transparent;
   }
@@ -623,10 +666,10 @@
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
     transform-origin: center;
     transition:
-      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
+      transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
     will-change: transform;
   }
 
@@ -636,8 +679,8 @@
     vector-effect: non-scaling-stroke;
     transform-origin: center;
     transition:
-      color 160ms cubic-bezier(0.22, 1, 0.36, 1),
-      opacity 160ms cubic-bezier(0.22, 1, 0.36, 1);
+      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .group[data-collapsible="icon"] [data-sidebar="menu-button"]:hover,

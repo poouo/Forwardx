@@ -17,12 +17,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
+import { compressImageFile, imageDataUrlSize } from "@/lib/imageUpload";
+import { cn } from "@/lib/utils";
 import {
   FORWARD_PROTOCOL_LABELS,
   FORWARD_TYPES,
@@ -59,11 +60,23 @@ import {
   Lock,
   MoveRight,
   Loader2,
+  Palette,
+  Image as ImageIcon,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { BRAND_LOGO_MAX_BYTES } from "@shared/avatar";
+import {
+  BUILTIN_WALLPAPERS,
+  DEFAULT_PERSONALIZATION_BACKGROUND,
+  clampBackgroundBlur,
+  clampBackgroundOpacity,
+  type PersonalizationBackgroundConfig,
+  type PersonalizationBackgroundImage,
+  type PersonalizationBackgroundUrlType,
+} from "@shared/personalization";
 
 function getUpgradeProgress(job: any) {
   const status = job?.status || "idle";
@@ -423,9 +436,88 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
   URL.revokeObjectURL(url);
 }
 
-const settingsTabs = ["system", "telegram", "email", "backup", "install", "logs"] as const;
+const settingsTabs = ["system", "telegram", "email", "personalization", "backup", "install", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 type DatabaseType = "sqlite" | "mysql" | "postgresql";
+type BackupSummaryCache = {
+  userCount: number;
+  hostCount: number;
+  ruleCount: number;
+  tunnelCount: number;
+  forwardGroupCount: number;
+  hasExistingData: boolean;
+  cachedAt?: number;
+};
+
+const backupSummaryCacheKey = "forwardx.settings.backupSummary";
+const zeroBackupSummary: BackupSummaryCache = {
+  userCount: 0,
+  hostCount: 0,
+  ruleCount: 0,
+  tunnelCount: 0,
+  forwardGroupCount: 0,
+  hasExistingData: false,
+};
+function normalizeBackupSummaryCache(value: any): BackupSummaryCache {
+  return {
+    userCount: Math.max(0, Number(value?.userCount || 0)),
+    hostCount: Math.max(0, Number(value?.hostCount || 0)),
+    ruleCount: Math.max(0, Number(value?.ruleCount || 0)),
+    tunnelCount: Math.max(0, Number(value?.tunnelCount || 0)),
+    forwardGroupCount: Math.max(0, Number(value?.forwardGroupCount || 0)),
+    hasExistingData: !!value?.hasExistingData,
+    cachedAt: Number(value?.cachedAt || 0) || undefined,
+  };
+}
+
+function readBackupSummaryCache(): BackupSummaryCache | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(backupSummaryCacheKey);
+    if (!raw) return null;
+    return normalizeBackupSummaryCache(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeBackupSummaryCache(summary: BackupSummaryCache) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(backupSummaryCacheKey, JSON.stringify({ ...summary, cachedAt: Date.now() }));
+  } catch {
+    // Local cache is only a display optimization.
+  }
+}
+
+function normalizePersonalizationBackgroundConfig(value: any): PersonalizationBackgroundConfig {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...DEFAULT_PERSONALIZATION_BACKGROUND,
+    ...source,
+    source: source.source === "builtin" || source.source === "upload" || source.source === "url" ? source.source : "none",
+    opacity: clampBackgroundOpacity(source.opacity),
+    blur: clampBackgroundBlur(source.blur),
+    selectedId: source.selectedId ? String(source.selectedId) : null,
+    url: String(source.url || ""),
+    urlType: source.urlType === "video" ? "video" : "image",
+    images: Array.isArray(source.images) ? source.images : [],
+  };
+}
+
+function formatBytes(bytes: number) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${Math.max(0, value)} B`;
+}
+
+function createLocalId(prefix: string) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function isSettingsTab(tab: string | null): tab is SettingsTab {
   return !!tab && settingsTabs.includes(tab as SettingsTab);
@@ -546,6 +638,10 @@ function SettingsContent() {
               <TabsTrigger value="email" className={settingsTabTriggerClass}>
                 <Mail className="h-3.5 w-3.5" />
                 邮箱设置
+              </TabsTrigger>
+              <TabsTrigger value="personalization" className={settingsTabTriggerClass}>
+                <Palette className="h-3.5 w-3.5" />
+                个性化配置
               </TabsTrigger>
               <TabsTrigger value="backup" className={settingsTabTriggerClass}>
                 <Database className="h-3.5 w-3.5" />
@@ -739,6 +835,11 @@ function SettingsContent() {
         {/* Email Settings Tab */}
         <TabsContent value="email" className="space-y-4">
           <EmailSettingsContent />
+        </TabsContent>
+
+        {/* Personalization Tab */}
+        <TabsContent value="personalization" className="space-y-4">
+          <PersonalizationSettingsSection />
         </TabsContent>
 
         {/* Backup and Restore Tab */}
@@ -966,6 +1067,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [databaseSwitchJobId, setDatabaseSwitchJobId] = useState<string | null>(null);
   const [reportedDatabaseSwitchJobId, setReportedDatabaseSwitchJobId] = useState<string | null>(null);
   const [showDatabaseSwitchConfirm, setShowDatabaseSwitchConfirm] = useState(false);
+  const [cachedBackupSummary, setCachedBackupSummary] = useState<BackupSummaryCache | null>(() => readBackupSummaryCache());
 
   const { data: currentMigrationCode } = trpc.system.getMigrationCode.useQuery(undefined, {
     refetchInterval: 1000,
@@ -1019,6 +1121,13 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   useEffect(() => {
     setMigrationCode(currentMigrationCode || null);
   }, [currentMigrationCode]);
+
+  useEffect(() => {
+    if (!backupSummary) return;
+    const nextSummary = normalizeBackupSummaryCache(backupSummary);
+    setCachedBackupSummary(nextSummary);
+    writeBackupSummaryCache(nextSummary);
+  }, [backupSummary]);
 
   useEffect(() => {
     setOnlineMigration((current) => (
@@ -1178,8 +1287,11 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
 
   const migrationCountdown = getMigrationCodeCountdown(migrationCode, migrationCodeTick);
   const migrationRequest = migrationCode?.pendingRequest;
+  const displayBackupSummary = backupSummary
+    ? normalizeBackupSummaryCache(backupSummary)
+    : cachedBackupSummary || zeroBackupSummary;
   const backupSummaryReady = !!backupSummary;
-  const hasExistingData = !!backupSummary?.hasExistingData;
+  const hasExistingData = !!displayBackupSummary.hasExistingData;
 
   const handleExportBackup = () => {
     if (backupPassword.length < 8) {
@@ -1261,35 +1373,28 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {[
-          { label: "当前用户", value: backupSummary?.userCount },
-          { label: "当前主机", value: backupSummary?.hostCount },
-          { label: "当前规则", value: backupSummary?.ruleCount },
-          { label: "当前隧道", value: backupSummary?.tunnelCount },
-          { label: "转发组", value: backupSummary?.forwardGroupCount },
-        ].map((item) => {
-          const isValueLoading = backupSummaryLoading && !backupSummary;
-          return (
-            <Card key={item.label} className="border-border/40 bg-card/60 backdrop-blur-md">
-              <CardContent className="min-h-[80px] p-4">
-                <p className="text-xs text-muted-foreground">{item.label}</p>
-                <div className="mt-1 flex h-7 items-center">
-                  {isValueLoading ? (
-                    <Skeleton className="h-6 w-12" />
-                  ) : (
-                    <p className="text-xl font-semibold leading-7">{item.value ?? 0}</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+          { label: "当前用户", value: displayBackupSummary.userCount },
+          { label: "当前主机", value: displayBackupSummary.hostCount },
+          { label: "当前规则", value: displayBackupSummary.ruleCount },
+          { label: "当前隧道", value: displayBackupSummary.tunnelCount },
+          { label: "转发组", value: displayBackupSummary.forwardGroupCount },
+        ].map((item) => (
+          <Card key={item.label} className="border-border/40 bg-card/60 backdrop-blur-md">
+            <CardContent className="min-h-[80px] p-4">
+              <p className="text-xs text-muted-foreground">{item.label}</p>
+              <div className="mt-1 flex h-7 items-center">
+                <p className="text-xl font-semibold leading-7">{item.value ?? 0}</p>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
       <Alert>
         <ShieldCheck className="h-4 w-4" />
         <AlertTitle>
-          {!backupSummaryReady
-            ? "正在检查当前面板数据"
+          {!backupSummaryReady && backupSummaryLoading
+            ? "已展示缓存数据，正在后台刷新"
             : hasExistingData
               ? "当前面板已有业务数据，迁移将按增量方式执行"
               : "当前面板没有业务数据，可作为完整恢复执行"}
@@ -1297,7 +1402,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
         <AlertDescription>
           {backupSummaryReady
             ? "增量迁移会保留新面板现有主机、用户、规则和订单数据，并把旧面板数据追加导入；重复的用户账号、主机 Token、订单号、兑换码会复用现有记录。"
-            : "加载完成后会根据当前面板是否已有业务数据，自动判断完整恢复或增量迁移。"}
+            : "首次进入没有缓存时会先显示 0；接口返回真实数据后会自动更新并缓存，后续进入可直接展示上次统计。"}
         </AlertDescription>
       </Alert>
 
@@ -2564,7 +2669,6 @@ type SystemSettingsSaveKey =
   | "panelUrl"
   | "registration"
   | "twoFactor"
-  | "homepage"
   | "ddns"
   | "forwardProtocols"
   | "agentInstall";
@@ -2578,6 +2682,530 @@ function normalizeTtl(value: string, fallback: number) {
   const ttl = Math.floor(Number(value));
   if (!Number.isFinite(ttl)) return fallback;
   return Math.min(86400, Math.max(60, ttl));
+}
+
+function PersonalizationSettingsSection() {
+  const utils = trpc.useUtils();
+  const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+  const backgroundInputRef = useRef<HTMLInputElement | null>(null);
+  const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
+  const [homepageEnabled, setHomepageEnabled] = useState(true);
+  const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
+  const [homepageHtml, setHomepageHtml] = useState("");
+  const [backgroundConfig, setBackgroundConfig] = useState<PersonalizationBackgroundConfig>(DEFAULT_PERSONALIZATION_BACKGROUND);
+  const [backgroundUrlInput, setBackgroundUrlInput] = useState("");
+  const [backgroundUrlType, setBackgroundUrlType] = useState<PersonalizationBackgroundUrlType>("image");
+  const [saving, setSaving] = useState(false);
+  const [compressingLogo, setCompressingLogo] = useState(false);
+  const [compressingBackground, setCompressingBackground] = useState(false);
+
+  useEffect(() => {
+    if (!settings) return;
+    const nextBackground = normalizePersonalizationBackgroundConfig(settings.personalizationBackgroundConfig);
+    setSiteLogoDataUrl(settings.siteLogoDataUrl || "");
+    setHomepageEnabled(settings.homepageEnabled ?? true);
+    setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
+    setHomepageHtml(settings.homepageHtml || "");
+    setBackgroundConfig(nextBackground);
+    setBackgroundUrlInput(nextBackground.url || "");
+    setBackgroundUrlType(nextBackground.urlType || "image");
+  }, [settings]);
+
+  const updateSettingsMutation = trpc.system.updateSettings.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.system.getSettings.invalidate(),
+        utils.system.publicInfo.invalidate(),
+      ]);
+      toast.success("个性化配置已保存");
+    },
+    onError: (err) => toast.error(err.message || "保存个性化配置失败"),
+    onSettled: () => setSaving(false),
+  });
+
+  const updateBackground = (patch: Partial<PersonalizationBackgroundConfig>) => {
+    setBackgroundConfig((current) => normalizePersonalizationBackgroundConfig({ ...current, ...patch }));
+  };
+
+  const selectedUploadedBackground = backgroundConfig.images.find((item) => item.id === backgroundConfig.selectedId) || null;
+  const selectedBuiltinBackground = BUILTIN_WALLPAPERS.find((item) => item.id === backgroundConfig.selectedId) || null;
+  const previewBackgroundUrl =
+    backgroundConfig.source === "builtin"
+      ? selectedBuiltinBackground?.url || ""
+      : backgroundConfig.source === "upload"
+        ? selectedUploadedBackground?.dataUrl || ""
+        : backgroundConfig.source === "url"
+          ? backgroundConfig.url
+          : "";
+  const previewIsVideo = backgroundConfig.source === "url" && backgroundConfig.urlType === "video";
+  const opacityPercent = Math.round(clampBackgroundOpacity(backgroundConfig.opacity) * 100);
+  const blurAmount = Math.round(clampBackgroundBlur(backgroundConfig.blur));
+  const backgroundEnabled = backgroundConfig.source !== "none" && !!previewBackgroundUrl;
+
+  const handleLogoUpload = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setCompressingLogo(true);
+      const result = await compressImageFile(file, {
+        maxBytes: BRAND_LOGO_MAX_BYTES,
+        maxSide: 512,
+        preferredType: file.type === "image/png" ? "image/png" : "image/webp",
+        minQuality: 0.55,
+      });
+      setSiteLogoDataUrl(result.dataUrl);
+      toast.success(`Logo 已处理为 ${formatBytes(result.size)}`);
+    } catch (err: any) {
+      toast.error(err?.message || "Logo 上传失败");
+    } finally {
+      setCompressingLogo(false);
+      if (logoInputRef.current) logoInputRef.current.value = "";
+    }
+  };
+
+  const handleBackgroundUpload = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setCompressingBackground(true);
+      const result = await compressImageFile(file, {
+        maxBytes: 3 * 1024 * 1024,
+        maxSide: 2560,
+        preferredType: "image/jpeg",
+        minQuality: 0.62,
+      });
+      const item: PersonalizationBackgroundImage = {
+        id: createLocalId("wallpaper"),
+        name: file.name.replace(/\.[^.]+$/, "").slice(0, 60) || "上传背景",
+        dataUrl: result.dataUrl,
+        size: result.size,
+        createdAt: Date.now(),
+      };
+      setBackgroundConfig((current) => {
+        const images = [item, ...current.images].slice(0, 6);
+        return normalizePersonalizationBackgroundConfig({
+          ...current,
+          source: "upload",
+          selectedId: item.id,
+          images,
+        });
+      });
+      toast.success(`背景已处理为 ${formatBytes(result.size)}`);
+    } catch (err: any) {
+      toast.error(err?.message || "背景上传失败");
+    } finally {
+      setCompressingBackground(false);
+      if (backgroundInputRef.current) backgroundInputRef.current.value = "";
+    }
+  };
+
+  const handleDeleteUploadedBackground = (id: string) => {
+    setBackgroundConfig((current) => {
+      const images = current.images.filter((item) => item.id !== id);
+      const selectedDeleted = current.source === "upload" && current.selectedId === id;
+      return normalizePersonalizationBackgroundConfig({
+        ...current,
+        source: selectedDeleted ? "none" : current.source,
+        selectedId: selectedDeleted ? null : current.selectedId,
+        images,
+      });
+    });
+  };
+
+  const applyBackgroundUrl = () => {
+    const url = backgroundUrlInput.trim();
+    if (!url) {
+      toast.error("请填写背景链接");
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error("背景链接必须以 http:// 或 https:// 开头");
+      return;
+    }
+    updateBackground({
+      source: "url",
+      url,
+      urlType: backgroundUrlType,
+      selectedId: null,
+    });
+  };
+
+  const handlePreviewHomepage = () => {
+    const previewId = createLocalId("homepage");
+    const previewKey = `forwardx.homepage.preview.${previewId}`;
+    try {
+      window.localStorage.setItem(previewKey, homepageHtml);
+      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
+    } catch {
+      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
+    }
+    window.open(`/homepage-preview?mode=draft&id=${encodeURIComponent(previewId)}`, "_blank", "noopener,noreferrer");
+  };
+
+  const handleUseHomepageTemplate = () => {
+    if (homepageHtml.trim() && !window.confirm("当前编辑内容会被示例模板覆盖，确定继续吗？")) return;
+    setHomepageHtml(defaultHomepageHtml);
+  };
+
+  const handleSave = () => {
+    if (siteLogoDataUrl && imageDataUrlSize(siteLogoDataUrl) > BRAND_LOGO_MAX_BYTES) {
+      toast.error("Logo 超过 100KB，请重新上传");
+      return;
+    }
+    if (backgroundConfig.source === "url") {
+      if (!backgroundConfig.url.trim()) {
+        toast.error("请先应用背景链接");
+        return;
+      }
+      if (!/^https?:\/\//i.test(backgroundConfig.url.trim())) {
+        toast.error("背景链接必须以 http:// 或 https:// 开头");
+        return;
+      }
+    }
+    setSaving(true);
+    updateSettingsMutation.mutate({
+      siteLogoDataUrl,
+      homepageEnabled,
+      homepageCustomEnabled,
+      homepageHtml,
+      personalizationBackground: normalizePersonalizationBackgroundConfig(backgroundConfig),
+    });
+  };
+
+  if (isLoading) {
+    return <DataSectionLoading label="正在加载个性化配置" minHeight="min-h-[220px]" />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ImageIcon className="h-4 w-4 text-primary" />
+              Logo
+            </CardTitle>
+            <CardDescription>
+              上传后会用于登录页、公开首页和侧边栏。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border/50 bg-muted/30">
+                {siteLogoDataUrl ? (
+                  <img src={siteLogoDataUrl} alt="Logo 预览" className="h-full w-full object-contain p-2" />
+                ) : (
+                  <ImageIcon className="h-7 w-7 text-muted-foreground" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => handleLogoUpload(event.target.files?.[0])}
+                  />
+                  <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()} disabled={compressingLogo}>
+                    {compressingLogo && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    上传 Logo
+                  </Button>
+                  <Button type="button" variant="ghost" onClick={() => setSiteLogoDataUrl("")} disabled={!siteLogoDataUrl}>
+                    清除
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  最大 100KB，超过后会在浏览器内自动压缩。
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Palette className="h-4 w-4 text-primary" />
+              背景预览
+            </CardTitle>
+            <CardDescription>
+              默认不使用背景，可选择内置、上传或链接背景。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="relative min-h-44 overflow-hidden rounded-lg border border-border/40 bg-muted/30">
+              {previewBackgroundUrl ? (
+                previewIsVideo ? (
+                  <video src={previewBackgroundUrl} muted loop playsInline autoPlay className="absolute inset-0 h-full w-full object-cover" />
+                ) : (
+                  <img src={previewBackgroundUrl} alt="背景预览" className="absolute inset-0 h-full w-full object-cover" />
+                )
+              ) : (
+                <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
+                  未启用背景
+                </div>
+              )}
+              {previewBackgroundUrl && (
+                <div
+                  className="absolute inset-0 bg-background"
+                  style={{ opacity: 1 - clampBackgroundOpacity(backgroundConfig.opacity) }}
+                />
+              )}
+              <div className="absolute bottom-3 left-3 rounded-md border border-border/50 bg-background/75 px-3 py-2 text-xs backdrop-blur">
+                {backgroundEnabled ? `不透明度 ${opacityPercent}% / 虚化 ${blurAmount}px` : "无背景"}
+              </div>
+            </div>
+            {backgroundEnabled && (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                  <div className="space-y-2">
+                    <Label>背景不透明度</Label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={85}
+                      step={5}
+                      value={opacityPercent}
+                      onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
+                      className="w-full accent-primary"
+                    />
+                  </div>
+                  <Input
+                    value={String(opacityPercent)}
+                    onChange={(event) => {
+                      const value = Math.min(85, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                      updateBackground({ opacity: value / 100 });
+                    }}
+                    inputMode="numeric"
+                    className="sm:mt-6"
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                  <div className="space-y-2">
+                    <Label>背景虚化程度</Label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={32}
+                      step={1}
+                      value={blurAmount}
+                      onChange={(event) => updateBackground({ blur: Number(event.target.value) })}
+                      className="w-full accent-primary"
+                    />
+                  </div>
+                  <Input
+                    value={String(blurAmount)}
+                    onChange={(event) => {
+                      const value = Math.min(32, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                      updateBackground({ blur: value });
+                    }}
+                    inputMode="numeric"
+                    className="sm:mt-6"
+                  />
+                </div>
+              </div>
+            )}
+            <Button type="button" variant="outline" onClick={() => updateBackground({ source: "none", selectedId: null })}>
+              不使用背景
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ImageIcon className="h-4 w-4 text-primary" />
+            背景来源
+          </CardTitle>
+          <CardDescription>
+            内置壁纸、上传图片和外部链接只会启用当前选择的一项。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">内置壁纸</p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {BUILTIN_WALLPAPERS.map((item) => {
+                const active = backgroundConfig.source === "builtin" && backgroundConfig.selectedId === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => updateBackground({ source: "builtin", selectedId: item.id })}
+                    className={cn(
+                      "group overflow-hidden rounded-lg border bg-muted/20 text-left transition",
+                      active ? "border-primary ring-2 ring-primary/25" : "border-border/40 hover:border-primary/50",
+                    )}
+                  >
+                    <img src={item.url} alt={item.name} className="aspect-[16/9] w-full object-cover transition-transform group-hover:scale-[1.02]" />
+                    <div className="px-3 py-2 text-xs font-medium">{item.name}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium">上传背景</p>
+                <p className="text-xs text-muted-foreground">最多保留 6 张，单张最大 3MB，超过会自动压缩。</p>
+              </div>
+              <div>
+                <input
+                  ref={backgroundInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => handleBackgroundUpload(event.target.files?.[0])}
+                />
+                <Button type="button" variant="outline" onClick={() => backgroundInputRef.current?.click()} disabled={compressingBackground}>
+                  {compressingBackground && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  上传背景
+                </Button>
+              </div>
+            </div>
+            {backgroundConfig.images.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {backgroundConfig.images.map((item) => {
+                  const active = backgroundConfig.source === "upload" && backgroundConfig.selectedId === item.id;
+                  return (
+                    <div
+                      key={item.id}
+                      className={cn(
+                        "overflow-hidden rounded-lg border bg-muted/20",
+                        active ? "border-primary ring-2 ring-primary/25" : "border-border/40",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => updateBackground({ source: "upload", selectedId: item.id })}
+                        className="block w-full text-left"
+                      >
+                        <img src={item.dataUrl} alt={item.name} className="aspect-[16/8] w-full object-cover" />
+                      </button>
+                      <div className="flex items-center justify-between gap-2 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium" title={item.name}>{item.name}</p>
+                          <p className="text-[11px] text-muted-foreground">{formatBytes(item.size || imageDataUrlSize(item.dataUrl))}</p>
+                        </div>
+                        <Button type="button" variant="ghost" size="icon" onClick={() => handleDeleteUploadedBackground(item.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">
+                还没有上传背景。
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">自定义链接</p>
+            <div className="grid gap-2 lg:grid-cols-[9rem_minmax(0,1fr)_auto]">
+              <Select value={backgroundUrlType} onValueChange={(value) => setBackgroundUrlType(value as PersonalizationBackgroundUrlType)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="image">图片链接</SelectItem>
+                  <SelectItem value="video">视频链接</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                value={backgroundUrlInput}
+                onChange={(event) => setBackgroundUrlInput(event.target.value)}
+                placeholder="https://example.com/background.jpg"
+              />
+              <Button type="button" variant="outline" onClick={applyBackgroundUrl}>
+                应用链接
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              视频背景会静音循环播放，建议使用 HTTPS 链接。
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Globe className="h-4 w-4 text-primary" />
+            公开首页
+          </CardTitle>
+          <CardDescription>
+            设置未登录时展示的首页。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">启用公开首页</p>
+                <p className="text-xs text-muted-foreground">关闭后直接进入登录页。</p>
+              </div>
+              <Switch checked={homepageEnabled} onCheckedChange={setHomepageEnabled} />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div>
+                <p className="text-sm font-medium">使用自定义 H5</p>
+                <p className="text-xs text-muted-foreground">优先展示自定义页面。</p>
+              </div>
+              <Switch checked={homepageCustomEnabled} onCheckedChange={setHomepageCustomEnabled} />
+            </div>
+          </div>
+          {homepageCustomEnabled && (
+            <div className="space-y-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <Label className="text-sm font-medium">首页 H5/HTML 代码</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    支持完整 HTML 或 body 内容。
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={handleUseHomepageTemplate}>
+                    使用示例
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handlePreviewHomepage} className="gap-2">
+                    <Eye className="h-4 w-4" />
+                    预览
+                  </Button>
+                  <Button variant="outline" size="sm" asChild>
+                    <a href="/homepage-preview" target="_blank" rel="noopener noreferrer">
+                      查看已保存
+                    </a>
+                  </Button>
+                </div>
+              </div>
+              <Textarea
+                value={homepageHtml}
+                onChange={(e) => setHomepageHtml(e.target.value)}
+                placeholder="粘贴你的首页 H5/HTML 代码"
+                className="min-h-72 font-mono text-xs leading-5"
+              />
+              <p className="text-xs text-muted-foreground">
+                {homepageHtml.length.toLocaleString()} / 60,000 字符
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="flex justify-end">
+        <Button onClick={handleSave} disabled={saving || updateSettingsMutation.isPending || compressingLogo || compressingBackground} className="gap-2">
+          {(saving || updateSettingsMutation.isPending) && <Loader2 className="h-4 w-4 animate-spin" />}
+          保存个性化配置
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function SystemInfoSection() {
@@ -2603,9 +3231,6 @@ function SystemInfoSection() {
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
-  const [homepageEnabled, setHomepageEnabled] = useState(true);
-  const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
-  const [homepageHtml, setHomepageHtml] = useState("");
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
   const [githubAcceleratorEnabled, setGithubAcceleratorEnabled] = useState(false);
   const [githubAcceleratorUrlInput, setGithubAcceleratorUrlInput] = useState(defaultGithubAcceleratorUrl);
@@ -2657,9 +3282,6 @@ function SystemInfoSection() {
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
-      setHomepageEnabled(settings.homepageEnabled ?? true);
-      setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
-      setHomepageHtml(settings.homepageHtml || "");
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
       setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
@@ -2904,10 +3526,6 @@ function SystemInfoSection() {
     saveSystemSettings("twoFactor", { twoFactorEnabled });
   };
 
-  const handleSaveHomepage = () => {
-    saveSystemSettings("homepage", { homepageEnabled, homepageCustomEnabled, homepageHtml });
-  };
-
   const handleSaveDdns = () => {
     const huaweicloudEndpoint = normalizeConfigUrl(ddnsHuaweiCloudEndpoint);
     const aliyunEndpoint = normalizeConfigUrl(ddnsAliyunEndpoint);
@@ -2999,25 +3617,6 @@ function SystemInfoSection() {
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
     setForwardProtocols((prev) => ({ ...prev, [key]: enabled }));
-  };
-
-  const handlePreviewHomepage = () => {
-    const previewId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const previewKey = `forwardx.homepage.preview.${previewId}`;
-    try {
-      window.localStorage.setItem(previewKey, homepageHtml);
-      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
-    } catch {
-      window.sessionStorage.setItem("forwardx.homepage.preview", homepageHtml);
-    }
-    window.open(`/homepage-preview?mode=draft&id=${encodeURIComponent(previewId)}`, "_blank", "noopener,noreferrer");
-  };
-
-  const handleUseHomepageTemplate = () => {
-    if (homepageHtml.trim() && !window.confirm("当前编辑内容会被示例模板覆盖，确定继续吗？")) return;
-    setHomepageHtml(defaultHomepageHtml);
   };
 
   const copyTextToClipboard = async (text: string) => {
@@ -3876,76 +4475,6 @@ function SystemInfoSection() {
       </Dialog>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Globe className="h-4 w-4 text-primary" />
-              公开首页
-            </CardTitle>
-            <CardDescription>
-              设置未登录时展示的首页。
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-3 lg:grid-cols-2">
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-                <div>
-                  <p className="text-sm font-medium">启用公开首页</p>
-                  <p className="text-xs text-muted-foreground">关闭后直接进入登录页。</p>
-                </div>
-                <Switch checked={homepageEnabled} onCheckedChange={setHomepageEnabled} />
-              </div>
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-                <div>
-                  <p className="text-sm font-medium">使用自定义 H5</p>
-                  <p className="text-xs text-muted-foreground">优先展示自定义页面。</p>
-                </div>
-                <Switch checked={homepageCustomEnabled} onCheckedChange={setHomepageCustomEnabled} />
-              </div>
-            </div>
-            {homepageCustomEnabled && (
-              <div className="space-y-2">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <Label className="text-sm font-medium">首页 H5/HTML 代码</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      支持完整 HTML 或 body 内容。
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" onClick={handleUseHomepageTemplate}>
-                      使用示例
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={handlePreviewHomepage} className="gap-2">
-                      <Eye className="h-4 w-4" />
-                      预览
-                    </Button>
-                    <Button variant="outline" size="sm" asChild>
-                      <a href="/homepage-preview" target="_blank" rel="noopener noreferrer">
-                        查看已保存
-                      </a>
-                    </Button>
-                  </div>
-                </div>
-                <Textarea
-                  value={homepageHtml}
-                  onChange={(e) => setHomepageHtml(e.target.value)}
-                  placeholder="粘贴你的首页 H5/HTML 代码"
-                  className="min-h-72 font-mono text-xs leading-5"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {homepageHtml.length.toLocaleString()} / 60,000 字符
-                </p>
-              </div>
-            )}
-            <div className="flex justify-end">
-              <Button variant="outline" onClick={handleSaveHomepage} disabled={isSavingSetting("homepage")}>
-                保存首页设置
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
         {/* 版本升级 */}
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>

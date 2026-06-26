@@ -849,7 +849,16 @@ function DashboardLayoutContent({
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
           <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]", isActive && "text-primary")} />
-          <span className={cn(isDesktopCollapsed && "sr-only")}>{item.label}</span>
+          <span
+            className={cn(
+              "sidebar-nav-label min-w-0 truncate transition-[max-width,opacity,transform] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]",
+              isDesktopCollapsed && "max-w-0 translate-x-1 opacity-0 pointer-events-none",
+              !isDesktopCollapsed && "max-w-36 opacity-100",
+            )}
+            aria-hidden={isDesktopCollapsed}
+          >
+            {item.label}
+          </span>
         </SidebarMenuButton>
       </SidebarMenuItem>
     );

@@ -131,12 +131,19 @@ export default function Login() {
     retry: false,
     refetchOnWindowFocus: false,
   });
+  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: hasMobilePanelUrl,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
   const { data: telegramLoginStatus } = trpc.telegram.loginStatus.useQuery(undefined, {
     enabled: hasMobilePanelUrl,
     retry: false,
     refetchOnWindowFocus: false,
   });
   const registrationEnabled = emailConfig?.registrationEnabled !== false;
+  const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
+  const logoSrc = publicInfo?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
 
   useEffect(() => {
     if (mode === "register" && !registrationEnabled) {
@@ -658,8 +665,8 @@ export default function Login() {
           <div className="relative flex min-h-screen w-full items-center px-10 py-14 xl:px-16">
             <div className="max-w-xl">
               <div className="flex items-center gap-3">
-                <img src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"} alt="ForwardX" className="h-11 w-11 object-contain" />
-                <span className="text-2xl font-bold tracking-tight text-foreground">ForwardX</span>
+                <img src={logoSrc} alt={siteTitle} className="h-11 w-11 object-contain" />
+                <span className="text-2xl font-bold tracking-tight text-foreground">{siteTitle}</span>
               </div>
               <p className="mt-7 max-w-lg text-lg leading-8 text-foreground/72">
                 高性能端口转发管理面板，轻松管理您的网络流量
@@ -702,11 +709,11 @@ export default function Login() {
             <CardHeader className="px-0 pb-7 text-left">
               <div className="mb-5 flex items-center gap-3 lg:hidden">
                 <img
-                  src={resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
-                  alt="ForwardX"
+                  src={logoSrc}
+                  alt={siteTitle}
                   className="h-10 w-10 object-contain"
                 />
-                <span className="text-lg font-semibold tracking-tight">ForwardX</span>
+                <span className="text-lg font-semibold tracking-tight">{siteTitle}</span>
               </div>
               <CardTitle className="text-2xl font-bold tracking-tight">
                 {mode === "login" ? "欢迎回来" : "创建账号"}

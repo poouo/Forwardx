@@ -13,6 +13,7 @@ const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "var(--forwardx-mobile-sidebar-width, min(16.5rem, calc(100vw - 3.5rem)))"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
+const SIDEBAR_MOTION = "duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
 
 type SidebarContext = {
   state: "expanded" | "collapsed"
@@ -129,7 +130,8 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & {
           data-mobile-sidebar="true"
           data-state={openMobile ? "open" : "closed"}
           className={cn(
-            "fixed inset-y-0 z-50 flex h-dvh max-h-dvh flex-col overflow-hidden bg-sidebar text-sidebar-foreground transition-transform duration-200",
+            "fixed inset-y-0 z-50 flex h-dvh max-h-dvh flex-col overflow-hidden bg-sidebar text-sidebar-foreground transition-transform will-change-transform",
+            SIDEBAR_MOTION,
             side === "left" ? "left-0" : "right-0",
             openMobile ? "translate-x-0" : side === "left" ? "-translate-x-full" : "translate-x-full",
             className
@@ -188,7 +190,8 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & {
       {/* Spacer div - takes up space in the flex layout to push content */}
       <div
         className={cn(
-          "duration-200 relative h-svh bg-transparent transition-[width] ease-linear",
+          "relative h-svh bg-transparent transition-[width] will-change-[width]",
+          SIDEBAR_MOTION,
           side === "right" && "rotate-180"
         )}
         style={{ width: spacerWidth }}
@@ -196,7 +199,8 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & {
       {/* Fixed sidebar - actually visible */}
       <div
         className={cn(
-          "duration-200 fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width] ease-linear md:flex",
+          "fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width,transform] will-change-[width,transform] md:flex",
+          SIDEBAR_MOTION,
           side === "left" ? "left-0" : "right-0",
           variant === "floating" || variant === "inset"
             ? "p-2"
@@ -261,7 +265,7 @@ SidebarGroup.displayName = "SidebarGroup"
 
 const SidebarGroupLabel = React.forwardRef<HTMLDivElement, React.ComponentProps<"div"> & { asChild?: boolean }>(({ className, asChild = false, ...props }, ref) => {
   const Comp = asChild ? Slot : "div"
-  return <Comp ref={ref} data-sidebar="group-label" className={cn("duration-200 flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 outline-none ring-sidebar-ring transition-[margin,opa] ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0", "group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0", className)} {...props} />
+  return <Comp ref={ref} data-sidebar="group-label" className={cn("flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 outline-none ring-sidebar-ring transition-[height,margin,opacity,transform] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0", "group-data-[collapsible=icon]:h-0 group-data-[collapsible=icon]:-translate-y-1 group-data-[collapsible=icon]:opacity-0 group-data-[collapsible=icon]:pointer-events-none", className)} {...props} />
 })
 SidebarGroupLabel.displayName = "SidebarGroupLabel"
 
@@ -277,7 +281,7 @@ SidebarMenuItem.displayName = "SidebarMenuItem"
 
 const sidebarMenuButtonVariants = (variant: "default" | "outline" = "default", size: "default" | "sm" | "lg" = "default") => {
   return cn(
-    "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-none ring-sidebar-ring transition-[width,height,padding,background-color,box-shadow] hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-[[data-sidebar=menu-action]]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent/80 data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_28px_rgba(0,0,0,0.08)] data-[state=open]:hover:bg-sidebar-accent/80 data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:!size-9 group-data-[collapsible=icon]:!justify-center group-data-[collapsible=icon]:!p-0 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+    "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-none ring-sidebar-ring transition-[width,height,padding,gap,background-color,color,box-shadow,transform] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-[[data-sidebar=menu-action]]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent/80 data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[active=true]:shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_28px_rgba(0,0,0,0.08)] data-[state=open]:hover:bg-sidebar-accent/80 data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:!size-9 group-data-[collapsible=icon]:!justify-center group-data-[collapsible=icon]:!gap-0 group-data-[collapsible=icon]:!p-0 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
     variant === "outline" && "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
     size === "sm" && "text-xs",
     size === "lg" && "text-sm group-data-[collapsible=icon]:!p-0",

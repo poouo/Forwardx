@@ -35,7 +35,7 @@ import {
   TUNNEL_PROTOCOLS,
   normalizeForwardProtocolSettings,
 } from "../../shared/forwardTypes";
-import { isValidBrandLogoValue } from "../../shared/avatar";
+import { getAvatarDataUrlByteLength, isValidBrandLogoValue } from "../../shared/avatar";
 import { generateSelfSignedPanelSslCertificate, readPanelSslSettings, validatePanelSslConfig } from "../panelSsl";
 import {
   AGENT_VERSION,
@@ -43,6 +43,14 @@ import {
   ANDROID_APP_VERSION,
   APP_VERSION,
 } from "../../shared/versions";
+import {
+  DEFAULT_PERSONALIZATION_BACKGROUND,
+  builtinWallpaperById,
+  clampBackgroundBlur,
+  clampBackgroundOpacity,
+  isBuiltinWallpaperId,
+  type PersonalizationBackgroundConfig,
+} from "../../shared/personalization";
 
 export {
   AGENT_VERSION,
@@ -92,7 +100,27 @@ const logPageInputSchema = z.object({
   offset: z.number().int().min(0).default(0),
 });
 const siteTitleSchema = z.string().trim().max(64);
-const brandLogoSchema = z.string().max(90 * 1024);
+const brandLogoSchema = z.string().max(150 * 1024);
+const personalizationBackgroundImageMaxBytes = 3 * 1024 * 1024;
+const personalizationBackgroundConfigMaxLength = 25 * 1024 * 1024;
+const imageDataUrlRe = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
+const backgroundSourceSchema = z.enum(["none", "builtin", "upload", "url"]);
+const backgroundUrlTypeSchema = z.enum(["image", "video"]);
+const personalizationBackgroundSchema = z.object({
+  source: backgroundSourceSchema.optional(),
+  opacity: z.number().min(0).max(1).optional(),
+  blur: z.number().min(0).max(32).optional(),
+  selectedId: z.string().max(80).optional().nullable(),
+  url: z.string().max(1200).optional(),
+  urlType: backgroundUrlTypeSchema.optional(),
+  images: z.array(z.object({
+    id: z.string().max(80),
+    name: z.string().max(120).optional(),
+    dataUrl: z.string().max(5 * 1024 * 1024),
+    size: z.number().int().min(0).max(personalizationBackgroundImageMaxBytes).optional(),
+    createdAt: z.number().int().min(0).optional(),
+  })).max(6).optional(),
+});
 const githubAcceleratorUrlSchema = z.string().trim().max(256);
 const mysqlDatabaseConfigInput = z.object({
   host: z.string().trim().min(1, "请输入 MySQL 地址"),
@@ -158,6 +186,98 @@ let upgradeJob: UpgradeJob = {
 
 function normalizeVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
+}
+
+function isValidBackgroundImageDataUrl(value: string) {
+  const text = String(value || "").trim();
+  if (!text || text.length > 5 * 1024 * 1024) return false;
+  if (!imageDataUrlRe.test(text)) return false;
+  return getAvatarDataUrlByteLength(text) <= personalizationBackgroundImageMaxBytes;
+}
+
+function normalizeBackgroundUrl(value: unknown) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (!/^https?:\/\//i.test(text)) throw new Error("背景链接必须以 http:// 或 https:// 开头");
+  return text;
+}
+
+function normalizePersonalizationBackground(input: unknown): PersonalizationBackgroundConfig {
+  const source = typeof input === "object" && input ? input as any : {};
+  const images = Array.isArray(source.images)
+    ? source.images
+      .slice(0, 6)
+      .map((item: any) => ({
+        id: String(item?.id || "").trim().replace(/[^a-z0-9_-]/gi, "").slice(0, 80),
+        name: String(item?.name || "上传背景").trim().slice(0, 120),
+        dataUrl: String(item?.dataUrl || "").trim(),
+        size: Number(item?.size || 0) || undefined,
+        createdAt: Number(item?.createdAt || 0) || Date.now(),
+      }))
+      .filter((item: any) => item.id && isValidBackgroundImageDataUrl(item.dataUrl))
+    : [];
+  const rawSource = String(source.source || DEFAULT_PERSONALIZATION_BACKGROUND.source);
+  const nextSource = rawSource === "builtin" || rawSource === "upload" || rawSource === "url" ? rawSource : "none";
+  const selectedId = source.selectedId ? String(source.selectedId).trim().slice(0, 80) : null;
+  const urlType = source.urlType === "video" ? "video" : "image";
+  const url = normalizeBackgroundUrl(source.url);
+
+  let normalizedSource = nextSource;
+  let normalizedSelectedId: string | null = selectedId;
+  if (normalizedSource === "builtin") {
+    if (!isBuiltinWallpaperId(selectedId)) {
+      normalizedSource = "none";
+      normalizedSelectedId = null;
+    }
+  } else if (normalizedSource === "upload") {
+    if (!images.some((item) => item.id === selectedId)) {
+      normalizedSource = "none";
+      normalizedSelectedId = null;
+    }
+  } else if (normalizedSource === "url") {
+    if (!url) normalizedSource = "none";
+    normalizedSelectedId = null;
+  } else {
+    normalizedSelectedId = null;
+  }
+
+  return {
+    source: normalizedSource as PersonalizationBackgroundConfig["source"],
+    opacity: clampBackgroundOpacity(source.opacity),
+    blur: clampBackgroundBlur(source.blur),
+    selectedId: normalizedSelectedId,
+    url,
+    urlType,
+    images,
+  };
+}
+
+function readPersonalizationBackground(all: Record<string, string | null>) {
+  const raw = String(all.personalizationBackground || "").trim();
+  if (!raw) return DEFAULT_PERSONALIZATION_BACKGROUND;
+  try {
+    return normalizePersonalizationBackground(JSON.parse(raw));
+  } catch {
+    return DEFAULT_PERSONALIZATION_BACKGROUND;
+  }
+}
+
+function resolvePersonalizationBackgroundUrl(config: PersonalizationBackgroundConfig) {
+  if (config.source === "builtin") return builtinWallpaperById(config.selectedId)?.url || "";
+  if (config.source === "upload") return config.images.find((item) => item.id === config.selectedId)?.dataUrl || "";
+  if (config.source === "url") return config.url || "";
+  return "";
+}
+
+function publicPersonalizationBackground(all: Record<string, string | null>) {
+  const config = readPersonalizationBackground(all);
+  return {
+    source: config.source,
+    opacity: config.opacity,
+    blur: config.blur,
+    urlType: config.urlType,
+    effectiveUrl: resolvePersonalizationBackgroundUrl(config),
+  };
 }
 
 function compareVersions(a: string, b: string) {
@@ -1068,6 +1188,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     agentVersion: AGENT_VERSION,
     siteTitle: all.siteTitle || "ForwardX",
     siteLogoDataUrl: all.siteLogoDataUrl || "",
+    personalizationBackground: publicPersonalizationBackground(all),
     panelPublicUrl: all.panelPublicUrl ?? "",
     panelSsl: {
       enabled: false,
@@ -1203,6 +1324,7 @@ export const systemRouter = router({
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
+      personalizationBackground: publicPersonalizationBackground(all),
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
@@ -1238,6 +1360,7 @@ export const systemRouter = router({
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+      personalizationBackgroundConfig: readPersonalizationBackground(all),
       homepageEnabled: all.homepageEnabled !== "false",
       homepageCustomEnabled: all.homepageCustomEnabled === "true",
       homepageHtml: all.homepageHtml ?? "",
@@ -1449,6 +1572,7 @@ export const systemRouter = router({
         homepageEnabled: z.boolean().optional(),
         homepageCustomEnabled: z.boolean().optional(),
         homepageHtml: z.string().max(60000).optional(),
+        personalizationBackground: personalizationBackgroundSchema.optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
         githubAccelerator: z.object({
@@ -1547,7 +1671,7 @@ export const systemRouter = router({
       if (input.siteLogoDataUrl !== undefined) {
         const logo = input.siteLogoDataUrl.trim();
         if (!isValidBrandLogoValue(logo)) {
-          throw new Error("Logo 格式不支持或超过 50K");
+          throw new Error("Logo 格式不支持或超过 100KB");
         }
         await db.setSetting("siteLogoDataUrl", logo || null);
         console.info(`[Settings] site logo ${logo ? "updated" : "cleared"}`);
@@ -1575,6 +1699,15 @@ export const systemRouter = router({
       if (input.homepageHtml !== undefined) {
         await db.setSetting("homepageHtml", input.homepageHtml.trim() || null);
         console.info("[Settings] custom homepage html updated");
+      }
+      if (input.personalizationBackground !== undefined) {
+        const background = normalizePersonalizationBackground(input.personalizationBackground);
+        const encoded = JSON.stringify(background);
+        if (encoded.length > personalizationBackgroundConfigMaxLength) {
+          throw new Error("背景配置过大，请删除部分上传背景后再保存");
+        }
+        await db.setSetting("personalizationBackground", encoded);
+        console.info(`[Settings] personalization background updated source=${background.source}`);
       }
       if (input.forwardProtocols !== undefined) {
         const normalized = normalizeForwardProtocolSettings(input.forwardProtocols);
