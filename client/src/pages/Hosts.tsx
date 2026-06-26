@@ -49,6 +49,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -899,6 +900,9 @@ type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "services" | "tokens";
 type HostDialogTab = "basic" | "other";
 
+const HOST_MANAGE_TABS_ADMIN = ["hosts", "tokens", "services"] as const;
+const HOST_MANAGE_TABS_USER = ["hosts"] as const;
+
 const HOST_DIALOG_TABS = [
   { value: "basic", label: "基础信息", icon: Server },
   { value: "other", label: "其他配置", icon: Gauge },
@@ -923,29 +927,6 @@ function storeHostViewMode(viewMode: HostViewMode) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(HOST_VIEW_MODE_STORAGE_KEY, viewMode);
-  } catch {
-    // Ignore storage failures so the page still works in restricted browsers.
-  }
-}
-
-function normalizeHostManageTab(value: unknown, isAdmin = true): HostManageTab {
-  if (value === "tokens" || value === "services") return isAdmin ? value : "hosts";
-  return "hosts";
-}
-
-function getStoredHostManageTab(isAdmin = true): HostManageTab {
-  if (typeof window === "undefined") return "hosts";
-  try {
-    return normalizeHostManageTab(window.localStorage.getItem(HOST_MANAGE_TAB_STORAGE_KEY), isAdmin);
-  } catch {
-    return "hosts";
-  }
-}
-
-function storeHostManageTab(tab: HostManageTab) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(HOST_MANAGE_TAB_STORAGE_KEY, tab);
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
@@ -1037,7 +1018,11 @@ function HostsContent() {
   const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
-  const [activeManageTab, setActiveManageTabState] = useState<HostManageTab>(() => getStoredHostManageTab(user?.role === "admin"));
+  const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
+    values: user?.role === "admin" ? HOST_MANAGE_TABS_ADMIN : HOST_MANAGE_TABS_USER,
+    defaultValue: "hosts",
+    storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
+  });
   const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
@@ -1084,15 +1069,9 @@ function HostsContent() {
     storeHostProbeServiceViewMode(mode);
   };
 
-  const setActiveManageTab = (tab: HostManageTab) => {
-    const next = normalizeHostManageTab(tab, user?.role === "admin");
-    setActiveManageTabState(next);
-    storeHostManageTab(next);
-  };
-
   useEffect(() => {
     if (user?.role !== "admin" && activeManageTab !== "hosts") setActiveManageTab("hosts");
-  }, [activeManageTab, user?.role]);
+  }, [activeManageTab, setActiveManageTab, user?.role]);
 
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {

@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -55,6 +56,8 @@ type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
 type PlanManageTab = "plans" | "billing";
 type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
+const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
+const PLAN_MANAGE_TAB_STORAGE_KEY = "forwardx.plans.tab";
 const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
 
 const emptyForm: PlanForm = {
@@ -389,7 +392,11 @@ export default function Plans() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
-  const [activeTab, setActiveTab] = useState<PlanManageTab>("plans");
+  const [activeTab, setActiveTab] = useUrlTab<PlanManageTab>({
+    values: PLAN_MANAGE_TABS,
+    defaultValue: "plans",
+    storageKey: PLAN_MANAGE_TAB_STORAGE_KEY,
+  });
   const [planViewMode, setPlanViewMode] = useState<PlanListViewMode>(() => getStoredPlanListViewMode());
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
 

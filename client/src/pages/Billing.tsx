@@ -10,12 +10,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
 import { toast } from "sonner";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+type BillingTab = "ledger" | "subscriptions" | "balance" | "redeem" | "discount";
+const BILLING_TABS = ["ledger", "subscriptions", "balance", "redeem", "discount"] as const;
+const BILLING_TAB_STORAGE_KEY = "forwardx.billing.tab";
 
 function money(cents?: number, currency = "CNY") {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format((Number(cents) || 0) / 100);
@@ -213,6 +217,11 @@ export default function Billing() {
   const { data: redemptionCodes = [], isLoading: redemptionCodesLoading } = trpc.billing.listRedemptionCodes.useQuery();
   const { data: discountCodes = [], isLoading: discountCodesLoading } = trpc.billing.listDiscountCodes.useQuery();
   const { data: featureStatus, isLoading: featureStatusLoading } = trpc.billing.featureStatus.useQuery();
+  const [activeTab, setActiveTab] = useUrlTab<BillingTab>({
+    values: BILLING_TABS,
+    defaultValue: "balance",
+    storageKey: BILLING_TAB_STORAGE_KEY,
+  });
 
   const [redeemType, setRedeemType] = useState<"plan" | "balance">("plan");
   const [redeemCode, setRedeemCode] = useState("");
@@ -479,7 +488,7 @@ export default function Billing() {
           />
         </div>
 
-        <Tabs defaultValue="balance">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as BillingTab)}>
           <TabsList className="flex h-auto flex-wrap">
             <TabsTrigger value="ledger">账单流水</TabsTrigger>
             <TabsTrigger value="subscriptions">订阅记录</TabsTrigger>

@@ -97,6 +97,7 @@ import {
   targetGeoNodeMeta,
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { useUrlTab } from "@/hooks/useUrlTab";
 
 const loadReactGlobe = () => import("react-globe.gl");
 const ReactGlobe = lazy(loadReactGlobe) as typeof import("react-globe.gl").default;
@@ -324,6 +325,7 @@ type RuleGroupCollapsedState = Partial<Record<RuleGroupType, boolean>>;
 type RuleCategory = "all" | "local" | "tunnel" | "chain" | "group";
 type RuleTransferScopeType = Exclude<RuleCategory, "all">;
 
+const RULE_CATEGORIES = ["all", "local", "tunnel", "chain", "group"] as const;
 const RULE_TRANSFER_FILE_KIND = "forwardx.forward-rules";
 const RULE_TRANSFER_FILE_VERSION = 1;
 const RULE_TRANSFER_MAX_IMPORT_COUNT = 500;
@@ -502,11 +504,6 @@ function storeString(key: string, value: string) {
   } catch {
     // Ignore storage failures so the page still works in restricted browsers.
   }
-}
-
-function getStoredRuleCategory(): RuleCategory {
-  const value = getStoredString(RULE_CATEGORY_STORAGE_KEY, "all");
-  return value === "local" || value === "tunnel" || value === "chain" || value === "group" ? value : "all";
 }
 
 function getRuleForwardGroupKind(rule: any, forwardGroupById: Map<number, any>): "chain" | "group" | null {
@@ -2122,7 +2119,11 @@ function RulesContent() {
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
   const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
   const [ruleSearchQuery, setRuleSearchQuery] = useState("");
-  const [ruleCategory, setRuleCategory] = useState<RuleCategory>(() => getStoredRuleCategory());
+  const [ruleCategory, setRuleCategory] = useUrlTab<RuleCategory>({
+    values: RULE_CATEGORIES,
+    defaultValue: "all",
+    storageKey: RULE_CATEGORY_STORAGE_KEY,
+  });
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
   const [trafficRange, setTrafficRange] = useState<RuleTrafficRange>("24h");
@@ -4498,7 +4499,6 @@ function RulesContent() {
   const handleRuleCategoryChange = (value: string) => {
     const next = (value === "local" || value === "tunnel" || value === "chain" || value === "group" ? value : "all") as RuleCategory;
     setRuleCategory(next);
-    storeString(RULE_CATEGORY_STORAGE_KEY, next);
   };
 
   const handleFilterUserChange = (value: string) => {

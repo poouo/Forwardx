@@ -46,6 +46,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   ArrowDownToLine,
@@ -117,24 +118,7 @@ function formatCurrencyCny(cents: number | string | null | undefined): string {
   return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format((Number(cents) || 0) / 100);
 }
 
-function readStoredUserManageType(): "accounts" | "subscriptions" {
-  if (typeof window === "undefined") return "accounts";
-  try {
-    const value = window.localStorage.getItem("forwardx.users.type");
-    return value === "subscriptions" ? "subscriptions" : "accounts";
-  } catch {
-    return "accounts";
-  }
-}
-
-function writeStoredUserManageType(value: "accounts" | "subscriptions") {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem("forwardx.users.type", value);
-  } catch {
-    // Page still works when localStorage is unavailable.
-  }
-}
+const USER_MANAGE_TYPES = ["accounts", "subscriptions"] as const;
 
 function dateText(value?: string | Date | null) {
   if (!value) return "永久";
@@ -283,7 +267,11 @@ function UsersContent() {
   const [trafficResetDay, setTrafficResetDay] = useState(1);
 
   // Subscription management dialogs
-  const [manageType, setManageType] = useState<"accounts" | "subscriptions">(() => readStoredUserManageType());
+  const [manageType, setManageType] = useUrlTab<"accounts" | "subscriptions">({
+    values: USER_MANAGE_TYPES,
+    defaultValue: "accounts",
+    storageKey: "forwardx.users.type",
+  });
   const [showAddonDialog, setShowAddonDialog] = useState(false);
   const [addonUserId, setAddonUserId] = useState<number | null>(null);
   const [addonUserName, setAddonUserName] = useState("");
@@ -870,7 +858,6 @@ function UsersContent() {
   const handleManageTypeChange = (value: string) => {
     const next = value === "subscriptions" ? "subscriptions" : "accounts";
     setManageType(next);
-    writeStoredUserManageType(next);
   };
 
   const openAddonDialog = (sub: any) => {
