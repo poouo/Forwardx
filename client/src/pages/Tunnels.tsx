@@ -1366,9 +1366,26 @@ function TunnelSelfTestDialog({
     const hostForId = (hostId: number) => fullHostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
     const entryGroup = (entryGroups || []).find((group: any) => Number(group?.id || 0) === Number(tunnel?.entryGroupId || 0));
     const entryGroupMembers = enabledHostGroupMembers(entryGroup);
+    const entryGroupMemberByHostId = new Map<number, any>();
+    entryGroupMembers.forEach((member: any) => {
+      const hostId = Number(member?.hostId || 0);
+      if (hostId > 0) entryGroupMemberByHostId.set(hostId, member);
+    });
+    const labelForHostId = (hostId: number) => {
+      const host = hostForId(hostId);
+      const member = entryGroupMemberByHostId.get(Number(hostId));
+      return hostDisplayName(host)
+        || String(member?.name || member?.remark || "").trim()
+        || tunnelHopHostName(tunnel, hostId, hosts)
+        || `主机 #${hostId}`;
+    };
     const addNodeMetaForHostId = (hostId: number) => {
       const host = hostForId(hostId);
       addHostNodeMeta(meta, host, [
+        labelForHostId(hostId),
+        String(entryGroupMemberByHostId.get(Number(hostId))?.entryAddress || "").trim(),
+        `主机${hostId}`,
+        `主机 #${hostId}`,
         tunnelHopHostName(tunnel, hostId, hosts),
         hostDisplayName(host),
         `主机${hostId}`,
@@ -1382,16 +1399,14 @@ function TunnelSelfTestDialog({
     });
     const firstHostId = Number(hopIds[0] || 0);
     const lastHostId = Number(hopIds[hopIds.length - 1] || 0);
-    const firstHost = hostForId(firstHostId);
-    const lastHost = hostForId(lastHostId);
     const nodeMetaFor = (host: any, hostId: number) => meta[hostDisplayName(host)] || meta[String(hostId)] || undefined;
     let plannedSegments: LinkTestPlannedSegment[] = hopIds.slice(0, -1).map((hostId: number, index: number) => {
       const nextHostId = Number(hopIds[index + 1] || 0);
       const fromHost = hostForId(Number(hostId));
       const toHost = hostForId(nextHostId);
       return {
-        from: hostDisplayName(fromHost) || tunnelHopHostName(tunnel, Number(hostId), hosts),
-        to: hostDisplayName(toHost) || tunnelHopHostName(tunnel, nextHostId, hosts),
+        from: labelForHostId(Number(hostId)),
+        to: labelForHostId(nextHostId),
         fromMeta: nodeMetaFor(fromHost, Number(hostId)),
         toMeta: nodeMetaFor(toHost, nextHostId),
       };
@@ -1400,26 +1415,27 @@ function TunnelSelfTestDialog({
       firstHostId,
       ...entryGroupMembers.map((member: any) => Number(member?.hostId || 0)),
     ].filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)));
-    if (entryHostIds.length > 1 && hopIds.length >= 2) {
-      const nextHostId = Number(hopIds[1] || lastHostId || tunnel?.exitHostId || 0);
+    if (entryHostIds.length > 1) {
+      const restHopIds = hopIds.filter((hostId: number) => !entryHostIds.includes(Number(hostId)));
+      const nextHostId = Number(restHopIds[0] || lastHostId || tunnel?.exitHostId || 0);
       const nextHost = hostForId(nextHostId);
-      const nextLabel = hostDisplayName(nextHost) || tunnelHopHostName(tunnel, nextHostId, hosts);
+      const nextLabel = labelForHostId(nextHostId);
       const entrySegments: LinkTestPlannedSegment[] = entryHostIds.map((entryHostId) => {
         const entryHost = hostForId(entryHostId);
         return {
-          from: hostDisplayName(entryHost) || tunnelHopHostName(tunnel, entryHostId, hosts),
+          from: labelForHostId(entryHostId),
           to: nextLabel,
           fromMeta: nodeMetaFor(entryHost, entryHostId),
           toMeta: nodeMetaFor(nextHost, nextHostId),
         };
       });
-      const restSegments: LinkTestPlannedSegment[] = hopIds.slice(1, -1).map((hostId: number, index: number) => {
-        const nextRestHostId = Number(hopIds[index + 2] || 0);
+      const restSegments: LinkTestPlannedSegment[] = restHopIds.slice(0, -1).map((hostId: number, index: number) => {
+        const nextRestHostId = Number(restHopIds[index + 1] || 0);
         const fromHost = hostForId(Number(hostId));
         const toHost = hostForId(nextRestHostId);
         return {
-          from: hostDisplayName(fromHost) || tunnelHopHostName(tunnel, Number(hostId), hosts),
-          to: hostDisplayName(toHost) || tunnelHopHostName(tunnel, nextRestHostId, hosts),
+          from: labelForHostId(Number(hostId)),
+          to: labelForHostId(nextRestHostId),
           fromMeta: nodeMetaFor(fromHost, Number(hostId)),
           toMeta: nodeMetaFor(toHost, nextRestHostId),
         };
@@ -1461,8 +1477,8 @@ function TunnelSelfTestDialog({
     }
     return {
       nodeMeta: meta,
-      sourceLabel: hostDisplayName(firstHost) || (firstHostId ? tunnelHopHostName(tunnel, firstHostId, hosts) : tunnelName),
-      targetLabel: hostDisplayName(lastHost) || (lastHostId ? tunnelHopHostName(tunnel, lastHostId, hosts) : tunnelName),
+      sourceLabel: firstHostId ? labelForHostId(firstHostId) : tunnelName,
+      targetLabel: lastHostId ? labelForHostId(lastHostId) : tunnelName,
       plannedSegments,
     };
   }, [entryGroups, hosts, tunnel, tunnelName]);

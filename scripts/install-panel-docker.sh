@@ -136,6 +136,7 @@ read_database_config_json() {
     DATABASE_CONFIG_JSON="$(cat <<EOF
 {
   "type": "sqlite",
+  "setupPending": true,
   "sqlite": {
     "path": "/data/forwardx.db"
   }
@@ -149,15 +150,19 @@ EOF
     return
   fi
 
+  echo "[INFO] Database host must be reachable from inside the ForwardX panel container." > /dev/tty
+  echo "[INFO] If the database runs on the host, try host.docker.internal or the host LAN IP instead of 127.0.0.1." > /dev/tty
+  echo "[INFO] If the database runs in another container, make sure both containers share a Docker network and use the database service/container name." > /dev/tty
+
   if [ "$choice" = "2" ]; then
-    printf "MySQL host [127.0.0.1]: " > /dev/tty
+    printf "MySQL host [host.docker.internal]: " > /dev/tty
     IFS= read -r host < /dev/tty || host=""
-    host="${host:-127.0.0.1}"
+    host="${host:-host.docker.internal}"
     port="$(read_database_port "MySQL port" "3306")"
   else
-    printf "PostgreSQL host [127.0.0.1]: " > /dev/tty
+    printf "PostgreSQL host [host.docker.internal]: " > /dev/tty
     IFS= read -r host < /dev/tty || host=""
-    host="${host:-127.0.0.1}"
+    host="${host:-host.docker.internal}"
     port="$(read_database_port "PostgreSQL port" "5432")"
   fi
   printf "Database name [forwardx]: " > /dev/tty
@@ -175,6 +180,7 @@ EOF
     DATABASE_CONFIG_JSON="$(cat <<EOF
 {
   "type": "mysql",
+  "setupPending": true,
   "mysql": {
     "host": "$(json_escape "$host")",
     "port": $port,
@@ -190,6 +196,7 @@ EOF
     DATABASE_CONFIG_JSON="$(cat <<EOF
 {
   "type": "postgresql",
+  "setupPending": true,
   "postgresql": {
     "host": "$(json_escape "$host")",
     "port": $port,
@@ -318,6 +325,8 @@ services:
     image: ${FORWARDX_IMAGE}
     container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${PORT:-3000}:3000"
     environment:

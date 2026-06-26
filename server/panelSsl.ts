@@ -219,7 +219,13 @@ export async function generateSelfSignedPanelSslCertificate(inputHosts: string[]
 }
 
 export async function loadPanelSslRuntimeConfig(): Promise<PanelSslRuntimeConfig> {
-  const all = await getAllSettings();
+  let all: Record<string, string | null | undefined> = {};
+  try {
+    all = await getAllSettings();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[PanelSSL] Settings unavailable: ${message}; using environment SSL settings only`);
+  }
   const settings = readPanelSslSettings(all);
   if (!settings.enabled) return { enabled: false, settings };
 

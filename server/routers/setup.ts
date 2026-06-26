@@ -12,6 +12,7 @@ import {
   getDb,
   getDatabaseKind,
   getSchemaDialect,
+  isDatabaseSetupPendingConfig,
   maskDatabaseConfig,
   queryRaw,
   readDatabaseConfig,
@@ -23,8 +24,31 @@ import { countAll, quoteIdentifier } from "../dbCompat";
 import { createInitialAdmin, hasAdminUser, updateInitialAdmin } from "../db";
 import { getAllSettings, setSettings } from "../repositories/settingsRepository";
 import { getMigrationJob, startPanelMigration } from "../migration";
+import { hasLocalSetupCompleteMarker, markLocalSetupComplete } from "../setupState";
+import { startBackgroundServices } from "../backgroundServices";
 
 let setupSchemaReadyKey = "";
+
+function friendlyDatabaseError(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = String((error as any)?.code || "");
+  const hostname = String((error as any)?.hostname || "").trim();
+  if (code === "ENOTFOUND" || /getaddrinfo ENOTFOUND/i.test(raw)) {
+    const hostMatch = raw.match(/ENOTFOUND\s+([^\s]+)/i);
+    const host = hostname || hostMatch?.[1] || "数据库地址";
+    return `无法解析数据库地址 ${host}。如果面板通过 Docker/1Panel 部署，请确认这个主机名在面板容器内部可解析，或改用数据库容器服务名、同网络容器名、宿主机内网 IP 或可访问的域名。`;
+  }
+  if (code === "ECONNREFUSED" || /ECONNREFUSED/i.test(raw)) {
+    return "数据库连接被拒绝。请检查数据库服务是否启动、端口是否正确，以及防火墙或 Docker 网络是否允许面板容器访问。";
+  }
+  if (code === "ETIMEDOUT" || /timeout|timed out/i.test(raw)) {
+    return "数据库连接超时。请检查数据库地址、端口、防火墙、安全组和 Docker 网络。";
+  }
+  if (/password authentication failed|access denied/i.test(raw)) {
+    return "数据库账号或密码验证失败，请检查用户名、密码和数据库权限。";
+  }
+  return raw;
+}
 
 const mysqlConfigInput = z.object({
   host: z.string().trim().min(1, "请输入 MySQL 地址"),
@@ -129,19 +153,23 @@ async function setupStatus() {
       config: maskDatabaseConfig(config),
       needsRestart,
       defaultSqlitePath: defaultSqlitePath(),
-      error: error instanceof Error ? error.message : String(error),
+      error: friendlyDatabaseError(error),
     };
   }
 }
 
-async function ensureSetupWriteAllowed(ctx: { user?: { role?: string } | null }) {
+async function ensureSetupWriteAllowed(ctx: { user?: { role?: string } | null }, options: { allowDatabaseRecovery?: boolean } = {}) {
   if (ctx.user?.role === "admin") return;
+  if (hasLocalSetupCompleteMarker()) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
+  }
   const config = readDatabaseConfig();
   if (!config) return;
   try {
     await ensureSetupSchemaReady();
     if (!await hasAdminUser()) return;
   } catch {
+    if (options.allowDatabaseRecovery && isDatabaseSetupPendingConfig()) return;
     throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
   }
   throw new TRPCError({ code: "FORBIDDEN", message: "SETUP_LOCKED" });
@@ -227,6 +255,7 @@ async function saveDatabase(input: DatabaseConfig) {
   const db = await reconnectDatabase();
   if (!db) throw new Error("数据库连接未建立");
   await ensureDatabaseSchema();
+  startBackgroundServices();
   await setSettings({
     databaseConfigured: "true",
     databaseType: input.type,
@@ -252,7 +281,7 @@ export const setupRouter = router({
   testDatabase: publicProcedure
     .input(databaseConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       await testDatabaseConnection(input as DatabaseConfig);
       return { success: true };
     }),
@@ -260,14 +289,14 @@ export const setupRouter = router({
   saveDatabase: publicProcedure
     .input(databaseConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       return saveDatabase(input as DatabaseConfig);
     }),
 
   testMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       await testDatabaseConnection({ type: "mysql", mysql: input });
       return { success: true };
     }),
@@ -275,7 +304,7 @@ export const setupRouter = router({
   saveMysql: publicProcedure
     .input(mysqlConfigInput)
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
+      await ensureSetupWriteAllowed(ctx, { allowDatabaseRecovery: true });
       return saveDatabase({ type: "mysql", mysql: input });
     }),
 
@@ -321,13 +350,14 @@ export const setupRouter = router({
       name: z.string().trim().max(64).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await ensureSetupWriteAllowed(ctx);
-      await reconnectDatabase();
-      await ensureDatabaseSchema();
-      const id = await createInitialAdmin(input);
-      await setSettings({ setupDataChoice: "new-panel" });
-      return { id, success: true };
-    }),
+    await ensureSetupWriteAllowed(ctx);
+    await reconnectDatabase();
+    await ensureDatabaseSchema();
+    const id = await createInitialAdmin(input);
+    await setSettings({ setupDataChoice: "new-panel" });
+    markLocalSetupComplete();
+    return { id, success: true };
+  }),
 
   updateAdmin: publicProcedure
     .input(z.object({
@@ -345,6 +375,7 @@ export const setupRouter = router({
       const id = await updateInitialAdmin(input);
       const existingData = await getExistingDataSummary();
       await setSettings({ setupDataChoice: existingData.hasExistingData ? "use-existing" : "new-panel" });
+      markLocalSetupComplete();
       return { id, success: true };
     }),
 });

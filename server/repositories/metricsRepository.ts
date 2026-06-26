@@ -318,6 +318,42 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
   }));
 }
 
+export async function resetRuleTrafficStats(ruleIds: number[]) {
+  const db = await getDb();
+  if (!db) return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0 };
+  const requestedRuleIds = Array.from(new Set(ruleIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (requestedRuleIds.length === 0) {
+    return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0 };
+  }
+  const { queryRuleIds } = await expandTrafficQueryRuleIds(requestedRuleIds);
+  const clearedRuleIds = queryRuleIds.length > 0 ? queryRuleIds : requestedRuleIds;
+  const q = quoteIdentifier;
+  let deletedStats = 0;
+  let deletedBuckets = 0;
+  for (let index = 0; index < clearedRuleIds.length; index += 500) {
+    const batch = clearedRuleIds.slice(index, index + 500);
+    const placeholders = batch.map(() => "?").join(",");
+    const statsResult = await executeRaw(
+      `DELETE FROM ${q("traffic_stats")} WHERE ${q("ruleId")} IN (${placeholders})`,
+      batch,
+    );
+    const bucketsResult = await executeRaw(
+      `DELETE FROM ${q("traffic_stat_buckets")} WHERE ${q("ruleId")} IN (${placeholders})`,
+      batch,
+    );
+    deletedStats += rawAffectedRows(statsResult);
+    deletedBuckets += rawAffectedRows(bucketsResult);
+  }
+  return {
+    requestedRuleIds,
+    clearedRuleIds,
+    deletedStats,
+    deletedBuckets,
+  };
+}
+
 async function getRuleIdsByUser(userId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];

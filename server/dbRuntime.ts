@@ -75,6 +75,17 @@ export function getDatabaseConfigPath() {
   return configFilePath();
 }
 
+export function isDatabaseSetupPendingConfig() {
+  try {
+    const file = configFilePath();
+    if (!fs.existsSync(file)) return false;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed?.setupPending === true || parsed?.setupPending === "true";
+  } catch {
+    return false;
+  }
+}
+
 export function getMysqlConfigPath() {
   return legacyMysqlConfigPath();
 }
@@ -282,9 +293,25 @@ export function writeDatabaseConfig(config: DatabaseConfig) {
     : config.type === "postgresql"
       ? { type: "postgresql", postgresql: normalizePostgresql(config.postgresql) }
       : { type: "mysql", mysql: normalizeMysql(config.mysql) };
+  if (isDatabaseSetupPendingConfig()) {
+    (normalized as any).setupPending = true;
+  }
   const file = configFilePath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(normalized, null, 2), { mode: 0o600 });
+}
+
+export function clearDatabaseSetupPendingConfig() {
+  const file = configFilePath();
+  try {
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!parsed || parsed.setupPending === undefined) return;
+    delete parsed.setupPending;
+    fs.writeFileSync(file, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+  } catch {
+    // Ignore cleanup failures; setup locking also relies on the local marker.
+  }
 }
 
 export function writeMysqlConfig(config: MysqlConfig) {

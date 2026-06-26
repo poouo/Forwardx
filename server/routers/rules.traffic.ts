@@ -8,6 +8,37 @@ import { createQueryCache } from "../queryCache";
 const trafficQueryCache = createQueryCache(500);
 
 export const trafficRulesRouter = router({
+  resetTraffic: protectedProcedure
+    .input(z.object({
+      scope: z.enum(["rule", "all"]),
+      ruleId: z.number().optional(),
+      ruleIds: z.array(z.number()).max(5000).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      let targetRuleIds: number[] = [];
+      if (input.scope === "rule") {
+        const ruleId = Number(input.ruleId || 0);
+        if (!Number.isInteger(ruleId) || ruleId <= 0) throw new Error("请选择要重置的规则");
+        await requireRuleAccess(ctx, ruleId);
+        targetRuleIds = [ruleId];
+      } else {
+        const requestedRuleIds = Array.from(new Set<number>((input.ruleIds || [])
+          .map((id) => Number(id))
+          .filter((id): id is number => Number.isInteger(id) && id > 0)));
+        const visibleRules = await db.getForwardRules(ctx.user.role === "admin" ? undefined : ctx.user.id);
+        const visibleRuleIds = new Set<number>((visibleRules || [])
+          .map((rule: any) => Number(rule.id || 0))
+          .filter((id: number): id is number => Number.isInteger(id) && id > 0));
+        targetRuleIds = requestedRuleIds.length > 0
+          ? requestedRuleIds.filter((id) => visibleRuleIds.has(id))
+          : Array.from(visibleRuleIds);
+      }
+      targetRuleIds = Array.from(new Set(targetRuleIds)).sort((a, b) => a - b);
+      if (targetRuleIds.length === 0) throw new Error("没有可重置的规则流量");
+      const result = await db.resetRuleTrafficStats(targetRuleIds);
+      trafficQueryCache.clear();
+      return result;
+    }),
   traffic: protectedProcedure
     .input(z.object({ ruleId: z.number(), limit: z.number().default(60) }))
     .query(async ({ input, ctx }) => {

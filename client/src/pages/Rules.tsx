@@ -71,6 +71,7 @@ import {
   Rows3,
   GitBranch,
   Globe,
+  RotateCcw,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import {
@@ -110,6 +111,17 @@ function formatBytes(n: number): string {
     i += 1;
   }
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+function clearRuleTrafficStatCaches() {
+  if (typeof window === "undefined") return;
+  try {
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith("forwardx.stat.rules.traffic."))
+      .forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Local UI cache only; ignore storage failures.
+  }
 }
 
 type PortPolicy = {
@@ -2104,6 +2116,7 @@ function RulesContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [deleteRule, setDeleteRule] = useState<any | null>(null);
+  const [resetTrafficTarget, setResetTrafficTarget] = useState<{ scope: "all" } | { scope: "rule"; rule: any } | null>(null);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [form, setForm] = useState<RuleFormData>(defaultForm);
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
@@ -2802,6 +2815,21 @@ function RulesContent() {
     });
   };
 
+  const handleConfirmResetTraffic = () => {
+    if (!resetTrafficTarget) return;
+    if (resetTrafficTarget.scope === "rule") {
+      resetTrafficMutation.mutate({
+        scope: "rule",
+        ruleId: Number(resetTrafficTarget.rule?.id || 0),
+      });
+      return;
+    }
+    resetTrafficMutation.mutate({
+      scope: "all",
+      ruleIds: visibleRuleIdsForMetrics,
+    });
+  };
+
   const setProxyProtocolFlag = (field: ProxyProtocolField, checked: boolean) => {
     setForm((prev) => ({
       ...prev,
@@ -3117,6 +3145,24 @@ function RulesContent() {
   );
   const [stableTrafficSummaryRows, setStableTrafficSummaryRows] = useState<any[]>([]);
   const [stableTotalTrafficSummaryRows, setStableTotalTrafficSummaryRows] = useState<any[]>([]);
+  const resetTrafficMutation = trpc.rules.resetTraffic.useMutation({
+    onSuccess: async () => {
+      clearRuleTrafficStatCaches();
+      setStableTrafficSummaryRows([]);
+      setStableTotalTrafficSummaryRows([]);
+      await Promise.all([
+        utils.rules.trafficSummary.invalidate(),
+        utils.rules.traffic.invalidate(),
+        utils.rules.trafficSeries.invalidate(),
+        utils.dashboard.trafficTotals.invalidate(),
+        utils.dashboard.trafficSeries.invalidate(),
+        utils.dashboard.trafficBreakdown.invalidate(),
+      ]);
+      setResetTrafficTarget(null);
+      toast.success("规则流量统计已重置");
+    },
+    onError: (err) => toast.error(err.message || "重置流量失败"),
+  });
   useEffect(() => { setStableTrafficSummaryRows([]); }, [trafficRange]);
   useEffect(() => {
     if (!filteredRulesPrimed) return;
@@ -4399,6 +4445,18 @@ function RulesContent() {
           variant="ghost"
           size="icon"
           className="h-8 w-8"
+          onClick={() => setResetTrafficTarget({ scope: "rule", rule })}
+          disabled={resetTrafficMutation.isPending}
+          title={resetTrafficMutation.isPending ? "正在重置流量统计" : "重置规则流量"}
+        >
+          {resetTrafficMutation.isPending && resetTrafficTarget?.scope === "rule" && Number(resetTrafficTarget.rule?.id) === Number(rule.id)
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <RotateCcw className="h-3.5 w-3.5" />}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
           onClick={() => openEdit(rule)}
         >
           <Pencil className="h-3.5 w-3.5" />
@@ -4760,6 +4818,17 @@ function RulesContent() {
               <Globe className="h-4 w-4" />
             </Button>
           </div>
+          <Button
+            variant="outline"
+            onClick={() => setResetTrafficTarget({ scope: "all" })}
+            className="gap-2"
+            disabled={visibleRuleIdsForMetrics.length === 0 || resetTrafficMutation.isPending}
+          >
+            {resetTrafficMutation.isPending && resetTrafficTarget?.scope === "all"
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <RotateCcw className="h-4 w-4" />}
+            重置流量
+          </Button>
           <Button
             variant="outline"
             onClick={openCopyDialog}
@@ -5888,6 +5957,40 @@ function RulesContent() {
             <Button variant="outline" onClick={() => setShowCopyDialog(false)}>取消</Button>
             <Button onClick={handleCopyRules} disabled={copyMutation.isPending || copyRuleIds.length === 0 || copyTargetHostIds.length === 0}>
               {copyMutation.isPending ? "复制中..." : "开始复制"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!resetTrafficTarget} onOpenChange={(open) => !open && !resetTrafficMutation.isPending && setResetTrafficTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{resetTrafficTarget?.scope === "all" ? "重置全部规则流量" : "重置规则流量"}</DialogTitle>
+            <DialogDescription>
+              {resetTrafficTarget?.scope === "all"
+                ? `确认重置当前列表中 ${visibleRuleIdsForMetrics.length} 条规则的累计流量和最近 24H 流量？`
+                : `确认重置规则 "${resetTrafficTarget?.rule?.name || ""}" 的累计流量和最近 24H 流量？`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
+            这里只清除规则页面展示的统计数据，不会清除用户已使用累计值、余额、套餐用量或计费记录。
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setResetTrafficTarget(null)}
+              disabled={resetTrafficMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmResetTraffic}
+              disabled={!resetTrafficTarget || resetTrafficMutation.isPending || (resetTrafficTarget.scope === "all" && visibleRuleIdsForMetrics.length === 0)}
+              className="gap-2"
+            >
+              {resetTrafficMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+              {resetTrafficMutation.isPending ? "重置中..." : "确认重置"}
             </Button>
           </DialogFooter>
         </DialogContent>

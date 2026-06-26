@@ -118,6 +118,7 @@ read_database_config() {
     cat > "$config_file" <<EOF
 {
   "type": "sqlite",
+  "setupPending": true,
   "sqlite": {
     "path": "$(json_escape "$APP_DIR/data/forwardx.db")"
   }
@@ -158,6 +159,7 @@ EOF
     cat > "$config_file" <<EOF
 {
   "type": "mysql",
+  "setupPending": true,
   "mysql": {
     "host": "$(json_escape "$host")",
     "port": $port,
@@ -172,6 +174,7 @@ EOF
     cat > "$config_file" <<EOF
 {
   "type": "postgresql",
+  "setupPending": true,
   "postgresql": {
     "host": "$(json_escape "$host")",
     "port": $port,

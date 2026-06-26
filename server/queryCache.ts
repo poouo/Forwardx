@@ -72,5 +72,9 @@ export function createQueryCache(maxEntries = 300) {
     return refresh(key, opts, load);
   }
 
-  return { get, prune };
+  function clear() {
+    cache.clear();
+  }
+
+  return { get, prune, clear };
 }

@@ -4,6 +4,8 @@ node_modules/
 # Build output
 dist/
 client/dist/
+docs/.vitepress/dist/
+docs/.vitepress/.temp/
 
 # Environment variables
 .env

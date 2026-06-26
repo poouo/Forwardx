@@ -14,9 +14,8 @@ import { paymentCallbackRouter } from "./payment";
 import { migrationRouter } from "./migration";
 import { initDatabase } from "./db";
 import { installPanelLogger } from "./_core/panelLogger";
-import { startScheduler } from "./scheduler";
-import { startTelegramBot } from "./telegramBot";
 import { loadPanelSslRuntimeConfig } from "./panelSsl";
+import { startBackgroundServices } from "./backgroundServices";
 
 installPanelLogger();
 
@@ -74,7 +73,7 @@ function installMobileCors(app: express.Express) {
 }
 
 async function startServer() {
-  await initDatabase();
+  const databaseStatus = await initDatabase();
 
   const app = express();
   const panelSsl = await loadPanelSslRuntimeConfig();
@@ -117,10 +116,11 @@ async function startServer() {
     console.info(`[Server] ForwardX panel started on ${protocol.toUpperCase()} port ${port}`);
   });
 
-  startScheduler();
-  startTelegramBot().catch((error) => {
-    console.warn(`[Telegram] Failed to start bot: ${error instanceof Error ? error.message : String(error)}`);
-  });
+  if (databaseStatus.ready) {
+    startBackgroundServices();
+  } else {
+    console.warn("[Server] Database is not ready; background tasks are paused until the database setup is fixed and the panel restarts");
+  }
 }
 
 startServer().catch(console.error);

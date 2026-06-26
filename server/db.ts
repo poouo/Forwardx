@@ -18,6 +18,7 @@ import { randomMultiavatarValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
+import { markLocalSetupComplete } from "./setupState";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -37,6 +38,18 @@ export * from "./repositories/forwardGroupRepository";
 export * from "./repositories/hostProbeServiceRepository";
 
 // ==================== Initialization ====================
+
+function summarizeDatabaseStartupError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = String((error as any)?.code || "");
+  const hostname = String((error as any)?.hostname || "").trim();
+  if (code === "ENOTFOUND" || /getaddrinfo ENOTFOUND/i.test(message)) {
+    const hostMatch = message.match(/ENOTFOUND\s+([^\s]+)/i);
+    const host = hostname || hostMatch?.[1] || "database host";
+    return `cannot resolve database host ${host}; check the address from inside the panel container`;
+  }
+  return message;
+}
 
 async function backfillTunnelProxyProtocolSplit() {
   const marker = "proxy-protocol-split-v1";
@@ -111,11 +124,13 @@ export async function initDatabase() {
       console.log(`[Database] Migrated legacy preset avatars count=${migratedAvatars}`);
     }
     const hasAdmin = await hasAdminUser();
+    if (hasAdmin) markLocalSetupComplete();
     console.log(`[Database] Initialization complete (${kind}, ${hasAdmin ? "admin exists" : "no admin yet"})`);
     return { configured: true, ready: true, hasAdmin, kind } as const;
   } catch (error) {
-    console.error("[Database] Initialization failed:", error);
-    return { configured: true, ready: false, hasAdmin: false, error: error instanceof Error ? error.message : String(error) } as const;
+    const message = summarizeDatabaseStartupError(error);
+    console.error(`[Database] Initialization failed: ${message}`);
+    return { configured: true, ready: false, hasAdmin: false, error: message } as const;
   }
 }
 
