@@ -2665,7 +2665,7 @@ function DeepSeekSettingsCard() {
   );
 }
 type SystemSettingsSaveKey =
-  | "branding"
+  | "networkTest"
   | "panelUrl"
   | "registration"
   | "twoFactor"
@@ -2684,30 +2684,53 @@ function normalizeTtl(value: string, fallback: number) {
   return Math.min(86400, Math.max(60, ttl));
 }
 
+type PersonalizationSaveKey = "title" | "logo" | "background" | "homepage";
+
+const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
+  title: "网站标题已保存",
+  logo: "Logo 已保存",
+  background: "自定义背景已保存",
+  homepage: "公开首页已保存",
+};
+
+const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> = {
+  title: "网站标题保存失败",
+  logo: "Logo 保存失败",
+  background: "自定义背景保存失败",
+  homepage: "公开首页保存失败",
+};
+
 function PersonalizationSettingsSection() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
+  const savingSectionRef = useRef<PersonalizationSaveKey | null>(null);
+  const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
   const [homepageEnabled, setHomepageEnabled] = useState(true);
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
   const [backgroundConfig, setBackgroundConfig] = useState<PersonalizationBackgroundConfig>(DEFAULT_PERSONALIZATION_BACKGROUND);
+  const [backgroundSourceMode, setBackgroundSourceMode] = useState<Exclude<PersonalizationBackgroundConfig["source"], "none">>("builtin");
   const [backgroundUrlInput, setBackgroundUrlInput] = useState("");
   const [backgroundUrlType, setBackgroundUrlType] = useState<PersonalizationBackgroundUrlType>("image");
-  const [saving, setSaving] = useState(false);
+  const [savingSection, setSavingSection] = useState<PersonalizationSaveKey | null>(null);
   const [compressingLogo, setCompressingLogo] = useState(false);
   const [compressingBackground, setCompressingBackground] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
-    const nextBackground = normalizePersonalizationBackgroundConfig(settings.personalizationBackgroundConfig);
+    const nextBackground = normalizePersonalizationBackgroundConfig(
+      (settings as any).personalizationBackgroundConfig || settings.personalizationBackground,
+    );
+    setSiteTitleInput(settings.siteTitle || "ForwardX");
     setSiteLogoDataUrl(settings.siteLogoDataUrl || "");
     setHomepageEnabled(settings.homepageEnabled ?? true);
     setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
     setHomepageHtml(settings.homepageHtml || "");
     setBackgroundConfig(nextBackground);
+    setBackgroundSourceMode(nextBackground.source === "none" ? "builtin" : nextBackground.source);
     setBackgroundUrlInput(nextBackground.url || "");
     setBackgroundUrlType(nextBackground.urlType || "image");
   }, [settings]);
@@ -2718,14 +2741,33 @@ function PersonalizationSettingsSection() {
         utils.system.getSettings.invalidate(),
         utils.system.publicInfo.invalidate(),
       ]);
-      toast.success("个性化配置已保存");
+      const key = savingSectionRef.current;
+      toast.success(key ? personalizationSaveMessages[key] : "个性化配置已保存");
     },
-    onError: (err) => toast.error(err.message || "保存个性化配置失败"),
-    onSettled: () => setSaving(false),
+    onError: (err) => {
+      const key = savingSectionRef.current;
+      toast.error(err.message || (key ? personalizationSaveErrorMessages[key] : "保存失败"));
+    },
+    onSettled: () => {
+      savingSectionRef.current = null;
+      setSavingSection(null);
+    },
   });
+
+  const personalizationSaving = updateSettingsMutation.isPending;
+  const isSavingPersonalization = (key: PersonalizationSaveKey) => savingSection === key && personalizationSaving;
+  const savePersonalizationSection = (
+    key: PersonalizationSaveKey,
+    payload: Parameters<typeof updateSettingsMutation.mutate>[0],
+  ) => {
+    savingSectionRef.current = key;
+    setSavingSection(key);
+    updateSettingsMutation.mutate(payload);
+  };
 
   const updateBackground = (patch: Partial<PersonalizationBackgroundConfig>) => {
     setBackgroundConfig((current) => normalizePersonalizationBackgroundConfig({ ...current, ...patch }));
+    if (patch.source && patch.source !== "none") setBackgroundSourceMode(patch.source);
   };
 
   const selectedUploadedBackground = backgroundConfig.images.find((item) => item.id === backgroundConfig.selectedId) || null;
@@ -2742,6 +2784,15 @@ function PersonalizationSettingsSection() {
   const opacityPercent = Math.round(clampBackgroundOpacity(backgroundConfig.opacity) * 100);
   const blurAmount = Math.round(clampBackgroundBlur(backgroundConfig.blur));
   const backgroundEnabled = backgroundConfig.source !== "none" && !!previewBackgroundUrl;
+  const previewMediaStyle = {
+    filter: `blur(${blurAmount}px)`,
+    transform: `scale(${1 + blurAmount / 320})`,
+  };
+  const backgroundSourceOptions = [
+    { value: "builtin" as const, label: "内置壁纸", icon: ImageIcon },
+    { value: "upload" as const, label: "上传图片", icon: Upload },
+    { value: "url" as const, label: "外部链接", icon: Globe },
+  ];
 
   const handleLogoUpload = async (file: File | undefined) => {
     if (!file) return;
@@ -2789,6 +2840,7 @@ function PersonalizationSettingsSection() {
           images,
         });
       });
+      setBackgroundSourceMode("upload");
       toast.success(`背景已处理为 ${formatBytes(result.size)}`);
     } catch (err: any) {
       toast.error(err?.message || "背景上传失败");
@@ -2846,28 +2898,38 @@ function PersonalizationSettingsSection() {
     setHomepageHtml(defaultHomepageHtml);
   };
 
-  const handleSave = () => {
+  const handleSaveTitle = () => {
+    savePersonalizationSection("title", { siteTitle: siteTitleInput.trim().slice(0, 64) });
+  };
+
+  const handleSaveLogo = () => {
     if (siteLogoDataUrl && imageDataUrlSize(siteLogoDataUrl) > BRAND_LOGO_MAX_BYTES) {
       toast.error("Logo 超过 100KB，请重新上传");
       return;
     }
-    if (backgroundConfig.source === "url") {
-      if (!backgroundConfig.url.trim()) {
+    savePersonalizationSection("logo", { siteLogoDataUrl });
+  };
+
+  const handleSaveBackground = () => {
+    const nextBackground = normalizePersonalizationBackgroundConfig(backgroundConfig);
+    if (nextBackground.source === "url") {
+      if (!nextBackground.url.trim()) {
         toast.error("请先应用背景链接");
         return;
       }
-      if (!/^https?:\/\//i.test(backgroundConfig.url.trim())) {
+      if (!/^https?:\/\//i.test(nextBackground.url.trim())) {
         toast.error("背景链接必须以 http:// 或 https:// 开头");
         return;
       }
     }
-    setSaving(true);
-    updateSettingsMutation.mutate({
-      siteLogoDataUrl,
+    savePersonalizationSection("background", { personalizationBackground: nextBackground });
+  };
+
+  const handleSaveHomepage = () => {
+    savePersonalizationSection("homepage", {
       homepageEnabled,
       homepageCustomEnabled,
       homepageHtml,
-      personalizationBackground: normalizePersonalizationBackgroundConfig(backgroundConfig),
     });
   };
 
@@ -2877,7 +2939,36 @@ function PersonalizationSettingsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe className="h-4 w-4 text-primary" />
+              网站标题
+            </CardTitle>
+            <CardDescription>
+              配置后台显示的品牌名称。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={siteTitleInput}
+                onChange={(event) => setSiteTitleInput(event.target.value.slice(0, 64))}
+                placeholder="ForwardX"
+                className="flex-1"
+              />
+              <Button type="button" onClick={handleSaveTitle} disabled={personalizationSaving} className="gap-2">
+                {isSavingPersonalization("title") && <Loader2 className="h-4 w-4 animate-spin" />}
+                保存
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
+            </p>
+          </CardContent>
+        </Card>
+
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -2894,7 +2985,10 @@ function PersonalizationSettingsSection() {
                 {siteLogoDataUrl ? (
                   <img src={siteLogoDataUrl} alt="Logo 预览" className="h-full w-full object-contain p-2" />
                 ) : (
-                  <ImageIcon className="h-7 w-7 text-muted-foreground" />
+                  <>
+                    <img src="/logo-light.png" alt="默认 Logo" className="h-full w-full object-contain p-2 dark:hidden" />
+                    <img src="/logo-dark.png" alt="默认 Logo" className="hidden h-full w-full object-contain p-2 dark:block" />
+                  </>
                 )}
               </div>
               <div className="min-w-0 flex-1 space-y-2">
@@ -2906,12 +3000,17 @@ function PersonalizationSettingsSection() {
                     className="hidden"
                     onChange={(event) => handleLogoUpload(event.target.files?.[0])}
                   />
-                  <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()} disabled={compressingLogo}>
-                    {compressingLogo && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()} disabled={compressingLogo || personalizationSaving}>
+                    {compressingLogo ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
                     上传 Logo
                   </Button>
-                  <Button type="button" variant="ghost" onClick={() => setSiteLogoDataUrl("")} disabled={!siteLogoDataUrl}>
-                    清除
+                  <Button type="button" variant="outline" onClick={() => setSiteLogoDataUrl("")} disabled={!siteLogoDataUrl || compressingLogo || personalizationSaving}>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    还原默认
+                  </Button>
+                  <Button type="button" onClick={handleSaveLogo} disabled={compressingLogo || personalizationSaving} className="gap-2">
+                    {isSavingPersonalization("logo") && <Loader2 className="h-4 w-4 animate-spin" />}
+                    保存 Logo
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -2921,227 +3020,282 @@ function PersonalizationSettingsSection() {
             </div>
           </CardContent>
         </Card>
+      </div>
 
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Palette className="h-4 w-4 text-primary" />
-              背景预览
+              自定义背景
             </CardTitle>
             <CardDescription>
               默认不使用背景，可选择内置、上传或链接背景。
             </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="relative min-h-44 overflow-hidden rounded-lg border border-border/40 bg-muted/30">
-              {previewBackgroundUrl ? (
-                previewIsVideo ? (
-                  <video src={previewBackgroundUrl} muted loop playsInline autoPlay className="absolute inset-0 h-full w-full object-cover" />
-                ) : (
-                  <img src={previewBackgroundUrl} alt="背景预览" className="absolute inset-0 h-full w-full object-cover" />
-                )
-              ) : (
-                <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-                  未启用背景
-                </div>
-              )}
-              {previewBackgroundUrl && (
-                <div
-                  className="absolute inset-0 bg-background"
-                  style={{ opacity: 1 - clampBackgroundOpacity(backgroundConfig.opacity) }}
-                />
-              )}
-              <div className="absolute bottom-3 left-3 rounded-md border border-border/50 bg-background/75 px-3 py-2 text-xs backdrop-blur">
-                {backgroundEnabled ? `不透明度 ${opacityPercent}% / 虚化 ${blurAmount}px` : "无背景"}
-              </div>
-            </div>
-            {backgroundEnabled && (
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
-                  <div className="space-y-2">
-                    <Label>背景不透明度</Label>
-                    <input
-                      type="range"
-                      min={0}
-                      max={85}
-                      step={5}
-                      value={opacityPercent}
-                      onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
-                      className="w-full accent-primary"
-                    />
-                  </div>
-                  <Input
-                    value={String(opacityPercent)}
-                    onChange={(event) => {
-                      const value = Math.min(85, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
-                      updateBackground({ opacity: value / 100 });
-                    }}
-                    inputMode="numeric"
-                    className="sm:mt-6"
-                  />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
-                  <div className="space-y-2">
-                    <Label>背景虚化程度</Label>
-                    <input
-                      type="range"
-                      min={0}
-                      max={32}
-                      step={1}
-                      value={blurAmount}
-                      onChange={(event) => updateBackground({ blur: Number(event.target.value) })}
-                      className="w-full accent-primary"
-                    />
-                  </div>
-                  <Input
-                    value={String(blurAmount)}
-                    onChange={(event) => {
-                      const value = Math.min(32, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
-                      updateBackground({ blur: value });
-                    }}
-                    inputMode="numeric"
-                    className="sm:mt-6"
-                  />
-                </div>
-              </div>
-            )}
-            <Button type="button" variant="outline" onClick={() => updateBackground({ source: "none", selectedId: null })}>
-              不使用背景
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ImageIcon className="h-4 w-4 text-primary" />
-            背景来源
-          </CardTitle>
-          <CardDescription>
-            内置壁纸、上传图片和外部链接只会启用当前选择的一项。
-          </CardDescription>
+          </div>
+          <Button type="button" onClick={handleSaveBackground} disabled={compressingBackground || personalizationSaving} className="w-full gap-2 sm:w-auto">
+            {isSavingPersonalization("background") && <Loader2 className="h-4 w-4 animate-spin" />}
+            保存背景
+          </Button>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="space-y-2">
-            <p className="text-sm font-medium">内置壁纸</p>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              {BUILTIN_WALLPAPERS.map((item) => {
-                const active = backgroundConfig.source === "builtin" && backgroundConfig.selectedId === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => updateBackground({ source: "builtin", selectedId: item.id })}
-                    className={cn(
-                      "group overflow-hidden rounded-lg border bg-muted/20 text-left transition",
-                      active ? "border-primary ring-2 ring-primary/25" : "border-border/40 hover:border-primary/50",
-                    )}
-                  >
-                    <img src={item.url} alt={item.name} className="aspect-[16/9] w-full object-cover transition-transform group-hover:scale-[1.02]" />
-                    <div className="px-3 py-2 text-xs font-medium">{item.name}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div className="space-y-4">
+              <div className="relative min-h-52 overflow-hidden rounded-lg border border-border/40 bg-muted/30">
+                {previewBackgroundUrl ? (
+                  previewIsVideo ? (
+                    <video
+                      src={previewBackgroundUrl}
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                      className="absolute inset-0 h-full w-full object-cover transition-[filter,transform] duration-200"
+                      style={previewMediaStyle}
+                    />
+                  ) : (
+                    <img
+                      src={previewBackgroundUrl}
+                      alt="背景预览"
+                      loading="eager"
+                      decoding="async"
+                      className="absolute inset-0 h-full w-full object-cover transition-[filter,transform] duration-200"
+                      style={previewMediaStyle}
+                    />
+                  )
+                ) : (
+                  <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
+                    未启用背景
+                  </div>
+                )}
+                {previewBackgroundUrl && (
+                  <div
+                    className="absolute inset-0 bg-background"
+                    style={{ opacity: 1 - clampBackgroundOpacity(backgroundConfig.opacity) }}
+                  />
+                )}
+                <div className="absolute bottom-3 left-3 rounded-md border border-border/50 bg-background/75 px-3 py-2 text-xs backdrop-blur">
+                  {backgroundEnabled ? `不透明度 ${opacityPercent}% / 虚化 ${blurAmount}px` : "无背景"}
+                </div>
+              </div>
 
-          <div className="space-y-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium">上传背景</p>
-                <p className="text-xs text-muted-foreground">最多保留 6 张，单张最大 3MB，超过会自动压缩。</p>
-              </div>
-              <div>
-                <input
-                  ref={backgroundInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(event) => handleBackgroundUpload(event.target.files?.[0])}
-                />
-                <Button type="button" variant="outline" onClick={() => backgroundInputRef.current?.click()} disabled={compressingBackground}>
-                  {compressingBackground && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  上传背景
-                </Button>
-              </div>
+              {backgroundEnabled && (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                    <div className="space-y-2">
+                      <Label>背景不透明度</Label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={85}
+                        step={5}
+                        value={opacityPercent}
+                        onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
+                        className="w-full accent-primary"
+                      />
+                    </div>
+                    <Input
+                      value={String(opacityPercent)}
+                      onChange={(event) => {
+                        const value = Math.min(85, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                        updateBackground({ opacity: value / 100 });
+                      }}
+                      inputMode="numeric"
+                      className="sm:mt-6"
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                    <div className="space-y-2">
+                      <Label>背景虚化程度</Label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={32}
+                        step={1}
+                        value={blurAmount}
+                        onChange={(event) => updateBackground({ blur: Number(event.target.value) })}
+                        className="w-full accent-primary"
+                      />
+                    </div>
+                    <Input
+                      value={String(blurAmount)}
+                      onChange={(event) => {
+                        const value = Math.min(32, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                        updateBackground({ blur: value });
+                      }}
+                      inputMode="numeric"
+                      className="sm:mt-6"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <Button type="button" variant="outline" onClick={() => updateBackground({ source: "none", selectedId: null })} disabled={personalizationSaving}>
+                不使用背景
+              </Button>
             </div>
-            {backgroundConfig.images.length > 0 ? (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {backgroundConfig.images.map((item) => {
-                  const active = backgroundConfig.source === "upload" && backgroundConfig.selectedId === item.id;
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                {backgroundSourceOptions.map((option) => {
+                  const Icon = option.icon;
+                  const active = backgroundSourceMode === option.value;
                   return (
-                    <div
-                      key={item.id}
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setBackgroundSourceMode(option.value)}
                       className={cn(
-                        "overflow-hidden rounded-lg border bg-muted/20",
-                        active ? "border-primary ring-2 ring-primary/25" : "border-border/40",
+                        "flex min-h-10 items-center justify-center gap-2 rounded-lg border px-2 text-sm transition",
+                        active ? "border-primary bg-primary/10 text-primary" : "border-border/40 bg-muted/20 hover:border-primary/50",
                       )}
                     >
-                      <button
-                        type="button"
-                        onClick={() => updateBackground({ source: "upload", selectedId: item.id })}
-                        className="block w-full text-left"
-                      >
-                        <img src={item.dataUrl} alt={item.name} className="aspect-[16/8] w-full object-cover" />
-                      </button>
-                      <div className="flex items-center justify-between gap-2 px-3 py-2">
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium" title={item.name}>{item.name}</p>
-                          <p className="text-[11px] text-muted-foreground">{formatBytes(item.size || imageDataUrlSize(item.dataUrl))}</p>
-                        </div>
-                        <Button type="button" variant="ghost" size="icon" onClick={() => handleDeleteUploadedBackground(item.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{option.label}</span>
+                    </button>
                   );
                 })}
               </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">
-                还没有上传背景。
-              </div>
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <p className="text-sm font-medium">自定义链接</p>
-            <div className="grid gap-2 lg:grid-cols-[9rem_minmax(0,1fr)_auto]">
-              <Select value={backgroundUrlType} onValueChange={(value) => setBackgroundUrlType(value as PersonalizationBackgroundUrlType)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="image">图片链接</SelectItem>
-                  <SelectItem value="video">视频链接</SelectItem>
-                </SelectContent>
-              </Select>
-              <Input
-                value={backgroundUrlInput}
-                onChange={(event) => setBackgroundUrlInput(event.target.value)}
-                placeholder="https://example.com/background.jpg"
-              />
-              <Button type="button" variant="outline" onClick={applyBackgroundUrl}>
-                应用链接
-              </Button>
+              {backgroundSourceMode === "builtin" && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">内置壁纸</p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+                    {BUILTIN_WALLPAPERS.map((item) => {
+                      const active = backgroundConfig.source === "builtin" && backgroundConfig.selectedId === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => updateBackground({ source: "builtin", selectedId: item.id })}
+                          className={cn(
+                            "group overflow-hidden rounded-lg border bg-muted/20 text-left transition",
+                            active ? "border-primary ring-2 ring-primary/25" : "border-border/40 hover:border-primary/50",
+                          )}
+                        >
+                          <img
+                            src={item.url}
+                            alt={item.name}
+                            loading="lazy"
+                            decoding="async"
+                            className="aspect-[16/9] w-full object-cover transition-transform group-hover:scale-[1.02]"
+                          />
+                          <div className="px-3 py-2 text-xs font-medium">{item.name}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {backgroundSourceMode === "upload" && (
+                <div className="space-y-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium">上传背景</p>
+                      <p className="text-xs text-muted-foreground">最多保留 6 张，单张最大 3MB，超过会自动压缩。</p>
+                    </div>
+                    <div>
+                      <input
+                        ref={backgroundInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => handleBackgroundUpload(event.target.files?.[0])}
+                      />
+                      <Button type="button" variant="outline" onClick={() => backgroundInputRef.current?.click()} disabled={compressingBackground || personalizationSaving}>
+                        {compressingBackground ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                        上传背景
+                      </Button>
+                    </div>
+                  </div>
+                  {backgroundConfig.images.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {backgroundConfig.images.map((item) => {
+                        const active = backgroundConfig.source === "upload" && backgroundConfig.selectedId === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            className={cn(
+                              "overflow-hidden rounded-lg border bg-muted/20",
+                              active ? "border-primary ring-2 ring-primary/25" : "border-border/40",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => updateBackground({ source: "upload", selectedId: item.id })}
+                              className="block w-full text-left"
+                            >
+                              <img src={item.dataUrl} alt={item.name} loading="lazy" decoding="async" className="aspect-[16/9] w-full object-cover" />
+                            </button>
+                            <div className="flex items-center justify-between gap-2 px-3 py-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-medium" title={item.name}>{item.name}</p>
+                                <p className="text-[11px] text-muted-foreground">{formatBytes(item.size || imageDataUrlSize(item.dataUrl))}</p>
+                              </div>
+                              <Button type="button" variant="ghost" size="icon" onClick={() => handleDeleteUploadedBackground(item.id)} aria-label={`删除 ${item.name}`}>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-border/50 bg-muted/20 p-4 text-sm text-muted-foreground">
+                      还没有上传背景。
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {backgroundSourceMode === "url" && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">自定义链接</p>
+                  <div className="grid gap-2 lg:grid-cols-[9rem_minmax(0,1fr)_auto]">
+                    <Select value={backgroundUrlType} onValueChange={(value) => setBackgroundUrlType(value as PersonalizationBackgroundUrlType)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="image">图片链接</SelectItem>
+                        <SelectItem value="video">视频链接</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={backgroundUrlInput}
+                      onChange={(event) => setBackgroundUrlInput(event.target.value)}
+                      placeholder="https://example.com/background.jpg"
+                    />
+                    <Button type="button" variant="outline" onClick={applyBackgroundUrl}>
+                      应用链接
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    视频背景会静音循环播放，建议使用 HTTPS 链接。
+                  </p>
+                </div>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              视频背景会静音循环播放，建议使用 HTTPS 链接。
-            </p>
           </div>
         </CardContent>
       </Card>
 
       <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Globe className="h-4 w-4 text-primary" />
-            公开首页
-          </CardTitle>
-          <CardDescription>
-            设置未登录时展示的首页。
-          </CardDescription>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Globe className="h-4 w-4 text-primary" />
+              公开首页
+            </CardTitle>
+            <CardDescription>
+              设置未登录时展示的首页。
+            </CardDescription>
+          </div>
+          <Button type="button" onClick={handleSaveHomepage} disabled={personalizationSaving} className="w-full gap-2 sm:w-auto">
+            {isSavingPersonalization("homepage") && <Loader2 className="h-4 w-4 animate-spin" />}
+            保存首页
+          </Button>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-3 lg:grid-cols-2">
@@ -3198,12 +3352,7 @@ function PersonalizationSettingsSection() {
         </CardContent>
       </Card>
 
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saving || updateSettingsMutation.isPending || compressingLogo || compressingBackground} className="gap-2">
-          {(saving || updateSettingsMutation.isPending) && <Loader2 className="h-4 w-4 animate-spin" />}
-          保存个性化配置
-        </Button>
-      </div>
+
     </div>
   );
 }
@@ -3216,7 +3365,6 @@ function SystemInfoSection() {
     { refetchInterval: 5000 }
   );
   const [panelUrlInput, setPanelUrlInput] = useState("");
-  const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [webPortInput, setWebPortInput] = useState("");
   const [panelSslEnabled, setPanelSslEnabled] = useState(false);
   const [panelSslMode, setPanelSslMode] = useState<"path" | "pem">("path");
@@ -3271,7 +3419,6 @@ function SystemInfoSection() {
   useEffect(() => {
     if (settings) {
       setPanelUrlInput(settings.panelPublicUrl || "");
-      setSiteTitleInput(settings.siteTitle || "ForwardX");
       setWebPortInput(String(settings.webPort || 3000));
       setPanelSslEnabled(!!settings.panelSsl?.enabled);
       setPanelSslMode(settings.panelSsl?.mode === "pem" ? "pem" : "path");
@@ -3424,11 +3571,8 @@ function SystemInfoSection() {
     saveSystemSettings("panelUrl", { panelPublicUrl: v });
   };
 
-  const handleSaveBranding = () => {
-    saveSystemSettings("branding", {
-      siteTitle: siteTitleInput.trim(),
-      lookingGlassUserEnabled,
-    }, {
+  const handleSaveLookingGlass = () => {
+    saveSystemSettings("networkTest", { lookingGlassUserEnabled }, {
       onSuccess: () => utils.system.publicInfo.invalidate(),
     });
   };
@@ -3745,38 +3889,6 @@ function SystemInfoSection() {
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <Globe className="h-4 w-4 text-primary" />
-              网站标题
-            </CardTitle>
-            <CardDescription>
-              配置后台显示的品牌名称。
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                id="site-title"
-                value={siteTitleInput}
-                onChange={(e) => setSiteTitleInput(e.target.value.slice(0, 64))}
-                placeholder="ForwardX"
-                className="flex-1"
-              />
-              <Button
-                onClick={handleSaveBranding}
-                disabled={isSavingSetting("branding")}
-              >
-                保存
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              用于侧边栏、浏览器标题和移动端顶部展示，最多 64 个字符。
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
               <Wifi className="h-4 w-4 text-primary" />
               网络测试
             </CardTitle>
@@ -3794,7 +3906,7 @@ function SystemInfoSection() {
               </div>
               <Switch className="shrink-0" checked={lookingGlassUserEnabled} onCheckedChange={setLookingGlassUserEnabled} />
             </div>
-            <Button onClick={handleSaveBranding} disabled={isSavingSetting("branding")}>
+            <Button onClick={handleSaveLookingGlass} disabled={isSavingSetting("networkTest")}>
               保存
             </Button>
           </CardContent>

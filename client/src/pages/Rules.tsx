@@ -3371,34 +3371,77 @@ function RulesContent() {
     }
 
     const hostById = new Map<number, any>((hosts || []).map((host: any) => [Number(host.id), host]));
+    const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
+    const tunnelHostById = new Map<number, any>();
+    if (tunnel) {
+      [
+        ...(Array.isArray((tunnel as any).hopHosts) ? (tunnel as any).hopHosts : []),
+        (tunnel as any).entryHost,
+        (tunnel as any).exitHost,
+        ...(Array.isArray((tunnel as any).loadBalanceExits) ? (tunnel as any).loadBalanceExits.map((exit: any) => exit?.host) : []),
+      ].forEach((host: any) => {
+        const id = Number(host?.id || 0);
+        if (id > 0) tunnelHostById.set(id, host);
+      });
+    }
+    const hostForRouteId = (hostId: number) => hostById.get(Number(hostId)) || tunnelHostById.get(Number(hostId));
     const chainGroup = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const chainEntryGroup = chainGroup && isForwardChainGroup(chainGroup) && Number(chainGroup.entryGroupId || 0) > 0
       ? forwardGroupById.get(Number(chainGroup.entryGroupId))
       : null;
     const chainEntryMembers = chainEntryGroup && normalizeForwardGroupModeForRule(chainEntryGroup) === "entry" ? enabledHostMembers(chainEntryGroup) : [];
+    const tunnelEntryGroup = tunnel && Number((tunnel as any).entryGroupId || 0) > 0
+      ? forwardGroupById.get(Number((tunnel as any).entryGroupId))
+      : null;
+    const tunnelEntryMembers = tunnelEntryGroup && normalizeForwardGroupModeForRule(tunnelEntryGroup) === "entry" ? enabledHostMembers(tunnelEntryGroup) : [];
+    const tunnelEntryMemberByHostId = new Map<number, any>();
+    tunnelEntryMembers.forEach((member: any) => {
+      const hostId = Number(member?.hostId || 0);
+      if (hostId > 0) tunnelEntryMemberByHostId.set(hostId, member);
+    });
+    const labelForRouteHostId = (hostId: number) => {
+      const host = hostForRouteId(hostId);
+      const member = tunnelEntryMemberByHostId.get(Number(hostId));
+      return hostDisplayName(host)
+        || String(member?.name || member?.remark || "").trim()
+        || (tunnel ? tunnelHopHostName(tunnel, hostId, hosts) : "")
+        || `主机 #${hostId}`;
+    };
     const routeHostIds = ruleGlobeRouteHostIds(rule, tunnelById, forwardGroupById);
-    const tunnel = rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     routeHostIds.forEach((hostId: number, index: number) => {
-      const host = hostById.get(Number(hostId));
+      const host = hostForRouteId(Number(hostId));
       addHostNodeMeta(meta, host, [
         index === 0 ? "入口" : "",
         index === routeHostIds.length - 1 ? "出口" : "",
+        tunnel ? labelForRouteHostId(hostId) : "",
         tunnel ? tunnelHopHostName(tunnel, hostId, hosts) : "",
         `主机${hostId}`,
         `主机 #${hostId}`,
       ]);
     });
 
-    const sourceHost = hostById.get(Number(routeHostIds[0] || rule.hostId || 0)) || getRuleEntryHost(rule);
-    const exitHost = hostById.get(Number(routeHostIds[routeHostIds.length - 1] || 0));
+    const sourceHost = hostForRouteId(Number(routeHostIds[0] || rule.hostId || 0)) || getRuleEntryHost(rule);
+    const exitHost = hostForRouteId(Number(routeHostIds[routeHostIds.length - 1] || 0));
     if (sourceHost) addHostNodeMeta(meta, sourceHost, ["入口", "源节点"]);
     chainEntryMembers.forEach((entryMember: any) => {
-      const entryHost = hostById.get(Number(entryMember.hostId || 0));
+      const entryHost = hostForRouteId(Number(entryMember.hostId || 0));
       addHostNodeMeta(meta, entryHost, [
         "入口",
         "源节点",
         `主机${entryMember.hostId || ""}`,
         `主机 #${entryMember.hostId || ""}`,
+      ]);
+    });
+    tunnelEntryMembers.forEach((entryMember: any) => {
+      const entryHostId = Number(entryMember.hostId || 0);
+      const entryHost = hostForRouteId(entryHostId);
+      addHostNodeMeta(meta, entryHost, [
+        "入口",
+        "源节点",
+        labelForRouteHostId(entryHostId),
+        entryMember.entryAddress,
+        `主机${entryHostId || ""}`,
+        `主机 #${entryHostId || ""}`,
       ]);
     });
     if (exitHost) addHostNodeMeta(meta, exitHost, ["出口"]);
@@ -3437,13 +3480,13 @@ function RulesContent() {
     }
 
     const routeHosts = routeHostIds
-      .map((hostId: number) => hostById.get(Number(hostId)))
+      .map((hostId: number) => hostForRouteId(Number(hostId)))
       .filter(Boolean);
     const plannedSegments: LinkTestPlannedSegment[] = [];
     if (chainEntryMembers.length > 0 && routeHosts[0]) {
       const firstChainHost = routeHosts[0];
       chainEntryMembers.forEach((entryMember: any) => {
-        const entryHost = hostById.get(Number(entryMember.hostId || 0));
+        const entryHost = hostForRouteId(Number(entryMember.hostId || 0));
         plannedSegments.push({
           from: hostDisplayName(entryHost) || `入口主机 #${entryMember.hostId || "-"}`,
           to: hostDisplayName(firstChainHost),
@@ -3453,40 +3496,86 @@ function RulesContent() {
       });
     }
     const tunnelParsedMessage = tunnel ? parseLinkTestMessage((tunnel as any).lastTestMessage) : null;
-    const tunnelDetails = (tunnelParsedMessage?.details || [])
-      .filter((detail) => detail.pending || detail.success || detail.message || typeof detail.latencyMs === "number");
+    const tunnelTestStatus = String((tunnel as any)?.lastTestStatus || "");
+    const tunnelDetails = tunnelTestStatus !== "pending" && tunnelTestStatus !== "running"
+      ? (tunnelParsedMessage?.details || [])
+        .filter((detail) => !detail.pending && (detail.success || detail.message || typeof detail.latencyMs === "number"))
+      : [];
     const tunnelLatencyMs = typeof (tunnel as any)?.latestLatencyMs === "number" && Number.isFinite((tunnel as any).latestLatencyMs)
       ? Number((tunnel as any).latestLatencyMs)
       : typeof (tunnel as any)?.lastLatencyMs === "number" && Number.isFinite((tunnel as any).lastLatencyMs)
         ? Number((tunnel as any).lastLatencyMs)
         : null;
     const tunnelLatencyIsTimeout = !!(tunnel as any)?.latestLatencyIsTimeout || ((tunnel as any)?.lastTestStatus === "failed" && tunnelLatencyMs === null);
-    for (let index = 0; index < routeHosts.length - 1; index += 1) {
-      const fromHost = routeHosts[index];
-      const toHost = routeHosts[index + 1];
-      const tunnelDetail = tunnelDetails[index];
-      const singleTunnelSegment = routeHosts.length - 1 === 1;
-      plannedSegments.push({
-        from: hostDisplayName(fromHost),
-        to: hostDisplayName(toHost),
-        fromMeta: meta[hostDisplayName(fromHost)],
-        toMeta: meta[hostDisplayName(toHost)],
-        success: tunnelDetail
-          ? !!tunnelDetail.success
-          : tunnelLatencyMs !== null && (singleTunnelSegment || index === 0)
-            ? true
-            : tunnelLatencyIsTimeout
-              ? false
-              : undefined,
-        latencyMs: tunnelDetail && tunnelDetail.success && typeof tunnelDetail.latencyMs === "number"
-          ? tunnelDetail.latencyMs
-          : tunnelLatencyMs !== null && (singleTunnelSegment || index === 0)
-            ? tunnelLatencyMs
-            : null,
-        message: tunnelDetail?.message || (tunnelLatencyIsTimeout ? "隧道段失败" : null),
-        method: tunnelDetail?.method || null,
-        pending: tunnelDetail?.pending || false,
-      });
+    const nodeMetaForHostId = (hostId: number) => {
+      const host = hostForRouteId(hostId);
+      return meta[hostDisplayName(host)] || meta[labelForRouteHostId(hostId)] || meta[String(hostId)] || undefined;
+    };
+    const createTunnelPlannedSegment = (
+      fromHostId: number,
+      toHostId: number,
+      tunnelDetail: any,
+      useTunnelLatencyFallback: boolean,
+    ): LinkTestPlannedSegment => ({
+      from: labelForRouteHostId(fromHostId),
+      to: labelForRouteHostId(toHostId),
+      fromMeta: nodeMetaForHostId(fromHostId),
+      toMeta: nodeMetaForHostId(toHostId),
+      success: tunnelDetail
+        ? !!tunnelDetail.success
+        : tunnelLatencyMs !== null && useTunnelLatencyFallback
+          ? true
+          : tunnelLatencyIsTimeout
+            ? false
+            : undefined,
+      latencyMs: tunnelDetail && tunnelDetail.success && typeof tunnelDetail.latencyMs === "number"
+        ? tunnelDetail.latencyMs
+        : tunnelLatencyMs !== null && useTunnelLatencyFallback
+          ? tunnelLatencyMs
+          : null,
+      message: tunnelDetail?.message || (tunnelLatencyIsTimeout ? "隧道段失败" : null),
+      method: tunnelDetail?.method || null,
+      pending: tunnelDetail?.pending || false,
+    });
+    const tunnelEntryHostIds = tunnel
+      ? Array.from(new Set([
+        Number(routeHostIds[0] || (tunnel as any).entryHostId || 0),
+        ...tunnelEntryMembers.map((member: any) => Number(member?.hostId || 0)),
+      ].filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)))
+      : [];
+    const hasTunnelMultiEntry = !!tunnel && tunnelEntryHostIds.length > 1;
+    if (hasTunnelMultiEntry) {
+      const lastHostId = Number(routeHostIds[routeHostIds.length - 1] || (tunnel as any).exitHostId || 0);
+      const restRouteHostIds = routeHostIds.filter((hostId: number) => !tunnelEntryHostIds.includes(Number(hostId)));
+      const nextHostId = Number(restRouteHostIds[0] || lastHostId || (tunnel as any).exitHostId || 0);
+      let detailIndex = 0;
+      if (nextHostId > 0) {
+        tunnelEntryHostIds.forEach((entryHostId) => {
+          if (entryHostId !== nextHostId) {
+            plannedSegments.push(createTunnelPlannedSegment(entryHostId, nextHostId, tunnelDetails[detailIndex], false));
+            detailIndex += 1;
+          }
+        });
+      }
+      for (let index = 0; index < restRouteHostIds.length - 1; index += 1) {
+        plannedSegments.push(createTunnelPlannedSegment(
+          Number(restRouteHostIds[index]),
+          Number(restRouteHostIds[index + 1]),
+          tunnelDetails[detailIndex],
+          false,
+        ));
+        detailIndex += 1;
+      }
+    } else {
+      for (let index = 0; index < routeHostIds.length - 1; index += 1) {
+        const singleTunnelSegment = routeHostIds.length - 1 === 1;
+        plannedSegments.push(createTunnelPlannedSegment(
+          Number(routeHostIds[index]),
+          Number(routeHostIds[index + 1]),
+          tunnelDetails[index],
+          singleTunnelSegment || index === 0,
+        ));
+      }
     }
     const exitHostForTarget = routeHosts[routeHosts.length - 1] || sourceHost;
     if (exitHostForTarget) {
@@ -3502,10 +3591,12 @@ function RulesContent() {
       nodeMeta: meta,
       sourceLabel: chainEntryMembers.length > 0
         ? chainEntryMembers
-          .map((member: any) => hostDisplayName(hostById.get(Number(member.hostId || 0))) || `入口主机 #${member.hostId || "-"}`)
+          .map((member: any) => hostDisplayName(hostForRouteId(Number(member.hostId || 0))) || `入口主机 #${member.hostId || "-"}`)
           .filter(Boolean)
           .join(" / ")
-        : hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
+        : tunnelEntryHostIds.length > 1
+          ? tunnelEntryHostIds.map((hostId) => labelForRouteHostId(hostId)).filter(Boolean).join(" / ")
+          : hostDisplayName(sourceHost) || getRuleEntryHostName(rule),
       targetLabel: ruleLabel,
       plannedSegments,
     };

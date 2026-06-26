@@ -191,15 +191,40 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
     }
     if (meta?.kind === "forward-via-tunnel" && typeof meta.tunnelId === "number") {
+      const tunnel = await db.getTunnelById(meta.tunnelId);
       const tunnelLatency = await db.getLatestTunnelLatency(meta.tunnelId);
       let tunnelLatencyMs =
         tunnelLatency && !(tunnelLatency as any).isTimeout && typeof (tunnelLatency as any).latencyMs === "number"
           ? Number((tunnelLatency as any).latencyMs)
           : 0;
       if (tunnelLatencyMs <= 0) {
-        const tunnel = await db.getTunnelById(meta.tunnelId);
         const last = Number((tunnel as any)?.lastLatencyMs) || 0;
         if (last > 0) tunnelLatencyMs = last;
+      }
+      let tunnelDetails: any[] = [];
+      const tunnelMessage = typeof (tunnel as any)?.lastTestMessage === "string" ? String((tunnel as any).lastTestMessage).trim() : "";
+      const tunnelTestStatus = String((tunnel as any)?.lastTestStatus || "");
+      if (tunnelMessage.startsWith("{") && tunnelTestStatus !== "pending" && tunnelTestStatus !== "running") {
+        try {
+          const parsedTunnelMessage = JSON.parse(tunnelMessage);
+          if (Array.isArray(parsedTunnelMessage?.details)) {
+            tunnelDetails = parsedTunnelMessage.details
+              .filter((detail: any) => !detail?.pending && (detail?.success || detail?.message || typeof detail?.latencyMs === "number"))
+              .map((detail: any) => ({
+                success: !!detail.success,
+                latencyMs: typeof detail.latencyMs === "number" ? detail.latencyMs : null,
+                message: typeof detail.message === "string" ? detail.message : null,
+                hopLabel: typeof detail.hopLabel === "string" ? detail.hopLabel : null,
+                routeLabel: typeof detail.routeLabel === "string" ? detail.routeLabel : null,
+                method: typeof detail.method === "string" ? detail.method : "tcp",
+                pending: detail.pending === true,
+                groupKey: typeof detail.groupKey === "string" ? detail.groupKey : null,
+                groupLabel: typeof detail.groupLabel === "string" ? detail.groupLabel : null,
+              }));
+          }
+        } catch {
+          tunnelDetails = [];
+        }
       }
       const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
@@ -214,7 +239,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         kind: "forward-via-tunnel",
         tunnelId: meta.tunnelId,
         message: messageParts.join("; "),
-        details: [{
+        details: [...tunnelDetails, {
           success,
           latencyMs: success ? cleanLatency : null,
           message: success ? null : detailMessage,

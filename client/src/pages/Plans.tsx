@@ -54,6 +54,7 @@ type TrafficAddonForm = {
 
 type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
 type PlanManageTab = "plans" | "billing";
+type PlanDialogTab = "settings" | "resources";
 type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
 const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
@@ -389,6 +390,7 @@ export default function Plans() {
 
   const [form, setForm] = useState<PlanForm>(emptyForm);
   const [editing, setEditing] = useState(false);
+  const [planDialogTab, setPlanDialogTab] = useState<PlanDialogTab>("settings");
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
@@ -513,9 +515,15 @@ export default function Plans() {
 
   const openPlanCreate = () => {
     setForm(emptyForm);
+    setPlanDialogTab("settings");
     setEditing(true);
   };
 
+  const openPlanEdit = (plan: any) => {
+    setForm(toForm(plan));
+    setPlanDialogTab("settings");
+    setEditing(true);
+  };
   const openCreate = () => {
     if (activeTab === "billing") {
       setBillingCreateRequestKey((value) => value + 1);
@@ -530,13 +538,18 @@ export default function Plans() {
   };
 
   const save = () => {
-    if (!form.name.trim()) return toast.error("请填写套餐名称");
-    if (form.hostIds.length === 0 && form.tunnelIds.length === 0 && form.forwardGroupIds.length === 0) return toast.error("至少选择一个主机、隧道或转发组");
+    if (!form.name.trim()) {
+      setPlanDialogTab("settings");
+      return toast.error("请填写套餐名称");
+    }
+    if (form.hostIds.length === 0 && form.tunnelIds.length === 0 && form.forwardGroupIds.length === 0) {
+      setPlanDialogTab("resources");
+      return toast.error("至少选择一个主机、隧道或转发组");
+    }
     const data = payload(form);
     if (form.id) updatePlan.mutate({ id: form.id, ...data });
     else createPlan.mutate(data);
   };
-
   const addPlanResource = (key: PlanResourceKey, value: string) => {
     const id = Number(value);
     if (!id) return;
@@ -749,7 +762,7 @@ export default function Plans() {
                           <PlanCard
                             key={plan.id}
                             plan={plan}
-                            onEdit={() => { setForm(toForm(plan)); setEditing(true); }}
+                            onEdit={() => openPlanEdit(plan)}
                             onDelete={() => deletePlan.mutate({ id: plan.id })}
                           />
                         ))}
@@ -798,7 +811,7 @@ export default function Plans() {
                                   </div>
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  <Button variant="ghost" size="sm" onClick={() => { setForm(toForm(plan)); setEditing(true); }}>编辑</Button>
+                                  <Button variant="ghost" size="sm" onClick={() => openPlanEdit(plan)}>编辑</Button>
                                   <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deletePlan.mutate({ id: plan.id })}>
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
@@ -831,12 +844,21 @@ export default function Plans() {
       </div>
 
       <Dialog open={editing} onOpenChange={setEditing}>
-        <DialogContent className="max-w-3xl sm:max-h-[90svh]">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[92svh] max-w-3xl flex-col overflow-hidden p-0">
+          <DialogHeader className="px-6 pt-6">
             <DialogTitle>{form.id ? "编辑套餐" : "新增套餐"}</DialogTitle>
-            <DialogDescription>选择订阅后可用资源。</DialogDescription>
+            <DialogDescription>配置套餐限制，并绑定订阅后可用资源。</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 md:grid-cols-3">
+
+          <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="flex min-h-0 flex-1 flex-col px-6">
+            <TabsList className="grid h-auto w-full grid-cols-2">
+              <TabsTrigger value="settings">套餐设置</TabsTrigger>
+              <TabsTrigger value="resources">资源绑定</TabsTrigger>
+            </TabsList>
+
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <TabsContent value="settings" className="mt-4 space-y-4">
+                <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
               <Label>套餐名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：基础套餐" />
@@ -891,9 +913,16 @@ export default function Plans() {
               <Label>说明</Label>
               <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="展示给用户看的套餐说明" />
             </div>
-          </div>
+                </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+                <div className="flex flex-wrap gap-4 rounded-lg border border-border/60 px-4 py-3">
+                  <label className="flex items-center gap-2 text-sm"><Switch checked={form.isActive} onCheckedChange={(isActive) => setForm({ ...form, isActive })} /> 启用套餐</label>
+                  <label className="flex items-center gap-2 text-sm"><Switch checked={form.isStoreVisible} onCheckedChange={(isStoreVisible) => setForm({ ...form, isStoreVisible })} /> 商店可见</label>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="resources" className="mt-4 space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
             <PlanResourcePicker
               title="转发主机"
               countText={`${form.hostIds.length} 台`}
@@ -1006,12 +1035,11 @@ export default function Plans() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-4">
-            <label className="flex items-center gap-2 text-sm"><Switch checked={form.isActive} onCheckedChange={(isActive) => setForm({ ...form, isActive })} /> 启用套餐</label>
-            <label className="flex items-center gap-2 text-sm"><Switch checked={form.isStoreVisible} onCheckedChange={(isStoreVisible) => setForm({ ...form, isStoreVisible })} /> 商店可见</label>
-          </div>
+              </TabsContent>
+            </div>
+          </Tabs>
 
-          <DialogFooter>
+          <DialogFooter className="border-t border-border/60 px-6 py-4">
             <Button variant="outline" onClick={() => setEditing(false)}>取消</Button>
             <Button onClick={save} disabled={createPlan.isPending || updatePlan.isPending}>
               {(createPlan.isPending || updatePlan.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
