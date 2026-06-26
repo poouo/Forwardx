@@ -352,25 +352,131 @@ body::after {
 }
 
 @media (max-width: 768px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .VPNavBar:not(.home.top) {
+    background: rgba(248, 251, 255, 0.9);
+  }
+
+  .dark .VPNavBar:not(.home.top) {
+    background: rgba(12, 17, 24, 0.9);
+  }
+
+  .VPLocalNav {
+    border-bottom: 1px solid var(--vp-c-divider);
+    background: rgba(248, 251, 255, 0.74) !important;
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  }
+
+  .dark .VPLocalNav {
+    background: rgba(12, 17, 24, 0.78) !important;
+  }
+
+  .VPNavScreen {
+    background: rgba(248, 251, 255, 0.96) !important;
+  }
+
+  .dark .VPNavScreen {
+    background: rgba(12, 17, 24, 0.96) !important;
+  }
+
   .VPHomeHero .main::before {
     inset: -16px -14px;
     border-radius: 26px;
+  }
+
+  .VPSidebar {
+    width: min(84vw, 320px) !important;
+    padding: 22px 18px 28px 22px;
+    background:
+      linear-gradient(145deg, rgba(248, 251, 255, 0.94), rgba(237, 246, 255, 0.9)) !important;
+    box-shadow: 18px 0 48px rgba(15, 23, 42, 0.18);
+    backdrop-filter: blur(18px) saturate(1.18);
+    -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  }
+
+  .dark .VPSidebar {
+    background:
+      linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.92)) !important;
+    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.36);
   }
 
   .VPSidebar .group {
     margin-inline: 0;
   }
 
-  .VPSidebar {
-    padding: 18px 14px 24px 18px;
+  .VPSidebarItem.level-1 .item {
+    min-height: 38px;
+  }
+
+  .VPSidebarItem .text {
+    color: var(--vp-c-text-1);
+  }
+
+  .VPSidebarItem.level-1 .item:hover {
+    transform: none;
+  }
+
+  .VPDoc {
+    padding: 0 14px 32px;
   }
 
   .VPDoc .container > .content {
     margin-top: 18px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.72) !important;
+  }
+
+  .dark .VPDoc .container > .content {
+    background: rgba(17, 24, 39, 0.72) !important;
   }
 
   .VPDoc .content-container {
-    padding-top: 28px;
+    padding: 28px 18px 34px;
+    max-width: 100%;
+  }
+
+  .vp-doc h1 {
+    font-size: 34px;
+    line-height: 1.18;
+  }
+
+  .vp-doc h2 {
+    font-size: 26px;
+    line-height: 1.25;
+  }
+
+  .vp-doc p,
+  .vp-doc li {
+    line-height: 1.72;
+  }
+
+  .vp-doc div[class*="language-"] {
+    max-width: 100%;
+    margin: 18px 0;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .vp-doc div[class*="language-"] pre {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .vp-doc div[class*="language-"] span.lang {
+    right: 12px;
+  }
+
+  .vp-doc table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 }
 
