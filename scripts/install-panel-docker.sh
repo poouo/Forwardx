@@ -289,11 +289,12 @@ install_base_deps() {
 }
 
 install_docker() {
-  install_base_deps
   if command -v docker >/dev/null 2>&1; then
+    echo "[INFO] Docker is already installed, skip package manager update."
     start_docker_service
     return
   fi
+  install_base_deps
   if command -v apt-get >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com | sh
     start_docker_service

@@ -406,6 +406,13 @@ node_major_version() {
   node -p "Number(process.versions.node.split('.')[0] || 0)" 2>/dev/null || echo "0"
 }
 
+has_local_base_deps() {
+  command -v curl >/dev/null 2>&1 \
+    && command -v tar >/dev/null 2>&1 \
+    && command -v openssl >/dev/null 2>&1 \
+    && { command -v xz >/dev/null 2>&1 || command -v unxz >/dev/null 2>&1; }
+}
+
 ensure_node_runtime() {
   local major="0"
   major="$(node_major_version)"
@@ -442,7 +449,9 @@ ensure_node_runtime() {
 }
 
 install_deps() {
-  if command -v apt-get >/dev/null 2>&1; then
+  if has_local_base_deps; then
+    echo "[INFO] Runtime base dependencies are already installed, skip package manager update."
+  elif command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -qq curl ca-certificates tar xz-utils openssl >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
