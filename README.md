@@ -11,6 +11,7 @@ ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agen
 
 ## 社群与下载
 
+- 在线教程：https://poouo.github.io/Forwardx/
 - TG 群组：https://t.me/ForwardX_panel
 - Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.185/forwardx-android-v2.3.57.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases

@@ -101,17 +101,53 @@ body::after {
 }
 
 .VPSidebar {
-  padding-top: 20px;
+  padding: 26px 18px 28px 30px;
   backdrop-filter: blur(18px) saturate(1.18);
   -webkit-backdrop-filter: blur(18px) saturate(1.18);
 }
 
 .VPSidebar .group {
-  margin: 8px 14px;
-  border: 1px solid var(--fx-glass-border);
-  border-radius: 18px;
-  background: var(--fx-glass-bg);
-  box-shadow: var(--fx-glass-ring);
+  margin: 0 0 18px;
+  padding: 0 2px 14px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  box-shadow: none;
+}
+
+.dark .VPSidebar .group {
+  border-bottom-color: rgba(226, 232, 240, 0.1);
+}
+
+.VPSidebar .group:last-child {
+  border-bottom: 0;
+}
+
+.VPSidebarItem .text {
+  letter-spacing: 0;
+}
+
+.VPSidebarItem.level-0 > .item .text {
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+}
+
+.VPSidebarItem.level-1 .item {
+  min-height: 34px;
+  border-radius: 10px;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.VPSidebarItem.level-1 .item:hover {
+  background: rgba(20, 184, 166, 0.08);
+  transform: translateX(2px);
+}
+
+.VPSidebarItem.is-active > .item {
+  background: rgba(20, 184, 166, 0.13);
+}
+
+.VPSidebarItem.is-active > .item .text {
+  color: var(--vp-c-brand-1);
 }
 
 .VPHomeHero {
@@ -211,6 +247,11 @@ body::after {
 
 .VPDoc .container > .content {
   border-radius: 22px;
+  margin-top: 30px;
+}
+
+.VPDoc .content-container {
+  padding-top: 40px;
 }
 
 .vp-doc h1,
@@ -317,7 +358,19 @@ body::after {
   }
 
   .VPSidebar .group {
-    margin-inline: 8px;
+    margin-inline: 0;
+  }
+
+  .VPSidebar {
+    padding: 18px 14px 24px 18px;
+  }
+
+  .VPDoc .container > .content {
+    margin-top: 18px;
+  }
+
+  .VPDoc .content-container {
+    padding-top: 28px;
   }
 }
 
