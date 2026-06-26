@@ -1,4 +1,4 @@
-﻿import * as db from "./db";
+import * as db from "./db";
 import { requireMainBackupAllowed } from "./routers/rules.crud";
 import { ENV } from "./env";
 import { ACCOUNT_DISABLED_ERR_MSG } from "../shared/const";
@@ -3467,6 +3467,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         proxyProtocolSend: false,
         proxyProtocolExitReceive: false,
         proxyProtocolExitSend: false,
+        proxyProtocolVersion: 1,
         tcpFastOpen: false,
         zeroCopy: false,
         failoverEnabled: false,

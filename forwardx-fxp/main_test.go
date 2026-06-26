@@ -537,3 +537,29 @@ func waitForTCP(t *testing.T, port int) {
 	}
 	t.Fatalf("port %d did not open", port)
 }
+
+func TestFormatProxyProtocolV2(t *testing.T) {
+	hello := helloFrame{
+		TargetIP:             "10.0.0.5",
+		TargetPort:           8443,
+		ProxySourceIP:        "198.51.100.7",
+		ProxySourcePort:      51443,
+		ProxyDestIP:          "10.0.0.5",
+		ProxyDestPort:        8443,
+		ProxyProtocolVersion: 2,
+	}
+	payload := append(formatProxyProtocol(hello), []byte("payload")...)
+	info, remaining, ok, err := consumeProxyProtocol(payload)
+	if err != nil {
+		t.Fatalf("consumeProxyProtocol v2 error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected proxy protocol v2 header")
+	}
+	if string(remaining) != "payload" {
+		t.Fatalf("remaining payload = %q", string(remaining))
+	}
+	if info.SourceIP != "198.51.100.7" || info.SourcePort != 51443 || info.DestIP != "10.0.0.5" || info.DestPort != 8443 {
+		t.Fatalf("unexpected proxy info: %+v", info)
+	}
+}

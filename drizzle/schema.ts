@@ -265,6 +265,7 @@ export const forwardRules = table("forward_rules", {
   proxyProtocolSend: boolean("proxyProtocolSend").notNull().default(false),
   proxyProtocolExitReceive: boolean("proxyProtocolExitReceive").notNull().default(false),
   proxyProtocolExitSend: boolean("proxyProtocolExitSend").notNull().default(false),
+  proxyProtocolVersion: int("proxyProtocolVersion").notNull().default(1),
   tcpFastOpen: boolean("tcpFastOpen").notNull().default(false),
   zeroCopy: boolean("zeroCopy").notNull().default(false),
   protocolBlockReason: text("protocolBlockReason"),
@@ -365,6 +366,7 @@ export const tunnels = table("tunnels", {
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
+  rateLimitMbps: int("rateLimitMbps").notNull().default(0),
   portRangeStart: int("portRangeStart"),
   portRangeEnd: int("portRangeEnd"),
   networkType: varchar("networkType", { length: 32 }).notNull().default("public"),

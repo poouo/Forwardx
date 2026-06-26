@@ -3885,7 +3885,7 @@ function SystemInfoSection() {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -3909,6 +3909,39 @@ function SystemInfoSection() {
             <Button onClick={handleSaveLookingGlass} disabled={isSavingSetting("networkTest")}>
               保存
             </Button>
+          </CardContent>
+        </Card>
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ShieldCheck className="h-4 w-4 text-primary" />
+                转发协议总开关
+              </CardTitle>
+              <CardDescription>
+                控制用户可用的转发协议。
+              </CardDescription>
+            </div>
+            <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openForwardProtocolDialog}>
+              <Settings2 className="h-4 w-4" />
+              管理协议开关
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground">全部协议</p>
+                <p className="mt-1 text-lg font-semibold">{totalProtocolEnabledCount} / {totalProtocolCount}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground">端口转发</p>
+                <p className="mt-1 text-lg font-semibold">{directProtocolEnabledCount} / {directForwardProtocolKeys.length}</p>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground">隧道协议</p>
+                <p className="mt-1 text-lg font-semibold">{tunnelProtocolEnabledCount} / {tunnelForwardProtocolKeys.length}</p>
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -4485,39 +4518,6 @@ function SystemInfoSection() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1.5">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <ShieldCheck className="h-4 w-4 text-primary" />
-              转发协议总开关
-            </CardTitle>
-            <CardDescription>
-              控制用户可用的转发协议。
-            </CardDescription>
-          </div>
-          <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openForwardProtocolDialog}>
-            <Settings2 className="h-4 w-4" />
-            管理协议开关
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">全部协议</p>
-              <p className="mt-1 text-lg font-semibold">{totalProtocolEnabledCount} / {totalProtocolCount}</p>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">端口转发</p>
-              <p className="mt-1 text-lg font-semibold">{directProtocolEnabledCount} / {directForwardProtocolKeys.length}</p>
-            </div>
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
-              <p className="text-xs text-muted-foreground">隧道协议</p>
-              <p className="mt-1 text-lg font-semibold">{tunnelProtocolEnabledCount} / {tunnelForwardProtocolKeys.length}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       <Dialog
         open={showForwardProtocolDialog}

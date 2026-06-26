@@ -60,3 +60,26 @@ func TestBuildProxyProtocolV1FallsBackToClientAddr(t *testing.T) {
 		t.Fatalf("header = %q, want %q", header, want)
 	}
 }
+
+func TestBuildAndConsumeProxyProtocolV2(t *testing.T) {
+	header := buildProxyProtocol(2,
+		proxyProtocolInfo{SourceIP: "198.51.100.7", SourcePort: 51443, DestIP: "10.0.0.5", DestPort: 8443},
+		&net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 40000},
+		nil,
+		&net.TCPAddr{IP: net.ParseIP("10.0.0.5"), Port: 8443},
+	)
+	payload := append(header, []byte("payload")...)
+	info, remaining, ok, err := consumeProxyProtocol(payload)
+	if err != nil {
+		t.Fatalf("consumeProxyProtocol v2 error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected proxy protocol v2 header")
+	}
+	if string(remaining) != "payload" {
+		t.Fatalf("remaining payload = %q", string(remaining))
+	}
+	if info.SourceIP != "198.51.100.7" || info.SourcePort != 51443 || info.DestIP != "10.0.0.5" || info.DestPort != 8443 {
+		t.Fatalf("unexpected proxy info: %+v", info)
+	}
+}

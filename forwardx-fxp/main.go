@@ -41,6 +41,7 @@ type helloFrame struct {
 	ProxyDestPort            int    `json:"proxyDestPort,omitempty"`
 	ProxyProtocolExitReceive bool   `json:"proxyProtocolExitReceive,omitempty"`
 	ProxyProtocolExitSend    bool   `json:"proxyProtocolExitSend,omitempty"`
+	ProxyProtocolVersion     int    `json:"proxyProtocolVersion,omitempty"`
 }
 
 type protocolPolicy struct {
@@ -104,7 +105,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.99"
+	fxpRuntimeVersion   = "2.2.100"
 )
 
 var (
@@ -567,7 +568,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 	}
 	first = initial
 	if cfg.ProxyProtocolReceive {
-		parsed, remaining, ok, err := consumeProxyProtocolV1FromConn(client, first, initialTimeout)
+		parsed, remaining, ok, err := consumeProxyProtocolFromConn(client, first, initialTimeout)
 		if err != nil {
 			return err
 		}
@@ -620,6 +621,7 @@ func handleEntryTCP(client net.Conn, cfg config, selector *exitEndpointSelector,
 		ProxyDestPort:            proxyInfo.DestPort,
 		ProxyProtocolExitReceive: cfg.ProxyProtocolExitReceive,
 		ProxyProtocolExitSend:    cfg.ProxyProtocolExitSend,
+		ProxyProtocolVersion:     normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion),
 	})
 	if err := sec.writeFrame(hello); err != nil {
 		return err
@@ -752,6 +754,190 @@ func consumeProxyProtocolV1FromConn(conn net.Conn, data []byte, timeout time.Dur
 	return consumeProxyProtocolV1(buf)
 }
 
+var proxyProtocolV2Signature = []byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
+
+func normalizeProxyProtocolVersion(version int) int {
+	if version == 2 {
+		return 2
+	}
+	return 1
+}
+
+func consumeProxyProtocol(data []byte) (proxyProtocolInfo, []byte, bool, error) {
+	if bytes.HasPrefix(data, []byte("PROXY ")) {
+		return consumeProxyProtocolV1(data)
+	}
+	if bytes.HasPrefix(data, proxyProtocolV2Signature) {
+		return consumeProxyProtocolV2(data)
+	}
+	if len(data) > 0 && len(data) < len(proxyProtocolV2Signature) && bytes.HasPrefix(proxyProtocolV2Signature, data) {
+		return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol v2 header")
+	}
+	return proxyProtocolInfo{}, data, false, nil
+}
+
+func consumeProxyProtocolFromConn(conn net.Conn, data []byte, timeout time.Duration) (proxyProtocolInfo, []byte, bool, error) {
+	buf := append([]byte(nil), data...)
+	if len(buf) == 0 {
+		return consumeProxyProtocol(buf)
+	}
+	if bytes.HasPrefix(buf, []byte("PROXY ")) || bytes.HasPrefix([]byte("PROXY "), buf) {
+		return consumeProxyProtocolV1FromConn(conn, buf, timeout)
+	}
+	if bytes.HasPrefix(buf, proxyProtocolV2Signature) || bytes.HasPrefix(proxyProtocolV2Signature, buf) {
+		for len(buf) < 16 {
+			more, err := readProxyProtocolMore(conn, timeout, 16-len(buf))
+			if len(more) > 0 {
+				buf = append(buf, more...)
+			}
+			if err != nil {
+				return proxyProtocolInfo{}, nil, false, err
+			}
+			if len(more) == 0 {
+				return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol v2 header")
+			}
+		}
+		length := int(binary.BigEndian.Uint16(buf[14:16]))
+		need := 16 + length
+		for len(buf) < need {
+			more, err := readProxyProtocolMore(conn, timeout, need-len(buf))
+			if len(more) > 0 {
+				buf = append(buf, more...)
+			}
+			if err != nil {
+				return proxyProtocolInfo{}, nil, false, err
+			}
+			if len(more) == 0 {
+				return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol v2 payload")
+			}
+		}
+	}
+	return consumeProxyProtocol(buf)
+}
+
+func readProxyProtocolMore(conn net.Conn, timeout time.Duration, limit int) ([]byte, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
+	tmp := make([]byte, limit)
+	n, err := conn.Read(tmp)
+	_ = conn.SetReadDeadline(time.Time{})
+	if n > 0 {
+		return tmp[:n], err
+	}
+	return nil, err
+}
+
+func consumeProxyProtocolV2(data []byte) (proxyProtocolInfo, []byte, bool, error) {
+	if !bytes.HasPrefix(data, proxyProtocolV2Signature) {
+		return proxyProtocolInfo{}, data, false, nil
+	}
+	if len(data) < 16 {
+		return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol v2 header")
+	}
+	versionCommand := data[12]
+	if versionCommand>>4 != 0x2 {
+		return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol v2 version")
+	}
+	command := versionCommand & 0x0f
+	familyProtocol := data[13]
+	length := int(binary.BigEndian.Uint16(data[14:16]))
+	if len(data) < 16+length {
+		return proxyProtocolInfo{}, nil, false, errors.New("incomplete proxy protocol v2 payload")
+	}
+	payload := data[16 : 16+length]
+	remaining := data[16+length:]
+	if command == 0x0 {
+		return proxyProtocolInfo{}, remaining, true, nil
+	}
+	if command != 0x1 {
+		return proxyProtocolInfo{}, nil, false, errors.New("unsupported proxy protocol v2 command")
+	}
+	switch familyProtocol {
+	case 0x11:
+		if len(payload) < 12 {
+			return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol v2 tcp4 payload")
+		}
+		return proxyProtocolInfo{SourceIP: net.IP(payload[0:4]).String(), DestIP: net.IP(payload[4:8]).String(), SourcePort: int(binary.BigEndian.Uint16(payload[8:10])), DestPort: int(binary.BigEndian.Uint16(payload[10:12]))}, remaining, true, nil
+	case 0x21:
+		if len(payload) < 36 {
+			return proxyProtocolInfo{}, nil, false, errors.New("invalid proxy protocol v2 tcp6 payload")
+		}
+		return proxyProtocolInfo{SourceIP: net.IP(payload[0:16]).String(), DestIP: net.IP(payload[16:32]).String(), SourcePort: int(binary.BigEndian.Uint16(payload[32:34])), DestPort: int(binary.BigEndian.Uint16(payload[34:36]))}, remaining, true, nil
+	case 0x00:
+		return proxyProtocolInfo{}, remaining, true, nil
+	default:
+		return proxyProtocolInfo{}, nil, false, errors.New("unsupported proxy protocol v2 address family")
+	}
+}
+
+func formatProxyProtocol(hello helloFrame) []byte {
+	if normalizeProxyProtocolVersion(hello.ProxyProtocolVersion) == 2 {
+		return formatProxyProtocolV2(hello)
+	}
+	return []byte(formatProxyProtocolV1(hello))
+}
+
+func formatProxyProtocolV2(hello helloFrame) []byte {
+	sourceIP, destIP, sourcePort, destPort := proxyProtocolHelloValues(hello)
+	src := net.ParseIP(sourceIP)
+	dst := net.ParseIP(destIP)
+	if src == nil || dst == nil || sourcePort <= 0 || destPort <= 0 {
+		return formatProxyProtocolV2Local()
+	}
+	if src4, dst4 := src.To4(), dst.To4(); src4 != nil && dst4 != nil {
+		buf := make([]byte, 28)
+		copy(buf, proxyProtocolV2Signature)
+		buf[12] = 0x21
+		buf[13] = 0x11
+		binary.BigEndian.PutUint16(buf[14:16], 12)
+		copy(buf[16:20], src4)
+		copy(buf[20:24], dst4)
+		binary.BigEndian.PutUint16(buf[24:26], uint16(sourcePort))
+		binary.BigEndian.PutUint16(buf[26:28], uint16(destPort))
+		return buf
+	}
+	src16 := src.To16()
+	dst16 := dst.To16()
+	if src16 == nil || dst16 == nil || src.To4() != nil || dst.To4() != nil {
+		return formatProxyProtocolV2Local()
+	}
+	buf := make([]byte, 52)
+	copy(buf, proxyProtocolV2Signature)
+	buf[12] = 0x21
+	buf[13] = 0x21
+	binary.BigEndian.PutUint16(buf[14:16], 36)
+	copy(buf[16:32], src16)
+	copy(buf[32:48], dst16)
+	binary.BigEndian.PutUint16(buf[48:50], uint16(sourcePort))
+	binary.BigEndian.PutUint16(buf[50:52], uint16(destPort))
+	return buf
+}
+
+func formatProxyProtocolV2Local() []byte {
+	buf := make([]byte, 16)
+	copy(buf, proxyProtocolV2Signature)
+	buf[12] = 0x20
+	buf[13] = 0x00
+	return buf
+}
+
+func proxyProtocolHelloValues(hello helloFrame) (string, string, int, int) {
+	sourceIP := strings.TrimSpace(hello.ProxySourceIP)
+	destIP := strings.TrimSpace(hello.ProxyDestIP)
+	if destIP == "" {
+		destIP = strings.TrimSpace(hello.TargetIP)
+	}
+	sourcePort := hello.ProxySourcePort
+	destPort := hello.ProxyDestPort
+	if destPort <= 0 {
+		destPort = hello.TargetPort
+	}
+	return sourceIP, destIP, sourcePort, destPort
+}
 func formatProxyProtocolV1(hello helloFrame) string {
 	sourceIP := strings.TrimSpace(hello.ProxySourceIP)
 	destIP := strings.TrimSpace(hello.ProxyDestIP)
@@ -903,7 +1089,7 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 			hello.TargetIP,
 			hello.TargetPort,
 		)
-		if _, err := target.Write([]byte(formatProxyProtocolV1(hello))); err != nil {
+		if _, err := target.Write(formatProxyProtocol(hello)); err != nil {
 			return fmt.Errorf("write proxy protocol: %w", err)
 		}
 	} else if hello.ProxyProtocolExitSend {

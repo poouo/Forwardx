@@ -1,7 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -89,6 +89,15 @@ function storeAgentTokenViewMode(viewMode: AgentTokenViewMode) {
 
 function shellQuote(value: string) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function isLoopbackPanelUrl(value: string) {
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "::1" || host === "0.0.0.0" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
 }
 
 function normalizeConfigUrl(value: string) {
@@ -366,6 +375,7 @@ export default function AgentTokenManager({
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
     || (typeof window !== "undefined" ? window.location.origin : "");
+  const panelUrlUsesLoopback = isLoopbackPanelUrl(panelUrl);
   const githubAcceleratorUrl = normalizeConfigUrl(systemSettings?.githubAccelerator?.url || "");
   const githubAcceleratorActive = !!systemSettings?.githubAccelerator?.enabled && !!githubAcceleratorUrl;
   const agentPreferPanelInstall = !!systemSettings?.agentPreferPanelInstall;
@@ -700,6 +710,15 @@ export default function AgentTokenManager({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {panelUrlUsesLoopback && (
+              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>当前安装地址是本机回环地址</AlertTitle>
+                <AlertDescription>
+                  Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。
+                </AlertDescription>
+              </Alert>
+            )}
             <div className="space-y-2">
               <p className="text-sm font-medium">快速安装命令：</p>
               <div className="p-3 rounded-lg bg-background/50 border">
@@ -813,6 +832,15 @@ export default function AgentTokenManager({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {panelUrlUsesLoopback && (
+              <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>当前安装地址是本机回环地址</AlertTitle>
+                <AlertDescription>
+                  Agent 作为服务运行时访问 localhost、127.0.0.1 或 ::1 可能指向 Agent 自己，面板机部署 Agent 连接自己时容易不上线。请在系统设置里配置面板公开访问地址，或用实际 IP/域名打开面板后再复制命令。
+                </AlertDescription>
+              </Alert>
+            )}
             <CommandRow
               label="安装命令"
               command={scriptToken ? getInstallCommand(scriptToken) : ""}

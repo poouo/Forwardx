@@ -135,6 +135,15 @@ function userTunnelRateLimitMbps(user: any) {
   );
 }
 
+function tunnelRateLimitMbps(tunnel: any) {
+  return normalizeRateLimitMbps(tunnel?.rateLimitMbps);
+}
+
+function effectiveTunnelRateLimitMbps(user: any, tunnel?: any | null) {
+  const limits = [userTunnelRateLimitMbps(user), tunnelRateLimitMbps(tunnel)].filter((limit) => limit > 0);
+  return limits.length > 0 ? Math.min(...limits) : 0;
+}
+
 function mbpsToBytesPerSecond(mbps: unknown) {
   return Math.max(0, Math.floor(normalizeRateLimitMbps(mbps) * BYTES_PER_MEGABIT));
 }
@@ -652,6 +661,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ruleTargetRuntime: String(rule?.targetIp || ""),
         runtimeTarget: `${processTarget(rule)}:${Number(rule?.targetPort || 0)}`,
         protocol: String(rule?.protocol || ""),
+        proxyVersion: proxyProtocolVersion(rule),
         entryReceive: proxyDebugBool(proxyProtocolEnabled(rule, "entryReceive")),
         entrySend: proxyDebugBool(proxyProtocolEnabled(rule, "entrySend")),
         exitReceive: proxyDebugBool(proxyProtocolEnabled(rule, "exitReceive")),
@@ -672,25 +682,31 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const gostRuleUserIds = Array.from(new Set(agentHostRules.map((r: any) => Number(r.userId)).filter((id: number) => Number.isFinite(id) && id > 0))) as number[];
     const gostUsers = await Promise.all(gostRuleUserIds.map((id) => db.getUserById(id)));
     const gostUserById = new Map(gostUsers.filter(Boolean).map((u: any) => [u.id, u]));
-    const gostRateLimiters = gostUsers
-      .filter((u: any) => u && userTunnelRateLimitMbps(u) > 0)
-      .map((u: any) => {
-        const bytesPerSecond = mbpsToBytesPerSecond(userTunnelRateLimitMbps(u));
-        return {
-          name: `fwx-user-${u.id}`,
-          limits: [`$ ${bytesPerSecond}B ${bytesPerSecond}B`],
-        };
+    const gostRateLimiters: any[] = [];
+    const gostRateLimiterNames = new Set<string>();
+    const ensureGostLimiter = (name: string, mbps: number) => {
+      const bytesPerSecond = mbpsToBytesPerSecond(mbps);
+      if (bytesPerSecond <= 0 || gostRateLimiterNames.has(name)) return;
+      gostRateLimiterNames.add(name);
+      gostRateLimiters.push({
+        name,
+        limits: [`$ ${bytesPerSecond}B ${bytesPerSecond}B`],
       });
-    const applyGostLimiter = (service: any, userId: number) => {
+    };
+    const applyGostLimiter = (service: any, userId: number, tunnel?: any | null) => {
       const user = gostUserById.get(userId) as any;
-      if (user && userTunnelRateLimitMbps(user) > 0) {
-        service.limiter = `fwx-user-${user.id}`;
+      const mbps = effectiveTunnelRateLimitMbps(user, tunnel);
+      if (mbps > 0) {
+        const tunnelId = Number(tunnel?.id || 0);
+        const name = tunnelId > 0 ? `fwx-user-${userId}-tunnel-${tunnelId}-${mbps}` : `fwx-user-${userId}-${mbps}`;
+        ensureGostLimiter(name, mbps);
+        service.limiter = name;
       }
       return service;
     };
-    const userRateLimits = (userId: number) => {
+    const userRateLimits = (userId: number, tunnel?: any | null) => {
       const user = gostUserById.get(userId) as any;
-      const bytesPerSecond = mbpsToBytesPerSecond(userTunnelRateLimitMbps(user));
+      const bytesPerSecond = mbpsToBytesPerSecond(effectiveTunnelRateLimitMbps(user, tunnel));
       return {
         limitIn: bytesPerSecond,
         limitOut: bytesPerSecond,
@@ -832,8 +848,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (direction === "exitReceive") return !!(rule as any).proxyProtocolExitReceive;
       return !!(rule as any).proxyProtocolExitSend;
     };
+    const proxyProtocolVersion = (rule: any) => Number((rule as any)?.proxyProtocolVersion) === 2 ? 2 : 1;
     const maybeProxyProtocolMetadata = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => (
-      proxyProtocolEnabled(rule, direction) ? { proxyProtocol: 1 } : undefined
+      proxyProtocolEnabled(rule, direction) ? { proxyProtocol: proxyProtocolVersion(rule) } : undefined
     );
     const mergeMetadata = (...items: Array<Record<string, unknown> | undefined>) => {
       const merged = Object.assign({}, ...items.filter(Boolean));
@@ -1260,7 +1277,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           } else if (!tunnelExitHost || tunnelExitEndpointsForRule(r, tunnel).length === 0) {
             return null;
           }
-          return applyGostLimiter(service, Number(r.userId));
+          return applyGostLimiter(service, Number(r.userId), tunnel);
         }));
       })))
       .flat()
@@ -1466,7 +1483,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           return proxyProtocolEnabled(rule, "entrySend");
         });
         const relayReceiveProxyMetadata = relayRulesForCurrentHop.length > 0
-          ? { proxyProtocol: 1 }
+          ? { proxyProtocol: relayRulesForCurrentHop.some((rule: any) => proxyProtocolVersion(rule) === 2) ? 2 : 1 }
           : undefined;
         const listenerMetadata = mergeMetadata(
           Number(currentHop.seq) === 0 ? undefined : tunnelProtocolMetadata(tunnel.mode),
@@ -1873,6 +1890,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             policy: ruleGuardPolicy,
             proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
             proxyProtocolSend: proxyProtocolEnabled(rule, "send"),
+            proxyProtocolVersion: proxyProtocolVersion(rule),
           });
         }
         const runningForwardType = rule.forwardType === "gost" && ruleTunnel && isForwardXTunnel(ruleTunnel)
@@ -1920,6 +1938,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             policy: ruleGuardPolicy,
             proxyProtocolReceive: proxyProtocolEnabled(rule, "receive"),
             proxyProtocolSend: proxyProtocolEnabled(rule, "send"),
+            proxyProtocolVersion: proxyProtocolVersion(rule),
           });
           actions.push({
             ruleId: rule.id,
@@ -1983,7 +2002,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const tcpOnlyFlags = String(rule.protocol || "tcp") !== "udp"
             ? [
                 proxyProtocolEnabled(rule, "receive") ? "--accept-proxy --accept-proxy-timeout 5" : "",
-                proxyProtocolEnabled(rule, "send") ? "--send-proxy --send-proxy-version 1" : "",
+                proxyProtocolEnabled(rule, "send") ? `--send-proxy --send-proxy-version ${proxyProtocolVersion(rule)}` : "",
                 (rule as any).tcpFastOpen ? "--tfo" : "",
                 (rule as any).zeroCopy ? "--splice" : "",
               ].filter(Boolean).join(" ")
@@ -2140,7 +2159,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               appendPanelLog("error", `[TunnelRoute] invalid ForwardX entry route tunnel=${tunnel.id} rule=${rule.id} nextHost=${entryRoute.host || "-"} nextPort=${entryRoute.port || "-"}`);
               continue;
             }
-            const rateLimits = userRateLimits(Number(rule.userId));
+            const rateLimits = userRateLimits(Number(rule.userId), tunnel);
             const accessLimits = userAccessLimits(Number(rule.userId));
             const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
             actions.push({
@@ -2180,6 +2199,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 proxyProtocolSend: proxyProtocolEnabled(rule, "entrySend"),
                 proxyProtocolExitReceive: proxyProtocolEnabled(rule, "exitReceive"),
                 proxyProtocolExitSend: proxyProtocolEnabled(rule, "exitSend"),
+                proxyProtocolVersion: proxyProtocolVersion(rule),
                 tcpFastOpen: !!(rule as any).tcpFastOpen,
               },
               failover: mainBackup,
@@ -2319,6 +2339,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           policy,
           proxyProtocolReceive: proxyProtocolEnabled(rule, "exitReceive"),
           proxyProtocolSend: proxyProtocolEnabled(rule, "exitSend"),
+          proxyProtocolVersion: proxyProtocolVersion(rule),
         });
       }
     }

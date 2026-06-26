@@ -160,6 +160,7 @@ export const copyRulesRouter = router({
             proxyProtocolSend: !!(rule as any).proxyProtocolSend,
             proxyProtocolExitReceive: false,
             proxyProtocolExitSend: false,
+            proxyProtocolVersion: Number((rule as any).proxyProtocolVersion) === 2 ? 2 : 1,
             tcpFastOpen: !!(rule as any).tcpFastOpen,
             zeroCopy: !!(rule as any).zeroCopy,
             failoverEnabled: !!(rule as any).failoverEnabled,

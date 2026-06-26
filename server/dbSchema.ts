@@ -131,6 +131,7 @@ const tables: TableDef[] = [
       c("blockTls", "bool", { notNull: true, default: false }),
       c("proxyProtocolReceive", "bool", { notNull: true, default: false }), c("proxyProtocolSend", "bool", { notNull: true, default: false }),
       c("proxyProtocolExitReceive", "bool", { notNull: true, default: false }), c("proxyProtocolExitSend", "bool", { notNull: true, default: false }),
+      c("proxyProtocolVersion", "int", { notNull: true, default: 1 }),
       c("tcpFastOpen", "bool", { notNull: true, default: false }), c("zeroCopy", "bool", { notNull: true, default: false }),
       c("protocolBlockReason", "text"), c("isEnabled", "bool", { notNull: true, default: true }),
       c("failoverEnabled", "bool", { notNull: true, default: false }), c("failoverTargets", "text"),
@@ -187,7 +188,7 @@ const tables: TableDef[] = [
     columns: [
       c("id", "id"), c("name", "text", { notNull: true }), c("entryGroupId", "int"), c("entryHostId", "int", { notNull: true }),
       c("exitHostId", "int", { notNull: true }), c("mode", "varchar", { length: 32, notNull: true, default: "tls" }),
-      c("secret", "text"), c("listenPort", "int", { notNull: true }), c("portRangeStart", "int"), c("portRangeEnd", "int"),
+      c("secret", "text"), c("listenPort", "int", { notNull: true }), c("rateLimitMbps", "int", { notNull: true, default: 0 }), c("portRangeStart", "int"), c("portRangeEnd", "int"),
       c("networkType", "varchar", { length: 32, notNull: true, default: "public" }), c("connectHost", "text"),
       c("blockHttp", "bool", { notNull: true, default: false }), c("blockSocks", "bool", { notNull: true, default: false }),
       c("blockTls", "bool", { notNull: true, default: false }), c("loadBalanceEnabled", "bool", { notNull: true, default: false }),

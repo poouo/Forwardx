@@ -192,7 +192,7 @@ function PlanCard({
         <MobileInfoRow label="状态">
           <div className="flex flex-wrap justify-end gap-1">
             <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-            <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
+            <Badge variant={plan.isActive && plan.isStoreVisible ? "outline" : "secondary"}>{!plan.isActive ? "购买关闭" : plan.isStoreVisible ? "商店展示" : "后台分配"}</Badge>
           </div>
         </MobileInfoRow>
       </div>
@@ -361,7 +361,7 @@ function payload(form: PlanForm) {
     maxConnections: Math.max(0, Math.floor(Number(form.maxConnections || 0))),
     maxIPs: Math.max(0, Math.floor(Number(form.maxIPs || 0))),
     isActive: form.isActive,
-    isStoreVisible: form.isStoreVisible,
+    isStoreVisible: form.isActive && form.isStoreVisible,
     sortOrder: Math.max(0, Math.floor(Number(form.sortOrder || 0))),
     hostIds: form.hostIds,
     tunnelIds: form.tunnelIds,
@@ -807,7 +807,7 @@ export default function Plans() {
                                 <TableCell>
                                   <div className="flex flex-wrap gap-1">
                                     <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-                                    <Badge variant={plan.isStoreVisible ? "outline" : "secondary"}>{plan.isStoreVisible ? "商店可见" : "后台分配"}</Badge>
+                                    <Badge variant={plan.isActive && plan.isStoreVisible ? "outline" : "secondary"}>{!plan.isActive ? "购买关闭" : plan.isStoreVisible ? "商店展示" : "后台分配"}</Badge>
                                   </div>
                                 </TableCell>
                                 <TableCell className="text-right">
@@ -856,7 +856,7 @@ export default function Plans() {
               <TabsTrigger value="resources">资源绑定</TabsTrigger>
             </TabsList>
 
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
               <TabsContent value="settings" className="mt-4 space-y-4">
                 <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
@@ -915,9 +915,34 @@ export default function Plans() {
             </div>
                 </div>
 
-                <div className="flex flex-wrap gap-4 rounded-lg border border-border/60 px-4 py-3">
-                  <label className="flex items-center gap-2 text-sm"><Switch checked={form.isActive} onCheckedChange={(isActive) => setForm({ ...form, isActive })} /> 启用套餐</label>
-                  <label className="flex items-center gap-2 text-sm"><Switch checked={form.isStoreVisible} onCheckedChange={(isStoreVisible) => setForm({ ...form, isStoreVisible })} /> 商店可见</label>
+                <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
+                  <div className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">套餐状态</p>
+                      <p className="text-xs text-muted-foreground">关闭后该套餐不可购买或分配。</p>
+                    </div>
+                    <Switch
+                      className="shrink-0"
+                      checked={form.isActive}
+                      onCheckedChange={(isActive) => setForm((current) => ({
+                        ...current,
+                        isActive,
+                        isStoreVisible: isActive ? current.isStoreVisible : false,
+                      }))}
+                    />
+                  </div>
+                  <div className={`flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2 ${form.isActive ? "" : "opacity-60"}`}>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">购买入口</p>
+                      <p className="text-xs text-muted-foreground">开启后普通用户可在商店自助购买。</p>
+                    </div>
+                    <Switch
+                      className="shrink-0"
+                      checked={form.isActive && form.isStoreVisible}
+                      disabled={!form.isActive}
+                      onCheckedChange={(isStoreVisible) => setForm({ ...form, isStoreVisible })}
+                    />
+                  </div>
                 </div>
               </TabsContent>
 

@@ -390,6 +390,7 @@ export const tunnelsRouter = router({
         exitHostId: z.number(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
+        rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional().default("public"),
@@ -523,6 +524,7 @@ export const tunnelsRouter = router({
         exitHostId: z.number().optional(),
         mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
         listenPort: z.number().min(0).max(65535).optional(),
+        rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional(),
@@ -653,7 +655,7 @@ export const tunnelsRouter = router({
         })));
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || existingExtraSignature !== nextExtraSignature;
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);

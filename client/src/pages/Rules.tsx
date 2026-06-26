@@ -231,6 +231,7 @@ type RuleFormData = {
   proxyProtocolSend: boolean;
   proxyProtocolExitReceive: boolean;
   proxyProtocolExitSend: boolean;
+  proxyProtocolVersion: ProxyProtocolVersion;
   tcpFastOpen: boolean;
   zeroCopy: boolean;
   failoverEnabled: boolean;
@@ -240,6 +241,8 @@ type RuleFormData = {
   recoverSeconds: number;
   autoFailback: boolean;
 };
+
+type ProxyProtocolVersion = 1 | 2;
 
 type ProxyProtocolField =
   | "proxyProtocolReceive"
@@ -290,6 +293,7 @@ const defaultForm: RuleFormData = {
   proxyProtocolSend: false,
   proxyProtocolExitReceive: false,
   proxyProtocolExitSend: false,
+  proxyProtocolVersion: 1,
   tcpFastOpen: false,
   zeroCopy: false,
   failoverEnabled: false,
@@ -355,6 +359,7 @@ type RuleTransferFileRule = {
   proxyProtocolSend: boolean;
   proxyProtocolExitReceive: boolean;
   proxyProtocolExitSend: boolean;
+  proxyProtocolVersion: ProxyProtocolVersion;
   tcpFastOpen: boolean;
   zeroCopy: boolean;
   failoverEnabled: boolean;
@@ -1962,6 +1967,10 @@ function parseRuleFailoverTargets(raw: unknown) {
   }
 }
 
+function normalizeProxyProtocolVersion(value: unknown): ProxyProtocolVersion {
+  return Number(value) === 2 ? 2 : 1;
+}
+
 function formatFailoverTargetsText(raw: unknown) {
   return parseRuleFailoverTargets(raw)
     .map((target) => `${target.targetIp.includes(":") ? `[${target.targetIp}]` : target.targetIp}:${target.targetPort}`)
@@ -1980,6 +1989,7 @@ function exportRuleForTransfer(rule: any): RuleTransferFileRule {
     proxyProtocolSend: Boolean(rule?.proxyProtocolSend),
     proxyProtocolExitReceive: Boolean(rule?.proxyProtocolExitReceive),
     proxyProtocolExitSend: Boolean(rule?.proxyProtocolExitSend),
+    proxyProtocolVersion: normalizeProxyProtocolVersion(rule?.proxyProtocolVersion),
     tcpFastOpen: Boolean(rule?.tcpFastOpen),
     zeroCopy: Boolean(rule?.zeroCopy),
     failoverEnabled: Boolean(rule?.failoverEnabled),
@@ -2012,6 +2022,7 @@ function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
     proxyProtocolSend: Boolean(source.proxyProtocolSend),
     proxyProtocolExitReceive: Boolean(source.proxyProtocolExitReceive),
     proxyProtocolExitSend: Boolean(source.proxyProtocolExitSend),
+    proxyProtocolVersion: normalizeProxyProtocolVersion(source.proxyProtocolVersion),
     tcpFastOpen: Boolean(source.tcpFastOpen),
     zeroCopy: Boolean(source.zeroCopy),
     failoverEnabled: Boolean(source.failoverEnabled),
@@ -2358,7 +2369,7 @@ function RulesContent() {
       routeMode: rule.forwardGroupId ? (isForwardChainGroup(editForwardGroup) ? "chain" : "group") : rule.forwardType === "gost" && rule.tunnelId ? "tunnel" : "local",
       forwardType: rule.forwardType,
       protocol: rule.protocol,
-      gostMode: "direct",
+      gostMode: "direct" as const,
       gostRelayHost: "",
       gostRelayPort: 0,
       tunnelId: rule.tunnelId || null,
@@ -2373,6 +2384,7 @@ function RulesContent() {
       proxyProtocolSend: !!rule.proxyProtocolSend,
       proxyProtocolExitReceive: !!rule.proxyProtocolExitReceive,
       proxyProtocolExitSend: !!rule.proxyProtocolExitSend,
+      proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
       tcpFastOpen: !!rule.tcpFastOpen,
       zeroCopy: !!rule.zeroCopy,
       failoverEnabled: !!rule.failoverEnabled,
@@ -2628,6 +2640,7 @@ function RulesContent() {
     : proxyProtocolForwardType !== "gost" && proxyProtocolForwardType !== "realm"
     ? "当前转发工具不支持 PROXY Protocol。"
     : "";
+  const proxyProtocolAnyEnabled = form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend;
   const isForwardXTunnelMode = isTunnelProxyProtocolMode && String(selectedTunnel?.mode || "").toLowerCase() === "forwardx";
   const canUseTcpFastOpen = !selectedForwardGroupIsChain
     && proxyProtocolProtocolSupported
@@ -2979,6 +2992,7 @@ function RulesContent() {
       proxyProtocolSend: canUseProxyProtocol ? form.proxyProtocolSend : false,
       proxyProtocolExitReceive: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
       proxyProtocolExitSend: canUseProxyProtocol && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
+      proxyProtocolVersion: canUseProxyProtocol && proxyProtocolAnyEnabled ? form.proxyProtocolVersion : 1,
     };
     const transportTuningPayload = {
       tcpFastOpen: canUseTcpFastOpen ? form.tcpFastOpen : false,
@@ -3002,7 +3016,7 @@ function RulesContent() {
         name: form.name,
         forwardType: submitForwardType,
         protocol: form.protocol,
-        gostMode: "direct",
+        gostMode: "direct" as const,
         gostRelayHost: null,
         gostRelayPort: null,
         tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
@@ -3021,7 +3035,7 @@ function RulesContent() {
         name: form.name,
         forwardType: submitForwardType,
         protocol: form.protocol,
-        gostMode: "direct",
+        gostMode: "direct" as const,
         gostRelayHost: null,
         gostRelayPort: null,
         tunnelId: form.routeMode === "tunnel" ? form.tunnelId : null,
@@ -3884,7 +3898,7 @@ function RulesContent() {
       name: rule.name,
       forwardType: payloadForwardType,
       protocol: rule.protocol,
-      gostMode: "direct",
+      gostMode: "direct" as const,
       gostRelayHost: null,
       gostRelayPort: null,
       tunnelId: importScopeType === "tunnel" ? resourceId : null,
@@ -3896,6 +3910,7 @@ function RulesContent() {
       proxyProtocolSend: rule.proxyProtocolSend,
       proxyProtocolExitReceive: rule.proxyProtocolExitReceive,
       proxyProtocolExitSend: rule.proxyProtocolExitSend,
+      proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
       tcpFastOpen: rule.tcpFastOpen,
       zeroCopy: rule.zeroCopy,
       failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
@@ -5548,7 +5563,7 @@ function RulesContent() {
                     onValueChange={(v) => setForm({
                       ...form,
                       forwardType: v as any,
-                      gostMode: "direct",
+                      gostMode: "direct" as const,
                       gostRelayHost: "",
                       gostRelayPort: 0,
                       tunnelId: null,
@@ -5653,14 +5668,33 @@ function RulesContent() {
               </div>
             )}
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                <Label className="text-sm">PROXY Protocol</Label>
-                {!canUseProxyProtocol && proxyProtocolDisabledText && (
-                  <span className="text-xs text-amber-600">{proxyProtocolDisabledText}</span>
-                )}
-                {canUseProxyProtocol && isTunnelProxyProtocolMode && (
-                  <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
-                )}
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                  <Label className="text-sm">PROXY Protocol</Label>
+                  {!canUseProxyProtocol && proxyProtocolDisabledText && (
+                    <span className="text-xs text-amber-600">{proxyProtocolDisabledText}</span>
+                  )}
+                  {canUseProxyProtocol && isTunnelProxyProtocolMode && (
+                    <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
+                  )}
+                </div>
+                <div className={segmentedControlClassName}>
+                  <div className="grid grid-cols-2 gap-1">
+                    {([1, 2] as ProxyProtocolVersion[]).map((version) => (
+                      <button
+                        key={version}
+                        type="button"
+                        className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
+                        aria-pressed={form.proxyProtocolVersion === version}
+                        disabled={!canUseProxyProtocol || !proxyProtocolAnyEnabled}
+                        onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
+                        title={!proxyProtocolAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
+                      >
+                        V{version}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
               {isTunnelProxyProtocolMode ? (
                 <div className="space-y-2">

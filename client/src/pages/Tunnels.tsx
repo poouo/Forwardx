@@ -122,6 +122,7 @@ type TunnelForm = {
   hopConnectHosts: Array<string | null>;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp";
   listenPort: number;
+  rateLimitMbps: number;
   networkType: "public" | "private";
   connectHost: string;
   loadBalanceEnabled: boolean;
@@ -250,6 +251,7 @@ const defaultForm: TunnelForm = {
   hopConnectHosts: [],
   mode: "forwardx",
   listenPort: 0,
+  rateLimitMbps: 0,
   networkType: "public",
   connectHost: "",
   loadBalanceEnabled: false,
@@ -1890,6 +1892,7 @@ function TunnelsContent() {
       hopConnectHosts: displayRoute.hopConnectHosts,
       mode: tunnel.mode || "tls",
       listenPort: tunnel.listenPort,
+      rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
       loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
@@ -1985,6 +1988,11 @@ function TunnelsContent() {
       toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
       return;
     }
+    const rateLimitMbps = Number(submitForm.rateLimitMbps) || 0;
+    if (!Number.isInteger(rateLimitMbps) || rateLimitMbps < 0 || rateLimitMbps > 1_000_000) {
+      toast.error("隧道限速必须为 0 或正整数 Mbps，0 表示不限速");
+      return;
+    }
     if (!isTunnelSupported(submitForm)) {
       toast.error(unsupportedProtocolTitle);
       return;
@@ -2057,6 +2065,7 @@ function TunnelsContent() {
       name: submitForm.name,
       mode: submitForm.mode,
       listenPort: submitForm.listenPort,
+      rateLimitMbps,
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
@@ -2921,23 +2930,27 @@ function TunnelsContent() {
                         {unsupportedProtocolTitle}
                       </p>
                     )}
-                    <div className={`grid grid-cols-1 gap-3 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
-                      {form.mode !== "forwardx" && (
-                        <div className="space-y-2">
-                          <Label>GOST 协议</Label>
-                          <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {enabledGostTunnelModes.map((mode) => (
-                                <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
+                    {form.mode !== "forwardx" && (
+                      <div className="space-y-2">
+                        <Label>GOST 协议</Label>
+                        <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {enabledGostTunnelModes.map((mode) => (
+                              <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
                         <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>隧道限速 (Mbps)</Label>
+                        <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
                       </div>
                     </div>
                   </>
@@ -3191,23 +3204,27 @@ function TunnelsContent() {
                 {unsupportedProtocolTitle}
               </p>
             )}
-            <div className={`grid grid-cols-1 gap-3 ${form.mode === "forwardx" ? "" : "sm:grid-cols-2"}`}>
-              {form.mode !== "forwardx" && (
+            {form.mode !== "forwardx" && (
               <div className="space-y-2">
                 <Label>GOST 协议</Label>
-                    <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
+                <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
                     {enabledGostTunnelModes.map((mode) => (
                       <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-              )}
+            )}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
+              </div>
+              <div className="space-y-2">
+                <Label>隧道限速 (Mbps)</Label>
+                <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
               </div>
             </div>
           </div>

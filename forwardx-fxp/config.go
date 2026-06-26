@@ -22,6 +22,7 @@ func readConfig(path string) (config, error) {
 	cfg.TargetIP = strings.TrimSpace(cfg.TargetIP)
 	cfg.ExitHost = strings.TrimSpace(cfg.ExitHost)
 	cfg.RelayExitHost = strings.TrimSpace(cfg.RelayExitHost)
+	cfg.ProxyProtocolVersion = normalizeProxyProtocolVersion(cfg.ProxyProtocolVersion)
 	for i := range cfg.Exits {
 		cfg.Exits[i].Host = strings.TrimSpace(cfg.Exits[i].Host)
 		if cfg.Exits[i].Key == "" {
