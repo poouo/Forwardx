@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   CheckCircle2,
@@ -87,6 +88,10 @@ type PaymentConfigForm = {
     currency: string;
   };
 };
+
+type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "test";
+const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "test"] as const;
+const PAYMENT_TAB_STORAGE_KEY = "forwardx.payments.tab";
 
 const emptyForm: PaymentConfigForm = {
   enabled: false,
@@ -275,6 +280,11 @@ export default function Payments() {
   const [amount, setAmount] = useState("10");
   const [paymentType, setPaymentType] = useState<"alipay" | "wxpay" | "stripe">("alipay");
   const [createdPayUrl, setCreatedPayUrl] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useUrlTab<PaymentTab>({
+    values: PAYMENT_TABS,
+    defaultValue: "basic",
+    storageKey: PAYMENT_TAB_STORAGE_KEY,
+  });
 
   useEffect(() => {
     if (!config) return;
@@ -432,7 +442,7 @@ export default function Payments() {
         {isLoading ? (
           <DataSectionLoading label="正在加载支付配置" minHeight="min-h-[260px]" />
         ) : (
-        <Tabs defaultValue="basic">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PaymentTab)}>
           <TabsList className="flex h-auto flex-wrap">
             <TabsTrigger value="basic">基础设置</TabsTrigger>
             <TabsTrigger value="easypay">易支付</TabsTrigger>

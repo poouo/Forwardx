@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { useUrlTab } from "@/hooks/useUrlTab";
 import { planResourceText } from "@/lib/planDisplay";
 import { trpc } from "@/lib/trpc";
 import { CheckCircle2, Coins, CreditCard, Lock, Package, RefreshCw, Route, Server, ShoppingBag, TicketPercent, WalletCards } from "lucide-react";
@@ -63,6 +64,10 @@ const durationOptions = [
   { value: 730, label: "两年" },
 ];
 
+type StoreTab = "plans" | "billing";
+const STORE_TABS = ["plans", "billing"] as const;
+const STORE_TAB_STORAGE_KEY = "forwardx.store.tab";
+
 function durationLabel(days?: number | null) {
   return durationOptions.find((item) => item.value === Number(days))?.label || `${days || 30} 天`;
 }
@@ -96,6 +101,11 @@ export default function Store() {
   const [payMode, setPayMode] = useState<"gateway" | "balance">("gateway");
   const [discountCode, setDiscountCode] = useState("");
   const [discountPreview, setDiscountPreview] = useState<any | null>(null);
+  const [activeTab, setActiveTab] = useUrlTab<StoreTab>({
+    values: STORE_TABS,
+    defaultValue: "plans",
+    storageKey: STORE_TAB_STORAGE_KEY,
+  });
 
   const createOrder = trpc.payment.createOrder.useMutation({
     onSuccess: (order) => {
@@ -180,7 +190,7 @@ export default function Store() {
         )}
 
         {!storeStatusLoading && storeStatus?.enabled && (
-          <Tabs defaultValue="plans" className="space-y-4">
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as StoreTab)} className="space-y-4">
             <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto">
               <TabsTrigger value="plans" className="gap-2">
                 <Package className="h-4 w-4" /> 订阅套餐

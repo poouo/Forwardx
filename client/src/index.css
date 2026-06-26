@@ -666,10 +666,10 @@
   .group[data-collapsible="icon"] .collapsed-sidebar-logo-button {
     transform-origin: center;
     transition:
-      transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+      transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 160ms cubic-bezier(0.22, 1, 0.36, 1);
     will-change: transform;
   }
 
@@ -679,8 +679,8 @@
     vector-effect: non-scaling-stroke;
     transform-origin: center;
     transition:
-      color 220ms cubic-bezier(0.4, 0, 0.2, 1),
-      opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
+      color 160ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 160ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .group[data-collapsible="icon"] [data-sidebar="menu-button"]:hover,
