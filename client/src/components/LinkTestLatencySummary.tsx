@@ -126,6 +126,36 @@ function normalizeEndpointLabel(value: string) {
   return cleanNodeLabel(value).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function endpointMatchKeys(label: string, meta?: LinkTestNodeMeta) {
+  const values = [
+    label,
+    cleanNodeLabel(label),
+    meta?.label,
+    ...(String(meta?.address || "").split(/\s*\/\s*/)),
+  ];
+  const keys = new Set<string>();
+  values.forEach((value) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    [
+      text,
+      text.replace(/^目标\s+/i, "").trim(),
+      text.replace(/^\[/, "").replace(/\]$/, "").trim(),
+    ].forEach((candidate) => {
+      const key = normalizeEndpointLabel(candidate);
+      if (key) keys.add(key);
+    });
+  });
+  return keys;
+}
+
+function endpointLabelsMatch(leftLabel: string, leftMeta: LinkTestNodeMeta | undefined, rightLabel: string, rightMeta: LinkTestNodeMeta | undefined) {
+  const leftKeys = endpointMatchKeys(leftLabel, leftMeta);
+  const rightKeys = endpointMatchKeys(rightLabel, rightMeta);
+  if (leftKeys.size === 0 || rightKeys.size === 0) return false;
+  return Array.from(leftKeys).some((key) => rightKeys.has(key));
+}
+
 function isSelfLoopEndpoint(from: string, to: string) {
   const fromKey = normalizeEndpointLabel(from);
   const toKey = normalizeEndpointLabel(to);
@@ -190,8 +220,9 @@ function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
   if (initialDetails.length < 2 || uniqueSources.length < 2) return null;
   const latencies = visibleDetails.map((detail) => detail.success && hasLatencyValue(detail) ? Number(detail.latencyMs) : null);
   if (latencies.some((value) => value === null)) return null;
-  const initialLatency = Math.max(...latencies.slice(0, initialDetails.length).map((value) => Number(value)));
-  const restLatency = latencies.slice(initialDetails.length).reduce((sum, value) => sum + Number(value), 0);
+  const numericLatencies = latencies.map((value) => Number(value));
+  const initialLatency = Math.max(...numericLatencies.slice(0, initialDetails.length));
+  const restLatency = numericLatencies.slice(initialDetails.length).reduce((sum, value) => sum + value, 0);
   return initialLatency + restLatency;
 }
 
@@ -253,14 +284,63 @@ function buildProbeSegments(input: {
   }
 
   if (plannedSegments.length > 0) {
+    const detailRecords = visibleDetails.map((detail, index) => {
+      const endpoints = parseRouteEndpoints(detail, index);
+      return {
+        detail,
+        index,
+        endpoints,
+        fromMeta: lookupNodeMeta(input.nodeMeta, endpoints.from),
+        toMeta: lookupNodeMeta(input.nodeMeta, endpoints.to),
+      };
+    });
+    const usedDetailIndexes = new Set<number>();
+    const isGroupCompatible = (segment: (typeof plannedSegments)[number], record: (typeof detailRecords)[number]) => (
+      !segment.groupKey || !record.detail.groupKey || record.detail.groupKey === segment.groupKey
+    );
+    const findDetailRecordForSegment = (
+      segment: (typeof plannedSegments)[number],
+      index: number,
+      fromMeta: LinkTestNodeMeta | undefined,
+      toMeta: LinkTestNodeMeta | undefined,
+    ) => {
+      const exactRecord = detailRecords.find((record) => (
+        !usedDetailIndexes.has(record.index)
+        && isGroupCompatible(segment, record)
+        && endpointLabelsMatch(segment.from, fromMeta, record.endpoints.from, record.fromMeta)
+        && endpointLabelsMatch(segment.to, toMeta, record.endpoints.to, record.toMeta)
+      ));
+      if (exactRecord) return exactRecord;
+
+      if (visibleDetails.length === plannedSegments.length) {
+        const indexedRecord = detailRecords[index];
+        if (indexedRecord && !usedDetailIndexes.has(indexedRecord.index) && isGroupCompatible(segment, indexedRecord)) return indexedRecord;
+      }
+
+      if (plannedSegments.length === 1) {
+        const onlyRecord = detailRecords.find((record) => !usedDetailIndexes.has(record.index) && isGroupCompatible(segment, record));
+        if (onlyRecord) return onlyRecord;
+      }
+
+      if (index === plannedSegments.length - 1) {
+        for (let detailIndex = detailRecords.length - 1; detailIndex >= 0; detailIndex -= 1) {
+          const tailRecord = detailRecords[detailIndex];
+          if (tailRecord && !usedDetailIndexes.has(tailRecord.index) && isGroupCompatible(segment, tailRecord)) return tailRecord;
+        }
+      }
+
+      return null;
+    };
+
     return plannedSegments.map((segment, index): ProbeSegment => {
-      const detail = visibleDetails[index] || (index === plannedSegments.length - 1 ? visibleDetails[visibleDetails.length - 1] : null);
       const fromMeta = segment.fromMeta || lookupNodeMeta(input.nodeMeta, segment.from);
       const toMeta = segment.toMeta || lookupNodeMeta(input.nodeMeta, segment.to);
-      const detailApplies = !!detail && (visibleDetails.length >= plannedSegments.length || index === plannedSegments.length - 1);
-      const detailSuccess = detailApplies && typeof detail?.success === "boolean" ? !!detail.success : undefined;
-      const detailLatency = detailApplies && detail?.success && hasLatencyValue(detail) ? detail.latencyMs : null;
-      const detailMessage = detailApplies ? detail?.message || null : null;
+      const detailRecord = findDetailRecordForSegment(segment, index, fromMeta, toMeta);
+      if (detailRecord) usedDetailIndexes.add(detailRecord.index);
+      const detail = detailRecord?.detail || null;
+      const detailSuccess = detail && typeof detail.success === "boolean" ? !!detail.success : undefined;
+      const detailLatency = detail?.success && hasLatencyValue(detail) ? detail.latencyMs : null;
+      const detailMessage = detail?.message || null;
       const hasExplicitSuccess = typeof segment.success === "boolean" || typeof detailSuccess === "boolean";
       const hasExplicitLatency = hasUsableLatencyValue(segment.latencyMs) || hasUsableLatencyValue(detailLatency);
       const hasExplicitState = hasExplicitSuccess || hasExplicitLatency || !!segment.message || !!detailMessage || segment.pending === true || detail?.pending === true;
@@ -424,10 +504,8 @@ export function LinkTestProbeView({
           ? segment.latencyLabel
           : ok && hasUsableLatencyValue(segment.latencyMs)
             ? formatLatencyMs(segment.latencyMs)
-            : ok && segments.length === 1
-            ? "成功"
             : ok
-              ? ""
+              ? "--"
               : "失败";
     return { testing, ok, label };
   };
@@ -527,7 +605,7 @@ export function LinkTestProbeView({
               mobile && (testing ? "border-primary/20" : ok ? "border-emerald-500/20" : "border-destructive/20"),
             )}
           >
-            {label || (ok ? "通过" : "失败")}
+            {label || (ok ? "--" : "失败")}
           </span>
         </div>
         {mobile ? renderMobileNode(segment.to, segment.toMeta) : renderNode(segment.to, segment.toMeta)}
@@ -579,7 +657,7 @@ export function LinkTestProbeView({
               testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
             )}
           >
-            {label || "通过"}
+            {label || (ok ? "--" : "失败")}
           </span>
         ) : null}
       </div>
@@ -626,7 +704,7 @@ export function LinkTestProbeView({
                 <span className="flex h-3.5 w-5 shrink-0 items-center justify-center">{renderFlag(segment.fromMeta)}</span>
                 <span className="min-w-0 truncate">{entryLabel}</span>
               </span>
-              <span className="shrink-0 text-xs font-semibold tabular-nums">{label || (ok ? "通过" : "失败")}</span>
+              <span className="shrink-0 text-xs font-semibold tabular-nums">{label || (ok ? "--" : "失败")}</span>
             </div>
           );
         })}
@@ -717,7 +795,7 @@ export function LinkTestProbeView({
                         testing ? "border-primary/20 text-primary" : ok ? "border-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "border-destructive/20 text-destructive",
                       )}
                     >
-                      {label || "通过"}
+                      {label || (ok ? "--" : "失败")}
                     </span>
                   </div>
                   {renderMobileNode(segment.to, segment.toMeta)}
