@@ -384,6 +384,72 @@ body::after {
     background: rgba(12, 17, 24, 0.96) !important;
   }
 
+  .VPLocalNavOutlineDropdown {
+    position: static;
+  }
+
+  .VPLocalNavOutlineDropdown .items {
+    z-index: calc(var(--vp-z-index-local-nav) + 2);
+    left: 18px;
+    right: 18px;
+    top: 48px;
+    display: block;
+    max-height: min(62vh, 460px);
+    overflow-y: auto;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 18px;
+    background:
+      linear-gradient(145deg, rgba(248, 253, 255, 0.98), rgba(236, 247, 255, 0.96)) !important;
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.2);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  }
+
+  .dark .VPLocalNavOutlineDropdown .items {
+    border-color: rgba(226, 232, 240, 0.14);
+    background:
+      linear-gradient(145deg, rgba(17, 24, 39, 0.98), rgba(15, 23, 42, 0.96)) !important;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+  }
+
+  .VPLocalNavOutlineDropdown .header,
+  .VPLocalNavOutlineDropdown .outline {
+    background: transparent !important;
+  }
+
+  .VPLocalNavOutlineDropdown .header {
+    border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  }
+
+  .dark .VPLocalNavOutlineDropdown .header {
+    border-bottom-color: rgba(226, 232, 240, 0.12);
+  }
+
+  .VPLocalNavOutlineDropdown .top-link {
+    line-height: 50px;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .VPLocalNavOutlineDropdown .outline {
+    padding: 10px 8px 12px;
+  }
+
+  .VPLocalNavOutlineDropdown .outline-link {
+    display: block;
+    min-height: 38px;
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: var(--vp-c-text-1);
+    line-height: 1.45;
+  }
+
+  .VPLocalNavOutlineDropdown .outline-link.active,
+  .VPLocalNavOutlineDropdown .outline-link:hover {
+    background: rgba(20, 184, 166, 0.11);
+    color: var(--vp-c-brand-1);
+  }
+
   .VPHomeHero .main::before {
     inset: -16px -14px;
     border-radius: 26px;
