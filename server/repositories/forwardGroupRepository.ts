@@ -51,6 +51,9 @@ type SyncForwardGroupRulesOptions = {
 
 type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
 type ForwardGroupRecordType = "A" | "AAAA" | "CNAME";
+type ForwardGroupFailoverOptions = {
+  forcePriority?: boolean;
+};
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
 
@@ -64,27 +67,31 @@ export function normalizeChinaHealthTarget(raw: unknown) {
   if (bracketMatch) {
     host = bracketMatch[1];
     port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
-  } else {
+  } else if (isIP(withoutScheme) === 0) {
     const lastColon = withoutScheme.lastIndexOf(":");
-    if (lastColon > 0 && withoutScheme.indexOf(":") === lastColon) {
-      const maybePort = Number(withoutScheme.slice(lastColon + 1));
-      if (Number.isInteger(maybePort) && maybePort >= 1 && maybePort <= 65535) {
-        host = withoutScheme.slice(0, lastColon);
+    if (lastColon > 0) {
+      const maybeHost = withoutScheme.slice(0, lastColon).trim();
+      const maybePortText = withoutScheme.slice(lastColon + 1);
+      const maybePort = Number(maybePortText);
+      const singleColonHostPort = withoutScheme.indexOf(":") === lastColon;
+      const nakedIpv6HostPort = !singleColonHostPort && isIP(maybeHost) === 6;
+      if ((singleColonHostPort || nakedIpv6HostPort) && /^\d+$/.test(maybePortText) && Number.isInteger(maybePort) && maybePort >= 1 && maybePort <= 65535) {
+        host = maybeHost;
         port = maybePort;
       }
     }
   }
 
-  host = host.trim();
+  host = normalizeIpCandidate(host).trim();
   if (!host || host.length > 253 || /[\s'"<>/]/.test(host)) {
     throw new Error("China health target format is invalid");
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("China health target port must be 1-65535");
   }
-  return { host, port, text: `${host}:${port}` };
+  const textHost = isIP(host) === 6 ? `[${host}]` : host;
+  return { host, port, text: `${textHost}:${port}` };
 }
-
 function toDate(value: unknown): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -1913,7 +1920,7 @@ async function markExitGroupReady(group: any) {
     updatedAt: nowDate(),
   }).where(eq(forwardGroups.id, group.id));
 }
-async function runForwardGroupFailoverForGroups(groups: any[]) {
+async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardGroupFailoverOptions = {}) {
   const db = await getDb();
   const ddnsSettings = await getDdnsSettings();
   for (const group of groups as any[]) {
@@ -1980,11 +1987,10 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
       && !!failbackCandidate
       && Number(failbackCandidate.priority) < Number(active.priority);
     const shouldFailover = !active || (!!active && !active.healthy && active.failedLongEnough);
-    const next = shouldFailback
-      ? failbackCandidate
-      : shouldFailover
-        ? firstHealthy
-        : active;
+    let next = active;
+    if (options.forcePriority) next = firstHealthy;
+    else if (shouldFailback) next = failbackCandidate;
+    else if (shouldFailover) next = firstHealthy;
 
     if (!next) {
       await db.update(forwardGroups).set({
@@ -2058,10 +2064,10 @@ async function runForwardGroupFailoverForGroups(groups: any[]) {
   }
 }
 
-export async function runForwardGroupFailover(groupId: number) {
+export async function runForwardGroupFailover(groupId: number, options: ForwardGroupFailoverOptions = {}) {
   const group = await getForwardGroupById(groupId);
   if (!group) return;
-  await runForwardGroupFailoverForGroups([group]);
+  await runForwardGroupFailoverForGroups([group], options);
 }
 
 export async function runForwardGroupFailoverSweep() {

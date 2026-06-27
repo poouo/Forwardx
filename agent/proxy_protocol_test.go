@@ -83,3 +83,17 @@ func TestBuildAndConsumeProxyProtocolV2(t *testing.T) {
 		t.Fatalf("unexpected proxy info: %+v", info)
 	}
 }
+func TestNormalizeNetworkTargetHost(t *testing.T) {
+	cases := map[string]string{
+		"2402:4e00:c05::1":             "2402:4e00:c05::1",
+		"[2402:4e00:c05::1]":           "2402:4e00:c05::1",
+		"[2402:4e00:c05::1]:444":       "2402:4e00:c05::1",
+		"tcp://[2402:4e00:c05::1]:444": "2402:4e00:c05::1",
+		"ipv6.example.com:1888":        "ipv6.example.com",
+	}
+	for input, want := range cases {
+		if got := normalizeNetworkTargetHost(input); got != want {
+			t.Fatalf("normalizeNetworkTargetHost(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

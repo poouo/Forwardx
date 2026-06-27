@@ -1,9 +1,0 @@
-/doc/
-/images/
-/third-party/
-/libev/CVS/
-/example.conf
-/udp2raw
-/udp2raw_*
-/git_version.h
-/*.tar.gz

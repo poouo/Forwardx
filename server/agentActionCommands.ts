@@ -368,7 +368,7 @@ export function shQuote(value: string) {
 
 function serviceName(value: string) {
   const name = String(value || "").trim();
-  if (!/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error(`Invalid service name: ${value}`);
+  if (!/^[A-Za-z0-9_.@-]+$/.test(name)) throw new Error(`Invalid service name: ${value}`);
   return name;
 }
 

@@ -222,10 +222,6 @@ export async function findAvailableTunnelExitPort(
     eq(forwardRules.isEnabled, true),
     eq(forwardRules.pendingDelete, false),
   ));
-  const usedUdpOverTcpPorts = await db.select({ port: forwardRules.udpOverTcpPort }).from(forwardRules).where(and(
-    eq(forwardRules.isEnabled, true),
-    eq(forwardRules.pendingDelete, false),
-  ));
   const usedMappedExitPorts = await db.select({ port: forwardRuleTunnelExits.tunnelExitPort }).from(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.exitHostId, exitHostId));
   const used = new Set<number>();
   reservedPorts.forEach((port) => {
@@ -236,9 +232,6 @@ export async function findAvailableTunnelExitPort(
   usedTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
   usedExtraTunnelPorts.forEach((r: any) => used.add(Number(r.port)));
   usedExitPorts.forEach((r: any) => {
-    if (r.port != null) used.add(Number(r.port));
-  });
-  usedUdpOverTcpPorts.forEach((r: any) => {
     if (r.port != null) used.add(Number(r.port));
   });
   usedMappedExitPorts.forEach((r: any) => {
@@ -295,15 +288,6 @@ export async function isPortUsedOnHost(hostId: number, sourcePort: number, exclu
   if (excludeRuleId) conds.push(sql`${forwardRules.id} != ${excludeRuleId}`);
   const r = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(...conds));
   if ((Number(r[0]?.count) || 0) > 0) return true;
-  const udpConds: any[] = [
-    eq(forwardRules.udpOverTcpPort, sourcePort),
-    eq(forwardRules.isForwardGroupTemplate, false),
-    eq(forwardRules.isEnabled, true),
-    eq(forwardRules.pendingDelete, false),
-  ];
-  if (excludeRuleId) udpConds.push(sql`${forwardRules.id} != ${excludeRuleId}`);
-  const udpRows = await db.select({ count: sqlCountAll() }).from(forwardRules).where(and(...udpConds));
-  if ((Number(udpRows[0]?.count) || 0) > 0) return true;
   const exitRows = await db.select({ count: sqlCountAll() }).from(forwardRuleTunnelExits).where(and(
     eq(forwardRuleTunnelExits.exitHostId, hostId),
     eq(forwardRuleTunnelExits.tunnelExitPort, sourcePort),

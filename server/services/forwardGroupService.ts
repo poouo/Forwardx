@@ -70,6 +70,19 @@ export function normalizeForwardGroupMembers(
     };
   });
 }
+
+function memberPrioritySignature(members: ForwardGroupMemberRequest[]) {
+  return members
+    .map((member, index) => ({
+      key: `${member.memberType}:${member.memberType === "host" ? Number(member.hostId || 0) : Number(member.tunnelId || 0)}`,
+      enabled: member.isEnabled !== false,
+      priority: Number(member.priority ?? index),
+    }))
+    .sort((a, b) => a.priority - b.priority)
+    .map((member) => `${member.key}:${member.enabled ? 1 : 0}`)
+    .join("|");
+}
+
 async function assertEntryGroupReference(entryGroupId: number | null, userId?: number) {
   if (!entryGroupId) return null;
   const entryGroup = await db.getForwardGroupById(entryGroupId) as any;
@@ -152,13 +165,15 @@ export async function createForwardGroupFromInput(input: ForwardGroupInput, user
 export async function updateForwardGroupFromInput(id: number, input: ForwardGroupInput) {
   const existing = await db.getForwardGroupById(id) as any;
   const normalized = await normalizeForwardGroupInput(input);
+  const memberPriorityChanged = memberPrioritySignature((existing?.members || []) as ForwardGroupMemberRequest[])
+    !== memberPrioritySignature(normalized.members as ForwardGroupMemberRequest[]);
   const shouldResetChinaHealth = !normalized.data.chinaHealthCheckEnabled
     || !!existing?.chinaHealthCheckEnabled !== !!normalized.data.chinaHealthCheckEnabled
     || String(existing?.chinaHealthCheckTarget || "") !== String(normalized.data.chinaHealthCheckTarget || "");
   await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
   await db.replaceForwardGroupMembers(id, normalized.members as any);
   if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
-  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
+  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, { forcePriority: memberPriorityChanged });
 }
 
 export async function getForwardGroupDeleteImpact(groupId: number) {

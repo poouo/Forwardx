@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.118"
+var Version = "2.2.119"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -178,7 +178,6 @@ type action struct {
 	PostCommands     []string      `json:"postCommands"`
 	Fxp              *fxpSpec      `json:"fxp,omitempty"`
 	Failover         *failoverSpec `json:"failover,omitempty"`
-	UDPOverTCP       *udp2rawSpec  `json:"udpOverTcp,omitempty"`
 	ReportStatus     *bool         `json:"reportStatus,omitempty"`
 }
 
@@ -207,17 +206,6 @@ type failoverSpec struct {
 	FailoverSeconds int              `json:"failoverSeconds"`
 	RecoverSeconds  int              `json:"recoverSeconds"`
 	AutoFailback    bool             `json:"autoFailback"`
-}
-
-type udp2rawSpec struct {
-	Role       string `json:"role"`
-	Service    string `json:"service"`
-	ListenPort int    `json:"listenPort"`
-	RemoteHost string `json:"remoteHost"`
-	RemotePort int    `json:"remotePort"`
-	TargetIP   string `json:"targetIp"`
-	TargetPort int    `json:"targetPort"`
-	Password   string `json:"password"`
 }
 
 type tunnelProbe struct {
@@ -1281,13 +1269,6 @@ func handleAction(cfg Config, a action) {
 			}
 			ok = fxpOK && ok
 		}
-		if a.UDPOverTCP != nil {
-			udpOK := startUDPOverTCP(*a.UDPOverTCP, actionMessage)
-			if !udpOK || agentVerboseLogs {
-				logf("action udp over tcp role=%s service=%s listen=%d remote=%s:%d target=%s:%d ok=%v", a.UDPOverTCP.Role, a.UDPOverTCP.Service, a.UDPOverTCP.ListenPort, a.UDPOverTCP.RemoteHost, a.UDPOverTCP.RemotePort, a.UDPOverTCP.TargetIP, a.UDPOverTCP.TargetPort, udpOK)
-			}
-			ok = udpOK && ok
-		}
 		if a.Failover != nil && a.Failover.Enabled {
 			failoverOK := startFailoverProxy(a.RuleID, a.SourcePort, *a.Failover, actionMessage)
 			if !failoverOK || agentVerboseLogs {
@@ -1301,9 +1282,6 @@ func handleAction(cfg Config, a action) {
 		}
 	} else {
 		stopFailoverProxy(a.RuleID, a.SourcePort)
-		if a.UDPOverTCP != nil {
-			stopUDPOverTCP(*a.UDPOverTCP)
-		}
 		if a.Fxp != nil {
 			stopFXP(*a.Fxp)
 		}
@@ -2009,70 +1987,6 @@ func managedServiceNamesForAction(a action) []string {
 	default:
 		return nil
 	}
-}
-
-func startUDPOverTCP(spec udp2rawSpec, actionMessage *actionMessage) bool {
-	name := sanitizeServiceName(spec.Service)
-	if name == "" {
-		actionMessage.set("udp over tcp invalid service name")
-		return false
-	}
-	if spec.ListenPort <= 0 || spec.ListenPort > 65535 || spec.Password == "" {
-		actionMessage.set("udp over tcp invalid config service=%s listen=%d", name, spec.ListenPort)
-		return false
-	}
-	if _, err := os.Stat("/usr/local/bin/forwardx-udp2raw"); err != nil {
-		actionMessage.set("udp2raw runtime missing: install /usr/local/bin/forwardx-udp2raw to use UDP over TCP")
-		return false
-	}
-	role := strings.ToLower(strings.TrimSpace(spec.Role))
-	var cmd string
-	switch role {
-	case "entry":
-		if spec.RemoteHost == "" || spec.RemotePort <= 0 || spec.RemotePort > 65535 {
-			actionMessage.set("udp over tcp invalid entry remote service=%s", name)
-			return false
-		}
-		cmd = "/usr/local/bin/forwardx-udp2raw -c -l " + shellQuote("0.0.0.0:"+strconv.Itoa(spec.ListenPort)) +
-			" -r " + shellQuote(net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort))) +
-			" -k " + shellQuote(spec.Password) + " --raw-mode faketcp --cipher-mode aes128cbc --auth-mode hmac_sha1"
-	case "exit":
-		if spec.TargetIP == "" || spec.TargetPort <= 0 || spec.TargetPort > 65535 {
-			actionMessage.set("udp over tcp invalid exit target service=%s", name)
-			return false
-		}
-		cmd = "/usr/local/bin/forwardx-udp2raw -s -l " + shellQuote("0.0.0.0:"+strconv.Itoa(spec.ListenPort)) +
-			" -r " + shellQuote(net.JoinHostPort(spec.TargetIP, strconv.Itoa(spec.TargetPort))) +
-			" -k " + shellQuote(spec.Password) + " --raw-mode faketcp --cipher-mode aes128cbc --auth-mode hmac_sha1"
-	default:
-		actionMessage.set("udp over tcp unknown role=%s", spec.Role)
-		return false
-	}
-	unit := strings.Join([]string{
-		"[Unit]",
-		"Description=ForwardX UDP over TCP " + name,
-		"After=network.target",
-		"",
-		"[Service]",
-		"Type=simple",
-		"ExecStart=" + cmd,
-		"Restart=always",
-		"RestartSec=3",
-		"LimitNOFILE=65535",
-		"",
-		"[Install]",
-		"WantedBy=multi-user.target",
-		"",
-	}, "\n")
-	return writeUnitAndRestart(name, unit)
-}
-
-func stopUDPOverTCP(spec udp2rawSpec) {
-	name := sanitizeServiceName(spec.Service)
-	if name == "" {
-		return
-	}
-	cleanupManagedService(name)
 }
 
 func cleanupManagedService(name string) {

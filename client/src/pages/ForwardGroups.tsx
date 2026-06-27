@@ -147,7 +147,6 @@ function isChinaHealthTargetValid(value: string) {
   }
   return true;
 }
-
 function unwrapBracketedHost(value: unknown) {
   const text = String(value || "").trim();
   return text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
@@ -1802,14 +1801,14 @@ export function ForwardGroupsContent({
             {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
               <div className="space-y-1.5">
                 <Input
-                  aria-label="入口健康度检测目标，留空默认 www.189.cn:80"
+                  aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
                   disabled={!form.chinaHealthCheckEnabled}
                   value={form.chinaHealthCheckTarget}
                   onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                  placeholder="留空默认 www.189.cn:80"
+                  placeholder="留空默认 www.189.cn:80，IPv6 用 [地址]:端口"
                 />
                 <p className="text-xs text-muted-foreground">
-                  用于剔除不健康入口；至少一个成员可达时整体仍视为可用。
+                  统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时整体仍视为可用。
                 </p>
               </div>
               <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">

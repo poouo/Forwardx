@@ -19,7 +19,6 @@ SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
 RUNTIME_BIN="/usr/local/bin/forwardx-runtime"
-UDP2RAW_BIN="/usr/local/bin/forwardx-udp2raw"
 CONFIG_DIR="/etc/forwardx/agent"
 LEGACY_CONFIG_DIR="/etc/forwardx-agent"
 LOG_DIR="/var/log/forwardx-agent"
@@ -253,7 +252,7 @@ do_uninstall() {
     fi
   done
 
-  rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN" "$UDP2RAW_BIN"
+  rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN" /usr/local/bin/forwardx-udp2raw
   rm -rf "$CONFIG_DIR" "$LEGACY_CONFIG_DIR" "$LOG_DIR" "$STATE_DIR" /etc/forwardx /etc/forwardx-runtime /etc/forwardx-tunnel-runtime /etc/forwardx-gost /etc/forwardx-tunnels
 
   echo "[完成] Agent 已卸载"

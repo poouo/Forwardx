@@ -82,6 +82,168 @@ func TestForwardXTCPRoundTrip(t *testing.T) {
 	}
 }
 
+func TestForwardXUDPDirectRoundTrip(t *testing.T) {
+	target, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := target.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = target.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	key := "udp-direct-key"
+	targetPort := target.LocalAddr().(*net.UDPAddr).Port
+	exitPort := freeUDPPort(t)
+	entryPort := freeUDPPort(t)
+	exitDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   21,
+			ListenPort: exitPort,
+			Protocol:   "udp",
+			Key:        key,
+		})
+	}()
+	waitForUDP(t, exitPort)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:       "entry",
+			TunnelID:   21,
+			RuleID:     22,
+			ListenPort: entryPort,
+			Protocol:   "udp",
+			ExitHost:   "127.0.0.1",
+			ExitPort:   exitPort,
+			TargetIP:   "127.0.0.1",
+			TargetPort: targetPort,
+			Key:        key,
+		})
+	}()
+	waitForUDP(t, entryPort)
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("udp-forwardx")); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 64)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buf[:n]) != "udp-forwardx" {
+		t.Fatalf("unexpected udp echo %q", string(buf[:n]))
+	}
+}
+
+func TestForwardXRelayUDPDirectRoundTrip(t *testing.T) {
+	target, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := target.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = target.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	upstreamKey := "udp-entry-to-relay-key"
+	downstreamKey := "udp-relay-to-exit-key"
+	targetPort := target.LocalAddr().(*net.UDPAddr).Port
+	exitPort := freeUDPPort(t)
+	relayPort := freeUDPPort(t)
+	entryPort := freeUDPPort(t)
+	exitDone := make(chan struct{})
+	relayDone := make(chan struct{})
+	entryDone := make(chan struct{})
+	defer close(exitDone)
+	defer close(relayDone)
+	defer close(entryDone)
+
+	go func() {
+		_ = runExit(exitDone, config{
+			Role:       "exit",
+			TunnelID:   23,
+			ListenPort: exitPort,
+			Protocol:   "udp",
+			Key:        downstreamKey,
+		})
+	}()
+	waitForUDP(t, exitPort)
+
+	go func() {
+		_ = runRelay(relayDone, config{
+			Role:          "relay",
+			TunnelID:      23,
+			ListenPort:    relayPort,
+			Protocol:      "udp",
+			Key:           upstreamKey,
+			RelayExitHost: "127.0.0.1",
+			RelayExitPort: exitPort,
+			RelayKey:      downstreamKey,
+		})
+	}()
+	waitForUDP(t, relayPort)
+
+	go func() {
+		_ = runEntry(entryDone, config{
+			Role:       "entry",
+			TunnelID:   23,
+			RuleID:     24,
+			ListenPort: entryPort,
+			Protocol:   "udp",
+			ExitHost:   "127.0.0.1",
+			ExitPort:   relayPort,
+			TargetIP:   "127.0.0.1",
+			TargetPort: targetPort,
+			Key:        upstreamKey,
+		})
+	}()
+	waitForUDP(t, entryPort)
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: entryPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("udp-relay-forwardx")); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 64)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buf[:n]) != "udp-relay-forwardx" {
+		t.Fatalf("unexpected udp relay echo %q", string(buf[:n]))
+	}
+}
+
 func TestForwardXProxyProtocolRoundTrip(t *testing.T) {
 	headerCh := make(chan string, 1)
 	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -558,6 +720,31 @@ func freeTCPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
+func waitForUDP(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+		if err == nil {
+			_, _ = conn.Write([]byte{0})
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("udp port %d did not open", port)
 }
 
 func waitForTCP(t *testing.T, port int) {

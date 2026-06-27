@@ -437,6 +437,10 @@ func readTargetInfo(port string) (string, int, string, bool) {
 }
 
 func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {
+	ip = normalizeNetworkTargetHost(ip)
+	if ip == "" || port <= 0 {
+		return 0, false
+	}
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
 	if err != nil {
@@ -454,8 +458,43 @@ func pingLatency(host string, timeout time.Duration) (int, bool, string) {
 	return pingLatencyWithCount(host, timeout, 1)
 }
 
+func normalizeNetworkTargetHost(host string) string {
+	target := strings.TrimSpace(strings.ReplaceAll(host, "：", ":"))
+	if target == "" {
+		return ""
+	}
+	lower := strings.ToLower(target)
+	for _, prefix := range []string{"tcp://", "udp://"} {
+		if strings.HasPrefix(lower, prefix) {
+			target = strings.TrimSpace(target[len(prefix):])
+			lower = strings.ToLower(target)
+			break
+		}
+	}
+	if parsedHost, _, err := net.SplitHostPort(target); err == nil {
+		return strings.TrimSpace(parsedHost)
+	}
+	if strings.HasPrefix(target, "[") {
+		if end := strings.Index(target, "]"); end > 0 {
+			return strings.TrimSpace(target[1:end])
+		}
+	}
+	return target
+}
+
+func pingFamilyArg(host string) string {
+	ip := net.ParseIP(normalizeNetworkTargetHost(host))
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return "-4"
+	}
+	return "-6"
+}
+
 func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, bool, string) {
-	target := strings.TrimSpace(host)
+	target := normalizeNetworkTargetHost(host)
 	if target == "" {
 		return 0, false, "目标为空"
 	}
@@ -473,9 +512,18 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 	if timeoutSeconds < 1 {
 		timeoutSeconds = 1
 	}
-	args := []string{"-c", strconv.Itoa(count), "-W", strconv.Itoa(timeoutSeconds), target}
+	familyArg := pingFamilyArg(target)
+	args := []string{}
+	if familyArg != "" {
+		args = append(args, familyArg)
+	}
+	args = append(args, "-c", strconv.Itoa(count), "-W", strconv.Itoa(timeoutSeconds), target)
 	if runtime.GOOS == "windows" {
-		args = []string{"-n", strconv.Itoa(count), "-w", strconv.Itoa(int(timeout.Milliseconds())), target}
+		args = []string{}
+		if familyArg != "" {
+			args = append(args, familyArg)
+		}
+		args = append(args, "-n", strconv.Itoa(count), "-w", strconv.Itoa(int(timeout.Milliseconds())), target)
 	}
 	output, err := exec.CommandContext(ctx, "ping", args...).CombinedOutput()
 	elapsed := int(time.Since(start).Milliseconds())

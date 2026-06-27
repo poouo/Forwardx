@@ -161,7 +161,7 @@ function normalizeTransportTuningInput(input: {
 }, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean; tunnelRoute?: boolean; forwardxTunnel?: boolean }) {
   const clearUnsupported = options?.clearUnsupported ?? false;
   const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
-  const udpOverTcpProtocolSupported = protocol === "both";
+  const udpOverTcpProtocolSupported = protocol === "udp" || protocol === "both";
   const tunnelRoute = !!options?.tunnelRoute;
   const forwardxTunnel = !!options?.forwardxTunnel;
   const fastOpenSupported = !isForwardChain && protocolSupported && (
@@ -173,10 +173,10 @@ function normalizeTransportTuningInput(input: {
   const zeroCopy = zeroCopySupported && !!input.zeroCopy;
   const udpOverTcp = udpOverTcpSupported && !!input.udpOverTcp;
   if (input.udpOverTcp && !udpOverTcpSupported && !clearUnsupported) {
-    if (protocol !== "both") {
-      throw new Error("UDP over TCP only supports TCP+UDP rules");
+    if (protocol !== "udp" && protocol !== "both") {
+      throw new Error("UDP 混淆仅支持 UDP 或 TCP+UDP 规则");
     }
-    throw new Error("UDP over TCP only supports ForwardX custom encrypted tunnel TCP+UDP rules");
+    throw new Error("UDP 混淆仅支持 ForwardX 自定义加密隧道的 UDP/TCP+UDP 规则");
   }
   if (!tcpFastOpen && !zeroCopy && !udpOverTcp) {
     if (clearUnsupported) return { tcpFastOpen: false, zeroCopy: false, udpOverTcp: false, udpOverTcpPort: null };
@@ -190,39 +190,11 @@ function normalizeTransportTuningInput(input: {
       throw new Error("当前转发方式不支持 zero-copy");
     }
   }
-  return { tcpFastOpen, zeroCopy, udpOverTcp, udpOverTcpPort: udpOverTcp ? Number(input.udpOverTcpPort || 0) || null : null };
+  return { tcpFastOpen, zeroCopy, udpOverTcp, udpOverTcpPort: null };
 }
 
 function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
   return String(input || "").trim();
-}
-
-async function resolveUdpOverTcpPort(input: {
-  udpOverTcp?: boolean;
-  udpOverTcpPort?: number | null;
-}, tunnel: any, existingPort?: number | null, excludeRuleId?: number | null, reservedPorts: number[] = []) {
-  if (!input.udpOverTcp) return null;
-  const reserved = new Set(reservedPorts.map((port) => Number(port)).filter((port) => port > 0));
-  const requested = Number(input.udpOverTcpPort || 0);
-  if (requested > 0) {
-    if (reserved.has(requested)) throw new Error("UDP over TCP port is already used on the exit agent");
-    const exitHostId = Number(tunnel.exitHostId);
-    const usedByRule = await db.isPortUsedOnHost(exitHostId, requested, excludeRuleId || undefined);
-    const usedByTunnel = await db.isTunnelListenPortUsed(exitHostId, requested, Number(tunnel.id));
-    if (usedByRule || usedByTunnel) throw new Error("UDP over TCP port is already used on the exit agent");
-    return requested;
-  }
-  const current = Number(existingPort || 0);
-  if (current > 0 && !reserved.has(current)) return current;
-  const exit = await db.getHostById(Number(tunnel.exitHostId));
-  const port = await db.findAvailableTunnelExitPort(
-    Number(tunnel.exitHostId),
-    (exit as any)?.portRangeStart,
-    (exit as any)?.portRangeEnd,
-    Array.from(reserved),
-  );
-  if (!port) throw new Error("UDP over TCP exit agent has no available port");
-  return port;
 }
 
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
@@ -607,9 +579,6 @@ export const crudRulesRouter = router({
       }
 
       const transportTuning = normalizeTransportTuningInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" });
-      if (transportTuning.udpOverTcp && selectedTunnelForRule) {
-        transportTuning.udpOverTcpPort = await resolveUdpOverTcpPort(transportTuning, selectedTunnelForRule, null, null, [Number(tunnelExitPort || 0)]);
-      }
 
       const id = await db.createForwardRule({
         ...input,
@@ -955,9 +924,6 @@ export const crudRulesRouter = router({
           tunnelRoute: !!nextTunnelIdForRule,
           forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx",
         });
-        if (transportTuning.udpOverTcp && selectedTunnelForRule) {
-          transportTuning.udpOverTcpPort = await resolveUdpOverTcpPort(transportTuning, selectedTunnelForRule, (rule as any).udpOverTcpPort, rule.id);
-        }
         Object.assign(data as any, transportTuning);
       }
       if ((data.forwardType ?? rule.forwardType) !== "gost") {

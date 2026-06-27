@@ -31,9 +31,6 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install udp2raw build toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ g++-aarch64-linux-gnu
-
       - name: Resolve release version
         id: release
         shell: bash
@@ -67,7 +64,5 @@ jobs:
             dist/agent/forwardx-fxp-linux-arm64
             dist/agent/forwardx-runtime-linux-amd64
             dist/agent/forwardx-runtime-linux-arm64
-            dist/agent/forwardx-udp2raw-linux-amd64
-            dist/agent/forwardx-udp2raw-linux-arm64
             dist/agent/SHA256SUMS
           fail_on_unmatched_files: true

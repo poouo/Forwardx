@@ -137,7 +137,7 @@ export const forwardGroupsRouter = router({
     .input(z.object({ groupId: z.number(), memberIds: z.array(z.number()).min(1) }))
     .mutation(async ({ input }) => {
       await db.reorderForwardGroupMembers(input.groupId, input.memberIds);
-      await db.runForwardGroupFailover(input.groupId);
+      await db.runForwardGroupFailover(input.groupId, { forcePriority: true });
       return { success: true };
     }),
 

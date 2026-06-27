@@ -104,8 +104,9 @@ const (
 	fxpHandshakeWindow  = 5 * time.Minute
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
+	fxpUDPIdleTimeout   = 2 * time.Minute
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.101"
+	fxpRuntimeVersion   = "2.2.102"
 )
 
 var (
@@ -513,7 +514,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- serveEntryUDP(udpConn, cfg, selector, inLimiter, outLimiter)
+			errCh <- serveEntryUDPDirect(udpConn, cfg, selector, inLimiter, outLimiter)
 		}()
 	}
 	wg.Wait()
@@ -956,33 +957,91 @@ func formatProxyProtocolV1(hello helloFrame) string {
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, sourceIP, destIP, sourcePort, destPort)
 }
 
+type udpEntrySession struct {
+	key           string
+	clientAddr    *net.UDPAddr
+	conn          *net.UDPConn
+	exit          net.Conn
+	sec           *secureConn
+	cfg           config
+	endpoint      exitEndpoint
+	inLimiter     *limiter
+	outLimiter    *limiter
+	counter       *trafficCounter
+	stopReporting func()
+	send          chan []byte
+	done          chan struct{}
+	closeOnce     sync.Once
+	lastActivity  atomic.Int64
+	remove        func(*udpEntrySession)
+}
+
 func serveEntryUDP(conn *net.UDPConn, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter) error {
+	sessions := map[string]*udpEntrySession{}
+	var sessionsMu sync.Mutex
+	removeSession := func(session *udpEntrySession) {
+		sessionsMu.Lock()
+		if sessions[session.key] == session {
+			delete(sessions, session.key)
+		}
+		sessionsMu.Unlock()
+	}
 	buf := make([]byte, 65535)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
+			var closing []*udpEntrySession
+			sessionsMu.Lock()
+			for _, session := range sessions {
+				closing = append(closing, session)
+			}
+			sessionsMu.Unlock()
+			for _, session := range closing {
+				session.close()
+			}
 			return err
 		}
 		payload := append([]byte(nil), buf[:n]...)
-		go func() {
-			resp, err := udpRoundTripToExit(cfg, selector, payload, inLimiter, outLimiter)
-			if err != nil || len(resp) == 0 {
-				if err != nil && !isClosedErr(err) {
-					log.Printf("entry udp session error: %v", err)
+		key := clientAddr.String()
+		sessionsMu.Lock()
+		session := sessions[key]
+		sessionsMu.Unlock()
+		startSession := false
+		if session == nil {
+			created, err := newUDPEntrySession(conn, clientAddr, cfg, selector, inLimiter, outLimiter, removeSession)
+			if err != nil {
+				if !isClosedErr(err) {
+					log.Printf("entry udp session create failed tunnel=%d rule=%d client=%s: %v", cfg.TunnelID, cfg.RuleID, clientAddr, err)
 				}
-				return
+				continue
 			}
-			_, _ = conn.WriteToUDP(resp, clientAddr)
-		}()
+			var closeCreated *udpEntrySession
+			sessionsMu.Lock()
+			if existing := sessions[key]; existing != nil {
+				session = existing
+				closeCreated = created
+			} else {
+				sessions[key] = created
+				session = created
+				startSession = true
+			}
+			sessionsMu.Unlock()
+			if closeCreated != nil {
+				closeCreated.close()
+			}
+		}
+		if startSession {
+			session.start()
+		}
+		session.enqueue(payload)
 	}
 }
 
-func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []byte, inLimiter, outLimiter *limiter) ([]byte, error) {
+func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, remove func(*udpEntrySession)) (*udpEntrySession, error) {
 	exit, sec, endpoint, err := dialSelectedSecureTCP(selector, cfg)
 	if err != nil {
 		return nil, err
 	}
-	defer exit.Close()
 	hello, _ := json.Marshal(helloFrame{
 		Network:    "udp",
 		TargetIP:   cfg.TargetIP,
@@ -991,32 +1050,185 @@ func udpRoundTripToExit(cfg config, selector *exitEndpointSelector, payload []by
 		RuleID:     cfg.RuleID,
 	})
 	if err := sec.writeFrame(hello); err != nil {
+		_ = exit.Close()
 		return nil, err
 	}
-	inLimiter.wait(len(payload))
-	if err := sec.writeFrame(payload); err != nil {
-		return nil, err
+	counter := &trafficCounter{}
+	session := &udpEntrySession{
+		key:           clientAddr.String(),
+		clientAddr:    clientAddr,
+		conn:          conn,
+		exit:          exit,
+		sec:           sec,
+		cfg:           cfg,
+		endpoint:      endpoint,
+		inLimiter:     inLimiter,
+		outLimiter:    outLimiter,
+		counter:       counter,
+		stopReporting: startTrafficReporter(cfg, counter),
+		send:          make(chan []byte, 256),
+		done:          make(chan struct{}),
+		remove:        remove,
 	}
-	log.Printf("entry udp routed tunnel=%d rule=%d exit=%s:%d target=%s:%d", cfg.TunnelID, cfg.RuleID, endpoint.Host, endpoint.Port, cfg.TargetIP, cfg.TargetPort)
-	_ = exit.SetReadDeadline(time.Now().Add(8 * time.Second))
-	resp, err := sec.readFrame()
-	if err == nil {
-		outLimiter.wait(len(resp))
-		reportTraffic(cfg, uint64(len(payload)), uint64(len(resp)))
+	session.touch()
+	return session, nil
+}
+
+func (s *udpEntrySession) touch() {
+	s.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (s *udpEntrySession) start() {
+	go s.writeLoop()
+	go s.readLoop()
+	go s.idleLoop()
+	log.Printf("entry udp session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort)
+}
+
+func (s *udpEntrySession) enqueue(payload []byte) {
+	select {
+	case <-s.done:
+		return
+	case s.send <- payload:
+	default:
+		log.Printf("entry udp session queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 	}
-	return resp, err
+}
+
+func (s *udpEntrySession) writeLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case payload := <-s.send:
+			s.touch()
+			s.inLimiter.wait(len(payload))
+			if err := s.sec.writeFrame(payload); err != nil {
+				if !isClosedErr(err) {
+					log.Printf("entry udp write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
+				}
+				s.close()
+				return
+			}
+			s.counter.in.Add(uint64(len(payload)))
+		}
+	}
+}
+
+func (s *udpEntrySession) readLoop() {
+	for {
+		frame, err := s.sec.readFrame()
+		if err != nil {
+			if !isClosedErr(err) {
+				log.Printf("entry udp read failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
+			}
+			s.close()
+			return
+		}
+		if len(frame) == 0 {
+			s.close()
+			return
+		}
+		s.outLimiter.wait(len(frame))
+		if _, err := s.conn.WriteToUDP(frame, s.clientAddr); err != nil {
+			if !isClosedErr(err) {
+				log.Printf("entry udp client write failed tunnel=%d rule=%d client=%s: %v", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, err)
+			}
+			s.close()
+			return
+		}
+		s.counter.out.Add(uint64(len(frame)))
+		s.touch()
+	}
+}
+
+func (s *udpEntrySession) idleLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			last := time.Unix(0, s.lastActivity.Load())
+			if time.Since(last) >= fxpUDPIdleTimeout {
+				log.Printf("entry udp session idle timeout tunnel=%d rule=%d client=%s idle=%s", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, time.Since(last).Round(time.Second))
+				s.close()
+				return
+			}
+		}
+	}
+}
+
+func (s *udpEntrySession) close() {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		_ = s.exit.Close()
+		if s.stopReporting != nil {
+			s.stopReporting()
+		}
+		if s.remove != nil {
+			s.remove(s)
+		}
+	})
 }
 
 func runExit(done <-chan struct{}, cfg config) error {
-	ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
-	if err != nil {
-		return fmt.Errorf("exit tcp listen :%d: %w", cfg.ListenPort, err)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	if protocolHas(cfg, "tcp") {
+		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
+		if err != nil {
+			return fmt.Errorf("exit tcp listen :%d: %w", cfg.ListenPort, err)
+		}
+		log.Printf("exit tcp listening on :%d tunnel=%d", cfg.ListenPort, cfg.TunnelID)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-done
+			_ = ln.Close()
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- acceptExitTCP(ln, cfg)
+		}()
 	}
-	log.Printf("exit listening on :%d tunnel=%d", cfg.ListenPort, cfg.TunnelID)
-	go func() {
-		<-done
-		_ = ln.Close()
-	}()
+	if protocolHas(cfg, "udp") {
+		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(cfg.ListenPort))
+		if err != nil {
+			return err
+		}
+		udpConn, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			return fmt.Errorf("exit udp listen :%d: %w", cfg.ListenPort, err)
+		}
+		log.Printf("exit udp listening on :%d tunnel=%d", cfg.ListenPort, cfg.TunnelID)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-done
+			_ = udpConn.Close()
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- serveExitUDPDirect(udpConn, cfg)
+		}()
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		if errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		return err
+	default:
+		return nil
+	}
+}
+
+func acceptExitTCP(ln net.Listener, cfg config) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -1100,10 +1312,6 @@ func handleExitTCP(sec *secureConn, hello helloFrame) error {
 }
 
 func handleExitUDP(sec *secureConn, hello helloFrame) error {
-	payload, err := sec.readFrame()
-	if err != nil {
-		return err
-	}
 	targetAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(hello.TargetIP, strconv.Itoa(hello.TargetPort)))
 	if err != nil {
 		return err
@@ -1113,16 +1321,63 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 		return err
 	}
 	defer target.Close()
-	if _, err := target.Write(payload); err != nil {
+	log.Printf("exit udp session routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	touch := func() { lastActivity.Store(time.Now().UnixNano()) }
+	errCh := make(chan error, 2)
+	go func() {
+		for {
+			frame, err := sec.readFrame()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(frame) == 0 {
+				errCh <- nil
+				return
+			}
+			if _, err := target.Write(frame); err != nil {
+				errCh <- err
+				return
+			}
+			touch()
+		}
+	}()
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			_ = target.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := target.Read(buf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					last := time.Unix(0, lastActivity.Load())
+					if time.Since(last) >= fxpUDPIdleTimeout {
+						errCh <- nil
+						return
+					}
+					continue
+				}
+				errCh <- err
+				return
+			}
+			if n <= 0 {
+				continue
+			}
+			if err := sec.writeFrame(buf[:n]); err != nil {
+				errCh <- err
+				return
+			}
+			touch()
+		}
+	}()
+	err = <-errCh
+	_ = target.Close()
+	_ = sec.conn.Close()
+	if err != nil && !isClosedErr(err) {
 		return err
 	}
-	_ = target.SetReadDeadline(time.Now().Add(8 * time.Second))
-	buf := make([]byte, 65535)
-	n, err := target.Read(buf)
-	if err != nil {
-		return err
-	}
-	return sec.writeFrame(buf[:n])
+	return nil
 }
 
 // runRelay acts as an intermediate hop in a multi-hop FXP chain.
@@ -1134,18 +1389,64 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		return fmt.Errorf("relay requires relayExitHost, relayExitPort, and relayKey")
 	}
 	selector := newExitEndpointSelector(cfg.Exits, exitEndpoint{Host: cfg.RelayExitHost, Port: cfg.RelayExitPort, Key: cfg.RelayKey})
-	ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
-	if err != nil {
-		return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
-	}
-	log.Printf("relay listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
 	if selector.count() > 1 {
 		log.Printf("relay load balance exits=%s strategy=round", formatEndpointList(selector))
 	}
-	go func() {
-		<-done
-		_ = ln.Close()
-	}()
+	if protocolHas(cfg, "tcp") {
+		ln, err := listenTCP(cfg.ListenPort, cfg.TCPFastOpen)
+		if err != nil {
+			return fmt.Errorf("relay tcp listen :%d: %w", cfg.ListenPort, err)
+		}
+		log.Printf("relay tcp listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-done
+			_ = ln.Close()
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- acceptRelayTCP(ln, cfg, selector)
+		}()
+	}
+	if protocolHas(cfg, "udp") {
+		addr, err := net.ResolveUDPAddr("udp", ":"+strconv.Itoa(cfg.ListenPort))
+		if err != nil {
+			return err
+		}
+		udpConn, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			return fmt.Errorf("relay udp listen :%d: %w", cfg.ListenPort, err)
+		}
+		log.Printf("relay udp listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-done
+			_ = udpConn.Close()
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- serveRelayUDPDirect(udpConn, cfg, selector)
+		}()
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		if errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		return err
+	default:
+		return nil
+	}
+}
+
+func acceptRelayTCP(ln net.Listener, cfg config, selector *exitEndpointSelector) error {
 	for {
 		upConn, err := ln.Accept()
 		if err != nil {

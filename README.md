@@ -5,7 +5,7 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、端口转发链、入口组/出口组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.186-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.190-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -13,7 +13,7 @@ ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agen
 
 - 在线教程：https://poouo.github.io/Forwardx/
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.186/forwardx-android-v2.3.57.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.190/forwardx-android-v2.3.61.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -30,7 +30,8 @@ ForwardX 不只是一个端口转发工具。更贴切的定位是：
 - 支持 TCP、UDP、TCP+UDP 转发规则。
 - 支持 `iptables`、`nftables`、`realm`、`socat`、`gost` 等转发方式，并在规则界面提示内核 NAT 与用户态转发的 IPv4/IPv6 跨协议族风险。
 - 支持手动入口 IP、主机 DDNS 域名、自动检测 IPv4/IPv6 入口地址展示，IPv6 入口可单独复制。
-- 支持 GOST 隧道和 ForwardX 自定义加密隧道，支持多跳链路、入口组、出口组和多出口负载均衡。
+- 支持 GOST 隧道和 ForwardX 自定义加密隧道，支持原生 UDP 加密转发、多跳链路、入口组、出口组和多出口负载均衡。
+- ForwardX 自定义加密隧道可选 mimic UDP 混淆；UDP 仍走数据报通道，不再通过 TCP 承载，适合游戏、语音、直播等实时 UDP 场景。
 - 支持端口转发链，把多台主机按顺序串成入口、中转和出口路径，也可以复用入口组作为多入口统一入口。
 - 支持转发组，把多个主机入口或隧道入口作为一个高可用入口使用。
 - 支持转发组、入口组和出口组成员优先级拖拽排序，默认按高优先级到低优先级故障转移。
@@ -214,6 +215,8 @@ ForwardX 支持两类隧道：
 
 自定义加密隧道可以在入口和出口 Agent 下方指定连接地址。不填写时默认走公网入口；填写内网 IP 或 IPv6 地址时，会优先使用指定地址作为链路连接目标。隧道也可以引用入口组提供多入口，或配置多个出口节点用于出口负载均衡。
 
+需要绕过 UDP 识别或限制时，可以在 ForwardX 隧道规则中开启 mimic UDP 混淆。该功能要求相关 Agent 主机已安装 mimic/mimic-dkms，并在主机管理中配置正确网卡名；面板只下发 filter 配置，mimic 负责透明混淆，ForwardX 继续负责加密转发。
+
 ## Telegram 机器人
 
 1. 在 Telegram 找到 `@BotFather` 创建机器人并复制 Bot Token。
@@ -317,7 +320,7 @@ pnpm check:versions
 ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
 下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.186/forwardx-android-v2.3.57.apk
+https://github.com/poouo/Forwardx/releases/download/v2.3.190/forwardx-android-v2.3.61.apk
 
 常用命令：
 
