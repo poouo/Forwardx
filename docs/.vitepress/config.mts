@@ -30,6 +30,7 @@ export default defineConfig({
           { text: "快速开始", link: "/guide/quick-start" },
           { text: "部署前准备", link: "/guide/preparation" },
           { text: "部署面板", link: "/guide/deploy-panel" },
+          { text: "环境变量", link: "/guide/env-vars" },
           { text: "首次初始化", link: "/guide/first-setup" },
         ],
       },

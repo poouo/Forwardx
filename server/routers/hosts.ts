@@ -320,7 +320,7 @@ export const hostsRouter = router({
       }
       // 普通用户：返回自己创建的主机 + 普通授权主机 + 已授权的流量计费主机
       const [allowedHostIds, billingResourceIds] = await Promise.all([
-        db.getUserAllowedHostIds(ctx.user.id),
+        db.getUserEffectiveAllowedHostIds(ctx.user.id),
         db.getUserUsableTrafficBillingResourceIds(ctx.user.id),
       ]);
       const allHosts = await getHostsWithUpgradeStateCleanup();

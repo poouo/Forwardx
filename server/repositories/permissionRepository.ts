@@ -19,6 +19,13 @@ export async function getUserAllowedHostIds(userId: number): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ hostId: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId));
+  return rows.map((r: any) => r.hostId);
+}
+
+export async function getUserEffectiveAllowedHostIds(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ hostId: userHostPermissions.hostId }).from(userHostPermissions).where(eq(userHostPermissions.userId, userId));
   const planRows = await _getActiveSubscriptionHostIds(userId);
   return Array.from(new Set([...rows.map((r: any) => r.hostId), ...planRows]));
 }
@@ -54,7 +61,7 @@ async function _getActiveSubscriptionForwardGroupIds(userId: number): Promise<nu
 export async function getUserAllowedHosts(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  const hostIds = await getUserAllowedHostIds(userId);
+  const hostIds = await getUserEffectiveAllowedHostIds(userId);
   if (hostIds.length === 0) return [];
   const allHosts = await db.select().from(hosts);
   return allHosts.filter((h: any) => hostIds.includes(h.id));
@@ -157,6 +164,13 @@ export async function getUserAllowedTunnelIds(userId: number): Promise<number[]>
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select({ tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
+  return rows.map((r: any) => r.tunnelId);
+}
+
+export async function getUserEffectiveAllowedTunnelIds(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ tunnelId: userTunnelPermissions.tunnelId }).from(userTunnelPermissions).where(eq(userTunnelPermissions.userId, userId));
   const planRows = await _getActiveSubscriptionTunnelIds(userId);
   return Array.from(new Set([...rows.map((r: any) => r.tunnelId), ...planRows]));
 }
@@ -175,7 +189,7 @@ export async function getTunnelsForUser(userId: number) {
   if (!db) return [];
   const owned = await db.select().from(tunnels).where(eq(tunnels.userId, userId));
   const [allowedTunnelIds, billingResourceIds] = await Promise.all([
-    getUserAllowedTunnelIds(userId),
+    getUserEffectiveAllowedTunnelIds(userId),
     getUserUsableTrafficBillingResourceIds(userId),
   ]);
   const allAllowedTunnelIds = Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds]));

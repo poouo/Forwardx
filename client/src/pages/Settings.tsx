@@ -35,10 +35,8 @@ import {
   Trash2,
   Key,
   Copy,
-  Terminal,
   CheckCircle2,
   Settings2,
-  FileCode,
   Download,
   Github,
   Mail,
@@ -145,8 +143,8 @@ function getUpgradeProgress(job: any) {
 
 const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh";
 const panelDockerScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh";
-const panelLocalCommandPrefix = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s --`;
-const panelDockerCommandPrefix = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s --`;
+const panelLocalUpgradeCommand = `curl -fsSL ${panelLocalScriptUrl} | sudo bash -s -- upgrade`;
+const panelDockerUpgradeCommand = `curl -fsSL ${panelDockerScriptUrl} | sudo bash -s -- upgrade`;
 const defaultGithubAcceleratorUrl = "https://git.poouo.com";
 type AiProvider = "deepseek" | "siliconflow" | "custom";
 const aiProviderOptions: Array<{ value: AiProvider; label: string }> = [
@@ -242,39 +240,14 @@ function ddnsProviderGuideUrl(provider: DdnsProvider) {
   return `${docsBaseUrl}/guide/ddns#${ddnsProviderGuideAnchors[provider] || "quick-setup"}`;
 }
 
-const panelInstallGuideCommands = [
-  {
-    label: "本地部署",
-    description: "适合直接在 Linux 主机上运行面板，脚本会下载 GitHub Release 中已构建好的面板程序包，安装运行依赖、写入 systemd 服务并启动面板。",
-    directory: "/opt/forwardx-panel",
-    service: "forwardx-panel",
-    install: `${panelLocalCommandPrefix} install`,
-    upgrade: `${panelLocalCommandPrefix} upgrade`,
-    uninstall: `${panelLocalCommandPrefix} uninstall`,
-    versionedUpgrade: `curl -fsSL ${panelLocalScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
-    notes: ["默认 Web 端口为 3000，安装时可按提示修改。", "升级会保留 .env、data 目录、数据库配置和已有数据。", "如果面板程序包尚未上传到 Release，脚本会提示等待 GitHub Actions 构建完成。"],
-  },
-  {
-    label: "Docker 部署",
-    description: "适合使用 Docker Compose 管理面板，脚本会安装 Docker、拉取 GitHub Packages 预编译镜像并启动容器。",
-    directory: "/opt/forwardx-docker",
-    service: "forwardx-panel 容器",
-    install: `${panelDockerCommandPrefix} install`,
-    upgrade: `${panelDockerCommandPrefix} upgrade`,
-    uninstall: `${panelDockerCommandPrefix} uninstall`,
-    versionedUpgrade: `curl -fsSL ${panelDockerScriptUrl} | sudo env FORWARDX_TARGET_VERSION=vX.Y.Z bash -s -- upgrade`,
-    notes: ["默认映射 Web 端口为 3000，可通过 PORT 环境变量指定。", "升级会保留 .env、部署目录 data 数据和 Docker 数据卷。", "如果 latest 镜像尚未构建到目标版本，脚本会提示稍后重试并保留旧容器运行。"],
-  },
-] as const;
-
 const manualPanelUpgradeCommands = [
   {
     label: "本地部署",
-    command: panelInstallGuideCommands[0].upgrade,
+    command: panelLocalUpgradeCommand,
   },
   {
     label: "Docker 部署",
-    command: panelInstallGuideCommands[1].upgrade,
+    command: panelDockerUpgradeCommand,
   },
 ];
 
@@ -449,7 +422,7 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
   URL.revokeObjectURL(url);
 }
 
-const settingsTabs = ["system", "telegram", "email", "personalization", "backup", "install", "logs"] as const;
+const settingsTabs = ["system", "telegram", "email", "personalization", "backup", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
 type DatabaseType = "sqlite" | "mysql" | "postgresql";
 type BackupSummaryCache = {
@@ -505,15 +478,16 @@ function writeBackupSummaryCache(summary: BackupSummaryCache) {
 
 function normalizePersonalizationBackgroundConfig(value: any): PersonalizationBackgroundConfig {
   const source = value && typeof value === "object" ? value : {};
+  const normalizedSource = source.source === "builtin" || source.source === "upload" || source.source === "url" ? source.source : "none";
   return {
     ...DEFAULT_PERSONALIZATION_BACKGROUND,
     ...source,
-    source: source.source === "builtin" || source.source === "upload" || source.source === "url" ? source.source : "none",
+    source: normalizedSource,
     opacity: clampBackgroundOpacity(source.opacity),
     blur: clampBackgroundBlur(source.blur),
     selectedId: source.selectedId ? String(source.selectedId) : null,
     url: String(source.url || ""),
-    urlType: source.urlType === "video" ? "video" : "image",
+    urlType: normalizedSource === "url" && source.urlType === "video" ? "video" : "image",
     images: Array.isArray(source.images) ? source.images : [],
   };
 }
@@ -660,10 +634,6 @@ function SettingsContent() {
                 <Database className="h-3.5 w-3.5" />
                 备份恢复
               </TabsTrigger>
-              <TabsTrigger value="install" className={settingsTabTriggerClass}>
-                <Terminal className="h-3.5 w-3.5" />
-                安装说明
-              </TabsTrigger>
               <TabsTrigger value="logs" className={settingsTabTriggerClass}>
                 <FileText className="h-3.5 w-3.5" />
                 面板日志
@@ -671,168 +641,6 @@ function SettingsContent() {
             </TabsList>
           </div>
         </div>
-
-        {/* Install Guide Tab */}
-        <TabsContent value="install" className="space-y-4">
-          <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <FileCode className="h-4 w-4" />
-                安装说明
-              </CardTitle>
-              <CardDescription>
-                面板服务与 Agent 主机的部署说明。
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/30 border border-border/40">
-                <Settings2 className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                <div className="text-xs space-y-1">
-                  <p>
-                    <span className="font-medium">当前面板地址：</span>
-                    <code className="ml-1 font-mono text-foreground">{panelUrl}</code>
-                  </p>
-                  <p className="text-muted-foreground">
-                    首次部署完成后打开面板地址，按页面提示完成数据库初始化和管理员创建。
-                  </p>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <p className="text-sm font-medium">面板部署流程</p>
-                <div className="grid gap-3 sm:grid-cols-4">
-                  {["选择本地部署或 Docker 部署", "在服务器用 root 权限执行安装命令", "打开面板完成初始化配置", "后续使用升级命令更新面板"].map((step, i) => (
-                    <div key={i} className="flex gap-3 items-start">
-                      <span className="h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
-                        {i + 1}
-                      </span>
-                      <span className="text-sm text-muted-foreground">{step}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-lg border border-border/30 bg-muted/20 p-4">
-                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm font-medium">Agent 部署流程</p>
-                  <Badge variant="outline" className="w-fit text-[10px]">
-                    脚本从主机管理获取
-                  </Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-4">
-                  {[
-                    "在主机管理 > Token 管理中添加主机",
-                    "点击对应 Token 的安装命令按钮并复制命令",
-                    "在被控 Linux 主机用 root 权限执行安装命令",
-                    "回到主机管理确认 Agent 在线后创建转发",
-                  ].map((step, i) => (
-                    <div key={i} className="flex items-start gap-3">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                        {i + 1}
-                      </span>
-                      <span className="text-sm text-muted-foreground">{step}</span>
-                    </div>
-                  ))}
-                </div>
-                <ul className="space-y-1 text-xs text-muted-foreground">
-                  <li>- Agent 安装命令与具体 Token 绑定，安装说明页不展示通用安装脚本。</li>
-                  <li>- 安装、升级、卸载命令都可在主机管理的 Token 管理中通过对应 Token 的安装命令弹窗获取。</li>
-                  <li>- 一个 Token 建议只用于一台被控主机；Token 泄露后请删除并重新创建。</li>
-                </ul>
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                {panelInstallGuideCommands.map((guide) => (
-                  <div key={guide.label} className="rounded-lg border border-border/30 bg-muted/20 p-4">
-                    <div className="mb-4 flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold">{guide.label}</p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{guide.description}</p>
-                      </div>
-                      <Badge variant="outline" className="shrink-0 text-[10px]">
-                        {guide.service}
-                      </Badge>
-                    </div>
-                    <div className="mb-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                      <div className="rounded border border-border/30 bg-background/40 p-2">
-                        <span className="block text-[10px] uppercase text-muted-foreground/70">默认目录</span>
-                        <code className="mt-1 block font-mono text-foreground">{guide.directory}</code>
-                      </div>
-                      <div className="rounded border border-border/30 bg-background/40 p-2">
-                        <span className="block text-[10px] uppercase text-muted-foreground/70">默认端口</span>
-                        <code className="mt-1 block font-mono text-foreground">3000</code>
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      {[
-                        { label: "安装命令", icon: Download, command: guide.install },
-                        { label: "升级命令", icon: RefreshCw, command: guide.upgrade },
-                        { label: "卸载命令", icon: Trash2, command: guide.uninstall },
-                      ].map((item) => {
-                        const Icon = item.icon;
-                        return (
-                          <div key={item.label}>
-                            <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                              <Icon className="h-3 w-3" />
-                              {item.label}
-                            </p>
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                              <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
-                                {item.command}
-                              </code>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="shrink-0 self-end sm:self-auto"
-                                onClick={() => copyToClipboard(item.command)}
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      <div>
-                        <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                          <Github className="h-3 w-3" />
-                          指定版本升级
-                        </p>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                          <code className="min-w-0 flex-1 rounded border bg-background/50 p-3 font-mono text-xs break-all">
-                            {guide.versionedUpgrade}
-                          </code>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="shrink-0 self-end sm:self-auto"
-                            onClick={() => copyToClipboard(guide.versionedUpgrade)}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                    <ul className="mt-4 space-y-1 text-xs text-muted-foreground">
-                      {guide.notes.map((note) => (
-                        <li key={note}>- {note}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-
-              <div className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/20">
-                <p className="text-xs text-amber-400 font-medium mb-1">注意事项</p>
-                <ul className="text-xs text-muted-foreground space-y-1">
-                  <li>- 安装和升级需要 root 权限。</li>
-                  <li>- 本地部署会自动配置 systemd 服务；Docker 部署会使用 Docker Compose 启动容器。</li>
-                  <li>- 本地部署可通过 FORWARDX_TARGET_VERSION 指定 tag 或版本号；Docker 部署统一拉取 latest 镜像并校验目标版本。</li>
-                  <li>- 卸载命令只有输入 y 后才会删除部署目录或 Docker 数据卷，删除前请确认已经备份数据。</li>
-                </ul>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* System Info Tab */}
         <TabsContent value="system" className="space-y-4">
@@ -2589,7 +2397,7 @@ function DeepSeekSettingsCard() {
                     <div>
                       <p className="text-sm font-medium">普通用户可用 AI 管理</p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        关闭后仅管理员可执行 AI 对话管理写操作（查询不受影响）。
+                        关闭后普通用户不能使用 AI 对话执行管理操作。
                       </p>
                     </div>
                     <Switch
@@ -2850,6 +2658,7 @@ function PersonalizationSettingsSection() {
           ...current,
           source: "upload",
           selectedId: item.id,
+          urlType: "image",
           images,
         });
       });
@@ -3072,44 +2881,25 @@ function PersonalizationSettingsSection() {
               <div className="relative min-h-52 overflow-hidden rounded-lg border border-border/40 bg-muted/30">
                 {previewBackgroundUrl ? (
                   previewIsVideo ? (
-                    <>
-                      <video
-                        src={previewBackgroundUrl}
-                        muted
-                        loop
-                        playsInline
-                        autoPlay
-                        className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
-                        style={previewBackdropStyle}
-                      />
-                      <video
-                        src={previewBackgroundUrl}
-                        muted
-                        loop
-                        playsInline
-                        autoPlay
-                        className="absolute inset-0 h-full w-full object-contain p-2"
-                      />
-                    </>
+                    <video
+                      src={previewBackgroundUrl}
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                      className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
+                      style={previewBackdropStyle}
+                    />
                   ) : (
-                    <>
-                      <img
-                        src={previewBackgroundUrl}
-                        alt=""
-                        aria-hidden="true"
-                        loading="eager"
-                        decoding="async"
-                        className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
-                        style={previewBackdropStyle}
-                      />
-                      <img
-                        src={previewBackgroundUrl}
-                        alt="背景预览"
-                        loading="eager"
-                        decoding="async"
-                        className="absolute inset-0 h-full w-full object-contain p-2"
-                      />
-                    </>
+                    <img
+                      src={previewBackgroundUrl}
+                      alt=""
+                      aria-hidden="true"
+                      loading="eager"
+                      decoding="async"
+                      className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
+                      style={previewBackdropStyle}
+                    />
                   )
                 ) : (
                   <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
@@ -3121,6 +2911,28 @@ function PersonalizationSettingsSection() {
                     className="absolute inset-0 bg-background"
                     style={{ opacity: 1 - clampBackgroundOpacity(backgroundConfig.opacity) }}
                   />
+                )}
+                {previewBackgroundUrl && (
+                  <div className="absolute right-3 top-3 flex aspect-video w-28 max-w-[38%] items-center justify-center overflow-hidden rounded-md border border-border/50 bg-background/70 p-1 shadow-sm backdrop-blur sm:w-32">
+                    {previewIsVideo ? (
+                      <video
+                        src={previewBackgroundUrl}
+                        muted
+                        loop
+                        playsInline
+                        autoPlay
+                        className="h-full w-full rounded-[4px] object-contain"
+                      />
+                    ) : (
+                      <img
+                        src={previewBackgroundUrl}
+                        alt="背景原图预览"
+                        loading="eager"
+                        decoding="async"
+                        className="h-full w-full rounded-[4px] object-contain"
+                      />
+                    )}
+                  </div>
                 )}
                 <div className="absolute bottom-3 left-3 rounded-md border border-border/50 bg-background/75 px-3 py-2 text-xs backdrop-blur">
                   {backgroundEnabled ? `不透明度 ${opacityPercent}% / 虚化 ${blurAmount}px` : "无背景"}
@@ -3135,7 +2947,7 @@ function PersonalizationSettingsSection() {
                       <input
                         type="range"
                         min={0}
-                        max={85}
+                        max={100}
                         step={5}
                         value={opacityPercent}
                         onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
@@ -3145,7 +2957,7 @@ function PersonalizationSettingsSection() {
                     <Input
                       value={String(opacityPercent)}
                       onChange={(event) => {
-                        const value = Math.min(85, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                        const value = Math.min(100, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
                         updateBackground({ opacity: value / 100 });
                       }}
                       inputMode="numeric"
@@ -3212,7 +3024,7 @@ function PersonalizationSettingsSection() {
                         <button
                           key={item.id}
                           type="button"
-                          onClick={() => updateBackground({ source: "builtin", selectedId: item.id })}
+                          onClick={() => updateBackground({ source: "builtin", selectedId: item.id, urlType: "image" })}
                           className={cn(
                             "group overflow-hidden rounded-lg border bg-muted/20 text-left transition",
                             active ? "border-primary ring-2 ring-primary/25" : "border-border/40 hover:border-primary/50",
@@ -3268,7 +3080,7 @@ function PersonalizationSettingsSection() {
                           >
                             <button
                               type="button"
-                              onClick={() => updateBackground({ source: "upload", selectedId: item.id })}
+                              onClick={() => updateBackground({ source: "upload", selectedId: item.id, urlType: "image" })}
                               className="block w-full text-left"
                             >
                               <img src={item.dataUrl} alt={item.name} loading="lazy" decoding="async" className="aspect-[16/9] w-full bg-muted/40 object-contain" />
@@ -3296,7 +3108,15 @@ function PersonalizationSettingsSection() {
 
               {backgroundSourceMode === "url" && (
                 <div className="space-y-2">
-                  <p className="text-sm font-medium">自定义链接</p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm font-medium">自定义链接</p>
+                    <Button variant="outline" size="sm" className="w-full gap-1.5 sm:w-auto" asChild>
+                      <a href="https://c.7zz.cn/home?path=cloudreve%3A%2F%2FVaU6%40share" target="_blank" rel="noopener noreferrer">
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        动态 MP4 视频库
+                      </a>
+                    </Button>
+                  </div>
                   <div className="grid gap-2 lg:grid-cols-[9rem_minmax(0,1fr)_auto]">
                     <Select value={backgroundUrlType} onValueChange={(value) => setBackgroundUrlType(value as PersonalizationBackgroundUrlType)}>
                       <SelectTrigger>

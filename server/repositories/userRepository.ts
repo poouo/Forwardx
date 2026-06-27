@@ -457,6 +457,16 @@ export async function getAllUsers() {
       maxPorts: users.maxPorts,
       maxConnections: users.maxConnections,
       maxIPs: users.maxIPs,
+      manualCanAddRules: users.manualCanAddRules,
+      manualMaxRules: users.manualMaxRules,
+      manualMaxPorts: users.manualMaxPorts,
+      manualMaxConnections: users.manualMaxConnections,
+      manualMaxIPs: users.manualMaxIPs,
+      manualAllowForwardXTunnel: users.manualAllowForwardXTunnel,
+      manualGostRateLimitIn: users.manualGostRateLimitIn,
+      manualGostRateLimitOut: users.manualGostRateLimitOut,
+      manualTrafficLimit: users.manualTrafficLimit,
+      manualExpiresAt: users.manualExpiresAt,
       balanceCents: users.balanceCents,
       allowedForwardTypes: users.allowedForwardTypes,
       allowForwardXTunnel: users.allowForwardXTunnel,
@@ -510,6 +520,16 @@ export async function updateUserTrafficSettings(userId: number, data: {
   maxPorts?: number;
   maxConnections?: number;
   maxIPs?: number;
+  manualCanAddRules?: boolean;
+  manualMaxRules?: number;
+  manualMaxPorts?: number;
+  manualMaxConnections?: number;
+  manualMaxIPs?: number;
+  manualAllowForwardXTunnel?: boolean;
+  manualGostRateLimitIn?: number;
+  manualGostRateLimitOut?: number;
+  manualTrafficLimit?: number;
+  manualExpiresAt?: Date | null;
   allowedForwardTypes?: string | null;
   allowForwardXTunnel?: boolean;
   displayRemark?: string | null;
@@ -643,6 +663,16 @@ export async function getUserTrafficSummaries() {
     trafficUsed: users.trafficUsed,
     canAddRules: users.canAddRules,
     forwardAccessPauseReason: users.forwardAccessPauseReason,
+    manualCanAddRules: users.manualCanAddRules,
+    manualMaxRules: users.manualMaxRules,
+    manualMaxPorts: users.manualMaxPorts,
+    manualMaxConnections: users.manualMaxConnections,
+    manualMaxIPs: users.manualMaxIPs,
+    manualAllowForwardXTunnel: users.manualAllowForwardXTunnel,
+    manualGostRateLimitIn: users.manualGostRateLimitIn,
+    manualGostRateLimitOut: users.manualGostRateLimitOut,
+    manualTrafficLimit: users.manualTrafficLimit,
+    manualExpiresAt: users.manualExpiresAt,
     gostRateLimitIn: users.gostRateLimitIn,
     gostRateLimitOut: users.gostRateLimitOut,
     allowForwardXTunnel: users.allowForwardXTunnel,

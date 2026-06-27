@@ -3953,7 +3953,7 @@ async function visibleRulesForTelegramUser(user: any) {
 async function visibleHostsForTelegramUser(user: any) {
   if (user.role === "admin") return db.getHosts() as Promise<any[]>;
   const [allowedHostIds, billingResourceIds, allHosts] = await Promise.all([
-    db.getUserAllowedHostIds(user.id),
+    db.getUserEffectiveAllowedHostIds(user.id),
     db.getUserUsableTrafficBillingResourceIds(user.id),
     db.getHosts(),
   ]);

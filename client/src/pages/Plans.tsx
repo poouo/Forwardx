@@ -19,6 +19,7 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import { CheckCircle2, Coins, LayoutGrid, List, Package, Plus, RefreshCw, Settings2, ShoppingBag, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -38,6 +39,7 @@ type PlanForm = {
   maxIPs: string;
   isActive: boolean;
   isStoreVisible: boolean;
+  syncExistingSubscribers: boolean;
   sortOrder: string;
   hostIds: number[];
   tunnelIds: number[];
@@ -76,6 +78,7 @@ const emptyForm: PlanForm = {
   maxIPs: "10",
   isActive: true,
   isStoreVisible: true,
+  syncExistingSubscribers: true,
   sortOrder: "0",
   hostIds: [],
   tunnelIds: [],
@@ -161,14 +164,65 @@ function MobileInfoRow({
   );
 }
 
+function PlanStatusQuickToggle({
+  plan,
+  disabled,
+  onToggleActive,
+  onToggleStoreVisible,
+  align = "left",
+}: {
+  plan: any;
+  disabled?: boolean;
+  onToggleActive: () => void;
+  onToggleStoreVisible: () => void;
+  align?: "left" | "right";
+}) {
+  return (
+    <div className={`flex flex-wrap gap-1.5 ${align === "right" ? "justify-end" : ""}`}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onToggleActive}
+        className={cn(
+          "h-7 rounded-full border px-3 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-60",
+          plan.isActive
+            ? "border-primary bg-primary text-primary-foreground shadow-sm"
+            : "border-border/60 bg-background/70 text-muted-foreground hover:border-primary/45 hover:text-foreground",
+        )}
+      >
+        {plan.isActive ? "启用" : "停用"}
+      </button>
+      <button
+        type="button"
+        disabled={disabled || !plan.isActive}
+        onClick={onToggleStoreVisible}
+        className={cn(
+          "h-7 rounded-full border px-3 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-60",
+          plan.isActive && plan.isStoreVisible
+            ? "border-emerald-500/50 bg-emerald-500/12 text-emerald-600 dark:text-emerald-300"
+            : "border-border/60 bg-background/70 text-muted-foreground hover:border-emerald-500/35 hover:text-foreground",
+        )}
+      >
+        {plan.isActive && plan.isStoreVisible ? "商店展示" : "后台分配"}
+      </button>
+    </div>
+  );
+}
+
 function PlanCard({
   plan,
   onEdit,
   onDelete,
+  toggling,
+  onToggleActive,
+  onToggleStoreVisible,
 }: {
   plan: any;
   onEdit: () => void;
   onDelete: () => void;
+  toggling?: boolean;
+  onToggleActive: () => void;
+  onToggleStoreVisible: () => void;
 }) {
   return (
     <div className="rounded-lg border border-border/50 bg-background/40 p-3">
@@ -199,10 +253,13 @@ function PlanCard({
         <MobileInfoRow label="限速">{speed(plan.rateLimitMbps)}</MobileInfoRow>
         <MobileInfoRow label="附加流量">{plan.trafficAddons?.length || 0} 档</MobileInfoRow>
         <MobileInfoRow label="状态">
-          <div className="flex flex-wrap justify-end gap-1">
-            <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-            <Badge variant={plan.isActive && plan.isStoreVisible ? "outline" : "secondary"}>{!plan.isActive ? "购买关闭" : plan.isStoreVisible ? "商店展示" : "后台分配"}</Badge>
-          </div>
+          <PlanStatusQuickToggle
+            plan={plan}
+            disabled={toggling}
+            align="right"
+            onToggleActive={onToggleActive}
+            onToggleStoreVisible={onToggleStoreVisible}
+          />
         </MobileInfoRow>
       </div>
     </div>
@@ -338,6 +395,7 @@ function toForm(plan: any): PlanForm {
     maxIPs: String(plan.maxIPs ?? 10),
     isActive: !!plan.isActive,
     isStoreVisible: !!plan.isStoreVisible,
+    syncExistingSubscribers: true,
     sortOrder: String(plan.sortOrder ?? 0),
     hostIds: plan.hostIds || [],
     tunnelIds: plan.tunnelIds || [],
@@ -407,6 +465,7 @@ export default function Plans() {
   });
   const [planViewMode, setPlanViewMode] = useState<PlanListViewMode>(() => getStoredPlanListViewMode());
   const [billingCreateRequestKey, setBillingCreateRequestKey] = useState(0);
+  const [statusUpdatingPlanId, setStatusUpdatingPlanId] = useState<number | null>(null);
 
   const createPlan = trpc.plans.create.useMutation({
     onSuccess: () => {
@@ -427,6 +486,36 @@ export default function Plans() {
       utils.plans.storeList.invalidate();
     },
     onError: (error) => toast.error(error.message || "保存失败"),
+  });
+
+  const updatePlanStatus = trpc.plans.updateStatus.useMutation({
+    onMutate: async (variables) => {
+      setStatusUpdatingPlanId(variables.id);
+      await utils.plans.list.cancel();
+      const previous = utils.plans.list.getData();
+      utils.plans.list.setData(
+        undefined,
+        (previous || []).map((plan: any) =>
+          Number(plan.id) === Number(variables.id)
+            ? { ...plan, isActive: variables.isActive, isStoreVisible: variables.isActive && variables.isStoreVisible }
+            : plan,
+        ) as any,
+      );
+      return { previous };
+    },
+    onSuccess: (_result, variables) => {
+      toast.success(variables.isActive ? "套餐状态已更新" : "套餐已停用");
+      utils.plans.storeList.invalidate();
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previous) utils.plans.list.setData(undefined, context.previous as any);
+      toast.error(error.message || "状态更新失败");
+    },
+    onSettled: () => {
+      setStatusUpdatingPlanId(null);
+      utils.plans.list.invalidate();
+      utils.plans.storeList.invalidate();
+    },
   });
 
   const deletePlan = trpc.plans.delete.useMutation({
@@ -559,8 +648,27 @@ export default function Plans() {
       return toast.error("至少选择一个主机、隧道或转发组");
     }
     const data = payload(form);
-    if (form.id) updatePlan.mutate({ id: form.id, ...data });
+    if (form.id) updatePlan.mutate({ id: form.id, syncExistingSubscribers: form.syncExistingSubscribers, ...data });
     else createPlan.mutate(data);
+  };
+  const togglePlanActive = (plan: any) => {
+    const isActive = !plan.isActive;
+    updatePlanStatus.mutate({
+      id: Number(plan.id),
+      isActive,
+      isStoreVisible: isActive ? !!plan.isStoreVisible : false,
+    });
+  };
+  const togglePlanStoreVisible = (plan: any) => {
+    if (!plan.isActive) {
+      toast.info("套餐启用后才能开启商店展示");
+      return;
+    }
+    updatePlanStatus.mutate({
+      id: Number(plan.id),
+      isActive: true,
+      isStoreVisible: !plan.isStoreVisible,
+    });
   };
   const submitAssignPlan = () => {
     if (!assignUserId || !assignPlanId) return;
@@ -785,8 +893,11 @@ export default function Plans() {
                           <PlanCard
                             key={plan.id}
                             plan={plan}
+                            toggling={statusUpdatingPlanId === Number(plan.id)}
                             onEdit={() => openPlanEdit(plan)}
                             onDelete={() => deletePlan.mutate({ id: plan.id })}
+                            onToggleActive={() => togglePlanActive(plan)}
+                            onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
                           />
                         ))}
                         {plans.length === 0 && (
@@ -828,10 +939,12 @@ export default function Plans() {
                                   <div>连接 {plan.maxConnections || "不限"} · 单 IP {plan.maxIPs || "不限"} · 限速 {speed(plan.rateLimitMbps)}</div>
                                 </TableCell>
                                 <TableCell>
-                                  <div className="flex flex-wrap gap-1">
-                                    <Badge variant={plan.isActive ? "default" : "secondary"}>{plan.isActive ? "启用" : "停用"}</Badge>
-                                    <Badge variant={plan.isActive && plan.isStoreVisible ? "outline" : "secondary"}>{!plan.isActive ? "购买关闭" : plan.isStoreVisible ? "商店展示" : "后台分配"}</Badge>
-                                  </div>
+                                  <PlanStatusQuickToggle
+                                    plan={plan}
+                                    disabled={statusUpdatingPlanId === Number(plan.id)}
+                                    onToggleActive={() => togglePlanActive(plan)}
+                                    onToggleStoreVisible={() => togglePlanStoreVisible(plan)}
+                                  />
                                 </TableCell>
                                 <TableCell className="text-right">
                                   <Button variant="ghost" size="sm" onClick={() => openPlanEdit(plan)}>编辑</Button>
@@ -932,10 +1045,6 @@ export default function Plans() {
               <Label>排序</Label>
               <Input type="number" min={0} value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
             </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label>说明</Label>
-              <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="展示给用户看的套餐说明" />
-            </div>
                 </div>
 
                 <div className="grid gap-3 rounded-lg border border-border/60 p-3 sm:grid-cols-2">
@@ -966,6 +1075,25 @@ export default function Plans() {
                       onCheckedChange={(isStoreVisible) => setForm({ ...form, isStoreVisible })}
                     />
                   </div>
+                  {form.id && (
+                    <div className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2 sm:col-span-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">同步已购买用户</p>
+                        <p className="text-xs text-muted-foreground">开启后保存套餐会同步已购买用户的生效权益；关闭后仅影响后续新购或新分配。</p>
+                      </div>
+                      <Switch
+                        className="shrink-0"
+                        checked={form.syncExistingSubscribers}
+                        onCheckedChange={(syncExistingSubscribers) => setForm({ ...form, syncExistingSubscribers })}
+                        title={form.syncExistingSubscribers ? "保存后同步已购买该套餐用户的生效权益" : "保存后仅影响后续新购或新分配，已购买用户保持当前权益"}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>说明</Label>
+                  <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="展示给用户看的套餐说明" />
                 </div>
               </TabsContent>
 

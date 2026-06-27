@@ -197,9 +197,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
   if (!group) throw new Error("转发链不存在");
   if (String(group.groupMode || "failover") !== "chain") throw new Error("仅端口转发链支持链路自测");
 
-  await db.syncForwardGroupRules(groupId, { validatePorts: false, createMissing: false });
-  const template = await db.getForwardGroupPrimaryTemplateRule(groupId) as any;
-  const probes = await db.getForwardGroupChainProbes(groupId, { includeFinalTarget: true });
+  const probes = await db.getForwardGroupChainProbes(groupId, { includeFinalTarget: false, method: "ping" });
   if (probes.length === 0) throw new Error("转发链没有可测试的有效链路");
 
   const batchId = createHopTestBatch("fg", groupId);
@@ -218,7 +216,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
       batchId,
     });
     const testId = await db.createForwardTest({
-      ruleId: Number(template?.id || 0),
+      ruleId: 0,
       hostId: probe.fromHostId,
       userId: Number(group.userId),
       status: "pending",
@@ -230,7 +228,7 @@ export async function runForwardGroupChainSelfTest(groupId: number) {
     registerHopTest(batchId, Number(testId));
     pushAgentRefresh(probe.fromHostId, "forward-chain-selftest");
     queued += 1;
-    appendPanelLog("info", `[SelfTest] forward-chain=${groupId} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}:${probe.targetPort}`);
+    appendPanelLog("info", `[SelfTest] forward-chain=${groupId} queued hop=${probe.hopLabel} method=${probe.method} target=${probe.targetIp}${probe.targetPort ? `:${probe.targetPort}` : ""}`);
   }
   return { success: false, pending: true, queued };
 }

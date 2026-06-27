@@ -130,6 +130,10 @@ export default function PublicHome() {
             GitHub
           </a>
           <span className="text-muted-foreground/45">|</span>
+          <a href="https://poouo.github.io/Forwardx/" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
+            使用教程
+          </a>
+          <span className="text-muted-foreground/45">|</span>
           <a href="https://t.me/ForwardX_panel" target="_blank" rel="noopener noreferrer" className="hover:text-foreground">
             TG群组
           </a>

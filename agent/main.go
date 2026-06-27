@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.116"
+var Version = "2.2.117"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1430,8 +1430,9 @@ func logGostRuntimeProxySummary(path string, label string) {
 				Name     string         `json:"name"`
 				Metadata map[string]any `json:"metadata"`
 				Nodes    []struct {
-					Name string `json:"name"`
-					Addr string `json:"addr"`
+					Name     string         `json:"name"`
+					Addr     string         `json:"addr"`
+					Metadata map[string]any `json:"metadata"`
 				} `json:"nodes"`
 			} `json:"hops"`
 		} `json:"chains"`
@@ -1467,14 +1468,27 @@ func logGostRuntimeProxySummary(path string, label string) {
 	}
 	for _, chain := range cfg.Chains {
 		for _, hop := range chain.Hops {
-			if !hasProxyProtocolMetadata(hop.Metadata) {
-				continue
-			}
+			hopSend := hasProxyProtocolMetadata(hop.Metadata)
+			nodeSend := false
 			targets := make([]string, 0, len(hop.Nodes))
 			for _, node := range hop.Nodes {
+				if hasProxyProtocolMetadata(node.Metadata) {
+					nodeSend = true
+				}
 				targets = append(targets, fmt.Sprintf("%s@%s", emptyDash(node.Name), emptyDash(node.Addr)))
 			}
-			lines = append(lines, fmt.Sprintf("chain=%s hop=%s sendProxy=true nodes=%s", emptyDash(chain.Name), emptyDash(hop.Name), strings.Join(targets, ",")))
+			if !hopSend && !nodeSend {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf(
+				"chain=%s hop=%s sendProxy=%v hopProxy=%v nodeProxy=%v nodes=%s",
+				emptyDash(chain.Name),
+				emptyDash(hop.Name),
+				hopSend || nodeSend,
+				hopSend,
+				nodeSend,
+				strings.Join(targets, ","),
+			))
 		}
 	}
 	sort.Strings(lines)

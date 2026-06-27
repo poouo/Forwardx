@@ -97,6 +97,7 @@ const adminMenuItems: SidebarNavItem[] = [
   { icon: WalletCards, label: "账单与兑换", path: "/billing" },
   { icon: Package, label: "套餐管理", path: "/plans" },
   { icon: Users, label: "用户管理", path: "/users" },
+  lookingGlassMenuItem,
   { icon: Settings, label: "系统设置", path: "/settings" },
 ];
 
@@ -754,7 +755,7 @@ function DashboardLayoutContent({
     : [];
 
   const allMenuItems = isAdmin
-    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, lookingGlassMenuItem, ...adminMenuItems]
+    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, ...adminMenuItems]
     : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
 
   const currentPath = location.split("?")[0] || "/";
@@ -799,7 +800,7 @@ function DashboardLayoutContent({
     displayUpgradeJob?.status === "error"
   );
   const managementMenuItems: SidebarNavItem[] = isAdmin
-    ? [profileMenuItem, lookingGlassMenuItem, ...adminMenuItems]
+    ? [profileMenuItem, ...adminMenuItems]
     : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
   const navigateFromSidebar = (path: string) => {
     setLocation(path);
@@ -1176,6 +1177,15 @@ function DashboardLayoutContent({
               className="transition-colors hover:text-foreground"
             >
               项目地址
+            </a>
+            <span className="text-muted-foreground/45">|</span>
+            <a
+              href="https://poouo.github.io/Forwardx/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-colors hover:text-foreground"
+            >
+              使用教程
             </a>
             <span className="text-muted-foreground/45">|</span>
             <a

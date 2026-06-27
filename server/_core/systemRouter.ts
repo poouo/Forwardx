@@ -219,7 +219,7 @@ function normalizePersonalizationBackground(input: unknown): PersonalizationBack
   const rawSource = String(source.source || DEFAULT_PERSONALIZATION_BACKGROUND.source);
   const nextSource = rawSource === "builtin" || rawSource === "upload" || rawSource === "url" ? rawSource : "none";
   const selectedId = source.selectedId ? String(source.selectedId).trim().slice(0, 80) : null;
-  const urlType = source.urlType === "video" ? "video" : "image";
+  let urlType: PersonalizationBackgroundConfig["urlType"] = source.urlType === "video" ? "video" : "image";
   const url = normalizeBackgroundUrl(source.url);
 
   let normalizedSource = nextSource;
@@ -239,6 +239,9 @@ function normalizePersonalizationBackground(input: unknown): PersonalizationBack
     normalizedSelectedId = null;
   } else {
     normalizedSelectedId = null;
+  }
+  if (normalizedSource !== "url") {
+    urlType = "image";
   }
 
   return {
@@ -271,11 +274,12 @@ function resolvePersonalizationBackgroundUrl(config: PersonalizationBackgroundCo
 
 function publicPersonalizationBackground(all: Record<string, string | null>) {
   const config = readPersonalizationBackground(all);
+  const urlType = config.source === "url" && config.urlType === "video" ? "video" : "image";
   return {
     source: config.source,
     opacity: config.opacity,
     blur: config.blur,
-    urlType: config.urlType,
+    urlType,
     effectiveUrl: resolvePersonalizationBackgroundUrl(config),
   };
 }

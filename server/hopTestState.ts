@@ -73,7 +73,7 @@ function parseRouteEndpoints(detail: HopTestResult, index: number) {
     };
   }
   const hopLabel = String(detail.hopLabel || "").replace(/\s+/g, " ").trim();
-  const hopMatch = hopLabel.match(/(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
+  const hopMatch = hopLabel.match(/(?:(?:入口|出口)\s*)?(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
   if (hopMatch) {
     return {
       from: cleanRouteNodeLabel(hopMatch[1]),

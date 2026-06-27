@@ -50,7 +50,7 @@ export function builtinWallpaperById(value: unknown) {
 export function clampBackgroundOpacity(value: unknown) {
   const num = Number(value);
   if (!Number.isFinite(num)) return DEFAULT_PERSONALIZATION_BACKGROUND.opacity;
-  return Math.min(0.85, Math.max(0, num));
+  return Math.min(1, Math.max(0, num));
 }
 
 export function clampBackgroundBlur(value: unknown) {

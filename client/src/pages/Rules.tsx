@@ -4738,6 +4738,7 @@ function RulesContent() {
               checked={rule.isEnabled}
               onCheckedChange={(checked) => handleToggleRule(rule, checked)}
               className="scale-75"
+              title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
             />
           ) : (
             renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
@@ -4776,6 +4777,7 @@ function RulesContent() {
                   checked={rule.isEnabled}
                   onCheckedChange={(checked) => handleToggleRule(rule, checked)}
                   className="shrink-0 scale-75"
+                  title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
                 />
               ) : (
                 renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="shrink-0 scale-75" /></span>)
@@ -4848,6 +4850,7 @@ function RulesContent() {
                 checked={rule.isEnabled}
                 onCheckedChange={(checked) => handleToggleRule(rule, checked)}
                 className="scale-75"
+                title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
               />
             ) : (
               renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)

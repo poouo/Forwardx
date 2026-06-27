@@ -96,7 +96,6 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
     if (!Number.isFinite(id) || id <= 0 || ids.includes(id)) return;
     ids.push(id);
   };
-  pushId(tunnel?.entryHostId);
   const entryGroupId = Number(tunnel?.entryGroupId || 0);
   if (entryGroupId > 0) {
     const group = await db.getForwardGroupById(entryGroupId) as any;
@@ -107,6 +106,7 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
       for (const member of members) pushId(member.hostId);
     }
   }
+  if (ids.length === 0) pushId(tunnel?.entryHostId);
   return ids;
 }
 function structuredLinkTestMessage(input: {

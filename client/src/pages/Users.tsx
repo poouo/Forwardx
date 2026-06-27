@@ -282,7 +282,12 @@ function UsersContent() {
   const [showExtendDialog, setShowExtendDialog] = useState(false);
   const [extendSubscriptionId, setExtendSubscriptionId] = useState<number | null>(null);
   const [extendSubscriptionLabel, setExtendSubscriptionLabel] = useState("");
-  const [extendDays, setExtendDays] = useState("30");
+  const [extendExpiresAtInput, setExtendExpiresAtInput] = useState("");
+  const [showCancelSubscriptionDialog, setShowCancelSubscriptionDialog] = useState(false);
+  const [cancelSubscriptionId, setCancelSubscriptionId] = useState<number | null>(null);
+  const [cancelSubscriptionLabel, setCancelSubscriptionLabel] = useState("");
+  const [cancelSubscriptionPlanLabel, setCancelSubscriptionPlanLabel] = useState("");
+  const [hiddenCancelledSubscriptionIds, setHiddenCancelledSubscriptionIds] = useState<number[]>([]);
   const [maxRules, setMaxRules] = useState(0);
   const [maxPorts, setMaxPorts] = useState(0);
   const [maxConnections, setMaxConnections] = useState(0);
@@ -446,16 +451,16 @@ function UsersContent() {
     onSuccess: (_, variables) => {
       patchCachedUser(variables.userId, {
         displayRemark: variables.displayRemark,
-        trafficLimit: variables.trafficLimit,
-        gostRateLimitIn: variables.gostRateLimitIn,
-        gostRateLimitOut: variables.gostRateLimitOut,
-        expiresAt: variables.expiresAt ? parseDateInputValue(variables.expiresAt) : null,
+        manualTrafficLimit: variables.trafficLimit,
+        manualGostRateLimitIn: variables.gostRateLimitIn,
+        manualGostRateLimitOut: variables.gostRateLimitOut,
+        manualExpiresAt: variables.expiresAt ? parseDateInputValue(variables.expiresAt) : null,
         trafficAutoReset: variables.trafficAutoReset,
         trafficResetDay: variables.trafficResetDay,
-        maxRules: variables.maxRules,
-        maxPorts: variables.maxPorts,
-        maxConnections: variables.maxConnections,
-        maxIPs: variables.maxIPs,
+        manualMaxRules: variables.maxRules,
+        manualMaxPorts: variables.maxPorts,
+        manualMaxConnections: variables.maxConnections,
+        manualMaxIPs: variables.maxIPs,
         allowedForwardTypes: variables.allowedForwardTypes,
       });
       utils.users.list.invalidate();
@@ -481,11 +486,19 @@ function UsersContent() {
       setForwardAccessPendingUserId(variables.userId);
       await utils.users.list.cancel();
       const previousUsers = utils.users.list.getData();
-      patchCachedUser(variables.userId, { canAddRules: variables.enabled });
+      patchCachedUser(variables.userId, {
+        canAddRules: variables.enabled,
+        manualCanAddRules: variables.enabled,
+        manualAllowForwardXTunnel: variables.enabled,
+      });
       return { previousUsers };
     },
     onSuccess: (_, variables) => {
-      patchCachedUser(variables.userId, { canAddRules: variables.enabled });
+      patchCachedUser(variables.userId, {
+        canAddRules: variables.enabled,
+        manualCanAddRules: variables.enabled,
+        manualAllowForwardXTunnel: variables.enabled,
+      });
       utils.rules.list.invalidate();
       toast.success("用户转发权限已更新");
     },
@@ -567,34 +580,52 @@ function UsersContent() {
       utils.users.list.invalidate();
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
-      toast.success("订阅时间已延长");
+      toast.success("订阅到期时间已更新");
       setShowExtendDialog(false);
       setExtendSubscriptionId(null);
       setExtendSubscriptionLabel("");
-      setExtendDays("30");
+      setExtendExpiresAtInput("");
     },
-    onError: (err) => toast.error(err.message || "延长订阅失败"),
+    onError: (err) => toast.error(err.message || "更新订阅到期时间失败"),
   });
 
   const cancelSubscriptionMutation = trpc.plans.cancelSubscription.useMutation({
+    onMutate: (variables) => {
+      const id = Number(variables.id);
+      if (id > 0) {
+        setHiddenCancelledSubscriptionIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
+      }
+    },
     onSuccess: () => {
       utils.users.list.invalidate();
       utils.users.summary.invalidate();
       utils.plans.subscriptions.invalidate();
       toast.success("订阅已取消");
+      setShowCancelSubscriptionDialog(false);
+      setCancelSubscriptionId(null);
+      setCancelSubscriptionLabel("");
+      setCancelSubscriptionPlanLabel("");
     },
-    onError: (err) => toast.error(err.message || "取消订阅失败"),
+    onError: (err, variables) => {
+      const id = Number(variables.id);
+      setHiddenCancelledSubscriptionIds((ids) => ids.filter((item) => item !== id));
+      toast.error(err.message || "取消订阅失败");
+    },
   });
 
   const adminCount = useMemo(() => users?.filter((u: any) => u.role === "admin").length ?? 0, [users]);
-  const activeSubscriptionCount = useMemo(() => (allSubscriptions as any[]).filter(isSubscriptionActive).length, [allSubscriptions]);
+  const visibleSubscriptions = useMemo(
+    () => (allSubscriptions as any[]).filter((sub: any) => sub?.status !== "cancelled" && !hiddenCancelledSubscriptionIds.includes(Number(sub?.id))),
+    [allSubscriptions, hiddenCancelledSubscriptionIds],
+  );
+  const activeSubscriptionCount = useMemo(() => visibleSubscriptions.filter(isSubscriptionActive).length, [visibleSubscriptions]);
   const userPagination = usePersistentPagination(users || [], {
     storageKey: "forwardx.users.page",
     pageSize: 12,
     isReady: !isLoading && !!users,
   });
   const pagedUsers = userPagination.items;
-  const subscriptionPagination = usePersistentPagination(allSubscriptions || [], {
+  const subscriptionPagination = usePersistentPagination(visibleSubscriptions, {
     storageKey: "forwardx.users.subscriptions.page",
     pageSize: 12,
     isReady: !subscriptionsLoading,
@@ -741,7 +772,7 @@ function UsersContent() {
     setTrafficUserId(u.id);
     setTrafficUserName(userLabel(u));
     setTrafficDisplayRemark(String(u.displayRemark || ""));
-    const limitBytes = Number(u.trafficLimit) || 0;
+    const limitBytes = Number(u.manualTrafficLimit) || 0;
     if (limitBytes > 0) {
       const gb = limitBytes / (1024 * 1024 * 1024);
       // 以 GB 为单位、保留最多 2 位小数（去尾零）
@@ -749,18 +780,18 @@ function UsersContent() {
     } else {
       setTrafficLimitInput("0");
     }
-    setExpiresAtInput(formatDateInputValue(u.expiresAt));
+    setExpiresAtInput(formatDateInputValue(u.manualExpiresAt));
     setTrafficAutoReset(!!u.trafficAutoReset);
     setTrafficResetDay(u.trafficResetDay || 1);
-    const gostIn = Number(u.gostRateLimitIn) || 0;
-    const gostOut = Number(u.gostRateLimitOut) || 0;
+    const gostIn = Number(u.manualGostRateLimitIn) || 0;
+    const gostOut = Number(u.manualGostRateLimitOut) || 0;
     const unifiedRateLimit = Math.max(gostIn, gostOut);
     setGostRateLimitInInput(unifiedRateLimit > 0 ? String(unifiedRateLimit) : "0");
     setGostRateLimitOutInput(unifiedRateLimit > 0 ? String(unifiedRateLimit) : "0");
-    setMaxRules(u.maxRules || 0);
-    setMaxPorts(u.maxPorts || 0);
-    setMaxConnections(u.maxConnections || 0);
-    setMaxIPs(u.maxIPs || 0);
+    setMaxRules(u.manualMaxRules || 0);
+    setMaxPorts(u.manualMaxPorts || 0);
+    setMaxConnections(u.manualMaxConnections || 0);
+    setMaxIPs(u.manualMaxIPs || 0);
     // 转发方式权限：allowedForwardTypes 为 null 表示全部允许，空串表示全部禁用
     const allowedRaw = (u.allowedForwardTypes as string | null) || "";
     if (u.allowedForwardTypes === null || u.allowedForwardTypes === undefined) {
@@ -891,17 +922,24 @@ function UsersContent() {
 
   const openExtendDialog = (sub: any) => {
     if (sub.status === "cancelled") {
-      toast.error("已取消的订阅不能延长时间");
-      return;
-    }
-    if (!sub.expiresAt) {
-      toast.info("永久订阅无需延长");
+      toast.error("已取消的订阅不能更改到期时间");
       return;
     }
     setExtendSubscriptionId(Number(sub.id));
     setExtendSubscriptionLabel(`${userLabel({ username: sub.username, name: sub.name, id: sub.userId })} · ${sub.planName || `套餐 #${sub.planId}`}`);
-    setExtendDays("30");
+    setExtendExpiresAtInput(formatDateInputValue(sub.expiresAt));
     setShowExtendDialog(true);
+  };
+
+  const openCancelSubscriptionDialog = (sub: any) => {
+    if (!isSubscriptionActive(sub)) {
+      toast.error("只有生效中的订阅可以取消");
+      return;
+    }
+    setCancelSubscriptionId(Number(sub.id));
+    setCancelSubscriptionLabel(userLabel({ username: sub.username, name: sub.name, id: sub.userId }));
+    setCancelSubscriptionPlanLabel(sub.planName || `套餐 #${sub.planId}`);
+    setShowCancelSubscriptionDialog(true);
   };
 
   const handleAdminAddTrafficAddon = () => {
@@ -918,9 +956,17 @@ function UsersContent() {
 
   const handleExtendSubscription = () => {
     if (!extendSubscriptionId) return;
-    const days = Math.floor(Number(extendDays || 0));
-    if (!Number.isFinite(days) || days <= 0) return toast.error("请输入有效延长天数");
-    extendSubscriptionMutation.mutate({ id: extendSubscriptionId, days });
+    const text = extendExpiresAtInput.trim();
+    if (text && !parseDateInputValue(text)) return toast.error("请选择有效到期日期");
+    extendSubscriptionMutation.mutate({
+      id: extendSubscriptionId,
+      expiresAt: text ? parseDateInputValue(text)?.toISOString() || null : null,
+    });
+  };
+
+  const handleCancelSubscription = () => {
+    if (!cancelSubscriptionId) return;
+    cancelSubscriptionMutation.mutate({ id: cancelSubscriptionId });
   };
 
   const hostNameById = (hostId: number) => allHosts?.find((h: any) => h.id === hostId)?.name || `#${hostId}`;
@@ -1456,7 +1502,7 @@ function UsersContent() {
         <TabsContent value="subscriptions" className="space-y-4 data-[state=inactive]:hidden">
           {subscriptionsLoading ? (
             <DataSectionLoading label="正在加载订阅数据" minHeight="min-h-[240px]" />
-          ) : allSubscriptions.length === 0 ? (
+          ) : visibleSubscriptions.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-border/50 bg-card/60 py-16 text-muted-foreground">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/30">
                 <Package className="h-7 w-7 opacity-40" />
@@ -1472,7 +1518,7 @@ function UsersContent() {
                   const trafficLimit = Number(sub.trafficLimit || 0);
                   const activeAddonBytes = Number(sub.activeTrafficAddonBytes || 0);
                   const canAddAddon = active && trafficLimit > 0;
-                  const canExtend = sub.status !== "cancelled" && !!sub.expiresAt;
+                  const canChangeExpiry = sub.status !== "cancelled";
                   return (
                     <Card key={sub.id} className="border-border/40 bg-card/60">
                       <CardContent className="space-y-3 p-4">
@@ -1532,9 +1578,9 @@ function UsersContent() {
                             size="sm"
                             className="h-8 flex-1 px-2 text-xs sm:flex-none"
                             onClick={() => openExtendDialog(sub)}
-                            disabled={!canExtend || extendSubscriptionMutation.isPending}
+                            disabled={!canChangeExpiry || extendSubscriptionMutation.isPending}
                           >
-                            延长
+                            更改到期
                           </Button>
                           <Button
                             type="button"
@@ -1542,11 +1588,7 @@ function UsersContent() {
                             size="sm"
                             className="h-8 flex-1 px-2 text-xs text-destructive hover:text-destructive sm:flex-none"
                             disabled={!active || cancelSubscriptionMutation.isPending}
-                            onClick={() => {
-                              if (confirm(`确定取消 ${userLabel({ username: sub.username, name: sub.name, id: sub.userId })} 的订阅吗？`)) {
-                                cancelSubscriptionMutation.mutate({ id: Number(sub.id) });
-                              }
-                            }}
+                            onClick={() => openCancelSubscriptionDialog(sub)}
                           >
                             取消
                           </Button>
@@ -1878,21 +1920,22 @@ function UsersContent() {
 
       <Dialog open={showExtendDialog} onOpenChange={setShowExtendDialog}>
         <DialogContent className="sm:max-w-md">
-          <DialogTitle>延长订阅时间</DialogTitle>
-          <DialogDescription>给 "{extendSubscriptionLabel}" 延长订阅有效期。</DialogDescription>
+          <DialogTitle>更改到期时间</DialogTitle>
+          <DialogDescription>给 "{extendSubscriptionLabel}" 设置订阅到期时间。</DialogDescription>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>延长天数</Label>
-              <Input
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={3650}
-                step={1}
-                value={extendDays}
-                onChange={(e) => setExtendDays(e.target.value)}
-                placeholder="例如：30"
-              />
+              <Label>到期日期</Label>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <DatePickerInput
+                  value={extendExpiresAtInput}
+                  onChange={setExtendExpiresAtInput}
+                  placeholder="永久有效"
+                />
+                <Button type="button" variant="outline" className="h-8 px-3" onClick={() => setExtendExpiresAtInput("")}>
+                  永久有效
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">留空表示永久有效。</p>
             </div>
           </div>
           <DialogFooter>
@@ -1900,7 +1943,46 @@ function UsersContent() {
               取消
             </Button>
             <Button onClick={handleExtendSubscription} disabled={extendSubscriptionMutation.isPending}>
-              {extendSubscriptionMutation.isPending ? "延长中..." : "确认延长"}
+              {extendSubscriptionMutation.isPending ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showCancelSubscriptionDialog}
+        onOpenChange={(open) => {
+          if (cancelSubscriptionMutation.isPending) return;
+          setShowCancelSubscriptionDialog(open);
+          if (!open) {
+            setCancelSubscriptionId(null);
+            setCancelSubscriptionLabel("");
+            setCancelSubscriptionPlanLabel("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>取消订阅</DialogTitle>
+          <DialogDescription>
+            确认取消 "{cancelSubscriptionLabel}" 的 {cancelSubscriptionPlanLabel || "当前套餐"} 订阅？
+          </DialogDescription>
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-muted-foreground">
+            取消后该订阅会立即停止生效，关联的本周期附加流量也会失效。用户账户和历史记录不会被删除。
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowCancelSubscriptionDialog(false)}
+              disabled={cancelSubscriptionMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleCancelSubscription}
+              disabled={!cancelSubscriptionId || cancelSubscriptionMutation.isPending}
+            >
+              {cancelSubscriptionMutation.isPending ? "取消中..." : "确认取消"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1910,7 +1992,9 @@ function UsersContent() {
       <Dialog open={showTrafficSettings} onOpenChange={setShowTrafficSettings}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
           <DialogTitle>流量与权限设置</DialogTitle>
-          <DialogDescription>设置 "{trafficUserName}" 的配额和权限。</DialogDescription>
+          <DialogDescription>
+            设置 "{trafficUserName}" 的管理员额外配额和权限；套餐权益在订阅管理中单独体现。
+          </DialogDescription>
           <Tabs defaultValue="permission" className="flex-1 min-h-0 flex flex-col">
             <TabsList className="grid grid-cols-3 w-full">
               <TabsTrigger value="permission" className="gap-1.5">

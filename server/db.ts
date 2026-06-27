@@ -18,6 +18,7 @@ import { randomAvataaarsValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
+import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { markLocalSetupComplete } from "./setupState";
 
 export { getDb } from "./dbRuntime";
@@ -112,6 +113,9 @@ export async function initDatabase() {
     });
     await ensureTrafficStatBucketsBackfilled().catch((error) => {
       console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
+      console.warn("[Database] Manual entitlement backfill skipped:", error instanceof Error ? error.message : String(error));
     });
     await maintainCurrentPostgresqlDatabase().catch((error) => {
       console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));

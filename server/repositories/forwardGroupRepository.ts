@@ -537,10 +537,10 @@ export type ForwardGroupChinaHealthProbe = {
   probeType: "china";
 };
 
-export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean; templateRule?: any } = {}) {
+export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean; templateRule?: any; method?: "tcp" | "ping"; sourcePort?: number } = {}) {
   const group = await getForwardGroupById(groupId) as any;
   if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
-  const template = options.templateRule || await getForwardGroupPrimaryTemplateRule(groupId) as any;
+  const template = options.templateRule || (options.includeFinalTarget ? await getForwardGroupPrimaryTemplateRule(groupId) : null) as any;
   const members = sortedMembers(group, true) as any[];
   const entryMembers = await chainEntryMembers(group);
   const hasExternalEntry = entryMembers.length > 0;
@@ -553,9 +553,9 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
   }
 
   const probes: ForwardGroupChainProbe[] = [];
-  const sourcePort = Number(template?.sourcePort || 0);
+  const sourcePort = Number(options.sourcePort ?? template?.sourcePort ?? 0);
   const protocol = String(template?.protocol || "both").toLowerCase();
-  const hopProbeMethod: "tcp" | "ping" = protocol === "udp" ? "ping" : "tcp";
+  const hopProbeMethod: "tcp" | "ping" = options.method || (template ? (protocol === "udp" ? "ping" : "tcp") : "ping");
   const hasFinalTarget = !!options.includeFinalTarget
     && !!template
     && String(template.targetIp || "").trim()
@@ -570,7 +570,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     const firstHost = hostById.get(firstHostId);
     const targetIp = resolveChainConnectHost(firstMember, firstHost);
     const firstName = String(firstHost?.name || `主机${firstHostId}`);
-    if (targetIp && sourcePort > 0) {
+    if (targetIp && (hopProbeMethod === "ping" || sourcePort > 0)) {
       for (const entryMember of entryMembers) {
         const entryHostId = Number(entryMember.hostId || 0);
         const entryHost = hostById.get(entryHostId);
@@ -580,7 +580,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
           groupId,
           fromHostId: entryHostId,
           targetIp,
-          targetPort: sourcePort,
+          targetPort: hopProbeMethod === "ping" ? 0 : sourcePort,
           method: hopProbeMethod,
           hopIndex,
           hopCount,
@@ -606,7 +606,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
       groupId,
       fromHostId: currentHostId,
       targetIp,
-      targetPort: sourcePort > 0 ? sourcePort : 0,
+      targetPort: hopProbeMethod === "ping" ? 0 : (sourcePort > 0 ? sourcePort : 0),
       method: hopProbeMethod,
       hopIndex,
       hopCount,

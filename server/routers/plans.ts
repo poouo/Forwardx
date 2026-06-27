@@ -68,17 +68,45 @@ export const plansRouter = router({
       } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
     }),
   update: adminProcedure
-    .input(planInput.extend({ id: z.number().int().positive() }))
-    .mutation(async ({ input }) => {
-      const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, ...data } = input;
+    .input(planInput.extend({
+      id: z.number().int().positive(),
+      syncExistingSubscribers: z.boolean().default(true),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, ...data } = input;
       if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) {
         throw new Error("套餐至少需要绑定一个主机、隧道或转发组");
       }
-      return db.updateSubscriptionPlan(id, {
+      if (!syncExistingSubscribers) {
+        await db.freezePlanSubscriberSnapshots(id);
+      }
+      const result = await db.updateSubscriptionPlan(id, {
         ...data,
         description: data.description || null,
         currency: data.currency.toUpperCase(),
       } as any, hostIds, tunnelIds, forwardGroupIds, trafficAddons);
+      if (syncExistingSubscribers) {
+        const userIds = await db.syncPlanSubscribers(id);
+        for (const userId of userIds) {
+          await refreshUserForwardEndpoints(userId, "plan-updated");
+        }
+        appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=true users=${userIds.length} operator=${ctx.user.id}`);
+      } else {
+        appendPanelLog("info", `[Plan] updated plan=${id} syncSubscribers=false operator=${ctx.user.id}`);
+      }
+      return result;
+    }),
+  updateStatus: adminProcedure
+    .input(z.object({
+      id: z.number().int().positive(),
+      isActive: z.boolean(),
+      isStoreVisible: z.boolean(),
+    }))
+    .mutation(async ({ input }) => {
+      return db.updateSubscriptionPlan(input.id, {
+        isActive: input.isActive,
+        isStoreVisible: input.isActive && input.isStoreVisible,
+      } as any);
     }),
   delete: adminProcedure
     .input(z.object({ id: z.number().int().positive() }))
@@ -128,12 +156,18 @@ export const plansRouter = router({
   extendSubscription: adminProcedure
     .input(z.object({
       id: z.number().int().positive(),
-      days: z.number().int().min(1).max(3650),
+      days: z.number().int().min(1).max(3650).optional(),
+      expiresAt: z.string().nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      const result = await db.extendUserSubscription(input.id, input.days);
-      await refreshUserForwardEndpoints(result.userId, "subscription-extended");
-      appendPanelLog("info", `[Plan] extended subscription=${input.id} user=${result.userId} days=${input.days} operator=${ctx.user.id}`);
+      const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, "expiresAt");
+      const result = hasExpiresAtInput
+        ? await db.setUserSubscriptionExpiresAt(input.id, input.expiresAt ? new Date(input.expiresAt) : null)
+        : await db.extendUserSubscription(input.id, input.days || 0);
+      await refreshUserForwardEndpoints(result.userId, hasExpiresAtInput ? "subscription-expiry-updated" : "subscription-extended");
+      appendPanelLog("info", hasExpiresAtInput
+        ? `[Plan] updated subscription expiry subscription=${input.id} user=${result.userId} expiresAt=${input.expiresAt || "permanent"} operator=${ctx.user.id}`
+        : `[Plan] extended subscription=${input.id} user=${result.userId} days=${input.days} operator=${ctx.user.id}`);
       return result;
     }),
 });

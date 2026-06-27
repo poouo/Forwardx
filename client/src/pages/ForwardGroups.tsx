@@ -1846,7 +1846,7 @@ export function ForwardGroupsContent({
                         )}
                         <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
                           setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                        }} />
+                        }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
                         <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>

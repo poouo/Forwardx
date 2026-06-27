@@ -166,6 +166,7 @@ export const usersRouter = router({
     getHostPermissions: adminProcedure
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => {
+        // 管理编辑页只展示管理员手动授权；套餐绑定资源在订阅管理中体现。
         return db.getUserAllowedHostIds(input.userId);
       }),
     /** 设置某用户的主机权限（全量替换） */
@@ -203,6 +204,7 @@ export const usersRouter = router({
     getTunnelPermissions: adminProcedure
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => {
+        // 管理编辑页只展示管理员手动授权；套餐绑定资源在订阅管理中体现。
         return db.getUserAllowedTunnelIds(input.userId);
       }),
     setTunnelPermissions: adminProcedure
@@ -270,8 +272,36 @@ export const usersRouter = router({
       .mutation(async ({ input, ctx }) => {
         const { userId, expiresAt, allowedForwardTypes, ...rest } = input;
         const data: any = { ...rest };
+        if (data.trafficLimit !== undefined) {
+          data.manualTrafficLimit = Math.max(0, Math.floor(Number(data.trafficLimit) || 0));
+          delete data.trafficLimit;
+        }
+        if (data.gostRateLimitIn !== undefined) {
+          data.manualGostRateLimitIn = Math.max(0, Math.floor(Number(data.gostRateLimitIn) || 0));
+          delete data.gostRateLimitIn;
+        }
+        if (data.gostRateLimitOut !== undefined) {
+          data.manualGostRateLimitOut = Math.max(0, Math.floor(Number(data.gostRateLimitOut) || 0));
+          delete data.gostRateLimitOut;
+        }
+        if (data.maxRules !== undefined) {
+          data.manualMaxRules = Math.max(0, Math.floor(Number(data.maxRules) || 0));
+          delete data.maxRules;
+        }
+        if (data.maxPorts !== undefined) {
+          data.manualMaxPorts = Math.max(0, Math.floor(Number(data.maxPorts) || 0));
+          delete data.maxPorts;
+        }
+        if (data.maxConnections !== undefined) {
+          data.manualMaxConnections = Math.max(0, Math.floor(Number(data.maxConnections) || 0));
+          delete data.maxConnections;
+        }
+        if (data.maxIPs !== undefined) {
+          data.manualMaxIPs = Math.max(0, Math.floor(Number(data.maxIPs) || 0));
+          delete data.maxIPs;
+        }
         if (expiresAt !== undefined) {
-          data.expiresAt = expiresAt ? new Date(expiresAt) : null;
+          data.manualExpiresAt = expiresAt ? new Date(expiresAt) : null;
         }
         if (allowedForwardTypes !== undefined) {
           // null 表示全部允许；空字符串表示全部禁用。
@@ -283,13 +313,16 @@ export const usersRouter = router({
           data.displayRemark = input.displayRemark?.trim() || null;
         }
         if (input.canAddRules !== undefined) {
+          data.manualCanAddRules = input.canAddRules;
           data.forwardAccessPauseReason = input.canAddRules ? null : "manual";
-          data.allowForwardXTunnel = input.canAddRules ? (data.allowForwardXTunnel ?? true) : false;
+          data.manualAllowForwardXTunnel = input.canAddRules ? (data.allowForwardXTunnel ?? true) : false;
+          delete data.canAddRules;
+          delete data.allowForwardXTunnel;
         }
-        const shouldRefreshRuntime = ["gostRateLimitIn", "gostRateLimitOut", "maxConnections", "maxIPs"].some((key) =>
+        const shouldRefreshRuntime = ["manualGostRateLimitIn", "manualGostRateLimitOut", "manualMaxConnections", "manualMaxIPs"].some((key) =>
           Object.prototype.hasOwnProperty.call(data, key)
         );
-        await db.updateUserTrafficSettings(userId, data);
+        await db.updateUserManualEntitlements(userId, data);
         if (shouldRefreshRuntime) {
           await refreshUserForwardEndpoints(userId, "user-runtime-limits-updated");
         }
@@ -302,7 +335,14 @@ export const usersRouter = router({
         const target = await db.getUserById(input.userId);
         if (!target) throw new Error("用户不存在");
         if (target.role === "admin") throw new Error("管理员默认拥有全部权限");
-        await db.setUserForwardAccess(input.userId, input.enabled);
+        await db.updateUserManualEntitlements(input.userId, {
+          manualCanAddRules: input.enabled,
+          manualAllowForwardXTunnel: input.enabled,
+          forwardAccessPauseReason: input.enabled ? null : "manual",
+        });
+        if (!input.enabled) {
+          await db.disableAllUserRules(input.userId);
+        }
         await refreshUserForwardEndpoints(input.userId, input.enabled ? "user-forward-enabled" : "user-forward-disabled");
         console.info(`[Users] Forward access ${input.enabled ? "enabled" : "disabled"} userId=${input.userId} ${actorLabel(ctx)}`);
         return { success: true };

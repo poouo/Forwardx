@@ -1256,9 +1256,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           && (r.pendingDelete || !r.isEnabled || !tunnel.isEnabled || !isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel));
       });
 
-    const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any, connectorType: "relay" | "forward" = "relay") => ({
+    const gostTunnelNode = (
+      name: string,
+      addr: string,
+      dialerType: string,
+      tunnel: any,
+      connectorType: "relay" | "forward" = "relay",
+      metadata?: Record<string, unknown>,
+    ) => ({
       name,
       addr,
+      ...(metadata ? { metadata } : {}),
       connector: connectorType === "forward"
         ? { type: "forward" }
         : { type: "relay", metadata: { nodelay: true } },
@@ -1275,12 +1283,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           : await getExtraExitDialAddress(endpoint.node);
         if (!exitHost || endpoint.listenPort <= 0) continue;
         const exitKey = endpoint.primary ? 0 : (endpoint.exitSeq || endpoint.exitNodeId);
+        const entrySendProxyMetadata = maybeProxyProtocolMetadata(rule, "entrySend");
         nodes.push(gostTunnelNode(
           `exit-${rule.id}-${exitKey}`,
           endpointHostPort(exitHost, endpoint.listenPort),
           tunnelProtocolType(tunnel.mode),
           tunnel,
           "forward",
+          entrySendProxyMetadata,
         ));
       }
       return nodes;

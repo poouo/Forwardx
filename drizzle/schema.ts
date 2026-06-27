@@ -153,6 +153,16 @@ export const users = table("users", {
   gostRateLimitOut: int("gostRateLimitOut").notNull().default(0),
   maxConnections: int("maxConnections").notNull().default(0),
   maxIPs: int("maxIPs").notNull().default(0),
+  manualCanAddRules: boolean("manualCanAddRules").notNull().default(false),
+  manualMaxRules: int("manualMaxRules").notNull().default(0),
+  manualMaxPorts: int("manualMaxPorts").notNull().default(0),
+  manualMaxConnections: int("manualMaxConnections").notNull().default(0),
+  manualMaxIPs: int("manualMaxIPs").notNull().default(0),
+  manualAllowForwardXTunnel: boolean("manualAllowForwardXTunnel").notNull().default(false),
+  manualGostRateLimitIn: int("manualGostRateLimitIn").notNull().default(0),
+  manualGostRateLimitOut: int("manualGostRateLimitOut").notNull().default(0),
+  manualTrafficLimit: bigint("manualTrafficLimit", { mode: "number" }).notNull().default(0),
+  manualExpiresAt: epoch("manualExpiresAt"),
   balanceCents: bigint("balanceCents", { mode: "number" }).notNull().default(0),
   // ===== 流量管理字段 =====
   trafficLimit: bigint("trafficLimit", { mode: "number" }).notNull().default(0),           // 流量额度（字节），0 = 不限制
@@ -692,6 +702,7 @@ export const userSubscriptions = table("user_subscriptions", {
   status: varchar("status", { length: 32 }).notNull().default("active"), // active | expired | cancelled
   source: varchar("source", { length: 32 }).notNull().default("admin"), // admin | payment
   paymentOrderNo: text("paymentOrderNo"),
+  planSnapshot: text("planSnapshot"),
   portRangeStart: int("portRangeStart"),
   portRangeEnd: int("portRangeEnd"),
   nextTrafficResetAt: epoch("nextTrafficResetAt"),

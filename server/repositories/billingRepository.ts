@@ -23,6 +23,7 @@ import { getHostById } from "./hostRepository";
 import { getTunnelById, updateTunnel } from "./tunnelRepository";
 import {
   disableAllUserRules,
+  getAllUsers,
   getUserById,
   resetUserTraffic,
   setUserForwardAccess,
@@ -32,6 +33,7 @@ import {
 import { addMonthsClamped, nextMonthlyTrafficReset } from "./repositoryUtils";
 import { pushAgentRefresh } from "../agentEvents";
 import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingRepository";
+import { getSetting, setSetting } from "./settingsRepository";
 
 // ==================== Payment Orders ====================
 
@@ -114,6 +116,73 @@ function normalizeTrafficAddons(addons: any[] = []) {
     .slice(0, 20);
 }
 
+function normalizeNumericIds(values: any[] = []) {
+  return Array.from(new Set(values.map(Number).filter((id) => Number.isFinite(id) && id > 0)));
+}
+
+function buildPlanSnapshot(plan: any) {
+  return {
+    name: plan?.name || null,
+    portCount: Number(plan?.portCount ?? 20),
+    trafficLimit: Number(plan?.trafficLimit || 0),
+    rateLimitMbps: Number(plan?.rateLimitMbps || 0),
+    maxRules: Number(plan?.maxRules ?? 20),
+    maxConnections: Number(plan?.maxConnections ?? 2000),
+    maxIPs: Number(plan?.maxIPs ?? 10),
+    hostIds: normalizeNumericIds(plan?.hostIds || []),
+    tunnelIds: normalizeNumericIds(plan?.tunnelIds || []),
+    forwardGroupIds: normalizeNumericIds(plan?.forwardGroupIds || []),
+  };
+}
+
+function parsePlanSnapshot(value: unknown) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : null,
+      portCount: Number(parsed.portCount ?? 20),
+      trafficLimit: Number(parsed.trafficLimit || 0),
+      rateLimitMbps: Number(parsed.rateLimitMbps || 0),
+      maxRules: Number(parsed.maxRules ?? 20),
+      maxConnections: Number(parsed.maxConnections ?? 2000),
+      maxIPs: Number(parsed.maxIPs ?? 10),
+      hostIds: normalizeNumericIds(Array.isArray(parsed.hostIds) ? parsed.hostIds : []),
+      tunnelIds: normalizeNumericIds(Array.isArray(parsed.tunnelIds) ? parsed.tunnelIds : []),
+      forwardGroupIds: normalizeNumericIds(Array.isArray(parsed.forwardGroupIds) ? parsed.forwardGroupIds : []),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function snapshotForPlanId(planId: number) {
+  const plan = await getSubscriptionPlanById(planId);
+  return plan ? buildPlanSnapshot(plan) : null;
+}
+
+async function attachSubscriptionSnapshots<T extends { planId: number; planSnapshot?: string | null }>(subscriptions: T[]) {
+  return Promise.all(subscriptions.map(async (subscription: any) => {
+    const snapshot = parsePlanSnapshot(subscription.planSnapshot);
+    return {
+      ...subscription,
+      planName: snapshot?.name || subscription.planName,
+      portCount: snapshot?.portCount ?? subscription.portCount,
+      trafficLimit: snapshot?.trafficLimit ?? subscription.trafficLimit,
+      rateLimitMbps: snapshot?.rateLimitMbps ?? subscription.rateLimitMbps,
+      maxRules: snapshot?.maxRules ?? subscription.maxRules,
+      maxConnections: snapshot?.maxConnections ?? subscription.maxConnections,
+      maxIPs: snapshot?.maxIPs ?? subscription.maxIPs,
+      hostIds: snapshot ? snapshot.hostIds : await getPlanHostIds(Number(subscription.planId)),
+      tunnelIds: snapshot ? snapshot.tunnelIds : await getPlanTunnelIds(Number(subscription.planId)),
+      forwardGroupIds: snapshot ? snapshot.forwardGroupIds : await getPlanForwardGroupIds(Number(subscription.planId)),
+      trafficAddons: await getPlanTrafficAddons(Number(subscription.planId), false),
+      activeTrafficAddonBytes: await getActiveTrafficAddonBytesForSubscription(Number(subscription.id)),
+    };
+  }));
+}
+
 async function attachPlanResources<T extends { id: number }>(plans: T[]) {
   return Promise.all(plans.map(async (plan) => ({
     ...plan,
@@ -164,6 +233,66 @@ export async function updateSubscriptionPlan(id: number, data: Partial<InsertSub
   }
   if (trafficAddons) await setSubscriptionPlanTrafficAddons(id, trafficAddons);
   return getSubscriptionPlanById(id);
+}
+
+export async function freezePlanSubscriberSnapshots(planId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const currentSnapshot = await snapshotForPlanId(planId);
+  if (!currentSnapshot) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rows = await db
+    .select({
+      id: userSubscriptions.id,
+      userId: userSubscriptions.userId,
+      planSnapshot: userSubscriptions.planSnapshot,
+    })
+    .from(userSubscriptions)
+    .where(and(
+      eq(userSubscriptions.planId, planId),
+      eq(userSubscriptions.status, "active"),
+      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+    ));
+  const userIds = new Set<number>();
+  for (const row of rows as any[]) {
+    const userId = Number(row.userId || 0);
+    if (userId > 0) userIds.add(userId);
+    if (parsePlanSnapshot(row.planSnapshot)) continue;
+    await updateUserSubscription(Number(row.id), { planSnapshot: JSON.stringify(currentSnapshot) } as any);
+  }
+  return Array.from(userIds);
+}
+
+export async function syncPlanSubscribers(planId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const snapshot = await snapshotForPlanId(planId);
+  if (!snapshot) return [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rows = await db
+    .select({
+      id: userSubscriptions.id,
+      userId: userSubscriptions.userId,
+    })
+    .from(userSubscriptions)
+    .where(and(
+      eq(userSubscriptions.planId, planId),
+      eq(userSubscriptions.status, "active"),
+      sql`(${userSubscriptions.expiresAt} IS NULL OR ${userSubscriptions.expiresAt} > ${nowSec})`,
+    ));
+  const userIds = new Set<number>();
+  for (const row of rows as any[]) {
+    const subscriptionId = Number(row.id || 0);
+    const userId = Number(row.userId || 0);
+    if (subscriptionId <= 0) continue;
+    await updateUserSubscription(subscriptionId, { planSnapshot: JSON.stringify(snapshot) } as any);
+    if (userId > 0) userIds.add(userId);
+  }
+  const affectedUserIds = Array.from(userIds);
+  for (const userId of affectedUserIds) {
+    await syncUserSubscriptionEntitlements(userId);
+  }
+  return affectedUserIds;
 }
 
 export async function deleteSubscriptionPlan(id: number) {
@@ -228,6 +357,7 @@ export async function listUserSubscriptions(userId?: number) {
       status: userSubscriptions.status,
       source: userSubscriptions.source,
       paymentOrderNo: userSubscriptions.paymentOrderNo,
+      planSnapshot: userSubscriptions.planSnapshot,
       portRangeStart: userSubscriptions.portRangeStart,
       portRangeEnd: userSubscriptions.portRangeEnd,
       nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
@@ -246,14 +376,7 @@ export async function listUserSubscriptions(userId?: number) {
 }
 
 async function attachUserSubscriptionDetails<T extends { id: number; planId: number }>(subscriptions: T[]) {
-  return Promise.all(subscriptions.map(async (subscription: any) => ({
-    ...subscription,
-    hostIds: await getPlanHostIds(Number(subscription.planId)),
-    tunnelIds: await getPlanTunnelIds(Number(subscription.planId)),
-    forwardGroupIds: await getPlanForwardGroupIds(Number(subscription.planId)),
-    trafficAddons: await getPlanTrafficAddons(Number(subscription.planId), false),
-    activeTrafficAddonBytes: await getActiveTrafficAddonBytesForSubscription(Number(subscription.id)),
-  })));
+  return attachSubscriptionSnapshots(subscriptions as any);
 }
 
 async function getActiveTrafficAddonBytesForSubscription(subscriptionId: number) {
@@ -303,6 +426,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
       status: userSubscriptions.status,
       source: userSubscriptions.source,
       paymentOrderNo: userSubscriptions.paymentOrderNo,
+      planSnapshot: userSubscriptions.planSnapshot,
       portRangeStart: userSubscriptions.portRangeStart,
       portRangeEnd: userSubscriptions.portRangeEnd,
       nextTrafficResetAt: userSubscriptions.nextTrafficResetAt,
@@ -320,14 +444,7 @@ export async function getActiveUserSubscriptions(userId?: number) {
     .leftJoin(subscriptionPlans, eq(userSubscriptions.planId, subscriptionPlans.id))
     .where(and(...conds))
     .orderBy(desc(userSubscriptions.createdAt));
-  return Promise.all(rows.map(async (row: any) => ({
-    ...row,
-    hostIds: await getPlanHostIds(row.planId),
-    tunnelIds: await getPlanTunnelIds(row.planId),
-    forwardGroupIds: await getPlanForwardGroupIds(row.planId),
-    trafficAddons: await getPlanTrafficAddons(row.planId, false),
-    activeTrafficAddonBytes: await getActiveTrafficAddonBytesForSubscription(row.id),
-  })));
+  return attachSubscriptionSnapshots(rows as any);
 }
 
 export async function createUserSubscription(data: InsertUserSubscription) {
@@ -393,6 +510,52 @@ export async function cancelUserSubscription(id: number) {
   await expireTrafficAddonsForSubscriptionIds([id]);
 }
 
+export async function setUserSubscriptionExpiresAt(id: number, expiresAt: Date | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const rows = await db.select().from(userSubscriptions).where(eq(userSubscriptions.id, id)).limit(1);
+  const subscription = rows[0] as any;
+  if (!subscription) throw new Error("订阅不存在");
+  if (subscription.status === "cancelled") throw new Error("已取消的订阅不能更改到期时间");
+  const nextExpiresAt = expiresAt ? new Date(expiresAt) : null;
+  if (nextExpiresAt && !Number.isFinite(nextExpiresAt.getTime())) throw new Error("到期时间无效");
+  const now = nowDate();
+  const expired = !!nextExpiresAt && nextExpiresAt.getTime() <= now.getTime();
+  let nextTrafficResetAt = subscription.nextTrafficResetAt ? new Date(subscription.nextTrafficResetAt) : null;
+  const plan = await getSubscriptionPlanById(Number(subscription.planId));
+  const subscriptionSnapshot = parsePlanSnapshot((subscription as any).planSnapshot);
+  const subscriptionTrafficLimit = Number(subscriptionSnapshot?.trafficLimit ?? plan?.trafficLimit ?? 0);
+  if (subscriptionTrafficLimit > 0 && !expired) {
+    if (
+      !nextTrafficResetAt ||
+      !Number.isFinite(nextTrafficResetAt.getTime()) ||
+      nextTrafficResetAt.getTime() <= now.getTime() ||
+      (nextExpiresAt && nextTrafficResetAt.getTime() >= nextExpiresAt.getTime())
+    ) {
+      nextTrafficResetAt = nextMonthlyTrafficReset(now, nextExpiresAt);
+    }
+    if (nextTrafficResetAt && nextExpiresAt && nextTrafficResetAt.getTime() >= nextExpiresAt.getTime()) {
+      nextTrafficResetAt = null;
+    }
+  } else {
+    nextTrafficResetAt = null;
+  }
+  await updateUserSubscription(id, {
+    status: expired ? "expired" : "active",
+    expiresAt: nextExpiresAt,
+    nextTrafficResetAt,
+  } as any);
+  if (expired) await expireTrafficAddonsForSubscriptionIds([id]);
+  const limits = await syncUserSubscriptionEntitlements(Number(subscription.userId));
+  return {
+    id,
+    userId: Number(subscription.userId),
+    expiresAt: nextExpiresAt,
+    nextTrafficResetAt,
+    trafficLimit: limits.trafficLimit,
+  };
+}
+
 export async function extendUserSubscription(id: number, days: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -411,7 +574,9 @@ export async function extendUserSubscription(id: number, days: number) {
   const expiresAt = new Date(base.getTime() + extraDays * 24 * 3600 * 1000);
   let nextTrafficResetAt = subscription.nextTrafficResetAt ? new Date(subscription.nextTrafficResetAt) : null;
   const plan = await getSubscriptionPlanById(Number(subscription.planId));
-  if (Number(plan?.trafficLimit || 0) > 0) {
+  const subscriptionSnapshot = parsePlanSnapshot((subscription as any).planSnapshot);
+  const subscriptionTrafficLimit = Number(subscriptionSnapshot?.trafficLimit ?? plan?.trafficLimit ?? 0);
+  if (subscriptionTrafficLimit > 0) {
     if (!nextTrafficResetAt || !Number.isFinite(nextTrafficResetAt.getTime()) || nextTrafficResetAt.getTime() <= now.getTime()) {
       nextTrafficResetAt = nextMonthlyTrafficReset(now, expiresAt);
     }
@@ -552,6 +717,99 @@ function isTrafficLimitExceeded(trafficUsed: unknown, trafficLimit: unknown) {
   return limit > 0 && Number(trafficUsed || 0) >= limit;
 }
 
+function positiveInt(value: unknown) {
+  return Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function mergeLimitValue(sources: Array<{ active: boolean; value: unknown }>) {
+  let hasSource = false;
+  let max = 0;
+  for (const source of sources) {
+    if (!source.active) continue;
+    hasSource = true;
+    const value = positiveInt(source.value);
+    if (value === 0) return 0;
+    max = Math.max(max, value);
+  }
+  return hasSource ? max : 0;
+}
+
+function mergeTrafficLimitValue(sources: Array<{ active: boolean; value: unknown }>) {
+  let hasSource = false;
+  let total = 0;
+  for (const source of sources) {
+    if (!source.active) continue;
+    hasSource = true;
+    const value = positiveInt(source.value);
+    if (value === 0) return 0;
+    total += value;
+  }
+  return hasSource ? total : 0;
+}
+
+function latestExpiresAtValue(sources: Array<{ active: boolean; value: unknown }>): Date | null {
+  let latest: Date | null = null;
+  for (const source of sources) {
+    if (!source.active) continue;
+    if (!source.value) return null;
+    const date = new Date(source.value as any);
+    if (!Number.isFinite(date.getTime())) continue;
+    if (!latest || date.getTime() > latest.getTime()) latest = date;
+  }
+  return latest;
+}
+
+export function mergeManualAndPlanLimits(user: any, planLimits: any) {
+  const manualCanAddRules = !!user?.manualCanAddRules;
+  const planCanAddRules = !!planLimits?.canAddRules;
+  const manualAllowForwardXTunnel = !!user?.manualAllowForwardXTunnel;
+  const planAllowForwardXTunnel = !!planLimits?.allowForwardXTunnel;
+  const manualDefaultActive = manualCanAddRules && !planCanAddRules;
+  const manualMaxRules = positiveInt(user?.manualMaxRules);
+  const manualMaxPorts = positiveInt(user?.manualMaxPorts);
+  const manualMaxConnections = positiveInt(user?.manualMaxConnections);
+  const manualMaxIPs = positiveInt(user?.manualMaxIPs);
+  const manualTrafficLimit = positiveInt(user?.manualTrafficLimit);
+  const manualGostRateLimitIn = positiveInt(user?.manualGostRateLimitIn);
+  const manualGostRateLimitOut = positiveInt(user?.manualGostRateLimitOut);
+  return {
+    canAddRules: manualCanAddRules || planCanAddRules,
+    allowForwardXTunnel: manualAllowForwardXTunnel || planAllowForwardXTunnel,
+    maxPorts: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.maxPorts },
+      { active: manualDefaultActive || manualMaxPorts > 0, value: manualMaxPorts },
+    ]),
+    maxRules: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.maxRules },
+      { active: manualDefaultActive || manualMaxRules > 0, value: manualMaxRules },
+    ]),
+    maxConnections: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.maxConnections },
+      { active: manualDefaultActive || manualMaxConnections > 0, value: manualMaxConnections },
+    ]),
+    maxIPs: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.maxIPs },
+      { active: manualDefaultActive || manualMaxIPs > 0, value: manualMaxIPs },
+    ]),
+    trafficLimit: mergeTrafficLimitValue([
+      { active: planCanAddRules, value: planLimits?.trafficLimit },
+      { active: manualDefaultActive || manualTrafficLimit > 0, value: manualTrafficLimit },
+    ]),
+    gostRateLimitIn: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.gostRateLimitIn },
+      { active: manualDefaultActive || manualGostRateLimitIn > 0, value: manualGostRateLimitIn },
+    ]),
+    gostRateLimitOut: mergeLimitValue([
+      { active: planCanAddRules, value: planLimits?.gostRateLimitOut },
+      { active: manualDefaultActive || manualGostRateLimitOut > 0, value: manualGostRateLimitOut },
+    ]),
+    expiresAt: latestExpiresAtValue([
+      { active: planCanAddRules, value: planLimits?.expiresAt },
+      { active: manualDefaultActive || !!user?.manualExpiresAt, value: user?.manualExpiresAt },
+    ]),
+  };
+}
+
 export type ForwardAccessCheckResult = {
   allowed: boolean;
   restored: boolean;
@@ -586,6 +844,7 @@ export async function recoverUserForwardAccessIfEligible(
 
   const limits = await getEffectiveUserPlanLimits(userId);
   const billingResources = await getUserUsableTrafficBillingResourceIds(userId);
+  const effectiveLimits = mergeManualAndPlanLimits(user, limits);
   const hasTrafficBillingResource = billingResources.hostIds.length > 0 || billingResources.tunnelIds.length > 0;
   const hasTrafficBillingBalance = Number((user as any).balanceCents || 0) > 0;
   if (pauseReason === "traffic_billing_balance" && hasTrafficBillingResource && !hasTrafficBillingBalance) {
@@ -598,12 +857,12 @@ export async function recoverUserForwardAccessIfEligible(
     };
   }
 
-  if (limits.canAddRules) {
-    if (isTrafficLimitExceeded((user as any).trafficUsed, limits.trafficLimit)) {
+  if (effectiveLimits.canAddRules) {
+    if (isTrafficLimitExceeded((user as any).trafficUsed, effectiveLimits.trafficLimit)) {
       if (options.allowTrafficBillingRecovery && hasTrafficBillingResource && hasTrafficBillingBalance) {
         const restored = !(user as any).canAddRules || !!pauseReason;
         await updateUserTrafficSettings(userId, {
-          ...limits,
+          ...effectiveLimits,
           canAddRules: true,
           allowForwardXTunnel: true,
           forwardAccessPauseReason: null,
@@ -628,7 +887,7 @@ export async function recoverUserForwardAccessIfEligible(
 
     const restored = !(user as any).canAddRules || !!pauseReason;
     await updateUserTrafficSettings(userId, {
-      ...limits,
+      ...effectiveLimits,
       canAddRules: true,
       allowForwardXTunnel: true,
       forwardAccessPauseReason: null,
@@ -702,13 +961,14 @@ export async function syncUserSubscriptionEntitlements(userId: number) {
   const limits = await getEffectiveUserPlanLimits(userId);
   const user = await getUserById(userId);
   const pauseReason = normalizeForwardAccessPauseReason((user as any)?.forwardAccessPauseReason);
-  const trafficExceeded = limits.canAddRules && isTrafficLimitExceeded((user as any)?.trafficUsed, limits.trafficLimit);
+  const effectiveLimits = mergeManualAndPlanLimits(user, limits);
+  const trafficExceeded = effectiveLimits.canAddRules && isTrafficLimitExceeded((user as any)?.trafficUsed, effectiveLimits.trafficLimit);
   const manualPaused = pauseReason === "manual";
   const nextLimits = {
-    ...limits,
-    canAddRules: limits.canAddRules && !manualPaused && !trafficExceeded,
-    allowForwardXTunnel: limits.allowForwardXTunnel && !manualPaused && !trafficExceeded,
-    forwardAccessPauseReason: (limits.canAddRules && !manualPaused && !trafficExceeded
+    ...effectiveLimits,
+    canAddRules: effectiveLimits.canAddRules && !manualPaused && !trafficExceeded,
+    allowForwardXTunnel: effectiveLimits.allowForwardXTunnel && !manualPaused && !trafficExceeded,
+    forwardAccessPauseReason: (effectiveLimits.canAddRules && !manualPaused && !trafficExceeded
       ? null
       : manualPaused
       ? "manual"
@@ -721,6 +981,61 @@ export async function syncUserSubscriptionEntitlements(userId: number) {
     await disableAllUserRules(userId);
   }
   return nextLimits;
+}
+
+export async function updateUserManualEntitlements(userId: number, data: {
+  manualTrafficLimit?: number;
+  manualGostRateLimitIn?: number;
+  manualGostRateLimitOut?: number;
+  manualExpiresAt?: Date | null;
+  manualCanAddRules?: boolean;
+  manualMaxRules?: number;
+  manualMaxPorts?: number;
+  manualMaxConnections?: number;
+  manualMaxIPs?: number;
+  manualAllowForwardXTunnel?: boolean;
+  allowedForwardTypes?: string | null;
+  displayRemark?: string | null;
+  trafficAutoReset?: boolean;
+  trafficResetDay?: number;
+  forwardAccessPauseReason?: ForwardAccessPauseReason;
+}) {
+  await updateUserTrafficSettings(userId, data as any);
+  return syncUserSubscriptionEntitlements(userId);
+}
+
+export async function backfillManualEntitlementsFromEffectiveUsers() {
+  if (await getSetting("manual-entitlements-backfill-v1")) return;
+  const allUsers = await getAllUsers();
+  for (const user of allUsers as any[]) {
+    if (user.role === "admin") continue;
+    const planLimits = await getEffectiveUserPlanLimits(Number(user.id));
+    const hasPlan = !!planLimits.canAddRules;
+    const manualCanAddRules = !!user.canAddRules && !hasPlan;
+    const overPlan = (effective: unknown, plan: unknown) => {
+      const current = positiveInt(effective);
+      const planValue = positiveInt(plan);
+      if (!hasPlan) return current;
+      if (current === 0) return planValue === 0 ? 0 : 0;
+      if (planValue === 0) return 0;
+      return current > planValue ? current : 0;
+    };
+    const manualExpiresAt = hasPlan ? null : (user.expiresAt ? new Date(user.expiresAt) : null);
+    await updateUserTrafficSettings(Number(user.id), {
+      manualCanAddRules,
+      manualAllowForwardXTunnel: manualCanAddRules && !!user.allowForwardXTunnel,
+      manualMaxRules: overPlan(user.maxRules, planLimits.maxRules),
+      manualMaxPorts: overPlan(user.maxPorts, planLimits.maxPorts),
+      manualMaxConnections: overPlan(user.maxConnections, planLimits.maxConnections),
+      manualMaxIPs: overPlan(user.maxIPs, planLimits.maxIPs),
+      manualGostRateLimitIn: overPlan(user.gostRateLimitIn, planLimits.gostRateLimitIn),
+      manualGostRateLimitOut: overPlan(user.gostRateLimitOut, planLimits.gostRateLimitOut),
+      manualTrafficLimit: overPlan(user.trafficLimit, planLimits.trafficLimit),
+      manualExpiresAt,
+    } as any);
+    await syncUserSubscriptionEntitlements(Number(user.id));
+  }
+  await setSetting("manual-entitlements-backfill-v1", String(Math.floor(Date.now() / 1000)));
 }
 
 export async function rechargeSubscriptionTrafficCycles() {
@@ -904,6 +1219,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
       status: "active",
       expiresAt,
       nextTrafficResetAt,
+      planSnapshot: JSON.stringify(buildPlanSnapshot(plan)),
     } as any;
     if (paymentOrderNo) {
       (updateData as any).paymentOrderNo = paymentOrderNo;
@@ -937,6 +1253,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
     status: "active",
     source,
     paymentOrderNo: paymentOrderNo ?? null,
+    planSnapshot: JSON.stringify(buildPlanSnapshot(plan)),
     portRangeStart: block.start,
     portRangeEnd: block.end,
     nextTrafficResetAt,

@@ -153,6 +153,9 @@ function endpointLabelsMatch(leftLabel: string, leftMeta: LinkTestNodeMeta | und
   const leftKeys = endpointMatchKeys(leftLabel, leftMeta);
   const rightKeys = endpointMatchKeys(rightLabel, rightMeta);
   if (leftKeys.size === 0 || rightKeys.size === 0) return false;
+  const leftLabelKey = normalizeEndpointLabel(leftMeta?.label || leftLabel);
+  const rightLabelKey = normalizeEndpointLabel(rightMeta?.label || rightLabel);
+  if (leftLabelKey && rightLabelKey && leftLabelKey === rightLabelKey) return true;
   return Array.from(leftKeys).some((key) => rightKeys.has(key));
 }
 
@@ -173,7 +176,7 @@ function parseRouteEndpoints(detail: LinkTestDetail, index: number) {
   }
 
   const hopLabel = String(detail.hopLabel || "").replace(/\s+/g, " ").trim();
-  const hopMatch = hopLabel.match(/(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
+  const hopMatch = hopLabel.match(/(?:(?:入口|出口)\s*)?(?:\d+\s*\/\s*\d+\s*)?(.+?)\s*->\s*(.+)$/);
   if (hopMatch) {
     return {
       from: cleanNodeLabel(hopMatch[1]),

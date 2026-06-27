@@ -15,11 +15,11 @@ export default function PersonalizationLayer() {
   const effectiveUrl = String(background?.effectiveUrl || "");
   const source = background?.source || "none";
   const urlType = background?.urlType || "image";
-  const opacity = Math.min(0.85, Math.max(0, Number(background?.opacity ?? 0.22)));
+  const opacity = Math.min(1, Math.max(0, Number(background?.opacity ?? 0.22)));
   const blur = Math.min(32, Math.max(0, Number(background?.blur ?? 0)));
   const scale = 1 + blur / 320;
-  const showImage = source !== "none" && urlType !== "video" && !!effectiveUrl;
-  const showVideo = source !== "none" && urlType === "video" && !!effectiveUrl;
+  const showVideo = source === "url" && urlType === "video" && !!effectiveUrl;
+  const showImage = source !== "none" && !showVideo && !!effectiveUrl;
 
   useEffect(() => {
     const root = document.documentElement;

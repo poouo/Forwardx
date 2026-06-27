@@ -1394,12 +1394,13 @@ function TunnelSelfTestDialog({
         toMeta: nodeMetaFor(toHost, nextHostId),
       };
     }).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
-    const entryHostIds = Array.from(new Set([
-      firstHostId,
-      ...entryGroupMembers.map((member: any) => Number(member?.hostId || 0)),
-    ].filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)));
+    const entryHostIds = Array.from(new Set((
+      entryGroupMembers.length > 0
+        ? entryGroupMembers.map((member: any) => Number(member?.hostId || 0))
+        : [firstHostId]
+    ).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0)));
     if (entryHostIds.length > 1) {
-      const restHopIds = hopIds.filter((hostId: number) => !entryHostIds.includes(Number(hostId)));
+      const restHopIds = hopIds.slice(1).filter((hostId: number) => Number.isFinite(Number(hostId)) && Number(hostId) > 0);
       const nextHostId = Number(restHopIds[0] || lastHostId || tunnel?.exitHostId || 0);
       const nextHost = hostForId(nextHostId);
       const nextLabel = labelForHostId(nextHostId);
@@ -2368,6 +2369,7 @@ function TunnelsContent() {
                           checked={tunnel.isEnabled}
                           onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
                           className="scale-75"
+                          title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
                         />
                       ) : (
                         renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
@@ -2445,6 +2447,7 @@ function TunnelsContent() {
                           checked={tunnel.isEnabled}
                           onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
                           className="scale-75"
+                          title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
                         />
                       ) : (
                         renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
@@ -2549,6 +2552,7 @@ function TunnelsContent() {
                             checked={tunnel.isEnabled}
                             onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
                             className="scale-75"
+                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
                           />
                         ) : (
                           renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
