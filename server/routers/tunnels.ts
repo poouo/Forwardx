@@ -282,7 +282,7 @@ async function attachTunnelEndpointHosts(tunnels: any[]) {
         tunnelId: Number(tunnel.id),
         latencyMs: aggregate.success ? aggregate.latencyMs : null,
         isTimeout: !aggregate.success,
-      });
+      }, { preserveMessage: true });
       (tunnel as any).lastLatencyMs = aggregate.success ? aggregate.latencyMs : null;
     }
     if (shouldMarkRunning) {
@@ -655,7 +655,7 @@ export const tunnelsRouter = router({
         })));
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || existingExtraSignature !== nextExtraSignature;
-        const keyChanged = ["entryHostId", "exitHostId", "mode", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
@@ -702,7 +702,10 @@ export const tunnelsRouter = router({
             await db.disableForwardRulesByTunnel(id);
           }
         }
-        if (keyChanged) await db.resetForwardRulesByTunnel(id);
+        if (keyChanged) {
+          await db.resetForwardRulesByTunnel(id);
+          await hopRepo.clearTunnelTestSnapshot(id);
+        }
         if (keyChanged) {
           const existingExtraHostIds = (existingExtraExitNodes || []).map((node: any) => Number(node.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
           const nextExtraHostIds = extraExitNodes.map((node) => Number(node.hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0);

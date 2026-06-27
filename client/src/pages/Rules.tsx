@@ -5898,9 +5898,14 @@ function RulesContent() {
                 {renderTransportTuningSwitch("mimic UDP 混淆", "专为 UDP 封锁环境优化，适合游戏场景", "udpOverTcp", canUseUdpOverTcp)}
               </div>
               {canUseUdpOverTcp && form.udpOverTcp && (
-                <p className="text-[11px] leading-4 text-muted-foreground">
-                  开启后 ForwardX UDP 仍走原生 UDP 加密通道，并在配置网卡的 Agent 上通过 mimic 做 TCP 外观混淆；需要 Agent 系统已安装 mimic 和 mimic-dkms。
-                </p>
+                <div className="space-y-1.5 text-[11px] leading-4">
+                  <p className="text-muted-foreground">
+                    开启后 ForwardX UDP 仍走原生 UDP 加密通道，并在配置网卡的 Agent 上通过 mimic 做 TCP 外观混淆；需要 Agent 系统已安装 mimic 和 mimic-dkms。
+                  </p>
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-amber-700 dark:text-amber-300">
+                    mimic TCP 外观伪装会增加封装开销。游戏、直播或 UDP 测速在 1400 以上明显丢包时，建议把客户端或业务 UDP MTU 调整到 1200-1300。
+                  </div>
+                </div>
               )}
             </div>
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
