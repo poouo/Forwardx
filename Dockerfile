@@ -6,6 +6,7 @@ RUN npm install -g pnpm@10
 RUN apk add --no-cache bash python3 make g++ curl ca-certificates
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+COPY patches ./patches
 RUN pnpm install --prod=false
 
 COPY . .
@@ -26,6 +27,7 @@ WORKDIR /app
 RUN npm install -g pnpm@10
 RUN apk add --no-cache python3 make g++ git
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+COPY patches ./patches
 RUN pnpm install --prod
 
 # ---------- 3. Runtime image ----------
