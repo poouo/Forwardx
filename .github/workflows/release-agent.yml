@@ -32,7 +32,7 @@ jobs:
           node-version: "22"
 
       - name: Install udp2raw build toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ aarch64-linux-gnu-g++
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ g++-aarch64-linux-gnu
 
       - name: Resolve release version
         id: release
