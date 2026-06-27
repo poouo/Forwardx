@@ -666,6 +666,13 @@ function appendUpgradeLog(line: string) {
 function normalizeUpgradeCommand(command: string) {
   const trimmed = command.trim();
   if (!trimmed) return "";
+  const missingLocalPanelUpgrade = trimmed.match(/^(?:\/bin\/bash|\/usr\/bin\/bash|bash)\s+(\S*install-panel-local\.sh)\s+upgrade\s*$/i);
+  if (missingLocalPanelUpgrade) {
+    const scriptPath = missingLocalPanelUpgrade[1].replace(/^['"]|['"]$/g, "");
+    if (!fs.existsSync(scriptPath)) {
+      return MANUAL_LOCAL_UPGRADE_COMMAND;
+    }
+  }
   if (/^(?:bash|sh|\/bin\/bash|\/usr\/bin\/bash|\/bin\/sh|\/usr\/bin\/sh)\s+/i.test(trimmed)) {
     return trimmed;
   }

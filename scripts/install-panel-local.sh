@@ -535,7 +535,7 @@ MYSQL_CONFIG_PATH=$APP_DIR/data/mysql.json
 JWT_SECRET=$jwt_secret
 FORWARDX_PORT_CONFIG_PATH=$APP_DIR/.env
 FORWARDX_PORT_MANAGEMENT=local
-FORWARDX_UPGRADE_COMMAND="/bin/bash $APP_DIR/scripts/install-panel-local.sh upgrade"
+FORWARDX_UPGRADE_COMMAND="/bin/bash -lc 'SCRIPT=\"$APP_DIR/scripts/install-panel-local.sh\"; if [ -f \"\$SCRIPT\" ]; then exec /bin/bash \"\$SCRIPT\" upgrade; fi; URL=\"https://raw.githubusercontent.com/${REPO_SLUG}/main/scripts/install-panel-local.sh\"; if command -v sudo >/dev/null 2>&1; then curl -fsSL \"\$URL\" | sudo bash -s -- upgrade; else curl -fsSL \"\$URL\" | bash -s -- upgrade; fi'"
 EOF
 }
 
