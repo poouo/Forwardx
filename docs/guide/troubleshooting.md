@@ -44,10 +44,10 @@ journalctl -u forwardx-agent -n 300 --no-pager
 Agent 配置路径：
 
 ```text
-/etc/forwardx-agent/config.json
+/etc/forwardx/agent/config.json
 ```
 
-如果手动改完又被覆盖，通常说明升级脚本或面板下发仍使用旧的公开地址。应先在面板后台修正公开地址，再重新执行 Agent 升级命令。
+旧版本可能仍有 `/etc/forwardx-agent/config.json`，新版升级脚本会自动迁移到 `/etc/forwardx/agent/config.json`。如果手动改完又被覆盖，通常说明升级脚本或面板下发仍使用旧的公开地址。应先在面板后台修正公开地址，再重新执行 Agent 升级命令。
 
 ## 转发不通
 
@@ -123,4 +123,3 @@ ip6tables -t nat -S
 - 反向代理是否正常转发 `/api/agent/*`。
 
 如果面板域名、协议或端口发生变化，应先在面板后台修正公开地址，再重新执行 Agent 升级命令。
-

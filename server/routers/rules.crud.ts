@@ -45,6 +45,8 @@ const proxyProtocolInputShape = {
 const transportTuningInputShape = {
   tcpFastOpen: z.boolean().optional(),
   zeroCopy: z.boolean().optional(),
+  udpOverTcp: z.boolean().optional(),
+  udpOverTcpPort: z.number().int().min(0).max(65535).nullable().optional(),
 } as const;
 
 type FailoverInput = {
@@ -154,19 +156,30 @@ function normalizeProxyProtocolInput(input: {
 function normalizeTransportTuningInput(input: {
   tcpFastOpen?: boolean;
   zeroCopy?: boolean;
+  udpOverTcp?: boolean;
+  udpOverTcpPort?: number | null;
 }, protocol?: string | null, forwardType?: string | null, isForwardChain?: boolean, options?: { clearUnsupported?: boolean; tunnelRoute?: boolean; forwardxTunnel?: boolean }) {
   const clearUnsupported = options?.clearUnsupported ?? false;
   const protocolSupported = !protocol || protocol === "tcp" || protocol === "both";
+  const udpOverTcpProtocolSupported = protocol === "both";
   const tunnelRoute = !!options?.tunnelRoute;
   const forwardxTunnel = !!options?.forwardxTunnel;
   const fastOpenSupported = !isForwardChain && protocolSupported && (
     forwardType === "realm" || (forwardType === "gost" && tunnelRoute && forwardxTunnel)
   );
   const zeroCopySupported = !isForwardChain && protocolSupported && forwardType === "realm" && !tunnelRoute;
+  const udpOverTcpSupported = !isForwardChain && udpOverTcpProtocolSupported && forwardType === "gost" && tunnelRoute && forwardxTunnel;
   const tcpFastOpen = fastOpenSupported && !!input.tcpFastOpen;
   const zeroCopy = zeroCopySupported && !!input.zeroCopy;
-  if (!tcpFastOpen && !zeroCopy) {
-    if (clearUnsupported) return { tcpFastOpen: false, zeroCopy: false };
+  const udpOverTcp = udpOverTcpSupported && !!input.udpOverTcp;
+  if (input.udpOverTcp && !udpOverTcpSupported && !clearUnsupported) {
+    if (protocol !== "both") {
+      throw new Error("UDP over TCP only supports TCP+UDP rules");
+    }
+    throw new Error("UDP over TCP only supports ForwardX custom encrypted tunnel TCP+UDP rules");
+  }
+  if (!tcpFastOpen && !zeroCopy && !udpOverTcp) {
+    if (clearUnsupported) return { tcpFastOpen: false, zeroCopy: false, udpOverTcp: false, udpOverTcpPort: null };
     if ((input.tcpFastOpen || input.zeroCopy) && protocol && protocol !== "tcp" && protocol !== "both") {
       throw new Error("TCP Fast Open 和 zero-copy 仅支持 TCP 协议");
     }
@@ -177,11 +190,39 @@ function normalizeTransportTuningInput(input: {
       throw new Error("当前转发方式不支持 zero-copy");
     }
   }
-  return { tcpFastOpen, zeroCopy };
+  return { tcpFastOpen, zeroCopy, udpOverTcp, udpOverTcpPort: udpOverTcp ? Number(input.udpOverTcpPort || 0) || null : null };
 }
 
 function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
   return String(input || "").trim();
+}
+
+async function resolveUdpOverTcpPort(input: {
+  udpOverTcp?: boolean;
+  udpOverTcpPort?: number | null;
+}, tunnel: any, existingPort?: number | null, excludeRuleId?: number | null, reservedPorts: number[] = []) {
+  if (!input.udpOverTcp) return null;
+  const reserved = new Set(reservedPorts.map((port) => Number(port)).filter((port) => port > 0));
+  const requested = Number(input.udpOverTcpPort || 0);
+  if (requested > 0) {
+    if (reserved.has(requested)) throw new Error("UDP over TCP port is already used on the exit agent");
+    const exitHostId = Number(tunnel.exitHostId);
+    const usedByRule = await db.isPortUsedOnHost(exitHostId, requested, excludeRuleId || undefined);
+    const usedByTunnel = await db.isTunnelListenPortUsed(exitHostId, requested, Number(tunnel.id));
+    if (usedByRule || usedByTunnel) throw new Error("UDP over TCP port is already used on the exit agent");
+    return requested;
+  }
+  const current = Number(existingPort || 0);
+  if (current > 0 && !reserved.has(current)) return current;
+  const exit = await db.getHostById(Number(tunnel.exitHostId));
+  const port = await db.findAvailableTunnelExitPort(
+    Number(tunnel.exitHostId),
+    (exit as any)?.portRangeStart,
+    (exit as any)?.portRangeEnd,
+    Array.from(reserved),
+  );
+  if (!port) throw new Error("UDP over TCP exit agent has no available port");
+  return port;
 }
 
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
@@ -565,11 +606,16 @@ export const crudRulesRouter = router({
         if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
       }
 
+      const transportTuning = normalizeTransportTuningInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" });
+      if (transportTuning.udpOverTcp && selectedTunnelForRule) {
+        transportTuning.udpOverTcpPort = await resolveUdpOverTcpPort(transportTuning, selectedTunnelForRule, null, null, [Number(tunnelExitPort || 0)]);
+      }
+
       const id = await db.createForwardRule({
         ...input,
         ...normalizeFailoverInput(input, input.protocol),
         ...normalizeProxyProtocolInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId }),
-        ...normalizeTransportTuningInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" }),
+        ...transportTuning,
         blockHttp: false,
         blockSocks: false,
         blockTls: false,
@@ -691,6 +737,8 @@ export const crudRulesRouter = router({
             input.proxyProtocolVersion !== undefined ||
             input.tcpFastOpen !== undefined ||
             input.zeroCopy !== undefined ||
+            input.udpOverTcp !== undefined ||
+            input.udpOverTcpPort !== undefined ||
             input.protocol !== undefined ||
             input.forwardType !== undefined ||
             input.failoverEnabled !== undefined
@@ -707,11 +755,15 @@ export const crudRulesRouter = router({
           ...(
             input.tcpFastOpen !== undefined ||
             input.zeroCopy !== undefined ||
+            input.udpOverTcp !== undefined ||
+            input.udpOverTcpPort !== undefined ||
             input.protocol !== undefined ||
             input.forwardType !== undefined
               ? normalizeTransportTuningInput({
                   tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
                   zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+                  udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
+                  udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
                 }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, {
                   clearUnsupported: true,
                   tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
@@ -734,7 +786,7 @@ export const crudRulesRouter = router({
         delete data.blockHttp;
         delete data.blockSocks;
         delete data.blockTls;
-        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "proxyProtocolVersion", "tcpFastOpen", "zeroCopy", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
+        const watchedFields = ["sourcePort", "targetIp", "targetPort", "forwardType", "protocol", "proxyProtocolReceive", "proxyProtocolSend", "proxyProtocolExitReceive", "proxyProtocolExitSend", "proxyProtocolVersion", "tcpFastOpen", "zeroCopy", "udpOverTcp", "udpOverTcpPort", "failoverEnabled", "failoverStrategy", "failoverTargets", "failoverSeconds", "recoverSeconds", "autoFailback"] as const;
         const keyFieldChanged = watchedFields.some((field) => data[field] !== undefined && data[field] !== (rule as any)[field]);
         if (keyFieldChanged || data.isEnabled !== undefined) data.isRunning = false;
         await db.updateForwardRule(input.id, data);
@@ -870,6 +922,8 @@ export const crudRulesRouter = router({
         input.proxyProtocolVersion !== undefined ||
         input.tcpFastOpen !== undefined ||
         input.zeroCopy !== undefined ||
+        input.udpOverTcp !== undefined ||
+        input.udpOverTcpPort !== undefined ||
         input.protocol !== undefined ||
         input.forwardType !== undefined ||
         input.failoverEnabled !== undefined
@@ -886,17 +940,25 @@ export const crudRulesRouter = router({
       if (
         input.tcpFastOpen !== undefined ||
         input.zeroCopy !== undefined ||
+        input.udpOverTcp !== undefined ||
+        input.udpOverTcpPort !== undefined ||
         input.protocol !== undefined ||
         input.forwardType !== undefined
       ) {
-        Object.assign(data as any, normalizeTransportTuningInput({
+        const transportTuning = normalizeTransportTuningInput({
           tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
           zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+          udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
+          udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
         }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, {
           clearUnsupported: true,
           tunnelRoute: !!nextTunnelIdForRule,
           forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx",
-        }));
+        });
+        if (transportTuning.udpOverTcp && selectedTunnelForRule) {
+          transportTuning.udpOverTcpPort = await resolveUdpOverTcpPort(transportTuning, selectedTunnelForRule, (rule as any).udpOverTcpPort, rule.id);
+        }
+        Object.assign(data as any, transportTuning);
       }
       if ((data.forwardType ?? rule.forwardType) !== "gost") {
         (data as any).gostMode = "direct";
@@ -972,6 +1034,8 @@ export const crudRulesRouter = router({
         "proxyProtocolVersion",
         "tcpFastOpen",
         "zeroCopy",
+        "udpOverTcp",
+        "udpOverTcpPort",
         "failoverEnabled",
         "failoverStrategy",
         "failoverTargets",

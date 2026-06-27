@@ -100,11 +100,17 @@ export const plansRouter = router({
     .input(z.object({
       userId: z.number().int().positive(),
       planId: z.number().int().positive(),
+      durationDays: z.union([z.literal(0), z.literal(30), z.literal(90), z.literal(180)]).optional(),
     }))
     .mutation(async ({ input }) => {
-      const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null);
+      const plan = await db.getSubscriptionPlanById(input.planId);
+      if (!plan) throw new Error("套餐不存在");
+      const overrideDurationDays = input.durationDays !== undefined && Number(plan.durationDays) === 30
+        ? input.durationDays
+        : null;
+      const result = await db.applySubscriptionToUser(input.userId, input.planId, "admin", null, undefined, overrideDurationDays);
       await refreshUserForwardEndpoints(input.userId, "plan-assigned");
-      appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} ports=${result.portRangeStart}-${result.portRangeEnd}`);
+      appendPanelLog("info", `[Plan] assigned user=${input.userId} plan=${input.planId} duration=${overrideDurationDays ?? plan.durationDays} ports=${result.portRangeStart}-${result.portRangeEnd}`);
       return result;
     }),
   cancelSubscription: adminProcedure

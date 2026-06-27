@@ -2770,19 +2770,19 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showCreateTypeDialog} onOpenChange={setShowCreateTypeDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-xl sm:p-4">
-          <DialogHeader>
+        <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+          <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
-            <div className="space-y-2.5">
-              <LinkCreateTypeSelector
-                value={selectedCreateType}
-                canCreateTunnel={canCreateTunnel}
-                canCreateChain={canCreateChain}
-                onValueChange={setSelectedCreateType}
-              />
-              <div className="space-y-2.5">
+          <div className="shrink-0 border-b border-border/50 px-3.5 pb-2 sm:px-4">
+            <LinkCreateTypeSelector
+              value={selectedCreateType}
+              canCreateTunnel={canCreateTunnel}
+              canCreateChain={canCreateChain}
+              onValueChange={setSelectedCreateType}
+            />
+          </div>
+          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
@@ -3038,10 +3038,8 @@ function TunnelsContent() {
                     </div>
                   </>
                 )}
-              </div>
-            </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 px-3.5 py-3 sm:px-4">
             <Button variant="outline" onClick={() => setShowCreateTypeDialog(false)}>取消</Button>
             <Button
               disabled={selectedCreateDisabled || isCreateTypePending || (selectedCreateType === "tunnel" && !isTunnelSupported(form))}
@@ -3054,11 +3052,11 @@ function TunnelsContent() {
       </Dialog>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-2.5 overflow-hidden p-3.5 sm:max-w-xl sm:p-4">
-          <DialogHeader>
+        <DialogContent className="flex h-[min(92svh,48rem)] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl sm:p-0">
+          <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
             <div className="space-y-2">
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
@@ -3228,7 +3226,7 @@ function TunnelsContent() {
               </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 px-3.5 py-3 sm:px-4">
             <Button variant="outline" onClick={() => setShowDialog(false)}>取消</Button>
             <Button onClick={handleSubmit} disabled={isPending || !isTunnelSupported(form)}>{isPending ? "保存中..." : editingId ? "保存" : "创建"}</Button>
           </DialogFooter>

@@ -58,6 +58,7 @@ export default defineConfig({
           { text: "用户、套餐和权限", link: "/guide/users-billing" },
           { text: "Telegram 和通知", link: "/guide/notifications" },
           { text: "升级和备份", link: "/guide/upgrade-backup" },
+          { text: "卸载 ForwardX", link: "/guide/uninstall" },
           { text: "常见问题排查", link: "/guide/troubleshooting" },
         ],
       },

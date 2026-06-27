@@ -44,6 +44,8 @@ docker logs -n 300 forwardx-panel
 /opt/forwardx-docker
 ```
 
+如需卸载 Docker 面板，请先阅读 [卸载 ForwardX](./uninstall.md)，确认是否保留数据卷和数据库。
+
 ### Docker 外部数据库地址怎么填
 
 如果你在 Docker 或 1Panel 中使用 MySQL/PostgreSQL，数据库地址必须是“面板容器内部能访问到的地址”，不是你电脑浏览器能访问到的地址。
@@ -93,6 +95,8 @@ journalctl -u forwardx-panel -n 300 --no-pager
 ```text
 /opt/forwardx-panel
 ```
+
+如需卸载本地面板，请先阅读 [卸载 ForwardX](./uninstall.md)，确认是否保留安装目录和数据库。
 
 ## 配置域名和 HTTPS
 

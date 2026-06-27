@@ -60,12 +60,20 @@ journalctl -u forwardx-agent -n 300 --no-pager
 查看 Agent 配置：
 
 ```bash
-cat /etc/forwardx-agent/config.json
+cat /etc/forwardx/agent/config.json
 ```
+
+Agent 常用文件位置：
+
+- Agent 通讯配置：`/etc/forwardx/agent/config.json`
+- Agent 日志：`/var/log/forwardx-agent/agent-go.log`
+- Agent 本地状态：`/var/lib/forwardx-agent`
+- GOST/隧道运行时配置：`/etc/forwardx/runtime`
+
+新版 Agent 会把自己的配置和运行时配置统一放在 `/etc/forwardx` 下。旧版本留下的 `/etc/forwardx-agent`、`/etc/forwardx-runtime`、`/etc/forwardx-tunnel-runtime`、`/etc/forwardx-gost`、`/etc/forwardx-tunnels` 属于历史路径，升级时会优先迁移到新目录，后续不会再继续新增这些分散目录。
 
 重点确认：
 
 - 面板地址是否正确。
 - 是否仍然是旧 IP。
 - 如果面板已经改成 HTTPS 域名，Agent 是否也使用 HTTPS 域名。
-

@@ -1,17 +1,21 @@
-import multiavatar from "@multiavatar/multiavatar/esm";
 import {
   AVATAR_MAX_BYTES,
+  avataaarsValue,
+  avatarSeedFromValue,
   getAvatarDataUrlByteLength,
+  isAvataaarsValue,
   isMultiavatarValue,
   isValidAvatarValue,
   migrateLegacyAvatarValue,
-  multiavatarSeedFromValue,
   multiavatarValue,
 } from "@shared/avatar";
 
 export {
   AVATAR_MAX_BYTES,
+  avataaarsValue,
   getAvatarDataUrlByteLength,
+  isAvataaarsValue,
+  isMultiavatarValue,
   isValidAvatarValue,
   migrateLegacyAvatarValue,
   multiavatarValue,
@@ -32,18 +36,14 @@ export const DEFAULT_AVATAR_SEEDS = [
   "forwardx-lagoon",
 ];
 
-function svgToDataUrl(svg: string) {
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
-export function renderMultiavatar(seed: string) {
-  return svgToDataUrl(multiavatar(seed));
+export function avatarSeed(value?: string | null, fallback?: string | number | null) {
+  return avatarSeedFromValue(value, fallback);
 }
 
 export function avatarSrc(value?: string | null, fallback?: string | number | null) {
   const text = String(value || "").trim();
-  if (isMultiavatarValue(text) || text.startsWith("preset:") || !text) {
-    return renderMultiavatar(multiavatarSeedFromValue(text, fallback));
+  if (isAvataaarsValue(text) || isMultiavatarValue(text) || text.startsWith("preset:") || !text) {
+    return "";
   }
   return text;
 }

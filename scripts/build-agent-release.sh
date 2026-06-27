@@ -10,6 +10,7 @@ REQUESTED_TAG="${1:-}"
 MIN_GO_MAJOR=1
 MIN_GO_MINOR=22
 GOST_VERSION="${GOST_VERSION:-3.2.6}"
+UDP2RAW_VERSION="${UDP2RAW_VERSION:-20230206.0}"
 GOST_VERSION="${GOST_VERSION#v}"
 AGENT_VERSION="$(sed -nE "s/.*AGENT_VERSION[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/p" "$ROOT_DIR/shared/versions.ts" | head -n 1)"
 if [ -z "$AGENT_VERSION" ]; then
@@ -113,12 +114,43 @@ download_gost_runtime() {
 download_gost_runtime amd64 forwardx-runtime-linux-amd64
 download_gost_runtime arm64 forwardx-runtime-linux-arm64
 
+download_udp2raw_runtime() {
+  local arch="$1"
+  local out="$2"
+  local tmp url bin
+  echo "[udp2raw] downloading udp2raw ${UDP2RAW_VERSION} ${arch} -> ${out}"
+  tmp="$(mktemp -d)"
+  url="https://github.com/wangyu-/udp2raw/releases/download/${UDP2RAW_VERSION}/udp2raw_binaries.tar.gz"
+  rm -f "$OUT_DIR/$out"
+  curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 -o "$tmp/udp2raw.tgz" "$url"
+  tar -xzf "$tmp/udp2raw.tgz" -C "$tmp"
+  case "$arch" in
+    amd64) bin="$(find "$tmp" -type f \( -name udp2raw_amd64 -o -name udp2raw_x86_64 \) | head -n1)" ;;
+    arm64) bin="$(find "$tmp" -type f \( -name udp2raw_arm64 -o -name udp2raw_aarch64 \) | head -n1)" ;;
+    *) bin="" ;;
+  esac
+  if [ -z "$bin" ]; then
+    echo "[udp2raw] binary not found in ${url} for ${arch}" >&2
+    find "$tmp" -type f >&2 || true
+    rm -rf "$tmp"
+    exit 1
+  fi
+  install -m 0755 "$bin" "$OUT_DIR/$out"
+  rm -rf "$tmp"
+}
+
+download_udp2raw_runtime amd64 forwardx-udp2raw-linux-amd64
+download_udp2raw_runtime arm64 forwardx-udp2raw-linux-arm64
+
 artifacts=("$OUT_DIR"/forwardx-agent-linux-*)
 if compgen -G "$OUT_DIR/forwardx-fxp-linux-*" >/dev/null; then
   artifacts+=("$OUT_DIR"/forwardx-fxp-linux-*)
 fi
 if compgen -G "$OUT_DIR/forwardx-runtime-linux-*" >/dev/null; then
   artifacts+=("$OUT_DIR"/forwardx-runtime-linux-*)
+fi
+if compgen -G "$OUT_DIR/forwardx-udp2raw-linux-*" >/dev/null; then
+  artifacts+=("$OUT_DIR"/forwardx-udp2raw-linux-*)
 fi
 sha256sum "${artifacts[@]}" > "$OUT_DIR"/SHA256SUMS
 

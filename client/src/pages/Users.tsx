@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DashboardLayout from "@/components/DashboardLayout";
+import DatePickerInput, { formatDateInputValue, parseDateInputValue } from "@/components/DatePickerInput";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -442,7 +443,21 @@ function UsersContent() {
   });
 
   const updateTrafficMutation = trpc.users.updateTrafficSettings.useMutation({
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      patchCachedUser(variables.userId, {
+        displayRemark: variables.displayRemark,
+        trafficLimit: variables.trafficLimit,
+        gostRateLimitIn: variables.gostRateLimitIn,
+        gostRateLimitOut: variables.gostRateLimitOut,
+        expiresAt: variables.expiresAt ? parseDateInputValue(variables.expiresAt) : null,
+        trafficAutoReset: variables.trafficAutoReset,
+        trafficResetDay: variables.trafficResetDay,
+        maxRules: variables.maxRules,
+        maxPorts: variables.maxPorts,
+        maxConnections: variables.maxConnections,
+        maxIPs: variables.maxIPs,
+        allowedForwardTypes: variables.allowedForwardTypes,
+      });
       utils.users.list.invalidate();
       toast.success("流量设置已更新");
       setShowTrafficSettings(false);
@@ -734,7 +749,7 @@ function UsersContent() {
     } else {
       setTrafficLimitInput("0");
     }
-    setExpiresAtInput(u.expiresAt ? new Date(u.expiresAt).toISOString().slice(0, 10) : "");
+    setExpiresAtInput(formatDateInputValue(u.expiresAt));
     setTrafficAutoReset(!!u.trafficAutoReset);
     setTrafficResetDay(u.trafficResetDay || 1);
     const gostIn = Number(u.gostRateLimitIn) || 0;
@@ -782,13 +797,14 @@ function UsersContent() {
     const allowedForwardTypes = allowed.length === FORWARD_TYPES.length ? null : allowed.join(",");
     const unifiedRateLimit = parseSpeedInputMbps(gostRateLimitInInput);
     const displayRemark = trafficDisplayRemark.trim().slice(0, 24);
+    const expiresAt = expiresAtInput.trim() || null;
     updateTrafficMutation.mutate({
       userId: trafficUserId,
       displayRemark: displayRemark || null,
       trafficLimit: limitBytes,
       gostRateLimitIn: unifiedRateLimit,
       gostRateLimitOut: unifiedRateLimit,
-      expiresAt: expiresAtInput || null,
+      expiresAt,
       trafficAutoReset,
       trafficResetDay,
       maxRules,
@@ -2063,24 +2079,11 @@ function UsersContent() {
                   <CalendarClock className="h-3.5 w-3.5" />
                   到期日期
                 </Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="date"
-                    value={expiresAtInput}
-                    onChange={(e) => setExpiresAtInput(e.target.value)}
-                    className="flex-1"
-                  />
-                  {expiresAtInput && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setExpiresAtInput("")}
-                    >
-                      清空
-                    </Button>
-                  )}
-                </div>
+                <DatePickerInput
+                  value={expiresAtInput}
+                  onChange={setExpiresAtInput}
+                  placeholder="永久有效"
+                />
                 <p className="text-xs text-muted-foreground">
                   留空表示永久有效。
                 </p>

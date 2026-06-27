@@ -973,6 +973,7 @@ export async function getTrafficSummaryByRule(opts: {
     : [];
   const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
   const parentChainChildren = new Map<number, number[]>();
+  const parentFailoverChildren = new Map<number, number[]>();
   const parentByChildRule = new Map<number, number>();
   const chainParentRuleIds = new Set<number>();
   for (const row of childLatencyRows as any[]) {
@@ -987,6 +988,9 @@ export async function getTrafficSummaryByRule(opts: {
       continue;
     }
     parentByChildRule.set(childId, parentId);
+    const children = parentFailoverChildren.get(parentId) || [];
+    children.push(childId);
+    parentFailoverChildren.set(parentId, children);
   }
   const latencyRuleIds = Array.from(new Set([
     ...ruleIds,
@@ -1016,13 +1020,50 @@ export async function getTrafficSummaryByRule(opts: {
     row.isTimeout = rowBool(row.isTimeout);
     row.recordedAt = rowDate(row.recordedAt);
     const rowRuleId = Number(row.ruleId);
-    const ruleId = parentByChildRule.get(rowRuleId) || rowRuleId;
+    const parentId = parentByChildRule.get(rowRuleId) || 0;
+    if (!parentId && parentFailoverChildren.has(rowRuleId)) continue;
+    if (parentId && parentFailoverChildren.has(parentId)) continue;
+    const ruleId = parentId || rowRuleId;
     if (!latestByRule.has(ruleId)) latestByRule.set(ruleId, row);
   }
   const latestByRawRule = new Map<number, any>();
   for (const row of latestRows as any[]) {
     const rowRuleId = Number(row.ruleId);
     if (!latestByRawRule.has(rowRuleId)) latestByRawRule.set(rowRuleId, row);
+  }
+  for (const [parentId, childIds] of parentFailoverChildren.entries()) {
+    let recordedAt: Date | null = null;
+    const healthyLatencies: number[] = [];
+    let hasAnyResult = false;
+    for (const childId of childIds) {
+      const latest = latestByRawRule.get(childId);
+      if (!latest) continue;
+      hasAnyResult = true;
+      if (!recordedAt || new Date(latest.recordedAt).getTime() > new Date(recordedAt).getTime()) {
+        recordedAt = latest.recordedAt;
+      }
+      if (!latest.isTimeout && latest.latencyMs !== null && latest.latencyMs !== undefined) {
+        const latency = Number(latest.latencyMs);
+        if (Number.isFinite(latency) && latency > 0) healthyLatencies.push(latency);
+      }
+    }
+    if (healthyLatencies.length > 0) {
+      latestByRule.set(parentId, {
+        ruleId: parentId,
+        latencyMs: Math.min(...healthyLatencies),
+        isTimeout: false,
+        recordedAt,
+      });
+    } else if (hasAnyResult) {
+      latestByRule.set(parentId, {
+        ruleId: parentId,
+        latencyMs: null,
+        isTimeout: true,
+        recordedAt,
+      });
+    } else {
+      latestByRule.delete(parentId);
+    }
   }
   for (const [parentId, childIds] of parentChainChildren.entries()) {
     let latencySum = 0;

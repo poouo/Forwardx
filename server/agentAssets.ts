@@ -15,6 +15,8 @@ export const AGENT_ASSET_NAMES = [
   "forwardx-fxp-linux-arm64",
   "forwardx-runtime-linux-amd64",
   "forwardx-runtime-linux-arm64",
+  "forwardx-udp2raw-linux-amd64",
+  "forwardx-udp2raw-linux-arm64",
 ] as const;
 
 export const AGENT_ASSET_NAME_SET = new Set<string>(AGENT_ASSET_NAMES);

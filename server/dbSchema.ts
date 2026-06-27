@@ -133,6 +133,8 @@ const tables: TableDef[] = [
       c("proxyProtocolExitReceive", "bool", { notNull: true, default: false }), c("proxyProtocolExitSend", "bool", { notNull: true, default: false }),
       c("proxyProtocolVersion", "int", { notNull: true, default: 1 }),
       c("tcpFastOpen", "bool", { notNull: true, default: false }), c("zeroCopy", "bool", { notNull: true, default: false }),
+      c("udpOverTcp", "bool", { notNull: true, default: false }),
+      c("udpOverTcpPort", "int"),
       c("protocolBlockReason", "text"), c("isEnabled", "bool", { notNull: true, default: true }),
       c("failoverEnabled", "bool", { notNull: true, default: false }), c("failoverTargets", "text"),
       c("failoverStrategy", "varchar", { length: 32, notNull: true, default: "fallback" }),

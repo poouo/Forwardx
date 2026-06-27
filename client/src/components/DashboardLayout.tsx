@@ -1138,7 +1138,7 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {isMobile && (
-          <div data-mobile-header="true" className="glass-surface flex border-b h-14 items-center justify-between px-2 sticky top-0 z-40">
+          <div data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b px-2 md:sticky">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
               <div className="flex items-center gap-3">

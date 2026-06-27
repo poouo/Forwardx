@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  avataaars@2.0.0:
+    hash: 785fa8a0d68180f215b5eeb746f09c147a12bcb9896ae28626c7df0555fb0197
+    path: patches/avataaars@2.0.0.patch
+
 importers:
 
   .:
@@ -35,9 +40,6 @@ importers:
       '@formkit/auto-animate':
         specifier: ^0.9.0
         version: 0.9.0
-      '@multiavatar/multiavatar':
-        specifier: ^1.0.7
-        version: 1.0.7
       '@radix-ui/react-avatar':
         specifier: ^1.1.11
         version: 1.1.11(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -80,6 +82,9 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      avataaars:
+        specifier: ^2.0.0
+        version: 2.0.0(patch_hash=785fa8a0d68180f215b5eeb746f09c147a12bcb9896ae28626c7df0555fb0197)(react@19.2.5)
       better-sqlite3:
         specifier: ^11.7.0
         version: 11.10.0
@@ -1556,9 +1561,6 @@ packages:
   '@math.gl/web-mercator@4.1.0':
     resolution: {integrity: sha512-HZo3vO5GCMkXJThxRJ5/QYUYRr3XumfT8CzNNCwoJfinxy5NtKUd7dusNTXn7yJ40UoB8FMIwkVwNlqaiRZZAw==}
 
-  '@multiavatar/multiavatar@1.0.7':
-    resolution: {integrity: sha512-Yg9Uw57bmlErsWL0CSv4d6D4ZqVBE00OZmYr9MRgygoXZdboNtsEI6FbBRw1AY8l88Sm1ARcyojtlm2uwUn0Zg==}
-
   '@petamoriken/float16@3.9.3':
     resolution: {integrity: sha512-8awtpHXCx/bNpFt4mt2xdkgtgVvKqty8VbjHI/WWWQuEw+KLzFot3f4+LkQY9YmOtq7A5GdOnqoIC8Pdygjk2g==}
 
@@ -2649,6 +2651,11 @@ packages:
     hasBin: true
     peerDependencies:
       postcss: ^8.1.0
+
+  avataaars@2.0.0:
+    resolution: {integrity: sha512-VBS14dAvTe1l/HEwSoR5LArV7OqXgbhksBCS3CZZLIOQfv+oM3yVgy0d5QKz/KYqNMmS8emSzD9znlrOhbg2fA==}
+    peerDependencies:
+      react: ^17.0.0
 
   aws-ssl-profiles@1.1.2:
     resolution: {integrity: sha512-NZKeq9AfyQvEeNlN0zSYAaWrmBffJh3IELMZfRpJVWgrpEbtEpnjvzqBPf+mxoI287JohRDoa+/nsfqqiZmF6g==}
@@ -5809,8 +5816,6 @@ snapshots:
     dependencies:
       '@math.gl/core': 4.1.0
 
-  '@multiavatar/multiavatar@1.0.7': {}
-
   '@petamoriken/float16@3.9.3': {}
 
   '@probe.gl/env@4.1.1': {}
@@ -6867,6 +6872,12 @@ snapshots:
       picocolors: 1.1.1
       postcss: 8.5.15
       postcss-value-parser: 4.2.0
+
+  avataaars@2.0.0(patch_hash=785fa8a0d68180f215b5eeb746f09c147a12bcb9896ae28626c7df0555fb0197)(react@19.2.5):
+    dependencies:
+      lodash: 4.18.1
+      prop-types: 15.8.1
+      react: 19.2.5
 
   aws-ssl-profiles@1.1.2: {}
 

@@ -52,3 +52,6 @@ journalctl -u forwardx-agent -n 300 --no-pager
 
 升级前建议查看 GitHub Release 或项目更新日志，确认是否包含面板、Agent 或 Android 客户端更新。
 
+## 卸载
+
+如果需要卸载面板或 Agent，请先确认是否需要保留数据库、配置和转发规则，再参考 [卸载 ForwardX](./uninstall.md)。

@@ -234,6 +234,8 @@ type RuleFormData = {
   proxyProtocolVersion: ProxyProtocolVersion;
   tcpFastOpen: boolean;
   zeroCopy: boolean;
+  udpOverTcp: boolean;
+  udpOverTcpPort: number;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargetsText: string;
@@ -296,6 +298,8 @@ const defaultForm: RuleFormData = {
   proxyProtocolVersion: 1,
   tcpFastOpen: false,
   zeroCopy: false,
+  udpOverTcp: false,
+  udpOverTcpPort: 0,
   failoverEnabled: false,
   failoverStrategy: "fallback",
   failoverTargetsText: "",
@@ -362,6 +366,8 @@ type RuleTransferFileRule = {
   proxyProtocolVersion: ProxyProtocolVersion;
   tcpFastOpen: boolean;
   zeroCopy: boolean;
+  udpOverTcp: boolean;
+  udpOverTcpPort: number;
   failoverEnabled: boolean;
   failoverStrategy: FailoverStrategy;
   failoverTargets: Array<{ targetIp: string; targetPort: number }>;
@@ -1992,6 +1998,8 @@ function exportRuleForTransfer(rule: any): RuleTransferFileRule {
     proxyProtocolVersion: normalizeProxyProtocolVersion(rule?.proxyProtocolVersion),
     tcpFastOpen: Boolean(rule?.tcpFastOpen),
     zeroCopy: Boolean(rule?.zeroCopy),
+    udpOverTcp: Boolean(rule?.udpOverTcp),
+    udpOverTcpPort: Number(rule?.udpOverTcpPort || 0),
     failoverEnabled: Boolean(rule?.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(rule?.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(rule?.failoverTargets),
@@ -2025,6 +2033,8 @@ function normalizeRuleTransferRule(raw: unknown): RuleTransferFileRule | null {
     proxyProtocolVersion: normalizeProxyProtocolVersion(source.proxyProtocolVersion),
     tcpFastOpen: Boolean(source.tcpFastOpen),
     zeroCopy: Boolean(source.zeroCopy),
+    udpOverTcp: Boolean(source.udpOverTcp),
+    udpOverTcpPort: Number(source.udpOverTcpPort || 0),
     failoverEnabled: Boolean(source.failoverEnabled),
     failoverStrategy: normalizeFailoverStrategy(source.failoverStrategy),
     failoverTargets: parseRuleFailoverTargets(source.failoverTargets),
@@ -2387,6 +2397,8 @@ function RulesContent() {
       proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
       tcpFastOpen: !!rule.tcpFastOpen,
       zeroCopy: !!rule.zeroCopy,
+      udpOverTcp: !!rule.udpOverTcp,
+      udpOverTcpPort: Number(rule.udpOverTcpPort || 0),
       failoverEnabled: !!rule.failoverEnabled,
       failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
       failoverTargetsText: formatFailoverTargetsText(rule.failoverTargets),
@@ -2649,6 +2661,10 @@ function RulesContent() {
     && proxyProtocolProtocolSupported
     && proxyProtocolForwardType === "realm"
     && !isTunnelProxyProtocolMode;
+  const canUseUdpOverTcp = !selectedForwardGroupIsChain
+    && form.protocol === "both"
+    && proxyProtocolForwardType === "gost"
+    && isForwardXTunnelMode;
   const transportTuningDisabledText = selectedForwardGroupIsChain
     ? "端口转发链不支持传输优化。"
     : !proxyProtocolProtocolSupported
@@ -2773,13 +2789,15 @@ function RulesContent() {
   }, [canUseProxyProtocol, form.proxyProtocolExitReceive, form.proxyProtocolExitSend, form.proxyProtocolReceive, form.proxyProtocolSend]);
 
   useEffect(() => {
-    if ((canUseTcpFastOpen || !form.tcpFastOpen) && (canUseZeroCopy || !form.zeroCopy)) return;
+    if ((canUseTcpFastOpen || !form.tcpFastOpen) && (canUseZeroCopy || !form.zeroCopy) && (canUseUdpOverTcp || (!form.udpOverTcp && !form.udpOverTcpPort))) return;
     setForm((prev) => ({
       ...prev,
       tcpFastOpen: canUseTcpFastOpen ? prev.tcpFastOpen : false,
       zeroCopy: canUseZeroCopy ? prev.zeroCopy : false,
+      udpOverTcp: canUseUdpOverTcp ? prev.udpOverTcp : false,
+      udpOverTcpPort: canUseUdpOverTcp ? prev.udpOverTcpPort : 0,
     }));
-  }, [canUseTcpFastOpen, canUseZeroCopy, form.tcpFastOpen, form.zeroCopy]);
+  }, [canUseTcpFastOpen, canUseZeroCopy, canUseUdpOverTcp, form.tcpFastOpen, form.zeroCopy, form.udpOverTcp, form.udpOverTcpPort]);
 
   // 随机分配端口
   const handleRandomPort = async () => {
@@ -2881,7 +2899,7 @@ function RulesContent() {
   const renderTransportTuningSwitch = (
     label: string,
     description: string,
-    field: "tcpFastOpen" | "zeroCopy",
+    field: "tcpFastOpen" | "zeroCopy" | "udpOverTcp",
     enabled: boolean,
   ) => (
     <div className="flex min-h-10 items-center justify-between gap-3 rounded-md bg-background/65 px-3 py-2 ring-1 ring-border/40">
@@ -2997,6 +3015,8 @@ function RulesContent() {
     const transportTuningPayload = {
       tcpFastOpen: canUseTcpFastOpen ? form.tcpFastOpen : false,
       zeroCopy: canUseZeroCopy ? form.zeroCopy : false,
+      udpOverTcp: canUseUdpOverTcp ? form.udpOverTcp : false,
+      udpOverTcpPort: canUseUdpOverTcp && form.udpOverTcp ? Number(form.udpOverTcpPort || 0) || null : null,
     };
     if (!isForwardGroupRouteMode && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
@@ -3913,6 +3933,8 @@ function RulesContent() {
       proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
       tcpFastOpen: rule.tcpFastOpen,
       zeroCopy: rule.zeroCopy,
+      udpOverTcp: rule.udpOverTcp,
+      udpOverTcpPort: rule.udpOverTcpPort,
       failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
       failoverStrategy: rule.failoverStrategy,
       failoverTargets: importScopeType === "chain" || !rule.failoverEnabled ? [] : rule.failoverTargets,
@@ -5522,6 +5544,8 @@ function RulesContent() {
                     proxyProtocolExitSend: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
                     tcpFastOpen: v !== "udp" ? form.tcpFastOpen : false,
                     zeroCopy: v !== "udp" ? form.zeroCopy : false,
+                    udpOverTcp: v === "both" ? form.udpOverTcp : false,
+                    udpOverTcpPort: v === "both" ? form.udpOverTcpPort : 0,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -5573,6 +5597,8 @@ function RulesContent() {
                       proxyProtocolExitSend: false,
                       tcpFastOpen: v === "realm" ? form.tcpFastOpen : false,
                       zeroCopy: v === "realm" ? form.zeroCopy : false,
+                      udpOverTcp: false,
+                      udpOverTcpPort: 0,
                     })}
                   >
                     <SelectTrigger><SelectValue /></SelectTrigger>
@@ -5716,14 +5742,33 @@ function RulesContent() {
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
                 <Label className="text-sm">传输优化</Label>
-                {!canUseTcpFastOpen && !canUseZeroCopy && (
+                {!canUseTcpFastOpen && !canUseZeroCopy && !canUseUdpOverTcp && (
                   <span className="text-xs text-amber-600">{transportTuningDisabledText}</span>
                 )}
               </div>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-3">
                 {renderTransportTuningSwitch("TCP Fast Open", "降低 TCP 建连等待", "tcpFastOpen", canUseTcpFastOpen)}
                 {renderTransportTuningSwitch("zero-copy", "减少内核与用户态拷贝", "zeroCopy", canUseZeroCopy)}
+                {renderTransportTuningSwitch("UDP over TCP", "UDP 走伪装 TCP 通道", "udpOverTcp", canUseUdpOverTcp)}
               </div>
+              {canUseUdpOverTcp && form.udpOverTcp && (
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,220px)_1fr] sm:items-end">
+                  <div className="space-y-1">
+                    <Label className="text-xs">UDP over TCP 端口</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={65535}
+                      placeholder="0 自动分配"
+                      value={form.udpOverTcpPort || ""}
+                      onChange={(e) => setForm({ ...form, udpOverTcpPort: Number(e.target.value || 0) })}
+                    />
+                  </div>
+                  <p className="pb-2 text-[11px] leading-4 text-muted-foreground">
+                    开启后 UDP 会使用独立通道端口，留空或 0 自动分配；关闭时继续使用原来的单端口隧道。
+                  </p>
+                </div>
+              )}
             </div>
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

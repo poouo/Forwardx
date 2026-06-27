@@ -53,6 +53,7 @@ type TrafficAddonForm = {
 };
 
 type PlanDurationDays = 30 | 90 | 180 | 365 | 730;
+type AssignDurationDays = 0 | 30 | 90 | 180;
 type PlanManageTab = "plans" | "billing";
 type PlanDialogTab = "settings" | "resources";
 type PlanListViewMode = "card" | "table";
@@ -131,7 +132,15 @@ const durationOptions = [
   { value: "730", label: "两年" },
 ];
 
+const assignMonthlyDurationOptions = [
+  { value: "30", label: "一个月" },
+  { value: "90", label: "三个月" },
+  { value: "180", label: "半年" },
+  { value: "0", label: "永久" },
+];
+
 function durationLabel(days?: number | null) {
+  if (Number(days) === 0) return "永久";
   return durationOptions.find((item) => Number(item.value) === Number(days))?.label || `${days || 30} 天`;
 }
 
@@ -261,59 +270,55 @@ function PlanResourcePicker({
   renderSelected: (item: any) => ReactNode;
 }) {
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-base">{title}</CardTitle>
-          <Badge variant="outline">{countText}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {loading ? (
-          <DataSectionLoading label={loadingLabel} minHeight="min-h-[120px]" />
-        ) : (
-          <>
-            {selectedItems.length > 0 ? (
-              <div className="space-y-2">
-                {selectedItems.map((item) => (
-                  <div key={getId(item)} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
-                    <div className="min-w-0 flex-1">{renderSelected(item)}</div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 shrink-0 text-destructive"
-                      title="删除"
-                      onClick={() => onRemove(getId(item))}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                {emptyText}
-              </div>
-            )}
-            <Select value="" onValueChange={onAdd} disabled={availableItems.length === 0}>
-              <SelectTrigger className="h-9">
-                <SelectValue placeholder={availableItems.length > 0 ? addPlaceholder : allAddedText} />
-              </SelectTrigger>
-              <SelectContent>
-                {availableItems.length === 0 ? (
-                  <div className="px-2 py-4 text-center text-xs text-muted-foreground">{allAddedText}</div>
-                ) : availableItems.map((item) => (
-                  <SelectItem key={getId(item)} value={String(getId(item))}>
-                    {renderOption(item)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </>
-        )}
-      </CardContent>
-    </Card>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <Label className="text-sm font-medium">{title}</Label>
+        <Badge variant="outline" className="h-6 shrink-0 rounded-full px-2 text-xs">{countText}</Badge>
+      </div>
+      {loading ? (
+        <DataSectionLoading label={loadingLabel} minHeight="min-h-[84px]" />
+      ) : (
+        <>
+          {selectedItems.length > 0 ? (
+            <div className="space-y-1.5">
+              {selectedItems.map((item) => (
+                <div key={getId(item)} className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+                  <div className="min-w-0 flex-1">{renderSelected(item)}</div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-destructive"
+                    title="删除"
+                    onClick={() => onRemove(getId(item))}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+              {emptyText}
+            </div>
+          )}
+          <Select value="" onValueChange={onAdd} disabled={availableItems.length === 0}>
+            <SelectTrigger>
+              <SelectValue placeholder={availableItems.length > 0 ? addPlaceholder : allAddedText} />
+            </SelectTrigger>
+            <SelectContent>
+              {availableItems.length === 0 ? (
+                <div className="px-2 py-4 text-center text-xs text-muted-foreground">{allAddedText}</div>
+              ) : availableItems.map((item) => (
+                <SelectItem key={getId(item)} value={String(getId(item))}>
+                  {renderOption(item)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -394,6 +399,7 @@ export default function Plans() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignUserId, setAssignUserId] = useState("");
   const [assignPlanId, setAssignPlanId] = useState("");
+  const [assignDurationDays, setAssignDurationDays] = useState("30");
   const [activeTab, setActiveTab] = useUrlTab<PlanManageTab>({
     values: PLAN_MANAGE_TABS,
     defaultValue: "plans",
@@ -480,6 +486,7 @@ export default function Plans() {
       setAssignOpen(false);
       setAssignUserId("");
       setAssignPlanId("");
+      setAssignDurationDays("30");
       utils.plans.subscriptions.invalidate();
       utils.users.list.invalidate();
     },
@@ -509,6 +516,11 @@ export default function Plans() {
   const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, "主机"), [form.hostIds, hosts]);
   const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, "隧道"), [form.tunnelIds, tunnels]);
   const selectedForwardGroups = useMemo(() => selectedResourceItems(form.forwardGroupIds, forwardGroups, "转发组"), [form.forwardGroupIds, forwardGroups]);
+  const selectedAssignPlan = useMemo(
+    () => plans.find((plan: any) => Number(plan.id) === Number(assignPlanId)) || null,
+    [assignPlanId, plans],
+  );
+  const assignPlanIsMonthly = Number(selectedAssignPlan?.durationDays || 0) === 30;
   const availableHosts = useMemo(() => hosts.filter((host: any) => !selectedHostIds.has(Number(host.id))), [hosts, selectedHostIds]);
   const availableTunnels = useMemo(() => tunnels.filter((tunnel: any) => !selectedTunnelIds.has(Number(tunnel.id))), [tunnels, selectedTunnelIds]);
   const availableForwardGroups = useMemo(() => forwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))), [forwardGroups, selectedForwardGroupIds]);
@@ -549,6 +561,17 @@ export default function Plans() {
     const data = payload(form);
     if (form.id) updatePlan.mutate({ id: form.id, ...data });
     else createPlan.mutate(data);
+  };
+  const submitAssignPlan = () => {
+    if (!assignUserId || !assignPlanId) return;
+    const durationDays = assignPlanIsMonthly
+      ? (Number(assignDurationDays) as AssignDurationDays)
+      : undefined;
+    assignPlan.mutate({
+      userId: Number(assignUserId),
+      planId: Number(assignPlanId),
+      durationDays,
+    });
   };
   const addPlanResource = (key: PlanResourceKey, value: string) => {
     const id = Number(value);
@@ -844,13 +867,13 @@ export default function Plans() {
       </div>
 
       <Dialog open={editing} onOpenChange={setEditing}>
-        <DialogContent className="flex max-h-[92svh] max-w-3xl flex-col overflow-hidden p-0">
-          <DialogHeader className="px-6 pt-6">
+        <DialogContent className="flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="px-4 pt-4 sm:px-5 sm:pt-5">
             <DialogTitle>{form.id ? "编辑套餐" : "新增套餐"}</DialogTitle>
             <DialogDescription>配置套餐限制，并绑定订阅后可用资源。</DialogDescription>
           </DialogHeader>
 
-          <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="flex min-h-0 flex-1 flex-col px-6">
+          <Tabs value={planDialogTab} onValueChange={(value) => setPlanDialogTab(value as PlanDialogTab)} className="flex min-h-0 flex-1 flex-col px-4 sm:px-5">
             <TabsList className="grid h-auto w-full grid-cols-2">
               <TabsTrigger value="settings">套餐设置</TabsTrigger>
               <TabsTrigger value="resources">资源绑定</TabsTrigger>
@@ -946,8 +969,8 @@ export default function Plans() {
                 </div>
               </TabsContent>
 
-              <TabsContent value="resources" className="mt-4 space-y-4">
-                <div className="grid gap-4 md:grid-cols-2">
+              <TabsContent value="resources" className="mt-3 space-y-3">
+                <div className="space-y-3">
             <PlanResourcePicker
               title="转发主机"
               countText={`${form.hostIds.length} 台`}
@@ -1024,7 +1047,7 @@ export default function Plans() {
             />
           </div>
 
-          <div className="space-y-3 rounded-lg border border-border/60 p-4">
+          <div className="space-y-3 rounded-lg border border-border/60 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <Label className="text-sm font-medium">附加流量包</Label>
@@ -1064,7 +1087,7 @@ export default function Plans() {
             </div>
           </Tabs>
 
-          <DialogFooter className="border-t border-border/60 px-6 py-4">
+          <DialogFooter className="border-t border-border/60 px-4 py-3 sm:px-5">
             <Button variant="outline" onClick={() => setEditing(false)}>取消</Button>
             <Button onClick={save} disabled={createPlan.isPending || updatePlan.isPending}>
               {(createPlan.isPending || updatePlan.isPending) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
@@ -1074,7 +1097,10 @@ export default function Plans() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={assignOpen} onOpenChange={setAssignOpen}>
+      <Dialog open={assignOpen} onOpenChange={(open) => {
+        setAssignOpen(open);
+        if (!open) setAssignDurationDays("30");
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>手动分配套餐</DialogTitle>
@@ -1092,18 +1118,41 @@ export default function Plans() {
             </div>
             <div className="space-y-2">
               <Label>套餐</Label>
-              <Select value={assignPlanId} onValueChange={setAssignPlanId}>
+              <Select value={assignPlanId} onValueChange={(value) => {
+                setAssignPlanId(value);
+                setAssignDurationDays("30");
+              }}>
                 <SelectTrigger><SelectValue placeholder="选择套餐" /></SelectTrigger>
                 <SelectContent>
                   {plans.map((plan: any) => <SelectItem key={plan.id} value={String(plan.id)}>{plan.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
+            {selectedAssignPlan && (
+              assignPlanIsMonthly ? (
+                <div className="space-y-2">
+                  <Label>分配周期</Label>
+                  <Select value={assignDurationDays} onValueChange={setAssignDurationDays}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {assignMonthlyDurationOptions.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">选择永久时不会设置到期时间。</p>
+                </div>
+              ) : (
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                  当前套餐有效期为 {durationLabel(selectedAssignPlan.durationDays)}，将按套餐自身周期分配；如需其他周期，请先编辑套餐。
+                </div>
+              )
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAssignOpen(false)}>取消</Button>
             <Button
-              onClick={() => assignPlan.mutate({ userId: Number(assignUserId), planId: Number(assignPlanId) })}
+              onClick={submitAssignPlan}
               disabled={!assignUserId || !assignPlanId || assignPlan.isPending}
             >
               <ShoppingBag className="mr-2 h-4 w-4" /> 分配

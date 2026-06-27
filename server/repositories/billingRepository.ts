@@ -864,7 +864,9 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const forwardGroupIds = (plan as any).forwardGroupIds || [];
   if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐未绑定任何主机、隧道或转发组");
   const now = startsAt || new Date();
-  const durationDays = Number(overrideDurationDays || plan.durationDays);
+  const durationDays = overrideDurationDays === null || overrideDurationDays === undefined
+    ? Number(plan.durationDays)
+    : Number(overrideDurationDays);
   const activeSubscriptions = await getActiveUserSubscriptions(userId);
   const user = await getUserById(userId);
   const hadActiveSubscription = activeSubscriptions.length > 0;

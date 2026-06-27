@@ -1703,13 +1703,18 @@ export function ForwardGroupsContent({
             </div>}
 
             {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
-              <Input
-                aria-label="入口健康度检测目标，留空默认 www.189.cn:80"
-                disabled={!form.chinaHealthCheckEnabled}
-                value={form.chinaHealthCheckTarget}
-                onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                placeholder="留空默认 www.189.cn:80"
-              />
+              <div className="space-y-1.5">
+                <Input
+                  aria-label="入口健康度检测目标，留空默认 www.189.cn:80"
+                  disabled={!form.chinaHealthCheckEnabled}
+                  value={form.chinaHealthCheckTarget}
+                  onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
+                  placeholder="留空默认 www.189.cn:80"
+                />
+                <p className="text-xs text-muted-foreground">
+                  用于剔除不健康入口；至少一个成员可达时整体仍视为可用。
+                </p>
+              </div>
               <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
                 <span className="text-sm">入口健康度检测</span>
                 <Switch

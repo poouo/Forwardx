@@ -1,9 +1,9 @@
 export const BUILTIN_WALLPAPERS = [
-  { id: "anime-1", name: "二次元 1", url: "/wallpapers/anime-1.jpg" },
+  { id: "anime-1", name: "插画 1", url: "/wallpapers/anime-1.jpg" },
   { id: "anime-2", name: "二次元 2", url: "/wallpapers/anime-2.jpg" },
   { id: "anime-3", name: "二次元 3", url: "/wallpapers/anime-3.jpg" },
   { id: "anime-4", name: "二次元 4", url: "/wallpapers/anime-4.jpg" },
-  { id: "illustration-1", name: "插画 1", url: "/wallpapers/illustration-1.jpg" },
+  { id: "illustration-1", name: "二次元 1", url: "/wallpapers/illustration-1.jpg" },
 ] as const;
 
 export type BuiltinWallpaperId = typeof BUILTIN_WALLPAPERS[number]["id"];

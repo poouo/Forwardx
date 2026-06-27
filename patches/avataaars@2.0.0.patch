@@ -1,0 +1,144 @@
+diff --git a/dist/index.js b/dist/index.js
+index 60583584c2edc02a789ddb670465b5473c865b87..2dec6c1a28c172a50918678de56f1b0a48b435b1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -16,10 +16,10 @@ var __extends = (this && this.__extends) || (function () {
+ })();
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.Piece = exports.allOptions = exports.OptionContext = exports.Option = exports.AvatarStyle = exports.Avatar = void 0;
+-var PropTypes = require("prop-types");
+ var React = require("react");
+ var avatar_1 = require("./avatar");
+ var options_1 = require("./options");
++var ModernOptionContext_1 = require("./options/ModernOptionContext");
+ var avatar_2 = require("./avatar");
+ Object.defineProperty(exports, "Avatar", { enumerable: true, get: function () { return avatar_2.default; } });
+ Object.defineProperty(exports, "AvatarStyle", { enumerable: true, get: function () { return avatar_2.AvatarStyle; } });
+@@ -35,9 +35,6 @@ var AvatarComponent = /** @class */ (function (_super) {
+         _this.optionContext = new options_1.OptionContext(options_1.allOptions);
+         return _this;
+     }
+-    AvatarComponent.prototype.getChildContext = function () {
+-        return { optionContext: this.optionContext };
+-    };
+     AvatarComponent.prototype.UNSAFE_componentWillMount = function () {
+         this.updateOptionContext(this.props);
+     };
+@@ -46,7 +43,7 @@ var AvatarComponent = /** @class */ (function (_super) {
+     };
+     AvatarComponent.prototype.render = function () {
+         var _a = this.props, avatarStyle = _a.avatarStyle, style = _a.style, className = _a.className;
+-        return React.createElement(avatar_1.default, { avatarStyle: avatarStyle, style: style, className: className });
++        return React.createElement(ModernOptionContext_1.OptionContextProvider, { value: this.optionContext }, React.createElement(avatar_1.default, { avatarStyle: avatarStyle, style: style, className: className }));
+     };
+     AvatarComponent.prototype.updateOptionContext = function (props) {
+         var data = {};
+@@ -60,9 +57,6 @@ var AvatarComponent = /** @class */ (function (_super) {
+         }
+         this.optionContext.setData(data);
+     };
+-    AvatarComponent.childContextTypes = {
+-        optionContext: PropTypes.instanceOf(options_1.OptionContext)
+-    };
+     return AvatarComponent;
+ }(React.Component));
+ exports.default = AvatarComponent;
+@@ -73,9 +67,6 @@ var Piece = /** @class */ (function (_super) {
+         _this.optionContext = new options_1.OptionContext(options_1.allOptions);
+         return _this;
+     }
+-    Piece.prototype.getChildContext = function () {
+-        return { optionContext: this.optionContext };
+-    };
+     Piece.prototype.UNSAFE_componentWillMount = function () {
+         this.updateOptionContext(this.props);
+     };
+@@ -84,7 +75,7 @@ var Piece = /** @class */ (function (_super) {
+     };
+     Piece.prototype.render = function () {
+         var _a = this.props, avatarStyle = _a.avatarStyle, style = _a.style, pieceType = _a.pieceType, pieceSize = _a.pieceSize, viewBox = _a.viewBox;
+-        return React.createElement(piece_1.default, { avatarStyle: avatarStyle, style: style, pieceType: pieceType, pieceSize: pieceSize, viewBox: viewBox });
++        return React.createElement(ModernOptionContext_1.OptionContextProvider, { value: this.optionContext }, React.createElement(piece_1.default, { avatarStyle: avatarStyle, style: style, pieceType: pieceType, pieceSize: pieceSize, viewBox: viewBox }));
+     };
+     Piece.prototype.updateOptionContext = function (props) {
+         var data = {};
+@@ -98,9 +89,6 @@ var Piece = /** @class */ (function (_super) {
+         }
+         this.optionContext.setData(data);
+     };
+-    Piece.childContextTypes = {
+-        optionContext: PropTypes.instanceOf(options_1.OptionContext)
+-    };
+     return Piece;
+ }(React.Component));
+ exports.Piece = Piece;
+diff --git a/dist/options/ModernOptionContext.js b/dist/options/ModernOptionContext.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd9d48a350da762140a7621b000241ef2ad35f92
+--- /dev/null
++++ b/dist/options/ModernOptionContext.js
+@@ -0,0 +1,6 @@
++"use strict";
++Object.defineProperty(exports, "__esModule", { value: true });
++exports.OptionContextProvider = exports.ModernOptionContext = void 0;
++var React = require("react");
++exports.ModernOptionContext = React.createContext(null);
++exports.OptionContextProvider = exports.ModernOptionContext.Provider;
+diff --git a/dist/options/Selector.js b/dist/options/Selector.js
+index 0eb7c0fcfe87232a98d9a5530fc859111837457d..197472945650580802f3e594b8cd48cb342c7d55 100644
+--- a/dist/options/Selector.js
++++ b/dist/options/Selector.js
+@@ -15,9 +15,8 @@ var __extends = (this && this.__extends) || (function () {
+     };
+ })();
+ Object.defineProperty(exports, "__esModule", { value: true });
+-var PropTypes = require("prop-types");
+ var React = require("react");
+-var OptionContext_1 = require("./OptionContext");
++var ModernOptionContext_1 = require("./ModernOptionContext");
+ function getComponentOptionValue(component) {
+     var optionValue = component.optionValue;
+     if (!optionValue) {
+@@ -34,9 +33,12 @@ var Selector = /** @class */ (function (_super) {
+         };
+         return _this;
+     }
++    Selector.prototype.componentDidMount = function () {
++        this.optionContext.addStateChangeListener(this.optionContextUpdate);
++    };
+     Object.defineProperty(Selector.prototype, "optionContext", {
+         get: function () {
+-            return this.context.optionContext;
++            return this.context;
+         },
+         enumerable: false,
+         configurable: true
+@@ -46,7 +48,6 @@ var Selector = /** @class */ (function (_super) {
+         var optionContext = this.optionContext;
+         var defaultValue = (typeof defaultOption === 'string' ?
+             defaultOption : getComponentOptionValue(defaultOption));
+-        optionContext.addStateChangeListener(this.optionContextUpdate);
+         optionContext.optionEnter(option.key);
+         var optionState = optionContext.getOptionState(option.key);
+         this.updateOptionValues();
+@@ -58,6 +59,9 @@ var Selector = /** @class */ (function (_super) {
+         this.updateOptionValues(nextProps);
+     };
+     Selector.prototype.componentWillUnmount = function () {
++        if (!this.optionContext) {
++            return;
++        }
+         this.optionContext.removeStateChangeListener(this.optionContextUpdate);
+         this.optionContext.optionExit(this.props.option.key);
+     };
+@@ -85,9 +89,7 @@ var Selector = /** @class */ (function (_super) {
+         }
+         this.optionContext.setOptions(option.key, values);
+     };
+-    Selector.contextTypes = {
+-        optionContext: PropTypes.instanceOf(OptionContext_1.default)
+-    };
++    Selector.contextType = ModernOptionContext_1.ModernOptionContext;
+     return Selector;
+ }(React.Component));
+ exports.default = Selector;

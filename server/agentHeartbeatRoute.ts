@@ -49,8 +49,9 @@ const agentActionBatchCache = new Map<number, { signature: string; issuedAt: num
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
 const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
-const RUNTIME_CONFIG_PATH = "/etc/forwardx-runtime/config.json";
-const TUNNEL_RUNTIME_CONFIG_PATH = "/etc/forwardx-tunnel-runtime/config.json";
+const RUNTIME_CONFIG_PATH = "/etc/forwardx/runtime/gost.json";
+const TUNNEL_RUNTIME_CONFIG_PATH = "/etc/forwardx/runtime/tunnel-gost.json";
+const RUNTIME_CONFIG_DIR = "/etc/forwardx/runtime";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
@@ -84,6 +85,7 @@ function stableActionSignature(actions: any[]) {
     unitExtra: action?.unitExtra || "",
     fxp: action?.fxp || null,
     failover: action?.failover || null,
+    udpOverTcp: action?.udpOverTcp || null,
   })));
 }
 
@@ -111,6 +113,10 @@ function isIpv6Literal(value: unknown) {
   return isIP(cleanEndpointHost(value)) === 6;
 }
 
+function isForwardXTunnelMode(tunnel: any) {
+  return String(tunnel?.mode || "").toLowerCase() === "forwardx";
+}
+
 function endpointHostPort(host: unknown, port: unknown) {
   const clean = cleanEndpointHost(host);
   return isIpv6Literal(clean) ? `[${clean}]:${Number(port) || 0}` : `${clean}:${Number(port) || 0}`;
@@ -120,6 +126,46 @@ function socatDialEndpoint(protocol: "TCP" | "UDP", host: unknown, port: unknown
   const clean = cleanEndpointHost(host);
   const dialProtocol = isIpv6Literal(clean) ? `${protocol}6` : protocol;
   return `${dialProtocol}:${endpointHostPort(clean, port)}`;
+}
+
+function udpOverTcpEnabled(rule: any, tunnel: any) {
+  return !!rule
+    && !!tunnel
+    && isForwardXTunnelMode(tunnel)
+    && !!(rule as any).udpOverTcp
+    && String(rule.protocol || "").toLowerCase() === "both"
+    && Number((rule as any).udpOverTcpPort || 0) > 0;
+}
+
+function udpOverTcpServiceName(role: "entry" | "exit", ruleId: unknown) {
+  return `forwardx-udp2raw-${role}-${Number(ruleId) || 0}`;
+}
+
+function udpOverTcpPassword(rule: any, tunnel: any) {
+  return crypto.createHash("sha256")
+    .update(`${tunnelSecretSeed(tunnel)}|udp2raw|${Number(rule?.id || 0)}|${Number(rule?.sourcePort || 0)}`)
+    .digest("hex");
+}
+
+function udp2rawRstDropCmd(port: number, comment: string) {
+  const p = Number(port) || 0;
+  const c = shQuote(comment);
+  return [
+    `iptables -I OUTPUT -p tcp --sport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP 2>/dev/null || true`,
+    `iptables -I OUTPUT -p tcp --dport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP 2>/dev/null || true`,
+    `ip6tables -I OUTPUT -p tcp --sport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP 2>/dev/null || true`,
+    `ip6tables -I OUTPUT -p tcp --dport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP 2>/dev/null || true`,
+  ].join("; ");
+}
+
+function udp2rawRstCleanupCmd(port: number, comment: string) {
+  const p = Number(port) || 0;
+  const c = shQuote(comment);
+  const rules = [
+    `OUTPUT -p tcp --sport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP`,
+    `OUTPUT -p tcp --dport ${p} --tcp-flags RST RST -m comment --comment ${c} -j DROP`,
+  ];
+  return ["iptables", "ip6tables"].flatMap((bin) => rules.map((rule) => `while ${bin} -C ${rule} 2>/dev/null; do ${bin} -D ${rule} 2>/dev/null || break; done`)).join("; ");
 }
 
 function normalizeRateLimitMbps(value: unknown) {
@@ -856,7 +902,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const merged = Object.assign({}, ...items.filter(Boolean));
       return Object.keys(merged).length > 0 ? merged : undefined;
     };
-    const isForwardXTunnel = (tunnel: any) => String(tunnel?.mode || "").toLowerCase() === "forwardx";
+    const isForwardXTunnel = isForwardXTunnelMode;
     const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
     const hostPublicAddress = (hostLike: any) => {
       const value = hostIngressAddress(hostLike);
@@ -1190,6 +1236,25 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           && isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel)
           && isCurrentHostTunnelExitForRule(r, tunnel);
       });
+    const forwardXUdpOverTcpExitRules = agentAllRules
+      .filter((r: any) => {
+        if (r.pendingDelete || !r.isEnabled || r.forwardType !== "gost" || !r.tunnelId) return false;
+        const tunnel = tunnelById.get(r.tunnelId) as any;
+        return udpOverTcpEnabled(r, tunnel)
+          && tunnel.isEnabled
+          && isTunnelProtocolEnabled(forwardProtocolSettings, tunnel)
+          && isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel)
+          && Number(tunnel.exitHostId) === Number(host.id);
+      });
+    const disabledForwardXUdpOverTcpExitRules = agentAllRules
+      .filter((r: any) => {
+        if (!r || !r.tunnelId || !r.udpOverTcp || Number(r.udpOverTcpPort || 0) <= 0) return false;
+        const tunnel = tunnelById.get(r.tunnelId) as any;
+        return !!tunnel
+          && isForwardXTunnel(tunnel)
+          && Number(tunnel.exitHostId) === Number(host.id)
+          && (r.pendingDelete || !r.isEnabled || !tunnel.isEnabled || !isRuleProtocolEnabled(forwardProtocolSettings, r, tunnel) || !isTunnelProtocolEnabled(forwardProtocolSettings, tunnel));
+      });
 
     const gostTunnelNode = (name: string, addr: string, dialerType: string, tunnel: any, connectorType: "relay" | "forward" = "relay") => ({
       name,
@@ -1380,7 +1445,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           chain: `chain-tunnel-${Number(rule.id || 0)}`,
         })) : [];
       const cmds = [
-        `mkdir -p ${shQuote(RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
+        `mkdir -p ${shQuote(RUNTIME_CONFIG_DIR)}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(RUNTIME_CONFIG_PATH)}`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(gostServiceName, gostServiceUnit),
@@ -1523,7 +1588,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }) : [];
       const encodedConfig = Buffer.from(JSON.stringify({ services }, null, 2), "utf8").toString("base64");
       const cmds = [
-        `mkdir -p ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH.replace(/\/config\.json$/, ""))}`,
+        `mkdir -p ${shQuote(RUNTIME_CONFIG_DIR)}`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(TUNNEL_RUNTIME_CONFIG_PATH)}`,
         ...proxyDebugCmds,
         writeManagedServiceCmd(TUNNEL_RUNTIME_SERVICE_NAME, [
@@ -1678,6 +1743,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const fxpRemoveKey = tunnel && isForwardXTunnel(tunnel)
           ? (await forwardXEntryRoute(tunnel)).key
           : "";
+        const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
         return {
           ruleId: rule.id,
           op: "remove",
@@ -1689,7 +1755,21 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           commands: [
             ...buildGostReloadCmds(),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...(useUdpOverTcp ? [
+              udp2rawRstCleanupCmd(Number(rule.sourcePort), `forwardx-udp2raw-${Number(rule.id)}`),
+              udp2rawRstCleanupCmd(Number((rule as any).udpOverTcpPort || 0), `forwardx-udp2raw-${Number(rule.id)}`),
+            ] : []),
           ],
+          udpOverTcp: useUdpOverTcp ? {
+            role: "entry",
+            service: udpOverTcpServiceName("entry", rule.id),
+            listenPort: Number(rule.sourcePort),
+            remoteHost: "",
+            remotePort: Number((rule as any).udpOverTcpPort || 0),
+            targetIp: "",
+            targetPort: 0,
+            password: udpOverTcpPassword(rule, tunnel),
+          } : undefined,
           fxp: tunnel && isForwardXTunnel(tunnel) ? {
             role: "entry",
             tunnelId: tunnel.id,
@@ -2162,6 +2242,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const rateLimits = userRateLimits(Number(rule.userId), tunnel);
             const accessLimits = userAccessLimits(Number(rule.userId));
             const mainBackup = failoverForCurrentHost(rule, tunnel, { listenPort: failoverProxyPort(rule) });
+            const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
+            const udpOverTcpSpec = useUdpOverTcp ? {
+              role: "entry",
+              service: udpOverTcpServiceName("entry", rule.id),
+              listenPort: Number(rule.sourcePort),
+              remoteHost: entryRoute.host,
+              remotePort: Number((rule as any).udpOverTcpPort),
+              targetIp: "",
+              targetPort: 0,
+              password: udpOverTcpPassword(rule, tunnel),
+            } : undefined;
             actions.push({
               ruleId: rule.id,
               op: "apply",
@@ -2173,6 +2264,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               networkInterface: hostInterface,
               commands: (!rule.isRunning || shouldRefreshForwardXEntryRule) ? [
                 ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+                ...(useUdpOverTcp ? [
+                  udp2rawRstCleanupCmd(Number(rule.sourcePort), `forwardx-udp2raw-${Number(rule.id)}`),
+                  udp2rawRstDropCmd(Number(rule.sourcePort), `forwardx-udp2raw-${Number(rule.id)}`),
+                ] : []),
                 ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ] : [],
               fxp: {
@@ -2180,7 +2275,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 tunnelId: tunnel.id,
                 ruleId: rule.id,
                 listenPort: rule.sourcePort,
-                protocol: rule.protocol,
+                protocol: useUdpOverTcp ? "tcp" : rule.protocol,
                 exitHost: entryRoute.host,
                 exitPort: entryRoute.port,
                 exits: entryRoutes.map((route) => ({
@@ -2202,6 +2297,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
                 proxyProtocolVersion: proxyProtocolVersion(rule),
                 tcpFastOpen: !!(rule as any).tcpFastOpen,
               },
+              udpOverTcp: udpOverTcpSpec,
               failover: mainBackup,
             });
             continue;
@@ -2298,9 +2394,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           const fxpRemoveKey = tunnel && isForwardXTunnel(tunnel)
             ? (await forwardXEntryRoute(tunnel)).key
             : "";
+          const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
           const removeCmds: string[] = [
             ...buildGostReloadCmds(),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
+            ...(useUdpOverTcp ? [
+              udp2rawRstCleanupCmd(Number(rule.sourcePort), `forwardx-udp2raw-${Number(rule.id)}`),
+              udp2rawRstCleanupCmd(Number((rule as any).udpOverTcpPort || 0), `forwardx-udp2raw-${Number(rule.id)}`),
+            ] : []),
           ];
           actions.push({
             ruleId: rule.id,
@@ -2311,6 +2412,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: removeCmds,
+            udpOverTcp: useUdpOverTcp ? {
+              role: "entry",
+              service: udpOverTcpServiceName("entry", rule.id),
+              listenPort: Number(rule.sourcePort),
+              remoteHost: "",
+              remotePort: Number((rule as any).udpOverTcpPort || 0),
+              targetIp: "",
+              targetPort: 0,
+              password: udpOverTcpPassword(rule, tunnel),
+            } : undefined,
             fxp: tunnel && isForwardXTunnel(tunnel) ? {
               role: "entry",
               tunnelId: tunnel.id,
@@ -2342,6 +2453,69 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           proxyProtocolVersion: proxyProtocolVersion(rule),
         });
       }
+    }
+
+    for (const rule of disabledForwardXUdpOverTcpExitRules) {
+      const tunnel = tunnelById.get(Number((rule as any).tunnelId)) as any;
+      const rawPort = Number((rule as any).udpOverTcpPort || 0);
+      actions.push({
+        ruleId: rule.id,
+        tunnelId: Number((rule as any).tunnelId || 0),
+        statusType: "rule",
+        op: "remove",
+        forwardType: "forwardx-udp-over-tcp-exit",
+        sourcePort: rawPort,
+        targetIp: rule.targetIp,
+        targetPort: rule.targetPort,
+        protocol: "udp",
+        commands: [
+          udp2rawRstCleanupCmd(rawPort, `forwardx-udp2raw-${Number(rule.id)}`),
+        ],
+        udpOverTcp: {
+          role: "exit",
+          service: udpOverTcpServiceName("exit", rule.id),
+          listenPort: rawPort,
+          remoteHost: "",
+          remotePort: 0,
+          targetIp: processTarget(rule),
+          targetPort: Number(rule.targetPort),
+          password: udpOverTcpPassword(rule, tunnel),
+        },
+        reportStatus: false,
+      } as any);
+    }
+
+    for (const rule of forwardXUdpOverTcpExitRules) {
+      const tunnel = tunnelById.get(Number((rule as any).tunnelId)) as any;
+      const service = udpOverTcpServiceName("exit", rule.id);
+      const rawPort = Number((rule as any).udpOverTcpPort || 0);
+      const comment = `forwardx-udp2raw-${Number(rule.id)}`;
+      actions.push({
+        ruleId: rule.id,
+        tunnelId: tunnel.id,
+        statusType: "rule",
+        op: "apply",
+        forwardType: "forwardx-udp-over-tcp-exit",
+        sourcePort: rawPort,
+        targetIp: processTarget(rule),
+        targetPort: rule.targetPort,
+        protocol: "udp",
+        commands: [
+          udp2rawRstCleanupCmd(rawPort, comment),
+          udp2rawRstDropCmd(rawPort, comment),
+        ],
+        udpOverTcp: {
+          role: "exit",
+          service,
+          listenPort: rawPort,
+          remoteHost: "",
+          remotePort: 0,
+          targetIp: processTarget(rule),
+          targetPort: Number(rule.targetPort),
+          password: udpOverTcpPassword(rule, tunnel),
+        },
+        reportStatus: false,
+      } as any);
     }
 
     for (const rule of tunnelExitRules) {

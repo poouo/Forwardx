@@ -93,7 +93,9 @@ const mysqlEpoch = customType<{ data: Date; driverData: number | string | null }
     return "int";
   },
   fromDriver(value) {
-    const n = Number(value || 0);
+    if (value === null || value === undefined || value === "") return null as any;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null as any;
     return new Date(n * 1000);
   },
   toDriver(value) {
@@ -107,7 +109,9 @@ const postgresEpoch = pgCustomType<{ data: Date; driverData: number | string | n
     return "int";
   },
   fromDriver(value) {
-    const n = Number(value || 0);
+    if (value === null || value === undefined || value === "") return null as any;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return null as any;
     return new Date(n * 1000);
   },
   toDriver(value) {
@@ -268,6 +272,8 @@ export const forwardRules = table("forward_rules", {
   proxyProtocolVersion: int("proxyProtocolVersion").notNull().default(1),
   tcpFastOpen: boolean("tcpFastOpen").notNull().default(false),
   zeroCopy: boolean("zeroCopy").notNull().default(false),
+  udpOverTcp: boolean("udpOverTcp").notNull().default(false),
+  udpOverTcpPort: int("udpOverTcpPort"),
   protocolBlockReason: text("protocolBlockReason"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   failoverEnabled: boolean("failoverEnabled").notNull().default(false),

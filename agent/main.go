@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.115"
+var Version = "2.2.116"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -55,14 +55,18 @@ const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
 const agentLogPath = agentLogDir + "/agent-go.log"
+const defaultConfigPath = "/etc/forwardx/agent/config.json"
+const legacyConfigPath = "/etc/forwardx-agent/config.json"
 const runtimeServiceName = "forwardx-runtime"
 const tunnelRuntimeServiceName = "forwardx-tunnel-runtime"
-const runtimeConfigPath = "/etc/forwardx-runtime/config.json"
-const tunnelRuntimeConfigPath = "/etc/forwardx-tunnel-runtime/config.json"
+const runtimeConfigPath = "/etc/forwardx/runtime/gost.json"
+const tunnelRuntimeConfigPath = "/etc/forwardx/runtime/tunnel-gost.json"
 const legacyGostServiceName = "forwardx-gost"
 const legacyTunnelServiceName = "forwardx-tunnels"
 const legacyGostConfigPath = "/etc/forwardx-gost/config.json"
 const legacyTunnelConfigPath = "/etc/forwardx-tunnels/config.json"
+const legacyRuntimeConfigPath = "/etc/forwardx-runtime/config.json"
+const legacyTunnelRuntimeConfigPath = "/etc/forwardx-tunnel-runtime/config.json"
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -174,6 +178,8 @@ type action struct {
 	PostCommands     []string      `json:"postCommands"`
 	Fxp              *fxpSpec      `json:"fxp,omitempty"`
 	Failover         *failoverSpec `json:"failover,omitempty"`
+	UDPOverTCP       *udp2rawSpec  `json:"udpOverTcp,omitempty"`
+	ReportStatus     *bool         `json:"reportStatus,omitempty"`
 }
 
 type runningRule struct {
@@ -201,6 +207,17 @@ type failoverSpec struct {
 	FailoverSeconds int              `json:"failoverSeconds"`
 	RecoverSeconds  int              `json:"recoverSeconds"`
 	AutoFailback    bool             `json:"autoFailback"`
+}
+
+type udp2rawSpec struct {
+	Role       string `json:"role"`
+	Service    string `json:"service"`
+	ListenPort int    `json:"listenPort"`
+	RemoteHost string `json:"remoteHost"`
+	RemotePort int    `json:"remotePort"`
+	TargetIP   string `json:"targetIp"`
+	TargetPort int    `json:"targetPort"`
+	Password   string `json:"password"`
 }
 
 type tunnelProbe struct {
@@ -331,11 +348,11 @@ type guardRule struct {
 }
 
 func main() {
-	configPath := flag.String("config", "/etc/forwardx-agent/config.json", "config file")
+	configPath := flag.String("config", defaultConfigPath, "config file")
 	onceRegister := flag.Bool("register", false, "register and exit")
 	flag.Parse()
 
-	cfg, err := loadConfig(*configPath)
+	resolvedConfigPath, cfg, err := loadConfigWithFallback(*configPath)
 	if err != nil {
 		fatal("load config: %v", err)
 	}
@@ -343,7 +360,7 @@ func main() {
 		cfg.Interval = 30
 	}
 	cfg.PanelURL = strings.TrimRight(cfg.PanelURL, "/")
-	activeConfigPath = *configPath
+	activeConfigPath = resolvedConfigPath
 	setRuntimePanelURL(cfg.PanelURL)
 
 	if *onceRegister {
@@ -391,6 +408,44 @@ func main() {
 	}
 }
 
+func loadConfigWithFallback(path string) (string, Config, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = defaultConfigPath
+	}
+	cfg, err := loadConfig(path)
+	if err == nil {
+		if path == defaultConfigPath {
+			migrateLegacyConfigToDefault(path)
+		}
+		return path, cfg, nil
+	}
+	if path == defaultConfigPath {
+		if legacyCfg, legacyErr := loadConfig(legacyConfigPath); legacyErr == nil {
+			if writeConfigFile(defaultConfigPath, legacyCfg) == nil {
+				logf("config migrated from %s to %s", legacyConfigPath, defaultConfigPath)
+				return defaultConfigPath, legacyCfg, nil
+			}
+			return legacyConfigPath, legacyCfg, nil
+		}
+	}
+	return path, Config{}, err
+}
+
+func migrateLegacyConfigToDefault(path string) {
+	if path != defaultConfigPath {
+		return
+	}
+	if _, err := os.Stat(legacyConfigPath); err != nil {
+		return
+	}
+	cfg, err := loadConfig(legacyConfigPath)
+	if err != nil {
+		return
+	}
+	_ = writeConfigFile(defaultConfigPath, cfg)
+}
+
 func loadConfig(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -404,6 +459,21 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("panelUrl/token required")
 	}
 	return cfg, nil
+}
+
+func writeConfigFile(path string, cfg Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
 }
 
 func normalizePanelURL(raw string) string {
@@ -570,7 +640,7 @@ func heartbeat(cfg Config) (int, error) {
 	pendingActionPorts := map[string]bool{}
 	actionDone := make([]<-chan struct{}, 0, len(resp.Actions))
 	for _, a := range resp.Actions {
-		if a.SourcePort > 0 {
+		if a.SourcePort > 0 && shouldReportActionStatus(a) {
 			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
 		}
 		actionDone = append(actionDone, enqueueAction(cfg, a))
@@ -1211,6 +1281,13 @@ func handleAction(cfg Config, a action) {
 			}
 			ok = fxpOK && ok
 		}
+		if a.UDPOverTCP != nil {
+			udpOK := startUDPOverTCP(*a.UDPOverTCP, actionMessage)
+			if !udpOK || agentVerboseLogs {
+				logf("action udp over tcp role=%s service=%s listen=%d remote=%s:%d target=%s:%d ok=%v", a.UDPOverTCP.Role, a.UDPOverTCP.Service, a.UDPOverTCP.ListenPort, a.UDPOverTCP.RemoteHost, a.UDPOverTCP.RemotePort, a.UDPOverTCP.TargetIP, a.UDPOverTCP.TargetPort, udpOK)
+			}
+			ok = udpOK && ok
+		}
 		if a.Failover != nil && a.Failover.Enabled {
 			failoverOK := startFailoverProxy(a.RuleID, a.SourcePort, *a.Failover, actionMessage)
 			if !failoverOK || agentVerboseLogs {
@@ -1219,9 +1296,14 @@ func handleAction(cfg Config, a action) {
 			ok = failoverOK && ok
 		}
 		runPostCommands(a.PostCommands, actionMessage)
-		writeState(a)
+		if shouldReportActionStatus(a) {
+			writeState(a)
+		}
 	} else {
 		stopFailoverProxy(a.RuleID, a.SourcePort)
+		if a.UDPOverTCP != nil {
+			stopUDPOverTCP(*a.UDPOverTCP)
+		}
 		if a.Fxp != nil {
 			stopFXP(*a.Fxp)
 		}
@@ -1231,7 +1313,12 @@ func handleAction(cfg Config, a action) {
 		for _, cmd := range a.Commands {
 			ok = runShell(cmd) && ok
 		}
-		removeState(a.SourcePort)
+		if shouldReportActionStatus(a) {
+			removeState(a.SourcePort)
+		}
+	}
+	if !shouldReportActionStatus(a) {
+		return
 	}
 	running := ok && a.Op == "apply"
 	message := actionMessage.get()
@@ -1749,9 +1836,15 @@ func managedRuntimeConfigs() []struct {
 	}{
 		{runtimeConfigPath, runtimeServiceName},
 		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName},
+		{legacyRuntimeConfigPath, runtimeServiceName},
+		{legacyTunnelRuntimeConfigPath, tunnelRuntimeServiceName},
 		{legacyGostConfigPath, legacyGostServiceName},
 		{legacyTunnelConfigPath, legacyTunnelServiceName},
 	}
+}
+
+func shouldReportActionStatus(a action) bool {
+	return a.ReportStatus == nil || *a.ReportStatus
 }
 
 func listenPortOwnerPIDs(port int) []int {
@@ -1902,6 +1995,70 @@ func managedServiceNamesForAction(a action) []string {
 	default:
 		return nil
 	}
+}
+
+func startUDPOverTCP(spec udp2rawSpec, actionMessage *actionMessage) bool {
+	name := sanitizeServiceName(spec.Service)
+	if name == "" {
+		actionMessage.set("udp over tcp invalid service name")
+		return false
+	}
+	if spec.ListenPort <= 0 || spec.ListenPort > 65535 || spec.Password == "" {
+		actionMessage.set("udp over tcp invalid config service=%s listen=%d", name, spec.ListenPort)
+		return false
+	}
+	if _, err := os.Stat("/usr/local/bin/forwardx-udp2raw"); err != nil {
+		actionMessage.set("udp2raw runtime missing: install /usr/local/bin/forwardx-udp2raw to use UDP over TCP")
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(spec.Role))
+	var cmd string
+	switch role {
+	case "entry":
+		if spec.RemoteHost == "" || spec.RemotePort <= 0 || spec.RemotePort > 65535 {
+			actionMessage.set("udp over tcp invalid entry remote service=%s", name)
+			return false
+		}
+		cmd = "/usr/local/bin/forwardx-udp2raw -c -l " + shellQuote("0.0.0.0:"+strconv.Itoa(spec.ListenPort)) +
+			" -r " + shellQuote(net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort))) +
+			" -k " + shellQuote(spec.Password) + " --raw-mode faketcp --cipher-mode aes128cbc --auth-mode hmac_sha1"
+	case "exit":
+		if spec.TargetIP == "" || spec.TargetPort <= 0 || spec.TargetPort > 65535 {
+			actionMessage.set("udp over tcp invalid exit target service=%s", name)
+			return false
+		}
+		cmd = "/usr/local/bin/forwardx-udp2raw -s -l " + shellQuote("0.0.0.0:"+strconv.Itoa(spec.ListenPort)) +
+			" -r " + shellQuote(net.JoinHostPort(spec.TargetIP, strconv.Itoa(spec.TargetPort))) +
+			" -k " + shellQuote(spec.Password) + " --raw-mode faketcp --cipher-mode aes128cbc --auth-mode hmac_sha1"
+	default:
+		actionMessage.set("udp over tcp unknown role=%s", spec.Role)
+		return false
+	}
+	unit := strings.Join([]string{
+		"[Unit]",
+		"Description=ForwardX UDP over TCP " + name,
+		"After=network.target",
+		"",
+		"[Service]",
+		"Type=simple",
+		"ExecStart=" + cmd,
+		"Restart=always",
+		"RestartSec=3",
+		"LimitNOFILE=65535",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+	return writeUnitAndRestart(name, unit)
+}
+
+func stopUDPOverTCP(spec udp2rawSpec) {
+	name := sanitizeServiceName(spec.Service)
+	if name == "" {
+		return
+	}
+	cleanupManagedService(name)
 }
 
 func cleanupManagedService(name string) {
@@ -2369,6 +2526,7 @@ func managedListenerCleanupCmds(port string) []string {
 	cmds = append(cmds,
 		"for pid in $(pgrep -f '[s]ocat .*LISTEN:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
 		"for pid in $(pgrep -f '[r]ealm .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
+		"for pid in $(pgrep -f '[f]orwardx-udp2raw .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
 	)
 	return cmds
 }

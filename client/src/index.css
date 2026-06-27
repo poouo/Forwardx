@@ -319,6 +319,11 @@
     overflow-y: hidden !important;
   }
 
+  html body[data-forwardx-select-open]:not([data-dialog-scroll-lock]) {
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+  }
+
   .right-scroll-bar-position {
     right: 0 !important;
   }
@@ -343,10 +348,19 @@
     padding-top: env(safe-area-inset-top);
     background: color-mix(in oklch, var(--background) 96%, transparent);
     box-shadow: 0 1px 0 color-mix(in oklch, var(--border) 72%, transparent);
+    transform: translateZ(0);
+    will-change: transform;
   }
 
   html.capacitor-native [data-mobile-main="true"] {
+    padding-top: calc(4.25rem + env(safe-area-inset-top));
     padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+
+  @media (max-width: 767px) {
+    [data-mobile-main="true"] {
+      padding-top: 4.25rem;
+    }
   }
 
   html.capacitor-native [data-sidebar="header"] {
@@ -924,6 +938,26 @@
       linear-gradient(118deg, color-mix(in oklch, var(--chart-1) 13%, transparent) 0%, transparent 36%),
       linear-gradient(246deg, color-mix(in oklch, var(--chart-2) 9%, transparent) 0%, transparent 42%),
       linear-gradient(135deg, color-mix(in oklch, var(--background) 92%, white 3%) 0%, var(--background) 54%, color-mix(in oklch, var(--background) 88%, var(--chart-4) 8%) 100%);
+  }
+
+  html[data-personalization-background="image"] .auth-shell,
+  html[data-personalization-background="video"] .auth-shell,
+  html[data-personalization-background="image"] .public-home-shell,
+  html[data-personalization-background="video"] .public-home-shell {
+    background:
+      linear-gradient(118deg, color-mix(in oklch, var(--chart-1) 14%, transparent) 0%, transparent 38%),
+      linear-gradient(246deg, color-mix(in oklch, var(--chart-2) 12%, transparent) 0%, transparent 44%),
+      color-mix(in oklch, var(--background) 42%, transparent);
+  }
+
+  .dark[data-personalization-background="image"] .auth-shell,
+  .dark[data-personalization-background="video"] .auth-shell,
+  .dark[data-personalization-background="image"] .public-home-shell,
+  .dark[data-personalization-background="video"] .public-home-shell {
+    background:
+      linear-gradient(118deg, color-mix(in oklch, var(--chart-1) 12%, transparent) 0%, transparent 38%),
+      linear-gradient(246deg, color-mix(in oklch, var(--chart-2) 10%, transparent) 0%, transparent 44%),
+      color-mix(in oklch, var(--background) 56%, transparent);
   }
 
   .auth-grid-overlay {

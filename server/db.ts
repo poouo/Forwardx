@@ -14,7 +14,7 @@ import { ensureDatabaseSchema } from "./dbSchema";
 import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
-import { randomMultiavatarValue } from "../shared/avatar";
+import { randomAvataaarsValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
@@ -158,7 +158,7 @@ export async function createInitialAdmin(input: { email: string; password: strin
     password: hashPassword(input.password),
     name: input.name?.trim() || input.email,
     email: input.email,
-    avatar: randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`)),
+    avatar: randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`)),
     role: "admin",
     accountEnabled: true,
     canAddRules: true,
@@ -180,8 +180,8 @@ export async function updateInitialAdmin(input: { email: string; password?: stri
     email: input.email,
     name: input.name?.trim() || input.email,
     avatar: (admin as any).avatar?.startsWith?.("preset:")
-      ? randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`))
-      : (admin as any).avatar || randomMultiavatarValue(String(`admin-${input.email}-${Date.now()}`)),
+      ? randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`))
+      : (admin as any).avatar || randomAvataaarsValue(String(`admin-${input.email}-${Date.now()}`)),
     updatedAt: nowDate(),
   };
   if (input.password?.trim()) {

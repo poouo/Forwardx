@@ -220,6 +220,15 @@ function toLocalAiProviderConfig(provider: AiProvider, source?: AiProviderServer
 }
 type DdnsProvider = "disabled" | "cloudflare" | "webhook" | "huaweicloud" | "aliyun" | "tencentcloud";
 const ddnsProviders: DdnsProvider[] = ["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"];
+const docsBaseUrl = "https://poouo.github.io/Forwardx";
+const ddnsProviderGuideAnchors: Record<DdnsProvider, string> = {
+  disabled: "quick-setup",
+  cloudflare: "cloudflare",
+  webhook: "webhook",
+  huaweicloud: "huaweicloud",
+  aliyun: "aliyun",
+  tencentcloud: "tencentcloud",
+};
 
 function normalizeConfigUrl(value: string) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -227,6 +236,10 @@ function normalizeConfigUrl(value: string) {
 
 function isDdnsProvider(value: unknown): value is DdnsProvider {
   return ddnsProviders.includes(value as DdnsProvider);
+}
+
+function ddnsProviderGuideUrl(provider: DdnsProvider) {
+  return `${docsBaseUrl}/guide/ddns#${ddnsProviderGuideAnchors[provider] || "quick-setup"}`;
 }
 
 const panelInstallGuideCommands = [
@@ -2784,9 +2797,9 @@ function PersonalizationSettingsSection() {
   const opacityPercent = Math.round(clampBackgroundOpacity(backgroundConfig.opacity) * 100);
   const blurAmount = Math.round(clampBackgroundBlur(backgroundConfig.blur));
   const backgroundEnabled = backgroundConfig.source !== "none" && !!previewBackgroundUrl;
-  const previewMediaStyle = {
+  const previewBackdropStyle = {
     filter: `blur(${blurAmount}px)`,
-    transform: `scale(${1 + blurAmount / 320})`,
+    transform: `scale(${1.04 + blurAmount / 280})`,
   };
   const backgroundSourceOptions = [
     { value: "builtin" as const, label: "内置壁纸", icon: ImageIcon },
@@ -2925,6 +2938,15 @@ function PersonalizationSettingsSection() {
     savePersonalizationSection("background", { personalizationBackground: nextBackground });
   };
 
+  const handleResetBackground = () => {
+    setBackgroundConfig((current) =>
+      normalizePersonalizationBackgroundConfig({
+        ...DEFAULT_PERSONALIZATION_BACKGROUND,
+        images: current.images,
+      }),
+    );
+  };
+
   const handleSaveHomepage = () => {
     savePersonalizationSection("homepage", {
       homepageEnabled,
@@ -3033,10 +3055,16 @@ function PersonalizationSettingsSection() {
               默认不使用背景，可选择内置、上传或链接背景。
             </CardDescription>
           </div>
-          <Button type="button" onClick={handleSaveBackground} disabled={compressingBackground || personalizationSaving} className="w-full gap-2 sm:w-auto">
-            {isSavingPersonalization("background") && <Loader2 className="h-4 w-4 animate-spin" />}
-            保存背景
-          </Button>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            <Button type="button" variant="outline" onClick={handleResetBackground} disabled={personalizationSaving} className="w-full gap-2 sm:w-auto">
+              <RefreshCw className="h-4 w-4" />
+              恢复默认
+            </Button>
+            <Button type="button" onClick={handleSaveBackground} disabled={compressingBackground || personalizationSaving} className="w-full gap-2 sm:w-auto">
+              {isSavingPersonalization("background") && <Loader2 className="h-4 w-4 animate-spin" />}
+              保存背景
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -3044,24 +3072,44 @@ function PersonalizationSettingsSection() {
               <div className="relative min-h-52 overflow-hidden rounded-lg border border-border/40 bg-muted/30">
                 {previewBackgroundUrl ? (
                   previewIsVideo ? (
-                    <video
-                      src={previewBackgroundUrl}
-                      muted
-                      loop
-                      playsInline
-                      autoPlay
-                      className="absolute inset-0 h-full w-full object-cover transition-[filter,transform] duration-200"
-                      style={previewMediaStyle}
-                    />
+                    <>
+                      <video
+                        src={previewBackgroundUrl}
+                        muted
+                        loop
+                        playsInline
+                        autoPlay
+                        className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
+                        style={previewBackdropStyle}
+                      />
+                      <video
+                        src={previewBackgroundUrl}
+                        muted
+                        loop
+                        playsInline
+                        autoPlay
+                        className="absolute inset-0 h-full w-full object-contain p-2"
+                      />
+                    </>
                   ) : (
-                    <img
-                      src={previewBackgroundUrl}
-                      alt="背景预览"
-                      loading="eager"
-                      decoding="async"
-                      className="absolute inset-0 h-full w-full object-cover transition-[filter,transform] duration-200"
-                      style={previewMediaStyle}
-                    />
+                    <>
+                      <img
+                        src={previewBackgroundUrl}
+                        alt=""
+                        aria-hidden="true"
+                        loading="eager"
+                        decoding="async"
+                        className="absolute inset-0 h-full w-full object-cover opacity-70 transition-[filter,transform] duration-200"
+                        style={previewBackdropStyle}
+                      />
+                      <img
+                        src={previewBackgroundUrl}
+                        alt="背景预览"
+                        loading="eager"
+                        decoding="async"
+                        className="absolute inset-0 h-full w-full object-contain p-2"
+                      />
+                    </>
                   )
                 ) : (
                   <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
@@ -3130,9 +3178,6 @@ function PersonalizationSettingsSection() {
                 </div>
               )}
 
-              <Button type="button" variant="outline" onClick={() => updateBackground({ source: "none", selectedId: null })} disabled={personalizationSaving}>
-                不使用背景
-              </Button>
             </div>
 
             <div className="space-y-4">
@@ -3178,7 +3223,7 @@ function PersonalizationSettingsSection() {
                             alt={item.name}
                             loading="lazy"
                             decoding="async"
-                            className="aspect-[16/9] w-full object-cover transition-transform group-hover:scale-[1.02]"
+                            className="aspect-[16/9] w-full bg-muted/40 object-contain transition-transform group-hover:scale-[1.02]"
                           />
                           <div className="px-3 py-2 text-xs font-medium">{item.name}</div>
                         </button>
@@ -3226,7 +3271,7 @@ function PersonalizationSettingsSection() {
                               onClick={() => updateBackground({ source: "upload", selectedId: item.id })}
                               className="block w-full text-left"
                             >
-                              <img src={item.dataUrl} alt={item.name} loading="lazy" decoding="async" className="aspect-[16/9] w-full object-cover" />
+                              <img src={item.dataUrl} alt={item.name} loading="lazy" decoding="async" className="aspect-[16/9] w-full bg-muted/40 object-contain" />
                             </button>
                             <div className="flex items-center justify-between gap-2 px-3 py-2">
                               <div className="min-w-0">
@@ -4315,7 +4360,7 @@ function SystemInfoSection() {
                 <p className="text-sm font-medium">服务商</p>
                 <p className="text-xs text-muted-foreground">选择用于同步域名的 DDNS 服务。</p>
               </div>
-              <div className="w-full sm:w-56">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-56">
                 <Select value={ddnsProvider} onValueChange={(v) => setDdnsProvider(v as any)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -4327,6 +4372,12 @@ function SystemInfoSection() {
                     <SelectItem value="webhook">自定义 Webhook</SelectItem>
                   </SelectContent>
                 </Select>
+                <Button type="button" variant="outline" size="sm" className="justify-center gap-2" asChild>
+                  <a href={ddnsProviderGuideUrl(ddnsProvider)} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    查看配置教程
+                  </a>
+                </Button>
               </div>
             </div>
           </div>
