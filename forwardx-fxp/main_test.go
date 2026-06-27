@@ -493,6 +493,42 @@ func TestFxpClientRetriesCompatibilityWireContext(t *testing.T) {
 	}
 }
 
+func TestWaitBidirectionalKeepsCleanHalfClosedStreamsOpen(t *testing.T) {
+	errCh := make(chan error, 2)
+	closed := make(chan struct{}, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- waitBidirectionalWithLinger(errCh, func() {
+			closed <- struct{}{}
+		}, 20*time.Millisecond)
+	}()
+
+	errCh <- nil
+	select {
+	case err := <-done:
+		t.Fatalf("returned before the opposite direction finished: %v", err)
+	case <-closed:
+		t.Fatal("closed both sides after a clean half-close")
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	errCh <- nil
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected wait error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for bidirectional relay to finish")
+	}
+	select {
+	case <-closed:
+		t.Fatal("closeAll should not run for a clean bidirectional shutdown")
+	default:
+	}
+}
+
 func TestFxpWireContextRemainsStable(t *testing.T) {
 	if string(fxpWireCurrent.sessionInfo) != "forwardx-fxp-v2 session" {
 		t.Fatalf("unexpected session context %q", string(fxpWireCurrent.sessionInfo))

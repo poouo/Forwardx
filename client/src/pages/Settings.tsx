@@ -2605,6 +2605,9 @@ function PersonalizationSettingsSection() {
   const opacityPercent = Math.round(clampBackgroundOpacity(backgroundConfig.opacity) * 100);
   const blurAmount = Math.round(clampBackgroundBlur(backgroundConfig.blur));
   const backgroundEnabled = backgroundConfig.source !== "none" && !!previewBackgroundUrl;
+  const mobileBackgroundHint = previewIsVideo
+    ? "移动端不会渲染视频背景，并会回退到默认背景，避免浏览器持续解码视频导致卡顿。"
+    : "移动端会自动关闭背景虚化和缩放效果，只保留静态背景和不透明度，降低页面滚动卡顿。";
   const previewBackdropStyle = {
     filter: `blur(${blurAmount}px)`,
     transform: `scale(${1.04 + blurAmount / 280})`,
@@ -2640,8 +2643,8 @@ function PersonalizationSettingsSection() {
     try {
       setCompressingBackground(true);
       const result = await compressImageFile(file, {
-        maxBytes: 3 * 1024 * 1024,
-        maxSide: 2560,
+        maxBytes: 1.5 * 1024 * 1024,
+        maxSide: 1920,
         preferredType: "image/jpeg",
         minQuality: 0.62,
       });
@@ -2940,52 +2943,57 @@ function PersonalizationSettingsSection() {
               </div>
 
               {backgroundEnabled && (
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
-                    <div className="space-y-2">
-                      <Label>背景不透明度</Label>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={5}
-                        value={opacityPercent}
-                        onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
-                        className="w-full accent-primary"
+                <div className="space-y-3">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                      <div className="space-y-2">
+                        <Label>背景不透明度</Label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={opacityPercent}
+                          onChange={(event) => updateBackground({ opacity: Number(event.target.value) / 100 })}
+                          className="w-full accent-primary"
+                        />
+                      </div>
+                      <Input
+                        value={String(opacityPercent)}
+                        onChange={(event) => {
+                          const value = Math.min(100, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                          updateBackground({ opacity: value / 100 });
+                        }}
+                        inputMode="numeric"
+                        className="sm:mt-6"
                       />
                     </div>
-                    <Input
-                      value={String(opacityPercent)}
-                      onChange={(event) => {
-                        const value = Math.min(100, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
-                        updateBackground({ opacity: value / 100 });
-                      }}
-                      inputMode="numeric"
-                      className="sm:mt-6"
-                    />
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
+                      <div className="space-y-2">
+                        <Label>背景虚化程度</Label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={32}
+                          step={1}
+                          value={blurAmount}
+                          onChange={(event) => updateBackground({ blur: Number(event.target.value) })}
+                          className="w-full accent-primary"
+                        />
+                      </div>
+                      <Input
+                        value={String(blurAmount)}
+                        onChange={(event) => {
+                          const value = Math.min(32, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
+                          updateBackground({ blur: value });
+                        }}
+                        inputMode="numeric"
+                        className="sm:mt-6"
+                      />
+                    </div>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_6rem] sm:items-center">
-                    <div className="space-y-2">
-                      <Label>背景虚化程度</Label>
-                      <input
-                        type="range"
-                        min={0}
-                        max={32}
-                        step={1}
-                        value={blurAmount}
-                        onChange={(event) => updateBackground({ blur: Number(event.target.value) })}
-                        className="w-full accent-primary"
-                      />
-                    </div>
-                    <Input
-                      value={String(blurAmount)}
-                      onChange={(event) => {
-                        const value = Math.min(32, Math.max(0, Number(event.target.value.replace(/\D/g, "") || 0)));
-                        updateBackground({ blur: value });
-                      }}
-                      inputMode="numeric"
-                      className="sm:mt-6"
-                    />
+                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                    {mobileBackgroundHint}
                   </div>
                 </div>
               )}
@@ -3050,7 +3058,7 @@ function PersonalizationSettingsSection() {
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="text-sm font-medium">上传背景</p>
-                      <p className="text-xs text-muted-foreground">最多保留 6 张，单张最大 3MB，超过会自动压缩。</p>
+                      <p className="text-xs text-muted-foreground">最多保留 6 张，单张最大 1.5MB，超过会自动压缩。</p>
                     </div>
                     <div>
                       <input
@@ -3137,7 +3145,7 @@ function PersonalizationSettingsSection() {
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    视频背景会静音循环播放，建议使用 HTTPS 链接。
+                    视频背景会静音循环播放，建议使用 HTTPS 链接；移动端不会展示视频背景。
                   </p>
                 </div>
               )}

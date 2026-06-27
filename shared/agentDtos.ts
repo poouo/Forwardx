@@ -66,6 +66,7 @@ export type SelfTestMeta =
       tunnelId: number;
       targetIp?: string;
       targetPort?: number;
+      method?: "tcp" | "ping";
     }
   | {
       kind: "forward-via-tunnel-entry";
@@ -74,6 +75,7 @@ export type SelfTestMeta =
       entrySourcePort?: number;
       targetIp?: string;
       targetPort?: number;
+      method?: "tcp" | "ping";
     }
   | {
       kind: "forward-chain";

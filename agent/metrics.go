@@ -37,6 +37,7 @@ type localRuleState struct {
 	ForwardType string
 	TargetIP    string
 	TargetPort  int
+	Protocol    string
 }
 
 type trafficCounters struct {
@@ -122,9 +123,14 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 		if state.RuleID <= 0 || state.TargetIP == "" || state.TargetPort <= 0 {
 			continue
 		}
+		method := "tcping"
+		if normalizeRuntimeProtocol(state.Protocol) == "udp" {
+			method = "ping"
+		}
 		ruleTasks = append(ruleTasks, tcpingTask{
 			Kind:       "rule",
 			RuleID:     state.RuleID,
+			Method:     method,
 			TargetIP:   state.TargetIP,
 			TargetPort: state.TargetPort,
 		})
@@ -290,13 +296,14 @@ func readLocalRuleStates() []localRuleState {
 			continue
 		}
 		ruleID, _ := strconv.Atoi(strings.TrimSpace(string(ridBytes)))
-		targetIP, targetPort, _ := readTargetInfo(port)
+		targetIP, targetPort, protocol, _ := readTargetInfo(port)
 		states = append(states, localRuleState{
 			Port:        port,
 			RuleID:      ruleID,
 			ForwardType: readForwardTypeByPort(port),
 			TargetIP:    targetIP,
 			TargetPort:  targetPort,
+			Protocol:    protocol,
 		})
 	}
 	return states
@@ -363,7 +370,7 @@ func runTCPingTasks(tasks []tcpingTask) ([]map[string]any, []map[string]any, []m
 func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	var latency int
 	var reachable bool
-	if (task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
+	if (task.Kind == "rule" || task.Kind == "forwardGroup" || task.Kind == "service") && task.Method == "ping" {
 		latency, reachable, _ = pingLatencyWithCount(task.TargetIP, tcpingProbeTimeout, tcpingPingProbeCount)
 	} else {
 		latency, reachable = tcpLatency(task.TargetIP, task.TargetPort, tcpingProbeTimeout)
@@ -411,18 +418,22 @@ func executeTCPingTask(task tcpingTask) tcpingTaskResult {
 	return tcpingTaskResult{Kind: task.Kind, Payload: payload}
 }
 
-func readTargetInfo(port string) (string, int, bool) {
+func readTargetInfo(port string) (string, int, string, bool) {
 	b, err := os.ReadFile("/var/lib/forwardx-agent/target_" + port + ".info")
 	if err != nil {
-		return "", 0, false
+		return "", 0, "tcp", false
 	}
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	if len(lines) < 2 {
-		return "", 0, false
+		return "", 0, "tcp", false
 	}
 	targetIP := strings.TrimSpace(lines[0])
 	targetPort, _ := strconv.Atoi(strings.TrimSpace(lines[1]))
-	return targetIP, targetPort, targetIP != "" && targetPort > 0
+	protocol := "tcp"
+	if len(lines) >= 3 {
+		protocol = normalizeRuntimeProtocol(lines[2])
+	}
+	return targetIP, targetPort, protocol, targetIP != "" && targetPort > 0
 }
 
 func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {

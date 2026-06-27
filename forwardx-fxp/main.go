@@ -105,7 +105,7 @@ const (
 	fxpTCPKeepAlive     = 30 * time.Second
 	fxpHalfCloseLinger  = 30 * time.Second
 	fxpMasterContext    = "forwardx-fxp-v2 master"
-	fxpRuntimeVersion   = "2.2.100"
+	fxpRuntimeVersion   = "2.2.101"
 )
 
 var (
@@ -1254,12 +1254,24 @@ func proxyPlainSecure(plain net.Conn, sec *secureConn, inLimiter, outLimiter *li
 }
 
 func waitBidirectional(errCh <-chan error, closeAll func()) error {
+	return waitBidirectionalWithLinger(errCh, closeAll, fxpHalfCloseLinger)
+}
+
+func waitBidirectionalWithLinger(errCh <-chan error, closeAll func(), halfCloseLinger time.Duration) error {
 	first := <-errCh
-	if first != nil && !isClosedErr(first) {
+	if first == nil {
+		second := <-errCh
+		if second != nil && !isClosedErr(second) {
+			closeAll()
+			return second
+		}
+		return nil
+	}
+	if !isClosedErr(first) {
 		closeAll()
 		return first
 	}
-	timer := time.NewTimer(fxpHalfCloseLinger)
+	timer := time.NewTimer(halfCloseLinger)
 	defer timer.Stop()
 	select {
 	case second := <-errCh:

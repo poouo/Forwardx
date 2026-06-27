@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.117"
+var Version = "2.2.118"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -2209,7 +2209,7 @@ func writeState(a action) {
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(a.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(a.ForwardType), 0644)
 	if a.TargetIP != "" && a.TargetPort > 0 {
-		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", a.TargetIP, a.TargetPort)), 0644)
+		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n%s\n", a.TargetIP, a.TargetPort, normalizeRuntimeProtocol(a.Protocol))), 0644)
 	}
 }
 
@@ -2230,7 +2230,7 @@ func writeRunningRuleState(r runningRule) {
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(r.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(r.ForwardType), 0644)
 	if r.TargetIP != "" && r.TargetPort > 0 {
-		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n", r.TargetIP, r.TargetPort)), 0644)
+		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n%s\n", r.TargetIP, r.TargetPort, normalizeRuntimeProtocol(r.Protocol))), 0644)
 	}
 }
 
@@ -2502,7 +2502,7 @@ func managedPortCleanupCmds(port string) []string {
 		)
 	}
 	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
-	if targetIP, targetPort, ok := readTargetInfo(port); ok {
+	if targetIP, targetPort, _, ok := readTargetInfo(port); ok {
 		target := iptablesAgentAddress(targetIP)
 		tp := strconv.Itoa(targetPort)
 		binary := iptablesAgentBinaryForTarget(target)

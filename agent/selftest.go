@@ -35,6 +35,9 @@ func handleSelfTest(cfg Config, t selfTest) {
 	if method == "" {
 		method = strings.ToLower(strings.TrimSpace(t.Protocol))
 	}
+	if normalizeRuntimeProtocol(method) == "udp" {
+		method = "ping"
+	}
 	if method == "ping" {
 		latency, reachable, detail := pingLatency(t.TargetIP, 3*time.Second)
 		msg := ""

@@ -68,16 +68,19 @@ function TcpingDetailDialog({
   ruleId,
   ruleName,
   isForwardChain = false,
+  probeMethod = "tcping",
   open,
   onOpenChange,
 }: {
   ruleId: number;
   ruleName: string;
   isForwardChain?: boolean;
+  probeMethod?: "tcping" | "ping";
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
+  const methodLabel = probeMethod === "ping" ? "Ping" : "TCPing";
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
     { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" },
@@ -131,7 +134,7 @@ function TcpingDetailDialog({
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
               <DialogTitle className="truncate text-base sm:text-lg">
-                {isForwardChain ? "转发链路延迟" : "转发链路延迟 (TCPing)"} - {ruleName}
+                {isForwardChain ? "转发链路延迟" : `转发链路延迟 (${methodLabel})`} - {ruleName}
               </DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
                 {isForwardChain ? "最近 24 小时链路汇总延迟和丢包。" : "最近 24 小时延迟和丢包。"}
@@ -146,7 +149,7 @@ function TcpingDetailDialog({
               <Skeleton className="h-full w-full" />
             ) : chartData.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                暂无 TCPing 数据
+                暂无 {methodLabel} 数据
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">

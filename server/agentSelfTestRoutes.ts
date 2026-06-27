@@ -70,6 +70,11 @@ function tunnelHopModeText(latencyMode: "sum" | "max" | "multi-source") {
     seriesLabel: "总延迟",
   };
 }
+
+function ruleLatencyProbeMethod(rule: any): "tcp" | "ping" {
+  return String(rule?.protocol || "tcp").toLowerCase() === "udp" ? "ping" : "tcp";
+}
+
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
   try {
@@ -228,6 +233,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       }
       const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
+      const targetMethod = meta.method === "ping" ? "ping" : "tcp";
       const messageParts = [
         `隧道整体链路测试 ${success ? "成功" : "失败"}`,
         `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}`,
@@ -245,7 +251,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
           message: success ? null : detailMessage,
           hopLabel: `出口 -> 目标 ${target}`,
           routeLabel: `出口 -> 目标 ${target}`,
-          method: "tcp",
+          method: targetMethod,
         }],
         totalLatencyMs: totalLatency,
       });
@@ -400,13 +406,15 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
         continue;
       }
       if (meta?.kind === "forward-via-tunnel") {
+        const method = meta.method === "ping" ? "ping" : "tcp";
         selfTests.push({
           testId: t.id,
           kind: "forward-via-tunnel",
           tunnelId: meta.tunnelId,
           ruleId: t.ruleId,
           forwardType: "gost-tunnel",
-          protocol: "tcp",
+          protocol: method,
+          method,
           sourcePort: 0,
           targetIp: meta.targetIp,
           targetPort: meta.targetPort,
@@ -414,13 +422,15 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
         continue;
       }
       if (meta?.kind === "forward-via-tunnel-entry") {
+        const method = meta.method === "ping" ? "ping" : "tcp";
         selfTests.push({
           testId: t.id,
           kind: "forward-via-tunnel-entry",
           tunnelId: meta.tunnelId,
           ruleId: t.ruleId,
           forwardType: "gost-tunnel",
-          protocol: "tcp",
+          protocol: method,
+          method,
           sourcePort: meta.entrySourcePort || 0,
           targetIp: meta.entryIp,
           targetPort: meta.entrySourcePort,
@@ -446,11 +456,13 @@ agentRouter.post("/api/agent/selftest-pull", async (req: Request, res: Response)
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
       const targetIp = await resolveSelfTestTarget(rule);
+      const method = ruleLatencyProbeMethod(rule);
       selfTests.push({
         testId: t.id,
         ruleId: rule.id,
         forwardType: rule.forwardType,
-        protocol: rule.protocol,
+        protocol: method,
+        method,
         sourcePort: rule.sourcePort,
         targetIp,
         targetPort: rule.targetPort,

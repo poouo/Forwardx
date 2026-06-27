@@ -284,6 +284,38 @@
       transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
+  @media (max-width: 767px), (pointer: coarse) {
+    body::before {
+      filter: none;
+      transform: none;
+      transition: opacity 160ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .personalization-video-background {
+      display: none;
+    }
+
+    html[data-personalization-background="image"] .backdrop-blur,
+    html[data-personalization-background="image"] .backdrop-blur-sm,
+    html[data-personalization-background="image"] .backdrop-blur-md,
+    html[data-personalization-background="image"] .backdrop-blur-lg,
+    html[data-personalization-background="image"] .backdrop-blur-xl,
+    html[data-personalization-background="image"] .backdrop-blur-2xl,
+    html[data-personalization-background="image"] .glass-surface,
+    html[data-personalization-background="image"] .auth-card-surface,
+    html[data-personalization-background="video"] .backdrop-blur,
+    html[data-personalization-background="video"] .backdrop-blur-sm,
+    html[data-personalization-background="video"] .backdrop-blur-md,
+    html[data-personalization-background="video"] .backdrop-blur-lg,
+    html[data-personalization-background="video"] .backdrop-blur-xl,
+    html[data-personalization-background="video"] .backdrop-blur-2xl,
+    html[data-personalization-background="video"] .glass-surface,
+    html[data-personalization-background="video"] .auth-card-surface {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+  }
+
   #root {
     position: relative;
     z-index: 1;

@@ -2040,18 +2040,18 @@ function HostsContent() {
                       <Label className="text-sm font-semibold">协议屏蔽</Label>
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
-                        <span className="text-sm font-medium">HTTP</span>
-                        <Switch checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
+                        <span className="min-w-0 truncate text-sm font-medium">HTTP</span>
+                        <Switch className="shrink-0" checked={form.blockHttp} onCheckedChange={(checked) => setForm({ ...form, blockHttp: checked })} />
                       </label>
-                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
-                        <span className="text-sm font-medium">SOCKS</span>
-                        <Switch checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
+                      <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
+                        <span className="min-w-0 truncate text-sm font-medium">SOCKS</span>
+                        <Switch className="shrink-0" checked={form.blockSocks} onCheckedChange={(checked) => setForm({ ...form, blockSocks: checked })} />
                       </label>
-                      <label className="flex h-8 items-center justify-between gap-2 rounded-md bg-muted/35 px-2.5">
-                        <span className="text-sm font-medium">TLS</span>
-                        <Switch checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
+                      <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
+                        <span className="min-w-0 truncate text-sm font-medium">TLS</span>
+                        <Switch className="shrink-0" checked={form.blockTls} onCheckedChange={(checked) => setForm({ ...form, blockTls: checked })} />
                       </label>
                     </div>
                   </section>

@@ -623,12 +623,13 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     const targetPort = Number(template.targetPort || 0);
     if (lastHostId > 0 && targetIp && targetPort > 0) {
       const targetLabel = await forwardChainTargetLabel(template);
+      const finalProbeMethod: "tcp" | "ping" = protocol === "udp" ? "ping" : "tcp";
       probes.push({
         groupId,
         fromHostId: lastHostId,
         targetIp,
-        targetPort,
-        method: "tcp",
+        targetPort: finalProbeMethod === "ping" ? 0 : targetPort,
+        method: finalProbeMethod,
         hopIndex,
         hopCount,
         hopLabel: `${hopIndex + 1}/${hopCount} ${lastHostId}->target`,
@@ -1754,7 +1755,7 @@ async function evaluateMemberHealth(member: any, group: any) {
       const stat = await latestTcping(Number(rule.id));
       if (stat?.isTimeout) {
         healthy = false;
-        message = "TCPing timeout";
+        message = "Latency probe timeout";
         break;
       }
       if (stat && typeof stat.latencyMs !== "undefined" && stat.latencyMs !== null) {
@@ -1775,7 +1776,7 @@ async function evaluateMemberHealth(member: any, group: any) {
     }
     if (healthy) {
       latencyMs = latencies.length > 0 ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length) : null;
-      message = latencies.length > 0 ? "TCPing 正常" : "规则运行中，等待 TCPing 数据";
+      message = latencies.length > 0 ? "Latency probe normal" : "Rule is running, waiting for latency probe data";
     }
   }
 

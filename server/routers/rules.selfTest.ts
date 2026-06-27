@@ -10,6 +10,10 @@ import { createHopTestBatch, registerHopTest } from "../hopTestState";
 
 const selfTestQueryCache = createQueryCache(300);
 
+function ruleLatencyProbeMethod(rule: any): "tcp" | "ping" {
+  return String(rule?.protocol || "tcp").toLowerCase() === "udp" ? "ping" : "tcp";
+}
+
 export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
     .input(z.object({
@@ -97,6 +101,7 @@ export const selfTestRulesRouter = router({
           exitHostId: tunnel.exitHostId,
           targetIp,
           targetPort: rule.targetPort,
+          method: ruleLatencyProbeMethod(rule),
           refreshPushed: pushed,
         });
         appendPanelLog("info", `[SelfTest] rule=${rule.id} tunnel=${tunnel.id} queued tunnel+target test from exitHost=${tunnel.exitHostId} to target=${targetIp}:${rule.targetPort}`);
