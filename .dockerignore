@@ -2,6 +2,9 @@ node_modules
 dist
 client/dist
 docs
+udp2raw/doc
+udp2raw/images
+udp2raw/third-party
 .env
 .git
 *.md
