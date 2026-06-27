@@ -3,19 +3,28 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 RUN npm install -g pnpm@10
 
-RUN apk add --no-cache bash python3 make g++ go curl ca-certificates
+RUN apk add --no-cache bash python3 make g++ curl ca-certificates
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --prod=false
 
 COPY . .
-RUN pnpm build && bash scripts/build-agent-release.sh
+RUN pnpm build
+
+# ---------- 1b. Agent/runtime assets ----------
+FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS agent-assets
+WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git g++ aarch64-linux-gnu-g++ \
+  && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN bash scripts/build-agent-release.sh
 
 # ---------- 2. Production dependencies ----------
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 RUN npm install -g pnpm@10
-RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache python3 make g++ git
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --prod
 
@@ -37,6 +46,7 @@ VOLUME ["/data"]
 
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY --from=agent-assets /app/dist/agent ./dist/agent
 COPY --from=builder /app/client/dist ./client/dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/package.json ./
