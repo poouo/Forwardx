@@ -75,6 +75,65 @@ function ruleLatencyProbeMethod(rule: any): "tcp" | "ping" {
   return String(rule?.protocol || "tcp").toLowerCase() === "udp" ? "ping" : "tcp";
 }
 
+function detailHostEdges(details: any[]) {
+  const edges: Array<[number, number]> = [];
+  for (const detail of details || []) {
+    const labels = [detail?.hopLabel, detail?.routeLabel]
+      .map((value) => String(value || ""))
+      .filter(Boolean);
+    for (const label of labels) {
+      const match = label.match(/(\d+)\s*->\s*(\d+)/);
+      if (!match) continue;
+      const from = Number(match[1]);
+      const to = Number(match[2]);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to <= 0) continue;
+      edges.push([from, to]);
+      break;
+    }
+  }
+  return edges;
+}
+
+async function currentTunnelHostPath(tunnel: any) {
+  const tunnelId = Number(tunnel?.id || 0);
+  if (!tunnelId) return [];
+  const hops = await db.getTunnelHops(tunnelId).catch(() => []) as any[];
+  if (Array.isArray(hops) && hops.length >= 2) {
+    return hops
+      .map((hop) => Number(hop?.hostId || 0))
+      .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+  }
+  return [Number(tunnel?.entryHostId || 0), Number(tunnel?.exitHostId || 0)]
+    .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
+}
+
+async function isTunnelDetailsCurrent(tunnel: any, details: any[]) {
+  const detailEdges = detailHostEdges(details);
+  if (detailEdges.length === 0) return false;
+  const currentPath = await currentTunnelHostPath(tunnel);
+  if (currentPath.length < 2) return false;
+  const allowedEdges = new Set<string>();
+  for (let index = 0; index < currentPath.length - 1; index += 1) {
+    allowedEdges.add(`${currentPath[index]}->${currentPath[index + 1]}`);
+  }
+  const firstNextHostId = Number(currentPath[1] || currentPath[currentPath.length - 1] || 0);
+  const entryGroupId = Number(tunnel?.entryGroupId || 0);
+  if (entryGroupId > 0 && firstNextHostId > 0) {
+    const entryGroup = await db.getForwardGroupById(entryGroupId).catch(() => null) as any;
+    for (const member of entryGroup?.members || []) {
+      const hostId = Number(member?.hostId || 0);
+      if (member?.isEnabled !== false && hostId > 0) allowedEdges.add(`${hostId}->${firstNextHostId}`);
+    }
+  }
+  const extraExits = await db.getTunnelExitNodes(Number(tunnel?.id || 0)).catch(() => []) as any[];
+  const entryHostId = Number(currentPath[0] || tunnel?.entryHostId || 0);
+  for (const exit of extraExits || []) {
+    const exitHostId = Number(exit?.hostId || 0);
+    if (entryHostId > 0 && exitHostId > 0) allowedEdges.add(`${entryHostId}->${exitHostId}`);
+  }
+  return detailEdges.every(([from, to]) => allowedEdges.has(`${from}->${to}`));
+}
+
 export function registerAgentSelfTestRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Response) => {
   try {
@@ -226,6 +285,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
                 groupKey: typeof detail.groupKey === "string" ? detail.groupKey : null,
                 groupLabel: typeof detail.groupLabel === "string" ? detail.groupLabel : null,
               }));
+            if (!(await isTunnelDetailsCurrent(tunnel, tunnelDetails))) tunnelDetails = [];
           }
         } catch {
           tunnelDetails = [];

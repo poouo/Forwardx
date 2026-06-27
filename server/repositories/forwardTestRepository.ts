@@ -69,7 +69,7 @@ export async function getLatestForwardTest(ruleId: number) {
   );
   if (pendingRows[0]) return pendingRows[0];
   const rows = await queryRaw<any>(
-    `SELECT * FROM ${table} WHERE ${ruleCol} = ? ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
+    `SELECT * FROM ${table} WHERE ${ruleCol} = ? ORDER BY ${updatedCol} DESC, CASE WHEN ${messageCol} LIKE '%forward-chain-hop-summary%' OR ${messageCol} LIKE '%"kind":"forward-via-tunnel"%' THEN 0 ELSE 1 END, ${createdCol} DESC LIMIT 1`,
     [ruleId],
   );
   return rows[0];

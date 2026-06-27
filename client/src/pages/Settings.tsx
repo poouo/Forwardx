@@ -3259,7 +3259,6 @@ function SystemInfoSection() {
   const [ddnsEnabled, setDdnsEnabled] = useState(false);
   const [ddnsProvider, setDdnsProvider] = useState<DdnsProvider>("disabled");
   const [ddnsTtl, setDdnsTtl] = useState("600");
-  const [ddnsCloudflareZoneId, setDdnsCloudflareZoneId] = useState("");
   const [ddnsCloudflareApiToken, setDdnsCloudflareApiToken] = useState("");
   const [ddnsHuaweiCloudAccessKeyId, setDdnsHuaweiCloudAccessKeyId] = useState("");
   const [ddnsHuaweiCloudSecretKey, setDdnsHuaweiCloudSecretKey] = useState("");
@@ -3310,7 +3309,6 @@ function SystemInfoSection() {
       setDdnsProvider(isDdnsProvider(settings.ddns?.provider) ? settings.ddns.provider : "disabled");
       const ddnsUnifiedTtl = String(settings.ddns?.ttl || settings.ddns?.huaweicloudTtl || settings.ddns?.aliyunTtl || settings.ddns?.tencentcloudTtl || 600);
       setDdnsTtl(ddnsUnifiedTtl);
-      setDdnsCloudflareZoneId(settings.ddns?.cloudflareZoneId || "");
       setDdnsHuaweiCloudAccessKeyId(settings.ddns?.huaweicloudAccessKeyId || "");
       setDdnsHuaweiCloudRegion(settings.ddns?.huaweicloudRegion || "cn-north-4");
       setDdnsHuaweiCloudEndpoint(settings.ddns?.huaweicloudEndpoint || "");
@@ -3560,7 +3558,7 @@ function SystemInfoSection() {
         enabled: ddnsEnabled,
         provider: ddnsProvider,
         ttl,
-        cloudflareZoneId: ddnsCloudflareZoneId,
+        cloudflareZoneId: "",
         cloudflareApiToken: ddnsCloudflareApiToken.trim() || undefined,
         huaweicloudAccessKeyId: ddnsHuaweiCloudAccessKeyId,
         huaweicloudSecretKey: ddnsHuaweiCloudSecretKey.trim() || undefined,
@@ -4222,11 +4220,7 @@ function SystemInfoSection() {
           </div>
 
           {ddnsProvider === "cloudflare" && (
-            <div className="grid gap-3 lg:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Zone ID（可选）</Label>
-                <Input value={ddnsCloudflareZoneId} onChange={(e) => setDdnsCloudflareZoneId(e.target.value)} placeholder="可留空，系统会自动识别 Zone" />
-              </div>
+            <div className="space-y-2">
               <div className="space-y-2">
                 <Label>API Token</Label>
                 <Input
@@ -4235,7 +4229,7 @@ function SystemInfoSection() {
                   placeholder={settings?.ddns?.cloudflareTokenMasked || "需要 Zone:Read + DNS:Edit 权限"}
                   type="password"
                 />
-                <p className="text-xs text-muted-foreground">留空则保留已保存 Token；未填写 Zone ID 时 Token 需具备 Zone:Read + DNS:Edit 权限。</p>
+                <p className="text-xs text-muted-foreground">Cloudflare 会根据 DDNS 域名自动识别 Zone，不需要手动填写 Zone ID；留空则保留已保存 Token。</p>
               </div>
             </div>
           )}

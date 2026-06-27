@@ -76,6 +76,18 @@ export async function updateTunnel(id: number, data: Partial<InsertTunnel>) {
   await db.update(tunnels).set({ ...data, updatedAt: nowDate() }).where(eq(tunnels.id, id));
 }
 
+export async function clearTunnelTestSnapshot(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(tunnels).set({
+    lastLatencyMs: null,
+    lastTestStatus: null,
+    lastTestMessage: null,
+    lastTestAt: null,
+    updatedAt: nowDate(),
+  } as any).where(eq(tunnels.id, id));
+}
+
 export async function deleteTunnel(id: number) {
   const db = await getDb();
   if (!db) return;

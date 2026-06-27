@@ -1,6 +1,7 @@
 import { LatencyRating } from "@/components/LatencyRating";
 import type { LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 import { cn } from "@/lib/utils";
+import { useEffect, useMemo, useRef } from "react";
 
 export type LinkTestDetail = {
   success: boolean;
@@ -227,6 +228,59 @@ function getMultiSourceAdjustedDetailsTotalLatency(details: LinkTestDetail[]) {
   const initialLatency = Math.max(...numericLatencies.slice(0, initialDetails.length));
   const restLatency = numericLatencies.slice(initialDetails.length).reduce((sum, value) => sum + value, 0);
   return initialLatency + restLatency;
+}
+
+function segmentResultKey(segment: Pick<ProbeSegment, "from" | "to" | "groupKey">) {
+  return [
+    normalizeEndpointLabel(segment.groupKey || ""),
+    normalizeEndpointLabel(segment.from),
+    normalizeEndpointLabel(segment.to),
+  ].join(">");
+}
+
+function segmentHasConcreteResult(segment: ProbeSegment) {
+  return segment.pending === true
+    || hasUsableLatencyValue(segment.latencyMs)
+    || !!segment.message
+    || segment.success === false
+    || !!segment.latencyLabel;
+}
+
+function segmentNeedsCachedResult(segment: ProbeSegment) {
+  return !segment.pending
+    && segment.success
+    && !hasUsableLatencyValue(segment.latencyMs)
+    && !segment.message
+    && !segment.latencyLabel;
+}
+
+function mergeProbeSegmentsWithCache(segments: ProbeSegment[], cachedSegments: ProbeSegment[]) {
+  if (segments.length === 0 || cachedSegments.length === 0) return segments;
+  const usedCachedIndexes = new Set<number>();
+  return segments.map((segment, index) => {
+    if (!segmentNeedsCachedResult(segment)) return segment;
+    const cachedIndex = cachedSegments.findIndex((cached, cachedIndexCandidate) => {
+      if (usedCachedIndexes.has(cachedIndexCandidate)) return false;
+      if (!segmentHasConcreteResult(cached) || cached.pending) return false;
+      if (segmentResultKey(cached) === segmentResultKey(segment)) return true;
+      return cachedIndexCandidate === index
+        && (!segment.groupKey || !cached.groupKey || segment.groupKey === cached.groupKey)
+        && endpointLabelsMatch(segment.from, segment.fromMeta, cached.from, cached.fromMeta)
+        && endpointLabelsMatch(segment.to, segment.toMeta, cached.to, cached.toMeta);
+    });
+    if (cachedIndex < 0) return segment;
+    usedCachedIndexes.add(cachedIndex);
+    const cached = cachedSegments[cachedIndex];
+    return {
+      ...segment,
+      success: cached.success,
+      latencyMs: cached.latencyMs,
+      message: cached.message,
+      method: segment.method || cached.method,
+      pending: false,
+      latencyLabel: cached.latencyLabel,
+    };
+  });
 }
 
 function buildProbeSegments(input: {
@@ -471,7 +525,32 @@ export function LinkTestProbeView({
   wrapDesktopRows?: boolean;
   className?: string;
 }) {
-  const segments = buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments });
+  const rawSegments = useMemo(
+    () => buildProbeSegments({ parsed, fallbackLatencyMs, isSuccess, isTesting, sourceLabel, targetLabel, nodeMeta, plannedSegments }),
+    [fallbackLatencyMs, isSuccess, isTesting, nodeMeta, parsed, plannedSegments, sourceLabel, targetLabel],
+  );
+  const segmentCacheRef = useRef<{ topologyKey: string; segments: ProbeSegment[] } | null>(null);
+  const topologyKey = useMemo(
+    () => rawSegments.map((segment) => segmentResultKey(segment)).join("|"),
+    [rawSegments],
+  );
+  useEffect(() => {
+    if (isTesting) segmentCacheRef.current = null;
+  }, [isTesting]);
+  const segments = useMemo(() => {
+    const cached = !isTesting && segmentCacheRef.current?.topologyKey === topologyKey
+      ? segmentCacheRef.current.segments
+      : [];
+    return mergeProbeSegmentsWithCache(rawSegments, cached);
+  }, [isTesting, rawSegments, topologyKey]);
+  useEffect(() => {
+    if (isTesting || !topologyKey || segments.length === 0) return;
+    if (!segments.some((segment) => segmentHasConcreteResult(segment) && !segment.pending)) return;
+    segmentCacheRef.current = {
+      topologyKey,
+      segments: segments.map((segment) => ({ ...segment })),
+    };
+  }, [isTesting, segments, topologyKey]);
   const effectiveTesting = isTesting || segments.some((segment) => segment.pending);
   const branchKey = segments.length > 1 ? segments[0]?.groupKey || null : null;
   const branchSegments = branchKey && segments.every((segment) => segment.groupKey === branchKey) ? segments : [];
