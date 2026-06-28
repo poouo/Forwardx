@@ -34,12 +34,12 @@ import (
 	"time"
 )
 
-var Version = "2.2.120"
+var Version = "2.2.121"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
-const selfTestIdlePollInterval = time.Minute
-const selfTestActivePollInterval = 3 * time.Second
+const selfTestIdlePollInterval = 10 * time.Second
+const selfTestActivePollInterval = 2 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute

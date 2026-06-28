@@ -43,6 +43,7 @@ export async function refreshAgentsAffectedByHostAddress(hostId: number, reason:
 
 export async function refreshHostAddressRuntime(hostId: number, previousHost: any, reason: string) {
   await db.syncForwardChainsForHost(hostId, previousHost);
+  await db.syncTunnelsForHostAddress(hostId, previousHost);
   await db.resetAgentRuntimeStateForHost(hostId);
   clearTunnelRuntimeStatusForHost(hostId);
   await refreshAgentsAffectedByHostAddress(hostId, reason);

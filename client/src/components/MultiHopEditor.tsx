@@ -63,6 +63,18 @@ const ROLE_LABELS: Record<HopRole, string> = {
   exit: "出口",
 };
 
+function addressKey(value: unknown) {
+  const text = String(value || "").trim();
+  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+  return unwrapped.toLowerCase();
+}
+
+function sameAddress(a: unknown, b: unknown) {
+  const left = addressKey(a);
+  const right = addressKey(b);
+  return !!left && !!right && left === right;
+}
+
 function reorder<T>(arr: T[], fromIdx: number, toIdx: number): T[] {
   if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= arr.length || toIdx >= arr.length) {
     return arr;
@@ -112,11 +124,11 @@ export default function MultiHopEditor({
     list.map((hop, idx) => {
       if (idx === 0 && !externalEntry) return null;
       const host = hostById.get(hop.hostId);
-      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
       const ipv6Addr = String(host?.ipv6 || "").trim();
       if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
       if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
+      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       return publicAddr || null;
     }),
   );
@@ -134,14 +146,14 @@ export default function MultiHopEditor({
             if (idx === 0 && !externalEntry) return false;
             const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
             const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
-            return !!initialConnectHost && !!tunnelEntryIp && initialConnectHost === tunnelEntryIp;
+            return !!initialConnectHost && !!tunnelEntryIp && sameAddress(initialConnectHost, tunnelEntryIp);
           })(),
           useIpv6: (() => {
             if (idx === 0 && !externalEntry) return false;
             const initialConnectHost = String(initialHopConnectHosts?.[idx] || "").trim();
             const tunnelEntryIp = String(host.tunnelEntryIp || "").trim();
             const ipv6Addr = String(host.ipv6 || "").trim();
-            return !!initialConnectHost && !!ipv6Addr && initialConnectHost === ipv6Addr && initialConnectHost !== tunnelEntryIp;
+            return !!initialConnectHost && !!ipv6Addr && sameAddress(initialConnectHost, ipv6Addr) && !sameAddress(initialConnectHost, tunnelEntryIp);
           })(),
         };
       })
@@ -191,11 +203,11 @@ export default function MultiHopEditor({
     const connectHosts = hops.map((hop, idx) => {
       if (idx === 0 && !externalEntry) return null;
       const host = hostById.get(hop.hostId);
-      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       const privateAddr = String(host?.tunnelEntryIp || "").trim();
       const ipv6Addr = String(host?.ipv6 || "").trim();
       if (hop.useTunnelEntryIp && privateAddr) return privateAddr;
       if (hop.useIpv6 && ipv6Addr) return ipv6Addr;
+      const publicAddr = String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
       return publicAddr || null;
     });
     const connectText = JSON.stringify(connectHosts);
@@ -377,13 +389,15 @@ export default function MultiHopEditor({
             const isDragging = dragSourceIdx === idx;
             const isDropTarget = dragSourceIdx !== null && dragOverIdx === idx;
             const host = hostById.get(hop.hostId);
-            const hasTunnelEntryIp = !!String(host?.tunnelEntryIp || "").trim();
+            const tunnelEntryIp = String(host?.tunnelEntryIp || "").trim();
+            const hasTunnelEntryIp = !!tunnelEntryIp;
             const hasIpv6 = !!String(host?.ipv6 || "").trim();
             const useTunnelEntryIp = hop.useTunnelEntryIp && hasTunnelEntryIp;
             const useIpv6 = hop.useIpv6 && hasIpv6;
             const isFixedExit = fixedExitIds.has(hop.hostId);
             const showTunnelEntryIpSwitch = !isFirst && !isFixedExit;
             const showIpv6Switch = !isFirst && !isFixedExit;
+            const tunnelEntryTip = hasTunnelEntryIp ? "使用内网IP / IX地址" : missingTunnelEntryIpTip;
             const tunnelEntrySwitch = (
               <Switch
                 checked={useTunnelEntryIp}
@@ -437,7 +451,7 @@ export default function MultiHopEditor({
                             {tunnelEntrySwitch}
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>{hasTunnelEntryIp ? "使用内网IP" : missingTunnelEntryIpTip}</TooltipContent>
+                        <TooltipContent>{tunnelEntryTip}</TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
                   ) : (

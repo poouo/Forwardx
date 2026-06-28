@@ -1,6 +1,6 @@
 ﻿import { and, desc, eq } from "drizzle-orm";
 import { forwardTests, InsertForwardTest, tunnelLatencyStats } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw, rawAffectedRows } from "../dbRuntime";
 import { quoteIdentifier } from "../dbCompat";
 
 // ==================== Forward Tests ====================
@@ -22,8 +22,17 @@ export async function getPendingForwardTestsByHost(hostId: number) {
 
 export async function markForwardTestRunning(id: number) {
   const db = await getDb();
-  if (!db) return;
-  await db.update(forwardTests).set({ status: "running", updatedAt: nowDate() }).where(eq(forwardTests.id, id));
+  if (!db) return false;
+  const q = quoteIdentifier;
+  const result = await executeRaw(
+    `UPDATE ${q("forward_tests")}
+     SET ${q("status")} = 'running',
+         ${q("updatedAt")} = ?
+     WHERE ${q("id")} = ?
+       AND ${q("status")} = 'pending'`,
+    [nowDate(), id],
+  );
+  return rawAffectedRows(result) > 0;
 }
 
 export async function updateForwardTestResult(

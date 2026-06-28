@@ -40,7 +40,7 @@ function normalizeTunnelConnectForEndpoint(connectHost: string | null | undefine
   const normalized = normalizeTunnelConnect(connectHost);
   if (normalized) return normalized;
   if (networkType === "private") {
-    const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+    const privateAddr = getHostPrivateAddress(host);
     if (!privateAddr) throw new Error("出口 Agent 未配置内网IP，无法使用内网 IP 连接");
     return privateAddr;
   }
@@ -68,6 +68,10 @@ const getHostPublicAddress = (host: any) =>
 
 const getHostIpv6Address = (host: any) =>
   String((host as any)?.ipv6 || "").trim();
+
+function getHostPrivateAddress(host: any) {
+  return String((host as any)?.tunnelEntryIp || "").trim();
+}
 
 const tunnelLoadBalanceExitSchema = z.object({
   hostId: z.number(),
@@ -106,7 +110,7 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
 function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, host: any) {
   const raw = String(rawConnectHost || "").trim();
   const publicAddr = getHostPublicAddress(host);
-  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  const privateAddr = getHostPrivateAddress(host);
   const ipv6Addr = getHostIpv6Address(host);
   if (!raw) return publicAddr || null;
   const normalized = normalizeTunnelConnect(raw);
@@ -121,7 +125,7 @@ function normalizeOptionalConnectForHost(rawConnectHost: string | null | undefin
   const raw = String(rawConnectHost || "").trim();
   if (!raw) return null;
   const publicAddr = getHostPublicAddress(host);
-  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  const privateAddr = getHostPrivateAddress(host);
   const ipv6Addr = getHostIpv6Address(host);
   const normalized = normalizeTunnelConnect(raw);
   if (privateAddr && normalized === privateAddr) return privateAddr;
@@ -131,7 +135,7 @@ function normalizeOptionalConnectForHost(rawConnectHost: string | null | undefin
 }
 
 function isHostPrivateConnectHost(connectHost: string | null | undefined, host: any) {
-  const privateAddr = String((host as any)?.tunnelEntryIp || "").trim();
+  const privateAddr = getHostPrivateAddress(host);
   return !!privateAddr && String(connectHost || "").trim() === privateAddr;
 }
 
@@ -530,7 +534,8 @@ export const tunnelsRouter = router({
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
           ? ((input as any).hopHostIds as number[]).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
           : undefined;
-        const hopConnectHosts = Array.isArray((input as any).hopConnectHosts)
+        const hopConnectHostsProvided = Array.isArray((input as any).hopConnectHosts);
+        const rawHopConnectHosts = hopConnectHostsProvided
           ? ((input as any).hopConnectHosts as Array<string | null>)
           : [];
         const hopHostIds = requestedHopHostIds && requestedHopHostIds.length >= 3 ? requestedHopHostIds : null;
@@ -540,8 +545,18 @@ export const tunnelsRouter = router({
           if (new Set(hopHostIds).size !== hopHostIds.length) throw new Error("多级隧道中的主机不能重复");
           for (const hostId of hopHostIds) await requireHostAccess(ctx, hostId);
         }
-        const normalizedRequestedHopConnectHosts = hopHostIds
-          ? await normalizeHopConnectHostsForHosts(hopHostIds, hopConnectHosts)
+        const hopIdsForConnect = hopHostIds || (!switchToRegular && existingHopHostIds.length >= 3 ? existingHopHostIds : null);
+        const hopConnectHosts = hopIdsForConnect
+          ? hopIdsForConnect.map((_, index) => (
+            hopConnectHostsProvided && rawHopConnectHosts[index] !== undefined
+              ? rawHopConnectHosts[index]
+              : hopHostIds
+                ? null
+                : existingHopConnectHosts[index] ?? null
+          ))
+          : rawHopConnectHosts;
+        const normalizedRequestedHopConnectHosts = hopIdsForConnect
+          ? await normalizeHopConnectHostsForHosts(hopIdsForConnect, hopConnectHosts)
           : normalizeHopConnectHostsForCompare(hopConnectHosts);
         const entryHostId = hopHostIds ? hopHostIds[0] : (input.entryHostId ?? tunnel.entryHostId);
         const exitHostId = hopHostIds ? hopHostIds[hopHostIds.length - 1] : (input.exitHostId ?? tunnel.exitHostId);
@@ -616,11 +631,12 @@ export const tunnelsRouter = router({
           explicitListenPort: Number((input as any).listenPort || 0) > 0 ? Number((input as any).listenPort || 0) : 0,
         });
         (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
-        const hopChanged = requestedHopHostIds !== undefined
-          && (
+        const hopChanged = (requestedHopHostIds !== undefined || (hopConnectHostsProvided && existingHopHostIds.length >= 3))
+          ? (
             JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
             || JSON.stringify(normalizedRequestedHopConnectHosts) !== JSON.stringify(existingHopConnectHosts)
-          );
+          )
+          : false;
         const existingExtraSignature = JSON.stringify((existingExtraExitNodes || []).map((node: any) => ({
           hostId: Number(node.hostId),
           connectHost: String(node.connectHost || "").trim() || null,
@@ -637,7 +653,9 @@ export const tunnelsRouter = router({
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
-        if (hopHostIds) {
+        const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
+        const hopIdsToWrite = hopHostIds || existingHopHostIds;
+        if (shouldWriteHops && hopIdsToWrite.length >= 3) {
           const hops: { hostId: number; listenPort: number; connectHost?: string | null }[] = [];
           const existingPortByHostId = new Map<number, number>();
           for (const hop of existingHops || []) {
@@ -647,20 +665,20 @@ export const tunnelsRouter = router({
               existingPortByHostId.set(hostId, listenPort);
             }
           }
-          for (let i = 0; i < hopHostIds.length; i++) {
+          for (let i = 0; i < hopIdsToWrite.length; i++) {
             let port = 0;
-            if (i === hopHostIds.length - 1) {
+            if (i === hopIdsToWrite.length - 1) {
               port = Number((data as any).listenPort) || Number((tunnel as any).listenPort) || 0;
             } else {
-              port = existingPortByHostId.get(hopHostIds[i]) || 0;
+              port = existingPortByHostId.get(hopIdsToWrite[i]) || 0;
               if (!port) {
-                const hopHost = await db.getHostById(hopHostIds[i]) as any;
-                port = await db.findAvailableTunnelExitPort(hopHostIds[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
-                if (!port) throw new Error(`主机 ${hopHost?.name || hopHostIds[i]} 已无可用端口`);
+                const hopHost = await db.getHostById(hopIdsToWrite[i]) as any;
+                port = await db.findAvailableTunnelExitPort(hopIdsToWrite[i], hopHost?.portRangeStart, hopHost?.portRangeEnd) ?? 0;
+                if (!port) throw new Error(`主机 ${hopHost?.name || hopIdsToWrite[i]} 已无可用端口`);
               }
             }
             const normalizedHopConnectHost = i > 0 ? normalizedRequestedHopConnectHosts[i] : null;
-            hops.push({ hostId: hopHostIds[i], listenPort: port, connectHost: normalizedHopConnectHost });
+            hops.push({ hostId: hopIdsToWrite[i], listenPort: port, connectHost: normalizedHopConnectHost });
           }
           await hopRepo.createTunnelHops(id, hops);
         } else if (switchToRegular) {

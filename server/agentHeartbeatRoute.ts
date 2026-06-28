@@ -2588,7 +2588,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const pendingTests = await db.getPendingForwardTestsByHost(host.id);
     const selfTests: any[] = [];
     for (const t of pendingTests) {
-      await db.markForwardTestRunning(t.id);
+      const claimed = await db.markForwardTestRunning(t.id);
+      if (!claimed) continue;
       const meta = parseSelfTestMeta((t as any).message);
       if (meta?.kind === "tunnel") {
         selfTests.push({

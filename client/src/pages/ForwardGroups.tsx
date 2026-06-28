@@ -284,6 +284,18 @@ function sameNullableStringArray(a: Array<string | null>, b: Array<string | null
   return true;
 }
 
+function addressKey(value: unknown) {
+  const text = String(value || "").trim();
+  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+  return unwrapped.toLowerCase();
+}
+
+function sameAddress(a: unknown, b: unknown) {
+  const left = addressKey(a);
+  const right = addressKey(b);
+  return !!left && !!right && left === right;
+}
+
 function hostPrivateAddress(host: any) {
   return String(host?.tunnelEntryIp || "").trim();
 }
@@ -297,8 +309,8 @@ function normalizeConnectHostForHost(value: unknown, host: any, fallback: string
   if (!text) return fallback;
   const privateAddr = hostPrivateAddress(host);
   const ipv6Addr = hostIpv6Address(host);
-  if (privateAddr && text === privateAddr) return privateAddr;
-  if (ipv6Addr && text === ipv6Addr) return ipv6Addr;
+  if (privateAddr && sameAddress(text, privateAddr)) return privateAddr;
+  if (ipv6Addr && sameAddress(text, ipv6Addr)) return ipv6Addr;
   return fallback;
 }
 
@@ -1305,8 +1317,8 @@ export function ForwardGroupsContent({
     const connectHost = String(member.connectHost || "").trim();
     if (!connectHost || member.memberType !== "host") return "";
     const host = hostById.get(Number(member.hostId || 0));
-    if (hostPrivateAddress(host) && connectHost === hostPrivateAddress(host)) return "内网";
-    if (hostIpv6Address(host) && connectHost === hostIpv6Address(host)) return "IPv6";
+    if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return "内网";
+    if (hostIpv6Address(host) && sameAddress(connectHost, hostIpv6Address(host))) return "IPv6";
     return "指定地址";
   };
 
@@ -1949,7 +1961,7 @@ export function ForwardGroupsContent({
                             <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
                               <span>内网</span>
                               <Switch
-                                checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && member.connectHost === hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
+                                checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostPrivateAddress(hostById.get(Number(member.hostId || 0))))}
                                 disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
                                 onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
                               />
@@ -1957,7 +1969,7 @@ export function ForwardGroupsContent({
                             <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
                               <span>IPv6</span>
                               <Switch
-                                checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && member.connectHost === hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
+                                checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostIpv6Address(hostById.get(Number(member.hostId || 0))))}
                                 disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
                                 onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
                               />

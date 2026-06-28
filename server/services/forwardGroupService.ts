@@ -173,7 +173,10 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
   await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
   await db.replaceForwardGroupMembers(id, normalized.members as any);
   if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
-  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, { forcePriority: memberPriorityChanged });
+  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, {
+    forcePriority: memberPriorityChanged,
+    forceSync: memberPriorityChanged,
+  });
 }
 
 export async function getForwardGroupDeleteImpact(groupId: number) {

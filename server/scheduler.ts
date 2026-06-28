@@ -17,6 +17,8 @@ type TimedOutForwardTest = {
   message: string | null;
 };
 
+const SELF_TEST_TIMEOUT_SECONDS = 30;
+
 let hostStatusPrimePromise: Promise<void> | null = null;
 
 async function refreshUserRuleAgents(userId: number, reason: string) {
@@ -221,9 +223,9 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
 
 async function runSelfTestTimeoutSweep() {
   try {
-    const timedOutTests = await db.timeoutStaleForwardTests(60);
+    const timedOutTests = await db.timeoutStaleForwardTests(SELF_TEST_TIMEOUT_SECONDS);
     if (timedOutTests.length > 0) {
-      await settleTimedOutTunnelTests(timedOutTests, 60);
+      await settleTimedOutTunnelTests(timedOutTests, SELF_TEST_TIMEOUT_SECONDS);
       for (const test of timedOutTests) {
         const meta = parseSelfTestMeta(test.message);
         if (meta?.kind === "tunnel" || meta?.kind === "tunnel-hop") continue;
@@ -232,7 +234,7 @@ async function runSelfTestTimeoutSweep() {
           : meta && "tunnelId" in meta && typeof meta.tunnelId === "number"
             ? ` tunnel=${meta.tunnelId}`
             : "";
-        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${targetPart} host=${test.hostId} timeout after 60s test=${test.id}`);
+        appendPanelLog("warn", `[SelfTest] rule=${test.ruleId}${targetPart} host=${test.hostId} timeout after ${SELF_TEST_TIMEOUT_SECONDS}s test=${test.id}`);
       }
       console.log(`[Scheduler] Self-test timeout sweep: ${timedOutTests.length} test(s) marked as timeout`);
     }

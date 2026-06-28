@@ -76,6 +76,86 @@ export async function updateTunnel(id: number, data: Partial<InsertTunnel>) {
   await db.update(tunnels).set({ ...data, updatedAt: nowDate() }).where(eq(tunnels.id, id));
 }
 
+function hostEntryAddress(host: any) {
+  return String(host?.entryIp || host?.ipv4 || host?.ipv6 || host?.ip || "").trim();
+}
+
+function hostPrivateAddress(host: any) {
+  return String(host?.tunnelEntryIp || "").trim();
+}
+
+function hostIpv6Address(host: any) {
+  return String(host?.ipv6 || "").trim();
+}
+
+function nextStoredConnectHost(stored: unknown, currentHost: any, previousHost?: any) {
+  const value = String(stored || "").trim();
+  const currentPrivate = hostPrivateAddress(currentHost);
+  const currentIpv6 = hostIpv6Address(currentHost);
+  const previousPrivate = hostPrivateAddress(previousHost);
+  const previousIpv6 = hostIpv6Address(previousHost);
+  const previousPublic = hostEntryAddress(previousHost);
+  if (previousPrivate && value === previousPrivate) return currentPrivate || null;
+  if (previousIpv6 && value === previousIpv6) return currentIpv6 || null;
+  if (previousPublic && value === previousPublic) return null;
+  return undefined;
+}
+
+export async function syncTunnelsForHostAddress(hostId: number, previousHost?: any) {
+  const db = await getDb();
+  if (!db) return;
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const currentHost = await getHostById(id);
+  if (!currentHost) return;
+  const now = nowDate();
+
+  const directTunnels = await getTunnelsByHost(id);
+  for (const tunnel of directTunnels as any[]) {
+    if (Number(tunnel.exitHostId || 0) !== id) continue;
+    const stored = String(tunnel.connectHost || "").trim();
+    const privateAddr = hostPrivateAddress(currentHost);
+    const migrated = nextStoredConnectHost(stored, currentHost, previousHost);
+    const legacyPrivate = String(tunnel.networkType || "public") === "private" && !stored;
+    const nextConnectHost = migrated !== undefined
+      ? migrated
+      : legacyPrivate
+        ? privateAddr || null
+        : undefined;
+    if (nextConnectHost !== undefined && (stored || null) !== nextConnectHost) {
+      await db.update(tunnels).set({
+        connectHost: nextConnectHost,
+        networkType: nextConnectHost && privateAddr && nextConnectHost === privateAddr ? "private" : "public",
+        isRunning: false,
+        updatedAt: now,
+      } as any).where(eq(tunnels.id, Number(tunnel.id)));
+    }
+  }
+
+  const hopRows = await db.select().from(tunnelHops).where(eq(tunnelHops.hostId, id));
+  for (const hop of hopRows as any[]) {
+    const stored = String(hop.connectHost || "").trim();
+    const nextConnectHost = nextStoredConnectHost(stored, currentHost, previousHost);
+    if (nextConnectHost !== undefined && (stored || null) !== nextConnectHost) {
+      await db.update(tunnelHops).set({
+        connectHost: nextConnectHost,
+      } as any).where(eq(tunnelHops.id, Number(hop.id)));
+    }
+  }
+
+  const exitRows = await db.select().from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, id));
+  for (const node of exitRows as any[]) {
+    const stored = String(node.connectHost || "").trim();
+    const nextConnectHost = nextStoredConnectHost(stored, currentHost, previousHost);
+    if (nextConnectHost !== undefined && (stored || null) !== nextConnectHost) {
+      await db.update(tunnelExitNodes).set({
+        connectHost: nextConnectHost,
+        updatedAt: now,
+      } as any).where(eq(tunnelExitNodes.id, Number(node.id)));
+    }
+  }
+}
+
 export async function clearTunnelTestSnapshot(id: number) {
   const db = await getDb();
   if (!db) return;

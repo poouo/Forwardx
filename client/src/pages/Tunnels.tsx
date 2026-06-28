@@ -300,6 +300,18 @@ function sameNullableStringArray(a: Array<string | null>, b: Array<string | null
   return true;
 }
 
+function addressKey(value: unknown) {
+  const text = String(value || "").trim();
+  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+  return unwrapped.toLowerCase();
+}
+
+function sameAddress(a: unknown, b: unknown) {
+  const left = addressKey(a);
+  const right = addressKey(b);
+  return !!left && !!right && left === right;
+}
+
 function normalizeHopConnectHosts(
   raw: Array<string | null>,
   hostCount: number,
@@ -327,8 +339,8 @@ function normalizeConnectHostForHost(value: unknown, host: any, fallback: string
   if (!text) return fallback;
   const privateAddr = hostPrivateAddress(host);
   const ipv6Addr = hostIpv6Address(host);
-  if (privateAddr && text === privateAddr) return privateAddr;
-  if (ipv6Addr && text === ipv6Addr) return ipv6Addr;
+  if (privateAddr && sameAddress(text, privateAddr)) return privateAddr;
+  if (ipv6Addr && sameAddress(text, ipv6Addr)) return ipv6Addr;
   return fallback;
 }
 
@@ -1586,8 +1598,8 @@ function groupMemberConnectLabel(member: any, hosts: any[] | undefined) {
   if (!connectHost) return "";
   const hostId = Number(member?.hostId || 0);
   const host = (hosts || []).find((item: any) => Number(item.id) === hostId);
-  if (hostPrivateAddress(host) && connectHost === hostPrivateAddress(host)) return "内网";
-  if (hostIpv6Address(host) && connectHost === hostIpv6Address(host)) return "IPv6";
+  if (hostPrivateAddress(host) && sameAddress(connectHost, hostPrivateAddress(host))) return "内网";
+  if (hostIpv6Address(host) && sameAddress(connectHost, hostIpv6Address(host))) return "IPv6";
   return "指定地址";
 }
 
@@ -1877,7 +1889,7 @@ function TunnelsContent() {
         const connectHost = String(exit.connectHost || "").trim();
         return {
           hostId,
-          connectHost: (privateAddr && connectHost === privateAddr) || (ipv6Addr && connectHost === ipv6Addr) ? connectHost : "",
+          connectHost: (privateAddr && sameAddress(connectHost, privateAddr)) || (ipv6Addr && sameAddress(connectHost, ipv6Addr)) ? connectHost : "",
         };
       }).slice(0, MAX_EXTRA_TUNNEL_EXITS)
       : [];
@@ -2008,15 +2020,15 @@ function TunnelsContent() {
       if (!value) continue;
       const hopHostId = Number(orderedHopHostIds[i] || 0);
       const hopHost = hosts?.find((h: any) => Number(h.id) === hopHostId);
-      const privateAddr = String((hopHost as any)?.tunnelEntryIp || "").trim();
-      if (privateAddr && value === privateAddr) {
+      const privateAddr = hostPrivateAddress(hopHost);
+      if (privateAddr && sameAddress(value, privateAddr)) {
         hasPrivateHop = true;
         continue;
       }
       const ipv6Addr = hostIpv6Address(hopHost);
-      if (ipv6Addr && value === ipv6Addr) continue;
+      if (ipv6Addr && sameAddress(value, ipv6Addr)) continue;
       const publicAddr = hostPublicAddress(hopHost);
-      if (publicAddr && value === publicAddr) continue;
+      if (publicAddr && sameAddress(value, publicAddr)) continue;
       toast.error(`第 ${i + 1} 跳只能使用入口地址、内网IP或IPv6地址`);
       return;
     }
