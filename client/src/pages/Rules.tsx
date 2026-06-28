@@ -83,6 +83,7 @@ import {
   type ForwardType,
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
+import { ruleLatencyProbeMethodForRule } from "@shared/latencyProbe";
 import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
@@ -98,6 +99,7 @@ import {
 } from "@/lib/linkTestNodeMeta";
 import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { useUrlTab } from "@/hooks/useUrlTab";
+import { useIsMobile } from "@/hooks/useMobile";
 
 const loadReactGlobe = () => import("react-globe.gl");
 const ReactGlobe = lazy(loadReactGlobe) as typeof import("react-globe.gl").default;
@@ -427,9 +429,6 @@ function storeRuleViewMode(viewMode: RuleViewMode) {
 }
 
 function getDefaultRuleCardSize(): RuleCardSize {
-  if (typeof window !== "undefined" && window.matchMedia("(max-width: 639px)").matches) {
-    return "compact";
-  }
   return "standard";
 }
 
@@ -2085,6 +2084,7 @@ function normalizeFailoverTargetsForSubmit(text: string) {
 
 function RulesContent() {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const utils = trpc.useUtils();
   const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
   useEffect(() => {
@@ -2147,6 +2147,8 @@ function RulesContent() {
   });
   const [viewMode, setViewMode] = useState<RuleViewMode>(() => getStoredRuleViewMode());
   const [ruleCardSize, setRuleCardSize] = useState<RuleCardSize>(() => getStoredRuleCardSize());
+  const effectiveViewMode: RuleViewMode = isMobile ? "card" : viewMode;
+  const effectiveRuleCardSize: RuleCardSize = isMobile ? "standard" : ruleCardSize;
   const [trafficRange, setTrafficRange] = useState<RuleTrafficRange>("24h");
   const [rulePageSize, setRulePageSize] = useState<RulePageSize>(() =>
     getStoredRulePageSize(getStoredRuleCardSize() === "compact" ? 24 : 12)
@@ -3136,10 +3138,10 @@ function RulesContent() {
   ), [filteredRules]);
   const ruleTargetGeoAddresses = useMemo(() => (
     Array.from(new Set([
-      ...(viewMode === "globe" ? ruleGlobeTargetAddresses : []),
+      ...(effectiveViewMode === "globe" ? ruleGlobeTargetAddresses : []),
       selfTestTargetAddress,
     ].filter(Boolean))).slice(0, 100)
-  ), [ruleGlobeTargetAddresses, selfTestTargetAddress, viewMode]);
+  ), [effectiveViewMode, ruleGlobeTargetAddresses, selfTestTargetAddress]);
   const { data: ruleTargetGeoRows, isFetched: ruleTargetGeoFetched, isError: ruleTargetGeoError } = trpc.rules.targetGeoBatch.useQuery(
     { targets: ruleTargetGeoAddresses },
     {
@@ -3148,7 +3150,7 @@ function RulesContent() {
       refetchOnWindowFocus: false,
     }
   );
-  const targetGeoLookupReady = viewMode !== "globe" || ruleGlobeTargetAddresses.length === 0 || ruleTargetGeoFetched || ruleTargetGeoError;
+  const targetGeoLookupReady = effectiveViewMode !== "globe" || ruleGlobeTargetAddresses.length === 0 || ruleTargetGeoFetched || ruleTargetGeoError;
   const targetGeoByAddress = useMemo(() => {
     const map = new Map<string, RuleTargetGeo>();
     (ruleTargetGeoRows || []).forEach((row: any) => {
@@ -4687,7 +4689,7 @@ function RulesContent() {
     }
     const ruleCategory = getRuleCategory(rule, forwardGroupById);
     const isForwardChainRule = ruleCategory === "chain";
-    const probeMethod = String(rule.protocol || "tcp").toLowerCase() === "udp" ? "ping" : "tcping";
+    const probeMethod = ruleLatencyProbeMethodForRule(rule);
     return (
       <div className="flex items-center justify-end gap-1 whitespace-nowrap">
         <Button
@@ -4760,7 +4762,7 @@ function RulesContent() {
     storeRuleCardSize(nextMode);
   };
 
-  const displayMode: RuleDisplayMode = viewMode === "table" || viewMode === "globe" ? viewMode : ruleCardSize;
+  const displayMode: RuleDisplayMode = effectiveViewMode === "table" || effectiveViewMode === "globe" ? effectiveViewMode : effectiveRuleCardSize;
 
   const handleRuleCategoryChange = (value: string) => {
     const next = (value === "local" || value === "tunnel" || value === "chain" || value === "group" ? value : "all") as RuleCategory;
@@ -4792,10 +4794,10 @@ function RulesContent() {
     });
   };
 
-  const ruleCardGridClass = ruleCardSize === "compact"
+  const ruleCardGridClass = effectiveRuleCardSize === "compact"
     ? "standard-card-grid-compact rule-card-grid-static rule-card-grid-static-compact gap-3"
     : "standard-card-grid rule-card-grid-static rule-card-grid-static-standard gap-4";
-  const ruleContentModeKey = viewMode === "card" ? "card" : displayMode;
+  const ruleContentModeKey = effectiveViewMode === "card" ? "card" : displayMode;
   const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
   const renderRuleGroupIcon = (type: RuleGroupType, className = "h-4 w-4") => {
@@ -4890,7 +4892,7 @@ function RulesContent() {
   const renderRuleCard = (rule: any) => {
     const supported = isRuleSupported(rule);
     const protocolKey = getRuleProtocolKey(rule);
-    if (ruleCardSize === "compact") {
+    if (effectiveRuleCardSize === "compact") {
       return (
         <Card
           key={rule.id}
@@ -5053,7 +5055,7 @@ function RulesContent() {
               fallbackValue="0 / 0 活跃"
             />
           </Badge>
-          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+          <div className="hidden items-center overflow-hidden rounded-md border border-border/40 md:flex">
             <Button
               variant={displayMode === "compact" ? "secondary" : "ghost"}
               size="icon"
@@ -5339,7 +5341,7 @@ function RulesContent() {
         <DataSectionLoading label="正在加载转发规则" />
       ) : filteredRules.length > 0 ? (
         <>
-          {viewMode === "globe" ? (
+          {effectiveViewMode === "globe" ? (
             (!hosts || !tunnels || !forwardGroups) ? (
               <DataSectionLoading label="正在加载转发流量地图" />
             ) : (
@@ -5355,8 +5357,8 @@ function RulesContent() {
                 onEditRule={openEdit}
               />
             )
-          ) : viewMode === "card" ? (
-            <RuleCardModeTransition mode={ruleCardSize}>
+          ) : effectiveViewMode === "card" ? (
+            <RuleCardModeTransition mode={effectiveRuleCardSize}>
               {shouldGroupRuleCards ? (
                 <AutoAnimateContainer className="space-y-5">
                   {desktopRuleGroups.map((group) => {
@@ -5379,15 +5381,15 @@ function RulesContent() {
             </RuleCardModeTransition>
           ) : (
             <>
-              <RuleCardModeTransition mode={ruleCardSize} className="sm:hidden">
-                <AutoAnimateContainer layout={false} className={ruleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
+              <RuleCardModeTransition mode={effectiveRuleCardSize} className="sm:hidden">
+                <AutoAnimateContainer layout={false} className={effectiveRuleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
                   {shouldGroupRuleCards ? (
                     desktopRuleGroups.map((group) => {
                       const collapsed = !!ruleGroupCollapsed[group.type];
                       return (
                         <section key={group.type} className="space-y-2">
                           {renderRuleGroupHeader(group)}
-                          <RuleGroupItems open={!collapsed} layout={false} className={ruleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
+                          <RuleGroupItems open={!collapsed} layout={false} className={effectiveRuleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
                             {group.rules.map((rule: any) => renderRuleCard(rule))}
                           </RuleGroupItems>
                         </section>

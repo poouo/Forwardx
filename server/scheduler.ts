@@ -7,6 +7,8 @@ import { sendTelegramMessage } from "./telegramBot";
 import { recordTunnelHopTestResult } from "./tunnelHopTestState";
 import { recordHopTestResult } from "./hopTestState";
 import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
+import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
+import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 
 type TimedOutForwardTest = {
   id: number;
@@ -17,56 +19,6 @@ type TimedOutForwardTest = {
 
 let hostStatusPrimePromise: Promise<void> | null = null;
 
-function structuredLinkTestMessage(input: {
-  kind: string;
-  message: string;
-  details?: any[];
-  totalLatencyMs?: number | null;
-  groupId?: number | null;
-  tunnelId?: number | null;
-}) {
-  return JSON.stringify({
-    kind: input.kind,
-    ...(input.groupId ? { groupId: input.groupId } : {}),
-    ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
-    message: input.message,
-    details: input.details || [],
-    totalLatencyMs: input.totalLatencyMs ?? null,
-  });
-}
-
-function tunnelHopLatencyMode(meta: any): "sum" | "max" | "multi-source" {
-  const value = String(meta?.latencyMode || "");
-  return value === "max" || value === "multi-source" ? value : "sum";
-}
-
-function tunnelHopModeText(latencyMode: "sum" | "max" | "multi-source") {
-  if (latencyMode === "max") {
-    return {
-      kind: "tunnel-load-balance-summary",
-      label: "多出口负载探测",
-      successPrefix: "多出口负载探测成功",
-      failurePrefix: "多出口负载探测失败",
-      totalLabel: "最大延迟",
-    };
-  }
-  if (latencyMode === "multi-source") {
-    return {
-      kind: "tunnel-entry-group-summary",
-      label: "多入口隧道探测",
-      successPrefix: "多入口隧道探测成功",
-      failurePrefix: "多入口隧道探测失败",
-      totalLabel: "总延迟",
-    };
-  }
-  return {
-    kind: "tunnel-hop-summary",
-    label: "多级隧道逐跳测试",
-    successPrefix: "多级隧道逐跳测试成功",
-    failurePrefix: "多级隧道逐跳测试失败",
-    totalLabel: undefined,
-  };
-}
 async function refreshUserRuleAgents(userId: number, reason: string) {
   const rules = await db.getForwardRulesForUserSync(userId);
   const hostIds = new Set<number>();
@@ -233,7 +185,7 @@ async function settleTimedOutTunnelTests(timedOutTests: TimedOutForwardTest[], t
         message,
         hopLabel,
         routeLabel,
-        method: (meta as any).method === "ping" ? "ping" : "tcp",
+        method: normalizeLinkProbeMethod((meta as any).method),
       }, {
         successPrefix: "端口转发链逐跳测试成功",
         failurePrefix: "端口转发链逐跳测试失败",

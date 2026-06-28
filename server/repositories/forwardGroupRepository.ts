@@ -28,6 +28,7 @@ import { setUserForwardAccess } from "./userRepository";
 import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
+import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latencyProbe";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -67,7 +68,7 @@ export function normalizeChinaHealthTarget(raw: unknown) {
   if (bracketMatch) {
     host = bracketMatch[1];
     port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
-  } else if (isIP(withoutScheme) === 0) {
+  } else {
     const lastColon = withoutScheme.lastIndexOf(":");
     if (lastColon > 0) {
       const maybeHost = withoutScheme.slice(0, lastColon).trim();
@@ -83,6 +84,9 @@ export function normalizeChinaHealthTarget(raw: unknown) {
   }
 
   host = normalizeIpCandidate(host).trim();
+  if (host.includes(":") && isIP(host) !== 6) {
+    throw new Error("China health IPv6 target format is invalid");
+  }
   if (!host || host.length > 253 || /[\s'"<>/]/.test(host)) {
     throw new Error("China health target format is invalid");
   }
@@ -527,7 +531,7 @@ export type ForwardGroupChainProbe = {
   fromHostId: number;
   targetIp: string;
   targetPort: number;
-  method: "tcp" | "ping";
+  method: LinkProbeMethod;
   hopIndex: number;
   hopCount: number;
   hopLabel: string;
@@ -544,7 +548,7 @@ export type ForwardGroupChinaHealthProbe = {
   probeType: "china";
 };
 
-export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean; templateRule?: any; method?: "tcp" | "ping"; sourcePort?: number } = {}) {
+export async function getForwardGroupChainProbes(groupId: number, options: { includeFinalTarget?: boolean; templateRule?: any; method?: LinkProbeMethod; sourcePort?: number } = {}) {
   const group = await getForwardGroupById(groupId) as any;
   if (!group || groupModeOf(group) !== "chain") return [] as ForwardGroupChainProbe[];
   const template = options.templateRule || (options.includeFinalTarget ? await getForwardGroupPrimaryTemplateRule(groupId) : null) as any;
@@ -562,7 +566,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
   const probes: ForwardGroupChainProbe[] = [];
   const sourcePort = Number(options.sourcePort ?? template?.sourcePort ?? 0);
   const protocol = String(template?.protocol || "both").toLowerCase();
-  const hopProbeMethod: "tcp" | "ping" = options.method || (template ? (protocol === "udp" ? "ping" : "tcp") : "ping");
+  const hopProbeMethod = options.method || (template ? linkProbeMethodForProtocol(protocol) : "ping");
   const hasFinalTarget = !!options.includeFinalTarget
     && !!template
     && String(template.targetIp || "").trim()
@@ -630,7 +634,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     const targetPort = Number(template.targetPort || 0);
     if (lastHostId > 0 && targetIp && targetPort > 0) {
       const targetLabel = await forwardChainTargetLabel(template);
-      const finalProbeMethod: "tcp" | "ping" = protocol === "udp" ? "ping" : "tcp";
+      const finalProbeMethod = linkProbeMethodForProtocol(protocol);
       probes.push({
         groupId,
         fromHostId: lastHostId,
@@ -655,8 +659,9 @@ export async function getForwardGroupChinaHealthProbesForHost(hostId: number) {
     let target;
     try {
       target = normalizeChinaHealthTarget(group.chinaHealthCheckTarget);
-    } catch {
-      target = normalizeChinaHealthTarget(null);
+    } catch (error) {
+      appendPanelLog("warn", `[ForwardGroup] china health target invalid group=${group.id} target=${String(group.chinaHealthCheckTarget || "-")}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
     for (const member of sortedMembers(group, true) as any[]) {
       const entryHostId = await memberEntryHostId(member).catch(() => 0);

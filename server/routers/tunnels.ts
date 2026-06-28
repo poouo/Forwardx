@@ -12,14 +12,8 @@ import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { getTunnelAutoHopAggregate } from "../tunnelAutoLatencyState";
 import { createQueryCache } from "../queryCache";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
-import { isIP } from "net";
-
-const isValidHostOrIp = (value: string) => {
-  const text = String(value || "").trim();
-  const unwrapped = text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
-  if (isIP(unwrapped)) return true;
-  return /^[a-zA-Z0-9]([a-zA-Z0-9\-.]*[a-zA-Z0-9])?$/.test(text) && text.length <= 253;
-};
+import { structuredLinkTestMessage } from "../linkTestMessages";
+import { isValidHostOrIp } from "../networkAddress";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const MAX_TUNNEL_HOPS = 10;
@@ -109,22 +103,6 @@ async function getTunnelEntryTestHostIds(tunnel: any) {
   if (ids.length === 0) pushId(tunnel?.entryHostId);
   return ids;
 }
-function structuredLinkTestMessage(input: {
-  kind: string;
-  message: string;
-  details?: any[];
-  totalLatencyMs?: number | null;
-  tunnelId?: number | null;
-}) {
-  return JSON.stringify({
-    kind: input.kind,
-    ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
-    message: input.message,
-    details: input.details || [],
-    totalLatencyMs: input.totalLatencyMs ?? null,
-  });
-}
-
 function normalizeHopConnectForHost(rawConnectHost: string | null | undefined, host: any) {
   const raw = String(rawConnectHost || "").trim();
   const publicAddr = getHostPublicAddress(host);

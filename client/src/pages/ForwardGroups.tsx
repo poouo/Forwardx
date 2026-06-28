@@ -131,25 +131,49 @@ function isCollectionMode(mode: GroupMode) {
   return mode === "entry" || mode === "exit";
 }
 
-function isChinaHealthTargetValid(value: string) {
+function normalizeChinaHealthTargetInput(value: string) {
   const target = value.trim().replace(/^tcp:\/\//i, "").replace(/：/g, ":");
-  if (!target) return true;
-  if (target.length > 253 || /[\s'"<>/]/.test(target)) return false;
+  if (!target) return "";
+  if (target.length > 253 || /[\s'"<>/]/.test(target)) return undefined;
+  let host = target;
+  let port = 80;
   const bracketMatch = target.match(/^\[([^\]]+)\](?::(\d+))?$/);
   if (bracketMatch) {
-    const port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
-    return !!bracketMatch[1]?.trim() && Number.isInteger(port) && port >= 1 && port <= 65535;
+    host = bracketMatch[1]?.trim() || "";
+    port = bracketMatch[2] ? Number(bracketMatch[2]) : 80;
+  } else {
+    const lastColon = target.lastIndexOf(":");
+    if (lastColon > 0) {
+      const maybeHost = target.slice(0, lastColon).trim();
+      const maybePortText = target.slice(lastColon + 1);
+      const maybePort = Number(maybePortText);
+      const singleColonHostPort = target.indexOf(":") === lastColon;
+      const nakedIpv6HostPort = !singleColonHostPort && isValidIpv6Address(maybeHost);
+      if ((singleColonHostPort || nakedIpv6HostPort) && /^\d+$/.test(maybePortText) && Number.isInteger(maybePort) && maybePort >= 1 && maybePort <= 65535) {
+        host = maybeHost;
+        port = maybePort;
+      }
+    }
   }
-  const lastColon = target.lastIndexOf(":");
-  if (lastColon > 0 && target.indexOf(":") === lastColon) {
-    const port = Number(target.slice(lastColon + 1));
-    return !!target.slice(0, lastColon).trim() && Number.isInteger(port) && port >= 1 && port <= 65535;
-  }
-  return true;
+  host = unwrapBracketedHost(host).trim();
+  if (host.includes(":") && !isValidIpv6Address(host)) return undefined;
+  if (!host || host.length > 253 || /[\s'"<>/]/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  return isValidIpv6Address(host) ? `[${host}]:${port}` : `${host}:${port}`;
 }
 function unwrapBracketedHost(value: unknown) {
   const text = String(value || "").trim();
   return text.startsWith("[") && text.endsWith("]") ? text.slice(1, -1).trim() : text;
+}
+
+function isValidIpv6Address(value: unknown) {
+  const text = unwrapBracketedHost(value);
+  if (!text.includes(":")) return false;
+  try {
+    new URL(`http://[${text}]/`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function looksLikeIpv4(value: unknown) {
@@ -1154,8 +1178,8 @@ export function ForwardGroupsContent({
     if (!Number.isInteger(recoverSeconds) || recoverSeconds < 10 || recoverSeconds > 3600) {
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
-    const chinaHealthTarget = form.chinaHealthCheckTarget.trim();
-    if (supportsChinaHealth && form.chinaHealthCheckEnabled && !isChinaHealthTargetValid(chinaHealthTarget)) {
+    const chinaHealthTarget = normalizeChinaHealthTargetInput(form.chinaHealthCheckTarget);
+    if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
       return toast.error("入口健康度检测目标格式不正确");
     }
     const payload = {

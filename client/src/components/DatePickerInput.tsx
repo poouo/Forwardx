@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
+import { useOverlayContainer } from "@/components/ui/overlay-root";
 import { cn } from "@/lib/utils";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 
 function padDatePart(value: number) {
   return String(value).padStart(2, "0");
@@ -38,6 +40,9 @@ function sameDateOnly(a: Date | null, b: Date) {
   return !!a && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+const PANEL_WIDTH = 320;
+const PANEL_HEIGHT = 330;
+
 type DatePickerInputProps = {
   value: string;
   onChange: (value: string) => void;
@@ -59,6 +64,7 @@ export default function DatePickerInput({
   const [viewDate, setViewDate] = useState(() => selected || new Date());
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
   const [panelSide, setPanelSide] = useState<"top" | "bottom">("bottom");
+  const overlayContainer = useOverlayContainer();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -69,8 +75,6 @@ export default function DatePickerInput({
     const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
     const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 640;
     const containerRect = triggerRef.current?.closest(".dialog-panel")?.getBoundingClientRect();
-    const containingLeft = containerRect?.left ?? 0;
-    const containingTop = containerRect?.top ?? 0;
     const padding = 16;
     const gap = 8;
     const boundaryLeft = Math.max(padding, (containerRect?.left ?? 0) + padding);
@@ -79,8 +83,8 @@ export default function DatePickerInput({
     const boundaryBottom = Math.min(viewportHeight - padding, (containerRect?.bottom ?? viewportHeight) - padding);
     const availableWidth = Math.max(288, boundaryRight - boundaryLeft);
     const availableHeight = Math.max(220, boundaryBottom - boundaryTop);
-    const width = Math.min(320, availableWidth);
-    const panelHeight = Math.min(panelRef.current?.offsetHeight || 330, availableHeight);
+    const width = Math.min(PANEL_WIDTH, availableWidth);
+    const panelHeight = Math.min(PANEL_HEIGHT, availableHeight);
     const spaceBelow = boundaryBottom - rect.bottom;
     const spaceAbove = rect.top - boundaryTop;
     const side = spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
@@ -88,9 +92,10 @@ export default function DatePickerInput({
     const desiredLeft = align === "end" ? rect.right - width : rect.left;
     setPanelSide(side);
     setPanelStyle({
-      top: Math.max(boundaryTop, Math.min(desiredTop, boundaryBottom - panelHeight)) - containingTop,
-      left: Math.max(boundaryLeft, Math.min(desiredLeft, boundaryRight - width)) - containingLeft,
+      top: Math.max(boundaryTop, Math.min(desiredTop, boundaryBottom - panelHeight)),
+      left: Math.max(boundaryLeft, Math.min(desiredLeft, boundaryRight - width)),
       width,
+      height: panelHeight,
       maxHeight: availableHeight,
     });
   };
@@ -153,6 +158,45 @@ export default function DatePickerInput({
     ? align === "end" ? "origin-bottom-right" : "origin-bottom-left"
     : align === "end" ? "origin-top-right" : "origin-top-left";
   const panelClosedTranslate = panelSide === "top" ? "translate-y-1.5" : "-translate-y-1.5";
+  const panel = (
+    <div
+      ref={panelRef}
+      aria-hidden={!open}
+      style={panelStyle}
+      className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
+    >
+      <div className="p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
+          {["一", "二", "三", "四", "五", "六", "日"].map((day) => <div key={day} className="py-1">{day}</div>)}
+        </div>
+        <div className="mt-1 grid grid-cols-7 gap-1">
+          {days.map((day) => (
+            <button
+              key={day.date.toISOString()}
+              type="button"
+              className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
+              onClick={() => commitDate(day.date)}
+            >
+              {day.date.getDate()}
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => commitDate(new Date())}>今天</Button>
+          <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div ref={rootRef} className={cn("relative", className)}>
@@ -169,43 +213,7 @@ export default function DatePickerInput({
         <span className={label ? "truncate text-foreground" : "truncate text-muted-foreground"}>{label || placeholder}</span>
         <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
       </button>
-      <div
-        ref={panelRef}
-        aria-hidden={!open}
-        style={panelStyle}
-        className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
-      >
-        <div className="p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(-1)} aria-label="上个月">
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <div className="text-sm font-semibold">{viewDate.getFullYear()}年{padDatePart(viewDate.getMonth() + 1)}月</div>
-            <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={() => shiftMonth(1)} aria-label="下个月">
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-muted-foreground">
-            {["一", "二", "三", "四", "五", "六", "日"].map((day) => <div key={day} className="py-1">{day}</div>)}
-          </div>
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {days.map((day) => (
-              <button
-                key={day.date.toISOString()}
-                type="button"
-                className={`h-8 rounded-md text-sm transition-colors ${day.isSelected ? "bg-primary text-primary-foreground shadow-sm" : day.inMonth ? "text-foreground hover:bg-primary/10" : "text-muted-foreground/55 hover:bg-muted/70"} ${day.isToday && !day.isSelected ? "ring-1 ring-primary/40" : ""}`}
-                onClick={() => commitDate(day.date)}
-              >
-                {day.date.getDate()}
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => commitDate(new Date())}>今天</Button>
-            <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
-          </div>
-        </div>
-      </div>
+      {overlayContainer ? createPortal(panel, overlayContainer) : panel}
     </div>
   );
 }

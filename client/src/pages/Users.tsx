@@ -1216,7 +1216,6 @@ function UsersContent() {
                     )}
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {isOverLimit && <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">超额</Badge>}
-                      {isExpired && <Badge variant="destructive" className="h-5 px-1.5 text-[10px]">已到期</Badge>}
                       {u.trafficAutoReset && (
                         <Badge variant="outline" className="h-5 px-1.5 text-[10px]">每月{u.trafficResetDay || 1}日重置</Badge>
                       )}
@@ -1229,7 +1228,10 @@ function UsersContent() {
                       <p className="mt-1 truncate font-medium">{formatCurrencyCny(u.balanceCents)}</p>
                     </div>
                     <div className="min-w-0 rounded-md bg-muted/25 p-2">
-                      <p className="text-muted-foreground">到期</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-muted-foreground">到期</p>
+                        {isExpired && <Badge variant="destructive" className="h-5 shrink-0 px-1.5 text-[10px]">已到期</Badge>}
+                      </div>
                       <p className={`mt-1 truncate font-medium ${isExpired ? "text-destructive" : ""}`}>
                         {u.expiresAt ? new Date(u.expiresAt).toLocaleDateString() : "不限"}
                       </p>
@@ -1402,15 +1404,17 @@ function UsersContent() {
                           </span>
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
-                          <div className="flex items-center gap-1">
+                          <div className="flex min-w-[120px] flex-col items-start gap-1">
                             {u.expiresAt ? (
                               <>
-                                <CalendarClock className="h-3 w-3 text-muted-foreground" />
-                                <span className={`text-xs ${isExpired ? "text-destructive" : "text-muted-foreground"}`}>
-                                  {new Date(u.expiresAt).toLocaleDateString()}
-                                </span>
+                                <div className="flex items-center gap-1.5 whitespace-nowrap">
+                                  <CalendarClock className="h-3 w-3 text-muted-foreground" />
+                                  <span className={`text-xs ${isExpired ? "text-destructive" : "text-muted-foreground"}`}>
+                                    {new Date(u.expiresAt).toLocaleDateString()}
+                                  </span>
+                                </div>
                                 {isExpired && (
-                                  <Badge variant="destructive" className="text-[9px] px-1 py-0 h-3.5 ml-1">已到期</Badge>
+                                  <Badge variant="destructive" className="h-4 px-1.5 py-0 text-[9px]">已到期</Badge>
                                 )}
                               </>
                             ) : (

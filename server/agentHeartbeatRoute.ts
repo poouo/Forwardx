@@ -38,6 +38,7 @@ import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHo
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { scheduleHostDdnsUpdate } from "./hostDdns";
+import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -59,10 +60,6 @@ const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
-
-function ruleLatencyProbeMethod(rule: any): "tcp" | "ping" {
-  return String(rule?.protocol || "tcp").toLowerCase() === "udp" ? "ping" : "tcp";
-}
 
 type AgentDnsWatch = {
   host: string;
@@ -107,6 +104,30 @@ function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssu
   }
   agentActionBatchCache.set(hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now });
   return fallbackIssuedAt;
+}
+
+function actionPortKey(action: any) {
+  const port = Number(action?.sourcePort || 0);
+  if (port <= 0) return "";
+  const statusType = String(action?.statusType || "").trim();
+  if (statusType === "tunnel" || Number(action?.tunnelId || 0) > 0) {
+    return `tunnel:${Number(action?.tunnelId || 0)}:${port}`;
+  }
+  if (Number(action?.ruleId || 0) > 0 || statusType === "rule") {
+    return `rule-port:${port}`;
+  }
+  return "";
+}
+
+function dropStalePortRemoveActions(actions: any[]) {
+  const applyPorts = new Set(
+    actions
+      .filter((action: any) => action?.op === "apply")
+      .map(actionPortKey)
+      .filter(Boolean),
+  );
+  if (applyPorts.size === 0) return actions;
+  return actions.filter((action: any) => !(action?.op === "remove" && applyPorts.has(actionPortKey(action))));
 }
 
 function cleanEndpointHost(value: unknown) {
@@ -2598,7 +2619,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         continue;
       }
       if (meta?.kind === "forward-via-tunnel") {
-        const method = meta.method === "ping" ? "ping" : "tcp";
+        const method = normalizeLinkProbeMethod(meta.method);
         selfTests.push({
           testId: t.id,
           kind: "forward-via-tunnel",
@@ -2614,7 +2635,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         continue;
       }
       if (meta?.kind === "forward-via-tunnel-entry") {
-        const method = meta.method === "ping" ? "ping" : "tcp";
+        const method = normalizeLinkProbeMethod(meta.method);
         selfTests.push({
           testId: t.id,
           kind: "forward-via-tunnel-entry",
@@ -2630,7 +2651,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         continue;
       }
       if (meta?.kind === "forward-chain") {
-        const method = meta.method === "ping" ? "ping" : "tcp";
+        const method = normalizeLinkProbeMethod(meta.method);
         selfTests.push({
           testId: t.id,
           kind: "forward-chain",
@@ -2647,7 +2668,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       const rule = await db.getForwardRuleById(t.ruleId);
       if (!rule) continue;
-      const method = ruleLatencyProbeMethod(rule);
+      const method = linkProbeMethodForRule(rule);
       selfTests.push({
         testId: t.id,
         ruleId: rule.id,
@@ -2686,8 +2707,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       commands: await buildGostRuntimeSyncCmds(),
     } as any);
 
-    const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), actions, responseIssuedAt);
-    const normalizedActions = actions.map((action: any) => ({
+    const effectiveActions = dropStalePortRemoveActions(actions);
+    const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);
+    const normalizedActions = effectiveActions.map((action: any) => ({
       ...action,
       issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),

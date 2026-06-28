@@ -14,6 +14,7 @@ import { clearTunnelRuntimeStatusForHost } from "../tunnelRuntimeStatus";
 import { createQueryCache } from "../queryCache";
 import { describePortPolicy, normalizePortAllowlist, portPolicyFrom, portPolicyHasRestriction } from "../portPolicy";
 import { ENV } from "../env";
+import { isValidHostOrIp as isValidNetworkHostOrIp } from "../networkAddress";
 
 const HOST_UPGRADE_CLEANUP_INTERVAL_MS = 60 * 1000;
 const GITHUB_API_LIMIT_STATUSES = new Set([403, 429]);
@@ -35,9 +36,7 @@ async function refreshHostPolicyRuntime(hostId: number, reason: string) {
   pushAgentRefresh(id, reason);
 }
 
-function isValidHostOrIp(value: string) {
-  return /^[a-zA-Z0-9]([a-zA-Z0-9\-_.]*[a-zA-Z0-9])?$|^[a-fA-F0-9:.]+$/.test(value.trim());
-}
+const isValidHostOrIp = (value: unknown) => isValidNetworkHostOrIp(value, { allowUnderscore: true, allowLooseIpLiteral: true });
 
 const hostAddressSchema = z.string().trim().min(1).max(253).refine(isValidHostOrIp, "Invalid host or IP");
 const optionalHostAddressSchema = z.string().trim().max(253).nullable().optional().refine(

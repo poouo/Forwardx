@@ -1,6 +1,7 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import DatePickerInput, { parseDateInputValue } from "@/components/DatePickerInput";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,7 +36,8 @@ function randomBillingCode() {
 }
 
 function parseLocalTime(value: string) {
-  return value ? new Date(value).getTime() : 0;
+  const date = parseDateInputValue(value);
+  return date ? date.getTime() : 0;
 }
 
 function discountStatus(code: any) {
@@ -759,10 +761,13 @@ export default function Billing() {
                   <div className="space-y-2"><Label>余额金额</Label><Input type="number" min={0.01} step="0.01" value={redeemAmount} onChange={(e) => setRedeemAmount(e.target.value)} /></div>
                 )}
                 <div className="space-y-2"><Label>数量</Label><Input type="number" min={1} max={500} value={redeemCount} onChange={(e) => setRedeemCount(e.target.value)} /></div>
-                <div className="space-y-2"><Label>生效时间</Label><Input type="datetime-local" value={redeemStartsAt} onChange={(e) => setRedeemStartsAt(e.target.value)} /></div>
                 <div className="space-y-2">
-                  <Label>失效时间</Label>
-                  <Input type="datetime-local" value={redeemExpiresAt} onChange={(e) => setRedeemExpiresAt(e.target.value)} />
+                  <Label>生效日期</Label>
+                  <DatePickerInput value={redeemStartsAt} onChange={setRedeemStartsAt} placeholder="立即生效" />
+                </div>
+                <div className="space-y-2">
+                  <Label>失效日期</Label>
+                  <DatePickerInput value={redeemExpiresAt} onChange={setRedeemExpiresAt} placeholder="永久有效" />
                   <p className="text-xs text-muted-foreground">不选择则永久有效。</p>
                 </div>
                 <div className="flex justify-end md:col-span-4"><Button className="w-full sm:w-auto" onClick={submitRedemption} disabled={createRedemptionCodes.isPending}><Gift className="mr-2 h-4 w-4" /> 生成兑换码</Button></div>
@@ -883,8 +888,14 @@ export default function Billing() {
                 <div className="space-y-2"><Label>类型</Label><Select value={discountType} onValueChange={(v: "percent" | "amount") => setDiscountType(v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="percent">百分比</SelectItem><SelectItem value="amount">固定金额</SelectItem></SelectContent></Select></div>
                 <div className="space-y-2"><Label>{discountType === "percent" ? "折扣百分比" : "抵扣金额"}</Label><Input type="number" min={1} max={discountType === "percent" ? 100 : undefined} value={discountValue} onChange={(e) => setDiscountValue(e.target.value)} /></div>
                 <div className="space-y-2"><Label>可用次数</Label><Input type="number" min={0} value={discountMaxUses} onChange={(e) => setDiscountMaxUses(e.target.value)} placeholder="0=不限" /></div>
-                <div className="space-y-2"><Label>生效时间</Label><Input type="datetime-local" value={discountStartsAt} onChange={(e) => setDiscountStartsAt(e.target.value)} /></div>
-                <div className="space-y-2"><Label>失效时间</Label><Input type="datetime-local" value={discountExpiresAt} onChange={(e) => setDiscountExpiresAt(e.target.value)} /></div>
+                <div className="space-y-2">
+                  <Label>生效日期</Label>
+                  <DatePickerInput value={discountStartsAt} onChange={setDiscountStartsAt} placeholder="立即生效" />
+                </div>
+                <div className="space-y-2">
+                  <Label>失效日期</Label>
+                  <DatePickerInput value={discountExpiresAt} onChange={setDiscountExpiresAt} placeholder="永久有效" />
+                </div>
                 <div className="space-y-2 md:col-span-4">
                   <Label>适用套餐</Label>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

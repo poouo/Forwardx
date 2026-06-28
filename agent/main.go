@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.119"
+var Version = "2.2.120"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1281,18 +1281,22 @@ func handleAction(cfg Config, a action) {
 			writeState(a)
 		}
 	} else {
-		stopFailoverProxy(a.RuleID, a.SourcePort)
-		if a.Fxp != nil {
-			stopFXP(*a.Fxp)
-		}
-		for _, name := range managedServiceNamesForAction(a) {
-			cleanupManagedService(name)
-		}
-		for _, cmd := range a.Commands {
-			ok = runShell(cmd) && ok
-		}
-		if shouldReportActionStatus(a) {
-			removeState(a.SourcePort)
+		if shouldSkipRemoveForReassignedPort(a) {
+			ok = true
+		} else {
+			stopFailoverProxy(a.RuleID, a.SourcePort)
+			if a.Fxp != nil {
+				stopFXP(*a.Fxp)
+			}
+			for _, name := range managedServiceNamesForAction(a) {
+				cleanupManagedService(name)
+			}
+			for _, cmd := range a.Commands {
+				ok = runShell(cmd) && ok
+			}
+			if shouldReportActionStatus(a) {
+				removeState(a.SourcePort)
+			}
 		}
 	}
 	if !shouldReportActionStatus(a) {
@@ -1309,11 +1313,36 @@ func handleAction(cfg Config, a action) {
 	}
 }
 
+func shouldSkipRemoveForReassignedPort(a action) bool {
+	if a.Op != "remove" || a.RuleID <= 0 || a.SourcePort <= 0 || strings.TrimSpace(a.StatusType) == "tunnel" {
+		return false
+	}
+	port := strconv.Itoa(a.SourcePort)
+	localRuleID := readRuleIDByPort(port)
+	if localRuleID <= 0 || localRuleID == a.RuleID {
+		return false
+	}
+	logf("skip stale remove for reassigned port=%d removeRule=%d currentRule=%d forwardType=%s", a.SourcePort, a.RuleID, localRuleID, a.ForwardType)
+	return true
+}
+
 func cleanupKernelForwardPortBeforeApply(a action) {
 	if a.Op != "apply" || a.SourcePort <= 0 {
 		return
 	}
 	port := strconv.Itoa(a.SourcePort)
+	localRuleID := readRuleIDByPort(port)
+	localForwardType := readForwardTypeByPort(port)
+	reassignedRule := a.RuleID > 0 && localRuleID > 0 && localRuleID != a.RuleID
+	changedFromKernelForward := reassignedRule && (localForwardType == "iptables" || localForwardType == "nftables")
+	if changedFromKernelForward && a.ForwardType != "iptables" {
+		for _, binary := range iptablesAgentBinaries() {
+			_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
+		}
+	}
+	if changedFromKernelForward && a.ForwardType != "nftables" {
+		_ = runShell(nftPortCleanupCmd(port, "both"))
+	}
 	switch a.ForwardType {
 	case "iptables":
 		for _, binary := range iptablesAgentBinaries() {

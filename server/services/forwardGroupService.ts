@@ -116,10 +116,10 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     externalEntry: groupMode === "chain" && !!entryGroupId,
   });
   const chinaHealthCheckEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.chinaHealthCheckEnabled;
-  const chinaHealthCheckTarget = chinaHealthCheckEnabled
-    ? String(input.chinaHealthCheckTarget || "").trim() || null
+  const rawChinaHealthTarget = chinaHealthCheckEnabled ? String(input.chinaHealthCheckTarget || "").trim() : "";
+  const chinaHealthCheckTarget = chinaHealthCheckEnabled && rawChinaHealthTarget
+    ? db.normalizeChinaHealthTarget(rawChinaHealthTarget).text
     : null;
-  if (chinaHealthCheckTarget) db.normalizeChinaHealthTarget(chinaHealthCheckTarget);
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
   await db.validateForwardGroupRecordMembers({ groupMode, groupType, recordType }, members as any);
   const commonData = {
