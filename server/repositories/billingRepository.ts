@@ -48,15 +48,131 @@ function normalizeCode(code: string) {
   return code.trim().toUpperCase();
 }
 
+const BILLING_CODE_BODY_LENGTH = 24;
+
 export function generateBillingCode(prefix = "") {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const raw = crypto.randomBytes(10);
-  const bodyLength = Math.max(6, 10 - prefix.length);
+  const bodyLength = BILLING_CODE_BODY_LENGTH;
+  const raw = crypto.randomBytes(bodyLength);
   let body = "";
   for (let i = 0; i < bodyLength; i++) {
     body += chars[raw[i] % chars.length];
   }
-  return `${prefix}${body}`.slice(0, 10).toUpperCase();
+  return `${prefix}${body}`.slice(0, 64).toUpperCase();
+}
+
+type RedemptionAttemptEntry = {
+  count: number;
+  lastFailAt: number;
+};
+
+const redemptionAttemptStore = new Map<string, RedemptionAttemptEntry>();
+const redemptionCodeLocks = new Map<string, Promise<void>>();
+const redemptionScopeLocks = new Map<string, Promise<void>>();
+const REDEMPTION_ATTEMPT_WINDOW_MS = 30 * 60 * 1000;
+const REDEMPTION_ATTEMPT_BLOCK_MS = 15 * 60 * 1000;
+const REDEMPTION_ATTEMPT_THRESHOLD = 8;
+const REDEMPTION_ATTEMPT_SOURCE_THRESHOLD = 20;
+
+function redemptionAttemptUserKey(userId: number) {
+  return `user:${userId}`;
+}
+
+function redemptionAttemptSourceKey(scope?: string | null) {
+  const normalized = String(scope || "").trim().slice(0, 128);
+  return normalized ? `source:${normalized}` : null;
+}
+
+function getActiveRedemptionAttemptEntry(key: string) {
+  const entry = redemptionAttemptStore.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.lastFailAt < REDEMPTION_ATTEMPT_WINDOW_MS) return entry;
+  redemptionAttemptStore.delete(key);
+  return null;
+}
+
+function recordRedemptionAttemptFailureForKey(key: string) {
+  const entry = getActiveRedemptionAttemptEntry(key);
+  const now = Date.now();
+  if (entry) {
+    entry.count += 1;
+    entry.lastFailAt = now;
+  } else {
+    redemptionAttemptStore.set(key, { count: 1, lastFailAt: now });
+  }
+}
+
+function redemptionAttemptKeys(userId: number, scope?: string | null) {
+  const keys = [redemptionAttemptUserKey(userId)];
+  const sourceKey = redemptionAttemptSourceKey(scope);
+  if (sourceKey) keys.push(sourceKey);
+  return keys;
+}
+
+function recordRedemptionAttemptFailure(userId: number, scope?: string | null) {
+  for (const key of redemptionAttemptKeys(userId, scope)) {
+    recordRedemptionAttemptFailureForKey(key);
+  }
+}
+
+function clearRedemptionAttemptFailures(userId: number, scope?: string | null) {
+  for (const key of redemptionAttemptKeys(userId, scope)) {
+    redemptionAttemptStore.delete(key);
+  }
+}
+
+function redemptionAttemptRateLimitState(userId: number, scope?: string | null) {
+  const checks = [
+    { key: redemptionAttemptUserKey(userId), threshold: REDEMPTION_ATTEMPT_THRESHOLD },
+    ...(redemptionAttemptSourceKey(scope) ? [{ key: redemptionAttemptSourceKey(scope)!, threshold: REDEMPTION_ATTEMPT_SOURCE_THRESHOLD }] : []),
+  ];
+  let retryAfterSeconds = 0;
+  for (const check of checks) {
+    const entry = getActiveRedemptionAttemptEntry(check.key);
+    if (!entry || entry.count < check.threshold) {
+      continue;
+    }
+    const now = Date.now();
+    const retryAt = entry.lastFailAt + REDEMPTION_ATTEMPT_BLOCK_MS;
+    if (retryAt <= now) {
+      redemptionAttemptStore.delete(check.key);
+      continue;
+    }
+    retryAfterSeconds = Math.max(retryAfterSeconds, Math.ceil((retryAt - now) / 1000));
+  }
+  return retryAfterSeconds > 0
+    ? { limited: true, retryAfterSeconds: Math.max(1, retryAfterSeconds) }
+    : { limited: false, retryAfterSeconds: 0 };
+}
+
+async function withRedemptionLock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => Promise<T>) {
+  const previous = locks.get(key);
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  locks.set(key, current);
+  if (previous) await previous.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (locks.get(key) === current) {
+      locks.delete(key);
+    }
+  }
+}
+
+function redemptionAttemptLockKey(userId: number, scope?: string | null) {
+  return redemptionAttemptSourceKey(scope) || redemptionAttemptUserKey(userId);
+}
+
+async function withRedemptionScopeLock<T>(userId: number, scope: string | null | undefined, fn: () => Promise<T>) {
+  return withRedemptionLock(redemptionScopeLocks, redemptionAttemptLockKey(userId, scope), fn);
+}
+
+async function withRedemptionCodeLock<T>(code: string, fn: () => Promise<T>) {
+  return withRedemptionLock(redemptionCodeLocks, code, fn);
 }
 
 export async function getPaymentOrderByOutTradeNo(outTradeNo: string) {
@@ -1787,49 +1903,67 @@ export async function deleteRedemptionCode(id: number) {
   await db.delete(redemptionCodes).where(eq(redemptionCodes.id, id));
 }
 
-export async function redeemCode(userId: number, code: string) {
+export async function redeemCode(userId: number, code: string, attemptScope?: string | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const normalized = normalizeCode(code);
-  const rows = await db.select().from(redemptionCodes).where(eq(redemptionCodes.code, normalized)).limit(1);
-  const item = rows[0] as any;
-  if (!item || !item.isActive) throw new Error("兑换码无效");
-  if (item.usedAt || item.usedByUserId) throw new Error("兑换码已被使用");
-  const now = new Date();
-  if (item.startsAt && new Date(item.startsAt).getTime() > now.getTime()) throw new Error("兑换码尚未生效");
-  if (item.expiresAt && new Date(item.expiresAt).getTime() <= now.getTime()) throw new Error("兑换码已过期");
-  if (item.type === "balance") {
-    if (Number(item.amountCents) <= 0) throw new Error("兑换码金额无效");
-    const balance = await addUserBalance(userId, Number(item.amountCents), {
-      type: "redeem",
-      description: `兑换余额：${normalized}`,
-      redemptionCodeId: item.id,
-    } as any);
-    await db.update(redemptionCodes).set({ usedByUserId: userId, usedAt: nowDate(), updatedAt: nowDate() } as any).where(eq(redemptionCodes.id, item.id));
-    return {
-      success: true,
-      type: item.type,
-      amountCents: Number(item.amountCents),
-      balanceCents: Number((balance as any)?.balanceCents || 0),
-    };
-  } else if (item.type === "plan") {
-    if (!item.planId) throw new Error("兑换码套餐无效");
-    const subscription = await applySubscriptionToUser(userId, Number(item.planId), "redeem", null, now, item.durationDays || null);
-    const plan = await getSubscriptionPlanById(Number(item.planId));
-    await db.update(redemptionCodes).set({ usedByUserId: userId, usedAt: nowDate(), updatedAt: nowDate() } as any).where(eq(redemptionCodes.id, item.id));
-    return {
-      success: true,
-      type: item.type,
-      planId: Number(item.planId),
-      planName: (plan as any)?.name || null,
-      durationDays: Number(item.durationDays || 0),
-      expiresAt: subscription.expiresAt,
-      portRangeStart: subscription.portRangeStart,
-      portRangeEnd: subscription.portRangeEnd,
-    };
-  } else {
-    throw new Error("兑换码类型无效");
-  }
+  return withRedemptionScopeLock(userId, attemptScope, async () => {
+    const limited = redemptionAttemptRateLimitState(userId, attemptScope);
+    if (limited.limited) {
+      throw new Error(`兑换过于频繁，请 ${limited.retryAfterSeconds} 秒后再试`);
+    }
+    const normalized = normalizeCode(code);
+    try {
+      return await withRedemptionCodeLock(normalized, async () => {
+        const rows = await db.select().from(redemptionCodes).where(eq(redemptionCodes.code, normalized)).limit(1);
+        const item = rows[0] as any;
+        if (!item || !item.isActive) throw new Error("兑换码无效");
+        if (item.usedAt || item.usedByUserId) throw new Error("兑换码已被使用");
+        const now = new Date();
+        if (item.startsAt && new Date(item.startsAt).getTime() > now.getTime()) throw new Error("兑换码尚未生效");
+        if (item.expiresAt && new Date(item.expiresAt).getTime() <= now.getTime()) throw new Error("兑换码已过期");
+        if (item.type === "balance") {
+          if (Number(item.amountCents) <= 0) throw new Error("兑换码金额无效");
+          const balance = await addUserBalance(userId, Number(item.amountCents), {
+            type: "redeem",
+            description: `兑换余额：${normalized}`,
+            redemptionCodeId: item.id,
+          } as any);
+          await db.update(redemptionCodes).set({ usedByUserId: userId, usedAt: nowDate(), updatedAt: nowDate() } as any).where(eq(redemptionCodes.id, item.id));
+          clearRedemptionAttemptFailures(userId, attemptScope);
+          return {
+            success: true,
+            type: item.type,
+            amountCents: Number(item.amountCents),
+            balanceCents: Number((balance as any)?.balanceCents || 0),
+          };
+        } else if (item.type === "plan") {
+          if (!item.planId) throw new Error("兑换码套餐无效");
+          const subscription = await applySubscriptionToUser(userId, Number(item.planId), "redeem", null, now, item.durationDays || null);
+          const plan = await getSubscriptionPlanById(Number(item.planId));
+          await db.update(redemptionCodes).set({ usedByUserId: userId, usedAt: nowDate(), updatedAt: nowDate() } as any).where(eq(redemptionCodes.id, item.id));
+          clearRedemptionAttemptFailures(userId, attemptScope);
+          return {
+            success: true,
+            type: item.type,
+            planId: Number(item.planId),
+            planName: (plan as any)?.name || null,
+            durationDays: Number(item.durationDays || 0),
+            expiresAt: subscription.expiresAt,
+            portRangeStart: subscription.portRangeStart,
+            portRangeEnd: subscription.portRangeEnd,
+          };
+        } else {
+          throw new Error("兑换码类型无效");
+        }
+      });
+    } catch (error) {
+      const message = String((error as any)?.message || error || "");
+      if (message !== "Database not available" && !message.includes("兑换过于频繁")) {
+        recordRedemptionAttemptFailure(userId, attemptScope);
+      }
+      throw error;
+    }
+  });
 }
 
 // ==================== Discount Codes ====================

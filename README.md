@@ -5,7 +5,7 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、端口转发链、入口组/出口组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.193-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.194-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -13,7 +13,7 @@ ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agen
 
 - 在线教程：https://poouo.github.io/Forwardx/
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.193/forwardx-android-v2.3.64.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.194/forwardx-android-v2.3.65.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -320,7 +320,7 @@ pnpm check:versions
 ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
 下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.193/forwardx-android-v2.3.64.apk
+https://github.com/poouo/Forwardx/releases/download/v2.3.194/forwardx-android-v2.3.65.apk
 
 常用命令：
 
@@ -340,14 +340,6 @@ pnpm mobile:apk
 - 妥善保存 Agent Token，泄露后应立即禁用并重新生成。
 - DDNS Token 建议只授予目标域名所需的最小权限。
 
-## License
-
-GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
-
-## Star 趋势
-
-[![Star History Chart](https://api.star-history.com/svg?repos=poouo/Forwardx&type=Date)](https://www.star-history.com/#poouo/Forwardx&Date)
-
 ## V我50喝咖啡
 
 USDT：
@@ -356,3 +348,12 @@ TRON ：`TGCVssNj5v58JPHxPZLLVQXsphQzLqQ3fK`
 Solana ：`8XvFdKNmESquSSJqhYepqqPJkWUqtBXn4jgeDjXyhzHU`
 
 BNB Smart Chain ：`0x44543FE6C5569Efe2b0Dc13454D4008378c92fE3`
+
+
+## License
+
+GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
+
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=poouo/Forwardx&type=Date)](https://www.star-history.com/#poouo/Forwardx&Date)

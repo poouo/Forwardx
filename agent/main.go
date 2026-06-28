@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.121"
+var Version = "2.2.122"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -51,6 +51,13 @@ const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
 const actionBacklogHeartbeatDelay = 30 * time.Second
 const actionShellTimeout = 90 * time.Second
+const protocolGuardSampleMinBytes = 96
+const protocolGuardSampleMaxBytes = 512
+const protocolGuardSampleTimeout = 750 * time.Millisecond
+const protocolGuardConfirmations = 3
+const protocolGuardWindowStep = 64
+const protocolGuardTLSMinRecordSize = 64
+const protocolGuardSOCKS5MaxMethods = 16
 const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
@@ -321,6 +328,81 @@ type protocolPolicy struct {
 	BlockHTTP  bool `json:"blockHttp"`
 	BlockSocks bool `json:"blockSocks"`
 	BlockTLS   bool `json:"blockTls"`
+}
+
+func (p protocolPolicy) enabled() bool {
+	return p.BlockHTTP || p.BlockSocks || p.BlockTLS
+}
+
+func readProtocolGuardSample(conn net.Conn, initial []byte, minBytes int) []byte {
+	sample := append([]byte(nil), initial...)
+	if len(sample) >= minBytes {
+		return sample
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(protocolGuardSampleTimeout))
+	defer conn.SetReadDeadline(time.Time{})
+	for len(sample) < protocolGuardSampleMaxBytes {
+		limit := protocolGuardSampleMaxBytes - len(sample)
+		if limit > protocolGuardWindowStep {
+			limit = protocolGuardWindowStep
+		}
+		if limit <= 0 {
+			break
+		}
+		tmp := make([]byte, limit)
+		n, err := conn.Read(tmp)
+		if n > 0 {
+			sample = append(sample, tmp[:n]...)
+		}
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				break
+			}
+			break
+		}
+		if n == 0 {
+			break
+		}
+		if len(sample) >= minBytes {
+			break
+		}
+	}
+	return sample
+}
+
+func detectBlockedProtocolWithConfirmations(conn net.Conn, first []byte, policy protocolPolicy) ([]byte, string, bool) {
+	if len(first) == 0 || !policy.enabled() {
+		return first, "", false
+	}
+	sample := append([]byte(nil), first...)
+	candidate := ""
+	confirmed := 0
+	nextTarget := protocolGuardSampleMinBytes
+	for i := 0; i < protocolGuardConfirmations && len(sample) < protocolGuardSampleMaxBytes; i++ {
+		sample = readProtocolGuardSample(conn, sample, nextTarget)
+		if nextTarget < protocolGuardSampleMaxBytes {
+			nextTarget = len(sample) + protocolGuardWindowStep
+			if nextTarget > protocolGuardSampleMaxBytes {
+				nextTarget = protocolGuardSampleMaxBytes
+			}
+		}
+		proto := detectBlockedProtocol(sample, policy)
+		if proto == "" {
+			candidate = ""
+			confirmed = 0
+			continue
+		}
+		if candidate != proto {
+			candidate = proto
+			confirmed = 1
+			continue
+		}
+		confirmed++
+		if confirmed >= 2 {
+			return sample, candidate, true
+		}
+	}
+	return sample, "", false
 }
 
 type guardRule struct {
@@ -3798,7 +3880,14 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 			first = remaining
 		}
 	}
-	if proto := detectBlockedProtocol(first, s.rule.Policy); proto != "" {
+	if s.rule.Policy.enabled() {
+		sample, proto, blocked := detectBlockedProtocolWithConfirmations(client, first, s.rule.Policy)
+		first = sample
+		if blocked && proto != "" {
+			reportProtocolBlock(cfg, s.rule, proto)
+			return
+		}
+	} else if proto := detectBlockedProtocol(first, s.rule.Policy); proto != "" {
 		reportProtocolBlock(cfg, s.rule, proto)
 		return
 	}
@@ -4172,21 +4261,49 @@ func detectBlockedProtocol(data []byte, policy protocolPolicy) string {
 }
 
 func detectHTTPProtocol(data []byte) bool {
-	if len(data) >= 24 && string(data[:24]) == "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
+	if bytes.HasPrefix(data, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")) {
 		return true
 	}
-	methods := []string{"GET ", "POST ", "PUT ", "DELETE ", "HEAD ", "OPTIONS ", "PATCH ", "CONNECT ", "TRACE "}
-	upper := strings.ToUpper(string(data[:minInt(len(data), 16)]))
-	for _, method := range methods {
-		if strings.HasPrefix(upper, method) {
-			return true
-		}
+	limit := minInt(len(data), 256)
+	if limit < 8 {
+		return false
 	}
-	return false
+	lineEnd := bytes.IndexByte(data[:limit], '\n')
+	if lineEnd < 0 {
+		return false
+	}
+	line := strings.TrimSuffix(string(data[:lineEnd]), "\r")
+	parts := strings.Fields(line)
+	if len(parts) != 3 {
+		return false
+	}
+	switch strings.ToUpper(parts[0]) {
+	case "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE":
+	default:
+		return false
+	}
+	return parts[2] == "HTTP/1.0" || parts[2] == "HTTP/1.1"
 }
 
 func detectTLSProtocol(data []byte) bool {
-	return len(data) >= 5 && data[0] == 0x16 && data[1] == 0x03 && data[2] >= 0x01 && data[2] <= 0x04
+	if len(data) < 9 {
+		return false
+	}
+	if data[0] != 0x16 || data[1] != 0x03 || data[2] < 0x01 || data[2] > 0x04 {
+		return false
+	}
+	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if recordLen < protocolGuardTLSMinRecordSize || recordLen > 18432 {
+		return false
+	}
+	if data[5] != 0x01 {
+		return false
+	}
+	handshakeLen := int(data[6])<<16 | int(data[7])<<8 | int(data[8])
+	if handshakeLen <= 0 || handshakeLen+4 > recordLen {
+		return false
+	}
+	return true
 }
 
 func detectSocksProtocol(data []byte) bool {
@@ -4194,13 +4311,16 @@ func detectSocksProtocol(data []byte) bool {
 		return false
 	}
 	if data[0] == 0x04 {
-		return len(data) >= 7 && (data[1] == 0x01 || data[1] == 0x02)
+		if len(data) < 9 || (data[1] != 0x01 && data[1] != 0x02) {
+			return false
+		}
+		return bytes.IndexByte(data[8:], 0x00) >= 0
 	}
 	if data[0] != 0x05 {
 		return false
 	}
 	nMethods := int(data[1])
-	if nMethods <= 0 || len(data) < 2+nMethods {
+	if nMethods <= 0 || nMethods > protocolGuardSOCKS5MaxMethods || len(data) < 2+nMethods {
 		return false
 	}
 	for _, method := range data[2 : 2+nMethods] {

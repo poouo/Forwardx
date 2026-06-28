@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "
 import { toast } from "sonner";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const BILLING_CODE_BODY_LENGTH = 24;
 type BillingTab = "ledger" | "subscriptions" | "balance" | "redeem" | "discount";
 const BILLING_TABS = ["ledger", "subscriptions", "balance", "redeem", "discount"] as const;
 const BILLING_TAB_STORAGE_KEY = "forwardx.billing.tab";
@@ -30,9 +31,18 @@ function dateText(value?: string | Date | null) {
   return value ? new Date(value).toLocaleString() : "不限";
 }
 
-function randomBillingCode() {
-  const length = 6 + Math.floor(Math.random() * 5);
-  return Array.from({ length }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join("");
+function randomBillingCode(prefix = "") {
+  const randomValues = new Uint8Array(BILLING_CODE_BODY_LENGTH);
+  const cryptoSource = globalThis.crypto;
+  if (cryptoSource?.getRandomValues) {
+    cryptoSource.getRandomValues(randomValues);
+  } else {
+    for (let i = 0; i < BILLING_CODE_BODY_LENGTH; i++) {
+      randomValues[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const body = Array.from(randomValues, (value) => CODE_CHARS[value % CODE_CHARS.length]).join("");
+  return `${prefix}${body}`.slice(0, 64).toUpperCase();
 }
 
 function parseLocalTime(value: string) {
@@ -747,7 +757,7 @@ export default function Billing() {
                   <Label>兑换码</Label>
                   <div className="flex gap-2">
                     <Input value={redeemCode} onChange={(e) => setRedeemCode(normalizeCodeInput(e.target.value))} placeholder="留空自动生成" />
-                    <Button type="button" variant="outline" onClick={() => setRedeemCode(randomBillingCode())}><Shuffle className="mr-2 h-4 w-4" /> 随机</Button>
+                    <Button type="button" variant="outline" onClick={() => setRedeemCode(randomBillingCode("FXR"))}><Shuffle className="mr-2 h-4 w-4" /> 随机</Button>
                   </div>
                   <p className="text-xs text-muted-foreground">留空自动生成兑换码。</p>
                 </div>
@@ -848,7 +858,7 @@ export default function Billing() {
                     {filteredRedemptionCodes.map((code: any) => (
                       <TableRow key={code.id}>
                         <TableCell><input type="checkbox" checked={selectedRedemptionSet.has(Number(code.id))} onChange={(event) => toggleRedemptionCode(Number(code.id), event.target.checked)} /></TableCell>
-                        <TableCell className="font-mono">{code.code}</TableCell>
+                        <TableCell className="font-mono break-all">{code.code}</TableCell>
                         <TableCell><Badge variant="outline">{code.type === "plan" ? "套餐" : "余额"}</Badge></TableCell>
                         <TableCell>{code.type === "plan" ? `${code.planName || `套餐 #${code.planId}`} / ${code.durationDays || 30} 天` : money(code.amountCents)}</TableCell>
                         <TableCell>{dateText(code.startsAt)} - {dateText(code.expiresAt)}</TableCell>
@@ -881,7 +891,7 @@ export default function Billing() {
                   <Label>折扣码</Label>
                   <div className="flex gap-2">
                     <Input value={discountCode} onChange={(e) => setDiscountCode(normalizeCodeInput(e.target.value))} placeholder="例如 SALE2026" />
-                    <Button type="button" variant="outline" onClick={() => setDiscountCode(randomBillingCode())}><Shuffle className="mr-2 h-4 w-4" /> 随机</Button>
+                    <Button type="button" variant="outline" onClick={() => setDiscountCode(randomBillingCode("FXD"))}><Shuffle className="mr-2 h-4 w-4" /> 随机</Button>
                   </div>
                   <p className="text-xs text-muted-foreground">可手动填写或随机生成。</p>
                 </div>
@@ -954,7 +964,7 @@ export default function Billing() {
                       const status = discountStatus(code);
                       return (
                         <TableRow key={code.id}>
-                          <TableCell className="font-mono">{code.code}</TableCell>
+                          <TableCell className="font-mono break-all">{code.code}</TableCell>
                           <TableCell>{code.discountType === "percent" ? `${code.discountValue}%` : money(code.discountValue)}</TableCell>
                           <TableCell>{code.planIds?.length ? code.planIds.map((id: number) => (plans as any[]).find((plan: any) => Number(plan.id) === Number(id))?.name || `#${id}`).join("、") : "全部套餐"}</TableCell>
                           <TableCell><Badge variant={status === "生效中" ? "default" : "secondary"}>{status}</Badge></TableCell>

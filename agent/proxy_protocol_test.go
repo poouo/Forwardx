@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+func TestDetectHTTPProtocolRequiresRequestLine(t *testing.T) {
+	if detectHTTPProtocol([]byte("GET /")) {
+		t.Fatal("expected short prefix to be rejected")
+	}
+	if !detectHTTPProtocol([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n")) {
+		t.Fatal("expected full request line to be detected")
+	}
+}
+
+func TestDetectTLSProtocolRequiresHandshakeShape(t *testing.T) {
+	if detectTLSProtocol([]byte{0x16, 0x03, 0x03, 0x00, 0x10}) {
+		t.Fatal("expected short tls record to be rejected")
+	}
+	if !detectTLSProtocol([]byte{0x16, 0x03, 0x03, 0x00, 0x48, 0x01, 0x00, 0x00, 0x44}) {
+		t.Fatal("expected shaped tls record to be detected")
+	}
+}
+
+func TestDetectSocksProtocolRequiresFullGreeting(t *testing.T) {
+	if detectSocksProtocol([]byte{0x05, 0x01, 0x00}) {
+		t.Fatal("expected short socks greeting to be rejected")
+	}
+	if !detectSocksProtocol([]byte{0x05, 0x02, 0x00, 0x02}) {
+		t.Fatal("expected socks greeting to be detected")
+	}
+}
+
 func TestConsumeProxyProtocolV1(t *testing.T) {
 	info, remaining, ok, err := consumeProxyProtocolV1([]byte("PROXY TCP4 203.0.113.9 10.0.0.5 45123 443\r\nGET / HTTP/1.1\r\n"))
 	if err != nil {

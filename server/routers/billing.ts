@@ -13,6 +13,10 @@ function parseDate(value?: string | null) {
   return date;
 }
 
+function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: string } } }) {
+  return ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
+}
+
 export const billingRouter = router({
   featureStatus: protectedProcedure.query(async () => ({
     redemptionEnabled: (await db.getSetting("redemptionEnabled")) !== "false",
@@ -168,7 +172,7 @@ export const billingRouter = router({
     .input(z.object({ code: z.string().trim().min(1).max(64) }))
     .mutation(async ({ input, ctx }) => {
       if ((await db.getSetting("redemptionEnabled")) === "false") throw new Error("兑换码功能已关闭");
-      const result = await db.redeemCode(ctx.user.id, input.code);
+      const result = await db.redeemCode(ctx.user.id, input.code, getRequestIp(ctx));
       const recovery = await db.recoverUserForwardAccessIfEligible(ctx.user.id);
       await refreshUserForwardEndpoints(ctx.user.id, "code-redeemed");
       appendPanelLog("info", `[Redeem] user=${ctx.user.id} type=${result.type}`);

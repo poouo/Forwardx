@@ -145,6 +145,7 @@ export default function HostCard({
     return { in: inDelta / seconds, out: outDelta / seconds };
   }, [latestMetric, previousMetric]);
   const remainingTimeLabel = formatRemainingTime(host.purchasedAt, host.stoppedAt);
+  const hostName = String(host.name || "-").trim() || "-";
   const osInfoText = compactHostOsInfo(host.osInfo);
   const remainingTimeClass = remainingTimeLabel === "已到期"
     ? "border-destructive/30 bg-destructive/10 text-destructive"
@@ -227,106 +228,199 @@ export default function HostCard({
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
     }`}>
       <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
-            <span className="flex min-w-0 flex-wrap items-center gap-2">
-              <Monitor className="h-4 w-4 shrink-0" />
-              <span className="min-w-0 max-w-full truncate">{host.name}</span>
-              <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground ${
-                isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
-              }`}>
-                {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
-              </span>
-              {agentNeedsUpdate && (
-                <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                  新版
-                </Badge>
+        {compact ? (
+          <div className="flex items-center justify-between gap-2">
+            <Monitor className={`h-4 w-4 shrink-0 ${isOnline ? "" : "text-muted-foreground"}`} />
+            <div className="flex shrink-0 items-center justify-end gap-1">
+              {onViewProbeLatency && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title="查看服务延迟"
+                  onClick={() => onViewProbeLatency(host)}
+                >
+                  <Activity className="h-3.5 w-3.5" />
+                </Button>
               )}
-              {host.agentUpgradeRequested && (
-                <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
-                  {agentUpgradeTimedOut ? "升级失败" : "升级中"}
-                </Badge>
+              {onResetTraffic && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={resetTrafficPending}
+                  title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
+                  onClick={() => onResetTraffic(host)}
+                >
+                  {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                </Button>
               )}
-            </span>
-          </CardTitle>
-          <div className="flex shrink-0 items-center justify-end gap-1">
-            {onViewProbeLatency && (
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                title="查看服务延迟"
-                onClick={() => onViewProbeLatency(host)}
+                disabled={!canUpgrade}
+                title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
+                onClick={() => onUpgrade(host)}
               >
-                <Activity className="h-3.5 w-3.5" />
+                {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
               </Button>
-            )}
-            {onResetTraffic && (
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                disabled={resetTrafficPending}
-                title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
-                onClick={() => onResetTraffic(host)}
+                onClick={() => onEdit(host)}
               >
-                {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                <Pencil className="h-3.5 w-3.5" />
               </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              disabled={!canUpgrade}
-              title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
-              onClick={() => onUpgrade(host)}
-            >
-              {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => onEdit(host)}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-destructive hover:text-destructive"
-              onClick={() => {
-                if (confirm("确定要删除此主机吗？")) onDelete(host.id);
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-destructive hover:text-destructive"
+                onClick={() => {
+                  if (confirm("确定要删除此主机吗？")) onDelete(host.id);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <Monitor className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 max-w-full truncate">{hostName}</span>
+              </span>
+            </CardTitle>
+            <div className="flex shrink-0 items-center justify-end gap-1">
+              {onViewProbeLatency && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title="查看服务延迟"
+                  onClick={() => onViewProbeLatency(host)}
+                >
+                  <Activity className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              {onResetTraffic && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  disabled={resetTrafficPending}
+                  title={resetTrafficPending ? "正在重置流量统计" : "重置流量统计"}
+                  onClick={() => onResetTraffic(host)}
+                >
+                  {resetTrafficPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={!canUpgrade}
+                title={agentUpgradeTimedOut ? "升级超时，可重新下发" : "升级 Agent"}
+                onClick={() => onUpgrade(host)}
+              >
+                {agentUpgrading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => onEdit(host)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-destructive hover:text-destructive"
+                onClick={() => {
+                  if (confirm("确定要删除此主机吗？")) onDelete(host.id);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
       </CardHeader>
       <CardContent className={`host-card-mode-content ${compact ? "host-card-mode-content-compact space-y-2 px-3.5 pb-3.5" : "host-card-mode-content-standard space-y-3"} ${isOnline ? "" : "text-muted-foreground"}`}>
-        <div className={compact ? "space-y-1.5" : "space-y-2"}>
-          <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
-            <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
-              <span className="mr-1.5 text-muted-foreground">地址</span>
-              {hostPrimaryAddressText(host)}
-            </p>
-            <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
-              <HostRegionBadge host={host} />
+        {compact ? (
+          <div className="space-y-2">
+            <div className={`min-w-0 rounded-md border px-2.5 py-1.5 ${infoPanelClass}`}>
+              <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
+                <span className="mr-1.5 text-muted-foreground">地址</span>
+                {hostPrimaryAddressText(host)}
+              </p>
+              <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
+                <HostRegionBadge host={host} compact />
+              </div>
+            </div>
+            <div className="w-full min-w-0 rounded-md border px-2.5 py-1.5">
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="min-w-0 flex-1 break-words text-sm font-semibold leading-snug" title={hostName}>
+                  {hostName}
+                </span>
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground ${
+                    isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
+                  }`}
+                >
+                  {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                </span>
+              </div>
+              {(agentNeedsUpdate || host.agentUpgradeRequested) && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {agentNeedsUpdate && (
+                    <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
+                      新版
+                    </Badge>
+                  )}
+                  {host.agentUpgradeRequested && (
+                    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
+                      {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap text-xs`}>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
+                <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
+              </div>
             </div>
           </div>
-          <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap ${compact ? "text-xs" : "text-sm"}`}>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
-              <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
+        ) : (
+          <div className={compact ? "space-y-1.5" : "space-y-2"}>
+            <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
+              <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
+                <span className="mr-1.5 text-muted-foreground">地址</span>
+                {hostPrimaryAddressText(host)}
+              </p>
+              <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
+                <HostRegionBadge host={host} />
+              </div>
             </div>
-            {!compact && <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-              <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate" title={host.osInfo || ""}>{osInfoText}</span>
-            </div>}
+            <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap ${compact ? "text-xs" : "text-sm"}`}>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
+                <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
+              </div>
+              {!compact && <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                <Server className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 truncate" title={host.osInfo || ""}>{osInfoText}</span>
+              </div>}
+            </div>
           </div>
-        </div>
+        )}
 
         {latestMetric ? (
           compact ? (

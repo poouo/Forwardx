@@ -4637,11 +4637,11 @@ function redeemSuccessText(result: any) {
   return "<b>兑换成功</b>";
 }
 
-async function redeemForTelegramUser(user: any, code: string) {
+async function redeemForTelegramUser(user: any, code: string, attemptScope?: string | null) {
   const normalized = code.trim();
   if (!normalized) throw new Error("请输入兑换码");
   if (user.role === "admin") throw new Error("管理员账户无需兑换码");
-  const result = await db.redeemCode(user.id, normalized);
+  const result = await db.redeemCode(user.id, normalized, attemptScope || `tg:${user.telegramId || user.id}`);
   const recovery = await db.recoverUserForwardAccessIfEligible(user.id);
   if (recovery.restored) {
     await refreshUserForwardEndpoints(user.id, "telegram-code-redeemed-forward-restored");
@@ -4655,7 +4655,7 @@ async function handleRedeem(message: TelegramMessage, user: any, code?: string) 
     return;
   }
   try {
-    const result = await redeemForTelegramUser(user, code);
+    const result = await redeemForTelegramUser(user, code, `tg:${message.chat.id}:${message.from?.id || user.telegramId || user.id}`);
     await sendMessage(message.chat.id, redeemSuccessText(result), backMenuKeyboard());
   } catch (error: any) {
     await sendMessage(message.chat.id, `兑换失败：${escapeHtml(error?.message || "兑换码无效")}`, redeemCancelKeyboard());

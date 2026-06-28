@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { useOverlayContainer } from "@/components/ui/overlay-root";
 import { cn } from "@/lib/utils";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 function padDatePart(value: number) {
@@ -41,7 +41,7 @@ function sameDateOnly(a: Date | null, b: Date) {
 }
 
 const PANEL_WIDTH = 320;
-const PANEL_HEIGHT = 330;
+const PANEL_HEIGHT = 360;
 
 type DatePickerInputProps = {
   value: string;
@@ -84,7 +84,9 @@ export default function DatePickerInput({
     const availableWidth = Math.max(288, boundaryRight - boundaryLeft);
     const availableHeight = Math.max(220, boundaryBottom - boundaryTop);
     const width = Math.min(PANEL_WIDTH, availableWidth);
-    const panelHeight = Math.min(PANEL_HEIGHT, availableHeight);
+    const contentHeight = panelRef.current?.scrollHeight || PANEL_HEIGHT;
+    const panelHeight = Math.min(contentHeight, availableHeight);
+    const needsScroll = contentHeight > availableHeight;
     const spaceBelow = boundaryBottom - rect.bottom;
     const spaceAbove = rect.top - boundaryTop;
     const side = spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
@@ -97,6 +99,7 @@ export default function DatePickerInput({
       width,
       height: panelHeight,
       maxHeight: availableHeight,
+      overflowY: needsScroll ? "auto" : "hidden",
     });
   };
 
@@ -104,7 +107,7 @@ export default function DatePickerInput({
     if (open) setViewDate(selected || new Date());
   }, [open, selectedTime, selected]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     updatePanelPosition();
     const frame = window.requestAnimationFrame(updatePanelPosition);
@@ -163,7 +166,7 @@ export default function DatePickerInput({
       ref={panelRef}
       aria-hidden={!open}
       style={panelStyle}
-      className={`fixed z-[70] overflow-y-auto overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
+      className={`fixed z-[70] overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
     >
       <div className="p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -192,7 +195,7 @@ export default function DatePickerInput({
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => commitDate(new Date())}>今天</Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
         </div>
       </div>
     </div>
