@@ -72,7 +72,7 @@ export const FORWARD_PROTOCOL_LABELS: Record<ForwardProtocolKey, string> = {
   mwss: "GOST MWSS",
   mtcp: "GOST MTCP",
   nginx_stream: "Nginx",
-  nginx_tls: "Nginx TLS",
+  nginx_tls: "Nginx",
 };
 
 export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {

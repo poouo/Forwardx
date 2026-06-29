@@ -122,6 +122,7 @@ type TunnelForm = {
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp" | "nginx_stream" | "nginx_tls";
+  certDomain: string;
   listenPort: number;
   rateLimitMbps: number;
   networkType: "public" | "private";
@@ -252,6 +253,7 @@ const defaultForm: TunnelForm = {
   hopHostIds: [],
   hopConnectHosts: [],
   mode: "forwardx",
+  certDomain: "",
   listenPort: 0,
   rateLimitMbps: 0,
   networkType: "public",
@@ -631,11 +633,11 @@ const tunnelModeLabels: Record<TunnelForm["mode"], string> = {
   mwss: "MWSS",
   mtcp: "MTCP",
   nginx_stream: "Stream",
-  nginx_tls: "TLS",
+  nginx_tls: "Stream",
 };
 
 const gostTunnelModes: TunnelForm["mode"][] = ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"];
-const nginxTunnelModes: TunnelForm["mode"][] = ["nginx_stream", "nginx_tls"];
+const nginxTunnelModes: TunnelForm["mode"][] = ["nginx_stream"];
 const tunnelLoadBalanceStrategyLabels: Record<TunnelForm["loadBalanceStrategy"], string> = {
   round_robin: "轮询",
   random: "随机",
@@ -645,10 +647,23 @@ const tunnelLoadBalanceStrategyLabels: Record<TunnelForm["loadBalanceStrategy"],
 };
 const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 
+function isNginxTunnelModeValue(mode: unknown) {
+  const normalized = String(mode || "").toLowerCase();
+  return normalized === "nginx_stream" || normalized === "nginx_tls";
+}
+
+function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
+  const normalized = String(mode || "").toLowerCase();
+  if (normalized === "nginx_tls") return "nginx_stream";
+  return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream"] as const).includes(normalized as any)
+    ? normalized as TunnelForm["mode"]
+    : "forwardx";
+}
+
 function getTunnelModeDisplay(mode: unknown) {
   const normalized = String(mode || "").toLowerCase() as TunnelForm["mode"];
   const label = tunnelModeLabels[normalized] || String(mode || "").toUpperCase();
-  if (nginxTunnelModes.includes(normalized)) return normalized === "nginx_tls" ? "Nginx TLS" : "Nginx";
+  if (isNginxTunnelModeValue(normalized)) return "Nginx";
   return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
 }
 
@@ -1665,6 +1680,7 @@ function TunnelsContent() {
   );
   const getTunnelProtocolKey = (tunnel: any | null | undefined): ForwardProtocolKey | null => {
     const mode = String(tunnel?.mode || "").toLowerCase();
+    if (mode === "nginx_tls") return "nginx_stream";
     return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const).includes(mode as any)
       ? mode as ForwardProtocolKey
       : null;
@@ -1921,7 +1937,8 @@ function TunnelsContent() {
       exitHostId: tunnel.exitHostId,
       hopHostIds: displayRoute.hopHostIds,
       hopConnectHosts: displayRoute.hopConnectHosts,
-      mode: tunnel.mode || "tls",
+      mode: normalizeTunnelModeForForm(tunnel.mode || "tls"),
+      certDomain: String(tunnel.certDomain || ""),
       listenPort: tunnel.listenPort,
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       networkType: tunnel.networkType === "private" ? "private" : "public",
@@ -2022,6 +2039,11 @@ function TunnelsContent() {
       toast.error("出口监听端口必须为 0 或 1-65535，0 表示自动分配");
       return;
     }
+    const certDomain = String(submitForm.certDomain || "").trim();
+    if (isNginxTunnelModeValue(submitForm.mode) && certDomain && !isValidConnectHost(certDomain)) {
+      toast.error("证书域名格式无效");
+      return;
+    }
     const rateLimitMbps = Number(submitForm.rateLimitMbps) || 0;
     if (!Number.isInteger(rateLimitMbps) || rateLimitMbps < 0 || rateLimitMbps > 1_000_000) {
       toast.error("隧道限速必须为 0 或正整数 Mbps，0 表示不限速");
@@ -2097,7 +2119,8 @@ function TunnelsContent() {
     }
     const payload: any = {
       name: submitForm.name,
-      mode: submitForm.mode,
+      mode: normalizeTunnelModeForForm(submitForm.mode),
+      certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
       listenPort: submitForm.listenPort,
       rateLimitMbps,
       networkType: isMultiHopTunnel
@@ -2964,16 +2987,13 @@ function TunnelsContent() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            const nextMode = nginxTunnelModes.includes(form.mode) ? form.mode : enabledNginxTunnelModes[0];
-                            if (nextMode) setForm({ ...form, mode: nextMode });
-                          }}
+                          onClick={() => setForm({ ...form, mode: "nginx_stream" })}
                           disabled={nginxRuntimeDisabled}
                           title={enabledNginxTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                          aria-pressed={nginxTunnelModes.includes(form.mode)}
-                          className={segmentedOptionClassName(nginxTunnelModes.includes(form.mode), nginxRuntimeDisabled, "px-2")}
+                          aria-pressed={isNginxTunnelModeValue(form.mode)}
+                          className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), nginxRuntimeDisabled, "px-2")}
                         >
-                          <Server className={segmentedIconClassName(nginxTunnelModes.includes(form.mode))} />
+                          <Server className={segmentedIconClassName(isNginxTunnelModeValue(form.mode))} />
                           <span className="truncate">Nginx</span>
                         </button>
                       </div>
@@ -2996,23 +3016,16 @@ function TunnelsContent() {
                         </Select>
                       </div>
                     )}
-                    {nginxTunnelModes.includes(form.mode) && (
+                    {isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
-                        <Label>Nginx 协议</Label>
-                        <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {enabledNginxTunnelModes.map((mode) => (
-                              <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <Label>证书域名</Label>
+                        <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
                         <p className="text-xs text-muted-foreground">
-                          Nginx Stream 支持 TCP/UDP/TCP+UDP；Nginx TLS 隧道仅支持 TCP 转发。
+                          Nginx 当前仅使用 Stream 四层转发，支持 TCP/UDP/TCP+UDP；证书域名仅保存为配置项。
                         </p>
                       </div>
                     )}
-                    {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && nginxTunnelModes.includes(form.mode) && (
+                    {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
                         <Label>出口组负载模式</Label>
                         <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>
@@ -3280,16 +3293,13 @@ function TunnelsContent() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    const nextMode = nginxTunnelModes.includes(form.mode) ? form.mode : enabledNginxTunnelModes[0];
-                    if (nextMode) setForm({ ...form, mode: nextMode });
-                  }}
+                  onClick={() => setForm({ ...form, mode: "nginx_stream" })}
                   disabled={nginxRuntimeDisabled}
                   title={enabledNginxTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
-                  aria-pressed={nginxTunnelModes.includes(form.mode)}
-                  className={segmentedOptionClassName(nginxTunnelModes.includes(form.mode), nginxRuntimeDisabled, "px-2")}
+                  aria-pressed={isNginxTunnelModeValue(form.mode)}
+                  className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), nginxRuntimeDisabled, "px-2")}
                 >
-                  <Server className={segmentedIconClassName(nginxTunnelModes.includes(form.mode))} />
+                  <Server className={segmentedIconClassName(isNginxTunnelModeValue(form.mode))} />
                   <span className="truncate">Nginx</span>
                 </button>
               </div>
@@ -3312,23 +3322,16 @@ function TunnelsContent() {
                 </Select>
               </div>
             )}
-            {nginxTunnelModes.includes(form.mode) && (
+            {isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
-                <Label>Nginx 协议</Label>
-                <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {enabledNginxTunnelModes.map((mode) => (
-                      <SelectItem key={mode} value={mode}>{tunnelModeLabels[mode]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label>证书域名</Label>
+                <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
                 <p className="text-xs text-muted-foreground">
-                  Nginx Stream 支持 TCP/UDP/TCP+UDP；Nginx TLS 隧道仅支持 TCP 转发。
+                  Nginx 当前仅使用 Stream 四层转发，支持 TCP/UDP/TCP+UDP；证书域名仅保存为配置项。
                 </p>
               </div>
             )}
-            {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && nginxTunnelModes.includes(form.mode) && (
+            {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
                 <Label>出口组负载模式</Label>
                 <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>

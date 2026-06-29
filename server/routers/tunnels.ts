@@ -22,6 +22,18 @@ const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
 const tunnelQueryCache = createQueryCache(300);
 
+function normalizeTunnelMode(mode: unknown) {
+  const value = String(mode || "").trim().toLowerCase();
+  return value === "nginx_tls" ? "nginx_stream" : value;
+}
+
+function normalizeCertDomain(value: unknown) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (text.length > 253 || /[\s'"<>]/.test(text)) throw new Error("证书域名格式无效");
+  return text;
+}
+
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
   clearTunnelRuntimeStatus(tunnelId);
   const uniqueHostIds = Array.from(new Set(hostIds.map((hostId) => Number(hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0)));
@@ -382,6 +394,7 @@ export const tunnelsRouter = router({
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        certDomain: z.string().max(253).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional().default("public"),
         connectHost: z.string().max(128).nullable().optional(),
         blockHttp: z.boolean().optional().default(false),
@@ -394,6 +407,8 @@ export const tunnelsRouter = router({
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        const normalizedMode = normalizeTunnelMode(input.mode);
+        const certDomain = normalizedMode === "nginx_stream" ? normalizeCertDomain((input as any).certDomain) : null;
         const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 3) ? input.hopHostIds : null;
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts) ? (input as any).hopConnectHosts as Array<string | null> : [];
         if (hopHostIds) {
@@ -411,7 +426,7 @@ export const tunnelsRouter = router({
           const exit = await requireHostAccess(ctx, input.exitHostId);
           if (!entry || !exit) throw new Error("主机不存在");
         }
-        await requireTunnelProtocolEnabled(input);
+        await requireTunnelProtocolEnabled({ ...input, mode: normalizedMode });
         await requireEntryGroupAccess(ctx, input.entryGroupId);
 
         // Determine entry/exit host IDs
@@ -447,7 +462,7 @@ export const tunnelsRouter = router({
           primaryHostId: exitHostId,
           blockedHostIds: hopHostIds || [entryHostId, exitHostId],
           enabled: loadBalanceEnabled,
-          mode: input.mode,
+          mode: normalizedMode,
           exits: input.loadBalanceExits || [],
           explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
         });
@@ -465,6 +480,8 @@ export const tunnelsRouter = router({
           entryGroupId: input.entryGroupId ?? null,
           entryHostId,
           exitHostId,
+          mode: normalizedMode,
+          certDomain,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
           networkType: isHostPrivateConnectHost(connectHost, exitHostForConnect) ? "private" : "public",
@@ -519,6 +536,7 @@ export const tunnelsRouter = router({
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
+        certDomain: z.string().max(253).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional(),
         connectHost: z.string().max(128).nullable().optional(),
         blockHttp: z.boolean().optional(),
@@ -539,7 +557,7 @@ export const tunnelsRouter = router({
         const existingExtraExitNodes = await hopRepo.getTunnelExitNodes(input.id);
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
-        const nextModeForRuntime = input.mode ?? (tunnel as any).mode;
+        const nextModeForRuntime = normalizeTunnelMode(input.mode ?? (tunnel as any).mode);
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
@@ -584,6 +602,13 @@ export const tunnelsRouter = router({
           blockTls: _ignoredBlockTls,
           ...data
         } = input as any;
+        if ((data as any).mode !== undefined) {
+          (data as any).mode = normalizeTunnelMode((data as any).mode);
+        }
+        if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
+          const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
+          (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
+        }
         const nextPortRangeStart = (data as any).portRangeStart !== undefined ? (data as any).portRangeStart : (tunnel as any).portRangeStart;
         const nextPortRangeEnd = (data as any).portRangeEnd !== undefined ? (data as any).portRangeEnd : (tunnel as any).portRangeEnd;
         if (nextPortRangeStart != null && nextPortRangeEnd != null && nextPortRangeStart > nextPortRangeEnd) {

@@ -799,11 +799,10 @@ function getTunnelDisplay(tunnel: any | null | undefined) {
     };
   }
   if (nginxTunnelModes.has(mode)) {
-    const isTls = mode === "nginx_tls";
     return {
-      shortLabel: isTls ? "Nginx TLS" : "Nginx",
-      badgeLabel: isTls ? "隧道 / Nginx TLS" : "隧道 / Nginx",
-      toolLabel: isTls ? "Nginx TLS 隧道" : "Nginx Stream 隧道",
+      shortLabel: "Nginx",
+      badgeLabel: "隧道 / Nginx",
+      toolLabel: "Nginx Stream 隧道",
     };
   }
   return {
@@ -2455,6 +2454,7 @@ function RulesContent() {
   }, [forwardProtocolSettings]);
   const getTunnelProtocolKey = useCallback((tunnel: any | null | undefined): ForwardProtocolKey | null => {
     const mode = String(tunnel?.mode || "").toLowerCase();
+    if (mode === "nginx_tls") return "nginx_stream";
     return (["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const).includes(mode as any)
       ? mode as ForwardProtocolKey
       : null;
@@ -2480,8 +2480,6 @@ function RulesContent() {
     if (!form.tunnelId || !tunnels) return null;
     return tunnels.find((t: any) => t.id === form.tunnelId) || null;
   }, [form.tunnelId, tunnels]);
-  const selectedTunnelMode = String(selectedTunnel?.mode || "").toLowerCase();
-  const selectedTunnelIsNginxTls = form.routeMode === "tunnel" && selectedTunnelMode === "nginx_tls";
   const selectedEntryPortPolicy = useMemo(() => {
     if (!selectedHost) return portPolicyFrom(null);
     let policy = portPolicyFrom(selectedHost);
@@ -2799,22 +2797,6 @@ function RulesContent() {
     if (telegramBotReady || !form.telegramErrorNotifyEnabled) return;
     setForm((prev) => prev.telegramErrorNotifyEnabled ? { ...prev, telegramErrorNotifyEnabled: false } : prev);
   }, [form.telegramErrorNotifyEnabled, systemSettingsFetched, telegramBotReady]);
-
-  useEffect(() => {
-    if (!selectedTunnelIsNginxTls || form.protocol === "tcp") return;
-    setForm((prev) => ({
-      ...prev,
-      protocol: "tcp",
-      proxyProtocolReceive: false,
-      proxyProtocolSend: false,
-      proxyProtocolExitReceive: false,
-      proxyProtocolExitSend: false,
-      tcpFastOpen: false,
-      zeroCopy: false,
-      udpOverTcp: false,
-      udpOverTcpPort: 0,
-    }));
-  }, [form.protocol, selectedTunnelIsNginxTls]);
 
   useEffect(() => {
     if (canUseProxyProtocol) return;
@@ -5304,99 +5286,108 @@ function RulesContent() {
           <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">入向流量</p>
-              <AnimatedStatValue
-                as="p"
-                value={formatBytes(totalTrafficTotals.bytesIn)}
-                loading={totalTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.bytesIn`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
-                fallbackValue="0 B"
-                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
-              />
-            </div>
-            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
-              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
-                <ArrowDownToLine className="h-3 w-3 text-chart-2 sm:h-3.5 sm:w-3.5" />
-                <span>24H</span>
+              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={formatBytes(totalTrafficTotals.bytesIn)}
+                    loading={totalTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.bytesIn`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesIn`, "rules.traffic.total.last.bytesIn"]}
+                    fallbackValue="0 B"
+                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                  />
+                </div>
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={formatBytes(dailyTrafficTotals.bytesIn)}
+                    loading={dailyTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesIn`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
+                    fallbackValue="0 B"
+                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                  />
+                </div>
               </div>
-              <AnimatedStatValue
-                as="p"
-                value={formatBytes(dailyTrafficTotals.bytesIn)}
-                loading={dailyTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesIn`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
-                fallbackValue="0 B"
-                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
-              />
             </div>
+            <ArrowDownToLine className="h-5 w-5 shrink-0 text-chart-2 sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
+          <CardContent className="flex min-w-0 items-center justify-between gap-3 p-3 sm:gap-4 sm:p-4">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">出向流量</p>
-              <AnimatedStatValue
-                as="p"
-                value={formatBytes(totalTrafficTotals.bytesOut)}
-                loading={totalTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.bytesOut`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
-                fallbackValue="0 B"
-                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
-              />
-            </div>
-            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
-              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
-                <ArrowUpFromLine className="h-3 w-3 text-chart-4 sm:h-3.5 sm:w-3.5" />
-                <span>24H</span>
+              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={formatBytes(totalTrafficTotals.bytesOut)}
+                    loading={totalTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.bytesOut`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.bytesOut`, "rules.traffic.total.last.bytesOut"]}
+                    fallbackValue="0 B"
+                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                  />
+                </div>
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={formatBytes(dailyTrafficTotals.bytesOut)}
+                    loading={dailyTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesOut`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
+                    fallbackValue="0 B"
+                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                  />
+                </div>
               </div>
-              <AnimatedStatValue
-                as="p"
-                value={formatBytes(dailyTrafficTotals.bytesOut)}
-                loading={dailyTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesOut`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
-                fallbackValue="0 B"
-                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
-              />
             </div>
+            <ArrowUpFromLine className="h-5 w-5 shrink-0 text-chart-4 sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
+          <CardContent className="flex min-w-0 items-center justify-between gap-3 p-3 sm:gap-4 sm:p-4">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">连接次数</p>
-              <AnimatedStatValue
-                as="p"
-                value={totalTrafficTotals.connections.toLocaleString()}
-                loading={totalTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.connections`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
-                fallbackValue="0"
-                className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
-              />
-            </div>
-            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
-              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
-                <Activity className="h-3 w-3 text-chart-3 sm:h-3.5 sm:w-3.5" />
-                <span>24H</span>
+              <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={totalTrafficTotals.connections.toLocaleString()}
+                    loading={totalTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.total.connections`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.total.last.connections`, "rules.traffic.total.last.connections"]}
+                    fallbackValue="0"
+                    className="truncate text-xs font-semibold tabular-nums sm:text-xl"
+                  />
+                </div>
+                <div className="inline-flex min-w-0 items-baseline gap-1">
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">24H</span>
+                  <AnimatedStatValue
+                    as="span"
+                    value={dailyTrafficTotals.connections.toLocaleString()}
+                    loading={dailyTrafficTotalsLoading}
+                    cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.connections`}
+                    fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
+                    mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
+                    fallbackValue="0"
+                    className="truncate text-[10px] font-semibold tabular-nums text-foreground sm:text-xs"
+                  />
+                </div>
               </div>
-              <AnimatedStatValue
-                as="p"
-                value={dailyTrafficTotals.connections.toLocaleString()}
-                loading={dailyTrafficTotalsLoading}
-                cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.connections`}
-                fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
-                mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
-                fallbackValue="0"
-                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
-              />
             </div>
+            <Activity className="h-5 w-5 shrink-0 text-chart-3 sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
       </div>
@@ -5653,18 +5644,10 @@ function RulesContent() {
                       onValueChange={(v) => {
                         const nextTunnelId = v === "none" ? null : Number(v);
                         const tunnel = nextTunnelId ? tunnels?.find((t: any) => t.id === nextTunnelId) : null;
-                        const nextIsNginxTls = String(tunnel?.mode || "").toLowerCase() === "nginx_tls";
                         setForm({
                           ...form,
                           tunnelId: nextTunnelId,
                           hostId: tunnel ? tunnel.entryHostId : null,
-                          protocol: nextIsNginxTls ? "tcp" : form.protocol,
-                          proxyProtocolReceive: nextIsNginxTls ? false : form.proxyProtocolReceive,
-                          proxyProtocolSend: nextIsNginxTls ? false : form.proxyProtocolSend,
-                          proxyProtocolExitReceive: nextIsNginxTls ? false : form.proxyProtocolExitReceive,
-                          proxyProtocolExitSend: nextIsNginxTls ? false : form.proxyProtocolExitSend,
-                          udpOverTcp: nextIsNginxTls ? false : form.udpOverTcp,
-                          udpOverTcpPort: nextIsNginxTls ? 0 : form.udpOverTcpPort,
                         });
                       }}
                     >
@@ -5776,13 +5759,10 @@ function RulesContent() {
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="tcp">TCP</SelectItem>
-                    <SelectItem value="udp" disabled={selectedTunnelIsNginxTls}>UDP</SelectItem>
-                    <SelectItem value="both" disabled={selectedTunnelIsNginxTls}>TCP+UDP</SelectItem>
+                    <SelectItem value="udp">UDP</SelectItem>
+                    <SelectItem value="both">TCP+UDP</SelectItem>
                   </SelectContent>
                 </Select>
-                {selectedTunnelIsNginxTls && (
-                  <p className="text-xs text-muted-foreground">Nginx TLS 隧道只支持 TCP，UDP 请使用 Nginx Stream 隧道。</p>
-                )}
               </div>
               {form.routeMode === "local" && (
                 <div className="space-y-2">

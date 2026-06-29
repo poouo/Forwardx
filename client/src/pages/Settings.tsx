@@ -252,7 +252,7 @@ const manualPanelUpgradeCommands = [
 ];
 
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
-const tunnelForwardProtocolKeys = [...TUNNEL_PROTOCOLS] as const;
+const tunnelForwardProtocolKeys = TUNNEL_PROTOCOLS.filter((key) => key !== "nginx_tls");
 const LOG_PAGE_SIZE = 200;
 const settingsTabTriggerClass = "min-w-0 justify-center gap-1.5 px-2 text-xs sm:w-[7.5rem] sm:px-3 sm:text-sm [&>svg]:shrink-0";
 

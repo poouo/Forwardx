@@ -158,10 +158,6 @@ function isNginxTunnelMode(tunnel: any) {
   return mode === "nginx_stream" || mode === "nginx_tls";
 }
 
-function isNginxTLSTunnelMode(tunnel: any) {
-  return String(tunnel?.mode || "").toLowerCase() === "nginx_tls";
-}
-
 function isGostTunnelMode(tunnel: any) {
   return !!tunnel && !isForwardXTunnelMode(tunnel) && !isNginxTunnelMode(tunnel);
 }
@@ -1366,6 +1362,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!isForwardRuleProtocolTcpEnabled(rule.protocol)) return false;
       return hasProtocolPolicy(await ruleProtocolPolicy(rule));
     };
+    const shouldUseProtocolGuard = (rule: any, policy: any) => isForwardRuleProtocolTcpEnabled(rule?.protocol) && hasProtocolPolicy(policy);
     const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
@@ -1439,11 +1436,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     });
     const gostServiceConfig = (await Promise.all(gostRules
       .map(async (r: any) => {
-        if (await shouldUseRuleGuard(r)) return [];
+        const useRuleGuard = await shouldUseRuleGuard(r);
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && !isGostTunnelMode(tunnel)) return [];
         const protos = tunnel ? tunnelForwardProtos(r.protocol) : forwardRuleProtocols(r.protocol);
         return Promise.all(protos.map(async (proto) => {
+          if (useRuleGuard && proto === "tcp") return null;
           const tunnelHops = tunnel ? tunnelHopsByTunnelId.get(Number(tunnel.id)) : null;
           const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
           const isMultiHopTunnel = Array.isArray(tunnelHops) && tunnelHops.length >= 3;
@@ -1648,13 +1646,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         }
         return services;
       });
-      const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
+    const ruleServices = (await Promise.all(tunnelExitRules.map(async (rule: any) => {
         const tunnel = tunnelById.get(rule.tunnelId) as any;
         if (!tunnel || !isGostTunnelMode(tunnel)) return [];
         const exitPorts = currentHostTunnelExitPortsForRule(rule, tunnel);
         if (exitPorts.length === 0) return [];
         const policy = await tunnelProtocolPolicy(tunnel);
-        const targetAddr = hasProtocolPolicy(policy) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
+        const targetAddr = shouldUseProtocolGuard(rule, policy) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
         return exitPorts.map((exitPort) => {
           const exitSendProxyMetadata = maybeProxyProtocolMetadata(rule, "exitSend");
           return {
@@ -1770,15 +1768,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (!clean || port <= 0 || port > 65535) return "";
       return isIpv6Literal(clean) ? `[${clean}]:${port}` : `${clean}:${port}`;
     };
-    const nginxListenLine = (port: number, proto: "tcp" | "udp", tls = false) => {
+    const nginxListenLine = (port: number, proto: "tcp" | "udp") => {
       const parts = [`listen [::]:${port}`];
-      if (tls) parts.push("ssl");
       if (proto === "udp") parts.push("udp", "reuseport");
       parts.push("ipv6only=off");
       return `${parts.join(" ")};`;
     };
-    const nginxProtocolsForRule = (rule: any, tunnel?: any | null): Array<"tcp" | "udp"> => {
-      if (tunnel && isNginxTLSTunnelMode(tunnel)) return ["tcp"];
+    const nginxProtocolsForRule = (rule: any): Array<"tcp" | "udp"> => {
       return forwardRuleProtocols(rule?.protocol);
     };
     const nginxUpstreamBlock = (
@@ -1805,32 +1801,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       listenPort: number;
       proto: "tcp" | "udp";
       upstream: string;
-      tlsListen?: boolean;
-      tlsDial?: boolean;
-      sni?: string;
     }) => {
       const lines = [
         "  server {",
         `    # ${nginxConfigQuote(options.name)}`,
-        `    ${nginxListenLine(options.listenPort, options.proto, !!options.tlsListen)}`,
+        `    ${nginxListenLine(options.listenPort, options.proto)}`,
         "    proxy_connect_timeout 10s;",
         options.proto === "udp" ? "    proxy_timeout 2m;" : "    proxy_timeout 10m;",
       ];
-      if (options.tlsListen) {
-        lines.push(
-          `    ssl_certificate ${NGINX_CONFIG_DIR}/forwardx-nginx.crt;`,
-          `    ssl_certificate_key ${NGINX_CONFIG_DIR}/forwardx-nginx.key;`,
-          "    ssl_protocols TLSv1.2 TLSv1.3;",
-        );
-      }
-      if (options.tlsDial) {
-        lines.push(
-          "    proxy_ssl on;",
-          "    proxy_ssl_verify off;",
-          "    proxy_ssl_server_name on;",
-          `    proxy_ssl_name ${nginxConfigQuote(options.sni || "forwardx.local")};`,
-        );
-      }
       lines.push(`    proxy_pass ${options.upstream};`, "  }");
       return lines.join("\n");
     };
@@ -1857,8 +1835,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       for (const rule of agentHostRules as any[]) {
         if (!rule || rule.pendingDelete || !rule.isEnabled || rule.forwardType !== "nginx") continue;
         if (!isRuleProtocolEnabled(forwardProtocolSettings, rule, null)) continue;
-        if (await shouldUseRuleGuard(rule)) continue;
+        const useRuleGuard = await shouldUseRuleGuard(rule);
         for (const proto of nginxProtocolsForRule(rule)) {
+          if (useRuleGuard && proto === "tcp") continue;
           const upstream = `fwx_rule_${Number(rule.id)}_${proto}`;
           if (!addUpstreamServer(upstream, [{ addr: nginxEndpoint(processTarget(rule), rule.targetPort), primary: true }])) continue;
           addServer({
@@ -1886,7 +1865,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (addr) endpoints.push({ addr, primary: endpoint.primary });
         }
         if (endpoints.length === 0) continue;
-        for (const proto of nginxProtocolsForRule(rule, tunnel)) {
+        for (const proto of nginxProtocolsForRule(rule)) {
           const upstream = `fwx_tentry_${Number(rule.id)}_${proto}`;
           if (!addUpstreamServer(upstream, endpoints, (tunnel as any).loadBalanceStrategy)) continue;
           addServer({
@@ -1894,8 +1873,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort: Number(rule.sourcePort),
             proto,
             upstream,
-            tlsDial: isNginxTLSTunnelMode(tunnel),
-            sni: String((tunnel as any).name || "forwardx.local").replace(/\s+/g, "-"),
           });
         }
         countingCmds.push(...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
@@ -1908,7 +1885,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!tunnel || !isNginxTunnelMode(tunnel)) continue;
         for (const exitPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
           nginxBusinessListenKeys.add(`${Number(host.id)}:${Number(exitPort)}`);
-          for (const proto of nginxProtocolsForRule(rule, tunnel)) {
+          for (const proto of nginxProtocolsForRule(rule)) {
             const upstream = `fwx_texit_${Number(tunnel.id)}_${Number(rule.id)}_${Number(exitPort)}_${proto}`;
             if (!addUpstreamServer(upstream, [{ addr: nginxEndpoint(processTarget(rule), rule.targetPort), primary: true }])) continue;
             addServer({
@@ -1916,7 +1893,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               listenPort: Number(exitPort),
               proto,
               upstream,
-              tlsListen: isNginxTLSTunnelMode(tunnel),
             });
           }
           countingCmds.push(...buildCountingChainCmds(Number(exitPort), rule.targetIp, rule.targetPort, rule.protocol));
@@ -1939,7 +1915,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             listenPort,
             proto: "tcp",
             upstream,
-            tlsListen: isNginxTLSTunnelMode(tunnel),
           });
         }
       }
@@ -1967,15 +1942,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ] : []),
       ].join("\n");
       const encodedConfig = Buffer.from(config, "utf8").toString("base64");
-      const tlsNeeded = servers.some((server) => server.includes(" ssl"));
-      const certCmds = tlsNeeded ? [
-        `if [ ! -s ${shQuote(`${NGINX_CONFIG_DIR}/forwardx-nginx.key`)} ] || [ ! -s ${shQuote(`${NGINX_CONFIG_DIR}/forwardx-nginx.crt`)} ]; then command -v openssl >/dev/null 2>&1 || { echo "[nginx] openssl is required for Nginx TLS tunnel"; exit 1; }; openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=forwardx-nginx" -keyout ${shQuote(`${NGINX_CONFIG_DIR}/forwardx-nginx.key`)} -out ${shQuote(`${NGINX_CONFIG_DIR}/forwardx-nginx.crt`)} >/dev/null 2>&1; chmod 600 ${shQuote(`${NGINX_CONFIG_DIR}/forwardx-nginx.key`)} 2>/dev/null || true; fi`,
-      ] : [];
       const cmds = [
         `mkdir -p ${shQuote(NGINX_CONFIG_DIR)} /var/log/forwardx-agent`,
         `modules_conf=${shQuote(`${NGINX_CONFIG_DIR}/modules.conf`)}; : > "$modules_conf"; for mod in /usr/lib/nginx/modules/ngx_stream_module.so /usr/lib64/nginx/modules/ngx_stream_module.so /usr/share/nginx/modules/ngx_stream_module.so modules/ngx_stream_module.so; do if [ -s "$mod" ]; then printf 'load_module %s;\\n' "$mod" > "$modules_conf"; break; fi; done`,
         `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(NGINX_CONFIG_PATH)}`,
-        ...certCmds,
       ];
       if (hasServers) {
         cmds.unshift(ensureNginxBinaryCmd());
@@ -2895,7 +2865,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     for (const rule of tunnelExitRules) {
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
       const policy = tunnel ? await tunnelProtocolPolicy(tunnel) : emptyProtocolPolicy;
-      if (tunnel && !isForwardXTunnel(tunnel) && hasProtocolPolicy(policy)) {
+      if (tunnel && !isForwardXTunnel(tunnel) && shouldUseProtocolGuard(rule, policy)) {
         const target = failoverTargetEndpoint(rule);
         guardRules.push({
           ruleId: rule.id,
@@ -2914,7 +2884,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const tunnel = tunnelById.get((rule as any).tunnelId) as any;
       if (!tunnel) continue;
       const policy = await tunnelProtocolPolicy(tunnel);
-      if (hasProtocolPolicy(policy)) {
+      if (shouldUseProtocolGuard(rule, policy)) {
         const target = failoverTargetEndpoint(rule);
         guardRules.push({
           ruleId: rule.id,

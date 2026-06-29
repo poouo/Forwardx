@@ -146,8 +146,8 @@ export default function HostCard({
   const memoryTooltip = [
     "内存使用详情",
     memoryUsed !== null && memoryTotal
-      ? `常规内存 ${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${memoryUsage}%)`
-      : `常规内存 ${memoryUsage}%`,
+      ? `RAM ${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${memoryUsage}%)`
+      : `RAM ${memoryUsage}%`,
     hasSwapReport
       ? `Swap ${formatBytes(swapUsed ?? 0)} / ${formatBytes(swapTotal ?? 0)} (${swapUsage}%)`
       : "Swap 未上报",
@@ -244,7 +244,11 @@ export default function HostCard({
     }`}>
       <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
         {compact ? (
-          <div className="flex min-w-0 items-center justify-end gap-1">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
               {onViewProbeLatency && (
                 <Button
                   variant="ghost"
@@ -294,9 +298,10 @@ export default function HostCard({
                   if (confirm("确定要删除此主机吗？")) onDelete(host.id);
                 }}
               >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
         ) : (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>

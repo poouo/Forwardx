@@ -26,6 +26,7 @@ export async function getForwardProtocolSettings(): Promise<ForwardProtocolSetti
 
 export function getTunnelProtocolKey(tunnel: any): ForwardProtocolKey | null {
   const mode = String(tunnel?.mode || "").toLowerCase();
+  if (mode === "nginx_tls") return "nginx_stream";
   return (TUNNEL_PROTOCOLS as readonly string[]).includes(mode) ? mode as ForwardProtocolKey : null;
 }
 

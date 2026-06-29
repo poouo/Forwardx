@@ -488,7 +488,7 @@ export default function AgentTokenManager({
     const bashPrefix = env ? `${env} bash` : "bash";
     const withPipefail = (pipeline: string) => `bash -c ${shellQuote(`set -o pipefail; ${pipeline}`)}`;
     const curlScriptArgs = "--connect-timeout 15 --speed-limit 1024 --speed-time 60";
-    const panelCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${panelUrl}/api/agent/install.sh" | ${bashPrefix} -s -- ${args}`);
+    const panelCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${panelUrl}/api/agent/install.sh" | PANEL_URL=${shellQuote(panelUrl)} ${bashPrefix} -s -- ${args}`);
     const githubScriptUrl = githubAcceleratorActive
       ? `${githubAcceleratorUrl}/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh`
       : "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh";

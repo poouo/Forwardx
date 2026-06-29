@@ -205,17 +205,6 @@ function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | nu
   return String(input || "").trim();
 }
 
-function isNginxTLSTunnel(tunnel: any) {
-  return String(tunnel?.mode || "").toLowerCase() === "nginx_tls";
-}
-
-function assertNginxTunnelProtocolAllowed(tunnel: any, protocol: string | null | undefined) {
-  if (!isNginxTLSTunnel(tunnel)) return;
-  if (String(protocol || "tcp").toLowerCase() !== "tcp") {
-    throw new Error("Nginx TLS 隧道仅支持 TCP，UDP 请使用 Nginx Stream 隧道");
-  }
-}
-
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
   const changedFields = [
     "sourcePort",
@@ -506,7 +495,6 @@ export const crudRulesRouter = router({
         if (selectedTunnelForRule.entryHostId !== input.hostId) {
           throw new Error("Tunnel entry host must match the rule host");
         }
-        assertNginxTunnelProtocolAllowed(selectedTunnelForRule, input.protocol);
       } else {
         const access = await requireHostUseAccess(ctx, input.hostId);
         isTrafficBillingRule = access.isTrafficBillingResource;
@@ -823,7 +811,6 @@ export const crudRulesRouter = router({
         throw new Error("端口转发和隧道转发不能相互切换，请新建规则");
       }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
-      assertNginxTunnelProtocolAllowed(selectedTunnelForRule, input.protocol ?? (rule as any).protocol);
       const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
       requireMainBackupAllowed({
         enabled: nextMainBackupEnabled,
@@ -1171,10 +1158,6 @@ export const crudRulesRouter = router({
         if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
       }
       if (input.isEnabled) {
-        if ((rule as any).tunnelId) {
-          const tunnel = await db.getTunnelById((rule as any).tunnelId);
-          assertNginxTunnelProtocolAllowed(tunnel, (rule as any).protocol);
-        }
         requireMainBackupAllowed({
           enabled: (rule as any).failoverEnabled,
           protocol: (rule as any).protocol,
