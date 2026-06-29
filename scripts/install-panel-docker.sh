@@ -5,7 +5,7 @@ ACTION="${1:-install}"
 APP_DIR="${FORWARDX_DOCKER_DIR:-/opt/forwardx-docker}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-forwardx}"
 CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
-PORT="${PORT:-3000}"
+PORT="${PORT:-9810}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
@@ -329,7 +329,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-9810}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -357,7 +357,7 @@ write_env() {
   local image="$1"
   local existing_jwt jwt_secret
   if ! valid_port "$PORT"; then
-    PORT="3000"
+    PORT="9810"
   fi
 
   existing_jwt="$(get_env_value JWT_SECRET || true)"

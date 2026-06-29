@@ -28,9 +28,9 @@ ForwardX 不只是一个端口转发工具。更贴切的定位是：
 
 - 多主机 Agent 管理，无需在面板保存 SSH 密钥。
 - 支持 TCP、UDP、TCP+UDP 转发规则。
-- 支持 `iptables`、`nftables`、`realm`、`socat`、`gost` 等转发方式，并在规则界面提示内核 NAT 与用户态转发的 IPv4/IPv6 跨协议族风险。
+- 支持 `iptables`、`nftables`、`realm`、`socat`、`gost`、`nginx` 等转发方式，并在规则界面提示内核 NAT 与用户态转发的 IPv4/IPv6 跨协议族风险。
 - 支持手动入口 IP、主机 DDNS 域名、自动检测 IPv4/IPv6 入口地址展示，IPv6 入口可单独复制。
-- 支持 GOST 隧道和 ForwardX 自定义加密隧道，支持原生 UDP 加密转发、多跳链路、入口组、出口组和多出口负载均衡。
+- 支持 GOST 隧道、ForwardX 自定义加密隧道、Nginx Stream 隧道和 Nginx TLS 隧道，支持原生 UDP 加密转发、多跳链路、入口组、出口组和多出口负载均衡。
 - ForwardX 自定义加密隧道可选 mimic UDP 混淆；UDP 仍走数据报通道，不再通过 TCP 承载，适合游戏、语音、直播等实时 UDP 场景。
 - 支持端口转发链，把多台主机按顺序串成入口、中转和出口路径，也可以复用入口组作为多入口统一入口。
 - 支持转发组，把多个主机入口或隧道入口作为一个高可用入口使用。
@@ -53,7 +53,7 @@ ForwardX 里常用的入口方式有四类：
 | 模式 | 适用场景 | 说明 |
 | --- | --- | --- |
 | 主机端口转发 | 入口和目标都可以由单台主机直接处理 | 在转发规则中选择所属主机、协议、入口端口和目标地址 |
-| 隧道转发 | 入口机和出口机不同，或需要加密链路 | 先创建 GOST 或 ForwardX 隧道，再在转发规则中选择隧道入口 |
+| 隧道转发 | 入口机和出口机不同，或需要加密链路 | 先创建 GOST、ForwardX 或 Nginx 隧道，再在转发规则中选择隧道入口 |
 | 端口转发链 | 需要把 IPv4/IPv6 入口、中转机和落地出口按固定顺序串起来 | 在链路管理中创建端口转发链，可绑定入口组提供多入口，再在转发规则中引用该链 |
 | 转发组 | 多台机器对同一目标提供同一服务入口 | 在转发组中维护成员和 DDNS 策略，在转发规则中选择转发组生成成员规则 |
 
@@ -109,7 +109,7 @@ MySQL 和 PostgreSQL 默认连接池按约 30 台 Agent 主机的常规生产使
 
 ## 快速部署
 
-面板默认监听 `3000` 端口。
+首次部署时，面板默认访问端口为 `9810`。Docker 部署默认映射宿主机 `9810` 到容器内 `3000`；升级会读取已有端口配置，不影响已部署实例。
 
 以下命令请以 `root` 用户执行；如果当前不是 `root`，把命令中的 `bash` 替换为 `sudo bash`。
 
@@ -169,7 +169,7 @@ Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database
 
 ## 首次初始化
 
-1. 访问 `http://服务器IP:3000`。
+1. 访问 `http://服务器IP:9810`。
 2. 选择 SQLite、MySQL 或 PostgreSQL，并完成连接检测。
 3. 选择作为新面板使用，或输入旧面板地址和管理员账户发起迁移。
 4. 如果是新库，注册第一个管理员账户；如果是旧库或迁移完成，直接使用原管理员账户登录。
@@ -180,19 +180,19 @@ Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database
 在面板「系统设置 -> Agent Token」中创建 Token，然后在被管理的 Linux 主机上执行：
 
 ```bash
-curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
 升级 Agent：
 
 ```bash
-curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- upgrade YOUR_AGENT_TOKEN
+curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- upgrade YOUR_AGENT_TOKEN
 ```
 
 卸载 Agent：
 
 ```bash
-curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- uninstall
+curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- uninstall
 ```
 
 ## 基本使用流程
@@ -208,10 +208,12 @@ curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- unin
 
 ## 隧道说明
 
-ForwardX 支持两类隧道：
+ForwardX 支持这些隧道：
 
 - GOST 隧道：使用 GOST 提供的 TLS、WSS、TCP、MTLS、MWSS、MTCP 等模式。
 - ForwardX 自定义加密隧道：由 ForwardX Agent 建立入口到出口的加密链路，支持 TCP/UDP、按规则流量统计和用户限速。
+- Nginx Stream 隧道：使用 Nginx Stream 做四层中转，支持 TCP、UDP 和 TCP+UDP，适合出口组负载均衡。
+- Nginx TLS 隧道：使用 Nginx TLS Stream 做 TCP 链路中转，仅支持 TCP；UDP 场景请使用 Nginx Stream。
 
 自定义加密隧道可以在入口和出口 Agent 下方指定连接地址。不填写时默认走公网入口；填写内网 IP 或 IPv6 地址时，会优先使用指定地址作为链路连接目标。隧道也可以引用入口组提供多入口，或配置多个出口节点用于出口负载均衡。
 
@@ -254,14 +256,14 @@ ForwardX 支持两类隧道：
 - 首页趋势图默认按 30 分钟聚合展示。
 - TCPing 默认用于链路健康探测、链路自测和延迟趋势展示。
 - GOST 和 ForwardX 自定义加密隧道支持用户限速。
-- `iptables`、`nftables`、`realm`、`socat` 当前主要用于转发和统计，不作为限速主路径。`iptables`/`nftables` 属于内核 NAT/防火墙规则，跨 IPv4/IPv6 入口和目标时应改用 `realm`、`socat`、`gost` 等用户态转发或统一协议族。
+- `iptables`、`nftables`、`realm`、`socat`、`nginx` 当前主要用于转发和统计，不作为限速主路径。`iptables`/`nftables` 属于内核 NAT/防火墙规则，跨 IPv4/IPv6 入口和目标时应改用 `realm`、`socat`、`gost`、`nginx` 等用户态转发或统一协议族。
 - 连接数限制主要针对 TCP 生效；隧道转发按隧道维度聚合，端口转发按主机维度聚合。
 
 ## 常用环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `3000` | 面板监听端口 |
+| `PORT` | `9810` | 面板监听端口；Docker Compose 中通常是宿主机访问端口，容器内仍监听 `3000` |
 | `DATABASE_CONFIG_PATH` | `/data/database.json` | 面板保存数据库连接配置的位置 |
 | `SQLITE_PATH` | `/data/forwardx.db` | SQLite 默认数据文件路径 |
 | `DATABASE_TYPE` / `DB_TYPE` | 空 | 可选，强制指定 `mysql`、`postgresql` 或 `sqlite` |

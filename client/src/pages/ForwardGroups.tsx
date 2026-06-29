@@ -95,6 +95,7 @@ type GroupForm = {
   recoverSeconds: string;
   chinaHealthCheckEnabled: boolean;
   chinaHealthCheckTarget: string;
+  telegramSwitchNotifyEnabled: boolean;
   ddnsAutoResolveEnabled: boolean;
   autoFailback: boolean;
   isEnabled: boolean;
@@ -112,6 +113,7 @@ const makeDefaultForm = (): GroupForm => ({
   recoverSeconds: "120",
   chinaHealthCheckEnabled: false,
   chinaHealthCheckTarget: "",
+  telegramSwitchNotifyEnabled: false,
   ddnsAutoResolveEnabled: true,
   autoFailback: true,
   isEnabled: true,
@@ -684,6 +686,7 @@ export function ForwardGroupsContent({
   const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
   const { data: hosts } = trpc.hosts.list.useQuery();
   const { data: tunnels } = trpc.tunnels.list.useQuery();
+  const { data: settings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<GroupForm>(makeDefaultForm());
@@ -698,6 +701,8 @@ export function ForwardGroupsContent({
   const closeResetTimerRef = useRef<number | null>(null);
   const activeGroupMode = mode;
   const viewMode = controlledViewMode ?? internalViewMode;
+  const telegramSettingsLoaded = settings !== undefined;
+  const telegramReady = telegramSettingsLoaded && !!settings?.telegram?.enabled && !!settings?.telegram?.configured;
   const deleteImpactQuery = trpc.forwardGroups.deleteImpact.useQuery(
     { id: Number(deleteGroup?.id || 0) },
     { enabled: !!deleteGroup },
@@ -930,6 +935,7 @@ export function ForwardGroupsContent({
       recoverSeconds: String(Number(group.recoverSeconds || 120)),
       chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: group.chinaHealthCheckTarget || "",
+      telegramSwitchNotifyEnabled: !!group.telegramSwitchNotifyEnabled,
       ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
       autoFailback: !!group.autoFailback,
       isEnabled: !!group.isEnabled,
@@ -1151,6 +1157,7 @@ export function ForwardGroupsContent({
     const isEntryGroup = form.groupMode === "entry";
     const isExitGroup = form.groupMode === "exit";
     const supportsChinaHealth = isFailoverMode || isEntryGroup;
+    const supportsSwitchNotify = isFailoverMode || isEntryGroup;
     if (!form.name.trim()) return toast.error(isChainGroup ? "请填写链名称" : "请填写组名称");
     if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
@@ -1194,6 +1201,9 @@ export function ForwardGroupsContent({
     if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
       return toast.error("入口健康度检测目标格式不正确");
     }
+    if (supportsSwitchNotify && form.telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
+      return toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+    }
     const payload = {
       ...form,
       name: form.name.trim(),
@@ -1206,6 +1216,7 @@ export function ForwardGroupsContent({
       recoverSeconds,
       chinaHealthCheckEnabled: supportsChinaHealth && form.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: supportsChinaHealth && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
+      telegramSwitchNotifyEnabled: supportsSwitchNotify && form.telegramSwitchNotifyEnabled,
       ddnsAutoResolveEnabled: isEntryGroup ? form.ddnsAutoResolveEnabled : true,
       members: form.members.map((member, index) => ({
         memberType: member.memberType,
@@ -1847,13 +1858,37 @@ export function ForwardGroupsContent({
                   统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时整体仍视为可用。
                 </p>
               </div>
-              <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                <span className="text-sm">入口健康度检测</span>
-                <Switch
-                  checked={form.chinaHealthCheckEnabled}
-                  onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
-                />
-              </label>
+              <div className="space-y-2">
+                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                  <span className="text-sm">入口健康度检测</span>
+                  <Switch
+                    checked={form.chinaHealthCheckEnabled}
+                    onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
+                  />
+                </label>
+                <label
+                  className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
+                  title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                >
+                  <span className="min-w-0">
+                    <span className="block text-sm">切换告警</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
+                    </span>
+                  </span>
+                  <Switch
+                    checked={form.telegramSwitchNotifyEnabled}
+                    disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
+                    onCheckedChange={(telegramSwitchNotifyEnabled) => {
+                      if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
+                        toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+                        return;
+                      }
+                      setForm({ ...form, telegramSwitchNotifyEnabled });
+                    }}
+                  />
+                </label>
+              </div>
             </div>}
             </>
             )}

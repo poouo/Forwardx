@@ -130,11 +130,28 @@ export default function HostCard({
   ].join("\n");
   const memoryUsed = latestMetric?.memoryUsed == null ? null : Number(latestMetric.memoryUsed);
   const memoryTotal = host.memoryTotal == null ? null : Number(host.memoryTotal);
+  const swapUsed = latestMetric?.swapUsed == null ? null : Number(latestMetric.swapUsed);
+  const swapTotal = latestMetric?.swapTotal == null ? null : Number(latestMetric.swapTotal);
   const diskUsed = latestMetric?.diskUsed == null ? null : Number(latestMetric.diskUsed);
   const diskTotal = latestMetric?.diskTotal == null ? null : Number(latestMetric.diskTotal);
   const cpuUsage = Number(latestMetric?.cpuUsage ?? 0);
   const memoryUsage = Number(latestMetric?.memoryUsage ?? 0);
+  const swapUsage = latestMetric?.swapUsage == null
+    ? swapUsed !== null && swapTotal
+      ? Math.round((swapUsed / swapTotal) * 100)
+      : 0
+    : Number(latestMetric.swapUsage);
   const diskUsage = Number(latestMetric?.diskUsage ?? 0);
+  const hasSwapReport = latestMetric?.swapUsed != null || latestMetric?.swapTotal != null || latestMetric?.swapUsage != null;
+  const memoryTooltip = [
+    "内存使用详情",
+    memoryUsed !== null && memoryTotal
+      ? `常规内存 ${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${memoryUsage}%)`
+      : `常规内存 ${memoryUsage}%`,
+    hasSwapReport
+      ? `Swap ${formatBytes(swapUsed ?? 0)} / ${formatBytes(swapTotal ?? 0)} (${swapUsage}%)`
+      : "Swap 未上报",
+  ].join("\n");
   const networkSpeed = useMemo(() => {
     if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
     const latestAt = new Date(latestMetric.recordedAt).getTime();
@@ -190,9 +207,7 @@ export default function HostCard({
       value: memoryUsage,
       valueLabel: `${memoryUsage}%`,
       progressClass: metricUsageProgressClass(memoryUsage, isOnline),
-      tooltip: memoryUsed !== null && memoryTotal
-        ? `内存使用率 ${memoryUsage}%\n${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)}`
-        : `内存使用率 ${memoryUsage}%`,
+      tooltip: memoryTooltip,
     },
     {
       key: "disk",
@@ -229,8 +244,39 @@ export default function HostCard({
     }`}>
       <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
         {compact ? (
-          <div className="flex items-center justify-between gap-2">
-            <Monitor className={`h-4 w-4 shrink-0 ${isOnline ? "" : "text-muted-foreground"}`} />
+          <div className="flex min-w-0 items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <CardTitle className={`min-w-0 text-sm font-semibold leading-7 ${isOnline ? "" : "text-muted-foreground"}`}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
+                    title={isOnline ? "在线" : "离线"}
+                  />
+                  <span className="min-w-0 truncate" title={hostName}>{hostName}</span>
+                  <span
+                    className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
+                      isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
+                    }`}
+                  >
+                    {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                  </span>
+                </span>
+              </CardTitle>
+              {(agentNeedsUpdate || host.agentUpgradeRequested) && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {agentNeedsUpdate && (
+                    <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
+                      新版
+                    </Badge>
+                  )}
+                  {host.agentUpgradeRequested && (
+                    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
+                      {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="flex shrink-0 items-center justify-end gap-1">
               {onViewProbeLatency && (
                 <Button
@@ -361,41 +407,6 @@ export default function HostCard({
                 <HostRegionBadge host={host} compact />
               </div>
             </div>
-            <div className="w-full min-w-0 rounded-md border px-2.5 py-1.5">
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="min-w-0 flex-1 break-words text-sm font-semibold leading-snug" title={hostName}>
-                  {hostName}
-                </span>
-                <span
-                  className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground ${
-                    isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
-                  }`}
-                >
-                  {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
-                </span>
-              </div>
-              {(agentNeedsUpdate || host.agentUpgradeRequested) && (
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {agentNeedsUpdate && (
-                    <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                      新版
-                    </Badge>
-                  )}
-                  {host.agentUpgradeRequested && (
-                    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
-                      {agentUpgradeTimedOut ? "升级失败" : "升级中"}
-                    </Badge>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap text-xs`}>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
-                <span className={isOnline ? "" : "font-medium text-destructive"}>{isOnline ? "在线" : "离线"}</span>
-              </div>
-            </div>
           </div>
         ) : (
           <div className={compact ? "space-y-1.5" : "space-y-2"}>
@@ -479,17 +490,26 @@ export default function HostCard({
               </p>
               <Progress value={latestMetric.cpuUsage ?? 0} className={metricUsageProgressClass(latestMetric.cpuUsage, isOnline)} />
             </div>
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
-                <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
-                  {memoryUsed && memoryTotal
-                    ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
-                    : `${latestMetric.memoryUsage ?? 0}%`}
-                </span>
-              </div>
-              <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
-            </div>
+            <TooltipProvider delayDuration={120}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="space-y-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" aria-label={memoryTooltip} tabIndex={0}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground flex items-center gap-1"><MemoryStick className="h-3 w-3" /> 内存</span>
+                      <span className="max-w-[70%] truncate text-right font-medium tabular-nums">
+                        {memoryUsed !== null && memoryTotal
+                          ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)} (${latestMetric.memoryUsage ?? 0}%)`
+                          : `${latestMetric.memoryUsage ?? 0}%`}
+                      </span>
+                    </div>
+                    <Progress value={latestMetric.memoryUsage ?? 0} className={metricUsageProgressClass(latestMetric.memoryUsage, isOnline)} />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent collisionPadding={12} className="max-w-[260px] whitespace-pre-line text-xs">
+                  {memoryTooltip}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground flex items-center gap-1"><HardDrive className="h-3 w-3" /> 磁盘</span>

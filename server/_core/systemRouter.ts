@@ -1920,7 +1920,7 @@ export const systemRouter = router({
         if (input.ddns.webhookMethod !== undefined) next.ddnsWebhookMethod = input.ddns.webhookMethod;
         if (input.ddns.webhookHeaders !== undefined) next.ddnsWebhookHeaders = input.ddns.webhookHeaders.trim() || null;
         await db.setSettings(next);
-        db.runForwardGroupFailoverSweep().catch((error) => {
+        db.runForwardGroupFailoverSweep({ manual: true }).catch((error) => {
           console.warn(`[Settings] forward group DDNS refresh failed: ${error instanceof Error ? error.message : String(error)}`);
         });
         console.info("[Settings] ddns settings updated");
@@ -1935,7 +1935,7 @@ export const systemRouter = router({
         throw new Error("Docker 部署不支持在后台修改 Web 端口，请自行配置端口映射");
       }
       const port = normalizePort(input.port);
-      const currentPort = normalizePort(ENV.port || 3000);
+      const currentPort = normalizePort(ENV.port || 9810);
       if (port === currentPort) return { success: true, port, restartScheduled: false };
       if (!(await isTcpPortAvailable(port))) {
         throw new Error(`端口 ${port} 已被占用，请更换端口`);

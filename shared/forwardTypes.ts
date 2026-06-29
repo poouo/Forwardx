@@ -1,4 +1,4 @@
-export const FORWARD_TYPES = ["iptables", "nftables", "realm", "socat", "gost"] as const;
+export const FORWARD_TYPES = ["iptables", "nftables", "realm", "socat", "gost", "nginx"] as const;
 
 export type ForwardType = (typeof FORWARD_TYPES)[number];
 export type ForwardRuleProtocol = "tcp" | "udp" | "both";
@@ -9,6 +9,7 @@ export const FORWARD_TYPE_LABELS: Record<ForwardType, string> = {
   realm: "realm",
   socat: "socat",
   gost: "gost",
+  nginx: "nginx",
 };
 
 export const FORWARD_RULE_PROTOCOL_LABELS: Record<ForwardRuleProtocol, string> = {
@@ -25,9 +26,11 @@ export function formatForwardRuleProtocol(protocol: string | null | undefined) {
   return value ? value.toUpperCase() : "-";
 }
 
-export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"] as const;
+export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const;
 
 export type TunnelProtocol = (typeof TUNNEL_PROTOCOLS)[number];
+
+export const FORWARD_PROTOCOLS = Array.from(new Set([...FORWARD_TYPES, ...TUNNEL_PROTOCOLS])) as Array<ForwardType | TunnelProtocol>;
 
 export type ForwardProtocolKey = ForwardType | TunnelProtocol;
 
@@ -39,6 +42,7 @@ export const FORWARD_PROTOCOL_LABELS: Record<ForwardProtocolKey, string> = {
   realm: "realm",
   socat: "socat",
   gost: "gost",
+  nginx: "Nginx",
   forwardx: "ForwardX",
   tls: "GOST TLS",
   wss: "GOST WSS",
@@ -46,6 +50,8 @@ export const FORWARD_PROTOCOL_LABELS: Record<ForwardProtocolKey, string> = {
   mtls: "GOST MTLS",
   mwss: "GOST MWSS",
   mtcp: "GOST MTCP",
+  nginx_stream: "Nginx",
+  nginx_tls: "Nginx TLS",
 };
 
 export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
@@ -54,6 +60,7 @@ export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
   realm: true,
   socat: true,
   gost: true,
+  nginx: true,
   forwardx: true,
   tls: true,
   wss: true,
@@ -61,12 +68,14 @@ export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
   mtls: true,
   mwss: true,
   mtcp: true,
+  nginx_stream: true,
+  nginx_tls: true,
 };
 
 export function normalizeForwardProtocolSettings(input?: Partial<Record<string, unknown>> | null): ForwardProtocolSettings {
   const out: ForwardProtocolSettings = { ...DEFAULT_FORWARD_PROTOCOL_SETTINGS };
   if (!input) return out;
-  for (const key of [...FORWARD_TYPES, ...TUNNEL_PROTOCOLS]) {
+  for (const key of FORWARD_PROTOCOLS) {
     const value = input[key];
     if (typeof value === "boolean") out[key] = value;
     else if (typeof value === "string") out[key] = value === "true";

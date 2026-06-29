@@ -79,14 +79,11 @@ export default function DatePickerInput({
     const gap = 8;
     const boundaryLeft = Math.max(padding, (containerRect?.left ?? 0) + padding);
     const boundaryRight = Math.min(viewportWidth - padding, (containerRect?.right ?? viewportWidth) - padding);
-    const boundaryTop = Math.max(padding, (containerRect?.top ?? 0) + padding);
-    const boundaryBottom = Math.min(viewportHeight - padding, (containerRect?.bottom ?? viewportHeight) - padding);
+    const boundaryTop = padding;
+    const boundaryBottom = viewportHeight - padding;
     const availableWidth = Math.max(288, boundaryRight - boundaryLeft);
-    const availableHeight = Math.max(220, boundaryBottom - boundaryTop);
     const width = Math.min(PANEL_WIDTH, availableWidth);
-    const contentHeight = panelRef.current?.scrollHeight || PANEL_HEIGHT;
-    const panelHeight = Math.min(contentHeight, availableHeight);
-    const needsScroll = contentHeight > availableHeight;
+    const panelHeight = PANEL_HEIGHT;
     const spaceBelow = boundaryBottom - rect.bottom;
     const spaceAbove = rect.top - boundaryTop;
     const side = spaceBelow >= panelHeight || spaceBelow >= spaceAbove ? "bottom" : "top";
@@ -98,8 +95,7 @@ export default function DatePickerInput({
       left: Math.max(boundaryLeft, Math.min(desiredLeft, boundaryRight - width)),
       width,
       height: panelHeight,
-      maxHeight: availableHeight,
-      overflowY: needsScroll ? "auto" : "hidden",
+      overflowY: "hidden",
     });
   };
 
@@ -166,7 +162,7 @@ export default function DatePickerInput({
       ref={panelRef}
       aria-hidden={!open}
       style={panelStyle}
-      className={`fixed z-[70] overflow-x-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
+      className={`fixed z-[70] overflow-hidden rounded-lg border border-border/80 bg-background shadow-[0_20px_60px_rgba(15,23,42,0.22)] ring-1 ring-black/5 transition-all duration-200 ease-out ${panelOrigin} ${open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : `pointer-events-none ${panelClosedTranslate} scale-[0.98] opacity-0`}`}
     >
       <div className="p-3">
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -194,8 +190,8 @@ export default function DatePickerInput({
           ))}
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => commitDate(new Date())}>今天</Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background" onClick={() => commitDate(new Date())}>今天</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 border-input bg-background text-muted-foreground" onClick={() => { onChange(""); setOpen(false); }}>清除</Button>
         </div>
       </div>
     </div>

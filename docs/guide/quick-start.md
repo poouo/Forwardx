@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 安装完成后访问：
 
 ```text
-http://服务器IP:3000
+http://服务器IP:9810
 ```
 
 如果你不使用 Docker，可以看 [部署面板](./deploy-panel.md) 中的本地 systemd 部署方式。
@@ -47,7 +47,7 @@ http://服务器IP:3000
 在 Token 管理中点击对应 Token 的“安装命令”，复制面板生成的命令，然后在需要被管理的 Linux 服务器执行。命令格式类似：
 
 ```bash
-curl -fsSL http://你的面板地址:3000/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
+curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
 
 如果已经配置 HTTPS 域名：

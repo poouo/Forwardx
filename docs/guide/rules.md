@@ -17,7 +17,7 @@
 | 入口端口 | 用户访问的端口 |
 | 目标地址 | 最终服务 IP 或域名 |
 | 目标端口 | 最终服务端口 |
-| 转发方式 | iptables、nftables、realm、socat、gost 等 |
+| 转发方式 | iptables、nftables、realm、socat、gost、nginx 等 |
 | 所属用户 | 规则归属和流量计费对象 |
 
 例如：
@@ -59,8 +59,20 @@
 | realm | 用户态转发，配置简单 |
 | socat | 兼容性好，适合简单场景 |
 | gost | 功能更多，适合特殊代理或隧道能力 |
+| nginx | 基于 Nginx Stream 的四层转发，适合 TCP/UDP 转发和出口组负载均衡场景 |
 
 如果不确定，优先使用面板推荐或默认方式。
+
+## Nginx 转发
+
+Nginx 转发使用 Nginx Stream 能力处理四层 TCP/UDP 流量，适合需要稳定四层中转、UDP 转发或配合出口组做负载均衡的场景。
+
+使用时注意：
+
+- 支持 TCP、UDP 和 TCP+UDP 规则。
+- 需要对应 Agent 主机具备可用的 Nginx Stream 运行环境；安装脚本会尽量自动安装和检测。
+- Nginx 转发更适合四层流量中转，不等同于 ForwardX 自定义加密隧道。
+- PROXY Protocol、TCP Fast Open、zero-copy 等开关是否可用，以规则界面实际可选状态为准。
 
 ## 规则状态
 

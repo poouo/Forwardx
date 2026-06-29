@@ -4,7 +4,7 @@ set -euo pipefail
 ACTION="${1:-install}"
 APP_DIR="${FORWARDX_PANEL_DIR:-/opt/forwardx-panel}"
 SERVICE_NAME="${FORWARDX_SERVICE_NAME:-forwardx-panel}"
-PORT="${PORT:-3000}"
+PORT="${PORT:-9810}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 PANEL_BUNDLE_PREFIX="${FORWARDX_PANEL_BUNDLE_PREFIX:-forwardx-panel-v}"
 PNPM_VERSION="${FORWARDX_PNPM_VERSION:-10.28.1}"
@@ -31,11 +31,11 @@ get_env_value() {
 }
 
 read_install_port() {
-  local default_port="${PORT:-3000}"
+  local default_port="${PORT:-9810}"
   local input=""
 
   if ! valid_port "$default_port"; then
-    default_port="3000"
+    default_port="9810"
   fi
 
   if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
@@ -197,7 +197,7 @@ resolve_runtime_env() {
   if [ -n "$existing_port" ] && valid_port "$existing_port"; then
     PORT="$existing_port"
   elif ! valid_port "$PORT"; then
-    PORT="3000"
+    PORT="9810"
   fi
 
   if [ -z "${JWT_SECRET:-}" ] && [ -n "$existing_jwt" ]; then

@@ -16,6 +16,8 @@ import { structuredLinkTestMessage } from "../linkTestMessages";
 import { isValidHostOrIp } from "../networkAddress";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
+const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
+const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
 const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
 const tunnelQueryCache = createQueryCache(300);
@@ -77,6 +79,11 @@ const tunnelLoadBalanceExitSchema = z.object({
   hostId: z.number(),
   connectHost: z.string().max(128).nullable().optional(),
 });
+
+function normalizeTunnelLoadBalanceStrategy(value: unknown) {
+  const parsed = tunnelLoadBalanceStrategySchema.safeParse(value);
+  return parsed.success ? parsed.data : "round_robin";
+}
 
 async function requireEntryGroupAccess(ctx: any, entryGroupId: number | null | undefined) {
   const id = Number(entryGroupId || 0);
@@ -370,7 +377,7 @@ export const tunnelsRouter = router({
         entryGroupId: z.number().nullable().optional(),
         entryHostId: z.number(),
         exitHostId: z.number(),
-        mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).default("forwardx"),
+        mode: tunnelModeSchema.default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -381,6 +388,7 @@ export const tunnelsRouter = router({
         blockSocks: z.boolean().optional().default(false),
         blockTls: z.boolean().optional().default(false),
         loadBalanceEnabled: z.boolean().optional().default(false),
+        loadBalanceStrategy: tunnelLoadBalanceStrategySchema.optional().default("round_robin"),
         loadBalanceExits: z.array(tunnelLoadBalanceExitSchema).max(MAX_EXTRA_TUNNEL_EXITS).optional(),
         hopHostIds: z.array(z.number()).optional(),
         hopConnectHosts: z.array(z.string().max(128).nullable()).optional(),
@@ -434,6 +442,7 @@ export const tunnelsRouter = router({
           ? normalizeTunnelConnect(input.connectHost)
           : normalizeTunnelConnectForEndpoint(input.connectHost, input.networkType, exitHostForConnect);
         const loadBalanceEnabled = !!input.loadBalanceEnabled;
+        const loadBalanceStrategy = loadBalanceEnabled ? normalizeTunnelLoadBalanceStrategy(input.loadBalanceStrategy) : "round_robin";
         const extraExitNodes = await buildExtraExitNodes(ctx, {
           primaryHostId: exitHostId,
           blockedHostIds: hopHostIds || [entryHostId, exitHostId],
@@ -464,6 +473,7 @@ export const tunnelsRouter = router({
           blockSocks: false,
           blockTls: false,
           loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
+          loadBalanceStrategy: loadBalanceEnabled && extraExitNodes.length > 0 ? loadBalanceStrategy : "round_robin",
           listenPort,
           secret,
           userId: ctx.user.id,
@@ -504,7 +514,7 @@ export const tunnelsRouter = router({
         entryGroupId: z.number().nullable().optional(),
         entryHostId: z.number().optional(),
         exitHostId: z.number().optional(),
-        mode: z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp"]).optional(),
+        mode: tunnelModeSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
@@ -515,6 +525,7 @@ export const tunnelsRouter = router({
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
         loadBalanceEnabled: z.boolean().optional(),
+        loadBalanceStrategy: tunnelLoadBalanceStrategySchema.optional(),
         loadBalanceExits: z.array(tunnelLoadBalanceExitSchema).max(MAX_EXTRA_TUNNEL_EXITS).optional(),
         isEnabled: z.boolean().optional(),
         hopHostIds: z.array(z.number()).optional(),
@@ -614,6 +625,9 @@ export const tunnelsRouter = router({
         (data as any).exitHostId = exitHostId;
         const normalizedRequestedHopIds = hopHostIds ? hopHostIds : (switchToRegular ? [] : existingHopHostIds);
         const nextLoadBalanceEnabled = (data as any).loadBalanceEnabled !== undefined ? !!(data as any).loadBalanceEnabled : !!(tunnel as any).loadBalanceEnabled;
+        const nextLoadBalanceStrategy = nextLoadBalanceEnabled
+          ? normalizeTunnelLoadBalanceStrategy((data as any).loadBalanceStrategy ?? (tunnel as any).loadBalanceStrategy)
+          : "round_robin";
         const requestedExtraExits = (input as any).loadBalanceExits !== undefined
           ? ((input as any).loadBalanceExits as Array<{ hostId: number; connectHost?: string | null }>)
           : (existingExtraExitNodes || []).map((node: any) => ({
@@ -631,6 +645,7 @@ export const tunnelsRouter = router({
           explicitListenPort: Number((input as any).listenPort || 0) > 0 ? Number((input as any).listenPort || 0) : 0,
         });
         (data as any).loadBalanceEnabled = nextLoadBalanceEnabled && extraExitNodes.length > 0;
+        (data as any).loadBalanceStrategy = (data as any).loadBalanceEnabled ? nextLoadBalanceStrategy : "round_robin";
         const hopChanged = (requestedHopHostIds !== undefined || (hopConnectHostsProvided && existingHopHostIds.length >= 3))
           ? (
             JSON.stringify(normalizedRequestedHopIds) !== JSON.stringify(existingHopHostIds)
@@ -648,6 +663,7 @@ export const tunnelsRouter = router({
           listenPort: Number(node.listenPort) || 0,
         })));
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
+          || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
         const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;

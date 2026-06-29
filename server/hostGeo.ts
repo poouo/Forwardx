@@ -1,14 +1,27 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 import * as db from "./db";
+import { executeRaw, queryRaw } from "./dbRuntime";
+import { quoteIdentifier } from "./dbCompat";
 
-const GEO_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const GEO_REQUEST_TIMEOUT_MS = 8000;
-const ADDRESS_GEO_CACHE_MS = 24 * 60 * 60 * 1000;
+const ADDRESS_GEO_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+const ADDRESS_GEO_STALE_MS = 30 * 24 * 60 * 60 * 1000;
+const GEO_REFRESH_INTERVAL_MS = ADDRESS_GEO_FRESH_MS;
 const ADDRESS_GEO_NEGATIVE_CACHE_MS = 30 * 60 * 1000;
+const GEO_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+const GEO_PROVIDER = "ipapi.co";
 
 const refreshingHostIds = new Set<number>();
-const addressGeoCache = new Map<string, { expiresAt: number; value: AddressGeoLookupResult | null }>();
+const addressGeoCache = new Map<string, AddressGeoCacheEntry>();
+const addressGeoInflight = new Map<string, Promise<AddressGeoLookupResult | null>>();
+let geoRateLimitedUntil = 0;
+
+type AddressGeoCacheEntry = {
+  freshUntil: number;
+  expiresAt: number;
+  value: AddressGeoLookupResult | null;
+};
 
 export type AddressGeoLookupResult = {
   address: string;
@@ -41,6 +54,36 @@ function toCoordinateMicro(value: unknown) {
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
   return Math.round(num * 1_000_000);
+}
+
+function epochSeconds(value = new Date()) {
+  return Math.floor(value.getTime() / 1000);
+}
+
+function rowDate(value: unknown) {
+  if (value instanceof Date) return value;
+  const num = Number(value || 0);
+  if (Number.isFinite(num) && num > 0) return new Date(num * 1000);
+  const parsed = new Date(value as any);
+  return Number.isFinite(parsed.getTime()) ? parsed : new Date();
+}
+
+function cacheResultFromRow(row: any): AddressGeoLookupResult | null {
+  const countryCode = String(row?.geoCountryCode || "").trim().toUpperCase();
+  const resolvedAddress = String(row?.resolvedAddress || "").trim();
+  const address = String(row?.address || resolvedAddress || "").trim();
+  if (!countryCode || !resolvedAddress || !address) return null;
+  return {
+    address,
+    resolvedAddress,
+    geoCountryCode: countryCode,
+    geoCountryName: String(row?.geoCountryName || "").trim() || null,
+    geoRegion: String(row?.geoRegion || "").trim() || null,
+    geoEmoji: String(row?.geoEmoji || "").trim() || countryCodeToEmoji(countryCode) || null,
+    geoLatitudeMicro: row?.geoLatitudeMicro == null ? null : Number(row.geoLatitudeMicro),
+    geoLongitudeMicro: row?.geoLongitudeMicro == null ? null : Number(row.geoLongitudeMicro),
+    geoUpdatedAt: rowDate(row?.fetchedAt || row?.geoUpdatedAt),
+  };
 }
 
 function isRefreshDue(host: any) {
@@ -139,6 +182,10 @@ async function resolveLookupAddress(address: string) {
 }
 
 async function fetchHostGeo(address: string) {
+  const now = Date.now();
+  if (geoRateLimitedUntil > now) {
+    throw new Error(`ipapi.co rate limited until ${new Date(geoRateLimitedUntil).toISOString()}`);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEO_REQUEST_TIMEOUT_MS);
   try {
@@ -150,6 +197,10 @@ async function fetchHostGeo(address: string) {
       },
       signal: controller.signal,
     });
+    if (res.status === 429) {
+      geoRateLimitedUntil = Date.now() + GEO_RATE_LIMIT_COOLDOWN_MS;
+      throw new Error("ipapi.co 429 rate limited");
+    }
     if (!res.ok) throw new Error(`ipapi.co ${res.status}`);
     const data = await res.json() as any;
     const countryCode = String(data.country_code || "").trim().toUpperCase();
@@ -168,6 +219,122 @@ async function fetchHostGeo(address: string) {
   }
 }
 
+function cacheEntryFromRow(row: any): AddressGeoCacheEntry | null {
+  const value = cacheResultFromRow(row);
+  if (!value) return null;
+  const fetchedAt = toTime(row?.fetchedAt);
+  const expiresAt = Number(row?.expiresAt || 0);
+  return {
+    freshUntil: fetchedAt > 0 ? fetchedAt + ADDRESS_GEO_FRESH_MS : Date.now(),
+    expiresAt: expiresAt > 0 ? expiresAt * 1000 : Date.now() + ADDRESS_GEO_STALE_MS,
+    value,
+  };
+}
+
+async function readPersistentGeoCacheEntry(cacheKey: string) {
+  const q = quoteIdentifier;
+  const nowSec = epochSeconds();
+  const rows = await queryRaw<any>(
+    `SELECT ${q("address")}, ${q("resolvedAddress")}, ${q("geoCountryCode")}, ${q("geoCountryName")}, ${q("geoRegion")}, ${q("geoEmoji")}, ${q("geoLatitudeMicro")}, ${q("geoLongitudeMicro")}, ${q("fetchedAt")}, ${q("expiresAt")}
+       FROM ${q("ip_geo_cache")}
+      WHERE ${q("address")} = ? AND ${q("expiresAt")} > ?
+      LIMIT 1`,
+    [cacheKey, nowSec],
+  ).catch(() => []);
+  const entry = cacheEntryFromRow(rows[0]);
+  if (entry) addressGeoCache.set(cacheKey, entry);
+  return entry;
+}
+
+async function writePersistentGeoCache(cacheKey: string, value: AddressGeoLookupResult) {
+  const nowSec = epochSeconds();
+  const expiresAt = Math.floor((Date.now() + ADDRESS_GEO_STALE_MS) / 1000);
+  const q = quoteIdentifier;
+  const table = q("ip_geo_cache");
+  const columns = [
+    "address",
+    "resolvedAddress",
+    "geoCountryCode",
+    "geoCountryName",
+    "geoRegion",
+    "geoEmoji",
+    "geoLatitudeMicro",
+    "geoLongitudeMicro",
+    "provider",
+    "fetchedAt",
+    "expiresAt",
+  ];
+  const params = [
+    cacheKey,
+    value.resolvedAddress,
+    value.geoCountryCode,
+    value.geoCountryName,
+    value.geoRegion,
+    value.geoEmoji,
+    value.geoLatitudeMicro,
+    value.geoLongitudeMicro,
+    GEO_PROVIDER,
+    nowSec,
+    expiresAt,
+  ];
+  await executeRaw(`DELETE FROM ${table} WHERE ${q("address")} = ?`, [cacheKey]).catch(() => undefined);
+  await executeRaw(
+    `INSERT INTO ${table} (${columns.map(q).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params,
+  ).catch(() => undefined);
+}
+
+async function lookupAddressGeoUncached(normalized: string, cacheKey: string): Promise<AddressGeoLookupResult | null> {
+  const staleEntry = await readPersistentGeoCacheEntry(cacheKey);
+  if (staleEntry && staleEntry.freshUntil > Date.now()) return staleEntry.value;
+  if (staleEntry?.value && staleEntry.expiresAt > Date.now() && geoRateLimitedUntil > Date.now()) return staleEntry.value;
+
+  const resolvedAddress = await resolveLookupAddress(normalized);
+  if (!resolvedAddress || isPrivateAddress(resolvedAddress)) {
+    addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+    return null;
+  }
+
+  const resolvedKey = resolvedAddress.toLowerCase();
+  if (resolvedKey !== cacheKey) {
+    const resolvedEntry = await readPersistentGeoCacheEntry(resolvedKey);
+    if (resolvedEntry && resolvedEntry.freshUntil > Date.now() && resolvedEntry.value) {
+      const value = { ...resolvedEntry.value, address: normalized, resolvedAddress };
+      addressGeoCache.set(cacheKey, { ...resolvedEntry, value });
+      await writePersistentGeoCache(cacheKey, value);
+      return value;
+    }
+  }
+
+  let geo: Awaited<ReturnType<typeof fetchHostGeo>>;
+  try {
+    geo = await fetchHostGeo(resolvedAddress);
+  } catch (error) {
+    if (staleEntry?.value) return staleEntry.value;
+    if (resolvedKey !== cacheKey) {
+      const resolvedStaleEntry = await readPersistentGeoCacheEntry(resolvedKey);
+      if (resolvedStaleEntry?.value) return { ...resolvedStaleEntry.value, address: normalized, resolvedAddress };
+    }
+    throw error;
+  }
+  if (geo.geoLatitudeMicro == null || geo.geoLongitudeMicro == null) {
+    if (staleEntry?.value) return staleEntry.value;
+    addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+    return null;
+  }
+  const value = {
+    address: normalized,
+    resolvedAddress,
+    ...geo,
+  };
+  addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_FRESH_MS, expiresAt: Date.now() + ADDRESS_GEO_STALE_MS, value });
+  await writePersistentGeoCache(cacheKey, value);
+  if (resolvedKey !== cacheKey) {
+    await writePersistentGeoCache(resolvedKey, { ...value, address: resolvedAddress });
+  }
+  return value;
+}
+
 async function refreshHostGeo(host: any) {
   const hostId = Number(host?.id) || 0;
   if (!hostId || refreshingHostIds.has(hostId)) return;
@@ -179,9 +346,17 @@ async function refreshHostGeo(host: any) {
     if (!address) {
       return;
     }
-    const lookupAddress = await resolveLookupAddress(address);
-    const geo = await fetchHostGeo(lookupAddress);
-    await db.updateHost(hostId, geo as any);
+    const geo = await lookupAddressGeo(address);
+    if (!geo) return;
+    await db.updateHost(hostId, {
+      geoCountryCode: geo.geoCountryCode,
+      geoCountryName: geo.geoCountryName,
+      geoRegion: geo.geoRegion,
+      geoEmoji: geo.geoEmoji,
+      geoLatitudeMicro: geo.geoLatitudeMicro,
+      geoLongitudeMicro: geo.geoLongitudeMicro,
+      geoUpdatedAt: geo.geoUpdatedAt,
+    } as any);
   } catch (error: any) {
     console.warn(`[HostGeo] refresh failed host=${hostId}:`, error?.message || error);
   } finally {
@@ -194,31 +369,24 @@ export async function lookupAddressGeo(address: string): Promise<AddressGeoLooku
   if (!normalized) return null;
   const cacheKey = normalized.toLowerCase();
   const cached = addressGeoCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (cached && cached.expiresAt > Date.now() && cached.freshUntil > Date.now()) return cached.value;
+  if (cached?.value && cached.expiresAt > Date.now() && geoRateLimitedUntil > Date.now()) return cached.value;
+  const inflight = addressGeoInflight.get(cacheKey);
+  if (inflight) return inflight;
 
-  try {
-    const resolvedAddress = await resolveLookupAddress(normalized);
-    if (!resolvedAddress || isPrivateAddress(resolvedAddress)) {
-      addressGeoCache.set(cacheKey, { expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+  const promise = lookupAddressGeoUncached(normalized, cacheKey)
+    .catch((error: any) => {
+      const fallback = addressGeoCache.get(cacheKey);
+      if (fallback?.value && fallback.expiresAt > Date.now()) return fallback.value;
+      addressGeoCache.set(cacheKey, { freshUntil: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
+      console.warn(`[HostGeo] lookup failed address=${normalized}:`, error?.message || error);
       return null;
-    }
-    const geo = await fetchHostGeo(resolvedAddress);
-    if (geo.geoLatitudeMicro == null || geo.geoLongitudeMicro == null) {
-      addressGeoCache.set(cacheKey, { expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
-      return null;
-    }
-    const value = {
-      address: normalized,
-      resolvedAddress,
-      ...geo,
-    };
-    addressGeoCache.set(cacheKey, { expiresAt: Date.now() + ADDRESS_GEO_CACHE_MS, value });
-    return value;
-  } catch (error: any) {
-    addressGeoCache.set(cacheKey, { expiresAt: Date.now() + ADDRESS_GEO_NEGATIVE_CACHE_MS, value: null });
-    console.warn(`[HostGeo] lookup failed address=${normalized}:`, error?.message || error);
-    return null;
-  }
+    })
+    .finally(() => {
+      addressGeoInflight.delete(cacheKey);
+    });
+  addressGeoInflight.set(cacheKey, promise);
+  return promise;
 }
 
 export function scheduleHostGeoRefresh(hostRows: any[]) {

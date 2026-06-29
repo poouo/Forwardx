@@ -6,7 +6,7 @@ services:
     container_name: ${FORWARDX_CONTAINER_NAME:-forwardx-panel}
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-9810}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000

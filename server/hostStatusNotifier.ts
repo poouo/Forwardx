@@ -38,12 +38,18 @@ function hostAddress(host: any) {
 
 function hostStatusMessage(host: any, status: HostStatus) {
   const online = status === "online";
+  const marker = online ? "🟢" : "🔴";
+  const title = online ? "ForwardX 主机上线通知" : "ForwardX 主机离线告警";
+  const statusLabel = online ? "在线" : "离线";
+  const statusText = online ? "Agent 已重新连接面板" : "心跳超时，主机已被标记离线";
   return [
-    `<b>ForwardX 主机${online ? "上线" : "离线"}</b>`,
+    `<b>${marker} ${escapeHtml(title)}</b>`,
     "",
-    `主机：${escapeHtml(hostName(host))} (#${escapeHtml(host?.id || "-")})`,
-    `地址：${escapeHtml(hostAddress(host))}`,
-    `时间：${escapeHtml(formatTime())}`,
+    `<b>状态</b>：${marker} ${escapeHtml(statusLabel)}`,
+    `<b>主机</b>：${escapeHtml(hostName(host))} (#${escapeHtml(host?.id || "-")})`,
+    `<b>地址</b>：<code>${escapeHtml(hostAddress(host))}</code>`,
+    `<b>说明</b>：${escapeHtml(statusText)}`,
+    `<b>时间</b>：${escapeHtml(formatTime())}`,
   ].join("\n");
 }
 

@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 安装完成后访问：
 
 ```text
-http://服务器IP:3000
+http://服务器IP:9810
 ```
 
 第一次打开面板时不会直接进入后台，而是进入初始化向导。你需要先选择数据库，再创建管理员账号。
@@ -81,7 +81,7 @@ openssl rand -hex 32
 
 ```bash
 cat > .env <<'EOF'
-PORT=3000
+PORT=9810
 COMPOSE_PROJECT_NAME=forwardx
 FORWARDX_CONTAINER_NAME=forwardx-panel
 FORWARDX_IMAGE=ghcr.io/poouo/forwardx:latest
@@ -123,7 +123,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-9810}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -167,7 +167,7 @@ docker logs -n 100 forwardx-panel
 浏览器访问：
 
 ```text
-http://服务器IP:3000
+http://服务器IP:9810
 ```
 
 ### 6. 手动升级 Docker 面板
@@ -209,7 +209,7 @@ curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install
 安装完成后访问：
 
 ```text
-http://服务器IP:3000
+http://服务器IP:9810
 ```
 
 常用命令：
@@ -285,7 +285,7 @@ openssl rand -hex 32
 mkdir -p /opt/forwardx-panel/data
 cat > /opt/forwardx-panel/.env <<'EOF'
 NODE_ENV=production
-PORT=3000
+PORT=9810
 DATABASE_CONFIG_PATH=/opt/forwardx-panel/data/database.json
 SQLITE_PATH=/opt/forwardx-panel/data/forwardx.db
 MYSQL_CONFIG_PATH=/opt/forwardx-panel/data/mysql.json
@@ -328,7 +328,7 @@ journalctl -u forwardx-panel -n 100 --no-pager
 浏览器访问：
 
 ```text
-http://服务器IP:3000
+http://服务器IP:9810
 ```
 
 ### 5. 手动升级本地面板
@@ -366,7 +366,7 @@ server {
     server_name panel.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:9810;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

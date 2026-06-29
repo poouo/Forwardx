@@ -29,6 +29,7 @@ import { settleTrafficBillingRuleOnDelete } from "./trafficBillingRepository";
 import { combinePortPolicies, isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom, type PortPolicy } from "../portPolicy";
 import { clearTunnelRuntimeStatus } from "../tunnelRuntimeStatus";
 import { linkProbeMethodForProtocol, type LinkProbeMethod } from "@shared/latencyProbe";
+import { notifyForwardGroupSwitch } from "../forwardGroupSwitchNotifier";
 
 export type ForwardGroupMemberInput = {
   memberType: "host" | "tunnel";
@@ -82,6 +83,7 @@ type ForwardGroupRecordType = "A" | "AAAA" | "CNAME";
 type ForwardGroupFailoverOptions = {
   forcePriority?: boolean;
   forceSync?: boolean;
+  manual?: boolean;
 };
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
@@ -402,6 +404,39 @@ async function refreshTunnelsUsingEntryGroup(entryGroupId: number, reason = "ent
 function describeDdnsTarget(group: any, value: string, provider?: string) {
   const providerLabel = provider ? `provider=${provider}` : "provider=disabled";
   return `${providerLabel} domain=${String(group.domain || "-")} type=${String(group.recordType || "A")} value=${value}`;
+}
+
+async function forwardGroupMemberLabel(member: any | null | undefined, fallbackId?: number | null) {
+  if (!member) return fallbackId ? `成员 #${fallbackId}` : "";
+  if (member.memberType === "host") {
+    const host = await getHostById(Number(member.hostId)).catch(() => null);
+    return hostDisplayLabel(host, `主机 #${member.hostId || member.id || fallbackId || "-"}`);
+  }
+  if (member.memberType === "tunnel") {
+    const tunnel = await getTunnelById(Number(member.tunnelId)).catch(() => null);
+    return String((tunnel as any)?.name || `隧道 #${member.tunnelId || member.id || fallbackId || "-"}`).trim();
+  }
+  return fallbackId ? `成员 #${fallbackId}` : `成员 #${member.id || "-"}`;
+}
+
+function normalizeHealthReason(message: unknown) {
+  const text = String(message || "").trim();
+  if (!text) return "入口不可用";
+  if (text.includes("国内健康")) return "国内健康度检测失败";
+  if (/timeout/i.test(text)) return "入口延迟探测超时";
+  if (/not running/i.test(text)) return "入口规则未运行";
+  if (/disabled/i.test(text)) return "入口规则已停用";
+  if (/No forwarding rule/i.test(text)) return "入口暂未生成转发规则";
+  if (/waiting/i.test(text)) return "等待健康度检测数据";
+  return text;
+}
+
+function switchNotifySuppressed(options: ForwardGroupFailoverOptions) {
+  return !!options.manual || !!options.forcePriority || !!options.forceSync;
+}
+
+function groupSwitchNotifyEnabled(group: any) {
+  return !!group?.telegramSwitchNotifyEnabled;
 }
 
 export async function getForwardGroups(userId?: number) {
@@ -1150,6 +1185,7 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     recoverSeconds: group.recoverSeconds,
     chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
     chinaHealthCheckTarget: group.chinaHealthCheckTarget || null,
+    telegramSwitchNotifyEnabled: !!group.telegramSwitchNotifyEnabled,
     ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
     autoFailback: group.autoFailback,
     isEnabled: group.isEnabled,
@@ -1265,6 +1301,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     sourcePort: Number(templateRule.sourcePort),
     targetIp: templateRule.targetIp,
     targetPort: Number(templateRule.targetPort),
+    telegramErrorNotifyEnabled: !!(templateRule as any).telegramErrorNotifyEnabled,
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
@@ -1382,6 +1419,7 @@ async function ensureChainRuleForTemplate(
     sourcePort: Number(templateRule.sourcePort),
     targetIp,
     targetPort,
+    telegramErrorNotifyEnabled: !!(templateRule as any).telegramErrorNotifyEnabled,
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
@@ -1691,7 +1729,7 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
     }
   }
   if (isCollectionGroupMode(groupMode)) {
-    await runForwardGroupFailover(groupId, { forceSync: true });
+    await runForwardGroupFailover(groupId, { forceSync: true, manual: true });
     if (groupMode === "entry") {
       await syncChainsUsingEntryGroup(groupId);
       await refreshTunnelsUsingEntryGroup(groupId);
@@ -1875,11 +1913,12 @@ async function evaluateMemberHealth(member: any, group: any) {
   return { ...member, healthy, latencyMs, message, failureSince, healthySince, failedLongEnough, recoveredLongEnough };
 }
 
-async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: { forceSync?: boolean } = {}) {
+async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: ForwardGroupFailoverOptions = {}) {
   const db = await getDb();
   const members = sortedMembers(group, true) as any[];
   const recordType = normalizeForwardGroupRecordType(group.recordType);
   const forceSync = !!options.forceSync;
+  const previousValue = String(group.lastDdnsValue || "").trim();
   const values: string[] = [];
   const excluded: string[] = [];
   let activeMemberId: number | null = null;
@@ -1969,6 +2008,23 @@ async function syncEntryGroupDdns(group: any, ddnsSettings: any, options: { forc
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     await insertForwardGroupEvent(group.id, null, "ddns-update", `入口组 DDNS 已同步；domain=${String(group.domain || "-")} values=${joined}${excludedSuffix}${forceSync ? " force=true" : ""}`);
+    if (groupSwitchNotifyEnabled(group) && !switchNotifySuppressed(options) && previousValue && previousValue !== joined) {
+      void notifyForwardGroupSwitch({
+        groupId: Number(group.id),
+        groupName: String(group.name || "入口组"),
+        groupMode: "entry",
+        domain: String(group.domain || ""),
+        recordType,
+        fromLabel: "原入口集合",
+        fromValue: previousValue,
+        toLabel: `${values.length} 个健康入口`,
+        toValue: joined,
+        reason: excluded.length > 0 ? "国内健康度检测失败，已自动剔除不健康入口" : "入口可用列表变化，已自动同步解析",
+        detail: excluded.length > 0 ? `剔除 ${excluded.length} 个入口；健康入口 ${values.length} 个` : `健康入口 ${values.length} 个`,
+      }).catch((error) => {
+        console.warn(`[ForwardGroup] switch notify failed group=${group.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.update(forwardGroups).set({
@@ -2001,6 +2057,10 @@ async function syncSingleForwardGroupDdns(
     eventType?: string;
     successMessage?: string;
     currentMessage?: string;
+    suppressSwitchNotify?: boolean;
+    switchReason?: string;
+    switchDetail?: string;
+    previousMember?: any | null;
   } = {},
 ) {
   const db = await getDb();
@@ -2011,6 +2071,8 @@ async function syncSingleForwardGroupDdns(
   const eventType = options.eventType || "failover";
   const successMessage = options.successMessage || "DDNS 已切换";
   const currentMessage = options.currentMessage || "DDNS 已是最新，解析记录已指向选中入口";
+  const previousMemberId = Number(group.activeMemberId || 0);
+  const previousValue = String(group.lastDdnsValue || "").trim();
 
   if (!ddnsSettings.enabled || ddnsSettings.provider === "disabled") {
     await db.update(forwardGroups).set({
@@ -2052,6 +2114,27 @@ async function syncSingleForwardGroupDdns(
       updatedAt: nowDate(),
     }).where(eq(forwardGroups.id, group.id));
     await insertForwardGroupEvent(group.id, memberId, eventType, `${successMessage}；${detail}`);
+    if (groupSwitchNotifyEnabled(group) && !options.suppressSwitchNotify && previousMemberId > 0 && Number(previousMemberId) !== Number(memberId)) {
+      const [fromLabel, toLabel] = await Promise.all([
+        forwardGroupMemberLabel(options.previousMember, previousMemberId),
+        forwardGroupMemberLabel(member, memberId),
+      ]);
+      void notifyForwardGroupSwitch({
+        groupId: Number(group.id),
+        groupName: String(group.name || "转发组"),
+        groupMode: "failover",
+        domain: String(group.domain || ""),
+        recordType,
+        fromLabel,
+        fromValue: previousValue,
+        toLabel,
+        toValue: value,
+        reason: options.switchReason || "入口不可用，已自动切换到健康成员",
+        detail: options.switchDetail || "",
+      }).catch((error) => {
+        console.warn(`[ForwardGroup] switch notify failed group=${group.id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.update(forwardGroups).set({
@@ -2080,7 +2163,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
           }
         }
       }
-      await syncEntryGroupDdns(group, ddnsSettings, { forceSync: !!options.forceSync });
+      await syncEntryGroupDdns(group, ddnsSettings, options);
       continue;
     }
     if (mode === "exit") {
@@ -2099,6 +2182,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
           eventType: options.forcePriority ? "failover" : "ddns-update",
           successMessage: "DDNS 已切换",
           currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
+          suppressSwitchNotify: true,
         });
         continue;
       }
@@ -2145,9 +2229,22 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
       && Number(failbackCandidate.priority) < Number(active.priority);
     const shouldFailover = !active || (!!active && !active.healthy && active.failedLongEnough);
     let next = active;
+    let switchReason = "";
+    let switchDetail = "";
     if (options.forcePriority) next = (await firstResolvableMember(members, recordType)).member || firstHealthy;
-    else if (shouldFailback) next = failbackCandidate;
-    else if (shouldFailover) next = firstHealthy;
+    else if (shouldFailback) {
+      next = failbackCandidate;
+      switchReason = "高优先级入口恢复，已自动回切";
+      switchDetail = `恢复稳定时间已达到 ${Number(group.recoverSeconds || 120)} 秒`;
+    } else if (shouldFailover) {
+      next = firstHealthy;
+      switchReason = active
+        ? `${normalizeHealthReason(active.message)}导致切换`
+        : "当前没有可用活动入口，已自动选择健康成员";
+      switchDetail = active
+        ? `原入口异常持续已达到 ${Number(group.failoverSeconds || 60)} 秒；检测结果：${normalizeHealthReason(active.message)}`
+        : "未记录活动成员或活动成员已不存在";
+    }
 
     if (!next) {
       await db.update(forwardGroups).set({
@@ -2170,6 +2267,10 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
       eventType: "failover",
       successMessage: "DDNS 已切换",
       currentMessage: "DDNS 已是最新，解析记录已指向选中入口",
+      suppressSwitchNotify: switchNotifySuppressed(options) || Number(group.activeMemberId || 0) === Number(next.id || 0),
+      switchReason,
+      switchDetail,
+      previousMember: active || null,
     });
   }
 }
@@ -2180,7 +2281,7 @@ export async function runForwardGroupFailover(groupId: number, options: ForwardG
   await runForwardGroupFailoverForGroups([group], options);
 }
 
-export async function runForwardGroupFailoverSweep() {
+export async function runForwardGroupFailoverSweep(options: ForwardGroupFailoverOptions = {}) {
   const groups = await getForwardGroups();
-  await runForwardGroupFailoverForGroups(groups as any[]);
+  await runForwardGroupFailoverForGroups(groups as any[], options);
 }

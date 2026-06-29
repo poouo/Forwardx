@@ -3546,7 +3546,7 @@ async function executePendingManageAction(pending: PendingManageAction, callback
         collectBilling(await settleTrafficBillingForDeletedRuleByTelegram(rule));
         await db.markForwardRulePendingDelete(ruleId);
         const groupId = Number((rule as any).forwardGroupId || 0);
-        if (groupId > 0) await db.runForwardGroupFailover(groupId);
+        if (groupId > 0) await db.runForwardGroupFailover(groupId, { manual: true });
         return [
           "<b>执行成功</b>",
           `操作：删除转发规则`,

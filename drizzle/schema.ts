@@ -272,6 +272,7 @@ export const forwardRules = table("forward_rules", {
   sourcePort: int("sourcePort").notNull(),
   targetIp: text("targetIp").notNull(),
   targetPort: int("targetPort").notNull(),
+  telegramErrorNotifyEnabled: boolean("telegramErrorNotifyEnabled").notNull().default(false),
   blockHttp: boolean("blockHttp").notNull().default(false),
   blockSocks: boolean("blockSocks").notNull().default(false),
   blockTls: boolean("blockTls").notNull().default(false),
@@ -321,6 +322,7 @@ export const forwardGroups = table("forward_groups", {
   recoverSeconds: int("recoverSeconds").notNull().default(120),
   chinaHealthCheckEnabled: boolean("chinaHealthCheckEnabled").notNull().default(false),
   chinaHealthCheckTarget: text("chinaHealthCheckTarget"),
+  telegramSwitchNotifyEnabled: boolean("telegramSwitchNotifyEnabled").notNull().default(false),
   ddnsAutoResolveEnabled: boolean("ddnsAutoResolveEnabled").notNull().default(true),
   autoFailback: boolean("autoFailback").notNull().default(true),
   isEnabled: boolean("isEnabled").notNull().default(true),
@@ -379,7 +381,7 @@ export const tunnels = table("tunnels", {
   entryGroupId: int("entryGroupId"),
   entryHostId: int("entryHostId").notNull(),
   exitHostId: int("exitHostId").notNull(),
-  mode: varchar("mode", { length: 32 }).notNull().default("tls"), // tls | wss | tcp | mtls | mwss | mtcp
+  mode: varchar("mode", { length: 32 }).notNull().default("tls"), // forwardx | tls | wss | tcp | mtls | mwss | mtcp | nginx_stream | nginx_tls
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),
@@ -391,6 +393,7 @@ export const tunnels = table("tunnels", {
   blockSocks: boolean("blockSocks").notNull().default(false),
   blockTls: boolean("blockTls").notNull().default(false),
   loadBalanceEnabled: boolean("loadBalanceEnabled").notNull().default(false),
+  loadBalanceStrategy: varchar("loadBalanceStrategy", { length: 32 }).notNull().default("round_robin"),
   isEnabled: boolean("isEnabled").notNull().default(true),
   isRunning: boolean("isRunning").notNull().default(false),
   lastLatencyMs: int("lastLatencyMs"),
@@ -449,6 +452,9 @@ export const hostMetrics = table("host_metrics", {
   cpuUsage: int("cpuUsage"),
   memoryUsage: int("memoryUsage"),
   memoryUsed: bigint("memoryUsed", { mode: "number" }),
+  swapUsage: int("swapUsage"),
+  swapUsed: bigint("swapUsed", { mode: "number" }),
+  swapTotal: bigint("swapTotal", { mode: "number" }),
   networkIn: bigint("networkIn", { mode: "number" }),
   networkOut: bigint("networkOut", { mode: "number" }),
   diskUsage: int("diskUsage"),
@@ -553,6 +559,24 @@ export const hostProbeServiceStats = table("host_probe_service_stats", {
 });
 export type HostProbeServiceStat = typeof hostProbeServiceStats.$inferSelect;
 export type InsertHostProbeServiceStat = typeof hostProbeServiceStats.$inferInsert;
+
+export const ipGeoCache = table("ip_geo_cache", {
+  id: serial("id"),
+  address: varchar("address", { length: 253 }).notNull().unique(),
+  resolvedAddress: varchar("resolvedAddress", { length: 64 }).notNull(),
+  geoCountryCode: varchar("geoCountryCode", { length: 8 }).notNull(),
+  geoCountryName: text("geoCountryName"),
+  geoRegion: text("geoRegion"),
+  geoEmoji: varchar("geoEmoji", { length: 16 }),
+  geoLatitudeMicro: int("geoLatitudeMicro"),
+  geoLongitudeMicro: int("geoLongitudeMicro"),
+  provider: varchar("provider", { length: 32 }).notNull().default("ipapi.co"),
+  fetchedAt: epoch("fetchedAt").notNull().default(nowDefault()),
+  expiresAt: epoch("expiresAt").notNull(),
+});
+export type IpGeoCache = typeof ipGeoCache.$inferSelect;
+export type InsertIpGeoCache = typeof ipGeoCache.$inferInsert;
+
 export const agentTokens = table("agent_tokens", {
   id: serial("id"),
   token: text("token").notNull().unique(),

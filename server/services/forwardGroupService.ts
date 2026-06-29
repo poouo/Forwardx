@@ -3,6 +3,7 @@ import { getDdnsSettings } from "../ddns";
 import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
+import { ENV } from "../env";
 
 export type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
@@ -28,6 +29,7 @@ export type ForwardGroupInput = {
   recoverSeconds: number;
   chinaHealthCheckEnabled?: boolean;
   chinaHealthCheckTarget?: string | null;
+  telegramSwitchNotifyEnabled?: boolean;
   ddnsAutoResolveEnabled?: boolean;
   autoFailback: boolean;
   isEnabled: boolean;
@@ -101,6 +103,17 @@ async function assertDdnsServiceConfiguredForEntryGroup(ddnsAutoResolveEnabled: 
   }
 }
 
+async function assertTelegramSwitchNotifyReady(enabled: boolean) {
+  if (!enabled) return;
+  const settings = await db.getAllSettings();
+  const envToken = ENV.telegramBotToken.trim();
+  const botEnabled = settings.telegramBotEnabled === "true" || (!!envToken && settings.telegramBotEnabled !== "false");
+  const botConfigured = !!String(settings.telegramBotToken || envToken).trim();
+  if (!botEnabled || !botConfigured) {
+    throw new Error("请先在系统设置中配置并启用 Telegram 机器人，再开启切换告警");
+  }
+}
+
 async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
   const rawMode = input.groupMode;
   const groupMode: ForwardGroupMode = rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
@@ -120,6 +133,8 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   const chinaHealthCheckTarget = chinaHealthCheckEnabled && rawChinaHealthTarget
     ? db.normalizeChinaHealthTarget(rawChinaHealthTarget).text
     : null;
+  const telegramSwitchNotifyEnabled = (groupMode === "failover" || groupMode === "entry") && !!input.telegramSwitchNotifyEnabled;
+  await assertTelegramSwitchNotifyReady(telegramSwitchNotifyEnabled);
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
   await db.validateForwardGroupRecordMembers({ groupMode, groupType, recordType }, members as any);
   const commonData = {
@@ -135,6 +150,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     recoverSeconds: input.recoverSeconds,
     chinaHealthCheckEnabled,
     chinaHealthCheckTarget,
+    telegramSwitchNotifyEnabled,
     ddnsAutoResolveEnabled,
     autoFailback: input.autoFailback,
     isEnabled: input.isEnabled,
@@ -158,7 +174,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
 export async function createForwardGroupFromInput(input: ForwardGroupInput, userId: number) {
   const normalized = await normalizeForwardGroupInput(input, userId);
   const id = await db.createForwardGroup(normalized.createData as any, normalized.members as any);
-  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id);
+  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, { manual: true });
   return id;
 }
 
@@ -176,6 +192,7 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
   if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, {
     forcePriority: memberPriorityChanged,
     forceSync: memberPriorityChanged,
+    manual: true,
   });
 }
 

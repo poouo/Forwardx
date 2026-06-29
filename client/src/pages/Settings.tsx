@@ -1928,7 +1928,7 @@ function TelegramBotSettingsCard() {
                 在系统配置填写公开地址，并在 @BotFather 绑定同一域名。
               </AlertDescription>
             </Alert>
-            <div className="grid gap-3 lg:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-lg border border-border/40 bg-background/50 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>

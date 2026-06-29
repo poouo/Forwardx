@@ -19,6 +19,7 @@ SERVICE_NAME="forwardx-agent"
 GO_AGENT_BIN="/usr/local/bin/forwardx-agent"
 FXP_BIN="/usr/local/bin/forwardx-fxp"
 RUNTIME_BIN="/usr/local/bin/forwardx-runtime"
+NGINX_BIN="/usr/local/bin/forwardx-nginx"
 CONFIG_DIR="/etc/forwardx/agent"
 LEGACY_CONFIG_DIR="/etc/forwardx-agent"
 LOG_DIR="/var/log/forwardx-agent"
@@ -33,7 +34,7 @@ show_help() {
 用法:
   安装 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
-      PANEL_URL="http://your-panel:3000" bash -s -- install YOUR_TOKEN
+      PANEL_URL="http://your-panel:9810" bash -s -- install YOUR_TOKEN
 
   卸载 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
@@ -41,7 +42,7 @@ show_help() {
 
   升级 Agent:
     curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh | \
-      PANEL_URL="http://your-panel:3000" bash -s -- upgrade [YOUR_TOKEN]
+      PANEL_URL="http://your-panel:9810" bash -s -- upgrade [YOUR_TOKEN]
 
 参数:
   install   <TOKEN>  安装 Agent 并注册到面板
@@ -151,13 +152,13 @@ do_install() {
 
   if [ -z "$agent_token" ]; then
     echo "[错误] install 需要 Agent Token"
-    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
+    echo "用法: PANEL_URL=\"http://your-panel:9810\" bash install-agent.sh install YOUR_TOKEN"
     exit 1
   fi
 
   if [ -z "${PANEL_URL:-}" ]; then
     echo "[错误] 缺少 PANEL_URL"
-    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh install YOUR_TOKEN"
+    echo "用法: PANEL_URL=\"http://your-panel:9810\" bash install-agent.sh install YOUR_TOKEN"
     exit 1
   fi
 
@@ -187,7 +188,7 @@ do_upgrade() {
 
   if [ -z "${PANEL_URL:-}" ]; then
     echo "[错误] 未找到 PANEL_URL"
-    echo "用法: PANEL_URL=\"http://your-panel:3000\" bash install-agent.sh upgrade [YOUR_TOKEN]"
+    echo "用法: PANEL_URL=\"http://your-panel:9810\" bash install-agent.sh upgrade [YOUR_TOKEN]"
     exit 1
   fi
 
@@ -226,6 +227,10 @@ do_uninstall() {
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
     kill "$pid" 2>/dev/null || true
   done
+  for pid in $(pgrep -f "[/]usr/local/bin/forwardx-nginx" 2>/dev/null || true); do
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
+    kill "$pid" 2>/dev/null || true
+  done
   for pid in $(pgrep -f "[/]usr/local/bin/forwardx-udp2raw" 2>/dev/null || true); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi
     kill "$pid" 2>/dev/null || true
@@ -239,20 +244,20 @@ do_uninstall() {
     kill "$pid" 2>/dev/null || true
   done
 
-  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service /etc/systemd/system/forwardx-udp2raw-*.service /etc/systemd/system/forwardx-runtime.service /etc/systemd/system/forwardx-tunnel-runtime.service /etc/systemd/system/forwardx-gost.service /etc/systemd/system/forwardx-tunnels.service; do
+  for SVC in /etc/systemd/system/forwardx-socat-*.service /etc/systemd/system/forwardx-realm-*.service /etc/systemd/system/forwardx-gost-*.service /etc/systemd/system/forwardx-nginx.service /etc/systemd/system/forwardx-udp2raw-*.service /etc/systemd/system/forwardx-runtime.service /etc/systemd/system/forwardx-tunnel-runtime.service /etc/systemd/system/forwardx-gost.service /etc/systemd/system/forwardx-tunnels.service; do
     if [ -f "$SVC" ]; then
       SVCNAME="$(basename "$SVC" .service)"
       remove_service_by_name "$SVCNAME"
     fi
   done
-  for SVC in /etc/init.d/forwardx-socat-* /etc/init.d/forwardx-realm-* /etc/init.d/forwardx-gost-* /etc/init.d/forwardx-udp2raw-* /etc/init.d/forwardx-runtime /etc/init.d/forwardx-tunnel-runtime /etc/init.d/forwardx-gost /etc/init.d/forwardx-tunnels; do
+  for SVC in /etc/init.d/forwardx-socat-* /etc/init.d/forwardx-realm-* /etc/init.d/forwardx-gost-* /etc/init.d/forwardx-nginx /etc/init.d/forwardx-udp2raw-* /etc/init.d/forwardx-runtime /etc/init.d/forwardx-tunnel-runtime /etc/init.d/forwardx-gost /etc/init.d/forwardx-tunnels; do
     if [ -f "$SVC" ]; then
       SVCNAME="$(basename "$SVC")"
       remove_service_by_name "$SVCNAME"
     fi
   done
 
-  rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN" /usr/local/bin/forwardx-udp2raw
+  rm -f "$GO_AGENT_BIN" "$FXP_BIN" "$RUNTIME_BIN" "$NGINX_BIN" /usr/local/bin/forwardx-udp2raw
   rm -rf "$CONFIG_DIR" "$LEGACY_CONFIG_DIR" "$LOG_DIR" "$STATE_DIR" /etc/forwardx /etc/forwardx-runtime /etc/forwardx-tunnel-runtime /etc/forwardx-gost /etc/forwardx-tunnels
 
   echo "[完成] Agent 已卸载"

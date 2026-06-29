@@ -2084,17 +2084,16 @@ function HostsContent() {
                         </div>
                         <div className="min-w-0 space-y-1">
                           <Label className="text-sm">套餐流量</Label>
-                          <div className="flex min-w-0 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring focus-within:ring-offset-0">
+                          <div className="flex h-8 min-w-0 overflow-hidden rounded-md border border-input bg-background focus-within:border-ring focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
                             <Input
-                              className="h-8 min-w-0 flex-1 rounded-r-none border border-r-0 border-input focus-visible:ring-0 focus-visible:ring-offset-0"
-                              type="number"
-                              min={0}
-                              step={1}
+                              className="h-8 min-w-0 flex-1 rounded-none border-0 bg-transparent px-3 py-1 focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                              type="text"
+                              inputMode="decimal"
                               placeholder="例如: 2000"
                               value={form.trafficLimitGb}
                               onChange={(e) => setForm({ ...form, trafficLimitGb: e.target.value })}
                             />
-                            <span className="flex h-8 shrink-0 items-center rounded-r-md border border-input border-l-0 bg-muted/50 px-2.5 text-sm text-muted-foreground">
+                            <span className="flex h-full shrink-0 items-center border-l border-border/60 bg-muted/50 px-2.5 text-sm text-muted-foreground">
                               GB
                             </span>
                           </div>

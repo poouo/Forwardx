@@ -9,6 +9,7 @@ import {
   recordTunnelRuntimeHostStatus,
 } from "./tunnelRuntimeStatus";
 import { getAgentHostFromRequest } from "./agentAuth";
+import { notifyForwardRuleError } from "./forwardRuleErrorNotifier";
 
 function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
@@ -264,7 +265,19 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
 
+    const wasRunning = !!(rule as any).isRunning;
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
+    if (
+      (wasRunning || !!message)
+      && !isRunning
+      && !!(rule as any).isEnabled
+      && !(rule as any).pendingDelete
+      && !!(rule as any).telegramErrorNotifyEnabled
+    ) {
+      void notifyForwardRuleError({ rule, host, message }).catch((error) => {
+        console.warn(`[Telegram] Forward rule error notify failed rule=${ruleId}: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     if (ruleTunnel && ruleTunnelEntryHostIds.includes(Number(host.id))) {
       recordTunnelRuntimeHostStatus(Number(ruleTunnel.id), Number(host.id), !!isRunning);
     }

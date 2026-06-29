@@ -66,8 +66,10 @@ const defaultConfigPath = "/etc/forwardx/agent/config.json"
 const legacyConfigPath = "/etc/forwardx-agent/config.json"
 const runtimeServiceName = "forwardx-runtime"
 const tunnelRuntimeServiceName = "forwardx-tunnel-runtime"
+const nginxServiceName = "forwardx-nginx"
 const runtimeConfigPath = "/etc/forwardx/runtime/gost.json"
 const tunnelRuntimeConfigPath = "/etc/forwardx/runtime/tunnel-gost.json"
+const nginxConfigPath = "/etc/forwardx/nginx/nginx.conf"
 const legacyGostServiceName = "forwardx-gost"
 const legacyTunnelServiceName = "forwardx-tunnels"
 const legacyGostConfigPath = "/etc/forwardx-gost/config.json"
@@ -666,11 +668,19 @@ func heartbeat(cfg Config) (int, error) {
 		primaryIP = ipv6
 	}
 	dnsChanges := takePendingDNSChanges()
+	memInfo := readMeminfo()
+	memoryTotal := memTotalFrom(memInfo)
+	memoryUsed := memUsedFrom(memInfo)
+	swapTotal := swapTotalFrom(memInfo)
+	swapUsed := swapUsedFrom(memInfo)
 	payload := map[string]any{
 		"cpuUsage":     cpuUsage(),
-		"memoryUsage":  memUsagePercent(),
-		"memoryUsed":   memUsed(),
-		"memoryTotal":  memTotal(),
+		"memoryUsage":  usagePercent(memoryUsed, memoryTotal),
+		"memoryUsed":   memoryUsed,
+		"memoryTotal":  memoryTotal,
+		"swapUsage":    usagePercent(swapUsed, swapTotal),
+		"swapUsed":     swapUsed,
+		"swapTotal":    swapTotal,
 		"networkIn":    netBytes(0),
 		"networkOut":   netBytes(1),
 		"diskUsage":    diskUsage(),
@@ -1792,7 +1802,7 @@ func actionUsesManagedListener(a action) bool {
 		return true
 	}
 	switch a.ForwardType {
-	case "realm", "socat", "gost", "forwardx", "forwardx-tunnel", "gost-tunnel":
+	case "realm", "socat", "gost", "nginx", "forwardx", "forwardx-tunnel", "gost-tunnel", "nginx-tunnel":
 		return true
 	default:
 		return false
@@ -1818,7 +1828,7 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	}
 	stopped := false
 	for _, item := range managedRuntimeConfigs() {
-		if gostRuntimeConfigUsesPort(item.path, port) {
+		if managedRuntimeConfigUsesPort(item.path, port) {
 			logf("runtime cleanup stopping %s for busy port=%d: %v", item.service, port, err)
 			cleanupManagedService(item.service)
 			stopped = true
@@ -1826,10 +1836,10 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	}
 	for _, configPath := range managedGostConfigPathsForListenPort(port) {
 		svcName := managedGostServiceNameForConfig(configPath)
-		if svcName == "" || gostRuntimeConfigUsesPort(configPath, port) {
+		if svcName == "" || managedRuntimeConfigUsesPort(configPath, port) {
 			continue
 		}
-		serviceCount, ok := gostRuntimeConfigServiceCount(configPath)
+		serviceCount, ok := managedRuntimeConfigServiceCount(configPath)
 		if !ok || serviceCount > 0 {
 			logf("runtime cleanup restarting %s for stale gost listener port=%d config=%s", svcName, port, configPath)
 			restartManagedService(svcName)
@@ -1842,6 +1852,20 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	if !stopped {
 		logf("runtime cleanup found busy port=%d but no managed gost config owns it: %v", port, err)
 	}
+}
+
+func managedRuntimeConfigUsesPort(path string, port int) bool {
+	if strings.HasSuffix(path, ".json") {
+		return gostRuntimeConfigUsesPort(path, port)
+	}
+	return nginxRuntimeConfigUsesPort(path, port)
+}
+
+func managedRuntimeConfigServiceCount(path string) (int, bool) {
+	if strings.HasSuffix(path, ".json") {
+		return gostRuntimeConfigServiceCount(path)
+	}
+	return nginxRuntimeConfigServiceCount(path)
 }
 
 func gostRuntimeConfigUsesPort(path string, port int) bool {
@@ -1880,6 +1904,45 @@ func readGostRuntimeServiceAddrs(path string) ([]string, bool) {
 		addrs = append(addrs, svc.Addr)
 	}
 	return addrs, true
+}
+
+func nginxRuntimeListenAddrs(path string) ([]string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	re := regexp.MustCompile(`(?m)\blisten\s+([^;]+);`)
+	matches := re.FindAllStringSubmatch(string(b), -1)
+	addrs := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		fields := strings.Fields(match[1])
+		if len(fields) == 0 {
+			continue
+		}
+		addrs = append(addrs, fields[0])
+	}
+	return addrs, true
+}
+
+func nginxRuntimeConfigUsesPort(path string, port int) bool {
+	addrs, ok := nginxRuntimeListenAddrs(path)
+	if !ok {
+		return false
+	}
+	for _, addr := range addrs {
+		if addrUsesPort(addr, port) {
+			return true
+		}
+	}
+	return false
+}
+
+func nginxRuntimeConfigServiceCount(path string) (int, bool) {
+	addrs, ok := nginxRuntimeListenAddrs(path)
+	return len(addrs), ok
 }
 
 func addrUsesPort(addr string, port int) bool {
@@ -1939,6 +2002,7 @@ func managedRuntimeConfigs() []struct {
 	}{
 		{runtimeConfigPath, runtimeServiceName},
 		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName},
+		{nginxConfigPath, nginxServiceName},
 		{legacyRuntimeConfigPath, runtimeServiceName},
 		{legacyTunnelRuntimeConfigPath, tunnelRuntimeServiceName},
 		{legacyGostConfigPath, legacyGostServiceName},
@@ -2485,6 +2549,7 @@ func managedPortCleanupCmds(port string) []string {
 		managedServiceCleanupShell("forwardx-socat-tcp-"+port),
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
+		managedNginxCleanupShell(port),
 	)
 	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
 	for _, binary := range iptablesAgentBinaries() {
@@ -2568,6 +2633,10 @@ func managedListenerCleanupCmds(port string) []string {
 		"for pid in $(pgrep -f '[f]orwardx-udp2raw .*:"+port+"' 2>/dev/null || true); do if [ \"$pid\" = \"$$\" ] || [ \"$pid\" = \"$PPID\" ]; then continue; fi; kill \"$pid\" 2>/dev/null || true; done",
 	)
 	return cmds
+}
+
+func managedNginxCleanupShell(port string) string {
+	return "if [ -f /etc/forwardx/nginx/nginx.conf ] && grep -Eq \"listen .*:" + port + "( |;)|listen \\\\[::\\\\]:" + port + "( |;)|listen 0.0.0.0:" + port + "( |;)\" /etc/forwardx/nginx/nginx.conf 2>/dev/null; then " + managedServiceCleanupShell("forwardx-nginx") + "; fi"
 }
 
 func fxpPortCleanupCmds(port string) []string {
@@ -4835,17 +4904,41 @@ func readMeminfo() map[string]uint64 {
 	return out
 }
 
-func memTotal() uint64 { return readMeminfo()["MemTotal"] }
-func memUsed() uint64 {
-	m := readMeminfo()
-	return m["MemTotal"] - m["MemAvailable"]
+func memTotalFrom(m map[string]uint64) uint64 { return m["MemTotal"] }
+
+func memUsedFrom(m map[string]uint64) uint64 {
+	total := m["MemTotal"]
+	available := m["MemAvailable"]
+	if total <= available {
+		return 0
+	}
+	return total - available
 }
-func memUsagePercent() int {
-	total := memTotal()
+
+func swapTotalFrom(m map[string]uint64) uint64 { return m["SwapTotal"] }
+
+func swapUsedFrom(m map[string]uint64) uint64 {
+	total := m["SwapTotal"]
+	free := m["SwapFree"]
+	if total <= free {
+		return 0
+	}
+	return total - free
+}
+
+func usagePercent(used, total uint64) int {
 	if total == 0 {
 		return 0
 	}
-	return int(memUsed() * 100 / total)
+	return int(used * 100 / total)
+}
+
+func memTotal() uint64 { return memTotalFrom(readMeminfo()) }
+func memUsed() uint64 {
+	return memUsedFrom(readMeminfo())
+}
+func memUsagePercent() int {
+	return usagePercent(memUsed(), memTotal())
 }
 
 func uptime() int64 {
