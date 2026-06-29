@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.123"
+var Version = "2.2.124"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -144,6 +144,12 @@ type envelope struct {
 	CT  string `json:"ct"`
 	MAC string `json:"mac"`
 	TS  int64  `json:"ts"`
+}
+
+type panelErrorResp struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Hint    string `json:"hint"`
 }
 
 type heartbeatResp struct {
@@ -2549,6 +2555,7 @@ func managedPortCleanupCmds(port string) []string {
 		managedServiceCleanupShell("forwardx-socat-tcp-"+port),
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
+		"rm -f /etc/forwardx/realm/forwardx-realm-"+port+".toml /etc/forwardx/realm/forwardx-realm-"+port+".toml.sha256 2>/dev/null || true",
 		managedNginxCleanupShell(port),
 	)
 	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
@@ -3220,10 +3227,12 @@ func runtimeProtocols(protocol string) []string {
 }
 
 func normalizeRuntimeProtocol(protocol string) string {
-	switch strings.ToLower(strings.TrimSpace(protocol)) {
-	case "udp":
+	value := strings.ToLower(strings.TrimSpace(protocol))
+	compact := strings.NewReplacer(" ", "", "\t", "", "_", "", "+", "", "-", "", "/", "").Replace(value)
+	switch {
+	case value == "udp":
 		return "udp"
-	case "both", "tcp+udp":
+	case value == "both" || compact == "tcpudp" || compact == "udptcp" || compact == "tcpandudp" || compact == "udpandtcp":
 		return "both"
 	default:
 		return "tcp"
@@ -4501,7 +4510,7 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 		if decryptErr != nil {
 			return fmt.Errorf("%s: %v", res.Status, decryptErr)
 		}
-		return fmt.Errorf("%s: %s", res.Status, string(decodedBody))
+		return fmt.Errorf("%s: %s", res.Status, formatPanelErrorBody(decodedBody))
 	}
 	if decryptErr != nil {
 		return decryptErr
@@ -4515,11 +4524,39 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	return nil
 }
 
+func formatPanelErrorBody(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return ""
+	}
+	var panelErr panelErrorResp
+	if err := json.Unmarshal(body, &panelErr); err != nil {
+		return trimmed
+	}
+	parts := make([]string, 0, 3)
+	if panelErr.Error != "" {
+		parts = append(parts, panelErr.Error)
+	}
+	if panelErr.Message != "" && panelErr.Message != panelErr.Error {
+		parts = append(parts, panelErr.Message)
+	}
+	if panelErr.Hint != "" {
+		parts = append(parts, "提示: "+panelErr.Hint)
+	}
+	if len(parts) == 0 {
+		return trimmed
+	}
+	return strings.Join(parts, "；")
+}
+
 func isClockSyncCandidateError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "mac verification failed") {
+		return false
+	}
 	if strings.Contains(msg, "timestamp") || strings.Contains(msg, "replay protection") {
 		return true
 	}

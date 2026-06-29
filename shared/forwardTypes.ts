@@ -18,12 +18,33 @@ export const FORWARD_RULE_PROTOCOL_LABELS: Record<ForwardRuleProtocol, string> =
   both: "TCP + UDP",
 };
 
+export function normalizeForwardRuleProtocol(protocol: unknown, fallback: ForwardRuleProtocol = "tcp"): ForwardRuleProtocol {
+  const raw = String(protocol ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "tcp" || raw === "udp" || raw === "both") return raw;
+  const compact = raw.replace(/[\s_+\/-]+/g, "");
+  if (compact === "tcpudp" || compact === "udptcp" || compact === "tcpandudp" || compact === "udpandtcp") return "both";
+  return fallback;
+}
+
+export function forwardRuleProtocols(protocol: unknown, fallback: ForwardRuleProtocol = "tcp"): Array<"tcp" | "udp"> {
+  const normalized = normalizeForwardRuleProtocol(protocol, fallback);
+  if (normalized === "udp") return ["udp"];
+  if (normalized === "both") return ["tcp", "udp"];
+  return ["tcp"];
+}
+
+export function isForwardRuleProtocolTcpEnabled(protocol: unknown, fallback: ForwardRuleProtocol = "tcp") {
+  return normalizeForwardRuleProtocol(protocol, fallback) !== "udp";
+}
+
+export function isForwardRuleProtocolUdpEnabled(protocol: unknown, fallback: ForwardRuleProtocol = "tcp") {
+  return normalizeForwardRuleProtocol(protocol, fallback) !== "tcp";
+}
+
 export function formatForwardRuleProtocol(protocol: string | null | undefined) {
-  const value = String(protocol || "").toLowerCase();
-  if (value === "tcp" || value === "udp" || value === "both") {
-    return FORWARD_RULE_PROTOCOL_LABELS[value as ForwardRuleProtocol];
-  }
-  return value ? value.toUpperCase() : "-";
+  if (protocol == null || String(protocol).trim() === "") return "-";
+  return FORWARD_RULE_PROTOCOL_LABELS[normalizeForwardRuleProtocol(protocol)];
 }
 
 export const TUNNEL_PROTOCOLS = ["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"] as const;

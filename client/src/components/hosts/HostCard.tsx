@@ -244,40 +244,7 @@ export default function HostCard({
     }`}>
       <CardHeader className={compact ? "px-3.5 pb-2 pt-3.5" : "pb-2"}>
         {compact ? (
-          <div className="flex min-w-0 items-start justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <CardTitle className={`min-w-0 text-sm font-semibold leading-7 ${isOnline ? "" : "text-muted-foreground"}`}>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
-                    title={isOnline ? "在线" : "离线"}
-                  />
-                  <span className="min-w-0 truncate" title={hostName}>{hostName}</span>
-                  <span
-                    className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
-                      isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
-                    }`}
-                  >
-                    {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
-                  </span>
-                </span>
-              </CardTitle>
-              {(agentNeedsUpdate || host.agentUpgradeRequested) && (
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {agentNeedsUpdate && (
-                    <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
-                      新版
-                    </Badge>
-                  )}
-                  {host.agentUpgradeRequested && (
-                    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
-                      {agentUpgradeTimedOut ? "升级失败" : "升级中"}
-                    </Badge>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="flex shrink-0 items-center justify-end gap-1">
+          <div className="flex min-w-0 items-center justify-end gap-1">
               {onViewProbeLatency && (
                 <Button
                   variant="ghost"
@@ -327,10 +294,9 @@ export default function HostCard({
                   if (confirm("确定要删除此主机吗？")) onDelete(host.id);
                 }}
               >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
         ) : (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <CardTitle className={`min-w-0 text-base font-semibold ${isOnline ? "" : "text-muted-foreground"}`}>
@@ -399,6 +365,34 @@ export default function HostCard({
         {compact ? (
           <div className="space-y-2">
             <div className={`min-w-0 rounded-md border px-2.5 py-1.5 ${infoPanelClass}`}>
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
+                  title={isOnline ? "在线" : "离线"}
+                />
+                <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
+                <span
+                  className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
+                    isOnline ? "border-border/50" : "border-muted-foreground/20 bg-muted/20"
+                  }`}
+                >
+                  {host.agentVersion ? `v${host.agentVersion}` : "未上报"}
+                </span>
+              </div>
+              {(agentNeedsUpdate || host.agentUpgradeRequested) && (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {agentNeedsUpdate && (
+                    <Badge variant="outline" className="shrink-0 border-amber-500/30 px-1.5 py-0 text-[10px] text-amber-500">
+                      新版
+                    </Badge>
+                  )}
+                  {host.agentUpgradeRequested && (
+                    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
+                      {agentUpgradeTimedOut ? "升级失败" : "升级中"}
+                    </Badge>
+                  )}
+                </div>
+              )}
               <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
                 <span className="mr-1.5 text-muted-foreground">地址</span>
                 {hostPrimaryAddressText(host)}

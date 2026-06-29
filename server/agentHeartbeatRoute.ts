@@ -39,6 +39,12 @@ import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { scheduleHostDdnsUpdate } from "./hostDdns";
 import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
+import {
+  forwardRuleProtocols,
+  isForwardRuleProtocolTcpEnabled,
+  isForwardRuleProtocolUdpEnabled,
+  normalizeForwardRuleProtocol,
+} from "@shared/forwardTypes";
 
 // DNS 解析缓存：ruleId → 主目标上次解析到的 IPv4 地址。
 // 备用出站策略里的域名由 Agent 的 TCP 拨号和健康检查动态解析。
@@ -57,6 +63,7 @@ const NGINX_BIN = "/usr/local/bin/forwardx-nginx";
 const NGINX_SERVICE_NAME = "forwardx-nginx";
 const NGINX_CONFIG_DIR = "/etc/forwardx/nginx";
 const NGINX_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf";
+const REALM_CONFIG_DIR = "/etc/forwardx/realm";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
 const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const MIMIC_CONFIG_DIR = "/etc/mimic";
@@ -170,6 +177,14 @@ function socatDialEndpoint(protocol: "TCP" | "UDP", host: unknown, port: unknown
   return `${dialProtocol}:${endpointHostPort(clean, port)}`;
 }
 
+function realmTomlString(value: unknown) {
+  return JSON.stringify(String(value ?? ""));
+}
+
+function realmConfigPathForPort(port: unknown) {
+  return `${REALM_CONFIG_DIR}/forwardx-realm-${Number(port) || 0}.toml`;
+}
+
 function mimicFilterEndpoint(host: unknown, port: unknown) {
   const clean = cleanEndpointHost(host);
   const p = Number(port) || 0;
@@ -181,12 +196,11 @@ function mimicFilterEndpoint(host: unknown, port: unknown) {
 }
 
 function udpOverTcpEnabled(rule: any, tunnel: any) {
-  const protocol = String(rule?.protocol || "").toLowerCase();
   return !!rule
     && !!tunnel
     && isForwardXTunnelMode(tunnel)
     && !!(rule as any).udpOverTcp
-    && (protocol === "udp" || protocol === "both");
+    && isForwardRuleProtocolUdpEnabled(rule?.protocol);
 }
 
 function normalizeRateLimitMbps(value: unknown) {
@@ -513,7 +527,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const failoverProxyHandlesTargetDns = (rule: any) => (
       !!rule?.failoverEnabled
       && rule.forwardType === "gost"
-      && rule.protocol === "tcp"
+      && normalizeForwardRuleProtocol(rule.protocol) === "tcp"
       && parseFailoverTargets(rule.failoverTargets).length > 0
     );
     const chainMemberAddress = (member: any, hostLike: any) => {
@@ -966,7 +980,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : undefined
     );
     const proxyProtocolEnabled = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => {
-      if (String(rule?.protocol || "tcp") === "udp") return false;
+      if (!isForwardRuleProtocolTcpEnabled(rule?.protocol)) return false;
       if (direction === "receive" || direction === "entryReceive") return !!(rule as any).proxyProtocolReceive;
       if (direction === "send" || direction === "entrySend") return !!(rule as any).proxyProtocolSend;
       if (direction === "exitReceive") return !!(rule as any).proxyProtocolExitReceive;
@@ -981,7 +995,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Object.keys(merged).length > 0 ? merged : undefined;
     };
     const isForwardXTunnel = isForwardXTunnelMode;
-    const tunnelForwardProtos = (protocol: string) => protocol === "udp" ? ["udp"] : (protocol === "both" ? ["tcp", "udp"] : ["tcp"]);
+    const tunnelForwardProtos = (protocol: string) => forwardRuleProtocols(protocol);
     const hostPublicAddress = (hostLike: any) => {
       const value = hostIngressAddress(hostLike);
       addDnsWatch(dnsWatches, value, "host-entry", Number(hostLike?.id || 0));
@@ -1349,7 +1363,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const tunnelProtocolPolicy = (tunnel: any) => getHostProtocolPolicy(isCurrentHostTunnelEntry(tunnel) ? Number(host.id) : Number((tunnel as any)?.entryHostId || 0));
     const shouldUseRuleGuard = async (rule: any) => {
       if (rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0) return false;
-      if (rule.protocol === "udp") return false;
+      if (!isForwardRuleProtocolTcpEnabled(rule.protocol)) return false;
       return hasProtocolPolicy(await ruleProtocolPolicy(rule));
     };
     const guardListenPort = (rule: any) => 39000 + (Number(rule.id) % 20000);
@@ -1428,7 +1442,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (await shouldUseRuleGuard(r)) return [];
         const tunnel = (r as any).tunnelId ? tunnelById.get((r as any).tunnelId) as any : null;
         if (tunnel && !isGostTunnelMode(tunnel)) return [];
-        const protos = tunnel ? tunnelForwardProtos(r.protocol) : (r.protocol === "both" ? ["tcp", "udp"] : [r.protocol === "udp" ? "udp" : "tcp"]);
+        const protos = tunnel ? tunnelForwardProtos(r.protocol) : forwardRuleProtocols(r.protocol);
         return Promise.all(protos.map(async (proto) => {
           const tunnelHops = tunnel ? tunnelHopsByTunnelId.get(Number(tunnel.id)) : null;
           const firstHop = Array.isArray(tunnelHops) && tunnelHops.length >= 2 ? (tunnelHops[0] as any) : null;
@@ -1765,10 +1779,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const nginxProtocolsForRule = (rule: any, tunnel?: any | null): Array<"tcp" | "udp"> => {
       if (tunnel && isNginxTLSTunnelMode(tunnel)) return ["tcp"];
-      const protocol = String(rule?.protocol || "tcp").toLowerCase();
-      if (protocol === "udp") return ["udp"];
-      if (protocol === "both") return ["tcp", "udp"];
-      return ["tcp"];
+      return forwardRuleProtocols(rule?.protocol);
     };
     const nginxUpstreamBlock = (
       name: string,
@@ -2057,6 +2068,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       if (rule.forwardType === "realm") {
         const svcName = `forwardx-realm-${rule.sourcePort}`;
+        const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
         return {
           ruleId: rule.id,
           op: "remove",
@@ -2068,7 +2080,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           svcName,
           commands: [
             removeManagedServiceCmd(svcName),
-            killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
+            killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
+            `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
             `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
             ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -2078,7 +2091,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       if (rule.forwardType === "socat") {
         const removeCmds: string[] = [];
-        if (rule.protocol === "both") {
+        if (normalizeForwardRuleProtocol(rule.protocol) === "both") {
           const svcTcp = `forwardx-socat-tcp-${rule.sourcePort}`;
           const svcUdp = `forwardx-socat-udp-${rule.sourcePort}`;
           removeCmds.push(removeManagedServiceCmd(svcTcp));
@@ -2466,18 +2479,32 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "realm") {
           const svcName = `forwardx-realm-${rule.sourcePort}`;
-          const udpFlag = rule.protocol === "udp" || rule.protocol === "both" ? "--udp" : "";
-          // 如果主机配置了网卡，realm 使用 --interface 绑定
-          const ifaceFlag = hostInterface ? `--interface ${hostInterface}` : "";
-          const tcpOnlyFlags = String(rule.protocol || "tcp") !== "udp"
-            ? [
-                proxyProtocolEnabled(rule, "receive") ? "--accept-proxy --accept-proxy-timeout 5" : "",
-                proxyProtocolEnabled(rule, "send") ? `--send-proxy --send-proxy-version ${proxyProtocolVersion(rule)}` : "",
-                (rule as any).tcpFastOpen ? "--tfo" : "",
-                (rule as any).zeroCopy ? "--splice" : "",
-              ].filter(Boolean).join(" ")
-            : "";
-          const realmCmd = `/usr/local/bin/realm -l [::]:${rule.sourcePort} -r ${endpointHostPort(processTarget(rule), rule.targetPort)} ${udpFlag} ${ifaceFlag} ${tcpOnlyFlags}`.replace(/\s+/g, ' ').trim();
+          const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
+          const realmRemote = endpointHostPort(processTarget(rule), rule.targetPort);
+          const realmConfig = [
+            "[log]",
+            'level = "warn"',
+            "",
+            "[network]",
+            `use_udp = ${isForwardRuleProtocolUdpEnabled(rule.protocol) ? "true" : "false"}`,
+            `zero_copy = ${(rule as any).zeroCopy && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
+            `fast_open = ${(rule as any).tcpFastOpen && isForwardRuleProtocolTcpEnabled(rule.protocol) ? "true" : "false"}`,
+            "tcp_timeout = 300",
+            "udp_timeout = 30",
+            "ipv6_only = false",
+            `send_proxy = ${proxyProtocolEnabled(rule, "send") ? "true" : "false"}`,
+            `send_proxy_version = ${proxyProtocolVersion(rule)}`,
+            `accept_proxy = ${proxyProtocolEnabled(rule, "receive") ? "true" : "false"}`,
+            "accept_proxy_timeout = 5",
+            "",
+            "[[endpoints]]",
+            `listen = ${realmTomlString(`[::0]:${Number(rule.sourcePort) || 0}`)}`,
+            `remote = ${realmTomlString(realmRemote)}`,
+            "",
+          ].join("\n");
+          const realmConfigB64 = Buffer.from(realmConfig, "utf8").toString("base64");
+          const ifaceFlag = hostInterface ? ` --interface ${hostInterface}` : "";
+          const realmCmd = `/usr/local/bin/realm -c ${realmConfigPath}${ifaceFlag}`;
           const unit = [
             "[Unit]",
             `Description=ForwardX realm forwarder ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -2505,6 +2532,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             networkInterface: hostInterface,
             svcName,
             unit,
+            preCommands: [
+              `mkdir -p ${shQuote(REALM_CONFIG_DIR)}`,
+              `printf '%s' '${realmConfigB64}' | base64 -d > ${shQuote(realmConfigPath)}`,
+            ],
             commands: [
               // 同时为该端口挂入 mangle 计数链，保证 realm 转发也能被准确统计
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -2525,7 +2556,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           // TCP: socat TCP-LISTEN:sourcePort,fork,reuseaddr TCP:targetIp:targetPort
           // UDP: socat UDP-LISTEN:sourcePort,fork,reuseaddr UDP:targetIp:targetPort
           // both: 需要两个 socat 进程
-          if (rule.protocol === "both") {
+          if (normalizeForwardRuleProtocol(rule.protocol) === "both") {
             // 两个服务：一个 TCP 一个 UDP
             const svcNameTcp = `forwardx-socat-tcp-${rule.sourcePort}`;
             const svcNameUdp = `forwardx-socat-udp-${rule.sourcePort}`;
@@ -2582,7 +2613,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               failover: actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
             });
           } else {
-            const protoUpper = rule.protocol === "udp" ? "UDP" : "TCP";
+            const protoUpper = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "UDP" : "TCP";
             const listenProto = protoUpper === "UDP" ? "UDP6" : "TCP6";
             const socatCmd = `/usr/bin/socat ${listenProto}-LISTEN:${rule.sourcePort},fork,reuseaddr,ipv6only=0 ${socatDialEndpoint(protoUpper, processTarget(rule), rule.targetPort)}`;
             const unit = [
@@ -2749,6 +2780,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "realm") {
           const svcName = `forwardx-realm-${rule.sourcePort}`;
+          const realmConfigPath = realmConfigPathForPort(rule.sourcePort);
           actions.push({
             ruleId: rule.id,
             op: "remove",
@@ -2760,7 +2792,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             svcName,
             commands: [
               removeManagedServiceCmd(svcName),
-              killByPatternCmd(`[r]ealm .*:${rule.sourcePort}`),
+              killByPatternCmd(`[r]ealm .*${realmConfigPath}`),
+              `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
               `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
@@ -2770,7 +2803,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           });
         } else if (rule.forwardType === "socat") {
           const removeCmds: string[] = [];
-          if (rule.protocol === "both") {
+          if (normalizeForwardRuleProtocol(rule.protocol) === "both") {
             const svcTcp = `forwardx-socat-tcp-${rule.sourcePort}`;
             const svcUdp = `forwardx-socat-udp-${rule.sourcePort}`;
             removeCmds.push(removeManagedServiceCmd(svcTcp));

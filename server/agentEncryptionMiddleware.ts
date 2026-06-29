@@ -53,7 +53,14 @@ export async function agentEncryptionMiddleware(req: Request, res: Response, nex
       rememberEncryptedEnvelope(req.body);
     }
   } catch (err: any) {
-    res.status(401).json({ error: "Unauthorized", message: err?.message });
+    const message = String(err?.message || "Unauthorized");
+    res.status(401).json({
+      error: "Unauthorized",
+      message,
+      ...(message.toLowerCase().includes("mac verification failed") ? {
+        hint: "Agent Token 与当前面板不匹配，或面板地址/反代指向了另一个 ForwardX 实例。",
+      } : {}),
+    });
     return;
   }
   if (!token) {

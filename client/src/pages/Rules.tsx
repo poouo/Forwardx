@@ -5301,8 +5301,8 @@ function RulesContent() {
       {/* 转发流量汇总 */}
       <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <Card className="border-border/40">
-          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
-            <div className="min-w-0">
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
+            <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">入向流量</p>
               <AnimatedStatValue
                 as="p"
@@ -5314,23 +5314,28 @@ function RulesContent() {
                 fallbackValue="0 B"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
+            </div>
+            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
+              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <ArrowDownToLine className="h-3 w-3 text-chart-2 sm:h-3.5 sm:w-3.5" />
+                <span>24H</span>
+              </div>
               <AnimatedStatValue
                 as="p"
-                value={`24H ${formatBytes(dailyTrafficTotals.bytesIn)}`}
+                value={formatBytes(dailyTrafficTotals.bytesIn)}
                 loading={dailyTrafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesIn`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesIn`, "rules.traffic.daily.last.bytesIn"]}
-                fallbackValue="24H 0 B"
-                className="mt-1 truncate text-[10px] font-medium tabular-nums text-muted-foreground sm:text-xs"
+                fallbackValue="0 B"
+                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
               />
             </div>
-            <ArrowDownToLine className="hidden h-4 w-4 shrink-0 text-chart-2 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
-            <div className="min-w-0">
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
+            <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">出向流量</p>
               <AnimatedStatValue
                 as="p"
@@ -5342,23 +5347,28 @@ function RulesContent() {
                 fallbackValue="0 B"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
+            </div>
+            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
+              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <ArrowUpFromLine className="h-3 w-3 text-chart-4 sm:h-3.5 sm:w-3.5" />
+                <span>24H</span>
+              </div>
               <AnimatedStatValue
                 as="p"
-                value={`24H ${formatBytes(dailyTrafficTotals.bytesOut)}`}
+                value={formatBytes(dailyTrafficTotals.bytesOut)}
                 loading={dailyTrafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.bytesOut`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.bytesOut`, "rules.traffic.daily.last.bytesOut"]}
-                fallbackValue="24H 0 B"
-                className="mt-1 truncate text-[10px] font-medium tabular-nums text-muted-foreground sm:text-xs"
+                fallbackValue="0 B"
+                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
               />
             </div>
-            <ArrowUpFromLine className="hidden h-4 w-4 shrink-0 text-chart-4 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
         <Card className="border-border/40">
-          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:p-4">
-            <div className="min-w-0">
+          <CardContent className="flex min-w-0 items-center justify-between gap-2 p-3 sm:gap-3 sm:p-4">
+            <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs text-muted-foreground">连接次数</p>
               <AnimatedStatValue
                 as="p"
@@ -5370,18 +5380,23 @@ function RulesContent() {
                 fallbackValue="0"
                 className="mt-0.5 truncate text-xs font-semibold tabular-nums sm:mt-1 sm:text-xl"
               />
+            </div>
+            <div className="flex shrink-0 flex-col items-end justify-center gap-1 rounded-md border border-border/40 bg-muted/30 px-2 py-1.5 text-right sm:min-w-[6.75rem] sm:px-2.5">
+              <div className="flex items-center gap-1 text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">
+                <Activity className="h-3 w-3 text-chart-3 sm:h-3.5 sm:w-3.5" />
+                <span>24H</span>
+              </div>
               <AnimatedStatValue
                 as="p"
-                value={`24H ${dailyTrafficTotals.connections.toLocaleString()}`}
+                value={dailyTrafficTotals.connections.toLocaleString()}
                 loading={dailyTrafficTotalsLoading}
                 cacheKey={`rules.traffic.${trafficTotalsCacheScope}.daily.connections`}
                 fallbackCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
                 mirrorCacheKeys={[`rules.traffic.${trafficTotalsLastCacheScope}.daily.last.connections`, "rules.traffic.daily.last.connections"]}
-                fallbackValue="24H 0"
-                className="mt-1 truncate text-[10px] font-medium tabular-nums text-muted-foreground sm:text-xs"
+                fallbackValue="0"
+                className="max-w-[3.8rem] truncate text-[10px] font-semibold tabular-nums text-foreground sm:max-w-[7rem] sm:text-xs"
               />
             </div>
-            <Activity className="hidden h-4 w-4 shrink-0 text-chart-3 sm:block sm:h-6 sm:w-6" />
           </CardContent>
         </Card>
       </div>
@@ -5885,29 +5900,33 @@ function RulesContent() {
                   onChange={(e) => setForm({ ...form, targetIp: e.target.value })}
                 />
               </div>
-              <div className="space-y-2">
-                <Label>{form.routeMode === "local" ? "目标端口" : "最终目标端口"} <span className="text-destructive">*</span></Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={65535}
-                  step={1}
-                  placeholder="例如: 80"
-                  value={form.targetPort || ""}
-                  onChange={(e) => setForm({ ...form, targetPort: parseInt(e.target.value) || 0 })}
-                />
-                <div className="flex min-h-10 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0 space-y-0.5">
-                    <Label className="text-sm font-medium">异常TG提醒</Label>
-                    <p className="text-xs text-muted-foreground">
-                      {telegramBotReady ? "规则运行异常时提醒已绑定 Telegram 的管理员。" : "请先在系统设置中配置并启用 TG 机器人。"}
-                    </p>
+              <div className="space-y-2 sm:col-span-2">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,0.9fr)] sm:items-end">
+                  <div className="space-y-2">
+                    <Label>{form.routeMode === "local" ? "目标端口" : "最终目标端口"} <span className="text-destructive">*</span></Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      step={1}
+                      placeholder="例如: 80"
+                      value={form.targetPort || ""}
+                      onChange={(e) => setForm({ ...form, targetPort: parseInt(e.target.value) || 0 })}
+                    />
                   </div>
-                  <Switch
-                    checked={telegramBotReady && form.telegramErrorNotifyEnabled}
-                    disabled={!telegramBotReady}
-                    onCheckedChange={(checked) => setForm({ ...form, telegramErrorNotifyEnabled: checked })}
-                  />
+                  <div className="flex min-h-10 flex-col gap-2 rounded-md bg-muted/35 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 space-y-0.5">
+                      <Label className="text-sm font-medium">异常TG提醒</Label>
+                      <p className="text-xs text-muted-foreground">
+                        {telegramBotReady ? "规则运行异常时提醒已绑定 Telegram 的管理员。" : "请先在系统设置中配置并启用 TG 机器人。"}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={telegramBotReady && form.telegramErrorNotifyEnabled}
+                      disabled={!telegramBotReady}
+                      onCheckedChange={(checked) => setForm({ ...form, telegramErrorNotifyEnabled: checked })}
+                    />
+                  </div>
                 </div>
               </div>
             </div>

@@ -630,8 +630,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
 
   const probes: ForwardGroupChainProbe[] = [];
   const sourcePort = Number(options.sourcePort ?? template?.sourcePort ?? 0);
-  const protocol = String(template?.protocol || "both").toLowerCase();
-  const hopProbeMethod = options.method || (template ? linkProbeMethodForProtocol(protocol) : "ping");
+  const hopProbeMethod = options.method || (template ? linkProbeMethodForProtocol(template?.protocol) : "ping");
   const hasFinalTarget = !!options.includeFinalTarget
     && !!template
     && String(template.targetIp || "").trim()
@@ -699,7 +698,7 @@ export async function getForwardGroupChainProbes(groupId: number, options: { inc
     const targetPort = Number(template.targetPort || 0);
     if (lastHostId > 0 && targetIp && targetPort > 0) {
       const targetLabel = await forwardChainTargetLabel(template);
-      const finalProbeMethod = linkProbeMethodForProtocol(protocol);
+      const finalProbeMethod = linkProbeMethodForProtocol(template?.protocol);
       probes.push({
         groupId,
         fromHostId: lastHostId,

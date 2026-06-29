@@ -244,6 +244,7 @@ function DashboardLayoutContent({
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar, isMobile, openMobile, setOpenMobile } = useSidebar();
   const openMobileRef = useRef(openMobile);
+  const mobileHeaderRef = useRef<HTMLDivElement | null>(null);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuOpenRef = useRef(accountMenuOpen);
   const isDesktopCollapsed = !isMobile && state === "collapsed";
@@ -869,6 +870,39 @@ function DashboardLayoutContent({
   }, [isMobile, openMobile]);
 
   useEffect(() => {
+    const root = document.documentElement;
+    if (!isMobile) {
+      root.style.removeProperty("--forwardx-mobile-header-offset");
+      return;
+    }
+    const header = mobileHeaderRef.current;
+    if (!header) return;
+
+    let frame = 0;
+    const syncHeaderOffset = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const height = Math.ceil(header.getBoundingClientRect().height || 0);
+        if (height > 0) root.style.setProperty("--forwardx-mobile-header-offset", `${height}px`);
+      });
+    };
+
+    syncHeaderOffset();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(syncHeaderOffset) : null;
+    observer?.observe(header);
+    window.addEventListener("resize", syncHeaderOffset);
+    window.addEventListener("orientationchange", syncHeaderOffset);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", syncHeaderOffset);
+      window.removeEventListener("orientationchange", syncHeaderOffset);
+      root.style.removeProperty("--forwardx-mobile-header-offset");
+    };
+  }, [isMobile]);
+
+  useEffect(() => {
     if (!mobileAuth.isNative || !isMobile) return;
     let disposed = false;
     let removeListener: (() => void) | undefined;
@@ -1139,7 +1173,7 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {isMobile && (
-          <div data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b px-2 md:sticky">
+          <div ref={mobileHeaderRef} data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b px-2 md:sticky">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
               <div className="flex items-center gap-3">

@@ -984,7 +984,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '    RC=$?',
     '    echo "[错误] Agent 注册失败（退出码: $RC）"',
     '    [ -n "$OUT" ] && printf "%s\\n" "$OUT"',
-    '    echo "[提示] 请检查 Token、面板地址、服务器时间，以及面板是否已更新到支持加密通讯的版本"',
+    '    echo "[提示] 请检查 Token 是否来自当前面板、面板地址/反代是否指向当前实例，以及服务器时间是否正常"',
     '    return "$RC"',
     '  fi',
     '}',

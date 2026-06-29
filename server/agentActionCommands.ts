@@ -1,3 +1,5 @@
+import { forwardRuleProtocols } from "@shared/forwardTypes";
+
 type IptablesBinary = "iptables" | "ip6tables";
 
 const iptablesBinaries: IptablesBinary[] = ["iptables", "ip6tables"];
@@ -62,7 +64,7 @@ function iptablesDnatTarget(targetIp: unknown, targetPort: unknown) {
 }
 
 function iptablesDeleteDnatRulesForPort(binary: IptablesBinary, port: number, protocol?: string) {
-  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const protos = forwardRuleProtocols(protocol, "both");
   const body = protos
     .map((proto) => {
       const awk = `awk '/^-A PREROUTING / && / -p ${proto} / && /--dport ${port}( |$)/ && / -j DNAT / {sub(/^-A/, "-D"); print}'`;
@@ -84,7 +86,7 @@ function nftAddressFamily(targetIp: unknown) {
 }
 
 export function buildCountingChainCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
-  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const protos = forwardRuleProtocols(protocol, "both");
   const inMarker = `fwx-stat-${port}:in`;
   const outMarker = `fwx-stat-${port}:out`;
   const addStatRule = (binary: IptablesBinary, chain: string, rule: string, marker: string) =>
@@ -108,7 +110,7 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
 }
 
 export function buildCountingCleanupCmds(port: number, targetIp?: string, targetPort?: number, protocol?: string): string[] {
-  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const protos = forwardRuleProtocols(protocol, "both");
   const inMarker = `fwx-stat-${port}:in`;
   const outMarker = `fwx-stat-${port}:out`;
   const cmds: string[] = [];
@@ -197,7 +199,7 @@ function buildNftIpv6RoutefixCmds(family: string): string[] {
 
 function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
   if (!Number(port)) return [];
-  const protos = protocol === "tcp" || protocol === "udp" ? [protocol] : ["tcp", "udp"];
+  const protos = forwardRuleProtocols(protocol, "both");
   return protos.map((proto) => {
     const awk = `awk '/ ${proto} dport ${port}( |$)/ && / dnat / {print $NF}'`;
     return `if nft list chain inet ${nftTable} prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null; true; done; fi; true`;
@@ -208,7 +210,7 @@ function buildNftForwardTargetCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const targetPort = Number(rule.targetPort) || 0;
   if (!targetIp || targetPort <= 0) return [];
-  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const protos = forwardRuleProtocols(rule.protocol);
   const family = nftAddressFamily(targetIp);
   const cmds: string[] = [];
   for (const proto of protos) {
@@ -226,7 +228,7 @@ function buildNftPostroutingTargetCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const targetPort = Number(rule.targetPort) || 0;
   if (!targetIp || targetPort <= 0) return [];
-  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const protos = forwardRuleProtocols(rule.protocol);
   const family = nftAddressFamily(targetIp);
   return protos.map((proto) => {
     const awk = `awk -v family='${family}' -v addr='${targetIp}' -v proto='${proto}' -v port='${targetPort}' 'index($0, family " daddr " addr) && index($0, proto " dport " port) && index($0, " masquerade") {print $NF}'`;
@@ -260,7 +262,7 @@ export function buildNftCleanupCmds(rule: any): string[] {
 }
 
 export function buildNftForwardCmds(rule: any): string[] {
-  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const protos = forwardRuleProtocols(rule.protocol);
   const ruleId = Number(rule.id) || 0;
   const comment = nftComment(rule);
   const targetIp = cleanAddress(rule.targetIp);
@@ -320,6 +322,7 @@ export function buildManagedPortCleanupCmds(port: number, targetIp?: string, tar
     removeManagedServiceCmd(`forwardx-socat-tcp-${port}`),
     removeManagedServiceCmd(`forwardx-socat-udp-${port}`),
     removeManagedServiceCmd(`forwardx-realm-${port}`),
+    `rm -f /etc/forwardx/realm/forwardx-realm-${port}.toml /etc/forwardx/realm/forwardx-realm-${port}.toml.sha256 2>/dev/null || true`,
     `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
     ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
   ];
@@ -328,7 +331,7 @@ export function buildManagedPortCleanupCmds(port: number, targetIp?: string, tar
 export function buildIptablesForwardCleanupCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
-  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const protos = forwardRuleProtocols(rule.protocol);
   const cmds: string[] = buildIptablesForwardPortCleanupCmds(Number(rule.sourcePort));
   for (const proto of protos) {
     cmds.push(iptablesDelete(binary, "nat", `PREROUTING -p ${proto} --dport ${rule.sourcePort} -j DNAT --to-destination ${iptablesDnatTarget(targetIp, rule.targetPort)}`));
@@ -342,7 +345,7 @@ export function buildIptablesForwardCleanupCmds(rule: any): string[] {
 export function buildIptablesForwardCmds(rule: any): string[] {
   const targetIp = cleanAddress(rule.targetIp);
   const binary = iptablesBinaryForTarget(targetIp);
-  const protos = rule.protocol === "both" ? ["tcp", "udp"] : [rule.protocol === "udp" ? "udp" : "tcp"];
+  const protos = forwardRuleProtocols(rule.protocol);
   const cmds = [
     binary === "ip6tables"
       ? `sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null`
