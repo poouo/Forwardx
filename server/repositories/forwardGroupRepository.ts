@@ -87,6 +87,7 @@ type ForwardGroupFailoverOptions = {
 };
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
+const lastDdnsEventByKey = new Map<string, string>();
 
 export function normalizeChinaHealthTarget(raw: unknown) {
   const source = String(raw || "").trim() || DEFAULT_CHINA_HEALTH_TARGET;
@@ -779,6 +780,15 @@ export async function resetForwardGroupChinaHealth(groupId: number) {
 }
 
 async function insertForwardGroupEvent(groupId: number, memberId: number | null, type: string, message: string) {
+  if (type.startsWith("ddns-")) {
+    const truncated = message.slice(0, 500);
+    const key = `${groupId}:${memberId ?? "-"}:${type}`;
+    if (lastDdnsEventByKey.get(key) === truncated) {
+      return;
+    }
+    lastDdnsEventByKey.set(key, truncated);
+    message = truncated;
+  }
   const level = type.includes("error") ? "error" : type.includes("skip") ? "warn" : "info";
   appendPanelLog(level, `[DDNS] group=${groupId} member=${memberId ?? "-"} type=${type} ${message}`);
   await insertAndGetId("forward_group_events", {
