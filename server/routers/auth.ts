@@ -7,6 +7,7 @@ import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
 import * as db from "../db";
+import { resolveRequestedSessionKind, type SessionKind } from "../session";
 import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
@@ -165,14 +166,21 @@ function getRequestIp(ctx: { req: { ip?: string; socket: { remoteAddress?: strin
   return ctx.req.ip || ctx.req.socket.remoteAddress || "unknown";
 }
 
-function createLoginSession(ctx: any, user: any, mobile?: boolean) {
+async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
   if (user?.accountEnabled === false) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
-  const token = jwt.sign({ userId: user.id }, ENV.cookieSecret, { expiresIn: "10d" });
+  const sid = nanoid(24);
+  const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
+  await db.setUserSessionToken(user.id, sessionKind, sid);
   const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
   return { ...safeUser, mobileToken: mobile ? token : null };
+}
+
+async function createLoginSession(ctx: any, user: any, mobile?: boolean) {
+  const sessionKind = resolveRequestedSessionKind(ctx.req, mobile);
+  return issueLoginSession(ctx, user, sessionKind, mobile);
 }
 
 function sanitizeUser(user: any) {
@@ -423,9 +431,12 @@ export const authRouter = router({
       return { id, message: "注册成功，请联系管理员开通权限" };
     }),
 
-  logout: publicProcedure.mutation(({ ctx }) => {
+  logout: publicProcedure.mutation(async ({ ctx }) => {
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+    if (ctx.user && ctx.authSession?.kind) {
+      await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
+    }
     if (ctx.user) {
       console.info(`[Auth] Logout userId=${ctx.user.id} username=${maskIdentifier(ctx.user.username)} ip=${getRequestIp(ctx)}`);
     }

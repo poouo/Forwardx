@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { InsertUser, users, forwardRules } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { hashPassword, verifyPassword } from "../password";
+import { getSessionKindField, type SessionKind } from "../session";
 import {
   AVATAR_DAILY_CHANGE_LIMIT,
   AVATAR_RANDOM_WINDOW_LIMIT,
@@ -27,6 +28,21 @@ export async function getUserById(id: number) {
   if (!db) return undefined;
   const r = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return r[0];
+}
+
+export async function setUserSessionToken(userId: number, sessionKind: SessionKind, sessionToken: string | null) {
+  const db = await getDb();
+  if (!db) return;
+  const field = getSessionKindField(sessionKind);
+  const patch: Record<string, unknown> = {
+    updatedAt: nowDate(),
+  };
+  patch[field] = sessionToken || null;
+  await db.update(users).set(patch as any).where(eq(users.id, userId));
+}
+
+export async function clearUserSessionToken(userId: number, sessionKind: SessionKind) {
+  await setUserSessionToken(userId, sessionKind, null);
 }
 
 export async function getUserByTelegramId(telegramId: string) {

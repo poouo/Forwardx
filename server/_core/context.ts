@@ -2,35 +2,107 @@ import type { Request, Response } from "express";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import jwt from "jsonwebtoken";
 import { COOKIE_NAME } from "../../shared/const";
+import type { User } from "../../drizzle/schema";
 import { ENV } from "../env";
 import * as db from "../db";
-import type { User } from "../../drizzle/schema";
+import { getSessionCookieOptions } from "./cookies";
+import { getSessionKindField, inferLegacySessionKind, normalizeSessionKind, type SessionKind } from "../session";
+
+export interface AuthSession {
+  kind: SessionKind;
+  sid: string | null;
+  token: string;
+  legacy: boolean;
+  source: "cookie" | "bearer";
+}
 
 export interface TrpcContext {
   req: Request;
   res: Response;
   user: User | null;
+  authSession: AuthSession | null;
+}
+
+type TokenSource = "cookie" | "bearer";
+
+function getRequestToken(req: Request): { token: string; source: TokenSource | null } {
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
+  if (bearerToken) return { token: bearerToken, source: "bearer" };
+  const cookieToken = req.cookies?.[COOKIE_NAME];
+  if (typeof cookieToken === "string" && cookieToken.trim()) {
+    return { token: cookieToken.trim(), source: "cookie" };
+  }
+  return { token: "", source: null };
+}
+
+function clearSessionCookie(res: Response, req: Request) {
+  res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(req), maxAge: -1 });
+}
+
+function normalizeSessionPayload(req: Request, payload: unknown) {
+  if (!payload || typeof payload !== "object") return null;
+  const data = payload as Record<string, any>;
+  const userId = Number(data.userId);
+  if (!Number.isFinite(userId) || userId <= 0) return null;
+  const sid = String(data.sid || "").trim();
+  const kind = normalizeSessionKind(data.kind, inferLegacySessionKind(req));
+  return {
+    userId,
+    sid: sid || null,
+    kind,
+  };
+}
+
+async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<{ user: User; authSession: AuthSession } | null> {
+  try {
+    if (!ENV.cookieSecret) return null;
+    const payload = jwt.verify(token, ENV.cookieSecret);
+    const normalized = normalizeSessionPayload(req, payload);
+    if (!normalized) return null;
+
+    const found = await db.getUserById(normalized.userId);
+    if (!found) return null;
+
+    const sessionKind = normalized.sid ? normalized.kind : inferLegacySessionKind(req);
+    const field = getSessionKindField(sessionKind);
+    const storedToken = String((found as any)[field] || "").trim();
+    const valid = normalized.sid ? storedToken === normalized.sid : !storedToken;
+    if (!valid) {
+      if (source === "cookie") clearSessionCookie(res, req);
+      return null;
+    }
+
+    return {
+      user: found,
+      authSession: {
+        kind: sessionKind,
+        sid: normalized.sid,
+        token,
+        legacy: !normalized.sid,
+        source,
+      },
+    };
+  } catch {
+    if (source === "cookie") {
+      clearSessionCookie(res, req);
+    }
+    return null;
+  }
 }
 
 export async function createContext({ req, res }: CreateExpressContextOptions): Promise<TrpcContext> {
   let user: User | null = null;
+  let authSession: AuthSession | null = null;
 
-  try {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
-    const token = bearerToken || req.cookies?.[COOKIE_NAME];
-    if (token && ENV.cookieSecret) {
-      const payload = jwt.verify(token, ENV.cookieSecret) as { userId: number };
-      if (payload?.userId) {
-        const found = await db.getUserById(payload.userId);
-        if (found) {
-          user = found;
-        }
-      }
+  const session = getRequestToken(req);
+  if (session.token) {
+    const resolved = await resolveSessionFromToken(req, res, session.token, session.source || "cookie");
+    if (resolved) {
+      user = resolved.user;
+      authSession = resolved.authSession;
     }
-  } catch {
-    // Invalid token, user stays null
   }
 
-  return { req, res, user };
+  return { req, res, user, authSession };
 }

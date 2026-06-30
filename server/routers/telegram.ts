@@ -10,6 +10,7 @@ import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { createMobileTelegramLoginChallenge, takeMobileTelegramLoginChallenge } from "../telegramMobileLogin";
 import { consumeTelegramWebAppLoginChallenge } from "../telegramWebAppLogin";
+import { type SessionKind } from "../session";
 
 const BIND_CODE_TTL_MS = 5 * 60 * 1000;
 const MOBILE_LOGIN_TTL_MS = 5 * 60 * 1000;
@@ -168,14 +169,16 @@ function verifyTelegramWidgetLogin(payload: z.infer<typeof telegramWidgetLoginSc
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-function setLoginCookie(ctx: any, user: any, options: { mobile?: boolean } = {}) {
+async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKind, mobile?: boolean) {
   if (user?.accountEnabled === false) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });
   }
-  const token = jwt.sign({ userId: user.id }, ENV.cookieSecret, { expiresIn: "10d" });
+  const sid = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+  const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
+  await db.setUserSessionToken(user.id, sessionKind, sid);
   const { password, ...safeUser } = user;
-  return { ...safeUser, mobileToken: options.mobile ? token : null };
+  return { ...safeUser, mobileToken: mobile ? token : null };
 }
 
 export const telegramRouter = router({
@@ -312,7 +315,7 @@ export const telegramRouter = router({
       const user = await db.consumeTelegramLoginCode(code);
       if (!user) return { status: "pending" as const };
       takeMobileTelegramLoginChallenge(code);
-      return { status: "success" as const, ...setLoginCookie(ctx, user, { mobile: true }) };
+      return { status: "success" as const, ...await issueTelegramSession(ctx, user, "telegram", true) };
     }),
 
   login: publicProcedure
@@ -320,7 +323,7 @@ export const telegramRouter = router({
     .mutation(async ({ input, ctx }) => {
       const user = await db.consumeTelegramLoginCode(input.code.trim().toUpperCase());
       if (!user) throw new Error("Telegram 登录码无效或已过期");
-      return setLoginCookie(ctx, user, { mobile: input.mobile });
+      return await issueTelegramSession(ctx, user, "telegram", input.mobile);
     }),
 
   loginWithWidget: publicProcedure
@@ -344,7 +347,7 @@ export const telegramRouter = router({
         firstName: input.first_name || null,
         lastName: input.last_name || null,
       });
-      return setLoginCookie(ctx, user);
+      return await issueTelegramSession(ctx, user, "telegram");
     }),
 
   loginWithWebApp: publicProcedure
@@ -378,7 +381,7 @@ export const telegramRouter = router({
         firstName: payload.firstName,
         lastName: payload.lastName,
       });
-      return setLoginCookie(ctx, user, { mobile: input.mobile });
+      return await issueTelegramSession(ctx, user, "telegram", input.mobile);
     }),
 });
 

@@ -66,7 +66,7 @@ function TrafficBillingStatCard({
   fallbackValue?: string | number;
 }) {
   return (
-    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:border-border/70">
+    <Card className="group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
       <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">

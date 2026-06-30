@@ -92,6 +92,7 @@ const tables: TableDef[] = [
       c("telegramLinkedAt", "epoch"), c("telegramLastSeenAt", "epoch"), c("telegramAnnouncementSubscribed", "bool", { notNull: true, default: false }), c("telegramBindCode", "text"),
       c("telegramBindCodeExpiresAt", "epoch"), c("telegramLoginCode", "text"), c("telegramLoginCodeExpiresAt", "epoch"),
       c("twoFactorEnabled", "bool", { notNull: true, default: false }), c("twoFactorSecret", "text"), c("twoFactorEnabledAt", "epoch"),
+      c("browserSessionToken", "text"), c("mobileSessionToken", "text"), c("telegramSessionToken", "text"),
       c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
       c("lastSignedIn", "epoch", { notNull: true, default: "now" }),
     ],

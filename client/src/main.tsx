@@ -8,6 +8,8 @@ import App from "./App";
 import { mobileAuth } from "./lib/mobileAuth";
 import "./index.css";
 
+const LOGIN_EXPIRED_NOTICE = "登录状态已失效，请重新登录";
+
 const cachedSiteTitle = (() => {
   if (typeof window === "undefined") return "";
   try {
@@ -43,10 +45,13 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
   const isUnauthorized = error.message === UNAUTHED_ERR_MSG || error.message === ACCOUNT_DISABLED_ERR_MSG;
 
   if (!isUnauthorized) return;
-  if (error.message === ACCOUNT_DISABLED_ERR_MSG) {
+  const notice = error.message === ACCOUNT_DISABLED_ERR_MSG ? ACCOUNT_DISABLED_ERR_MSG : LOGIN_EXPIRED_NOTICE;
+  if (mobileAuth.isNative || error.message === ACCOUNT_DISABLED_ERR_MSG) {
     mobileAuth.clear();
-    window.sessionStorage.setItem("forwardx.loginNotice", ACCOUNT_DISABLED_ERR_MSG);
   }
+  window.sessionStorage.setItem("forwardx.loginNotice", notice);
+  void queryClient.cancelQueries();
+  queryClient.clear();
 
   // Only redirect if not already in a public bootstrapping flow.
   if (window.location.pathname !== "/login" && window.location.pathname !== "/setup") {
