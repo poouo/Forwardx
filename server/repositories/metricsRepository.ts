@@ -73,6 +73,96 @@ export async function getLatestHostMetrics(hostId: number, limit = 60) {
   return db.select().from(hostMetrics).where(eq(hostMetrics.hostId, hostId)).orderBy(desc(hostMetrics.recordedAt)).limit(limit);
 }
 
+type LatestHostMetricSnapshot = {
+  id: number;
+  hostId: number;
+  networkIn: number;
+  networkOut: number;
+  recordedAt: Date;
+  rn: number;
+};
+
+function mapLatestHostMetricSnapshot(row: any): LatestHostMetricSnapshot {
+  return {
+    id: Number(row?.id || 0),
+    hostId: Number(row?.hostId || 0),
+    networkIn: numeric(row?.networkIn),
+    networkOut: numeric(row?.networkOut),
+    recordedAt: rowDate(row?.recordedAt),
+    rn: Math.max(1, Math.floor(Number(row?.rn || 0))),
+  };
+}
+
+export async function getLatestHostMetricSnapshots(hostIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [] as LatestHostMetricSnapshot[];
+  const ids = Array.from(new Set((hostIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (ids.length === 0) return [];
+  const q = quoteIdentifier;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await queryRaw<any>(
+    `SELECT ranked.${q("id")},
+            ranked.${q("hostId")},
+            ranked.${q("networkIn")},
+            ranked.${q("networkOut")},
+            ranked.${q("recordedAt")},
+            ranked.rn
+       FROM (
+         SELECT hm.${q("id")},
+                hm.${q("hostId")},
+                hm.${q("networkIn")},
+                hm.${q("networkOut")},
+                hm.${q("recordedAt")},
+                ROW_NUMBER() OVER (
+                  PARTITION BY hm.${q("hostId")}
+                  ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
+                ) AS rn
+           FROM ${q("host_metrics")} hm
+          WHERE hm.${q("hostId")} IN (${placeholders})
+       ) ranked
+      WHERE ranked.rn <= 2
+      ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
+    ids,
+  ).catch(() => []);
+  return (rows as any[]).map(mapLatestHostMetricSnapshot).filter((row) => row.hostId > 0);
+}
+
+export function summarizeHostInstantTraffic(rows: LatestHostMetricSnapshot[]) {
+  const byHost = new Map<number, LatestHostMetricSnapshot[]>();
+  for (const row of rows) {
+    const bucket = byHost.get(row.hostId);
+    if (bucket) {
+      bucket.push(row);
+    } else {
+      byHost.set(row.hostId, [row]);
+    }
+  }
+
+  let currentTrafficIn = 0;
+  let currentTrafficOut = 0;
+  let measuredHosts = 0;
+
+  for (const bucket of byHost.values()) {
+    if (bucket.length < 2) continue;
+    const [latest, previous] = bucket;
+    const elapsedSeconds = Math.max(1, (new Date(latest.recordedAt).getTime() - new Date(previous.recordedAt).getTime()) / 1000);
+    const inDelta = Math.max(0, Number(latest.networkIn || 0) - Number(previous.networkIn || 0));
+    const outDelta = Math.max(0, Number(latest.networkOut || 0) - Number(previous.networkOut || 0));
+    currentTrafficIn += inDelta / elapsedSeconds;
+    currentTrafficOut += outDelta / elapsedSeconds;
+    if (inDelta > 0 || outDelta > 0) measuredHosts += 1;
+  }
+
+  return {
+    currentTrafficIn,
+    currentTrafficOut,
+    currentTrafficTotal: currentTrafficIn + currentTrafficOut,
+    measuredHosts,
+  };
+}
+
 
 type HostTrafficSample = {
   bytesIn?: number;
@@ -211,11 +301,13 @@ export async function getHostTraffic(hostId: number) {
 export async function getHostTrafficSummary(hostIds?: number[]) {
   const db = await getDb();
   if (!db) return [];
+  const hasHostFilter = Array.isArray(hostIds);
   const ids = Array.from(new Set((hostIds || [])
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0)));
+  if (hasHostFilter && ids.length === 0) return [];
   const q = quoteIdentifier;
-  const where = ids.length ? `WHERE ${q("hostId")} IN (${ids.map(() => "?").join(",")})` : "";
+  const where = hasHostFilter ? `WHERE ${q("hostId")} IN (${ids.map(() => "?").join(",")})` : "";
   const rows = await queryRaw<any>(
     `SELECT ${q("id")}, ${q("hostId")}, ${q("bytesIn")}, ${q("bytesOut")}, ${q("lastSystemIn")}, ${q("lastSystemOut")}, ${q("lastDeltaIn")}, ${q("lastDeltaOut")}, ${q("lastReportedAt")}, ${q("resetAt")}, ${q("createdAt")}, ${q("updatedAt")}
        FROM ${q("host_traffic_counters")}
@@ -224,7 +316,7 @@ export async function getHostTrafficSummary(hostIds?: number[]) {
     ids,
   ).catch(() => []);
   const mapped = (rows as any[]).map((row) => mapHostTrafficRow(row));
-  if (ids.length === 0) return mapped;
+  if (!hasHostFilter) return mapped;
   const byHost = new Map(mapped.map((row) => [row.hostId, row]));
   return ids.map((id) => byHost.get(id) || zeroHostTraffic(id));
 }

@@ -294,6 +294,25 @@ async function getHostsWithUpgradeStateCleanup(userId?: number) {
   return clearCompletedHostAgentUpgradeRequests(await db.getHosts(userId));
 }
 
+async function getVisibleHostsForUser(user: { id: number; role: string }) {
+  const isAdmin = user.role === "admin";
+  if (isAdmin) {
+    const hosts = await getHostsWithUpgradeStateCleanup();
+    scheduleHostGeoRefresh(hosts);
+    return hosts;
+  }
+  // 鏅€氱敤鎴凤細杩斿洖鑷繁鍒涘缓鐨勪富鏈?+ 鏅€氭巿鏉冧富鏈?+ 宸叉巿鏉冪殑娴侀噺璁¤垂涓绘満
+  const [allowedHostIds, billingResourceIds] = await Promise.all([
+    db.getUserEffectiveAllowedHostIds(user.id),
+    db.getUserUsableTrafficBillingResourceIds(user.id),
+  ]);
+  const allHosts = await getHostsWithUpgradeStateCleanup();
+  const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
+  const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === user.id);
+  scheduleHostGeoRefresh(visibleHosts);
+  return visibleHosts;
+}
+
 function scheduleStaleHostUpgradeCleanup() {
   const now = Date.now();
   if (hostUpgradeCleanupRunning || now - lastHostUpgradeCleanupAt < HOST_UPGRADE_CLEANUP_INTERVAL_MS) return;
@@ -310,24 +329,39 @@ function scheduleStaleHostUpgradeCleanup() {
 
 export const hostsRouter = router({
     list: protectedProcedure.query(async ({ ctx }) => {
-      const isAdmin = ctx.user.role === "admin";
-      if (isAdmin) scheduleStaleHostUpgradeCleanup();
-      if (isAdmin) {
-        const hosts = await getHostsWithUpgradeStateCleanup();
-        scheduleHostGeoRefresh(hosts);
-        return hosts;
-      }
-      // 普通用户：返回自己创建的主机 + 普通授权主机 + 已授权的流量计费主机
-      const [allowedHostIds, billingResourceIds] = await Promise.all([
-        db.getUserEffectiveAllowedHostIds(ctx.user.id),
-        db.getUserUsableTrafficBillingResourceIds(ctx.user.id),
-      ]);
-      const allHosts = await getHostsWithUpgradeStateCleanup();
-      const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
-      const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === ctx.user.id);
-      scheduleHostGeoRefresh(visibleHosts);
-      return visibleHosts;
+      if (ctx.user.role === "admin") scheduleStaleHostUpgradeCleanup();
+      return getVisibleHostsForUser(ctx.user);
     }),
+    summary: protectedProcedure.query(async ({ ctx }) => hostQueryCache.get(
+      `summary:${ctx.user.id}`,
+      { ttlMs: 2_000, staleMs: 10_000 },
+      async () => {
+        const visibleHosts = await getVisibleHostsForUser(ctx.user);
+        const hostIds = visibleHosts.map((host: any) => Number(host.id)).filter((id: number) => Number.isInteger(id) && id > 0);
+        const [metricSnapshots, trafficRows] = await Promise.all([
+          db.getLatestHostMetricSnapshots(hostIds),
+          db.getHostTrafficSummary(hostIds),
+        ]);
+        const instantTraffic = db.summarizeHostInstantTraffic(metricSnapshots);
+        let totalTrafficIn = 0;
+        let totalTrafficOut = 0;
+        for (const row of trafficRows as any[]) {
+          totalTrafficIn += Math.max(0, Number(row?.bytesIn) || 0);
+          totalTrafficOut += Math.max(0, Number(row?.bytesOut) || 0);
+        }
+        return {
+          totalHosts: visibleHosts.length,
+          onlineHosts: visibleHosts.filter((host: any) => !!host.isOnline).length,
+          currentTrafficIn: instantTraffic.currentTrafficIn,
+          currentTrafficOut: instantTraffic.currentTrafficOut,
+          currentTrafficTotal: instantTraffic.currentTrafficTotal,
+          measuredHosts: instantTraffic.measuredHosts,
+          totalTrafficIn,
+          totalTrafficOut,
+          totalTraffic: totalTrafficIn + totalTrafficOut,
+        };
+      },
+    )),
     probeServices: protectedProcedure.query(async ({ ctx }) => {
       const isAdmin = ctx.user.role === "admin";
       const services = await db.getHostProbeServices(isAdmin ? undefined : ctx.user.id);

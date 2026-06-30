@@ -13,6 +13,7 @@ import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLa
 import {
   agentDetectedIpText,
   compareVersions,
+  formatBytes,
   hostAddressText,
   hostPrimaryAddressLines,
   HostRegionBadge,
@@ -57,6 +58,7 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
+  ArrowUpFromLine,
   Plus,
   Trash2,
   Pencil,
@@ -74,6 +76,7 @@ import {
   Key,
   Rows3,
   RotateCcw,
+  ActivitySquare,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -695,6 +698,51 @@ function formatTrafficLimitGbInput(value: unknown) {
   return Number.isInteger(gb) ? String(gb) : String(Number(gb.toFixed(3)));
 }
 
+function formatBytesPerSecond(value: unknown) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B/s";
+  return `${formatBytes(bytes)}/s`;
+}
+
+function HostSummaryCard({
+  title,
+  value,
+  subtitle,
+  icon: Icon,
+  loading,
+  cacheKey,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  icon: typeof ActivitySquare;
+  loading?: boolean;
+  cacheKey: string;
+}) {
+  return (
+    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+      <CardContent className="flex min-h-[104px] items-center justify-between gap-3 p-4">
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground">{title}</p>
+          <AnimatedStatValue
+            as="p"
+            value={value}
+            loading={loading}
+            cacheKey={cacheKey}
+            fallbackValue="0"
+            className="mt-1 truncate text-xl font-semibold tabular-nums"
+            title={value}
+          />
+          <p className="mt-1 truncate text-[11px] text-muted-foreground" title={subtitle}>{subtitle}</p>
+        </div>
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/45 text-primary">
+          <Icon className="h-5 w-5" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
 type HostManageTab = "hosts" | "services" | "tokens";
 type HostDialogTab = "basic" | "other";
@@ -823,6 +871,10 @@ function HostsContent() {
     storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
   });
   const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
+  const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery(undefined, {
+    enabled: activeManageTab === "hosts",
+    refetchInterval: hostLiveRefreshInterval || 30000,
+  });
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -875,6 +927,7 @@ function HostsContent() {
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
       toast.success("主机添加成功");
@@ -885,6 +938,7 @@ function HostsContent() {
   const updateMutation = trpc.hosts.update.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.summary.invalidate();
       setShowDialog(false);
       resetForm();
       toast.success("主机更新成功");
@@ -895,6 +949,7 @@ function HostsContent() {
   const deleteMutation = trpc.hosts.delete.useMutation({
     onSuccess: () => {
       utils.hosts.list.invalidate();
+      utils.hosts.summary.invalidate();
       toast.success("主机已删除");
     },
     onError: (err) => toast.error(err.message || "删除失败"),
@@ -903,6 +958,7 @@ function HostsContent() {
   const resetHostTrafficMutation = trpc.hosts.resetTraffic.useMutation({
     onSuccess: () => {
       utils.hosts.trafficSummary.invalidate();
+      utils.hosts.summary.invalidate();
       setResetTrafficHost(null);
       toast.success("流量统计已重置");
     },
@@ -1406,6 +1462,32 @@ function HostsContent() {
         </TabsList>
 
         <TabsContent value="hosts" className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <HostSummaryCard
+              title="当前瞬时流量"
+              value={formatBytesPerSecond(hostSummary?.currentTrafficTotal)}
+              subtitle={`入 ${formatBytesPerSecond(hostSummary?.currentTrafficIn)} / 出 ${formatBytesPerSecond(hostSummary?.currentTrafficOut)}`}
+              icon={ActivitySquare}
+              loading={isHostSummaryLoading && !hostSummary}
+              cacheKey="hosts.summary.currentTraffic"
+            />
+            <HostSummaryCard
+              title="在线状态"
+              value={`${hostSummary?.onlineHosts ?? onlineCount} / ${hostSummary?.totalHosts ?? displayHosts.length}`}
+              subtitle={`${hostSummary?.measuredHosts ?? 0} 台主机有实时流量样本`}
+              icon={Server}
+              loading={isHostSummaryLoading && !hostSummary}
+              cacheKey="hosts.summary.online"
+            />
+            <HostSummaryCard
+              title="累计流量"
+              value={formatBytes(hostSummary?.totalTraffic)}
+              subtitle={`入 ${formatBytes(hostSummary?.totalTrafficIn)} / 出 ${formatBytes(hostSummary?.totalTrafficOut)}`}
+              icon={ArrowUpFromLine}
+              loading={isHostSummaryLoading && !hostSummary}
+              cacheKey="hosts.summary.totalTraffic"
+            />
+          </div>
       {/* Content */}
       {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />

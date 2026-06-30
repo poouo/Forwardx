@@ -80,7 +80,7 @@ function parseFailoverTargets(raw: unknown) {
   }
 }
 
-function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) {
+export function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) {
   const enabled = !!input.failoverEnabled;
   const targets: Array<{ targetIp: string; targetPort: number }> = [];
   if (enabled && protocol && protocol !== "tcp") {
@@ -113,7 +113,7 @@ function normalizeFailoverInput(input: FailoverInput, protocol?: string | null) 
   };
 }
 
-function normalizeProxyProtocolInput(input: {
+export function normalizeProxyProtocolInput(input: {
   proxyProtocolReceive?: boolean;
   proxyProtocolSend?: boolean;
   proxyProtocolExitReceive?: boolean;
@@ -161,7 +161,7 @@ function normalizeProxyProtocolInput(input: {
     proxyProtocolVersion: version,
   };
 }
-function normalizeTransportTuningInput(input: {
+export function normalizeTransportTuningInput(input: {
   tcpFastOpen?: boolean;
   zeroCopy?: boolean;
   udpOverTcp?: boolean;
@@ -806,10 +806,6 @@ export const crudRulesRouter = router({
         }
       }
       const nextIsTunnelForward = nextForwardTypeForRule === "gost" && Number(nextTunnelIdForRule || 0) > 0;
-      const currentIsTunnelForward = rule.forwardType === "gost" && Number((rule as any).tunnelId || 0) > 0;
-      if (currentIsTunnelForward !== nextIsTunnelForward) {
-        throw new Error("端口转发和隧道转发不能相互切换，请新建规则");
-      }
       await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardTypeForRule, tunnelId: nextTunnelIdForRule }, selectedTunnelForRule);
       const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
       requireMainBackupAllowed({

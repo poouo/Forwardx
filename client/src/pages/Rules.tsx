@@ -2267,7 +2267,6 @@ function RulesContent() {
 
   const setRouteMode = (mode: RuleRouteMode) => {
     if (mode === form.routeMode) return;
-    if (editingId && mode !== form.routeMode) return;
     if (mode === "local" && !canUseLocalForward) return;
     if (mode === "tunnel" && !canUseGost) return;
     const nextGroups = mode === "chain"
@@ -4388,7 +4387,7 @@ function RulesContent() {
     return <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/30" />;
   };
 
-  const renderTransfer = (rule: any, compact = false) => {
+  const getRuleTransferDisplay = (rule: any) => {
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const groupEntry = isForwardChainGroup(group)
       ? (entryDomainForForwardGroup(group) || group?.members?.[0]?.entryAddress || getForwardGroupName(rule.forwardGroupId))
@@ -4410,9 +4409,29 @@ function RulesContent() {
       ? `复制${isForwardChainGroup(group) ? "转发链" : "转发组"}入口: ${entryAddress}`
       : `复制入口地址: ${entryAddress}`;
     const failoverCount = parseRuleFailoverTargets(rule.failoverTargets).filter((target) => target.targetIp && target.targetPort > 0).length;
-    const failoverBadge = rule.failoverEnabled ? (
+    return {
+      entryAddresses,
+      entryAddress,
+      targetAddress,
+      entryTitle,
+      failoverCount,
+      failoverEnabled: !!rule.failoverEnabled,
+      failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
+    };
+  };
+
+  const renderTransfer = (rule: any, compact = false) => {
+    const {
+      entryAddresses,
+      targetAddress,
+      entryTitle,
+      failoverCount,
+      failoverEnabled,
+      failoverStrategy,
+    } = getRuleTransferDisplay(rule);
+    const failoverBadge = failoverEnabled ? (
       <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
-        {failoverStrategyLabels[normalizeFailoverStrategy(rule.failoverStrategy)]} {failoverCount}
+        {failoverStrategyLabels[failoverStrategy]} {failoverCount}
       </Badge>
     ) : null;
 
@@ -4457,6 +4476,43 @@ function RulesContent() {
             {failoverBadge}
           </div>
         </div>
+      </div>
+    );
+  };
+
+  const renderTableTransferEntry = (rule: any) => {
+    const { entryAddresses, entryTitle } = getRuleTransferDisplay(rule);
+    return (
+      <div className="flex min-w-0 items-center gap-1 overflow-hidden font-mono text-[11px] leading-5">
+        {entryAddresses.map((entry) => (
+          <button
+            key={`${entry.label}:${entry.value}`}
+            type="button"
+            onClick={() => copyEntryAddress(rule, entry.value)}
+            className="group inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 text-left transition-colors hover:bg-muted/70"
+            title={`${entryTitle}${entryAddresses.length > 1 ? ` (${entry.label})` : ""}`}
+          >
+            {entryAddresses.length > 1 && <span className="shrink-0 text-[10px] text-muted-foreground">{entry.label}</span>}
+            <code className="min-w-0 truncate">{entry.text}</code>
+            <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-60 group-hover:opacity-100" />
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  const renderTableTransferExit = (rule: any) => {
+    const { targetAddress, failoverCount, failoverEnabled, failoverStrategy } = getRuleTransferDisplay(rule);
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] leading-5">
+        <code className="min-w-0 truncate rounded border border-border/40 bg-muted/30 px-1.5 py-0.5" title={targetAddress}>
+          {targetAddress}
+        </code>
+        {failoverEnabled && (
+          <Badge variant="outline" className="h-5 shrink-0 border-amber-500/30 px-1.5 text-[10px] text-amber-600">
+            {failoverStrategyLabels[failoverStrategy]} {failoverCount}
+          </Badge>
+        )}
       </div>
     );
   };
@@ -4514,7 +4570,7 @@ function RulesContent() {
       </Badge>
     );
   };
-  const renderRouteBadge = (rule: any) => {
+  const renderRouteBadge = (rule: any, compactRow = false) => {
     const tunnel = rule.forwardType === "gost" && rule.tunnelId ? tunnelById.get(Number(rule.tunnelId)) : null;
     const group = rule.forwardGroupId ? forwardGroupById.get(Number(rule.forwardGroupId)) : null;
     const isChainRoute = !!rule.forwardGroupId && isForwardChainGroup(group);
@@ -4554,7 +4610,7 @@ function RulesContent() {
     );
     if (isChainRoute) {
       return (
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <div className={`flex min-w-0 items-center gap-1 ${compactRow ? "overflow-hidden" : "flex-wrap"}`}>
           {badge}
           {renderForwardToolBadge(rule)}
           {warningBadge}
@@ -4563,11 +4619,22 @@ function RulesContent() {
     }
     if (!tunnel) {
       return warningBadge ? (
-        <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <div className={`flex min-w-0 items-center gap-1 ${compactRow ? "overflow-hidden" : "flex-wrap"}`}>
           {badge}
           {warningBadge}
         </div>
       ) : badge;
+    }
+    if (compactRow) {
+      return (
+        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+          {badge}
+          <div className="min-w-0 flex-1 text-muted-foreground">
+            {renderTunnelRoute(tunnel, false)}
+          </div>
+          {warningBadge}
+        </div>
+      );
     }
     return (
       <div className="flex min-w-0 flex-col gap-1">
@@ -4664,6 +4731,20 @@ function RulesContent() {
         <span className="text-xs text-muted-foreground">24H</span>
         {renderRuleTraffic(rule)}
       </div>
+      {renderLatestLatency(rule)}
+    </div>
+  );
+
+  const renderTableRuleCombinedTraffic = (rule: any) => (
+    <div className="flex min-w-0 items-center gap-2 whitespace-nowrap text-xs">
+      {renderRuleTotalTraffic(rule)}
+      <span className="h-3 w-px shrink-0 bg-border/70" />
+      <span className="shrink-0 text-muted-foreground">24H</span>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {renderRuleDailyTrafficValue(rule, "in")}
+        {renderRuleDailyTrafficValue(rule, "out")}
+      </div>
+      <span className="h-3 w-px shrink-0 bg-border/70" />
       {renderLatestLatency(rule)}
     </div>
   );
@@ -4844,12 +4925,12 @@ function RulesContent() {
     const protocolKey = getRuleProtocolKey(rule);
     return (
       <TableRow key={rule.id} className={`animate-in fade-in-0 duration-150 ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
-        <TableCell>
+        <TableCell className="px-3 py-2">
           <div className="flex items-center justify-center">
             {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
           </div>
         </TableCell>
-        <TableCell>
+        <TableCell className="px-3 py-2">
           <span className="block truncate font-medium" title={rule.name}>{rule.name}</span>
           {!supported && (
             <span className="mt-1 block text-[11px] text-destructive">
@@ -4863,26 +4944,27 @@ function RulesContent() {
           )}
         </TableCell>
         {user?.role === "admin" && (
-          <TableCell>
+          <TableCell className="px-3 py-2">
             <span className="block truncate text-sm text-muted-foreground" title={getRuleOwnerName(rule)}>
               {getRuleOwnerName(rule)}
             </span>
           </TableCell>
         )}
-        <TableCell>
+        <TableCell className="px-3 py-2">
           <span className="block truncate text-sm text-muted-foreground" title={rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}>
             {rule.forwardGroupId ? getForwardGroupName(rule.forwardGroupId) : getRuleEntryHostName(rule)}
           </span>
         </TableCell>
-        <TableCell className="pr-5">{renderTransfer(rule)}</TableCell>
-        <TableCell className="pr-5">{renderRouteBadge(rule)}</TableCell>
-        <TableCell className="text-center">
+        <TableCell className="px-3 py-2">{renderTableTransferEntry(rule)}</TableCell>
+        <TableCell className="px-3 py-2">{renderTableTransferExit(rule)}</TableCell>
+        <TableCell className="px-3 py-2">{renderRouteBadge(rule, true)}</TableCell>
+        <TableCell className="px-3 py-2 text-center">
           <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
         </TableCell>
-        <TableCell className="pr-5">
-          {renderRuleCombinedTraffic(rule)}
+        <TableCell className="px-3 py-2">
+          {renderTableRuleCombinedTraffic(rule)}
         </TableCell>
-        <TableCell className="text-center">
+        <TableCell className="px-3 py-2 text-center">
           {supported ? (
             <Switch
               checked={rule.isEnabled}
@@ -4894,7 +4976,7 @@ function RulesContent() {
             renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
           )}
         </TableCell>
-        <TableCell className="py-4 pl-2 pr-4 text-right">{renderRuleActions(rule)}</TableCell>
+        <TableCell className="px-3 py-2 text-right">{renderRuleActions(rule)}</TableCell>
       </TableRow>
     );
   };
@@ -5459,16 +5541,17 @@ function RulesContent() {
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
-                    <Table className={user?.role === "admin" ? "min-w-[1380px] table-fixed" : "min-w-[1270px] table-fixed"}>
+                    <Table className={user?.role === "admin" ? "min-w-[1660px] table-fixed" : "min-w-[1550px] table-fixed"}>
                       <colgroup>
                         <col className="w-[56px]" />
                         <col className="w-[110px]" />
                         {user?.role === "admin" && <col className="w-[110px]" />}
                         <col className="w-[100px]" />
-                        <col className="w-[300px]" />
+                        <col className="w-[285px]" />
+                        <col className="w-[190px]" />
                         <col className="w-[170px]" />
                         <col className="w-[96px]" />
-                        <col className="w-[214px]" />
+                        <col className="w-[320px]" />
                         <col className="w-[70px]" />
                         <col className="w-[154px]" />
                       </colgroup>
@@ -5478,7 +5561,8 @@ function RulesContent() {
                           <TableHead>规则</TableHead>
                           {user?.role === "admin" && <TableHead>用户</TableHead>}
                           <TableHead>主机</TableHead>
-                          <TableHead>转发配置</TableHead>
+                          <TableHead>转发入口</TableHead>
+                          <TableHead>转发出口</TableHead>
                           <TableHead>链路</TableHead>
                           <TableHead className="text-center">协议</TableHead>
                           <TableHead className="whitespace-nowrap">{trafficMetricHeaderLabel}</TableHead>
@@ -5493,7 +5577,7 @@ function RulesContent() {
                             return (
                               <Fragment key={group.type}>
                                 <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/50">
-                                  <TableCell colSpan={user?.role === "admin" ? 10 : 9} className="p-1">
+                                  <TableCell colSpan={user?.role === "admin" ? 11 : 10} className="p-1">
                                     {renderRuleGroupHeader(group, true)}
                                   </TableCell>
                                 </TableRow>
@@ -5588,10 +5672,10 @@ function RulesContent() {
               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward || (!!editingId && form.routeMode !== "local"))}
+                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward)}
                   aria-pressed={form.routeMode === "local"}
                   onClick={() => setRouteMode("local")}
-                  disabled={!canUseLocalForward || (!!editingId && form.routeMode !== "local")}
+                  disabled={!canUseLocalForward}
                   title={!canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
@@ -5599,10 +5683,10 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost || (!!editingId && form.routeMode !== "tunnel"))}
+                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost)}
                   aria-pressed={form.routeMode === "tunnel"}
                   onClick={() => setRouteMode("tunnel")}
-                  disabled={!canUseGost || (!!editingId && form.routeMode !== "tunnel")}
+                  disabled={!canUseGost}
                   title={!canUseGost ? "暂无可用隧道" : undefined}
                 >
                   <Network className="h-4 w-4 shrink-0" />
@@ -5610,10 +5694,10 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "chain", !canUseForwardChain || (!!editingId && form.routeMode !== "chain"))}
+                  className={routeModeOptionClass(form.routeMode === "chain", !canUseForwardChain)}
                   aria-pressed={form.routeMode === "chain"}
                   onClick={() => setRouteMode("chain")}
-                  disabled={!canUseForwardChain || (!!editingId && form.routeMode !== "chain")}
+                  disabled={!canUseForwardChain}
                   title={!canUseForwardChain ? "暂无可用转发链" : undefined}
                 >
                   <GitBranch className="h-4 w-4 shrink-0" />
@@ -5621,10 +5705,10 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "group", !canUseFailoverGroup || (!!editingId && form.routeMode !== "group"))}
+                  className={routeModeOptionClass(form.routeMode === "group", !canUseFailoverGroup)}
                   aria-pressed={form.routeMode === "group"}
                   onClick={() => setRouteMode("group")}
-                  disabled={!canUseFailoverGroup || (!!editingId && form.routeMode !== "group")}
+                  disabled={!canUseFailoverGroup}
                   title={!canUseFailoverGroup ? "暂无可用转发组" : undefined}
                 >
                   <Layers3 className="h-4 w-4 shrink-0" />
