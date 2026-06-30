@@ -383,6 +383,8 @@ export const tunnels = table("tunnels", {
   exitHostId: int("exitHostId").notNull(),
   mode: varchar("mode", { length: 32 }).notNull().default("tls"), // forwardx | tls | wss | tcp | mtls | mwss | mtcp | nginx_stream
   certDomain: text("certDomain"),
+  certPem: text("certPem"),
+  certKeyPem: text("certKeyPem"),
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),

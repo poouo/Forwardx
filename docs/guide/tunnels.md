@@ -50,5 +50,7 @@
 ## Nginx 隧道注意事项
 
 - Nginx Stream 隧道适合 TCP/UDP 四层中转和出口组负载均衡。
+- Nginx 隧道不会默认监听 80 端口；运行时监听端口来自隧道的出口监听端口，转发规则入口仍使用规则入口端口。
+- 如填写自定义证书 PEM 和私钥 PEM，证书会下发到出口机的 ForwardX Nginx 运行目录，TCP 的入口到出口段会使用 TLS；UDP 仍保持 Stream 四层转发。
 - Nginx 隧道依赖 Agent 主机可用的 Nginx Stream 运行环境；不可用时应先升级或重新安装 Agent 运行组件。
 - 如果需要 ForwardX 自定义加密、mimic UDP 混淆或更完整的规则级能力，优先使用 ForwardX 自定义加密隧道。

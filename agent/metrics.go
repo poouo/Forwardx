@@ -437,21 +437,60 @@ func readTargetInfo(port string) (string, int, string, bool) {
 }
 
 func tcpLatency(ip string, port int, timeout time.Duration) (int, bool) {
-	ip = normalizeNetworkTargetHost(ip)
-	if ip == "" || port <= 0 {
-		return 0, false
+	latency, ok, _ := tcpLatencyResolved(ip, port, timeout)
+	return latency, ok
+}
+
+func tcpLatencyResolved(host string, port int, timeout time.Duration) (int, bool, string) {
+	target := normalizeNetworkTargetHost(host)
+	if target == "" || port <= 0 {
+		return 0, false, ""
 	}
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), timeout)
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	targets := []string{target}
+	if net.ParseIP(target) == nil {
+		resolved := resolveNetworkTargetIPs(target, timeout)
+		if len(resolved) == 0 {
+			return 0, false, ""
+		}
+		targets = resolved
+	}
+	for _, dialHost := range targets {
+		start := time.Now()
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(dialHost, strconv.Itoa(port)), timeout)
+		if err != nil {
+			continue
+		}
+		_ = conn.Close()
+		latency := int(time.Since(start).Milliseconds())
+		if latency < 1 {
+			latency = 1
+		}
+		return latency, true, dialHost
+	}
+	return 0, false, ""
+}
+
+func resolveNetworkTargetIPs(host string, timeout time.Duration) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return 0, false
+		return nil
 	}
-	_ = conn.Close()
-	latency := int(time.Since(start).Milliseconds())
-	if latency < 1 {
-		latency = 1
+	seen := map[string]bool{}
+	targets := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		value := strings.TrimSpace(addr.String())
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		targets = append(targets, value)
 	}
-	return latency, true
+	return targets
 }
 
 func pingLatency(host string, timeout time.Duration) (int, bool, string) {

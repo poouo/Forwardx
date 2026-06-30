@@ -30,12 +30,16 @@ func queuePendingDNSChanges(changes []dnsChangeReport) {
 
 func updateDNSWatch(items []dnsWatchItem) bool {
 	watched := map[string]string{}
+	watchedItems := map[string][]dnsWatchItem{}
 	for _, item := range items {
 		host := normalizeDNSWatchHost(item.Host)
 		if host == "" {
 			continue
 		}
-		watched[strings.ToLower(host)] = host
+		item.Host = host
+		key := strings.ToLower(host)
+		watched[key] = host
+		watchedItems[key] = append(watchedItems[key], item)
 	}
 
 	resolved := map[string][]string{}
@@ -64,11 +68,19 @@ func updateDNSWatch(items []dnsWatchItem) bool {
 		oldIPs, hadOld := dnsWatchSnapshot[key]
 		nextSnapshot[key] = append([]string(nil), ips...)
 		if hadOld && len(oldIPs) > 0 && !sameStringSlice(oldIPs, ips) {
-			reports = append(reports, dnsChangeReport{
-				Host: host,
-				Old:  append([]string(nil), oldIPs...),
-				New:  append([]string(nil), ips...),
-			})
+			refs := watchedItems[key]
+			if len(refs) == 0 {
+				refs = []dnsWatchItem{{Host: host}}
+			}
+			for _, item := range refs {
+				reports = append(reports, dnsChangeReport{
+					Host:  host,
+					Scope: item.Scope,
+					RefID: item.RefID,
+					Old:   append([]string(nil), oldIPs...),
+					New:   append([]string(nil), ips...),
+				})
+			}
 		}
 	}
 

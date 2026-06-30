@@ -89,7 +89,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       res.status(401).json({ error: "Invalid token" });
       return;
     }
-    const { testId, targetReachable, latencyMs, message } = req.body || {};
+    const { testId, targetReachable, latencyMs, message, resolvedTargetIp } = req.body || {};
     if (typeof testId !== "number") {
       res.status(400).json({ error: "testId is required" });
       return;
@@ -103,6 +103,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
     const success = !!targetReachable;
     const cleanLatency = typeof latencyMs === "number" ? latencyMs : null;
     const cleanMessage = typeof message === "string" ? message.slice(0, 4000) : null;
+    const cleanResolvedTargetIp = typeof resolvedTargetIp === "string" ? resolvedTargetIp.trim().slice(0, 255) : "";
     await db.updateForwardTestResult(testId, {
       status: success ? "success" : "failed",
       listenOk: true,
@@ -241,9 +242,12 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
       const totalLatency = success && cleanLatency !== null ? cleanLatency + tunnelLatencyMs : null;
       const target = `${meta.targetIp || "-"}:${meta.targetPort || "-"}`;
       const targetMethod = normalizeLinkProbeMethod(meta.method);
+      const resolvedTargetText = cleanResolvedTargetIp && cleanResolvedTargetIp !== String(meta.targetIp || "").trim()
+        ? `解析到 ${cleanResolvedTargetIp}`
+        : "";
       const messageParts = [
         `隧道整体链路测试 ${success ? "成功" : "失败"}`,
-        `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}`,
+        `出口到目标 ${target}${success ? ` ${cleanLatency}ms` : ""}${resolvedTargetText ? `，${resolvedTargetText}` : ""}`,
       ];
       if (tunnelLatencyMs > 0) messageParts.push(`隧道段 ${tunnelLatencyMs}ms`);
       if (cleanMessage && !success) messageParts.push(cleanMessage);
@@ -255,7 +259,7 @@ agentRouter.post("/api/agent/selftest-result", async (req: Request, res: Respons
         details: [...tunnelDetails, {
           success,
           latencyMs: success ? cleanLatency : null,
-          message: success ? null : detailMessage,
+          message: success && resolvedTargetText ? resolvedTargetText : success ? null : detailMessage,
           hopLabel: `出口 -> 目标 ${target}`,
           routeLabel: `出口 -> 目标 ${target}`,
           method: targetMethod,

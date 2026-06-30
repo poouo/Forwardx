@@ -197,6 +197,15 @@ function canonicalQuery(params: Record<string, string | number | undefined>) {
     .join("&");
 }
 
+function canonicalUri(path: string) {
+  const raw = String(path || "/").startsWith("/") ? String(path || "/") : `/${path}`;
+  const uri = raw
+    .split("/")
+    .map((part) => encodeRfc3986(part))
+    .join("/");
+  return uri.endsWith("/") ? uri : `${uri}/`;
+}
+
 function extractJsonError(body: any, fallback: string) {
   return (
     body?.message ||
@@ -351,8 +360,7 @@ async function updateWebhook(input: {
 }
 
 function huaweicloudEndpoint(settings: DdnsSettings) {
-  const region = settings.huaweicloudRegion.trim() || "cn-north-4";
-  return normalizeEndpoint(settings.huaweicloudEndpoint, `https://dns.${region}.myhuaweicloud.com`);
+  return normalizeEndpoint(settings.huaweicloudEndpoint, "https://dns.myhuaweicloud.com");
 }
 
 function huaweicloudDate(date = new Date()) {
@@ -361,15 +369,14 @@ function huaweicloudDate(date = new Date()) {
 
 async function huaweicloudRequest(settings: DdnsSettings, method: string, path: string, query: Record<string, string | number | undefined>, payload?: any) {
   const endpoint = huaweicloudEndpoint(settings);
-  const host = new URL(endpoint).host;
   const body = payload === undefined ? "" : JSON.stringify(payload);
   const queryString = canonicalQuery(query);
   const sdkDate = huaweicloudDate();
-  const signedHeaders = "content-type;host;x-sdk-date";
-  const canonicalHeaders = `content-type:application/json\nhost:${host}\nx-sdk-date:${sdkDate}\n`;
+  const signedHeaders = "x-sdk-date";
+  const canonicalHeaders = `x-sdk-date:${sdkDate}\n`;
   const canonicalRequest = [
     method.toUpperCase(),
-    path,
+    canonicalUri(path),
     queryString,
     canonicalHeaders,
     signedHeaders,
@@ -390,28 +397,72 @@ async function huaweicloudRequest(settings: DdnsSettings, method: string, path: 
   return readJson(resp, "华为云 DNS 请求失败");
 }
 
-async function updateHuaweiCloud(settings: DdnsSettings, input: DdnsRecordInput) {
-  if (!settings.huaweicloudAccessKeyId || !settings.huaweicloudSecretKey || !settings.huaweicloudZoneId) {
+function ensureHuaweiCloudCredentials(settings: DdnsSettings) {
+  if (!settings.huaweicloudAccessKeyId || !settings.huaweicloudSecretKey) {
     throw new Error("华为云 DDNS 配置不完整");
   }
+}
+
+function huaweiCloudLineMatches(record: any, line: string) {
+  if (!line) return true;
+  const recordLine = String(record?.line || record?.line_id || record?.lineId || "").trim();
+  return !recordLine || recordLine === line;
+}
+
+async function resolveHuaweiCloudZoneId(settings: DdnsSettings, domain: string) {
+  const configuredZoneId = String(settings.huaweicloudZoneId || "").trim();
+  if (configuredZoneId) return configuredZoneId;
+  const candidates = cloudflareZoneCandidates(domain);
+  for (const candidate of candidates) {
+    const body = await huaweicloudRequest(settings, "GET", "/v2/zones", { name: fqdn(candidate), limit: 100 });
+    const zones = Array.isArray(body?.zones) ? body.zones : [];
+    const exact = zones.find((zone: any) => String(zone?.name || "").toLowerCase() === fqdn(candidate).toLowerCase());
+    const zone = exact || zones[0];
+    if (zone?.id) return String(zone.id);
+  }
+  throw new Error(`华为云未找到域名 ${domain} 对应的公网 Zone，请确认域名已托管或手动填写 Zone ID`);
+}
+
+async function findHuaweiCloudRecord(settings: DdnsSettings, input: { domain: string; recordType: string; lineId?: string }) {
+  const name = fqdn(input.domain);
+  const line = String(input.lineId || settings.huaweicloudLine || "default_view").trim();
+  const query: Record<string, string | number | undefined> = {
+    name,
+    type: input.recordType,
+    limit: 100,
+    search_mode: "equal",
+  };
+  if (line) query.line_id = line;
+  if (settings.huaweicloudZoneId.trim()) query.zone_id = settings.huaweicloudZoneId.trim();
+  const list = await huaweicloudRequest(settings, "GET", "/v2.1/recordsets", query);
+  const recordsets = Array.isArray(list?.recordsets) ? list.recordsets : [];
+  return recordsets.find((item: any) => (
+    String(item?.name || "").toLowerCase() === name.toLowerCase() &&
+    String(item?.type || "").toUpperCase() === input.recordType &&
+    huaweiCloudLineMatches(item, line)
+  )) || null;
+}
+
+function huaweiCloudCreatePayload(input: { name: string; recordType: string; ttl: number; records: string[]; line: string }) {
+  return {
+    name: input.name,
+    type: input.recordType,
+    ttl: input.ttl,
+    records: input.records,
+    ...(input.line ? { line: input.line } : {}),
+  };
+}
+
+async function updateHuaweiCloud(settings: DdnsSettings, input: DdnsRecordInput) {
+  ensureHuaweiCloudCredentials(settings);
   const name = fqdn(input.domain);
   const recordType = (input.recordType || "A").toUpperCase();
   const line = (input.lineId || settings.huaweicloudLine || "default_view").trim();
   const ttl = parseTtl(input.ttl, settings.huaweicloudTtl);
-  const zoneId = encodeURIComponent(settings.huaweicloudZoneId);
+  const record = await findHuaweiCloudRecord(settings, { domain: input.domain, recordType, lineId: line });
+  const resolvedZoneId = String(record?.zone_id || record?.zoneId || await resolveHuaweiCloudZoneId(settings, input.domain));
+  const zoneId = encodeURIComponent(resolvedZoneId);
   const basePath = `/v2.1/zones/${zoneId}/recordsets`;
-  const list = await huaweicloudRequest(settings, "GET", basePath, {
-    name,
-    type: recordType,
-    line_id: line,
-    limit: 100,
-  });
-  const recordsets = Array.isArray(list?.recordsets) ? list.recordsets : [];
-  const record = recordsets.find((item: any) => (
-    String(item?.name || "").toLowerCase() === name.toLowerCase() &&
-    String(item?.type || "").toUpperCase() === recordType &&
-    (!line || String(item?.line || "") === line)
-  ));
   const payload = {
     name,
     type: recordType,
@@ -422,7 +473,7 @@ async function updateHuaweiCloud(settings: DdnsSettings, input: DdnsRecordInput)
     await huaweicloudRequest(settings, "PUT", `${basePath}/${encodeURIComponent(String(record.id))}`, {}, payload);
     return;
   }
-  await huaweicloudRequest(settings, "POST", basePath, {}, { ...payload, line });
+  await huaweicloudRequest(settings, "POST", basePath, {}, huaweiCloudCreatePayload({ name, recordType, ttl, records: [input.value], line }));
 }
 
 function aliyunEncode(value: string) {
@@ -514,8 +565,8 @@ async function tencentCloudRequest(settings: DdnsSettings, action: string, paylo
   const timestamp = Math.floor(Date.now() / 1000);
   const body = JSON.stringify(payload);
   const hashedRequestPayload = sha256Hex(body);
-  const canonicalHeaders = `content-type:application/json; charset=utf-8\nhost:${host}\n`;
-  const signedHeaders = "content-type;host";
+  const canonicalHeaders = `content-type:application/json\nhost:${host}\nx-tc-action:${action.toLowerCase()}\n`;
+  const signedHeaders = "content-type;host;x-tc-action";
   const canonicalRequest = [
     "POST",
     "/",
@@ -541,7 +592,7 @@ async function tencentCloudRequest(settings: DdnsSettings, action: string, paylo
     method: "POST",
     headers: {
       Authorization: authorization,
-      "Content-Type": "application/json; charset=utf-8",
+      "Content-Type": "application/json",
       "X-TC-Action": action,
       "X-TC-Timestamp": String(timestamp),
       "X-TC-Version": version,
@@ -698,28 +749,21 @@ async function updateWebhookValues(settings: DdnsSettings, input: DdnsRecordValu
 }
 
 async function updateHuaweiCloudValues(settings: DdnsSettings, input: DdnsRecordValuesInput, values: string[]) {
-  if (!settings.huaweicloudAccessKeyId || !settings.huaweicloudSecretKey || !settings.huaweicloudZoneId) {
-    throw new Error("华为云 DDNS 配置不完整");
-  }
+  ensureHuaweiCloudCredentials(settings);
   const name = fqdn(input.domain);
   const recordType = (input.recordType || "A").toUpperCase();
   const line = (input.lineId || settings.huaweicloudLine || "default_view").trim();
   const ttl = parseTtl(input.ttl, settings.huaweicloudTtl);
-  const zoneId = encodeURIComponent(settings.huaweicloudZoneId);
-  const basePath = "/v2.1/zones/" + zoneId + "/recordsets";
-  const list = await huaweicloudRequest(settings, "GET", basePath, { name, type: recordType, line_id: line, limit: 100 });
-  const recordsets = Array.isArray(list?.recordsets) ? list.recordsets : [];
-  const record = recordsets.find((item: any) => (
-    String(item?.name || "").toLowerCase() === name.toLowerCase() &&
-    String(item?.type || "").toUpperCase() === recordType &&
-    (!line || String(item?.line || "") === line)
-  ));
+  const record = await findHuaweiCloudRecord(settings, { domain: input.domain, recordType, lineId: line });
+  const resolvedZoneId = String(record?.zone_id || record?.zoneId || await resolveHuaweiCloudZoneId(settings, input.domain));
+  const zoneId = encodeURIComponent(resolvedZoneId);
+  const basePath = `/v2.1/zones/${zoneId}/recordsets`;
   const payload = { name, type: recordType, ttl, records: values };
   if (record?.id) {
-    await huaweicloudRequest(settings, "PUT", basePath + "/" + encodeURIComponent(String(record.id)), {}, payload);
+    await huaweicloudRequest(settings, "PUT", `${basePath}/${encodeURIComponent(String(record.id))}`, {}, payload);
     return;
   }
-  await huaweicloudRequest(settings, "POST", basePath, {}, { ...payload, line });
+  await huaweicloudRequest(settings, "POST", basePath, {}, huaweiCloudCreatePayload({ name, recordType, ttl, records: values, line }));
 }
 
 async function updateAliyunValues(settings: DdnsSettings, input: DdnsRecordValuesInput, values: string[]) {

@@ -71,6 +71,7 @@ Nginx 转发使用 Nginx Stream 能力处理四层 TCP/UDP 流量，适合需要
 
 - 支持 TCP、UDP 和 TCP+UDP 规则。
 - 需要对应 Agent 主机具备可用的 Nginx Stream 运行环境；安装脚本会尽量自动安装和检测。
+- ForwardX 使用独立的 `forwardx-nginx` 运行时，不会把 Nginx 转发固定监听到 80 端口；端口来自规则入口端口或隧道出口监听端口。
 - Nginx 转发更适合四层流量中转，不等同于 ForwardX 自定义加密隧道。
 - PROXY Protocol、TCP Fast Open、zero-copy 等开关是否可用，以规则界面实际可选状态为准。
 

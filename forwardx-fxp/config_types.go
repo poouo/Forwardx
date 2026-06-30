@@ -37,4 +37,5 @@ type config struct {
 	RelayExitHost            string         `json:"relayExitHost,omitempty"`
 	RelayExitPort            int            `json:"relayExitPort,omitempty"`
 	RelayKey                 string         `json:"relayKey,omitempty"`
+	DNSGeneration            int            `json:"dnsGeneration,omitempty"`
 }

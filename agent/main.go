@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.124"
+var Version = "2.2.125"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -260,6 +260,8 @@ type dnsWatchItem struct {
 
 type dnsChangeReport struct {
 	Host string   `json:"host"`
+	Scope string  `json:"scope,omitempty"`
+	RefID int     `json:"refId,omitempty"`
 	Old  []string `json:"old,omitempty"`
 	New  []string `json:"new,omitempty"`
 }
@@ -324,6 +326,7 @@ type fxpSpec struct {
 	RelayExitHost            string            `json:"relayExitHost,omitempty"`
 	RelayExitPort            int               `json:"relayExitPort,omitempty"`
 	RelayKey                 string            `json:"relayKey,omitempty"`
+	DNSGeneration            int               `json:"dnsGeneration,omitempty"`
 }
 
 type fxpExitEndpoint struct {
@@ -2849,6 +2852,7 @@ func fxpServerSignature(spec fxpSpec) string {
 		spec.RelayExitHost,
 		strconv.Itoa(spec.RelayExitPort),
 		spec.RelayKey,
+		strconv.Itoa(spec.DNSGeneration),
 	}
 	for _, exit := range spec.Exits {
 		parts = append(parts, strings.TrimSpace(exit.Host), strconv.Itoa(exit.Port), strings.TrimSpace(exit.Key))

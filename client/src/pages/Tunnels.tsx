@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -123,6 +124,8 @@ type TunnelForm = {
   hopConnectHosts: Array<string | null>;
   mode: "forwardx" | "tls" | "wss" | "tcp" | "mtls" | "mwss" | "mtcp" | "nginx_stream" | "nginx_tls";
   certDomain: string;
+  certPem: string;
+  certKeyPem: string;
   listenPort: number;
   rateLimitMbps: number;
   networkType: "public" | "private";
@@ -149,6 +152,10 @@ type TunnelLatencyPoint = {
   fullLabel: string;
   [key: string]: string | number | boolean | null | undefined;
 };
+
+function normalizePemText(value: unknown) {
+  return String(value || "").replace(/\r\n/g, "\n").trim();
+}
 
 type TunnelLatencySeriesDatum = {
   recordedAt: string | Date;
@@ -254,6 +261,8 @@ const defaultForm: TunnelForm = {
   hopConnectHosts: [],
   mode: "forwardx",
   certDomain: "",
+  certPem: "",
+  certKeyPem: "",
   listenPort: 0,
   rateLimitMbps: 0,
   networkType: "public",
@@ -1237,7 +1246,7 @@ function TunnelLatencyDialog({
             <LatencyPeakCutToggle id={`tunnel-peak-cut-${tunnelId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
         </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
+        <div className="dialog-scroll-area min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
         <div className="h-[42svh] min-h-[220px] w-full sm:h-72">
           {showInitialLoading ? (
             <Skeleton className="h-full w-full" />
@@ -1939,6 +1948,8 @@ function TunnelsContent() {
       hopConnectHosts: displayRoute.hopConnectHosts,
       mode: normalizeTunnelModeForForm(tunnel.mode || "tls"),
       certDomain: String(tunnel.certDomain || ""),
+      certPem: String(tunnel.certPem || ""),
+      certKeyPem: String(tunnel.certKeyPem || ""),
       listenPort: tunnel.listenPort,
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
       networkType: tunnel.networkType === "private" ? "private" : "public",
@@ -2040,8 +2051,14 @@ function TunnelsContent() {
       return;
     }
     const certDomain = String(submitForm.certDomain || "").trim();
+    const certPem = normalizePemText(submitForm.certPem);
+    const certKeyPem = normalizePemText(submitForm.certKeyPem);
     if (isNginxTunnelModeValue(submitForm.mode) && certDomain && !isValidConnectHost(certDomain)) {
       toast.error("证书域名格式无效");
+      return;
+    }
+    if (isNginxTunnelModeValue(submitForm.mode) && ((certPem && !certKeyPem) || (!certPem && certKeyPem))) {
+      toast.error("Nginx 自定义证书和私钥需要同时填写");
       return;
     }
     const rateLimitMbps = Number(submitForm.rateLimitMbps) || 0;
@@ -2121,6 +2138,8 @@ function TunnelsContent() {
       name: submitForm.name,
       mode: normalizeTunnelModeForForm(submitForm.mode),
       certDomain: isNginxTunnelModeValue(submitForm.mode) ? certDomain || null : null,
+      certPem: isNginxTunnelModeValue(submitForm.mode) ? certPem || null : null,
+      certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
       listenPort: submitForm.listenPort,
       rateLimitMbps,
       networkType: isMultiHopTunnel
@@ -2192,6 +2211,37 @@ function TunnelsContent() {
   const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
   const nginxRuntimeDisabled = enabledNginxTunnelModes.length === 0;
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
+  const renderNginxCertFields = () => (
+    <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+      <div className="space-y-2">
+        <Label>证书域名 / SNI</Label>
+        <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div className="space-y-2">
+          <Label>自定义证书 PEM</Label>
+          <Textarea
+            value={form.certPem}
+            onChange={(e) => setForm({ ...form, certPem: e.target.value })}
+            placeholder={"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"}
+            className="min-h-[132px] font-mono text-xs"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>私钥 PEM</Label>
+          <Textarea
+            value={form.certKeyPem}
+            onChange={(e) => setForm({ ...form, certKeyPem: e.target.value })}
+            placeholder={"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"}
+            className="min-h-[132px] font-mono text-xs"
+          />
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        证书与私钥需要同时填写。填写后 Nginx 隧道的 TCP 入口到出口段会使用 TLS，UDP 仍按 Stream 四层转发；未填写时保持普通 Nginx Stream。
+      </p>
+    </div>
+  );
   const groupViewMode: "card" | "table" = chainViewMode === "table" ? "table" : "card";
   const handleViewModeChange = (nextViewMode: TunnelViewMode) => {
     setViewMode(nextViewMode);
@@ -2844,7 +2894,7 @@ function TunnelsContent() {
               onValueChange={setSelectedCreateType}
             />
           </div>
-          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>
                     <div className="space-y-2">
@@ -3016,15 +3066,7 @@ function TunnelsContent() {
                         </Select>
                       </div>
                     )}
-                    {isNginxTunnelModeValue(form.mode) && (
-                      <div className="space-y-2">
-                        <Label>证书域名</Label>
-                        <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
-                        <p className="text-xs text-muted-foreground">
-                          Nginx 当前仅使用 Stream 四层转发，支持 TCP/UDP/TCP+UDP；证书域名仅保存为配置项。
-                        </p>
-                      </div>
-                    )}
+                    {isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
                     {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
                         <Label>出口组负载模式</Label>
@@ -3152,7 +3194,7 @@ function TunnelsContent() {
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>{editingId ? "编辑隧道" : "添加链路"}</DialogTitle>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
+          <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
             <div className="space-y-2">
               <Label>隧道名称</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如: 华东-香港隧道" />
@@ -3322,15 +3364,7 @@ function TunnelsContent() {
                 </Select>
               </div>
             )}
-            {isNginxTunnelModeValue(form.mode) && (
-              <div className="space-y-2">
-                <Label>证书域名</Label>
-                <Input value={form.certDomain} onChange={(e) => setForm({ ...form, certDomain: e.target.value })} placeholder="example.com" />
-                <p className="text-xs text-muted-foreground">
-                  Nginx 当前仅使用 Stream 四层转发，支持 TCP/UDP/TCP+UDP；证书域名仅保存为配置项。
-                </p>
-              </div>
-            )}
+            {isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
             {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
                 <Label>出口组负载模式</Label>

@@ -20,6 +20,7 @@ const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss"
 const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
 const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
+const MAX_NGINX_CERT_BYTES = 64 * 1024;
 const tunnelQueryCache = createQueryCache(300);
 
 function normalizeTunnelMode(mode: unknown) {
@@ -32,6 +33,25 @@ function normalizeCertDomain(value: unknown) {
   if (!text) return null;
   if (text.length > 253 || /[\s'"<>]/.test(text)) throw new Error("证书域名格式无效");
   return text;
+}
+
+function normalizePem(value: unknown, label: string) {
+  const text = String(value || "").replace(/\r\n/g, "\n").trim();
+  if (!text) return null;
+  if (Buffer.byteLength(text, "utf8") > MAX_NGINX_CERT_BYTES) {
+    throw new Error(`${label}不能超过 64KB`);
+  }
+  return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+function normalizeNginxCertInput(input: { certPem?: unknown; certKeyPem?: unknown }, enabled: boolean) {
+  if (!enabled) return { certPem: null, certKeyPem: null };
+  const certPem = normalizePem(input.certPem, "Nginx 证书");
+  const certKeyPem = normalizePem(input.certKeyPem, "Nginx 私钥");
+  if ((certPem && !certKeyPem) || (!certPem && certKeyPem)) {
+    throw new Error("Nginx 自定义证书和私钥需要同时填写");
+  }
+  return { certPem, certKeyPem };
 }
 
 async function refreshTunnelRuntimeHosts(tunnelId: number, hostIds: number[], reason: string) {
@@ -395,6 +415,8 @@ export const tunnelsRouter = router({
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
+        certPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
+        certKeyPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional().default("public"),
         connectHost: z.string().max(128).nullable().optional(),
         blockHttp: z.boolean().optional().default(false),
@@ -409,6 +431,7 @@ export const tunnelsRouter = router({
       .mutation(async ({ input, ctx }) => {
         const normalizedMode = normalizeTunnelMode(input.mode);
         const certDomain = normalizedMode === "nginx_stream" ? normalizeCertDomain((input as any).certDomain) : null;
+        const nginxCert = normalizeNginxCertInput(input as any, normalizedMode === "nginx_stream");
         const hopHostIds = (input.hopHostIds && input.hopHostIds.length >= 3) ? input.hopHostIds : null;
         const hopConnectHosts = Array.isArray((input as any).hopConnectHosts) ? (input as any).hopConnectHosts as Array<string | null> : [];
         if (hopHostIds) {
@@ -482,6 +505,8 @@ export const tunnelsRouter = router({
           exitHostId,
           mode: normalizedMode,
           certDomain,
+          certPem: nginxCert.certPem,
+          certKeyPem: nginxCert.certKeyPem,
           portRangeStart: input.portRangeStart ?? null,
           portRangeEnd: input.portRangeEnd ?? null,
           networkType: isHostPrivateConnectHost(connectHost, exitHostForConnect) ? "private" : "public",
@@ -537,6 +562,8 @@ export const tunnelsRouter = router({
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
+        certPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
+        certKeyPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional(),
         connectHost: z.string().max(128).nullable().optional(),
         blockHttp: z.boolean().optional(),
@@ -608,6 +635,20 @@ export const tunnelsRouter = router({
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
           (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
+        }
+        if (
+          (data as any).certPem !== undefined
+          || (data as any).certKeyPem !== undefined
+          || (data as any).mode !== undefined
+        ) {
+          const certPemSource = (data as any).certPem !== undefined ? (data as any).certPem : (tunnel as any).certPem;
+          const certKeySource = (data as any).certKeyPem !== undefined ? (data as any).certKeyPem : (tunnel as any).certKeyPem;
+          const nginxCert = normalizeNginxCertInput(
+            { certPem: certPemSource, certKeyPem: certKeySource },
+            nextModeForRuntime === "nginx_stream",
+          );
+          (data as any).certPem = nginxCert.certPem;
+          (data as any).certKeyPem = nginxCert.certKeyPem;
         }
         const nextPortRangeStart = (data as any).portRangeStart !== undefined ? (data as any).portRangeStart : (tunnel as any).portRangeStart;
         const nextPortRangeEnd = (data as any).portRangeEnd !== undefined ? (data as any).portRangeEnd : (tunnel as any).portRangeEnd;
@@ -690,7 +731,7 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
-        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
