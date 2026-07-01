@@ -1,4 +1,5 @@
 import { forwardRuleProtocols } from "@shared/forwardTypes";
+import { isIP } from "net";
 
 type IptablesBinary = "iptables" | "ip6tables";
 
@@ -10,6 +11,10 @@ function cleanAddress(value: unknown) {
 
 function isIpv6Address(value: unknown) {
   return cleanAddress(value).includes(":");
+}
+
+function isIpAddress(value: unknown) {
+  return isIP(cleanAddress(value)) !== 0;
 }
 
 function iptablesBinaryForTarget(targetIp: unknown): IptablesBinary {
@@ -99,8 +104,8 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
       cmds.push(addStatRule(binary, "POSTROUTING", `-p ${proto} --sport ${port}`, outMarker));
       cmds.push(addStatRule(binary, "OUTPUT", `-p ${proto} --sport ${port}`, outMarker));
     }
-    if (targetIp && Number(targetPort) > 0) {
-      const target = cleanAddress(targetIp);
+    const target = cleanAddress(targetIp);
+    if (isIpAddress(target) && Number(targetPort) > 0) {
       const targetBinary = iptablesBinaryForTarget(target);
       cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker));
       cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker));
@@ -141,8 +146,8 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
       cmds.unshift(iptablesDelete(binary, "mangle", `POSTROUTING -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
       cmds.unshift(iptablesDelete(binary, "mangle", `OUTPUT -p ${proto} --sport ${port} -m comment --comment "${outMarker}"`));
     }
-    if (targetIp && Number(targetPort) > 0) {
-      const target = cleanAddress(targetIp);
+    const target = cleanAddress(targetIp);
+    if (isIpAddress(target) && Number(targetPort) > 0) {
       const targetBinary = iptablesBinaryForTarget(target);
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `FORWARD -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));

@@ -233,6 +233,19 @@ export default function HostCard({
     },
   ];
 
+  const addressRegionBlock = (regionCompact = false) => (
+    <div className={`mt-0.5 min-w-0 space-y-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
+      <p className="min-w-0 truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
+        <span className="mr-1.5 text-muted-foreground">地址</span>
+        {hostPrimaryAddressText(host)}
+      </p>
+      <div className="flex min-w-0 items-center gap-1.5 text-xs leading-5">
+        <span className="shrink-0 text-muted-foreground">国家/地区：</span>
+        <HostRegionBadge host={host} compact={regionCompact} />
+      </div>
+    </div>
+  );
+
   useEffect(() => {
     if (!metrics?.length) return;
     writeCachedHostMetrics(host.id, metrics);
@@ -405,13 +418,7 @@ export default function HostCard({
                   </Badge>
                 </div>
               )}
-              <div className={`mt-0.5 flex min-w-0 items-center gap-1.5 ${isOnline ? "" : "opacity-70 grayscale"}`}>
-                <p className="min-w-0 truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
-                  <span className="mr-1.5 text-muted-foreground">地址</span>
-                  {hostPrimaryAddressText(host)}
-                </p>
-                <HostRegionBadge host={host} compact />
-              </div>
+              {addressRegionBlock(true)}
             </div>
           </div>
         ) : (
@@ -443,13 +450,7 @@ export default function HostCard({
                   </Badge>
                 </div>
               )}
-              <div className={`mt-1 flex min-w-0 items-center gap-1.5 ${isOnline ? "" : "opacity-70 grayscale"}`}>
-                <p className="min-w-0 truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
-                  <span className="mr-1.5 text-muted-foreground">地址</span>
-                  {hostPrimaryAddressText(host)}
-                </p>
-                <HostRegionBadge host={host} />
-              </div>
+              {addressRegionBlock(false)}
             </div>
             <div className={`flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap ${compact ? "text-xs" : "text-sm"}`}>
               <div className="flex shrink-0 items-center gap-1.5">

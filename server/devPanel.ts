@@ -6,6 +6,8 @@ import { setSetting, setSettings } from "./repositories/settingsRepository";
 import { getUserByUsername } from "./repositories/userRepository";
 import { hashPassword } from "./password";
 import { randomAvataaarsValue } from "../shared/avatar";
+import { syncForwardGroupRules } from "./repositories/forwardGroupRepository";
+import { reconcileForwardRuleTunnelExits } from "./repositories/tunnelRepository";
 
 export const DEV_PANEL_FLAG = "FORWARDX_DEV_PANEL";
 export const DEV_ADMIN_USERNAME = "dev.admin@forwardx.local";
@@ -107,7 +109,7 @@ async function seedHosts(adminId: number) {
       osInfo: "Ubuntu 24.04 LTS",
       cpuInfo: "Intel Xeon Gold 6148",
       memoryTotal: 8 * 1024 ** 3,
-      agentVersion: "2.2.127",
+      agentVersion: "2.2.128",
       isOnline: true,
       lastHeartbeat: now,
       purchasedAt: daysFromNow(-28),
@@ -155,9 +157,9 @@ async function seedHosts(adminId: number) {
       osInfo: "AlmaLinux 9",
       cpuInfo: "Ampere Altra",
       memoryTotal: 12 * 1024 ** 3,
-      agentVersion: "2.2.127",
+      agentVersion: "2.2.128",
       agentUpgradeRequested: true,
-      agentUpgradeTargetVersion: "2.2.127",
+      agentUpgradeTargetVersion: "2.2.128",
       agentUpgradeRequestedAt: minutesAgo(2),
       isOnline: true,
       lastHeartbeat: now,
@@ -181,7 +183,7 @@ async function seedHosts(adminId: number) {
       memoryTotal: 6 * 1024 ** 3,
       agentVersion: "2.2.124",
       agentUpgradeRequested: true,
-      agentUpgradeTargetVersion: "2.2.127",
+      agentUpgradeTargetVersion: "2.2.128",
       agentUpgradeRequestedAt: minutesAgo(20),
       isOnline: false,
       lastHeartbeat: minutesAgo(18),
@@ -271,13 +273,32 @@ async function seedHostMetrics(hostIds: number[]) {
   }
 }
 
-async function seedRules(adminId: number, hostIds: number[]) {
+type DevForwardResources = {
+  tunnels: {
+    primaryTunnelId: number;
+    multiEntryMultiExitTunnelId: number;
+  };
+  groups: {
+    entryGroupId: number;
+    exitGroupId: number;
+    failoverGroupId: number;
+    chainGroupId: number;
+  };
+};
+
+async function seedRules(adminId: number, hostIds: number[], resources: DevForwardResources) {
   const rules = [
     { hostId: hostIds[0], name: "网站 TCP 转发", forwardType: "iptables", protocol: "tcp", sourcePort: 15201, targetIp: "2a0e:97c0:3f4:1::41d", targetPort: 5201, isRunning: true },
     { hostId: hostIds[1], name: "游戏 TCP+UDP 转发", forwardType: "realm", protocol: "both", sourcePort: 21001, targetIp: "10.10.3.88", targetPort: 25565, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true, proxyProtocolExitSend: true },
     { hostId: hostIds[2], name: "UDP over TCP 测试", forwardType: "gost", protocol: "both", sourcePort: 32000, targetIp: "172.16.8.30", targetPort: 19132, udpOverTcp: true, udpOverTcpPort: 32001, isRunning: true },
     { hostId: hostIds[3], name: "离线备用规则", forwardType: "socat", protocol: "tcp", sourcePort: 30080, targetIp: "192.168.9.20", targetPort: 80, isRunning: false, disabledByUser: true },
   ];
+  rules.push(
+    { hostId: hostIds[0], name: "Dev multi-entry/multi-exit tunnel", forwardType: "gost", protocol: "both", sourcePort: 24443, targetIp: "10.30.0.44", targetPort: 443, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId, tunnelExitPort: 24444, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true },
+    { hostId: hostIds[0], name: "Dev group template", forwardType: "nginx_stream", protocol: "both", sourcePort: 15566, targetIp: "10.20.0.88", targetPort: 25565, forwardGroupId: resources.groups.failoverGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, isRunning: false },
+    { hostId: hostIds[0], name: "Dev chain template", forwardType: "realm", protocol: "tcp", sourcePort: 18080, targetIp: "10.40.0.80", targetPort: 8080, forwardGroupId: resources.groups.chainGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, isRunning: false },
+  );
+
   const ids: number[] = [];
   for (const rule of rules) {
     ids.push(await insertAndGetId("forward_rules", {
@@ -285,11 +306,27 @@ async function seedRules(adminId: number, hostIds: number[]) {
       targetIp: "",
       targetPort: 1,
       ...rule,
+      tunnelId: (rule as any).tunnelId ?? null,
+      tunnelExitPort: (rule as any).tunnelExitPort ?? null,
+      forwardGroupId: (rule as any).forwardGroupId ?? null,
+      forwardGroupRuleId: null,
+      forwardGroupMemberId: null,
+      isForwardGroupTemplate: !!(rule as any).isForwardGroupTemplate,
       isEnabled: !rule.disabledByUser,
       createdAt: nowDate(),
       updatedAt: nowDate(),
     }));
   }
+
+  const multiExitRuleId = ids[4];
+  if (multiExitRuleId) {
+    await reconcileForwardRuleTunnelExits(
+      { id: multiExitRuleId, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId },
+      { id: resources.tunnels.multiEntryMultiExitTunnelId, mode: "tls", loadBalanceEnabled: true },
+    );
+  }
+  await syncForwardGroupRules(resources.groups.failoverGroupId, { preserveRuntime: true });
+  await syncForwardGroupRules(resources.groups.chainGroupId, { preserveRuntime: true, validatePorts: false });
 
   for (const ruleId of ids) {
     for (let i = 24; i >= 0; i--) {
@@ -361,10 +398,13 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]) {
     groupType: "host",
     groupMode: "entry",
     forwardType: "iptables",
+    domain: "entry.dev.forwardx.local",
+    recordType: "A",
     sourcePort: 10001,
     protocol: "both",
     targetIp: "198.51.100.10",
     targetPort: 443,
+    lastDdnsValue: "103.88.45.21, 8.219.73.16",
     lastStatus: "healthy",
     lastMessage: "香港入口可用，新加坡入口备用",
     isEnabled: true,
@@ -410,20 +450,54 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]) {
     groupMode: "failover",
     entryGroupId,
     forwardType: "nginx_stream",
-    sourcePort: 25565,
+    sourcePort: 15566,
     protocol: "both",
     targetIp: "10.20.0.88",
     targetPort: 25565,
     chinaHealthCheckEnabled: true,
     chinaHealthCheckTarget: "www.189.cn:80",
     telegramSwitchNotifyEnabled: true,
-    activeMemberId: member1,
+    activeMemberId: null,
     lastStatus: "healthy",
     lastMessage: "当前使用香港入口",
     isEnabled: true,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
+  const activeFailoverMemberId = await insertAndGetId("forward_group_members", {
+    groupId: failoverGroupId,
+    memberType: "host",
+    hostId: hostIds[0],
+    priority: 1,
+    isEnabled: true,
+    healthStatus: "healthy",
+    lastLatencyMs: 18,
+    chinaHealthStatus: "healthy",
+    chinaHealthLatencyMs: 32,
+    lastCheckedAt: nowDate(),
+    healthySince: minutesAgo(30),
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await insertAndGetId("forward_group_members", {
+    groupId: failoverGroupId,
+    memberType: "host",
+    hostId: hostIds[2],
+    priority: 2,
+    isEnabled: true,
+    healthStatus: "healthy",
+    lastLatencyMs: 34,
+    chinaHealthStatus: "failed",
+    chinaHealthLatencyMs: null,
+    failureSince: minutesAgo(8),
+    lastCheckedAt: nowDate(),
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await executeRaw(
+    `UPDATE ${quoteDbIdentifier("forward_groups")} SET ${quoteDbIdentifier("activeMemberId")} = ? WHERE ${quoteDbIdentifier("id")} = ?`,
+    [activeFailoverMemberId, failoverGroupId],
+  );
   await insertAndGetId("forward_group_events", {
     groupId: failoverGroupId,
     memberId: member1,
@@ -437,6 +511,181 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]) {
     isTimeout: false,
     recordedAt: nowDate(),
   });
+
+  const exitGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Dev multi-exit group",
+    remark: "Local dev data: multiple exits for tunnel load-balance UI",
+    groupType: "host",
+    groupMode: "exit",
+    forwardType: "nginx_stream",
+    sourcePort: 24443,
+    protocol: "both",
+    targetIp: "10.30.0.44",
+    targetPort: 443,
+    lastStatus: "healthy",
+    lastMessage: "3 exits available",
+    isEnabled: true,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  const exitMembers = [
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 42, priority: 1 },
+    { hostId: hostIds[2], connectHost: "10.10.3.10", latency: 63, priority: 2 },
+    { hostId: hostIds[3], connectHost: null, latency: null, priority: 3, healthStatus: "failed" },
+  ];
+  for (const member of exitMembers) {
+    await insertAndGetId("forward_group_members", {
+      groupId: exitGroupId,
+      memberType: "host",
+      hostId: member.hostId,
+      connectHost: member.connectHost,
+      priority: member.priority,
+      isEnabled: true,
+      healthStatus: member.healthStatus || "healthy",
+      lastLatencyMs: member.latency,
+      chinaHealthStatus: member.healthStatus || "healthy",
+      chinaHealthLatencyMs: member.latency ? member.latency + 16 : null,
+      failureSince: member.healthStatus === "failed" ? minutesAgo(18) : null,
+      healthySince: member.healthStatus === "failed" ? null : minutesAgo(45),
+      lastCheckedAt: nowDate(),
+      createdAt: nowDate(),
+      updatedAt: nowDate(),
+    });
+  }
+
+  const chainGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Dev entry-group forward chain",
+    remark: "Local dev data: chain uses the multi-entry group in front",
+    groupType: "host",
+    groupMode: "chain",
+    entryGroupId,
+    forwardType: "realm",
+    sourcePort: 18080,
+    protocol: "tcp",
+    targetIp: "10.40.0.80",
+    targetPort: 8080,
+    lastStatus: "healthy",
+    lastMessage: "Multi-entry chain ready",
+    isEnabled: true,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  const chainMembers = [
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", priority: 1 },
+    { hostId: hostIds[3], connectHost: "172.86.92.18", priority: 2 },
+  ];
+  for (const member of chainMembers) {
+    await insertAndGetId("forward_group_members", {
+      groupId: chainGroupId,
+      memberType: "host",
+      hostId: member.hostId,
+      connectHost: member.connectHost,
+      priority: member.priority,
+      isEnabled: true,
+      healthStatus: "healthy",
+      lastLatencyMs: 28 + member.priority * 11,
+      chinaHealthStatus: "healthy",
+      chinaHealthLatencyMs: 45 + member.priority * 12,
+      healthySince: minutesAgo(50),
+      lastCheckedAt: nowDate(),
+      createdAt: nowDate(),
+      updatedAt: nowDate(),
+    });
+  }
+
+  const multiEntryMultiExitTunnelId = await insertAndGetId("tunnels", {
+    userId: adminId,
+    name: "Dev multi-entry / multi-exit TLS",
+    entryGroupId,
+    entryHostId: hostIds[0],
+    exitHostId: hostIds[1],
+    mode: "tls",
+    certDomain: "multi.dev.forwardx.local",
+    secret: "dev-multi-secret",
+    listenPort: 24443,
+    rateLimitMbps: 800,
+    portRangeStart: 24400,
+    portRangeEnd: 24999,
+    networkType: "private",
+    connectHost: "fd00:10:10::20",
+    loadBalanceEnabled: true,
+    loadBalanceStrategy: "random",
+    isEnabled: true,
+    isRunning: true,
+    lastLatencyMs: 68,
+    lastTestStatus: "success",
+    lastTestMessage: "Dev multi-entry/multi-exit probe succeeded",
+    lastTestAt: nowDate(),
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await insertAndGetId("tunnel_hops", {
+    tunnelId: multiEntryMultiExitTunnelId,
+    seq: 0,
+    hostId: hostIds[0],
+    listenPort: 24443,
+    connectHost: null,
+  });
+  await insertAndGetId("tunnel_hops", {
+    tunnelId: multiEntryMultiExitTunnelId,
+    seq: 1,
+    hostId: hostIds[1],
+    listenPort: 24443,
+    connectHost: "fd00:10:10::20",
+  });
+  await insertAndGetId("tunnel_exit_nodes", {
+    tunnelId: multiEntryMultiExitTunnelId,
+    seq: 1,
+    hostId: hostIds[2],
+    listenPort: 24445,
+    connectHost: "10.10.3.10",
+    isEnabled: true,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await insertAndGetId("tunnel_exit_nodes", {
+    tunnelId: multiEntryMultiExitTunnelId,
+    seq: 2,
+    hostId: hostIds[3],
+    listenPort: 24446,
+    connectHost: "172.86.92.18",
+    isEnabled: true,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  const tunnelSeries = [
+    ["total", "total", 68],
+    ["entry-hk", "HK entry -> JP exit", 42],
+    ["entry-sg", "SG entry -> JP exit", 63],
+    ["exit-jp", "entry -> JP exit", 46],
+    ["exit-sg", "entry -> SG exit", 71],
+    ["exit-us", "entry -> US backup exit", 138],
+  ] as const;
+  for (const [seriesKey, seriesLabel, latencyMs] of tunnelSeries) {
+    await insertAndGetId("tunnel_latency_stats", {
+      tunnelId: multiEntryMultiExitTunnelId,
+      seriesKey,
+      seriesLabel,
+      latencyMs,
+      isTimeout: false,
+      recordedAt: nowDate(),
+    });
+  }
+
+  return {
+    tunnels: {
+      primaryTunnelId: tunnelId,
+      multiEntryMultiExitTunnelId,
+    },
+    groups: {
+      entryGroupId,
+      exitGroupId,
+      failoverGroupId,
+      chainGroupId,
+    },
+  };
 }
 
 async function seedProbeServices(adminId: number, hostIds: number[]) {
@@ -515,8 +764,8 @@ async function seedSettings() {
     siteTitle: "ForwardX Dev",
     registrationEnabled: "true",
     lookingGlassUserEnabled: "true",
-    latestAgentVersion: "2.2.127",
-    agentVersion: "2.2.127",
+    latestAgentVersion: "2.2.128",
+    agentVersion: "2.2.128",
     telegramBotEnabled: "false",
     systemAnnouncementEnabled: "true",
   });
@@ -530,8 +779,8 @@ export async function seedDevPanelData() {
   await clearDevData();
   const hostIds = await seedHosts(adminId);
   await seedHostMetrics(hostIds);
-  await seedRules(adminId, hostIds);
-  await seedTunnelsAndGroups(adminId, hostIds);
+  const forwardResources = await seedTunnelsAndGroups(adminId, hostIds);
+  await seedRules(adminId, hostIds, forwardResources);
   await seedProbeServices(adminId, hostIds);
   await seedStoreAndContent(adminId);
   await seedSettings();

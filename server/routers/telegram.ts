@@ -34,6 +34,10 @@ function maskToken(token: string) {
   return `${token.slice(0, 8)}...${token.slice(-4)}`;
 }
 
+function compareByteOrder(a: string, b: string) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 async function getTelegramRuntimeSettings() {
   const settings = await db.getAllSettings();
   const envToken = ENV.telegramBotToken.trim();
@@ -135,7 +139,7 @@ function verifyTelegramWebAppLogin(initData: string, token: string): TelegramWeb
 
   const dataCheckString = Array.from(params.entries())
     .filter(([key]) => key !== "hash")
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => compareByteOrder(a, b))
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
   const secret = createHmac("sha256", "WebAppData").update(token).digest();
