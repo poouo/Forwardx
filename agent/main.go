@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.127"
+var Version = "2.2.128"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -1714,6 +1714,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		return false
 	}
 	port := strconv.Itoa(a.SourcePort)
+	sharedNginxRuntimePort := actionPortOwnedBySharedNginx(a)
 	if a.StatusType == "tunnel" && a.TunnelID > 0 {
 		localTunnelID := readTunnelIDByPort(port)
 		localForwardType := readTunnelForwardTypeByPort(port)
@@ -1724,10 +1725,14 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 			}
 			if actionUsesManagedListener(a) {
 				cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
-				waitForActionListenPortFree(a, 2*time.Second)
+				if !sharedNginxRuntimePort {
+					waitForActionListenPortFree(a, 2*time.Second)
+				}
 			}
 			cleanupGostRuntimeIfPortBusy(a.SourcePort)
-			waitForActionListenPortFree(a, 2*time.Second)
+			if !sharedNginxRuntimePort {
+				waitForActionListenPortFree(a, 2*time.Second)
+			}
 			return false
 		}
 		if localTunnelID == a.TunnelID && (localForwardType == "" || localForwardType == a.ForwardType) {
@@ -1751,10 +1756,12 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		if a.Fxp != nil {
 			stopFXPByListenPort(a.SourcePort)
 		}
-		for _, cmd := range managedPortCleanupCmds(port) {
+		for _, cmd := range managedPortCleanupCmdsForApply(port, sharedNginxRuntimePort) {
 			_ = runShell(cmd)
 		}
-		waitForActionListenPortFree(a, 2*time.Second)
+		if !sharedNginxRuntimePort {
+			waitForActionListenPortFree(a, 2*time.Second)
+		}
 		removeTunnelStateByPort(port)
 		return false
 	}
@@ -1770,10 +1777,14 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		}
 		if actionUsesManagedListener(a) {
 			cleanupUnknownManagedListener(port, a.SourcePort, a.ForwardType)
-			waitForActionListenPortFree(a, 2*time.Second)
+			if !sharedNginxRuntimePort {
+				waitForActionListenPortFree(a, 2*time.Second)
+			}
 		}
 		cleanupGostRuntimeIfPortBusy(a.SourcePort)
-		waitForActionListenPortFree(a, 2*time.Second)
+		if !sharedNginxRuntimePort {
+			waitForActionListenPortFree(a, 2*time.Second)
+		}
 		return false
 	}
 	if localRuleID == a.RuleID && (localForwardType == "" || localForwardType == a.ForwardType) {
@@ -1803,11 +1814,33 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	if localForwardType == "nftables" && localRuleID > 0 {
 		_ = runShell(nftRuleCleanupCmd(localRuleID))
 	}
-	for _, cmd := range managedPortCleanupCmds(port) {
+	for _, cmd := range managedPortCleanupCmdsForApply(port, sharedNginxRuntimePort) {
 		_ = runShell(cmd)
 	}
-	waitForActionListenPortFree(a, 2*time.Second)
+	if !sharedNginxRuntimePort {
+		waitForActionListenPortFree(a, 2*time.Second)
+	}
 	return false
+}
+
+func actionUsesSharedNginxRuntime(a action) bool {
+	switch strings.TrimSpace(a.ForwardType) {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return true
+	default:
+		return false
+	}
+}
+
+func actionPortOwnedBySharedNginx(a action) bool {
+	return actionUsesSharedNginxRuntime(a) && a.SourcePort > 0 && nginxRuntimeConfigUsesPort(nginxConfigPath, a.SourcePort)
+}
+
+func managedPortCleanupCmdsForApply(port string, keepSharedNginx bool) []string {
+	if keepSharedNginx {
+		return managedPortCleanupCmdsWithNginx(port, false)
+	}
+	return managedPortCleanupCmds(port)
 }
 
 func actionUsesManagedListener(a action) bool {
@@ -1842,6 +1875,11 @@ func cleanupGostRuntimeIfPortBusy(port int) {
 	stopped := false
 	for _, item := range managedRuntimeConfigs() {
 		if managedRuntimeConfigUsesPort(item.path, port) {
+			if item.service == nginxServiceName {
+				logf("runtime cleanup keeps shared %s for busy port=%d; waiting for nginx runtime sync to reload config", item.service, port)
+				stopped = true
+				continue
+			}
 			logf("runtime cleanup stopping %s for busy port=%d: %v", item.service, port, err)
 			cleanupManagedService(item.service)
 			stopped = true
@@ -2482,6 +2520,10 @@ func iptablesAgentBinaryForTarget(targetIP string) string {
 	return "iptables"
 }
 
+func iptablesAgentIsIPAddress(value string) bool {
+	return net.ParseIP(iptablesAgentAddress(value)) != nil
+}
+
 func iptablesAgentCommand(binary string, args string, optional bool) string {
 	if binary == "ip6tables" {
 		if optional {
@@ -2555,6 +2597,10 @@ func iptablesAgentDeleteDnatRulesForPort(binary string, port string, protocol st
 }
 
 func managedPortCleanupCmds(port string) []string {
+	return managedPortCleanupCmdsWithNginx(port, true)
+}
+
+func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 	inMarker := "fwx-stat-" + port + ":in"
 	outMarker := "fwx-stat-" + port + ":out"
 	cmds := append(managedListenerCleanupCmds(port),
@@ -2563,8 +2609,10 @@ func managedPortCleanupCmds(port string) []string {
 		managedServiceCleanupShell("forwardx-socat-udp-"+port),
 		managedServiceCleanupShell("forwardx-realm-"+port),
 		"rm -f /etc/forwardx/realm/forwardx-realm-"+port+".toml /etc/forwardx/realm/forwardx-realm-"+port+".toml.sha256 2>/dev/null || true",
-		managedNginxCleanupShell(port),
 	)
+	if cleanupNginx {
+		cmds = append(cmds, managedNginxCleanupShell(port))
+	}
 	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
 	for _, binary := range iptablesAgentBinaries() {
 		cmds = append(cmds, iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
@@ -2606,7 +2654,7 @@ func managedPortCleanupCmds(port string) []string {
 		)
 	}
 	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
-	if targetIP, targetPort, _, ok := readTargetInfo(port); ok {
+	if targetIP, targetPort, _, ok := readTargetInfo(port); ok && iptablesAgentIsIPAddress(targetIP) {
 		target := iptablesAgentAddress(targetIP)
 		tp := strconv.Itoa(targetPort)
 		binary := iptablesAgentBinaryForTarget(target)
@@ -2650,7 +2698,7 @@ func managedListenerCleanupCmds(port string) []string {
 }
 
 func managedNginxCleanupShell(port string) string {
-	return "if [ -f /etc/forwardx/nginx/nginx.conf ] && grep -Eq \"listen .*:" + port + "( |;)|listen \\\\[::\\\\]:" + port + "( |;)|listen 0.0.0.0:" + port + "( |;)\" /etc/forwardx/nginx/nginx.conf 2>/dev/null; then " + managedServiceCleanupShell("forwardx-nginx") + "; fi"
+	return "if [ -f /etc/forwardx/nginx/nginx.conf ] && grep -Eq \"listen .*:" + port + "( |;)|listen \\\\[::\\\\]:" + port + "( |;)|listen 0.0.0.0:" + port + "( |;)\" /etc/forwardx/nginx/nginx.conf 2>/dev/null; then listen_count=$(grep -E '^[[:space:]]*listen[[:space:]]+' /etc/forwardx/nginx/nginx.conf 2>/dev/null | wc -l | tr -d ' '); if [ \"${listen_count:-0}\" -le 1 ]; then " + managedServiceCleanupShell("forwardx-nginx") + "; else echo \"[nginx] keep shared forwardx-nginx while replacing port " + port + "\"; fi; fi"
 }
 
 func fxpPortCleanupCmds(port string) []string {
@@ -2717,7 +2765,7 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
 			}
 		}
-		if targetIP != "" && targetPort > 0 {
+		if targetIP != "" && targetPort > 0 && iptablesAgentIsIPAddress(targetIP) {
 			target := iptablesAgentAddress(targetIP)
 			tp := strconv.Itoa(targetPort)
 			binary := iptablesAgentBinaryForTarget(target)

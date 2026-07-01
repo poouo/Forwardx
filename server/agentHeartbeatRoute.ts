@@ -31,6 +31,7 @@ import {
   removeManagedServiceCmd,
   restartManagedServiceIfConfigChangedCmd,
   shQuote,
+  startManagedServiceCmd,
   stopManagedServiceCmd,
   writeManagedServiceCmd,
 } from "./agentActionCommands";
@@ -65,6 +66,7 @@ const NGINX_BIN = "/usr/local/bin/forwardx-nginx";
 const NGINX_SERVICE_NAME = "forwardx-nginx";
 const NGINX_CONFIG_DIR = "/etc/forwardx/nginx";
 const NGINX_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf";
+const NGINX_STAGED_CONFIG_PATH = "/etc/forwardx/nginx/nginx.conf.next";
 const NGINX_CERT_DIR = "/etc/forwardx/nginx/certs";
 const REALM_CONFIG_DIR = "/etc/forwardx/realm";
 const LEGACY_GOST_SERVICE_NAME = "forwardx-gost";
@@ -1030,6 +1032,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { mux: "true" }
         : undefined
     );
+    const tunnelDialerMetadata = (mode: string) => tunnelProtocolMetadata(mode);
     const proxyProtocolEnabled = (rule: any, direction: "receive" | "send" | "entryReceive" | "entrySend" | "exitReceive" | "exitSend") => {
       if (!isForwardRuleProtocolTcpEnabled(rule?.protocol)) return false;
       if (direction === "receive" || direction === "entryReceive") return !!(rule as any).proxyProtocolReceive;
@@ -1479,7 +1482,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         : { type: "relay", metadata: { nodelay: true } },
       dialer: {
         type: dialerType,
-        ...(dialerType !== "tcp" && tunnelProtocolMetadata(tunnel.mode) ? { metadata: tunnelProtocolMetadata(tunnel.mode) } : {}),
+        ...(tunnelDialerMetadata(tunnel.mode) ? { metadata: tunnelDialerMetadata(tunnel.mode) } : {}),
       },
     });
     const buildLoadBalancedExitNodes = async (rule: any, tunnel: any, primaryHostOverride?: string) => {
@@ -1931,13 +1934,37 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
       ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
     ];
-    const nginxRuntimeVerifyCmd = () => (
-      `${NGINX_BIN} -p ${NGINX_CONFIG_DIR} -c ${NGINX_CONFIG_PATH} -t && ` +
-      `(if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${shQuote(NGINX_SERVICE_NAME)}.service; ` +
+    const nginxRuntimeActiveCmd = () => (
+      `if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${shQuote(NGINX_SERVICE_NAME)}.service; ` +
       `elif command -v rc-service >/dev/null 2>&1; then rc-service ${shQuote(NGINX_SERVICE_NAME)} status >/dev/null 2>&1; ` +
       `elif [ -x /etc/init.d/${NGINX_SERVICE_NAME} ]; then /etc/init.d/${NGINX_SERVICE_NAME} status >/dev/null 2>&1; ` +
-      `else pgrep -f '${NGINX_BIN}.*${NGINX_CONFIG_PATH}' >/dev/null 2>&1; fi)`
+      `else pgrep -f '${NGINX_BIN}.*${NGINX_CONFIG_PATH}' >/dev/null 2>&1; fi`
     );
+    const nginxConfigHashCmd = (configPath = NGINX_CONFIG_PATH) => {
+      const config = shQuote(configPath);
+      return `if command -v sha256sum >/dev/null 2>&1; then sha256sum ${config} 2>/dev/null | awk '{print "sha256:"$1}'; elif command -v cksum >/dev/null 2>&1; then cksum ${config} 2>/dev/null | awk '{print "cksum:"$1":"$2}'; else echo "mtime:$(wc -c < ${config} 2>/dev/null):$(date -r ${config} +%s 2>/dev/null)"; fi`;
+    };
+    const nginxRuntimeVerifyCmd = () => {
+      const config = shQuote(NGINX_CONFIG_PATH);
+      return `[ -s ${config} ] && (${nginxRuntimeActiveCmd()}) && new_hash=$(${nginxConfigHashCmd()}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); [ -n "$new_hash" ] && [ "$new_hash" = "$old_hash" ]`;
+    };
+    const deployNginxConfigCmd = (encodedConfig: string) => {
+      const staged = shQuote(NGINX_STAGED_CONFIG_PATH);
+      const live = shQuote(NGINX_CONFIG_PATH);
+      return [
+        `printf '%s' '${encodedConfig}' | base64 -d > ${staged}`,
+        `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c ${staged} -t`,
+        `if cmp -s ${staged} ${live} 2>/dev/null; then rm -f ${staged}; else mv -f ${staged} ${live}; fi`,
+      ].join(" && ");
+    };
+    const reloadNginxIfConfigChangedCmd = () => {
+      const config = shQuote(NGINX_CONFIG_PATH);
+      const active = nginxRuntimeActiveCmd();
+      const start = startManagedServiceCmd(NGINX_SERVICE_NAME);
+      const configHash = nginxConfigHashCmd();
+      const reload = `${shQuote(NGINX_BIN)} -p ${shQuote(NGINX_CONFIG_DIR)} -c ${config} -s reload || { [ -s /run/forwardx-nginx.pid ] && kill -HUP "$(cat /run/forwardx-nginx.pid)" 2>/dev/null; }`;
+      return `new_hash=$(${configHash}); old_hash=$(cat ${config}.sha256 2>/dev/null || true); if [ -z "$new_hash" ]; then echo "[service] ${NGINX_SERVICE_NAME} config hash failed"; exit 1; fi; if [ "$new_hash" != "$old_hash" ] || ! { ${active}; }; then if { ${active}; }; then ${reload} || { echo "[service] ${NGINX_SERVICE_NAME} reload failed"; exit 1; }; else ${start}; fi; printf '%s' "$new_hash" > ${config}.sha256; else echo "[service] ${NGINX_SERVICE_NAME} config unchanged"; fi`;
+    };
     const buildNginxRuntimeSyncCmds = async () => {
       const startedAt = Date.now();
       const upstreams: string[] = [];
@@ -1964,11 +1991,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const certPem = String(tunnel?.certPem || "").trim();
         const keyPem = String(tunnel?.certKeyPem || "").trim();
         if (!id || !certPem || !keyPem) return null;
+        const normalizedCertPem = certPem.endsWith("\n") ? certPem : `${certPem}\n`;
+        const normalizedKeyPem = keyPem.endsWith("\n") ? keyPem : `${keyPem}\n`;
+        const fingerprint = crypto.createHash("sha256").update(`${normalizedCertPem}\n${normalizedKeyPem}`).digest("hex");
+        const fileKey = fingerprint.slice(0, 16);
         return {
-          certPath: `${NGINX_CERT_DIR}/tunnel-${id}.crt`,
-          keyPath: `${NGINX_CERT_DIR}/tunnel-${id}.key`,
-          certPem: certPem.endsWith("\n") ? certPem : `${certPem}\n`,
-          keyPem: keyPem.endsWith("\n") ? keyPem : `${keyPem}\n`,
+          certPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.crt`,
+          keyPath: `${NGINX_CERT_DIR}/tunnel-${id}-${fileKey}.key`,
+          certPem: normalizedCertPem,
+          keyPem: normalizedKeyPem,
+          fingerprint,
           serverName: String(tunnel?.certDomain || "").trim() || null,
         };
       };
@@ -1978,7 +2010,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const key = `${cert.certPath}:${cert.keyPath}`;
         if (!certKeys.has(key)) {
           certKeys.add(key);
-          certFingerprints.push(`# cert tunnel-${Number(tunnel?.id || 0)} ${crypto.createHash("sha256").update(`${cert.certPem}\n${cert.keyPem}`).digest("hex")}`);
+          certFingerprints.push(`# cert tunnel-${Number(tunnel?.id || 0)} ${cert.fingerprint}`);
           certCmds.push(
             `printf '%s' '${Buffer.from(cert.certPem, "utf8").toString("base64")}' | base64 -d > ${shQuote(cert.certPath)}`,
             `printf '%s' '${Buffer.from(cert.keyPem, "utf8").toString("base64")}' | base64 -d > ${shQuote(cert.keyPath)}`,
@@ -2142,15 +2174,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const encodedConfig = Buffer.from(config, "utf8").toString("base64");
       const cmds = [
         `mkdir -p ${shQuote(NGINX_CONFIG_DIR)} ${shQuote(NGINX_CERT_DIR)} /var/log/forwardx-agent`,
-        `find ${shQuote(NGINX_CERT_DIR)} -maxdepth 1 -type f \\( -name 'tunnel-*.crt' -o -name 'tunnel-*.key' \\) -delete 2>/dev/null || true`,
         ...certCmds,
         `modules_conf=${shQuote(`${NGINX_CONFIG_DIR}/modules.conf`)}; : > "$modules_conf"; for mod in /usr/lib/nginx/modules/ngx_stream_module.so /usr/lib64/nginx/modules/ngx_stream_module.so /usr/share/nginx/modules/ngx_stream_module.so modules/ngx_stream_module.so; do if [ -s "$mod" ]; then printf 'load_module %s;\\n' "$mod" > "$modules_conf"; break; fi; done`,
-        `printf '%s' '${encodedConfig}' | base64 -d > ${shQuote(NGINX_CONFIG_PATH)}`,
       ];
       if (hasServers) {
-        cmds.unshift(ensureNginxBinaryCmd());
-        cmds.push(
-          `${NGINX_BIN} -p ${NGINX_CONFIG_DIR} -c ${NGINX_CONFIG_PATH} -t`,
+        const nginxApplyCmd = [
+          deployNginxConfigCmd(encodedConfig),
           writeManagedServiceCmd(NGINX_SERVICE_NAME, [
             "[Unit]",
             "Description=ForwardX managed Nginx stream runtime",
@@ -2159,6 +2188,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             "[Service]",
             "Type=simple",
             `ExecStart=${NGINX_BIN} -p ${NGINX_CONFIG_DIR} -c ${NGINX_CONFIG_PATH} -g "daemon off;"`,
+            `ExecReload=${NGINX_BIN} -p ${NGINX_CONFIG_DIR} -c ${NGINX_CONFIG_PATH} -s reload`,
             "Restart=always",
             "RestartSec=5",
             "LimitNOFILE=65535",
@@ -2168,10 +2198,16 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             "",
           ].join("\n")),
           ...(anyTunnelDnsRefresh(hostTunnels as any[]) ? [dnsRuntimeRefreshCmd("nginx"), `rm -f ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`] : []),
-          restartManagedServiceIfConfigChangedCmd(NGINX_SERVICE_NAME, NGINX_CONFIG_PATH),
-        );
+          reloadNginxIfConfigChangedCmd(),
+        ].filter(Boolean).map((cmd) => `(${cmd})`).join(" && ");
+        cmds.unshift(ensureNginxBinaryCmd());
+        cmds.push(nginxApplyCmd);
       } else {
-        cmds.push(stopManagedServiceCmd(NGINX_SERVICE_NAME), `rm -f ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`);
+        cmds.push(
+          `rm -f ${shQuote(NGINX_STAGED_CONFIG_PATH)} 2>/dev/null || true`,
+          stopManagedServiceCmd(NGINX_SERVICE_NAME),
+          `rm -f ${shQuote(`${NGINX_CONFIG_PATH}.sha256`)} 2>/dev/null || true`,
+        );
       }
       cmds.push(...countingCmds);
       return cmds;
@@ -2582,7 +2618,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
       const ruleTunnelHops = ruleTunnel ? tunnelHopsByTunnelId.get(Number(ruleTunnel.id)) : null;
       const isCurrentTunnelEntryRule = !!ruleTunnel && isCurrentHostTunnelEntry(ruleTunnel);
+      const isGostMultiHopRule = !!ruleTunnel
+        && isGostTunnelMode(ruleTunnel)
+        && Array.isArray(ruleTunnelHops)
+        && ruleTunnelHops.length >= 3
+        && ruleTunnelHops.some((hop: any) => Number(hop.hostId) === Number(host.id));
       const shouldRefreshTunnelEntryRule = isCurrentTunnelEntryRule
+        && (isForwardXTunnel(ruleTunnel) || isGostMultiHopRule)
         && !isTunnelRuntimeHostReady(Number(ruleTunnel.id), Number(host.id));
       const isForwardXMultiHopRule = !!ruleTunnel
         && isForwardXTunnel(ruleTunnel)

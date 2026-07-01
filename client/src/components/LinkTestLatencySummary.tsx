@@ -1,7 +1,8 @@
 import { LatencyRating } from "@/components/LatencyRating";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LinkTestNodeMeta } from "@/lib/linkTestNodeMeta";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 export type LinkTestDetail = {
   success: boolean;
@@ -198,6 +199,23 @@ function lookupNodeMeta(meta: Record<string, LinkTestNodeMeta | undefined> | und
   const targetAlias = clean.replace(/^目标\s+/i, "").trim();
   const targetAliasLower = targetAlias.toLowerCase();
   return meta[label] || meta[clean] || meta[cleanLower] || meta[targetAlias] || meta[targetAliasLower];
+}
+
+function lookupNodeTooltipContent(tooltips: Record<string, ReactNode> | undefined, label: string, meta?: LinkTestNodeMeta) {
+  if (!tooltips) return null;
+  const candidates = [
+    label,
+    cleanNodeLabel(label),
+    normalizeEndpointLabel(label),
+    meta?.label,
+    cleanNodeLabel(String(meta?.label || "")),
+    normalizeEndpointLabel(String(meta?.label || "")),
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (key && tooltips[key]) return tooltips[key];
+  }
+  return null;
 }
 
 function withNodeLabel(meta: LinkTestNodeMeta | undefined, fallback: string) {
@@ -504,6 +522,7 @@ export function LinkTestProbeView({
   sourceLabel = "入口",
   targetLabel = "目标",
   nodeMeta,
+  nodeTooltips,
   plannedSegments,
   compactFrom = 4,
   roomyNodes = false,
@@ -518,6 +537,7 @@ export function LinkTestProbeView({
   sourceLabel?: string;
   targetLabel?: string;
   nodeMeta?: Record<string, LinkTestNodeMeta | undefined>;
+  nodeTooltips?: Record<string, ReactNode>;
   plannedSegments?: LinkTestPlannedSegment[];
   compactFrom?: number;
   roomyNodes?: boolean;
@@ -617,6 +637,7 @@ export function LinkTestProbeView({
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
+    const tooltipContent = lookupNodeTooltipContent(nodeTooltips, label, meta);
     const preferWideNode = options?.wide === true;
     const nodeWidthClass = preferWideNode
       ? roomyNodes ? "max-w-[228px]" : "max-w-[208px]"
@@ -636,16 +657,33 @@ export function LinkTestProbeView({
       : shouldStretchDesktopPath
       ? segments.length >= 3 ? 11 : segments.length >= 2 ? 14 : roomyNodes ? 18 : 14
       : shouldWrapDesktopRows ? 15 : roomyNodes ? 18 : 14;
+    const nodeCard = (
+      <div
+        className={cn(
+          "relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm",
+          nodeWidthClass,
+          tooltipContent ? "cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" : "",
+        )}
+        tabIndex={tooltipContent ? 0 : undefined}
+      >
+        <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
+          {shortNodeLabel(label, labelMaxLength)}
+        </span>
+      </div>
+    );
     return (
       <div className="flex shrink-0 flex-col items-center gap-1">
         <div className="flex h-5 items-center justify-center text-[10px] font-semibold leading-5 text-muted-foreground" title={region || undefined}>
           {renderFlag(meta)}
         </div>
-        <div className={cn("relative z-10 rounded-md border border-border/70 bg-background px-3 py-2 text-center text-sm font-medium shadow-sm", nodeWidthClass)}>
-          <span className="block truncate" title={[label, address, region].filter(Boolean).join(" / ") || label}>
-            {shortNodeLabel(label, labelMaxLength)}
-          </span>
-        </div>
+        {tooltipContent ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{nodeCard}</TooltipTrigger>
+            <TooltipContent collisionPadding={12} className="max-w-[320px] p-3 text-xs">
+              {tooltipContent}
+            </TooltipContent>
+          </Tooltip>
+        ) : nodeCard}
       </div>
     );
   };
@@ -653,14 +691,28 @@ export function LinkTestProbeView({
     const meta = segmentMeta || lookupNodeMeta(nodeMeta, label);
     const region = String(meta?.region || "").trim();
     const address = String(meta?.address || "").trim();
-    return (
+    const tooltipContent = lookupNodeTooltipContent(nodeTooltips, label, meta);
+    const nodeCard = (
       <div
-        className="mx-auto flex w-full max-w-[18rem] items-center justify-center gap-2 rounded-md border border-border/70 bg-background px-3 py-2 text-sm font-medium shadow-sm"
+        className={cn(
+          "mx-auto flex w-full max-w-[18rem] items-center justify-center gap-2 rounded-md border border-border/70 bg-background px-3 py-2 text-sm font-medium shadow-sm",
+          tooltipContent ? "cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" : "",
+        )}
         title={[label, address, region].filter(Boolean).join(" / ") || label}
+        tabIndex={tooltipContent ? 0 : undefined}
       >
         <span className="flex h-4 w-6 shrink-0 items-center justify-center">{renderFlag(meta)}</span>
         <span className="min-w-0 truncate">{shortNodeLabel(label, 22)}</span>
       </div>
+    );
+    if (!tooltipContent) return nodeCard;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{nodeCard}</TooltipTrigger>
+        <TooltipContent collisionPadding={12} className="max-w-[320px] p-3 text-xs">
+          {tooltipContent}
+        </TooltipContent>
+      </Tooltip>
     );
   };
   const renderBranchLine = (segment: ProbeSegment, index: number, mobile = false) => {

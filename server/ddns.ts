@@ -189,10 +189,14 @@ function encodeRfc3986(value: string) {
   return encodeURIComponent(value).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+function compareByteOrder(a: string, b: string) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function canonicalQuery(params: Record<string, string | number | undefined>) {
   return Object.entries(params)
     .filter(([, value]) => value !== undefined && value !== "")
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => compareByteOrder(a, b))
     .map(([key, value]) => `${encodeRfc3986(key)}=${encodeRfc3986(String(value))}`)
     .join("&");
 }
@@ -501,7 +505,7 @@ async function aliyunRequest(settings: DdnsSettings, action: string, params: Rec
     if (value !== undefined && value !== "") all[key] = value;
   }
   const canonical = Object.entries(all)
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => compareByteOrder(a, b))
     .map(([key, value]) => `${aliyunEncode(key)}=${aliyunEncode(String(value))}`)
     .join("&");
   const stringToSign = `GET&${aliyunEncode("/")}&${aliyunEncode(canonical)}`;
