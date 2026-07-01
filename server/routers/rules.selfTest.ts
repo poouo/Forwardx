@@ -13,10 +13,10 @@ const selfTestQueryCache = createQueryCache(300);
 
 export const selfTestRulesRouter = router({
   tcpingSeries: protectedProcedure
-    .input(z.object({
-      ruleId: z.number(),
-      hours: z.number().min(1).max(48).default(24),
-    }))
+      .input(z.object({
+        ruleId: z.number(),
+        hours: z.number().min(1).max(24 * 3).default(24),
+      }))
     .query(async ({ input, ctx }) => {
       const rule = await db.getForwardRuleById(input.ruleId);
       if (!rule) throw new Error("规则不存在");

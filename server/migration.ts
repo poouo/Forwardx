@@ -119,6 +119,30 @@ export async function exportMigrationSnapshot(sourcePanelUrl?: string): Promise<
   return { version: 1, exportedAt: Date.now(), appVersion: APP_VERSION, sourcePanelUrl, tables };
 }
 
+type MigrationTableName = (typeof MIGRATION_TABLES)[number];
+
+const PANEL_BACKUP_OMITTED_TABLES = new Set<MigrationTableName>([
+  "host_metrics",
+  "host_probe_service_stats",
+  "tunnel_latency_stats",
+  "forward_group_latency_stats",
+  "traffic_stats",
+  "tcping_stats",
+  "forward_tests",
+  "forward_group_events",
+  "ip_geo_cache",
+]);
+
+export function pruneMigrationSnapshotForPanelBackup(snapshot: MigrationSnapshot): MigrationSnapshot {
+  const tables: MigrationSnapshot["tables"] = {};
+  for (const table of MIGRATION_TABLES) {
+    if (PANEL_BACKUP_OMITTED_TABLES.has(table)) continue;
+    const rows = snapshot.tables?.[table];
+    if (Array.isArray(rows) && rows.length > 0) tables[table] = rows;
+  }
+  return { ...snapshot, tables };
+}
+
 function quote(name: string) {
   return quoteIdentifier(name);
 }

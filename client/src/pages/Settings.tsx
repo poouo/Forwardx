@@ -436,6 +436,12 @@ type BackupSummaryCache = {
   hasExistingData: boolean;
   cachedAt?: number;
 };
+type BackupTaskProgress = {
+  percent: number;
+  step: string;
+  detail: string;
+  status: "running" | "success" | "error";
+};
 
 const backupSummaryCacheKey = "forwardx.settings.backupSummary";
 const zeroBackupSummary: BackupSummaryCache = {
@@ -476,6 +482,27 @@ function writeBackupSummaryCache(summary: BackupSummaryCache) {
   } catch {
     // Local cache is only a display optimization.
   }
+}
+
+function BackupTaskProgressView({ progress }: { progress: BackupTaskProgress | null }) {
+  if (!progress) return null;
+  return (
+    <div className="rounded-lg border border-primary/15 bg-primary/5 p-4">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <div className="flex min-w-0 items-center gap-2">
+          {progress.status === "running"
+            ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            : progress.status === "success"
+              ? <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+              : <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />}
+          <span className="truncate font-medium">{progress.step}</span>
+        </div>
+        <span className="shrink-0 tabular-nums">{progress.percent}%</span>
+      </div>
+      <Progress value={progress.percent} className="mt-3" />
+      <p className="mt-2 text-xs text-muted-foreground">{progress.detail}</p>
+    </div>
+  );
 }
 
 function normalizePersonalizationBackgroundConfig(value: any): PersonalizationBackgroundConfig {
@@ -860,6 +887,8 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [importContent, setImportContent] = useState("");
   const [importFilename, setImportFilename] = useState("");
   const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [exportProgress, setExportProgress] = useState<BackupTaskProgress | null>(null);
+  const [importProgress, setImportProgress] = useState<BackupTaskProgress | null>(null);
   const [onlineMigration, setOnlineMigration] = useState({
     oldPanelUrl: "",
     migrationCode: "",
@@ -964,6 +993,8 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     return () => window.clearInterval(timer);
   }, [migrationCode?.code]);
 
+
+
   useEffect(() => {
     if (!migrationJob || reportedMigrationJobId === migrationJob.id) return;
     if (migrationJob?.status === "success") {
@@ -1033,29 +1064,112 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
     onError: (err) => toast.error(err.message || "拒绝迁移请求失败"),
   });
 
+  const finishExportProgress = (next: BackupTaskProgress) => {
+    setExportProgress(next);
+    window.setTimeout(() => setExportProgress(null), 1800);
+  };
+
+  const finishImportProgress = (next: BackupTaskProgress) => {
+    setImportProgress(next);
+    window.setTimeout(() => setImportProgress(null), 2200);
+  };
+
   const exportBackupMutation = trpc.system.exportPanelBackup.useMutation({
     onSuccess: (data) => {
+      setExportProgress({
+        percent: 92,
+        step: "正在准备下载文件",
+        detail: `备份文件 ${data.filename} 已生成，浏览器即将保存。`,
+        status: "running",
+      });
       downloadTextFile(data.filename, data.content, data.mimeType || "application/json;charset=utf-8");
       setBackupPassword("");
       setBackupPasswordConfirm("");
+      finishExportProgress({
+        percent: 100,
+        step: "备份导出完成",
+        detail: "加密备份文件已交给浏览器下载。",
+        status: "success",
+      });
       toast.success("加密备份已导出");
     },
-    onError: (err) => toast.error(err.message || "导出备份失败"),
+    onError: (err) => {
+      finishExportProgress({
+        percent: 100,
+        step: "备份导出失败",
+        detail: err.message || "导出备份失败",
+        status: "error",
+      });
+      toast.error(err.message || "导出备份失败");
+    },
   });
 
   const importBackupMutation = trpc.system.importPanelBackup.useMutation({
     onSuccess: async (result) => {
+      setImportProgress({
+        percent: 88,
+        step: "正在刷新面板数据",
+        detail: "备份已导入，正在更新当前页面的数据概览。",
+        status: "running",
+      });
       setShowImportConfirm(false);
       setImportPassword("");
       setImportContent("");
       setImportFilename("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       await utils.system.backupSummary.invalidate();
+      finishImportProgress({
+        percent: 100,
+        step: result.mode === "incremental" ? "增量导入完成" : "备份恢复完成",
+        detail: result.mode === "incremental" ? "当前面板数据已保留，备份数据已增量导入。" : "备份数据已恢复到当前面板。",
+        status: "success",
+      });
       toast.success(result.mode === "incremental" ? "增量导入完成，当前面板数据已保留" : "备份恢复完成");
     },
-    onError: (err) => toast.error(err.message || "导入备份失败"),
+    onError: (err) => {
+      finishImportProgress({
+        percent: 100,
+        step: "备份导入失败",
+        detail: err.message || "导入备份失败",
+        status: "error",
+      });
+      toast.error(err.message || "导入备份失败");
+    },
   });
 
+  useEffect(() => {
+    if (!exportBackupMutation.isPending) return;
+    const timer = window.setInterval(() => {
+      setExportProgress((current) => {
+        if (!current || current.status !== "running") return current;
+        const nextPercent = Math.min(86, current.percent + (current.percent < 70 ? 3 : 1));
+        return {
+          percent: nextPercent,
+          step: nextPercent >= 78 ? "等待服务器完成导出" : current.step,
+          detail: nextPercent >= 78 ? "数据量较大时导出会多花一些时间，请保持当前页面打开。" : current.detail,
+          status: "running",
+        };
+      });
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [exportBackupMutation.isPending]);
+
+  useEffect(() => {
+    if (!importBackupMutation.isPending) return;
+    const timer = window.setInterval(() => {
+      setImportProgress((current) => {
+        if (!current || current.status !== "running") return current;
+        const nextPercent = Math.min(84, current.percent + (current.percent < 65 ? 3 : 1));
+        return {
+          percent: nextPercent,
+          step: nextPercent >= 74 ? "等待服务器完成导入" : current.step,
+          detail: nextPercent >= 74 ? "备份文件较大时恢复会多花一些时间，请不要关闭页面。" : current.detail,
+          status: "running",
+        };
+      });
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [importBackupMutation.isPending]);
   const startPanelMigrationMutation = trpc.system.startPanelMigration.useMutation({
     onSuccess: (job) => {
       setMigrationJobId(job.id);
@@ -1125,6 +1239,22 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       toast.error("两次输入的备份密码不一致");
       return;
     }
+    setExportProgress({
+      percent: 12,
+      step: "正在读取面板数据",
+      detail: "正在整理用户、主机、规则、隧道和系统配置。",
+      status: "running",
+    });
+    window.setTimeout(() => {
+      setExportProgress((current) => current?.status === "running"
+        ? { percent: 42, step: "正在裁剪低价值数据", detail: "正在跳过日志、历史探测和临时统计数据，减小备份体积。", status: "running" }
+        : current);
+    }, 700);
+    window.setTimeout(() => {
+      setExportProgress((current) => current?.status === "running"
+        ? { percent: 68, step: "正在加密备份内容", detail: "备份文件会使用当前输入的密码加密保存。", status: "running" }
+        : current);
+    }, 1600);
     exportBackupMutation.mutate({ password: backupPassword });
   };
 
@@ -1153,6 +1283,31 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
       return;
     }
     setShowImportConfirm(true);
+  };
+
+  const confirmImportBackup = () => {
+    setImportProgress({
+      percent: 15,
+      step: "正在读取备份文件",
+      detail: importFilename ? `正在处理 ${importFilename}。` : "正在处理已选择的备份文件。",
+      status: "running",
+    });
+    window.setTimeout(() => {
+      setImportProgress((current) => current?.status === "running"
+        ? { percent: 36, step: "正在解密备份内容", detail: "正在使用备份密码校验并解密文件。", status: "running" }
+        : current);
+    }, 700);
+    window.setTimeout(() => {
+      setImportProgress((current) => current?.status === "running"
+        ? { percent: 62, step: "正在写入面板数据", detail: "正在恢复主机、规则、隧道和转发组数据。", status: "running" }
+        : current);
+    }, 1600);
+    importBackupMutation.mutate({
+      content: importContent,
+      password: importPassword,
+      targetPanelUrl: panelUrl || undefined,
+      confirmed: true,
+    });
   };
 
   const openOnlineConfirm = () => {
@@ -1592,9 +1747,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               <AlertTitle>请妥善保存备份密码</AlertTitle>
               <AlertDescription>备份文件不保存明文数据，忘记密码将无法解密恢复。</AlertDescription>
             </Alert>
+            <BackupTaskProgressView progress={exportProgress} />
             <Button className="gap-2" onClick={handleExportBackup} disabled={exportBackupMutation.isPending}>
-              <Download className="h-4 w-4" />
-              导出加密备份
+              {exportBackupMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {exportBackupMutation.isPending ? "正在导出..." : "导出加密备份"}
             </Button>
           </CardContent>
         </Card>
@@ -1624,9 +1780,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               <Label>备份密码</Label>
               <Input type="password" value={importPassword} onChange={(e) => setImportPassword(e.target.value)} />
             </div>
+            <BackupTaskProgressView progress={importProgress} />
             <Button className="gap-2" onClick={openImportConfirm} disabled={importBackupMutation.isPending}>
-              <Upload className="h-4 w-4" />
-              导入并恢复
+              {importBackupMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {importBackupMutation.isPending ? "正在导入..." : "导入并恢复"}
             </Button>
           </CardContent>
         </Card>
@@ -1657,15 +1814,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               取消
             </Button>
             <Button
-              onClick={() => importBackupMutation.mutate({
-                content: importContent,
-                password: importPassword,
-                targetPanelUrl: panelUrl || undefined,
-                confirmed: true,
-              })}
+              onClick={confirmImportBackup}
               disabled={importBackupMutation.isPending}
             >
-              确认导入
+              {importBackupMutation.isPending ? "正在导入..." : "确认导入"}
             </Button>
           </DialogFooter>
         </DialogContent>

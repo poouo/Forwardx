@@ -4,9 +4,12 @@ import (
 	"context"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const maxPendingDNSChanges = 512
 
 func takePendingDNSChanges() []dnsChangeReport {
 	dnsWatchMu.Lock()
@@ -14,7 +17,7 @@ func takePendingDNSChanges() []dnsChangeReport {
 	if len(pendingDNSChanges) == 0 {
 		return nil
 	}
-	changes := append([]dnsChangeReport(nil), pendingDNSChanges...)
+	changes := compactDNSChangeReports(pendingDNSChanges)
 	pendingDNSChanges = nil
 	return changes
 }
@@ -24,7 +27,7 @@ func queuePendingDNSChanges(changes []dnsChangeReport) {
 		return
 	}
 	dnsWatchMu.Lock()
-	pendingDNSChanges = append(pendingDNSChanges, changes...)
+	appendPendingDNSChangesLocked(changes)
 	dnsWatchMu.Unlock()
 }
 
@@ -86,10 +89,41 @@ func updateDNSWatch(items []dnsWatchItem) bool {
 
 	dnsWatchSnapshot = nextSnapshot
 	if len(reports) > 0 {
-		pendingDNSChanges = append(pendingDNSChanges, reports...)
+		appendPendingDNSChangesLocked(reports)
 		return true
 	}
 	return false
+}
+
+func appendPendingDNSChangesLocked(changes []dnsChangeReport) {
+	if len(changes) == 0 {
+		return
+	}
+	pendingDNSChanges = compactDNSChangeReports(append(pendingDNSChanges, changes...))
+}
+
+func compactDNSChangeReports(changes []dnsChangeReport) []dnsChangeReport {
+	if len(changes) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	reversed := make([]dnsChangeReport, 0, minInt(len(changes), maxPendingDNSChanges))
+	for i := len(changes) - 1; i >= 0 && len(reversed) < maxPendingDNSChanges; i-- {
+		key := dnsChangeReportKey(changes[i])
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		reversed = append(reversed, changes[i])
+	}
+	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+		reversed[i], reversed[j] = reversed[j], reversed[i]
+	}
+	return reversed
+}
+
+func dnsChangeReportKey(change dnsChangeReport) string {
+	return strings.ToLower(strings.TrimSpace(change.Host)) + "\x00" + strings.TrimSpace(change.Scope) + "\x00" + strconv.Itoa(change.RefID)
 }
 
 func normalizeDNSWatchHost(raw string) string {

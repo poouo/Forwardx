@@ -11,7 +11,7 @@ import {
   isRuleProtocolEnabled,
   isTunnelProtocolEnabled,
 } from "./forwardProtocolSettings";
-import { clearTunnelRuntimeStatusForHost, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
+import { clearTunnelRuntimeStatusForHost, getTunnelRuntimeGeneration, isTunnelRuntimeHostReady } from "./tunnelRuntimeStatus";
 import { appendPanelLog } from "./_core/panelLogger";
 import { isIP } from "net";
 import { resolve4, resolve6 } from "dns/promises";
@@ -761,6 +761,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const dnsRuntimeRefreshCmd = (label: string) => (
       dnsRuntimeRefreshToken ? `echo ${shQuote(`[dns] ${label} refresh ${dnsRuntimeRefreshToken}`)}` : ""
     );
+    const tunnelRuntimeGenerationCmd = () => {
+      const tokens = (hostTunnels as any[])
+        .map((tunnel: any) => {
+          const tunnelId = Number(tunnel?.id || 0);
+          const generation = getTunnelRuntimeGeneration(tunnelId);
+          return tunnelId > 0 && generation > 0 ? `${tunnelId}:${generation}` : "";
+        })
+        .filter(Boolean)
+        .sort()
+        .join(",");
+      return tokens ? `echo ${shQuote(`[runtime] tunnel generation ${tokens}`)}` : "";
+    };
     const tunnelEntryHostIdsByTunnelId = new Map<number, number[]>();
     await Promise.all((hostTunnels as any[]).map(async (tunnel: any) => {
       const entryHostIds = new Set<number>();
@@ -2221,11 +2233,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
 
     const buildGostRuntimeSyncCmds = async () => [
+      tunnelRuntimeGenerationCmd(),
       ...buildGostReloadCmds(),
       ...await buildTunnelReloadCmds(),
       ...await getNginxRuntimeSyncCmds(),
       ...buildMimicRuntimeSyncCmds(),
-    ];
+    ].filter(Boolean);
 
     const ruleTrafficPort = (rule: any) => {
       const tunnel = rule.tunnelId ? tunnelById.get(rule.tunnelId) as any : null;

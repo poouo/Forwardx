@@ -30,7 +30,7 @@ export const dashboardRouter = router({
     /** 当前用户流量走势（仪表盘图表） */
     trafficSeries: protectedProcedure
       .input(z.object({
-        hours: z.number().min(1).max(24 * 30).default(24),
+        hours: z.number().min(1).max(24 * 3).default(24),
         bucketMinutes: z.number().min(1).max(60).default(60),
       }).optional())
       .query(async ({ input, ctx }) => {
@@ -51,7 +51,7 @@ export const dashboardRouter = router({
     /** 当前用户按转发类型划分的规则流量消耗分布 */
     trafficBreakdown: protectedProcedure
       .input(z.object({
-        hours: z.number().min(1).max(24 * 30).default(24),
+        hours: z.number().min(1).max(24 * 3).default(24),
         limit: z.number().min(1).max(100).default(30),
       }).optional())
       .query(async ({ input, ctx }) => {
@@ -72,7 +72,7 @@ export const dashboardRouter = router({
     /** 当前用户 TCPing 延迟走势（仪表盘图表） */
     tcpingSeries: protectedProcedure
       .input(z.object({
-        hours: z.number().min(1).max(24 * 30).default(24),
+        hours: z.number().min(1).max(24 * 3).default(24),
         bucketMinutes: z.number().min(1).max(60).default(1),
       }).optional())
       .query(async ({ input, ctx }) => {

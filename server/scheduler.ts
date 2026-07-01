@@ -9,6 +9,7 @@ import { recordHopTestResult } from "./hopTestState";
 import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatusNotifier";
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
+import { cleanOldAddressGeoCache } from "./hostGeo";
 
 type TimedOutForwardTest = {
   id: number;
@@ -245,8 +246,17 @@ async function runSelfTestTimeoutSweep() {
 
 async function runTcpingCleanup() {
   try {
-    await db.cleanOldTcpingStats(48);
-    await db.cleanOldHostProbeServiceStats(48);
+    await Promise.all([
+      db.cleanOldHostMetrics(72),
+      db.cleanOldTrafficStats(72),
+      db.cleanOldTrafficStatBuckets(72),
+      db.cleanOldTcpingStats(72),
+      db.cleanOldTunnelLatencyStats(72),
+      db.cleanOldForwardTests(72),
+      db.cleanOldForwardGroupEvents(72),
+      db.cleanOldHostProbeServiceStats(72),
+      cleanOldAddressGeoCache(),
+    ]);
   } catch (error) {
     console.error("[Scheduler] TCPing cleanup error:", error);
   }

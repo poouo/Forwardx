@@ -10,6 +10,8 @@ import { SCHEMA_DIALECT } from "../drizzle/schema";
 import { ENV } from "./env";
 
 export type DatabaseKind = "mysql" | "sqlite" | "postgresql";
+export const MYSQL_MIN_VERSION = "8.0.13";
+const MYSQL_MIN_VERSION_PARTS = [8, 0, 13] as const;
 
 export interface MysqlConfig {
   host: string;
@@ -114,6 +116,37 @@ function normalizePostgresql(config: PostgresqlConfig): PostgresqlConfig {
     database: config.database.trim(),
     ssl: !!config.ssl,
   };
+}
+
+function parseMysqlVersion(version: unknown) {
+  const match = String(version || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+}
+
+function isMysqlVersionSupported(version: readonly [number, number, number]) {
+  for (let i = 0; i < MYSQL_MIN_VERSION_PARTS.length; i += 1) {
+    if (version[i] > MYSQL_MIN_VERSION_PARTS[i]) return true;
+    if (version[i] < MYSQL_MIN_VERSION_PARTS[i]) return false;
+  }
+  return true;
+}
+
+function mysqlVersionValue(queryResult: any) {
+  const rows = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return row?.version ?? row?.["VERSION()"] ?? row?.["@@version"] ?? "";
+}
+
+export async function assertSupportedMysqlServer(query: (sqlText: string) => Promise<any>) {
+  const result = await query("SELECT VERSION() AS version");
+  const versionText = String(mysqlVersionValue(result) || "").trim();
+  const version = parseMysqlVersion(versionText);
+  if (!version || !isMysqlVersionSupported(version)) {
+    throw new Error(
+      `Unsupported MySQL server version ${versionText || "unknown"}. ForwardX requires MySQL ${MYSQL_MIN_VERSION} or later. MySQL 5.7 does not support the current metrics queries and default-value DDL syntax.`,
+    );
+  }
 }
 
 function normalizeSqlite(config: SqliteConfig): SqliteConfig {
@@ -365,6 +398,7 @@ export async function testMysqlConnection(config: MysqlConfig) {
   const conn = await mysql.createConnection(mysqlConnectionOptions(normalizeMysql(config)));
   try {
     await conn.ping();
+    await assertSupportedMysqlServer((sqlText) => conn.query(sqlText));
   } finally {
     await conn.end();
   }
@@ -421,6 +455,7 @@ export async function connectDatabase(config = readDatabaseConfig()) {
     const normalized = normalizeMysql(config.mysql);
     _pool = mysql.createPool(poolOptions(normalized));
     await _pool.query("SELECT 1");
+    await assertSupportedMysqlServer((sqlText) => _pool!.query(sqlText));
     _db = drizzleMysql(_pool) as Db;
     _kind = "mysql";
     console.log(`[Database] MySQL connected at ${normalized.host}:${normalized.port}/${normalized.database}`);

@@ -194,7 +194,7 @@ export async function getLatestHostProbeServiceStats(serviceIds: number[]) {
 export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; hostId?: number; hours?: number; limit?: number } = {}) {
   const ids = Array.from(new Set((opts.serviceIds || []).map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
   const hostId = Number(opts.hostId || 0);
-  const hours = clampPositiveInt(opts.hours, 24, 24 * 30);
+  const hours = clampPositiveInt(opts.hours, 24, 24 * 3);
   const limit = clampPositiveInt(opts.limit, 20_000, 100_000);
   const since = new Date(Date.now() - hours * 3600 * 1000);
   const q = quoteIdentifier;
@@ -226,7 +226,7 @@ export async function getHostProbeServiceSeries(opts: { serviceIds?: number[]; h
     recordedAt: rowDate(row.recordedAt),
   }));
 }
-export async function cleanOldHostProbeServiceStats(retainHours = 48) {
+export async function cleanOldHostProbeServiceStats(retainHours = 72) {
   const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
   await executeRaw(
     `DELETE FROM ${quoteIdentifier("host_probe_service_stats")} WHERE ${quoteIdentifier("recordedAt")} < ?`,

@@ -71,7 +71,7 @@ export const forwardGroupsRouter = router({
   latencySeries: protectedProcedure
     .input(z.object({
       groupId: z.number(),
-      hours: z.number().min(1).max(48).default(24),
+      hours: z.number().min(1).max(24 * 3).default(24),
     }))
     .query(async ({ input, ctx }) => {
       const group = await assertForwardGroupAccess(input.groupId, ctx.user);

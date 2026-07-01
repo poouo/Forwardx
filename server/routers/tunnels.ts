@@ -389,10 +389,10 @@ export const tunnelsRouter = router({
       return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),
     latencySeries: protectedProcedure
-      .input(z.object({
-        tunnelId: z.number(),
-        hours: z.number().min(1).max(48).default(24),
-      }))
+    .input(z.object({
+      tunnelId: z.number(),
+      hours: z.number().min(1).max(24 * 3).default(24),
+    }))
       .query(async ({ input, ctx }) => {
         const tunnel = await db.getTunnelById(input.tunnelId);
         if (!tunnel) throw new Error("Tunnel not found");
@@ -790,22 +790,27 @@ export const tunnelsRouter = router({
         if (keyChanged) {
           const existingExtraHostIds = (existingExtraExitNodes || []).map((node: any) => Number(node.hostId)).filter((hostId: number) => Number.isFinite(hostId) && hostId > 0);
           const nextExtraHostIds = extraExitNodes.map((node) => Number(node.hostId)).filter((hostId) => Number.isFinite(hostId) && hostId > 0);
-          const affectedHopHostIds = Array.from(new Set([...existingHopHostIds, ...normalizedRequestedHopIds, ...existingExtraHostIds, ...nextExtraHostIds]));
-          const hasMultiHopRuntime = existingHopHostIds.length >= 3 || normalizedRequestedHopIds.length >= 3;
-          if (hasMultiHopRuntime) {
-            await refreshTunnelRuntimeHosts(id, affectedHopHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
-          } else {
-            clearTunnelRuntimeStatus(id);
-            await pushTunnelEndpointRefresh({ ...tunnel, entryHostId, exitHostId }, "tunnel-updated");
-          }
-          const endpointHostIds = [tunnel.entryHostId, tunnel.exitHostId, entryHostId, exitHostId, ...existingExtraHostIds, ...nextExtraHostIds]
-            .map((hostId) => Number(hostId))
-            .filter((hostId) => Number.isFinite(hostId) && hostId > 0);
-          for (const hostId of Array.from(new Set(endpointHostIds))) {
-            pushAgentRefresh(hostId, "tunnel-runtime-sync");
-          }
-          if (tunnel.entryHostId !== entryHostId) pushAgentRefresh(tunnel.entryHostId, "tunnel-updated-old-entry");
-          if (tunnel.exitHostId !== exitHostId) pushAgentRefresh(tunnel.exitHostId, "tunnel-updated-old-exit");
+          const previousEntryHostIds = await getTunnelEntryTestHostIds(tunnel);
+          const nextEntryHostIds = await getTunnelEntryTestHostIds({
+            ...tunnel,
+            ...data,
+            entryHostId,
+            exitHostId,
+            entryGroupId: (data as any).entryGroupId !== undefined ? (data as any).entryGroupId : (tunnel as any).entryGroupId,
+          });
+          const affectedHostIds = [
+            ...previousEntryHostIds,
+            ...nextEntryHostIds,
+            (tunnel as any).entryHostId,
+            (tunnel as any).exitHostId,
+            entryHostId,
+            exitHostId,
+            ...existingHopHostIds,
+            ...normalizedRequestedHopIds,
+            ...existingExtraHostIds,
+            ...nextExtraHostIds,
+          ];
+          await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
         }
         return { success: true, reset: keyChanged };
       }),

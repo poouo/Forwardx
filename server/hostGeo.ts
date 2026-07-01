@@ -284,6 +284,14 @@ async function writePersistentGeoCache(cacheKey: string, value: AddressGeoLookup
   ).catch(() => undefined);
 }
 
+export async function cleanOldAddressGeoCache() {
+  const cutoff = epochSeconds(new Date(Date.now() - ADDRESS_GEO_STALE_MS));
+  await executeRaw(
+    `DELETE FROM ${quoteIdentifier("ip_geo_cache")} WHERE ${quoteIdentifier("expiresAt")} <= ?`,
+    [cutoff],
+  ).catch(() => undefined);
+}
+
 async function lookupAddressGeoUncached(normalized: string, cacheKey: string): Promise<AddressGeoLookupResult | null> {
   const staleEntry = await readPersistentGeoCacheEntry(cacheKey);
   if (staleEntry && staleEntry.freshUntil > Date.now()) return staleEntry.value;

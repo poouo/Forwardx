@@ -15,6 +15,7 @@ import {
   getMigrationJob,
   getPanelDataSummary,
   importMigrationSnapshot,
+  pruneMigrationSnapshotForPanelBackup,
   summarizeMigrationSnapshot,
   startPanelMigration as beginPanelMigration,
 } from "../migration";
@@ -2070,14 +2071,15 @@ export const systemRouter = router({
     .mutation(async ({ input }) => {
       const settings = await db.getAllSettings();
       const snapshot = await exportMigrationSnapshot(settings.panelPublicUrl || undefined);
-      const backup = encryptMigrationSnapshot(snapshot, input.password);
+      const backupSnapshot = pruneMigrationSnapshotForPanelBackup(snapshot);
+      const backup = encryptMigrationSnapshot(backupSnapshot, input.password);
       const timestamp = new Date(snapshot.exportedAt).toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      console.info(`[Backup] Exported encrypted panel backup users=${snapshot.tables.users?.length || 0} hosts=${snapshot.tables.hosts?.length || 0}`);
+      console.info(`[Backup] Exported encrypted panel backup users=${backupSnapshot.tables.users?.length || 0} hosts=${backupSnapshot.tables.hosts?.length || 0}`);
       return {
         filename: `forwardx-panel-backup-v${APP_VERSION}-${timestamp}.fwxbak`,
         mimeType: "application/json;charset=utf-8",
         content: JSON.stringify(backup, null, 2),
-        summary: summarizeMigrationSnapshot(snapshot),
+        summary: summarizeMigrationSnapshot(backupSnapshot),
       };
     }),
 

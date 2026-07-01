@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.128"
+var Version = "2.2.129"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -47,6 +47,10 @@ const trafficCollectInterval = 3 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
 const runtimeActionRefreshInterval = 5 * time.Minute
 const agentLogRetention = 72 * time.Hour
+const agentLogMaxBytes int64 = 8 * 1024 * 1024
+const agentLogTailBytes int64 = 4 * 1024 * 1024
+const agentMemoryCacheRetention = 24 * time.Hour
+const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
 const actionBacklogHeartbeatDelay = 30 * time.Second
@@ -116,6 +120,7 @@ var runtimeProxyLogSignatures = map[string]string{}
 var dnsWatchHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9\-_.]*[A-Za-z0-9])?$`)
 var agentReportLogMu sync.Mutex
 var agentReportLogAt = map[string]time.Time{}
+var agentMemoryPrunedAt time.Time
 var actionPendingCount int64
 var heartbeatWakeCh = make(chan struct{}, 1)
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
@@ -675,6 +680,7 @@ func register(cfg Config) error {
 }
 
 func heartbeat(cfg Config) (int, error) {
+	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
 	primaryIP := ipv4
 	if primaryIP == "" {
@@ -5378,6 +5384,7 @@ func shouldLogAgentReport(key string, interval time.Duration) bool {
 	now := time.Now()
 	agentReportLogMu.Lock()
 	defer agentReportLogMu.Unlock()
+	pruneTimeMapLocked(agentReportLogAt, now, agentMemoryCacheRetention, agentReportLogMaxKeys)
 	last := agentReportLogAt[key]
 	if !last.IsZero() && now.Sub(last) < interval {
 		return false
@@ -5417,6 +5424,17 @@ func logf(format string, args ...any) {
 	pruneAgentLocalLogsLocked()
 }
 
+func pruneAgentRuntimeData() {
+	pruneAgentLocalLogs()
+	pruneAgentMemoryCaches()
+}
+
+func pruneAgentLocalLogs() {
+	agentLogMu.Lock()
+	defer agentLogMu.Unlock()
+	pruneAgentLocalLogsLocked()
+}
+
 func pruneAgentLocalLogsLocked() {
 	if time.Since(agentLogPrunedAt) < time.Hour {
 		return
@@ -5432,6 +5450,13 @@ func pruneAgentLocalLogsLocked() {
 }
 
 func pruneAgentLocalLogFile(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+	if info.Size() > agentLogMaxBytes {
+		trimLogFileTail(path, agentLogTailBytes)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -5456,14 +5481,115 @@ func pruneAgentLocalLogFile(path string) {
 		}
 		changed = true
 	}
-	if !changed {
+	if changed {
+		if len(retained) == 0 {
+			_ = os.WriteFile(path, nil, 0644)
+		} else {
+			_ = os.WriteFile(path, []byte(strings.Join(retained, "\n")+"\n"), 0644)
+		}
+	}
+	if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > agentLogMaxBytes {
+		trimLogFileTail(path, agentLogTailBytes)
+	}
+}
+
+func trimLogFileTail(path string, keepBytes int64) {
+	if keepBytes <= 0 || keepBytes > int64(int(keepBytes)) {
 		return
 	}
-	if len(retained) == 0 {
-		_ = os.WriteFile(path, nil, 0644)
+	f, err := os.Open(path)
+	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(strings.Join(retained, "\n")+"\n"), 0644)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() || info.Size() <= keepBytes {
+		return
+	}
+	buf := make([]byte, int(keepBytes))
+	n, err := f.ReadAt(buf, info.Size()-keepBytes)
+	if err != nil && err != io.EOF {
+		return
+	}
+	data := buf[:n]
+	if idx := bytes.IndexByte(data, '\n'); idx >= 0 && idx+1 < len(data) {
+		data = data[idx+1:]
+	}
+	_ = os.WriteFile(path, data, 0644)
+}
+
+func pruneAgentMemoryCaches() {
+	now := time.Now()
+	if !agentMemoryPrunedAt.IsZero() && now.Sub(agentMemoryPrunedAt) < time.Hour {
+		return
+	}
+	agentMemoryPrunedAt = now
+	agentReportLogMu.Lock()
+	pruneTimeMapLocked(agentReportLogAt, now, agentMemoryCacheRetention, agentReportLogMaxKeys)
+	agentReportLogMu.Unlock()
+	actionEpochMu.Lock()
+	pruneIssuedAtMapLocked(latestActionIssuedAt, now, agentMemoryCacheRetention)
+	actionEpochMu.Unlock()
+	countingChainMu.Lock()
+	pruneTimeMapLocked(countingChainCheckedAt, now, agentMemoryCacheRetention, 0)
+	for key := range countingChainSignatures {
+		if _, ok := countingChainCheckedAt[key]; !ok {
+			delete(countingChainSignatures, key)
+		}
+	}
+	countingChainMu.Unlock()
+	runtimeActionMu.Lock()
+	for key, state := range runtimeActionCache {
+		if state.CheckedAt.IsZero() || now.Sub(state.CheckedAt) > agentMemoryCacheRetention {
+			delete(runtimeActionCache, key)
+		}
+	}
+	runtimeActionMu.Unlock()
+}
+
+func pruneTimeMapLocked(values map[string]time.Time, now time.Time, maxAge time.Duration, maxKeys int) {
+	if len(values) == 0 {
+		return
+	}
+	for key, seenAt := range values {
+		if seenAt.IsZero() || now.Sub(seenAt) > maxAge {
+			delete(values, key)
+		}
+	}
+	if maxKeys <= 0 || len(values) <= maxKeys {
+		return
+	}
+	type entry struct {
+		key string
+		at  time.Time
+	}
+	entries := make([]entry, 0, len(values))
+	for key, seenAt := range values {
+		entries = append(entries, entry{key: key, at: seenAt})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
+	for i := 0; i < len(entries)-maxKeys; i++ {
+		delete(values, entries[i].key)
+	}
+}
+
+func pruneIssuedAtMapLocked(values map[string]int64, now time.Time, maxAge time.Duration) {
+	for key, issuedAt := range values {
+		at := unixMillisOrSecondsTime(issuedAt)
+		if at.IsZero() || now.Sub(at) > maxAge {
+			delete(values, key)
+		}
+	}
+}
+
+func unixMillisOrSecondsTime(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	if value > 1_000_000_000_000 {
+		return time.UnixMilli(value)
+	}
+	return time.Unix(value, 0)
 }
 
 func fatal(format string, args ...any) {

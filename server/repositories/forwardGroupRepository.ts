@@ -11,7 +11,7 @@ import {
 import { pushAgentRefresh, requestHostTcping } from "../agentEvents";
 import { appendPanelLog } from "../_core/panelLogger";
 import { getDdnsSettings, updateDdnsRecord, updateDdnsRecordValues } from "../ddns";
-import { getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, countAll, inList, quoteIdentifier } from "../dbCompat";
 import {
   createForwardRule,
@@ -533,6 +533,14 @@ export async function getForwardGroupEvents(groupId: number, limit = 50) {
     .where(eq(forwardGroupEvents.groupId, groupId))
     .orderBy(desc(forwardGroupEvents.createdAt))
     .limit(limit);
+}
+
+export async function cleanOldForwardGroupEvents(retainHours = 72) {
+  const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
+  await executeRaw(
+    `DELETE FROM ${quoteIdentifier("forward_group_events")} WHERE ${quoteIdentifier("createdAt")} < ?`,
+    [cutoff],
+  );
 }
 
 async function withForwardChainTargetLabel(test: any, template: any) {

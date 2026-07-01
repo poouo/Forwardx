@@ -3186,7 +3186,7 @@ function RulesContent() {
     return map;
   }, [ruleTargetGeoRows]);
   const trafficRangeLabel = "近 24h";
-  const trafficMetricHeaderLabels = ["累计", "24H", "延迟"];
+  const trafficMetricHeaderLabels = ["近 3 天", "24H", "延迟"];
 
   const { data: totalTrafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
@@ -4701,7 +4701,7 @@ function RulesContent() {
     return (
       <span
         className="flex items-center gap-1 whitespace-nowrap text-xs font-medium tabular-nums text-foreground"
-        title={`累计入向 ${formatBytes(Number(t.bytesIn || 0))} / 出向 ${formatBytes(Number(t.bytesOut || 0))}`}
+        title={`近 3 天入向 ${formatBytes(Number(t.bytesIn || 0))} / 出向 ${formatBytes(Number(t.bytesOut || 0))}`}
       >
         <ArrowRightLeft className="h-3 w-3 shrink-0 text-muted-foreground" />
         {formatBytes(total)}
@@ -4712,16 +4712,16 @@ function RulesContent() {
   const renderRuleTotalTraffic = (rule: any) => {
     const t = totalTrafficByRule.get(rule.id);
     if (!t) {
-      return <span className="text-xs text-muted-foreground">累计 —</span>;
+      return <span className="text-xs text-muted-foreground">近 3 天 —</span>;
     }
     const total = Number(t.bytesIn || 0) + Number(t.bytesOut || 0);
     return (
       <span
         className="flex items-center gap-1 whitespace-nowrap text-xs font-medium tabular-nums text-foreground"
-        title={`累计入向 ${formatBytes(t.bytesIn)} / 出向 ${formatBytes(t.bytesOut)}`}
+        title={`近 3 天入向 ${formatBytes(t.bytesIn)} / 出向 ${formatBytes(t.bytesOut)}`}
       >
         <ArrowRightLeft className="h-3 w-3 shrink-0 text-muted-foreground" />
-        累计 {formatBytes(total)}
+        近 3 天 {formatBytes(total)}
       </span>
     );
   };
@@ -5047,7 +5047,7 @@ function RulesContent() {
 
             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-border/40 pt-1.5 text-xs">
               <div className="min-w-0">
-                <div className="mb-0.5 text-[10px] text-muted-foreground">累计流量</div>
+                <div className="mb-0.5 text-[10px] text-muted-foreground">近 3 天流量</div>
                 {renderMobileRuleTotalTraffic(rule)}
               </div>
               <div className="min-w-0 text-right">
@@ -5133,7 +5133,7 @@ function RulesContent() {
               {renderRuleDailyTrafficValue(rule, "out")}
             </div>
             <div className="min-w-0">
-              <div className="mb-1 text-muted-foreground">累计流量</div>
+              <div className="mb-1 text-muted-foreground">近 3 天流量</div>
               {renderMobileRuleTotalTraffic(rule)}
             </div>
             <div className="min-w-0">
@@ -5377,7 +5377,7 @@ function RulesContent() {
               <p className="text-[10px] sm:text-xs text-muted-foreground">入向流量</p>
               <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                 <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">近 3 天</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(totalTrafficTotals.bytesIn)}
@@ -5413,7 +5413,7 @@ function RulesContent() {
               <p className="text-[10px] sm:text-xs text-muted-foreground">出向流量</p>
               <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                 <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">近 3 天</span>
                   <AnimatedStatValue
                     as="span"
                     value={formatBytes(totalTrafficTotals.bytesOut)}
@@ -5449,7 +5449,7 @@ function RulesContent() {
               <p className="text-[10px] sm:text-xs text-muted-foreground">连接次数</p>
               <div className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                 <div className="inline-flex min-w-0 items-baseline gap-1">
-                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">累计</span>
+                  <span className="text-[9px] font-medium uppercase text-muted-foreground sm:text-[10px]">近 3 天</span>
                   <AnimatedStatValue
                     as="span"
                     value={totalTrafficTotals.connections.toLocaleString()}

@@ -91,3 +91,11 @@ export async function getForwardTestById(id: number) {
   return rows[0];
 }
 
+export async function cleanOldForwardTests(retainHours = 72) {
+  const cutoff = Math.floor((Date.now() - retainHours * 3600 * 1000) / 1000);
+  await executeRaw(
+    `DELETE FROM ${quoteIdentifier("forward_tests")} WHERE ${quoteIdentifier("updatedAt")} < ?`,
+    [cutoff],
+  );
+}
+

@@ -14,12 +14,13 @@ import {
   type InsertTrafficBillingConfig,
 } from "../../drizzle/schema";
 import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
-import { getSetting } from "./settingsRepository";
+import { getSetting, setSetting } from "./settingsRepository";
 import { getUserById } from "./userRepository";
 
 const GB_BYTES = 1024 ** 3;
 const MILLI_CENTS_PER_CENT = 1000;
 const BILLING_DENOMINATOR = 100n * BigInt(MILLI_CENTS_PER_CENT);
+const TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER = "traffic-billing-rule-usage-v1";
 
 export type TrafficBillingResourceType = "host" | "tunnel";
 
@@ -76,6 +77,62 @@ async function getHistoricalRuleTrafficBytes(ruleId: number) {
   return Number(rows[0]?.totalBytes || 0);
 }
 
+export async function backfillTrafficBillingRuleUsageFromStats() {
+  if (await getSetting(TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER)) return { skipped: true, inserted: 0 };
+  const db = await getDb();
+  if (!db) return { skipped: true, inserted: 0 };
+
+  const usageRows = await db.select().from(trafficBillingUsage);
+  let inserted = 0;
+  for (const usage of usageRows as any[]) {
+    const userId = Number(usage?.userId || 0);
+    const resourceType = String(usage?.resourceType || "") as TrafficBillingResourceType;
+    const resourceId = Number(usage?.resourceId || 0);
+    if (userId <= 0 || resourceId <= 0 || (resourceType !== "host" && resourceType !== "tunnel")) continue;
+
+    const existingRows = await db
+      .select({ ruleId: trafficBillingRuleUsage.ruleId })
+      .from(trafficBillingRuleUsage)
+      .where(and(
+        eq(trafficBillingRuleUsage.resourceType, resourceType),
+        eq(trafficBillingRuleUsage.resourceId, resourceId),
+      ));
+    const existingRuleIds = new Set((existingRows as any[]).map((row) => Number(row.ruleId || 0)));
+    const ruleConditions: any[] = [eq(forwardRules.userId, userId)];
+    if (resourceType === "host") {
+      ruleConditions.push(eq(forwardRules.hostId, resourceId));
+      ruleConditions.push(sql`(${forwardRules.tunnelId} IS NULL OR ${forwardRules.tunnelId} = 0)`);
+    } else {
+      ruleConditions.push(eq(forwardRules.tunnelId, resourceId));
+    }
+    const ruleRows = await db
+      .select({ id: forwardRules.id })
+      .from(forwardRules)
+      .where(and(...ruleConditions));
+
+    for (const rule of ruleRows as any[]) {
+      const ruleId = Number(rule?.id || 0);
+      if (ruleId <= 0 || existingRuleIds.has(ruleId)) continue;
+      const totalBytes = Math.max(0, await getHistoricalRuleTrafficBytes(ruleId));
+      if (totalBytes <= 0) continue;
+      await db.insert(trafficBillingRuleUsage).values({
+        userId,
+        ruleId,
+        resourceType,
+        resourceId,
+        totalBytes,
+        billedGb: Math.ceil(totalBytes / GB_BYTES),
+        pendingMilliCents: 0,
+        settled: false,
+        updatedAt: nowDate(),
+      } as any);
+      existingRuleIds.add(ruleId);
+      inserted += 1;
+    }
+  }
+  await setSetting(TRAFFIC_BILLING_RULE_USAGE_BACKFILL_MARKER, String(Math.floor(Date.now() / 1000)));
+  return { skipped: false, inserted };
+}
 export async function isTrafficBillingEnabled() {
   return (await getSetting("trafficBillingEnabled")) === "true";
 }
