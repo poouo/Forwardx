@@ -1744,7 +1744,7 @@ export async function replaceForwardGroupMembers(groupId: number, members: Forwa
       await refreshTunnelsUsingEntryGroup(groupId);
     }
   } else {
-    await syncForwardGroupRules(groupId, groupMode === "chain" ? { validatePorts: false, createMissing: false } : {});
+    await syncForwardGroupRules(groupId, groupMode === "chain" ? { validatePorts: false } : {});
     if (groupMode === "chain") await refreshForwardChainRuntime(groupId, "forward-chain-members-updated");
   }
 }

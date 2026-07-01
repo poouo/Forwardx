@@ -7,6 +7,7 @@ import { ENV } from "../env";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import { getSessionKindField, inferLegacySessionKind, normalizeSessionKind, type SessionKind } from "../session";
+import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
 
 export interface AuthSession {
   kind: SessionKind;
@@ -104,6 +105,25 @@ export async function createContext({ req, res }: CreateExpressContextOptions): 
   let user: User | null = null;
   let authSession: AuthSession | null = null;
   let authFailureReason: TrpcContext["authFailureReason"] = null;
+
+  if (isDevPanelMode()) {
+    const devUser = await db.getUserByUsername(DEV_ADMIN_USERNAME).catch(() => null);
+    if (devUser) {
+      return {
+        req,
+        res,
+        user: devUser,
+        authSession: {
+          kind: "browser",
+          sid: "dev-panel",
+          token: "dev-panel",
+          legacy: false,
+          source: "cookie",
+        },
+        authFailureReason: null,
+      };
+    }
+  }
 
   const session = getRequestToken(req);
   if (session.token) {

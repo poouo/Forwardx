@@ -20,6 +20,7 @@ import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsReposi
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { markLocalSetupComplete } from "./setupState";
+import { seedDevPanelData } from "./devPanel";
 
 export { getDb } from "./dbRuntime";
 export * from "./repositories/userRepository";
@@ -116,6 +117,9 @@ export async function initDatabase() {
     });
     await backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
       console.warn("[Database] Manual entitlement backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await seedDevPanelData().catch((error) => {
+      console.warn("[DevPanel] Seed data skipped:", error instanceof Error ? error.message : String(error));
     });
     await maintainCurrentPostgresqlDatabase().catch((error) => {
       console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));

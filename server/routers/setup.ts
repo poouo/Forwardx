@@ -26,6 +26,7 @@ import { getAllSettings, setSettings } from "../repositories/settingsRepository"
 import { getMigrationJob, startPanelMigration } from "../migration";
 import { hasLocalSetupCompleteMarker, markLocalSetupComplete } from "../setupState";
 import { startBackgroundServices } from "../backgroundServices";
+import { isDevPanelMode } from "../devPanel";
 
 let setupSchemaReadyKey = "";
 
@@ -91,6 +92,25 @@ async function ensureSetupSchemaReady() {
 }
 
 async function setupStatus() {
+  if (isDevPanelMode()) {
+    return {
+      databaseConfigured: true,
+      databaseConnected: true,
+      databaseType: "sqlite" as const,
+      activeDatabaseType: getDatabaseKind(),
+      schemaReady: true,
+      hasAdmin: true,
+      hasExistingData: false,
+      existingData: null,
+      setupDataChoice: "new-panel",
+      setupComplete: true,
+      config: maskDatabaseConfig(readDatabaseConfig()),
+      needsRestart: false,
+      defaultSqlitePath: defaultSqlitePath(),
+      error: null,
+    };
+  }
+
   const config = readDatabaseConfig();
   if (!config) {
     return {

@@ -24,6 +24,7 @@ const agentApiRouter = Router();
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
+const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 
 function migratedAgentPayload(panelUrl: string) {
@@ -89,9 +90,14 @@ async function openAgentEventStream(input: {
   if (agentVersion) {
     const upgradedFirewallCounterAgent = isAgentVersionAtLeast(agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION)
       && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_FIREWALL_COUNTER_REFRESH_VERSION);
+    const upgradedProtocolGuardBackendAgent = isAgentVersionAtLeast(agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)
+      && !isAgentVersionAtLeast((host as any).agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION);
     await db.updateHostHeartbeat(host.id, { agentVersion } as any);
     if (upgradedFirewallCounterAgent) {
       await resetAgentRuntimeStateAfterReconnect(host.id, "agent-firewall-counter-upgrade");
+    }
+    if (upgradedProtocolGuardBackendAgent) {
+      await resetAgentRuntimeStateAfterReconnect(host.id, "agent-protocol-guard-backend-upgrade");
     }
     const requestedTargetVersion = (host as any).agentUpgradeTargetVersion || AGENT_VERSION;
     const agentUpgradeCompleted = (host as any).agentUpgradeRequested

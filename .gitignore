@@ -18,6 +18,7 @@ docs/.vitepress/.temp/
 *.db-wal
 *.db-shm
 data/
+.dev/
 
 # IDE
 .vscode/

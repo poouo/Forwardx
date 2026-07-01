@@ -869,29 +869,29 @@ function HostSummaryCard({
   className?: string;
 }) {
   return (
-    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
-      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
-      <CardContent className="relative p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">{title}</p>
-            <AnimatedStatValue
-              as="p"
-              value={value}
-              loading={loading}
-              cacheKey={cacheKey}
-              fallbackValue="0"
-              className="break-words text-2xl font-bold tracking-tight tabular-nums"
-              title={value}
-            />
-            {subtitle && (
-              <p className="break-words text-xs text-muted-foreground/80" title={subtitle}>{subtitle}</p>
-            )}
-          </div>
-          <div className={`hidden h-12 w-12 shrink-0 items-center justify-center rounded-2xl shadow-sm sm:flex ${tone}`}>
-            <Icon className="h-6 w-6 text-white" />
-          </div>
+    <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+      <div className={`absolute inset-0 opacity-[0.035] transition-opacity group-hover:opacity-[0.07] ${tone}`} />
+      <CardContent className="relative min-h-[112px] p-3.5 sm:min-h-[112px] sm:p-4">
+        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
+        <div className={`absolute right-4 top-4 hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
+          <Icon className="h-5 w-5 text-white" />
         </div>
+        <div className="absolute inset-x-4 top-1/2 -translate-x-3 -translate-y-1/2 px-8 text-center sm:-translate-x-4 sm:px-14">
+          <AnimatedStatValue
+            as="p"
+            value={value}
+            loading={loading}
+            cacheKey={cacheKey}
+            fallbackValue="0"
+            className="break-words text-2xl font-bold leading-none tracking-tight tabular-nums sm:text-[28px]"
+            title={value}
+          />
+        </div>
+        {subtitle && (
+          <p className="absolute bottom-3 right-4 max-w-[55%] truncate text-right text-xs leading-5 text-muted-foreground/80" title={subtitle}>
+            {subtitle}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -904,6 +904,7 @@ function HostTrafficDirectionStat({
   tone,
   loading,
   cacheKey,
+  className,
 }: {
   label: string;
   value: string;
@@ -911,22 +912,23 @@ function HostTrafficDirectionStat({
   tone: string;
   loading?: boolean;
   cacheKey: string;
+  className?: string;
 }) {
   return (
-    <div className="rounded-md border border-border/40 bg-background/35 px-3 py-3 shadow-sm">
-      <div className="flex items-center gap-3">
-        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md shadow-sm sm:h-12 sm:w-12 ${tone}`}>
-          <Icon className="h-5 w-5 text-white sm:h-6 sm:w-6" />
+    <div className={`min-w-0 ${className || ""}`.trim()}>
+      <div className="flex items-center gap-2.5">
+        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg shadow-sm ${tone}`}>
+          <Icon className="h-4 w-4 text-white" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium tracking-wide text-muted-foreground">{label}</p>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
           <AnimatedStatValue
             as="p"
             value={value}
             loading={loading}
             cacheKey={cacheKey}
             fallbackValue="0 B/s"
-            className="mt-1 break-words text-lg font-bold leading-tight tabular-nums sm:text-xl"
+            className="mt-0.5 whitespace-nowrap text-base font-semibold leading-tight tabular-nums sm:text-lg"
             title={value}
           />
         </div>
@@ -953,20 +955,20 @@ function HostTrafficSummaryCard({
   className?: string;
 }) {
   return (
-    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
-      <div className="absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] bg-gradient-to-br from-primary/10 to-transparent" />
-      <CardContent className="relative p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">{title}</p>
+    <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+      <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
+      <CardContent className="relative flex h-full flex-col justify-start p-3.5 sm:p-4">
+        <div className="flex min-h-0 items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1 pr-12">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
           </div>
-          <div className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary shadow-sm sm:flex">
+          <div className="pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
             <Icon className="h-5 w-5" />
           </div>
         </div>
-        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-2.5">
           <HostTrafficDirectionStat
-            label="入"
+            label="入向"
             value={inValue}
             loading={loading}
             cacheKey={`${cacheKey}.in`}
@@ -974,7 +976,7 @@ function HostTrafficSummaryCard({
             tone="bg-emerald-500"
           />
           <HostTrafficDirectionStat
-            label="出"
+            label="出向"
             value={outValue}
             loading={loading}
             cacheKey={`${cacheKey}.out`}
@@ -1717,14 +1719,6 @@ function HostsContent() {
 
         <TabsContent value="hosts" className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <HostTrafficSummaryCard
-            title="当前瞬时流量"
-            inValue={formatBytesPerSecond(hostSummary?.currentTrafficIn)}
-            outValue={formatBytesPerSecond(hostSummary?.currentTrafficOut)}
-            icon={ActivitySquare}
-            loading={isHostSummaryLoading && !hostSummary}
-            cacheKey="hosts.summary.currentTraffic"
-          />
           <HostSummaryCard
             title="在线状态"
             value={`${hostSummary?.onlineHosts ?? onlineCount} / ${hostSummary?.totalHosts ?? displayHosts.length}`}
@@ -1738,6 +1732,14 @@ function HostsContent() {
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
             loading={isHostSummaryLoading && !hostSummary}
             cacheKey="hosts.summary.online"
+          />
+          <HostTrafficSummaryCard
+            title="当前瞬时流量"
+            inValue={formatBytesPerSecond(hostSummary?.currentTrafficIn)}
+            outValue={formatBytesPerSecond(hostSummary?.currentTrafficOut)}
+            icon={ActivitySquare}
+            loading={isHostSummaryLoading && !hostSummary}
+            cacheKey="hosts.summary.currentTraffic"
           />
           <HostTrafficSummaryCard
             title="累计流量"
@@ -2425,6 +2427,9 @@ function HostsContent() {
                       <Label className="text-sm font-semibold">协议屏蔽</Label>
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
+                    <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                      协议屏蔽支持自定义加密隧道，以及 realm / gost / socat / nginx 等用户态转发；iptables / nftables 内核转发暂不支持。
+                    </p>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
                         <span className="min-w-0 truncate text-sm font-medium">HTTP</span>

@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.125"
+var Version = "2.2.127"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -58,6 +58,7 @@ const protocolGuardConfirmations = 3
 const protocolGuardWindowStep = 64
 const protocolGuardTLSMinRecordSize = 64
 const protocolGuardSOCKS5MaxMethods = 16
+const protocolGuardUDPIdleTimeout = 2 * time.Minute
 const agentVerboseEnv = "FORWARDX_AGENT_VERBOSE_LOG"
 
 const agentLogDir = "/var/log/forwardx-agent"
@@ -259,11 +260,11 @@ type dnsWatchItem struct {
 }
 
 type dnsChangeReport struct {
-	Host string   `json:"host"`
-	Scope string  `json:"scope,omitempty"`
-	RefID int     `json:"refId,omitempty"`
-	Old  []string `json:"old,omitempty"`
-	New  []string `json:"new,omitempty"`
+	Host  string   `json:"host"`
+	Scope string   `json:"scope,omitempty"`
+	RefID int      `json:"refId,omitempty"`
+	Old   []string `json:"old,omitempty"`
+	New   []string `json:"new,omitempty"`
 }
 
 type agentUpgrade struct {
@@ -422,6 +423,9 @@ type guardRule struct {
 	ListenPort           int            `json:"listenPort"`
 	TargetIP             string         `json:"targetIp"`
 	TargetPort           int            `json:"targetPort"`
+	BackendPort          int            `json:"backendPort"`
+	BackendForwardType   string         `json:"backendForwardType"`
+	Protocol             string         `json:"protocol"`
 	Policy               protocolPolicy `json:"policy"`
 	ProxyProtocolReceive bool           `json:"proxyProtocolReceive"`
 	ProxyProtocolSend    bool           `json:"proxyProtocolSend"`
@@ -3244,9 +3248,11 @@ func normalizeRuntimeProtocol(protocol string) string {
 }
 
 type protocolGuardServer struct {
-	rule guardRule
-	ln   net.Listener
-	done chan struct{}
+	rule     guardRule
+	tcpLn    net.Listener
+	udpConn  net.PacketConn
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 type lookingGlassTask struct {
@@ -3854,6 +3860,9 @@ func guardSignature(rule guardRule) string {
 		strconv.Itoa(rule.ListenPort),
 		rule.TargetIP,
 		strconv.Itoa(rule.TargetPort),
+		strconv.Itoa(rule.BackendPort),
+		strings.TrimSpace(rule.BackendForwardType),
+		normalizeRuntimeProtocol(rule.Protocol),
 		strconv.FormatBool(rule.Policy.BlockHTTP),
 		strconv.FormatBool(rule.Policy.BlockSocks),
 		strconv.FormatBool(rule.Policy.BlockTLS),
@@ -3861,6 +3870,14 @@ func guardSignature(rule guardRule) string {
 		strconv.FormatBool(rule.ProxyProtocolSend),
 		strconv.Itoa(normalizeProxyProtocolVersion(rule.ProxyProtocolVersion)),
 	}, "|")
+}
+
+func guardTCPEnabled(rule guardRule) bool {
+	return normalizeRuntimeProtocol(rule.Protocol) != "udp"
+}
+
+func guardUDPEnabled(rule guardRule) bool {
+	return normalizeRuntimeProtocol(rule.Protocol) != "tcp"
 }
 
 func syncProtocolGuards(cfg Config, rules []guardRule) {
@@ -3896,17 +3913,78 @@ func syncProtocolGuards(cfg Config, rules []guardRule) {
 }
 
 func startProtocolGuard(cfg Config, rule guardRule) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(rule.ListenPort))
-	if err != nil {
-		logf("protocol guard listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
+	prepareProtocolGuardPort(rule)
+	server := &protocolGuardServer{rule: rule, done: make(chan struct{})}
+	if guardTCPEnabled(rule) {
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(rule.ListenPort))
+		if err != nil {
+			logf("protocol guard tcp listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
+			return
+		}
+		server.tcpLn = ln
+	}
+	if guardUDPEnabled(rule) {
+		conn, err := net.ListenPacket("udp", ":"+strconv.Itoa(rule.ListenPort))
+		if err != nil {
+			if server.tcpLn != nil {
+				_ = server.tcpLn.Close()
+			}
+			logf("protocol guard udp listen failed rule=%d port=%d: %v", rule.RuleID, rule.ListenPort, err)
+			return
+		}
+		server.udpConn = conn
+	}
+	if server.tcpLn == nil && server.udpConn == nil {
+		logf("protocol guard no protocol enabled rule=%d port=%d protocol=%s", rule.RuleID, rule.ListenPort, rule.Protocol)
 		return
 	}
-	server := &protocolGuardServer{rule: rule, ln: ln, done: make(chan struct{})}
 	protocolGuardMu.Lock()
 	protocolGuards[guardID(rule)] = server
 	protocolGuardMu.Unlock()
-	go server.serve(cfg)
-	logf("protocol guard started rule=%d tunnel=%d listen=:%d target=%s:%d proxyReceive=%v proxySend=%v proxyVersion=%d", rule.RuleID, rule.TunnelID, rule.ListenPort, rule.TargetIP, rule.TargetPort, rule.ProxyProtocolReceive, rule.ProxyProtocolSend, normalizeProxyProtocolVersion(rule.ProxyProtocolVersion))
+	if server.tcpLn != nil {
+		go server.serveTCP(cfg)
+	}
+	if server.udpConn != nil {
+		go server.serveUDP()
+	}
+	logf("protocol guard started rule=%d tunnel=%d listen=:%d protocol=%s target=%s:%d proxyReceive=%v proxySend=%v proxyVersion=%d", rule.RuleID, rule.TunnelID, rule.ListenPort, normalizeRuntimeProtocol(rule.Protocol), rule.TargetIP, rule.TargetPort, rule.ProxyProtocolReceive, rule.ProxyProtocolSend, normalizeProxyProtocolVersion(rule.ProxyProtocolVersion))
+}
+
+func prepareProtocolGuardPort(rule guardRule) {
+	if rule.ListenPort <= 0 {
+		return
+	}
+	port := strconv.Itoa(rule.ListenPort)
+	stopFXPByListenPort(rule.ListenPort)
+	backendPort := rule.BackendPort
+	if backendPort <= 0 {
+		backendPort = rule.TargetPort
+	}
+	if backendPort != rule.ListenPort {
+		cleanupGostRuntimeIfPortBusy(rule.ListenPort)
+	}
+	for _, cmd := range managedListenerCleanupCmds(port) {
+		_ = runShell(cmd)
+	}
+	backendType := strings.TrimSpace(rule.BackendForwardType)
+	if backendType == "" || backendPort == rule.ListenPort {
+		for _, name := range []string{
+			"forwardx-socat-" + port,
+			"forwardx-socat-tcp-" + port,
+			"forwardx-socat-udp-" + port,
+			"forwardx-realm-" + port,
+		} {
+			_ = runShell(managedServiceCleanupShell(name))
+		}
+		_ = runShell("rm -f /etc/forwardx/realm/forwardx-realm-" + port + ".toml /etc/forwardx/realm/forwardx-realm-" + port + ".toml.sha256 2>/dev/null || true")
+	}
+	if backendType != "nginx" || backendPort == rule.ListenPort {
+		_ = runShell(managedNginxCleanupShell(port))
+	}
+	_ = runShell(nftPortCleanupCmd(port, "both"))
+	for _, binary := range iptablesAgentBinaries() {
+		_ = runShell(iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
+	}
 }
 
 func stopProtocolGuard(id string) {
@@ -3919,14 +3997,25 @@ func stopProtocolGuard(id string) {
 	if server == nil {
 		return
 	}
-	close(server.done)
-	_ = server.ln.Close()
+	server.close()
 	logf("protocol guard stopped rule=%d port=%d", server.rule.RuleID, server.rule.ListenPort)
 }
 
-func (s *protocolGuardServer) serve(cfg Config) {
+func (s *protocolGuardServer) close() {
+	s.doneOnce.Do(func() {
+		close(s.done)
+		if s.tcpLn != nil {
+			_ = s.tcpLn.Close()
+		}
+		if s.udpConn != nil {
+			_ = s.udpConn.Close()
+		}
+	})
+}
+
+func (s *protocolGuardServer) serveTCP(cfg Config) {
 	for {
-		conn, err := s.ln.Accept()
+		conn, err := s.tcpLn.Accept()
 		if err != nil {
 			select {
 			case <-s.done:
@@ -3942,16 +4031,19 @@ func (s *protocolGuardServer) serve(cfg Config) {
 
 func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 	defer client.Close()
-	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, 4096)
-	n, err := client.Read(buf)
-	_ = client.SetReadDeadline(time.Time{})
-	if err != nil {
-		return
-	}
-	first := buf[:n]
 	proxyInfo := proxyProtocolInfoFromConn(client)
+	first := []byte(nil)
 	if s.rule.ProxyProtocolReceive {
+		_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 4096)
+		n, err := client.Read(buf)
+		_ = client.SetReadDeadline(time.Time{})
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			first = append(first, buf[:n]...)
+		}
 		parsed, remaining, ok, err := consumeProxyProtocolFromConn(client, first, 5*time.Second)
 		if err != nil {
 			logf("protocol guard proxy receive failed rule=%d: %v", s.rule.RuleID, err)
@@ -3961,17 +4053,6 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 			proxyInfo = parsed
 			first = remaining
 		}
-	}
-	if s.rule.Policy.enabled() {
-		sample, proto, blocked := detectBlockedProtocolWithConfirmations(client, first, s.rule.Policy)
-		first = sample
-		if blocked && proto != "" {
-			reportProtocolBlock(cfg, s.rule, proto)
-			return
-		}
-	} else if proto := detectBlockedProtocol(first, s.rule.Policy); proto != "" {
-		reportProtocolBlock(cfg, s.rule, proto)
-		return
 	}
 	target, err := net.DialTimeout("tcp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)), 10*time.Second)
 	if err != nil {
@@ -3987,15 +4068,184 @@ func (s *protocolGuardServer) handleConn(cfg Config, client net.Conn) {
 			}
 		}
 	}
-	if len(first) > 0 {
-		if _, err := target.Write(first); err != nil {
-			return
-		}
-	}
 	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(target, client); errCh <- err }()
+	go func() { errCh <- s.copyTCPToTargetWithGuard(cfg, client, target, first) }()
 	go func() { _, err := io.Copy(client, target); errCh <- err }()
 	<-errCh
+}
+
+func (s *protocolGuardServer) copyTCPToTargetWithGuard(cfg Config, client net.Conn, target net.Conn, initial []byte) error {
+	sample := make([]byte, 0, protocolGuardSampleMaxBytes)
+	firstData := true
+	inspect := func(chunk []byte) (string, bool) {
+		if !s.rule.Policy.enabled() || len(chunk) == 0 || len(sample) >= protocolGuardSampleMaxBytes {
+			return "", false
+		}
+		remaining := protocolGuardSampleMaxBytes - len(sample)
+		if remaining > len(chunk) {
+			remaining = len(chunk)
+		}
+		sample = append(sample, chunk[:remaining]...)
+		proto := detectBlockedProtocol(sample, s.rule.Policy)
+		return proto, proto != ""
+	}
+	writeChunk := func(chunk []byte) error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		if firstData {
+			firstData = false
+			if _, err := target.Write(chunk); err != nil {
+				return err
+			}
+			if proto, blocked := inspect(chunk); blocked {
+				go reportProtocolBlock(cfg, s.rule, proto)
+				return fmt.Errorf("protocol blocked: %s", proto)
+			}
+			return nil
+		}
+		if proto, blocked := inspect(chunk); blocked {
+			go reportProtocolBlock(cfg, s.rule, proto)
+			return fmt.Errorf("protocol blocked: %s", proto)
+		}
+		_, err := target.Write(chunk)
+		return err
+	}
+	if err := writeChunk(initial); err != nil {
+		return err
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := client.Read(buf)
+		if n > 0 {
+			if writeErr := writeChunk(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+type protocolGuardUDPSession struct {
+	target net.Conn
+	last   time.Time
+}
+
+func (s *protocolGuardServer) serveUDP() {
+	sessions := map[string]*protocolGuardUDPSession{}
+	var sessionMu sync.Mutex
+	closeSessions := func() {
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
+		for key, session := range sessions {
+			_ = session.target.Close()
+			delete(sessions, key)
+		}
+	}
+	cleanupTicker := time.NewTicker(30 * time.Second)
+	stopCleanup := make(chan struct{})
+	defer func() {
+		close(stopCleanup)
+		cleanupTicker.Stop()
+		closeSessions()
+	}()
+	go func() {
+		for {
+			select {
+			case <-s.done:
+				closeSessions()
+				return
+			case <-stopCleanup:
+				return
+			case <-cleanupTicker.C:
+				now := time.Now()
+				sessionMu.Lock()
+				for key, session := range sessions {
+					if now.Sub(session.last) <= protocolGuardUDPIdleTimeout {
+						continue
+					}
+					_ = session.target.Close()
+					delete(sessions, key)
+				}
+				sessionMu.Unlock()
+			}
+		}
+	}()
+
+	buf := make([]byte, 65535)
+	for {
+		n, clientAddr, err := s.udpConn.ReadFrom(buf)
+		if err != nil {
+			select {
+			case <-s.done:
+				return
+			default:
+				logf("protocol guard udp read rule=%d: %v", s.rule.RuleID, err)
+				return
+			}
+		}
+		if n <= 0 || clientAddr == nil {
+			continue
+		}
+		packet := append([]byte(nil), buf[:n]...)
+		key := clientAddr.String()
+		sessionMu.Lock()
+		session := sessions[key]
+		if session == nil {
+			target, err := net.DialTimeout("udp", net.JoinHostPort(s.rule.TargetIP, strconv.Itoa(s.rule.TargetPort)), 10*time.Second)
+			if err != nil {
+				sessionMu.Unlock()
+				if shouldLogAgentReport(fmt.Sprintf("protocol-guard-udp-dial:%d", s.rule.RuleID), agentReportLogInterval) {
+					logf("protocol guard udp dial target rule=%d: %v", s.rule.RuleID, err)
+				}
+				continue
+			}
+			session = &protocolGuardUDPSession{target: target, last: time.Now()}
+			sessions[key] = session
+			go s.copyUDPToClient(key, clientAddr, target, sessions, &sessionMu)
+		}
+		session.last = time.Now()
+		target := session.target
+		sessionMu.Unlock()
+		if _, err := target.Write(packet); err != nil {
+			sessionMu.Lock()
+			if sessions[key] == session {
+				delete(sessions, key)
+			}
+			sessionMu.Unlock()
+			_ = target.Close()
+			if shouldLogAgentReport(fmt.Sprintf("protocol-guard-udp-write:%d", s.rule.RuleID), agentReportLogInterval) {
+				logf("protocol guard udp write target rule=%d client=%s: %v", s.rule.RuleID, key, err)
+			}
+		}
+	}
+}
+
+func (s *protocolGuardServer) copyUDPToClient(key string, clientAddr net.Addr, target net.Conn, sessions map[string]*protocolGuardUDPSession, sessionMu *sync.Mutex) {
+	buf := make([]byte, 65535)
+	for {
+		_ = target.SetReadDeadline(time.Now().Add(protocolGuardUDPIdleTimeout))
+		n, err := target.Read(buf)
+		if err != nil {
+			break
+		}
+		if n > 0 {
+			_, _ = s.udpConn.WriteTo(buf[:n], clientAddr)
+		}
+		sessionMu.Lock()
+		if session := sessions[key]; session != nil && session.target == target {
+			session.last = time.Now()
+		}
+		sessionMu.Unlock()
+	}
+	sessionMu.Lock()
+	if session := sessions[key]; session != nil && session.target == target {
+		delete(sessions, key)
+	}
+	sessionMu.Unlock()
+	_ = target.Close()
 }
 
 type proxyProtocolInfo struct {
