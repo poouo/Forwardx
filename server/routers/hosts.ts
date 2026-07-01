@@ -696,6 +696,16 @@ export const hostsRouter = router({
           () => db.getLatestHostMetrics(input.hostId, input.limit),
         );
       }),
+    latestMetricsSummary: protectedProcedure
+      .input(z.object({ hostIds: z.array(z.number()).max(500).optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const hostIds = Array.from(new Set((input?.hostIds || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0)));
+        if (hostIds.length === 0) return [];
+        for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
+        return db.getLatestHostMetricRows(hostIds);
+      }),
     traffic: protectedProcedure
       .input(z.object({ hostId: z.number() }))
       .query(async ({ input, ctx }) => {

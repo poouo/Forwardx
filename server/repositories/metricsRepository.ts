@@ -73,6 +73,105 @@ export async function getLatestHostMetrics(hostId: number, limit = 60) {
   return db.select().from(hostMetrics).where(eq(hostMetrics.hostId, hostId)).orderBy(desc(hostMetrics.recordedAt)).limit(limit);
 }
 
+export async function getLatestHostMetricRows(hostIds?: number[]) {
+  const db = await getDb();
+  if (!db) return [];
+  const ids = Array.from(new Set((hostIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (ids.length === 0) return [];
+  const q = quoteIdentifier;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await queryRaw<any>(
+    `SELECT ranked.${q("id")},
+            ranked.${q("hostId")},
+            ranked.${q("cpuUsage")},
+            ranked.${q("memoryUsage")},
+            ranked.${q("memoryUsed")},
+            ranked.${q("swapUsage")},
+            ranked.${q("swapUsed")},
+            ranked.${q("swapTotal")},
+            ranked.${q("networkIn")},
+            ranked.${q("networkOut")},
+            ranked.${q("diskUsage")},
+            ranked.${q("diskUsed")},
+            ranked.${q("diskTotal")},
+            ranked.${q("uptime")},
+            ranked.${q("recordedAt")},
+            ranked.rn
+       FROM (
+         SELECT hm.${q("id")},
+                hm.${q("hostId")},
+                hm.${q("cpuUsage")},
+                hm.${q("memoryUsage")},
+                hm.${q("memoryUsed")},
+                hm.${q("swapUsage")},
+                hm.${q("swapUsed")},
+                hm.${q("swapTotal")},
+                hm.${q("networkIn")},
+                hm.${q("networkOut")},
+                hm.${q("diskUsage")},
+                hm.${q("diskUsed")},
+                hm.${q("diskTotal")},
+                hm.${q("uptime")},
+                hm.${q("recordedAt")},
+                ROW_NUMBER() OVER (
+                  PARTITION BY hm.${q("hostId")}
+                  ORDER BY hm.${q("recordedAt")} DESC, hm.${q("id")} DESC
+                ) AS rn
+           FROM ${q("host_metrics")} hm
+          WHERE hm.${q("hostId")} IN (${placeholders})
+       ) ranked
+      WHERE ranked.rn <= 2
+      ORDER BY ranked.${q("hostId")} ASC, ranked.rn ASC`,
+    ids,
+  ).catch(() => []);
+  const mapped = (rows as any[])
+    .map((row) => ({
+      id: Number(row?.id || 0),
+      hostId: Number(row?.hostId || 0),
+      cpuUsage: row?.cpuUsage == null ? null : numeric(row.cpuUsage),
+      memoryUsage: row?.memoryUsage == null ? null : numeric(row.memoryUsage),
+      memoryUsed: row?.memoryUsed == null ? null : numeric(row.memoryUsed),
+      swapUsage: row?.swapUsage == null ? null : numeric(row.swapUsage),
+      swapUsed: row?.swapUsed == null ? null : numeric(row.swapUsed),
+      swapTotal: row?.swapTotal == null ? null : numeric(row.swapTotal),
+      networkIn: row?.networkIn == null ? null : numeric(row.networkIn),
+      networkOut: row?.networkOut == null ? null : numeric(row.networkOut),
+      diskUsage: row?.diskUsage == null ? null : numeric(row.diskUsage),
+      diskUsed: row?.diskUsed == null ? null : numeric(row.diskUsed),
+      diskTotal: row?.diskTotal == null ? null : numeric(row.diskTotal),
+      uptime: row?.uptime == null ? null : numeric(row.uptime),
+      recordedAt: rowDate(row?.recordedAt),
+      rn: Math.max(1, Math.floor(Number(row?.rn || 0))),
+    }))
+    .filter((row) => row.hostId > 0);
+  const byHost = new Map<number, typeof mapped>();
+  for (const row of mapped) {
+    const bucket = byHost.get(row.hostId);
+    if (bucket) bucket.push(row);
+    else byHost.set(row.hostId, [row]);
+  }
+  return Array.from(byHost.values()).map((bucket) => {
+    const sorted = bucket.sort((a, b) => a.rn - b.rn);
+    const latest = sorted[0];
+    const previous = sorted[1];
+    if (!latest) return null;
+    let networkSpeedIn: number | null = null;
+    let networkSpeedOut: number | null = null;
+    if (latest && previous) {
+      const elapsedSeconds = Math.max(1, (latest.recordedAt.getTime() - previous.recordedAt.getTime()) / 1000);
+      networkSpeedIn = Math.max(0, numeric(latest.networkIn) - numeric(previous.networkIn)) / elapsedSeconds;
+      networkSpeedOut = Math.max(0, numeric(latest.networkOut) - numeric(previous.networkOut)) / elapsedSeconds;
+    }
+    return {
+      ...latest,
+      networkSpeedIn,
+      networkSpeedOut,
+    };
+  }).filter(Boolean);
+}
+
 type LatestHostMetricSnapshot = {
   id: number;
   hostId: number;
