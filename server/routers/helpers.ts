@@ -116,6 +116,7 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
     ...extraExitHostIds,
   ];
   const uniqueHostIds = Array.from(new Set(hostIds));
+  const tunnelName = String(tunnel?.name || `隧道 #${tunnel?.id || "-"}`).trim();
   const pushed = uniqueHostIds.map((hostId) => ({
     hostId,
     pushed: pushAgentRefresh(hostId, `${reason}-host-${hostId}`),
@@ -123,7 +124,7 @@ export async function pushTunnelEndpointRefresh(tunnel: any, reason: string) {
   const allPushed = pushed.every((item) => item.pushed);
   appendPanelLog(
     allPushed ? "info" : "warn",
-    `[Tunnel] refresh tunnel=${tunnel.id} reason=${reason} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
+    `[Tunnel] refresh tunnel=${tunnel.id} name=${tunnelName} reason=${reason} entry=${Number(tunnel?.entryHostId || 0) || "-"} exit=${Number(tunnel?.exitHostId || 0) || "-"} loadBalance=${!!tunnel?.loadBalanceEnabled} hops=${hopHostIds.join("->") || "-"} extraExits=${extraExitHostIds.join(",") || "-"} hosts=${pushed.map((item) => `${item.hostId}:${item.pushed}`).join(",") || "-"}`,
   );
   const entryHostIdSet = new Set(entryHostIds);
   return {

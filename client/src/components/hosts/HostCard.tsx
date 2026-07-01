@@ -375,6 +375,9 @@ export default function HostCard({
                   className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? "bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" : "bg-destructive shadow-sm shadow-destructive/50"}`}
                   title={isOnline ? "在线" : "离线"}
                 />
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${isOnline ? "border-border/50 bg-background/45" : "border-muted-foreground/20 bg-muted/20"}`}>
+                  <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
+                </span>
                 <span className="min-w-0 truncate text-sm font-semibold leading-5" title={hostName}>{hostName}</span>
                 <span
                   className={`shrink-0 rounded border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none text-muted-foreground ${
@@ -410,10 +413,15 @@ export default function HostCard({
         ) : (
           <div className={compact ? "space-y-1.5" : "space-y-2"}>
             <div className={`min-w-0 rounded-md border px-2.5 ${compact ? "py-1.5" : "py-2"} ${infoPanelClass}`}>
-              <p className="truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
-                <span className="mr-1.5 text-muted-foreground">地址</span>
-                {hostPrimaryAddressText(host)}
-              </p>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border ${isOnline ? "border-border/50 bg-background/45" : "border-muted-foreground/20 bg-muted/20"}`}>
+                  <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
+                </span>
+                <p className="min-w-0 truncate font-mono text-xs leading-5" title={hostPrimaryAddressText(host)}>
+                  <span className="mr-1.5 text-muted-foreground">地址</span>
+                  {hostPrimaryAddressText(host)}
+                </p>
+              </div>
               <div className={`mt-1 ${isOnline ? "" : "opacity-70 grayscale"}`}>
                 <HostRegionBadge host={host} />
               </div>

@@ -4113,6 +4113,8 @@ type AiRuleTrafficSummary = {
   bytesIn: number;
   bytesOut: number;
   connections: number;
+  latestLatencyMs?: number | null;
+  latestLatencyIsTimeout?: boolean;
 };
 
 type AiRuleFilters = {
@@ -4324,8 +4326,8 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
   const ranked = (matched as any[])
     .map((rule: any) => ({ rule, summary: summaryByRuleId.get(Number(rule.id)) || emptyAiRuleTrafficSummary() }))
     .sort((a, b) => {
-      const av = aiRuleRankSortValue(metric, a.summary);
-      const bv = aiRuleRankSortValue(metric, b.summary);
+      const av = aiRuleRankSortValue(metric, a.summary, order);
+      const bv = aiRuleRankSortValue(metric, b.summary, order);
       if (av === bv) return Number(a.rule.id || 0) - Number(b.rule.id || 0);
       return order === "asc" ? av - bv : bv - av;
     });

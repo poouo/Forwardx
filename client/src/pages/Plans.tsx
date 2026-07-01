@@ -609,7 +609,8 @@ export default function Plans() {
     () => plans.find((plan: any) => Number(plan.id) === Number(assignPlanId)) || null,
     [assignPlanId, plans],
   );
-  const assignPlanIsMonthly = Number(selectedAssignPlan?.durationDays || 0) === 30;
+  const selectedAssignPlanDurationDays = Number((selectedAssignPlan as any)?.durationDays || 0);
+  const assignPlanIsMonthly = selectedAssignPlanDurationDays === 30;
   const availableHosts = useMemo(() => hosts.filter((host: any) => !selectedHostIds.has(Number(host.id))), [hosts, selectedHostIds]);
   const availableTunnels = useMemo(() => tunnels.filter((tunnel: any) => !selectedTunnelIds.has(Number(tunnel.id))), [tunnels, selectedTunnelIds]);
   const availableForwardGroups = useMemo(() => forwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))), [forwardGroups, selectedForwardGroupIds]);
@@ -1272,7 +1273,7 @@ export default function Plans() {
                 </div>
               ) : (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                  当前套餐有效期为 {durationLabel(selectedAssignPlan.durationDays)}，将按套餐自身周期分配；如需其他周期，请先编辑套餐。
+                  当前套餐有效期为 {durationLabel(selectedAssignPlanDurationDays)}，将按套餐自身周期分配；如需其他周期，请先编辑套餐。
                 </div>
               )
             )}

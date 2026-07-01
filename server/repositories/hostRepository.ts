@@ -170,7 +170,7 @@ export async function getHostsForTrafficAutoReset(now = new Date()) {
   const db = await getDb();
   if (!db) return [];
   const rows = await db.select().from(hosts).where(eq(hosts.trafficAutoReset, true));
-  return rows.filter((host) => hostResetDueToday(host, now));
+  return rows.filter((host: any) => hostResetDueToday(host, now));
 }
 
 export async function markHostTrafficReset(hostId: number) {

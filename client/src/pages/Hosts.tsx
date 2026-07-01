@@ -58,7 +58,9 @@ import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
+  ArrowDownToLine,
   ArrowUpFromLine,
+  ArrowRightLeft,
   Plus,
   Trash2,
   Pencil,
@@ -709,34 +711,133 @@ function HostSummaryCard({
   value,
   subtitle,
   icon: Icon,
+  tone,
   loading,
   cacheKey,
+  className,
 }: {
   title: string;
   value: string;
-  subtitle: string;
+  subtitle?: string;
   icon: typeof ActivitySquare;
+  tone: string;
+  loading?: boolean;
+  cacheKey: string;
+  className?: string;
+}) {
+  return (
+    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
+      <CardContent className="relative p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">{title}</p>
+            <AnimatedStatValue
+              as="p"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue="0"
+              className="break-words text-2xl font-bold tracking-tight tabular-nums"
+              title={value}
+            />
+            {subtitle && (
+              <p className="break-words text-xs text-muted-foreground/80" title={subtitle}>{subtitle}</p>
+            )}
+          </div>
+          <div className={`hidden h-12 w-12 shrink-0 items-center justify-center rounded-2xl shadow-sm sm:flex ${tone}`}>
+            <Icon className="h-6 w-6 text-white" />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function HostTrafficDirectionStat({
+  label,
+  value,
+  icon: Icon,
+  tone,
+  loading,
+  cacheKey,
+}: {
+  label: string;
+  value: string;
+  icon: typeof ActivitySquare;
+  tone: string;
   loading?: boolean;
   cacheKey: string;
 }) {
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-      <CardContent className="flex min-h-[104px] items-center justify-between gap-3 p-4">
+    <div className="rounded-2xl border border-border/40 bg-background/35 px-4 py-4 shadow-sm">
+      <div className="flex items-center gap-4 sm:gap-5">
+        <div className={`flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center rounded-2xl shadow-sm ${tone}`}>
+          <Icon className="h-9 w-9 text-white" />
+        </div>
         <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">{title}</p>
+          <p className="text-[11px] font-medium tracking-wide text-muted-foreground">{label}</p>
           <AnimatedStatValue
             as="p"
             value={value}
             loading={loading}
             cacheKey={cacheKey}
-            fallbackValue="0"
-            className="mt-1 truncate text-xl font-semibold tabular-nums"
+            fallbackValue="0 B/s"
+            className="mt-1 break-words text-[2rem] font-bold leading-none tabular-nums sm:text-[2.25rem]"
             title={value}
           />
-          <p className="mt-1 truncate text-[11px] text-muted-foreground" title={subtitle}>{subtitle}</p>
         </div>
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/45 text-primary">
-          <Icon className="h-5 w-5" />
+      </div>
+    </div>
+  );
+}
+
+function HostTrafficSummaryCard({
+  title,
+  inValue,
+  outValue,
+  icon: Icon,
+  loading,
+  cacheKey,
+  className,
+}: {
+  title: string;
+  inValue: string;
+  outValue: string;
+  icon: typeof ActivitySquare;
+  loading?: boolean;
+  cacheKey: string;
+  className?: string;
+}) {
+  return (
+    <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
+      <div className="absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] bg-gradient-to-br from-primary/10 to-transparent" />
+      <CardContent className="relative p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">{title}</p>
+          </div>
+          <div className="hidden h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+            <Icon className="h-6 w-6" />
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <HostTrafficDirectionStat
+            label="入"
+            value={inValue}
+            loading={loading}
+            cacheKey={`${cacheKey}.in`}
+            icon={ArrowDownToLine}
+            tone="bg-emerald-500"
+          />
+          <HostTrafficDirectionStat
+            label="出"
+            value={outValue}
+            loading={loading}
+            cacheKey={`${cacheKey}.out`}
+            icon={ArrowUpFromLine}
+            tone="bg-amber-500"
+          />
         </div>
       </CardContent>
     </Card>
@@ -1134,7 +1235,7 @@ function HostsContent() {
           ddnsEnabled: form.ddnsEnabled,
           ddnsDomain: form.ddnsDomain.trim(),
           ddnsIpVersion: form.ddnsIpVersion,
-          ddnsRecordType: form.ddnsIpVersion === "ipv6" ? "AAAA" : "A",
+          ddnsRecordType: (form.ddnsIpVersion === "ipv6" ? "AAAA" : "A") as "A" | "AAAA",
         }
       : {};
     const protocolPolicyPayload = user?.role === "admin"
@@ -1462,32 +1563,38 @@ function HostsContent() {
         </TabsList>
 
         <TabsContent value="hosts" className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <HostSummaryCard
-              title="当前瞬时流量"
-              value={formatBytesPerSecond(hostSummary?.currentTrafficTotal)}
-              subtitle={`入 ${formatBytesPerSecond(hostSummary?.currentTrafficIn)} / 出 ${formatBytesPerSecond(hostSummary?.currentTrafficOut)}`}
-              icon={ActivitySquare}
-              loading={isHostSummaryLoading && !hostSummary}
-              cacheKey="hosts.summary.currentTraffic"
-            />
-            <HostSummaryCard
-              title="在线状态"
-              value={`${hostSummary?.onlineHosts ?? onlineCount} / ${hostSummary?.totalHosts ?? displayHosts.length}`}
-              subtitle={`${hostSummary?.measuredHosts ?? 0} 台主机有实时流量样本`}
-              icon={Server}
-              loading={isHostSummaryLoading && !hostSummary}
-              cacheKey="hosts.summary.online"
-            />
-            <HostSummaryCard
-              title="累计流量"
-              value={formatBytes(hostSummary?.totalTraffic)}
-              subtitle={`入 ${formatBytes(hostSummary?.totalTrafficIn)} / 出 ${formatBytes(hostSummary?.totalTrafficOut)}`}
-              icon={ArrowUpFromLine}
-              loading={isHostSummaryLoading && !hostSummary}
-              cacheKey="hosts.summary.totalTraffic"
-            />
-          </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <HostTrafficSummaryCard
+            title="当前瞬时流量"
+            inValue={formatBytesPerSecond(hostSummary?.currentTrafficIn)}
+            outValue={formatBytesPerSecond(hostSummary?.currentTrafficOut)}
+            icon={ActivitySquare}
+            loading={isHostSummaryLoading && !hostSummary}
+            cacheKey="hosts.summary.currentTraffic"
+          />
+          <HostSummaryCard
+            title="在线状态"
+            value={`${hostSummary?.onlineHosts ?? onlineCount} / ${hostSummary?.totalHosts ?? displayHosts.length}`}
+            subtitle={hostSummary
+              ? (() => {
+                const offlineCount = Math.max(0, (hostSummary?.totalHosts ?? displayHosts.length) - (hostSummary?.onlineHosts ?? onlineCount));
+                return offlineCount > 0 ? `离线 ${offlineCount} 台` : "全部在线";
+              })()
+              : "状态正常"}
+            icon={Server}
+            tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
+            loading={isHostSummaryLoading && !hostSummary}
+            cacheKey="hosts.summary.online"
+          />
+          <HostTrafficSummaryCard
+            title="累计流量"
+            inValue={formatBytes(hostSummary?.totalTrafficIn)}
+            outValue={formatBytes(hostSummary?.totalTrafficOut)}
+            icon={ArrowRightLeft}
+            loading={isHostSummaryLoading && !hostSummary}
+            cacheKey="hosts.summary.totalTraffic"
+          />
+        </div>
       {/* Content */}
       {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />
@@ -1603,7 +1710,7 @@ function HostsContent() {
         ) : (
           /* ========== 表格式布局 ========== */
           <>
-            <AutoAnimateContainer className="grid grid-cols-1 gap-4 sm:hidden">
+            <AutoAnimateContainer className="grid grid-cols-1 gap-3 sm:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
                   key={host.id}
@@ -1627,8 +1734,8 @@ function HostsContent() {
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
-                      <TableHead>名称</TableHead>
+                      <TableHead className="w-[64px] whitespace-nowrap text-center">状态</TableHead>
+                      <TableHead className="min-w-[220px]">主机</TableHead>
                       <TableHead className="min-w-[220px]">地址</TableHead>
                       <TableHead className="hidden lg:table-cell">端口区间</TableHead>
                       <TableHead className="hidden md:table-cell">系统</TableHead>
@@ -1643,8 +1750,8 @@ function HostsContent() {
                       const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
                       return (
                       <TableRow key={host.id}>
-                        <TableCell className="w-[72px] text-center">
-                          <div className="flex items-center justify-center">
+                        <TableCell className="w-[64px] text-center">
+                          <div className="flex items-center justify-center" title={host.isOnline ? "在线" : "离线"}>
                             {host.isOnline ? (
                               <span className="h-2.5 w-2.5 rounded-full bg-chart-2 shadow-sm shadow-chart-2/50 animate-pulse" />
                             ) : (
@@ -1653,9 +1760,23 @@ function HostsContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Server className="h-4 w-4 text-muted-foreground" />
-                            <span className="font-medium">{host.name}</span>
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/45 text-muted-foreground">
+                              <Server className="h-4 w-4" />
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="min-w-0 truncate font-medium" title={host.name}>{host.name}</span>
+                                {host.agentVersion && (
+                                  <span className="shrink-0 rounded border border-border/50 bg-muted/35 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground">
+                                    v{host.agentVersion}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                                <HostRegionBadge host={host} compact />
+                              </div>
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell>
@@ -1666,7 +1787,6 @@ function HostsContent() {
                                 <span className="min-w-0 max-w-[260px] break-all">{item.value}</span>
                               </div>
                             ))}
-                            <HostRegionBadge host={host} compact />
                           </div>
                         </TableCell>
                         <TableCell className="hidden lg:table-cell">

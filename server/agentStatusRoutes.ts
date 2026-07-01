@@ -161,6 +161,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     const { ruleId, tunnelId, statusType, isRunning } = req.body;
     const rawMessage = typeof req.body?.message === "string" ? req.body.message.trim() : "";
     const message = rawMessage.length > 300 ? `${rawMessage.slice(0, 300)}...` : rawMessage;
+    const hostLogText = `host=${host.id} name=${String(host.name || "-")}`;
     if (statusType === "tunnel") {
       if (typeof tunnelId !== "number") {
         res.status(400).json({ error: "tunnelId is required" });
@@ -186,7 +187,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         if (shouldLogStatus(`tunnel:${tunnelId}:extra:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
           appendPanelLog(
             !!isRunning ? "info" : "warn",
-            `[Tunnel] status tunnel=${tunnelId} extraExit=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+            `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} extraExit=${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
           );
         }
         res.json({ success: true });
@@ -210,7 +211,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
         if (shouldLogStatus(`tunnel:${tunnelId}:host:${host.id}`, `running=${!!isRunning}:ready=${readyCount}/${hopHostIds.length}`, !isRunning || !!message)) {
           appendPanelLog(
             !!isRunning ? "info" : "warn",
-            `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
+            `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} ready=${readyCount}/${hopHostIds.length}${message ? ` message=${message}` : ""}`,
           );
         }
         res.json({ success: true });
@@ -218,7 +219,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       }
       if (isForwardXTunnel(tunnel) && Number(tunnel.exitHostId) !== Number(host.id) && !isExtraExit) {
         if (shouldLogStatus(`tunnel:${tunnelId}:ignored:${host.id}`, `running=${!!isRunning}`, !!message)) {
-          appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
+          appendPanelLog("info", `[Tunnel] status ignored non-exit ForwardX tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`);
         }
         res.json({ success: true, ignored: true });
         return;
@@ -230,7 +231,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       if (shouldLogStatus(`tunnel:${tunnelId}:direct:${host.id}`, `running=${!!isRunning}:effective=${nextRunning}`, !nextRunning || !!message)) {
         appendPanelLog(
           nextRunning ? "info" : "warn",
-          `[Tunnel] status tunnel=${tunnelId} host=${host.id} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
+          `[Tunnel] status tunnel=${tunnelId} name=${String((tunnel as any)?.name || "-")} ${hostLogText} running=${!!isRunning} effective=${nextRunning}${message ? ` message=${message}` : ""}`,
         );
       }
       res.json({ success: true });
@@ -295,7 +296,7 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
     if (shouldLogStatus(`rule:${ruleId}:host:${host.id}`, `running=${!!isRunning}`, !isRunning || !!message)) {
       appendPanelLog(
         !!isRunning ? "info" : "warn",
-        `[Rule] status rule=${ruleId} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} host=${host.id} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        `[Rule] status rule=${ruleId} name=${String((rule as any).name || "-")} tunnel=${Number((rule as any).tunnelId || tunnelId || 0) || "-"} ${hostLogText} port=${Number((rule as any).sourcePort || 0) || "-"} type=${(rule as any).forwardType || "-"} proto=${(rule as any).protocol || "-"} target=${String((rule as any).targetIp || "-")}:${Number((rule as any).targetPort || 0) || "-"} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
       );
     }
     res.json({ success: true });

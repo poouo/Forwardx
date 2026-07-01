@@ -3185,7 +3185,7 @@ function RulesContent() {
     return map;
   }, [ruleTargetGeoRows]);
   const trafficRangeLabel = "近 24h";
-  const trafficMetricHeaderLabel = "累计 / 24H / 延迟";
+  const trafficMetricHeaderLabels = ["累计", "24H", "延迟"];
 
   const { data: totalTrafficSummary } = trpc.rules.trafficSummary.useQuery(
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
@@ -3221,9 +3221,9 @@ function RulesContent() {
         utils.dashboard.trafficBreakdown.invalidate(),
       ]);
       setResetTrafficTarget(null);
-      toast.success("规则流量统计已重置");
+      toast.success("规则统计数据已重置");
     },
-    onError: (err) => toast.error(err.message || "重置流量失败"),
+    onError: (err) => toast.error(err.message || "重置数据失败"),
   });
   useEffect(() => {
     if (visibleRuleIdsForMetrics.length === 0) {
@@ -3389,11 +3389,12 @@ function RulesContent() {
       { type: "group" as const, label: desktopRuleTypeLabels.group, rules: [] as any[] },
     ];
     const groupByType = new Map(groups.map((group) => [group.type, group]));
-    pagedRules.forEach((rule: any) => {
+    const groupedRules = ruleCategory === "all" ? filteredRules : pagedRules;
+    groupedRules.forEach((rule: any) => {
       groupByType.get(getRuleDisplayType(rule, forwardGroupById))?.rules.push(rule);
     });
     return groups.filter((group) => group.rules.length > 0);
-  }, [forwardGroupById, pagedRules]);
+  }, [filteredRules, forwardGroupById, pagedRules, ruleCategory]);
   const shouldGroupRuleCards = ruleCategory === "all";
 
   const getHostName = (hostId: number) => {
@@ -4735,16 +4736,21 @@ function RulesContent() {
     </div>
   );
 
-  const renderTableRuleCombinedTraffic = (rule: any) => (
-    <div className="flex min-w-0 items-center gap-2 whitespace-nowrap text-xs">
+  const renderTableRuleTotalTraffic = (rule: any) => (
+    <div className="min-w-0 whitespace-nowrap text-xs">
       {renderRuleTotalTraffic(rule)}
-      <span className="h-3 w-px shrink-0 bg-border/70" />
-      <span className="shrink-0 text-muted-foreground">24H</span>
-      <div className="flex min-w-0 items-center gap-1.5">
-        {renderRuleDailyTrafficValue(rule, "in")}
-        {renderRuleDailyTrafficValue(rule, "out")}
-      </div>
-      <span className="h-3 w-px shrink-0 bg-border/70" />
+    </div>
+  );
+
+  const renderTableRuleDailyTraffic = (rule: any) => (
+    <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-xs">
+      {renderRuleDailyTrafficValue(rule, "in")}
+      {renderRuleDailyTrafficValue(rule, "out")}
+    </div>
+  );
+
+  const renderTableRuleLatency = (rule: any) => (
+    <div className="min-w-0 whitespace-nowrap text-xs">
       {renderLatestLatency(rule)}
     </div>
   );
@@ -4811,7 +4817,7 @@ function RulesContent() {
           className="h-8 w-8"
           onClick={() => setResetTrafficTarget({ scope: "rule", rule })}
           disabled={resetTrafficMutation.isPending}
-          title={resetTrafficMutation.isPending ? "正在重置流量统计" : "重置规则流量"}
+          title={resetTrafficMutation.isPending ? "正在重置统计数据" : "重置规则数据"}
         >
           {resetTrafficMutation.isPending && resetTrafficTarget?.scope === "rule" && Number(resetTrafficTarget.rule?.id) === Number(rule.id)
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -4961,9 +4967,9 @@ function RulesContent() {
         <TableCell className="px-3 py-2 text-center">
           <Badge variant="secondary" className="whitespace-nowrap text-[10px]">{formatForwardRuleProtocol(rule.protocol)}</Badge>
         </TableCell>
-        <TableCell className="px-3 py-2">
-          {renderTableRuleCombinedTraffic(rule)}
-        </TableCell>
+        <TableCell className="px-3 py-2">{renderTableRuleTotalTraffic(rule)}</TableCell>
+        <TableCell className="px-3 py-2">{renderTableRuleDailyTraffic(rule)}</TableCell>
+        <TableCell className="px-3 py-2">{renderTableRuleLatency(rule)}</TableCell>
         <TableCell className="px-3 py-2 text-center">
           {supported ? (
             <Switch
@@ -5208,7 +5214,7 @@ function RulesContent() {
             {resetTrafficMutation.isPending && resetTrafficTarget?.scope === "all"
               ? <Loader2 className="h-4 w-4 animate-spin" />
               : <RotateCcw className="h-4 w-4" />}
-            重置流量
+            重置数据
           </Button>
           <Button
             variant="outline"
@@ -5541,7 +5547,7 @@ function RulesContent() {
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
-                    <Table className={user?.role === "admin" ? "min-w-[1660px] table-fixed" : "min-w-[1550px] table-fixed"}>
+                    <Table className={user?.role === "admin" ? "min-w-[1720px] table-fixed" : "min-w-[1610px] table-fixed"}>
                       <colgroup>
                         <col className="w-[56px]" />
                         <col className="w-[110px]" />
@@ -5551,7 +5557,9 @@ function RulesContent() {
                         <col className="w-[190px]" />
                         <col className="w-[170px]" />
                         <col className="w-[96px]" />
-                        <col className="w-[320px]" />
+                        <col className="w-[120px]" />
+                        <col className="w-[120px]" />
+                        <col className="w-[120px]" />
                         <col className="w-[70px]" />
                         <col className="w-[154px]" />
                       </colgroup>
@@ -5565,7 +5573,9 @@ function RulesContent() {
                           <TableHead>转发出口</TableHead>
                           <TableHead>链路</TableHead>
                           <TableHead className="text-center">协议</TableHead>
-                          <TableHead className="whitespace-nowrap">{trafficMetricHeaderLabel}</TableHead>
+                          {trafficMetricHeaderLabels.map((label) => (
+                            <TableHead key={label} className="whitespace-nowrap">{label}</TableHead>
+                          ))}
                           <TableHead className="text-center">开关</TableHead>
                           <TableHead className="text-right">操作</TableHead>
                         </TableRow>
@@ -5577,7 +5587,7 @@ function RulesContent() {
                             return (
                               <Fragment key={group.type}>
                                 <TableRow className="border-border/40 bg-muted/35 hover:bg-muted/50">
-                                  <TableCell colSpan={user?.role === "admin" ? 11 : 10} className="p-1">
+                                  <TableCell colSpan={user?.role === "admin" ? 13 : 12} className="p-1">
                                     {renderRuleGroupHeader(group, true)}
                                   </TableCell>
                                 </TableRow>
@@ -6436,11 +6446,11 @@ function RulesContent() {
       <Dialog open={!!resetTrafficTarget} onOpenChange={(open) => !open && !resetTrafficMutation.isPending && setResetTrafficTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{resetTrafficTarget?.scope === "all" ? "重置全部规则流量" : "重置规则流量"}</DialogTitle>
+            <DialogTitle>{resetTrafficTarget?.scope === "all" ? "重置全部规则数据" : "重置规则数据"}</DialogTitle>
             <DialogDescription>
               {resetTrafficTarget?.scope === "all"
-                ? `确认重置当前列表中 ${visibleRuleIdsForMetrics.length} 条规则的累计流量和最近 24H 流量？`
-                : `确认重置规则 "${resetTrafficTarget?.rule?.name || ""}" 的累计流量和最近 24H 流量？`}
+                ? `确认重置当前列表中 ${visibleRuleIdsForMetrics.length} 条规则的所有统计数据？`
+                : `确认重置规则 "${resetTrafficTarget?.rule?.name || ""}" 的所有统计数据？`}
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-5 text-amber-700 dark:text-amber-300">

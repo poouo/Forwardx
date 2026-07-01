@@ -141,15 +141,15 @@ export async function getHostProbeTasksForHost(hostId: number) {
   const rows = await db.select().from(hostProbeServices).where(eq(hostProbeServices.isEnabled, true)).orderBy(desc(hostProbeServices.createdAt));
   return rows
     .map(mapHostProbeService)
-    .filter((service) => serviceAppliesToHost(service, hostId))
-    .map((service) => ({
+    .filter((service: any) => serviceAppliesToHost(service, hostId))
+    .map((service: any) => ({
       serviceId: service.id,
       method: service.method === "ping" ? "ping" : "tcping",
       targetIp: service.targetIp,
       targetPort: service.method === "tcping" ? Number(service.targetPort || 0) : 0,
       intervalSeconds: service.intervalSeconds,
     }))
-    .filter((task) => task.serviceId > 0 && task.targetIp && (task.method === "ping" || task.targetPort > 0));
+    .filter((task: any) => task.serviceId > 0 && task.targetIp && (task.method === "ping" || task.targetPort > 0));
 }
 
 export async function insertHostProbeServiceStats(stats: InsertHostProbeServiceStat[]) {

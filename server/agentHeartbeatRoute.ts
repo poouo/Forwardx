@@ -52,6 +52,7 @@ const AGENT_DNS_RESOLVE_TTL_MS = 5 * 60 * 1000;
 const resolvedIpCache = new Map<number, { raw: string; ip: string }>();
 const resolvedIpCheckedAt = new Map<number, number>();
 const tunnelRouteLogCache = new Map<string, string>();
+const nginxRuntimeLogCache = new Map<number, string>();
 const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
@@ -1889,13 +1890,34 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
       ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
     ];
+    const nginxRuntimeVerifyCmd = () => (
+      `${NGINX_BIN} -p ${NGINX_CONFIG_DIR} -c ${NGINX_CONFIG_PATH} -t && ` +
+      `(if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl is-active --quiet ${shQuote(NGINX_SERVICE_NAME)}.service; ` +
+      `elif command -v rc-service >/dev/null 2>&1; then rc-service ${shQuote(NGINX_SERVICE_NAME)} status >/dev/null 2>&1; ` +
+      `elif [ -x /etc/init.d/${NGINX_SERVICE_NAME} ]; then /etc/init.d/${NGINX_SERVICE_NAME} status >/dev/null 2>&1; ` +
+      `else pgrep -f '${NGINX_BIN}.*${NGINX_CONFIG_PATH}' >/dev/null 2>&1; fi)`
+    );
     const buildNginxRuntimeSyncCmds = async () => {
+      const startedAt = Date.now();
       const upstreams: string[] = [];
       const servers: string[] = [];
       const certCmds: string[] = [];
       const certFingerprints: string[] = [];
       const certKeys = new Set<string>();
       const countingCmds: string[] = [];
+      const routeSummaries: string[] = [];
+      const warnNginxRoute = (message: string) => {
+        const key = `nginx:${Number(host.id)}:${message}`;
+        if (tunnelRouteLogCache.get(key) === message) return;
+        tunnelRouteLogCache.set(key, message);
+        appendPanelLog("warn", message);
+      };
+      const logNginxRoute = (message: string) => {
+        const key = `nginx:${Number(host.id)}:${message}`;
+        if (tunnelRouteLogCache.get(key) === message) return;
+        tunnelRouteLogCache.set(key, message);
+        appendPanelLog("info", message);
+      };
       const nginxTunnelCert = (tunnel: any) => {
         const id = Number(tunnel?.id || 0);
         const certPem = String(tunnel?.certPem || "").trim();
@@ -1944,6 +1966,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           if (useRuleGuard && proto === "tcp") continue;
           const upstream = `fwx_rule_${Number(rule.id)}_${proto}`;
           if (!addUpstreamServer(upstream, [{ addr: nginxEndpoint(processTarget(rule), rule.targetPort), primary: true }])) continue;
+          routeSummaries.push(`rule=${rule.id} port=${Number(rule.sourcePort)} proto=${proto} target=${processTarget(rule)}:${Number(rule.targetPort) || 0}`);
           addServer({
             name: `rule ${Number(rule.id)} ${proto}`,
             listenPort: Number(rule.sourcePort),
@@ -1967,9 +1990,17 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ? (tunnelExitEndpointById.get(tunnel.id)?.host || await tunnelExitHostAddress(tunnel))
             : await getExtraExitDialAddress(endpoint.node);
           const addr = nginxEndpoint(exitHost, endpoint.listenPort);
-          if (addr) endpoints.push({ addr, primary: endpoint.primary });
+          if (addr) {
+            endpoints.push({ addr, primary: endpoint.primary });
+            continue;
+          }
+          warnNginxRoute(`[NginxRuntime] missing endpoint host=${host.id} name=${String(host.name || "-")} tunnel=${tunnel.id} rule=${rule.id} exitHost=${endpoint.exitHostId} listenPort=${endpoint.listenPort || "-"} primary=${endpoint.primary}`);
         }
-        if (endpoints.length === 0) continue;
+        if (endpoints.length === 0) {
+          warnNginxRoute(`[NginxRuntime] skipped tunnel entry host=${host.id} name=${String(host.name || "-")} tunnel=${tunnel.id} rule=${rule.id} reason=no-endpoints`);
+          continue;
+        }
+        routeSummaries.push(`entry rule=${rule.id} tunnel=${tunnel.id} port=${Number(rule.sourcePort)} endpoints=${endpoints.map((item) => item.addr).join(",")}`);
         for (const proto of nginxProtocolsForRule(rule)) {
           const upstream = `fwx_tentry_${Number(rule.id)}_${proto}`;
           if (!addUpstreamServer(upstream, endpoints, (tunnel as any).loadBalanceStrategy)) continue;
@@ -1992,6 +2023,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         const cert = ensureNginxTunnelCert(tunnel);
         for (const exitPort of currentHostTunnelExitPortsForRule(rule, tunnel)) {
           nginxBusinessListenKeys.add(`${Number(host.id)}:${Number(exitPort)}`);
+          routeSummaries.push(`exit rule=${rule.id} tunnel=${tunnel.id} host=${Number(host.id)} listen=${Number(exitPort)} target=${processTarget(rule)}:${Number(rule.targetPort) || 0}`);
           for (const proto of nginxProtocolsForRule(rule)) {
             const upstream = `fwx_texit_${Number(tunnel.id)}_${Number(rule.id)}_${Number(exitPort)}_${proto}`;
             if (!addUpstreamServer(upstream, [{ addr: nginxEndpoint(processTarget(rule), rule.targetPort), primary: true }])) continue;
@@ -2030,6 +2062,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
 
       const hasServers = servers.length > 0;
+      const configSignature = crypto.createHash("sha256")
+        .update(JSON.stringify({ hostId: Number(host.id), upstreams, servers, certFingerprints, counting: countingCmds.length }))
+        .digest("hex");
+      const previousSignature = nginxRuntimeLogCache.get(Number(host.id));
+      if (previousSignature !== configSignature) {
+        nginxRuntimeLogCache.set(Number(host.id), configSignature);
+        logNginxRoute(`[NginxRuntime] host=${host.id} name=${String(host.name || "-")} servers=${servers.length} upstreams=${upstreams.length} certs=${certKeys.size} counting=${countingCmds.length} routes=${routeSummaries.length} elapsedMs=${Date.now() - startedAt}`);
+        for (const summary of routeSummaries.slice(0, 20)) {
+          logNginxRoute(`[NginxRuntime] host=${host.id} ${summary}`);
+        }
+        if (routeSummaries.length > 20) {
+          logNginxRoute(`[NginxRuntime] host=${host.id} routeDetailsOmitted=${routeSummaries.length - 20}`);
+        }
+      }
       const config = [
         `include ${NGINX_CONFIG_DIR}/modules.conf;`,
         "worker_processes auto;",
@@ -2089,11 +2135,18 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       cmds.push(...countingCmds);
       return cmds;
     };
+    let nginxRuntimeSyncCmdsPromise: Promise<string[]> | null = null;
+    const getNginxRuntimeSyncCmds = () => {
+      if (!nginxRuntimeSyncCmdsPromise) {
+        nginxRuntimeSyncCmdsPromise = buildNginxRuntimeSyncCmds();
+      }
+      return nginxRuntimeSyncCmdsPromise;
+    };
 
     const buildGostRuntimeSyncCmds = async () => [
       ...buildGostReloadCmds(),
       ...await buildTunnelReloadCmds(),
-      ...await buildNginxRuntimeSyncCmds(),
+      ...await getNginxRuntimeSyncCmds(),
       ...buildMimicRuntimeSyncCmds(),
     ];
 
@@ -2210,7 +2263,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           commands: [
-            ...(await buildNginxRuntimeSyncCmds()),
             ...buildNginxPortCleanupCmds(rule),
           ],
         };
@@ -2228,7 +2280,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: [
-              ...(await buildNginxRuntimeSyncCmds()),
               ...buildNginxPortCleanupCmds(rule),
             ],
           };
@@ -2747,9 +2798,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             networkInterface: hostInterface,
-            commands: [
-              ...(await buildNginxRuntimeSyncCmds()),
-            ],
+            commands: [nginxRuntimeVerifyCmd()],
           });
         } else if (rule.forwardType === "gost") {
           const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
@@ -2765,7 +2814,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               networkInterface: hostInterface,
-              commands: await buildNginxRuntimeSyncCmds(),
+              commands: [nginxRuntimeVerifyCmd()],
             });
             continue;
           }
@@ -2925,7 +2974,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             targetPort: rule.targetPort,
             protocol: rule.protocol,
             commands: [
-              ...(await buildNginxRuntimeSyncCmds()),
               ...buildNginxPortCleanupCmds(rule),
             ],
           });
@@ -2943,7 +2991,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               targetPort: rule.targetPort,
               protocol: rule.protocol,
               commands: [
-                ...(await buildNginxRuntimeSyncCmds()),
                 ...buildNginxPortCleanupCmds(rule),
               ],
             });

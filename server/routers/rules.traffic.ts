@@ -3,9 +3,20 @@ import { z } from "zod";
 import * as db from "../db";
 import { lookupAddressGeo } from "../hostGeo";
 import { requireRuleAccess } from "./helpers";
+import { appendPanelLog } from "../_core/panelLogger";
 import { createQueryCache } from "../queryCache";
 
 const trafficQueryCache = createQueryCache(500);
+
+function ruleResetLogItem(rule: any) {
+  const id = Number(rule?.id || 0) || "-";
+  const name = String(rule?.name || "").trim() || "-";
+  const host = Number(rule?.hostId || 0) || "-";
+  const tunnel = Number(rule?.tunnelId || 0) || "-";
+  const sourcePort = Number(rule?.sourcePort || 0) || "-";
+  const target = `${String(rule?.targetIp || "-").trim() || "-"}:${Number(rule?.targetPort || 0) || "-"}`;
+  return `${id}:${name} host=${host} tunnel=${tunnel} type=${rule?.forwardType || "-"} proto=${rule?.protocol || "-"} port=${sourcePort} target=${target}`;
+}
 
 export const trafficRulesRouter = router({
   resetTraffic: protectedProcedure
@@ -35,6 +46,12 @@ export const trafficRulesRouter = router({
       }
       targetRuleIds = Array.from(new Set(targetRuleIds)).sort((a, b) => a - b);
       if (targetRuleIds.length === 0) throw new Error("没有可重置的规则流量");
+      const rules = await Promise.all(targetRuleIds.slice(0, 20).map((ruleId) => db.getForwardRuleById(ruleId).catch(() => null)));
+      const omitted = Math.max(0, targetRuleIds.length - rules.filter(Boolean).length);
+      appendPanelLog(
+        "info",
+        `[RuleTraffic] reset scope=${input.scope} count=${targetRuleIds.length} rules=${rules.filter(Boolean).map(ruleResetLogItem).join(" | ") || "-"}${omitted > 0 ? ` omitted=${omitted}` : ""}`,
+      );
       const result = await db.resetRuleTrafficStats(targetRuleIds);
       trafficQueryCache.clear();
       return result;

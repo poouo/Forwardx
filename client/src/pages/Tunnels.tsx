@@ -46,7 +46,7 @@ import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } 
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
-import { getTunnelHopIds, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
+import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -466,6 +466,18 @@ function tunnelLatestStatLatencyMs(tunnel: any) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Number(value) : null;
 }
 
+function tunnelSeriesLatencyEntries(tunnel: any) {
+  if (!Array.isArray(tunnel?.latestLatencySeries)) return [];
+  return tunnel.latestLatencySeries
+    .map((item: any) => ({
+      key: normalizeTunnelLatencySeriesKey(item?.seriesKey),
+      label: tunnelLatencySeriesDisplayName(normalizeTunnelLatencySeriesKey(item?.seriesKey), item?.seriesLabel),
+      latencyMs: typeof item?.latencyMs === "number" && Number.isFinite(item.latencyMs) ? Number(item.latencyMs) : null,
+      isTimeout: !!item?.isTimeout,
+    }))
+    .filter((item: any) => item.key !== "total");
+}
+
 function hasStructuredTunnelTestMessage(parsed: ReturnType<typeof parseLinkTestMessage>) {
   return !!parsed?.details?.length || typeof parsed?.totalLatencyMs === "number";
 }
@@ -486,6 +498,23 @@ function tunnelDisplayLatencyMs(tunnel: any) {
   if (structuredMessage || isSuccess || isFailed || latency !== null) return latency;
   if (latestFallback !== null) return latestFallback;
   return manualFallback;
+}
+
+function tunnelDisplayLatencyList(tunnel: any) {
+  const entries = tunnelSeriesLatencyEntries(tunnel);
+  if (entries.length === 0) {
+    const value = tunnelDisplayLatencyMs(tunnel);
+    return typeof value === "number" && Number.isFinite(value)
+      ? [{ label: "总延迟", latencyMs: value, isTimeout: false, key: "total" }]
+      : tunnelLatencyIsTimeout(tunnel)
+        ? [{ label: "总延迟", latencyMs: null, isTimeout: true, key: "total" }]
+        : [];
+  }
+  const total = tunnel?.latestLatencyMs;
+  const totalEntry = typeof total === "number" && Number.isFinite(total)
+    ? [{ label: "总延迟", latencyMs: Number(total), isTimeout: !!tunnel?.latestLatencyIsTimeout, key: "total" }]
+    : [];
+  return [...totalEntry, ...entries];
 }
 
 function tunnelLatencyIsTimeout(tunnel: any) {
@@ -807,7 +836,7 @@ function TunnelWorldGlobe({
         kind: "tunnel",
         item: tunnel,
         name: String(tunnel.name || `隧道 #${tunnel.id}`),
-        routeText: routeHosts.map((host) => host.name).join(" -> "),
+        routeText: getTunnelRouteText(tunnel, hosts),
         routeHosts,
         statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
         latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
@@ -913,6 +942,7 @@ function TunnelWorldGlobe({
           ...link,
           item: tunnel,
           name: String(tunnel.name || `隧道 #${tunnel.id}`),
+          routeText: getTunnelRouteText(tunnel, hosts),
           statusText: !supported ? "协议未启用" : active ? "运行中" : enabled ? "已启用" : "已停用",
           latencyText: formatGlobeLatency(tunnelDisplayLatencyMs(tunnel), tunnelLatencyIsTimeout(tunnel)),
           color: active ? "#4ade80" : enabled ? "#fbbf24" : "#94a3b8",
@@ -1301,7 +1331,9 @@ function TunnelLatencyDialog({
                     strokeLinejoin="round"
                     dot={(props: any) => props?.payload?.[meta.timeoutKey] ? (
                       <circle cx={props.cx} cy={props.cy} r={3} fill="var(--color-destructive)" stroke="var(--color-background)" strokeWidth={1.5} />
-                    ) : false}
+                    ) : (
+                      <circle cx={props.cx} cy={props.cy} r={0} fill="transparent" />
+                    )}
                     activeDot={{ r: 4, fill: meta.color, stroke: "var(--color-background)", strokeWidth: 2 }}
                     connectNulls={false}
                     isAnimationActive={shouldAnimateChart}
@@ -1444,7 +1476,7 @@ function TunnelSelfTestDialog({
         toMeta: nodeMetaFor(toHost, nextHostId),
       };
     }).filter((segment: LinkTestPlannedSegment) => segment.from && segment.to);
-    const entryHostIds = Array.from(new Set((
+    const entryHostIds = Array.from(new Set<number>((
       entryGroupMembers.length > 0
         ? entryGroupMembers.map((member: any) => Number(member?.hostId || 0))
         : [firstHostId]
@@ -1454,7 +1486,7 @@ function TunnelSelfTestDialog({
       const nextHostId = Number(restHopIds[0] || lastHostId || tunnel?.exitHostId || 0);
       const nextHost = hostForId(nextHostId);
       const nextLabel = labelForHostId(nextHostId);
-      const entrySegments: LinkTestPlannedSegment[] = entryHostIds.map((entryHostId) => {
+      const entrySegments: LinkTestPlannedSegment[] = entryHostIds.map((entryHostId: number) => {
         const entryHost = hostForId(entryHostId);
         return {
           from: labelForHostId(entryHostId),
@@ -1872,9 +1904,11 @@ function TunnelsContent() {
   };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
+    const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
+    const exitNames = extraExitNames.length > 0 ? getTunnelExitNames(tunnel, hosts) : [];
     return (
       <div
-        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact ? "flex-wrap" : "whitespace-nowrap"}`}
+        className={`flex min-w-0 items-center gap-1.5 text-xs ${compact || exitNames.length > 0 ? "flex-wrap" : "whitespace-nowrap"}`}
         title={getTunnelRouteText(tunnel, hosts)}
       >
         {hopIds.map((hostId: number, index: number) => (
@@ -1885,6 +1919,12 @@ function TunnelsContent() {
             </span>
           </Fragment>
         ))}
+        {exitNames.length > 0 && (
+          <span className="flex min-w-0 items-center gap-1 rounded border border-border/50 bg-muted/30 px-1.5 py-0.5 text-muted-foreground">
+            <span className="shrink-0">出口</span>
+            <span className="min-w-0 truncate">{exitNames.join(" / ")}</span>
+          </span>
+        )}
       </div>
     );
   };
@@ -2343,6 +2383,29 @@ function TunnelsContent() {
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };
 
+  const renderTunnelLatencyBreakdown = (tunnel: any, compact = false) => {
+    const items = tunnelDisplayLatencyList(tunnel);
+    if (items.length === 0) {
+      return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
+    }
+    return (
+      <div className="space-y-1">
+        {items.map((item) => (
+          <div key={item.key} className="flex min-w-0 items-center justify-between gap-2 whitespace-nowrap text-xs">
+            <span className="min-w-0 truncate text-muted-foreground">{item.label}</span>
+            <LatencyRating
+              latencyMs={item.latencyMs}
+              isTimeout={item.isTimeout}
+              icon="none"
+              timeoutText="不可达"
+              className={compact ? "shrink-0 text-[10px]" : "shrink-0"}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2493,9 +2556,9 @@ function TunnelsContent() {
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 text-xs">
+                    <div className="space-y-1 text-xs">
                       <span className="text-muted-foreground">延迟</span>
-                      {renderTunnelLatencyLabel(tunnel)}
+                      {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
                     <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
@@ -2571,9 +2634,9 @@ function TunnelsContent() {
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 text-xs">
+                    <div className="space-y-1 text-xs">
                       <span className="text-muted-foreground">延迟</span>
-                      {renderTunnelLatencyLabel(tunnel)}
+                      {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
                     <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
@@ -2652,7 +2715,7 @@ function TunnelsContent() {
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        {renderTunnelLatencyLabel(tunnel, true)}
+                        {renderTunnelLatencyBreakdown(tunnel, true)}
                       </TableCell>
                       <TableCell>
                         {supported ? (

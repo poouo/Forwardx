@@ -412,18 +412,21 @@ export async function getTrafficStats(ruleId: number, limit = 60) {
 
 export async function resetRuleTrafficStats(ruleIds: number[]) {
   const db = await getDb();
-  if (!db) return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0 };
+  if (!db) return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0, deletedTcping: 0, deletedForwardTests: 0, deletedGroupLatency: 0 };
   const requestedRuleIds = Array.from(new Set(ruleIds
     .map((id) => Number(id))
     .filter((id) => Number.isInteger(id) && id > 0)));
   if (requestedRuleIds.length === 0) {
-    return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0 };
+    return { requestedRuleIds: [], clearedRuleIds: [], deletedStats: 0, deletedBuckets: 0, deletedTcping: 0, deletedForwardTests: 0, deletedGroupLatency: 0 };
   }
   const { queryRuleIds } = await expandTrafficQueryRuleIds(requestedRuleIds);
   const clearedRuleIds = queryRuleIds.length > 0 ? queryRuleIds : requestedRuleIds;
   const q = quoteIdentifier;
   let deletedStats = 0;
   let deletedBuckets = 0;
+  let deletedTcping = 0;
+  let deletedForwardTests = 0;
+  let deletedGroupLatency = 0;
   for (let index = 0; index < clearedRuleIds.length; index += 500) {
     const batch = clearedRuleIds.slice(index, index + 500);
     const placeholders = batch.map(() => "?").join(",");
@@ -435,14 +438,46 @@ export async function resetRuleTrafficStats(ruleIds: number[]) {
       `DELETE FROM ${q("traffic_stat_buckets")} WHERE ${q("ruleId")} IN (${placeholders})`,
       batch,
     );
+    const tcpingResult = await executeRaw(
+      `DELETE FROM ${q("tcping_stats")} WHERE ${q("ruleId")} IN (${placeholders})`,
+      batch,
+    );
+    const forwardTestsResult = await executeRaw(
+      `DELETE FROM ${q("forward_tests")} WHERE ${q("ruleId")} IN (${placeholders})`,
+      batch,
+    );
     deletedStats += rawAffectedRows(statsResult);
     deletedBuckets += rawAffectedRows(bucketsResult);
+    deletedTcping += rawAffectedRows(tcpingResult);
+    deletedForwardTests += rawAffectedRows(forwardTestsResult);
+  }
+  if (clearedRuleIds.length > 0) {
+    const forwardGroupIds = Array.from(new Set((await queryRaw<any>(
+      `SELECT DISTINCT ${q("forwardGroupId")} AS ${q("forwardGroupId")}
+         FROM ${q("forward_rules")}
+        WHERE ${q("id")} IN (${clearedRuleIds.map(() => "?").join(",")})
+          AND ${q("forwardGroupId")} IS NOT NULL`,
+      clearedRuleIds,
+    )).map((row: any) => Number(row.forwardGroupId)).filter((id: number) => Number.isInteger(id) && id > 0)));
+    for (let index = 0; index < forwardGroupIds.length; index += 500) {
+      const batch = forwardGroupIds.slice(index, index + 500);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(",");
+      const groupLatencyResult = await executeRaw(
+        `DELETE FROM ${q("forward_group_latency_stats")} WHERE ${q("groupId")} IN (${placeholders})`,
+        batch,
+      );
+      deletedGroupLatency += rawAffectedRows(groupLatencyResult);
+    }
   }
   return {
     requestedRuleIds,
     clearedRuleIds,
     deletedStats,
     deletedBuckets,
+    deletedTcping,
+    deletedForwardTests,
+    deletedGroupLatency,
   };
 }
 
@@ -1440,17 +1475,18 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
     return new Map<number, { latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>();
   }
   const q = quoteIdentifier;
-  const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+  const rows = await queryRaw<{ tunnelId: number; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown; seriesKey: string | null }>(
     `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
             s.${q("latencyMs")} AS ${q("latencyMs")},
             s.${q("isTimeout")} AS ${q("isTimeout")},
-            s.${q("recordedAt")} AS ${q("recordedAt")}
+            s.${q("recordedAt")} AS ${q("recordedAt")},
+            s.${q("seriesKey")} AS ${q("seriesKey")}
        FROM ${q("tunnel_latency_stats")} s
        INNER JOIN (
-         SELECT ${q("tunnelId")}, MAX(${q("id")}) AS ${q("id")}
+         SELECT ${q("tunnelId")},
+                MAX(CASE WHEN ${q("seriesKey")} IS NULL OR ${q("seriesKey")} = '' OR ${q("seriesKey")} = 'total' THEN ${q("id")} ELSE NULL END) AS ${q("id")}
            FROM ${q("tunnel_latency_stats")}
           WHERE ${q("tunnelId")} IN (${ids.map(() => "?").join(",")})
-            AND (${q("seriesKey")} IS NULL OR ${q("seriesKey")} = '' OR ${q("seriesKey")} = 'total')
           GROUP BY ${q("tunnelId")}
        ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}`,
     ids,
@@ -1464,6 +1500,74 @@ export async function getLatestTunnelLatencies(tunnelIds: number[]) {
     });
   }
   return latest;
+}
+
+function normalizeTunnelLatencySeriesKey(value: unknown) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return key || "total";
+}
+
+function tunnelLatencySeriesSortRank(key: string) {
+  if (key === "total") return [0, 0];
+  if (key === "primary") return [1, 0];
+  const match = key.match(/^exit-(\d+)$/);
+  if (match) return [2, Number(match[1]) || 0];
+  return [3, 0];
+}
+
+export async function getLatestTunnelLatencySeries(tunnelIds: number[]) {
+  const db = await getDb();
+  const ids = Array.from(new Set(tunnelIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0)));
+  if (!db || ids.length === 0) {
+    return new Map<number, Array<{ seriesKey: string; seriesLabel: string | null; latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>>();
+  }
+  const q = quoteIdentifier;
+  const seriesExpr = `COALESCE(NULLIF(s.${q("seriesKey")}, ''), 'total')`;
+  const rows = await queryRaw<{ tunnelId: number; seriesKey: string | null; seriesLabel: string | null; latencyMs: number | null; isTimeout: unknown; recordedAt: unknown }>(
+    `SELECT s.${q("tunnelId")} AS ${q("tunnelId")},
+            ${seriesExpr} AS ${q("seriesKey")},
+            s.${q("seriesLabel")} AS ${q("seriesLabel")},
+            s.${q("latencyMs")} AS ${q("latencyMs")},
+            s.${q("isTimeout")} AS ${q("isTimeout")},
+            s.${q("recordedAt")} AS ${q("recordedAt")}
+       FROM ${q("tunnel_latency_stats")} s
+       INNER JOIN (
+         SELECT ${q("tunnelId")},
+                COALESCE(NULLIF(${q("seriesKey")}, ''), 'total') AS ${q("seriesKey")},
+                MAX(${q("id")}) AS ${q("id")}
+           FROM ${q("tunnel_latency_stats")}
+          WHERE ${q("tunnelId")} IN (${ids.map(() => "?").join(",")})
+          GROUP BY ${q("tunnelId")}, COALESCE(NULLIF(${q("seriesKey")}, ''), 'total')
+       ) latest ON latest.${q("tunnelId")} = s.${q("tunnelId")} AND latest.${q("id")} = s.${q("id")}` ,
+    ids,
+  );
+  const grouped = new Map<number, Array<{ seriesKey: string; seriesLabel: string | null; latencyMs: number | null; isTimeout: boolean; recordedAt: Date }>>();
+  for (const row of rows) {
+    const tunnelId = Number(row.tunnelId);
+    if (!Number.isFinite(tunnelId) || tunnelId <= 0) continue;
+    const seriesKey = normalizeTunnelLatencySeriesKey(row.seriesKey);
+    const series = grouped.get(tunnelId) || [];
+    series.push({
+      seriesKey,
+      seriesLabel: row.seriesLabel ? String(row.seriesLabel) : null,
+      latencyMs: row.latencyMs === null || row.latencyMs === undefined ? null : Number(row.latencyMs),
+      isTimeout: rowBool(row.isTimeout),
+      recordedAt: rowDate(row.recordedAt),
+    });
+    grouped.set(tunnelId, series);
+  }
+  for (const series of grouped.values()) {
+    series.sort((a, b) => {
+      const [rankA, tieA] = tunnelLatencySeriesSortRank(a.seriesKey);
+      const [rankB, tieB] = tunnelLatencySeriesSortRank(b.seriesKey);
+      if (rankA !== rankB) return rankA - rankB;
+      if (tieA !== tieB) return tieA - tieB;
+      return a.seriesKey.localeCompare(b.seriesKey, "en");
+    });
+  }
+  return grouped;
 }
 
 export async function getTunnelLatencySeries(

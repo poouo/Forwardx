@@ -230,7 +230,7 @@ function normalizePersonalizationBackground(input: unknown): PersonalizationBack
       normalizedSelectedId = null;
     }
   } else if (normalizedSource === "upload") {
-    if (!images.some((item) => item.id === selectedId)) {
+    if (!images.some((item: any) => item.id === selectedId)) {
       normalizedSource = "none";
       normalizedSelectedId = null;
     }
