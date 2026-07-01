@@ -311,6 +311,8 @@ function ensureNginxBinaryCmd() {
 
 export function registerAgentHeartbeatRoute(agentRouter: Router) {
 agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => {
+  let logHostId = 0;
+  let logHostName = "";
   try {
     const token = getResolvedAgentToken(req);
     const host = await getAgentHostFromRequest(req);
@@ -327,6 +329,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       res.status(401).json({ error: "Invalid token" });
       return;
     }
+    logHostId = Number((host as any).id || 0);
+    logHostName = String((host as any).name || "").trim();
 
     const { cpuUsage, cpuInfo, memoryUsage, memoryUsed, memoryTotal, swapUsage, swapUsed, swapTotal, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
@@ -3344,7 +3348,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
     res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, panelUrl, forceTcping, nextInterval });
   } catch (error) {
-    console.error("[Agent Heartbeat] Error:", error);
+    console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

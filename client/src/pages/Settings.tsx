@@ -4,6 +4,7 @@ import { EmailSettingsContent } from "./EmailSettings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { compressImageFile, imageDataUrlSize } from "@/lib/imageUpload";
@@ -687,7 +689,7 @@ function PanelLogsSection() {
     limit: LOG_PAGE_SIZE,
     offset: panelLogOffset,
   }, {
-    refetchInterval: 10000,
+    refetchInterval: pollingInterval("log"),
   });
   const exportLogsMutation = trpc.system.exportPanelLogs.useMutation({
     onSuccess: (data) => {
@@ -891,10 +893,10 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
   const [cachedBackupSummary, setCachedBackupSummary] = useState<BackupSummaryCache | null>(() => readBackupSummaryCache());
 
   const { data: currentMigrationCode } = trpc.system.getMigrationCode.useQuery(undefined, {
-    refetchInterval: 1000,
+    refetchInterval: pollingInterval("realtime"),
   });
   const { data: databaseSwitchStatus } = trpc.system.databaseSwitchStatus.useQuery(undefined, {
-    refetchInterval: 15000,
+    refetchInterval: pollingInterval("normal"),
   });
   const { data: backupSummary, isLoading: backupSummaryLoading } = trpc.system.backupSummary.useQuery(undefined, {
     staleTime: 60_000,
@@ -2523,6 +2525,7 @@ const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> =
 
 function PersonalizationSettingsSection() {
   const utils = trpc.useUtils();
+  const confirmDialog = useConfirmDialog();
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
@@ -2718,8 +2721,15 @@ function PersonalizationSettingsSection() {
     window.open(`/homepage-preview?mode=draft&id=${encodeURIComponent(previewId)}`, "_blank", "noopener,noreferrer");
   };
 
-  const handleUseHomepageTemplate = () => {
-    if (homepageHtml.trim() && !window.confirm("当前编辑内容会被示例模板覆盖，确定继续吗？")) return;
+  const handleUseHomepageTemplate = async () => {
+    if (homepageHtml.trim()) {
+      const confirmed = await confirmDialog({
+        title: "覆盖首页内容",
+        description: "当前编辑内容会被示例模板覆盖，确定继续吗？",
+        confirmText: "覆盖",
+      });
+      if (!confirmed) return;
+    }
     setHomepageHtml(defaultHomepageHtml);
   };
 
@@ -3235,7 +3245,7 @@ function SystemInfoSection() {
   const { data: settings, isLoading } = trpc.system.getSettings.useQuery();
   const { data: upgradeStatus, refetch: refetchUpgradeStatus } = trpc.system.upgradeStatus.useQuery(
     undefined,
-    { refetchInterval: 5000 }
+    { refetchInterval: pollingInterval("fast") }
   );
   const [panelUrlInput, setPanelUrlInput] = useState("");
   const [webPortInput, setWebPortInput] = useState("");
@@ -3432,6 +3442,10 @@ function SystemInfoSection() {
   const isSavingSetting = (key: SystemSettingsSaveKey) => (
     savingSetting === key && updateSettingsMutation.isPending
   );
+  const webPortManagement = settings?.webPortManagement;
+  const webPortDisplay = Number(settings?.webPort || webPortManagement?.publicPort || 3000);
+  const webContainerPort = Number(webPortManagement?.containerPort || webPortDisplay);
+  const isDockerWebPort = !!webPortManagement?.docker;
 
   const handleSavePanelUrl = () => {
     const v = panelUrlInput.trim();
@@ -3454,7 +3468,7 @@ function SystemInfoSection() {
       toast.error("端口必须是 1-65535 的数字");
       return;
     }
-    if (port === Number(settings?.webPort || 3000)) {
+    if (port === webPortDisplay) {
       toast.info("端口未变化");
       return;
     }
@@ -3859,7 +3873,7 @@ function SystemInfoSection() {
               Web 服务监听端口
             </CardTitle>
             <CardDescription>
-              修改本地部署面板的 Web 访问端口。
+              {isDockerWebPort ? "Docker 部署会显示宿主机映射端口，容器内仍固定监听 3000。" : "修改本地部署面板的 Web 访问端口。"}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -3882,14 +3896,18 @@ function SystemInfoSection() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              当前监听端口：{settings?.webPort || 3000}。修改后服务会重启，请使用新端口访问后台。
+              {isDockerWebPort
+                ? `当前宿主机映射端口：${webPortDisplay}，容器内监听端口：${webContainerPort}。Docker 部署请通过 docker-compose 或安装脚本修改端口映射。`
+                : `当前监听端口：${webPortDisplay}。修改后服务会重启，请使用新端口访问后台。`}
             </p>
             {!settings?.webPortManagement?.enabled && (
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Docker 部署不支持后台修改端口</AlertTitle>
+                <AlertTitle>{isDockerWebPort ? "Docker 部署不支持后台修改端口" : "当前环境不支持后台修改端口"}</AlertTitle>
                 <AlertDescription>
-                  Docker 用户请自行配置端口映射；非 Docker 部署可在此修改监听端口。
+                  {isDockerWebPort
+                    ? "请修改宿主机的 docker-compose 端口映射或重新运行 Docker 安装脚本；面板升级检测不依赖该端口，不会因此影响新版本检测。"
+                    : "请在服务环境变量或启动脚本中修改监听端口。"}
                 </AlertDescription>
               </Alert>
             )}
@@ -3911,7 +3929,7 @@ function SystemInfoSection() {
               <div className="min-w-0">
                 <p className="text-sm font-medium">启用 HTTPS</p>
                 <p className="text-xs text-muted-foreground">
-                  当前协议：{settings?.panelSsl?.activeProtocol === "https" ? "HTTPS" : "HTTP"}，端口：{settings?.webPort || 3000}
+                  当前协议：{settings?.panelSsl?.activeProtocol === "https" ? "HTTPS" : "HTTP"}，端口：{webPortDisplay}
                 </p>
               </div>
               <Switch className="shrink-0" checked={panelSslEnabled} onCheckedChange={setPanelSslEnabled} />
@@ -4083,7 +4101,7 @@ function SystemInfoSection() {
               确认修改面板 SSL
             </DialogTitle>
             <DialogDescription>
-              确认后面板会重启，当前端口 {settings?.webPort || 3000} 将切换为 {panelSslEnabled ? "HTTPS" : "HTTP"} 访问。
+              确认后面板会重启，当前端口 {webPortDisplay} 将切换为 {panelSslEnabled ? "HTTPS" : "HTTP"} 访问。
             </DialogDescription>
           </DialogHeader>
           <Alert>

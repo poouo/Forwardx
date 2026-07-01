@@ -52,6 +52,7 @@ type udpDirectEntrySession struct {
 	counter       *trafficCounter
 	stopReporting func()
 	send          chan []byte
+	recv          chan []byte
 	done          chan struct{}
 	closeOnce     sync.Once
 	lastActivity  atomic.Int64
@@ -64,6 +65,7 @@ type udpDirectExitSession struct {
 	peerAddr     *net.UDPAddr
 	conn         *net.UDPConn
 	target       *net.UDPConn
+	send         chan []byte
 	aead         cipher.AEAD
 	cfg          config
 	ruleID       int
@@ -83,6 +85,8 @@ type udpDirectRelaySession struct {
 	conn           *net.UDPConn
 	upstreamAEAD   cipher.AEAD
 	downstreamAEAD cipher.AEAD
+	downstreamSend chan []byte
+	upstreamSend   chan []byte
 	cfg            config
 	ruleID         int
 	endpoint       exitEndpoint
@@ -204,7 +208,8 @@ func newUDPDirectEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg co
 		outLimiter:    outLimiter,
 		counter:       counter,
 		stopReporting: startTrafficReporter(cfg, counter),
-		send:          make(chan []byte, 512),
+		send:          make(chan []byte, fxpUDPDirectQueueSize),
+		recv:          make(chan []byte, fxpUDPDirectQueueSize),
 		done:          make(chan struct{}),
 		remove:        remove,
 	}
@@ -218,6 +223,7 @@ func (s *udpDirectEntrySession) touch() {
 
 func (s *udpDirectEntrySession) start() {
 	go s.writeLoop()
+	go s.clientWriteLoop()
 	go s.idleLoop()
 	log.Printf("entry udp direct session started tunnel=%d rule=%d client=%s exit=%s:%d target=%s:%d session=%d", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr, s.endpoint.Host, s.endpoint.Port, s.cfg.TargetIP, s.cfg.TargetPort, s.sessionID)
 }
@@ -228,7 +234,7 @@ func (s *udpDirectEntrySession) enqueue(payload []byte) {
 		return
 	case s.send <- payload:
 	default:
-		log.Printf("entry udp direct queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		fxpUDPDropLog.Printf("entry udp direct queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 	}
 }
 
@@ -272,8 +278,24 @@ func (s *udpDirectEntrySession) handleResponse(payload []byte) {
 	select {
 	case <-s.done:
 		return
+	case s.recv <- payload:
 	default:
+		fxpUDPDropLog.Printf("entry udp direct response queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 	}
+}
+
+func (s *udpDirectEntrySession) clientWriteLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case payload := <-s.recv:
+			s.writeResponse(payload)
+		}
+	}
+}
+
+func (s *udpDirectEntrySession) writeResponse(payload []byte) {
 	s.outLimiter.wait(len(payload))
 	if _, err := s.conn.WriteToUDP(payload, s.clientAddr); err != nil {
 		if !isClosedErr(err) {
@@ -400,12 +422,14 @@ func newUDPDirectExitSession(conn *net.UDPConn, peerAddr *net.UDPAddr, cfg confi
 	if err != nil {
 		return nil, err
 	}
+	tuneUDPConn(target, "exit target", fxpUDPSessionBufferBytes)
 	session := &udpDirectExitSession{
 		key:        udpSessionKey(peerAddr, sessionID),
 		sessionID:  sessionID,
 		peerAddr:   peerAddr,
 		conn:       conn,
 		target:     target,
+		send:       make(chan []byte, fxpUDPDirectQueueSize),
 		aead:       aead,
 		cfg:        cfg,
 		ruleID:     ruleID,
@@ -423,6 +447,7 @@ func (s *udpDirectExitSession) touch() {
 }
 
 func (s *udpDirectExitSession) start() {
+	go s.writeTargetLoop()
 	go s.readTargetLoop()
 	go s.idleLoop()
 	log.Printf("exit udp direct session routed tunnel=%d rule=%d peer=%s target=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort, s.sessionID)
@@ -432,8 +457,24 @@ func (s *udpDirectExitSession) forwardToTarget(payload []byte) {
 	select {
 	case <-s.done:
 		return
+	case s.send <- payload:
 	default:
+		fxpUDPDropLog.Printf("exit udp direct target queue full tunnel=%d rule=%d peer=%s target=%s:%d; dropping packet", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort)
 	}
+}
+
+func (s *udpDirectExitSession) writeTargetLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case payload := <-s.send:
+			s.writeTarget(payload)
+		}
+	}
+}
+
+func (s *udpDirectExitSession) writeTarget(payload []byte) {
 	if _, err := s.target.Write(payload); err != nil {
 		log.Printf("exit udp direct target write failed tunnel=%d rule=%d peer=%s target=%s:%d: %v", s.cfg.TunnelID, s.ruleID, s.peerAddr, s.targetIP, s.targetPort, err)
 		s.close()
@@ -619,6 +660,8 @@ func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg 
 		ruleID:         ruleID,
 		endpoint:       endpoint,
 		endpointIndex:  index,
+		downstreamSend: make(chan []byte, fxpUDPDirectQueueSize),
+		upstreamSend:   make(chan []byte, fxpUDPDirectQueueSize),
 		done:           make(chan struct{}),
 		remove:         remove,
 	}
@@ -631,6 +674,8 @@ func (s *udpDirectRelaySession) touch() {
 }
 
 func (s *udpDirectRelaySession) start() {
+	go s.downstreamWriteLoop()
+	go s.upstreamWriteLoop()
 	go s.idleLoop()
 	log.Printf("relay udp direct session routed tunnel=%d rule=%d upstream=%s downstream=%s:%d session=%d", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.endpoint.Host, s.endpoint.Port, s.sessionID)
 }
@@ -639,8 +684,24 @@ func (s *udpDirectRelaySession) forwardToDownstream(payload []byte) {
 	select {
 	case <-s.done:
 		return
+	case s.downstreamSend <- payload:
 	default:
+		fxpUDPDropLog.Printf("relay udp direct downstream queue full tunnel=%d rule=%d upstream=%s downstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr, s.downstreamAddr)
 	}
+}
+
+func (s *udpDirectRelaySession) downstreamWriteLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case payload := <-s.downstreamSend:
+			s.writeDownstream(payload)
+		}
+	}
+}
+
+func (s *udpDirectRelaySession) writeDownstream(payload []byte) {
 	packet, err := sealFXPUDPPacket(s.downstreamAEAD, fxpUDPPacket{
 		packetType: fxpUDPTypeData,
 		tunnelID:   s.cfg.TunnelID,
@@ -665,8 +726,24 @@ func (s *udpDirectRelaySession) forwardToUpstream(payload []byte) {
 	select {
 	case <-s.done:
 		return
+	case s.upstreamSend <- payload:
 	default:
+		fxpUDPDropLog.Printf("relay udp direct upstream queue full tunnel=%d rule=%d upstream=%s; dropping packet", s.cfg.TunnelID, s.ruleID, s.upstreamAddr)
 	}
+}
+
+func (s *udpDirectRelaySession) upstreamWriteLoop() {
+	for {
+		select {
+		case <-s.done:
+			return
+		case payload := <-s.upstreamSend:
+			s.writeUpstream(payload)
+		}
+	}
+}
+
+func (s *udpDirectRelaySession) writeUpstream(payload []byte) {
 	packet, err := sealFXPUDPPacket(s.upstreamAEAD, fxpUDPPacket{
 		packetType: fxpUDPTypeReturn,
 		tunnelID:   s.cfg.TunnelID,

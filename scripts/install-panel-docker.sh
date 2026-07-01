@@ -333,6 +333,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      FORWARDX_PUBLIC_PORT: ${PORT:-9810}
+      FORWARDX_PORT_MANAGEMENT: docker
       DATABASE_CONFIG_PATH: /data/database.json
       SQLITE_PATH: /data/forwardx.db
       MYSQL_CONFIG_PATH: /data/mysql.json
@@ -368,6 +370,7 @@ write_env() {
 
   cat > "$APP_DIR/.env" <<EOF
 PORT=$PORT
+FORWARDX_PUBLIC_PORT=$PORT
 JWT_SECRET=$jwt_secret
 COMPOSE_PROJECT_NAME=$PROJECT_NAME
 FORWARDX_CONTAINER_NAME=$CONTAINER_NAME

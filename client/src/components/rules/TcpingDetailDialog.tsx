@@ -12,6 +12,7 @@ import {
   getLatencyYAxisTicks,
   isLatencySeriesCacheFresh,
 } from "@/lib/latencyChart";
+import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 
 type TcpingChartPoint = {
@@ -83,7 +84,7 @@ function TcpingDetailDialog({
   const methodLabel = probeMethod === "ping" ? "Ping" : "TCPing";
   const { data, isLoading, isFetching } = trpc.rules.tcpingSeries.useQuery(
     { ruleId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" },
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" },
   );
   const cachedData = tcpingSeriesCache.get(ruleId);
   const rawSeriesData = (data ?? cachedData) as TcpingSeriesDatum[] | undefined;

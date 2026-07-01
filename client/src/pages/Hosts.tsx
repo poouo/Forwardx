@@ -16,7 +16,7 @@ import {
   formatBytes,
   formatUptime,
   hostAddressText,
-  hostPrimaryAddressLines,
+  hostPrimaryAddressText,
   HostRegionBadge,
   hostRegionText,
   isAgentUpgradeTimedOut,
@@ -27,6 +27,7 @@ import { PersistentPagination, usePersistentPagination } from "@/components/Pers
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -58,6 +59,7 @@ import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { useUrlTab } from "@/hooks/useUrlTab";
+import { pollingInterval, visiblePollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
@@ -840,7 +842,7 @@ function HostListFlowPair({
 function HostListStatusBadge({ host }: { host: any }) {
   const online = !!host?.isOnline;
   return (
-    <div className="inline-flex items-center gap-2 rounded-full border border-border/50 bg-background/50 px-2.5 py-1 text-xs font-medium">
+    <div className="inline-flex min-w-[68px] items-center justify-center gap-2 whitespace-nowrap rounded-full border border-border/50 bg-background/50 px-2.5 py-1 text-xs font-medium">
       <span className={`h-2 w-2 rounded-full ${online ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-destructive shadow-sm shadow-destructive/50"}`} />
       <span className={online ? "text-emerald-500" : "text-destructive"}>{online ? "在线" : "离线"}</span>
     </div>
@@ -911,12 +913,12 @@ function HostTrafficDirectionStat({
   cacheKey: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border/40 bg-background/35 px-4 py-4 shadow-sm">
-      <div className="flex items-center gap-4 sm:gap-5">
-        <div className={`flex h-[4.5rem] w-[4.5rem] shrink-0 items-center justify-center rounded-2xl shadow-sm ${tone}`}>
-          <Icon className="h-9 w-9 text-white" />
+    <div className="rounded-md border border-border/40 bg-background/35 px-3 py-3 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md shadow-sm sm:h-12 sm:w-12 ${tone}`}>
+          <Icon className="h-5 w-5 text-white sm:h-6 sm:w-6" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-[11px] font-medium tracking-wide text-muted-foreground">{label}</p>
           <AnimatedStatValue
             as="p"
@@ -924,7 +926,7 @@ function HostTrafficDirectionStat({
             loading={loading}
             cacheKey={cacheKey}
             fallbackValue="0 B/s"
-            className="mt-1 break-words text-[2rem] font-bold leading-none tabular-nums sm:text-[2.25rem]"
+            className="mt-1 break-words text-lg font-bold leading-tight tabular-nums sm:text-xl"
             title={value}
           />
         </div>
@@ -953,16 +955,16 @@ function HostTrafficSummaryCard({
   return (
     <Card className={`group relative overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
       <div className="absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] bg-gradient-to-br from-primary/10 to-transparent" />
-      <CardContent className="relative p-5">
+      <CardContent className="relative p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
             <p className="text-xs font-medium text-muted-foreground">{title}</p>
           </div>
-          <div className="hidden h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
-            <Icon className="h-6 w-6" />
+          <div className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary shadow-sm sm:flex">
+            <Icon className="h-5 w-5" />
           </div>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
           <HostTrafficDirectionStat
             label="入"
             value={inValue}
@@ -1062,8 +1064,9 @@ function storeHostProbeServiceViewMode(viewMode: HostProbeServiceViewMode) {
 function HostsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const confirmDialog = useConfirmDialog();
   const pageVisible = usePageVisible();
-  const hostRefreshInterval = pageVisible ? 2000 : false;
+  const hostRefreshInterval = visiblePollingInterval("live", pageVisible);
   const { data: hosts, isLoading, isError, error, refetch } = trpc.hosts.list.useQuery(undefined, {
     refetchInterval: hostRefreshInterval,
     refetchOnWindowFocus: true,
@@ -1112,10 +1115,10 @@ function HostsContent() {
     defaultValue: "hosts",
     storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
   });
-  const hostLiveRefreshInterval = pageVisible && activeManageTab === "hosts" ? 2000 : false;
+  const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
   const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery(undefined, {
     enabled: activeManageTab === "hosts",
-    refetchInterval: hostLiveRefreshInterval || 30000,
+    refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
   });
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
@@ -1441,7 +1444,7 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
-  const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: 30000 });
+  const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
     { enabled: !!hostLiveRefreshInterval && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
@@ -1881,11 +1884,11 @@ function HostsContent() {
             <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
-                <Table className="min-w-[1180px]">
+                <Table className="min-w-[1080px]">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-[110px] whitespace-nowrap">状态</TableHead>
-                      <TableHead className="min-w-[300px]">设备名称</TableHead>
+                      <TableHead className="w-[96px] whitespace-nowrap">状态</TableHead>
+                      <TableHead className="w-[300px] min-w-[300px]">设备名称</TableHead>
                       <TableHead className="w-[130px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Cpu className="h-3.5 w-3.5" />CPU</span>
                       </TableHead>
@@ -1916,22 +1919,20 @@ function HostsContent() {
                       const agentUpgrading = !!host.agentUpgradeRequested && !agentUpgradeTimedOut;
                       const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
                       const remainingDays = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
-                      const primaryAddressText = hostAddressText(host);
-                      const addressTitle = hostPrimaryAddressLines(host).map((item) => `${item.label}${item.value}`).join("\n");
+                      const primaryAddressText = hostPrimaryAddressText(host);
                       const memoryDetail = formatMetricSizeDetail(latestMetric?.memoryUsed, host.memoryTotal);
                       const diskDetail = formatMetricSizeDetail(latestMetric?.diskUsed, latestMetric?.diskTotal);
-                      const osInfoText = compactHostOsInfo(host.osInfo);
                       return (
                       <TableRow key={host.id} className="align-middle hover:bg-muted/25">
-                        <TableCell className="w-[110px]">
+                        <TableCell className="w-[96px] whitespace-nowrap">
                           <HostListStatusBadge host={host} />
                         </TableCell>
-                        <TableCell className="min-w-[300px]">
+                        <TableCell className="w-[300px] min-w-[300px]">
                           <div className="flex min-w-0 items-center gap-3">
-                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground shadow-sm">
-                              <Server className="h-5 w-5" />
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground shadow-sm">
+                              <Server className="h-4 w-4" />
                             </span>
-                            <div className="min-w-0 space-y-1">
+                            <div className="min-w-0 space-y-0.5">
                               <div className="flex min-w-0 items-center gap-2">
                                 <span className="min-w-0 truncate font-semibold" title={host.name}>{host.name}</span>
                                 {host.agentVersion && (
@@ -1952,12 +1953,11 @@ function HostsContent() {
                               </div>
                               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                                 <HostRegionBadge host={host} compact />
-                                <span className="max-w-[160px] truncate" title={osInfoText}>{osInfoText}</span>
                                 <span className="rounded border border-border/40 bg-muted/25 px-1.5 py-0.5 font-mono" title={`端口策略：${formatHostPortPolicy(host)}`}>
                                   {formatHostPortPolicy(host)}
                                 </span>
                               </div>
-                              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={addressTitle || primaryAddressText}>
+                              <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={primaryAddressText}>
                                 <RadioTower className="h-3 w-3 shrink-0" />
                                 <span className="min-w-0 truncate font-mono">{primaryAddressText}</span>
                               </div>
@@ -2046,8 +2046,13 @@ function HostsContent() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-destructive hover:text-destructive"
-                              onClick={() => {
-                                if (confirm("确定要删除此主机吗？"))
+                              onClick={async () => {
+                                if (await confirmDialog({
+                                  title: "删除主机",
+                                  description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
+                                  confirmText: "删除",
+                                  tone: "destructive",
+                                }))
                                   deleteMutation.mutate({ id: host.id });
                               }}
                             >

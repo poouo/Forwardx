@@ -38,6 +38,7 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import MultiHopEditor from "@/components/MultiHopEditor";
+import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -388,7 +389,7 @@ function ForwardGroupLatencyDialog({
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.forwardGroups.latencySeries.useQuery(
     { groupId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
   );
   const cachedData = groupLatencySeriesCache.get(groupId);
   const rawSeriesData = (data ?? cachedData) as GroupLatencySeriesDatum[] | undefined;
@@ -507,7 +508,7 @@ function ForwardGroupSelfTestDialog({
   const utils = trpc.useUtils();
   const { data: latest } = trpc.forwardGroups.latestTest.useQuery(
     { groupId },
-    { enabled: open, refetchInterval: open ? 1500 : false, refetchOnWindowFocus: false }
+    { enabled: open, refetchInterval: pollingInterval("interactive", open), refetchOnWindowFocus: false }
   );
   const [optimisticTesting, setOptimisticTesting] = useState(false);
   const [baselineUpdatedAt, setBaselineUpdatedAt] = useState("");
@@ -683,7 +684,7 @@ export function ForwardGroupsContent({
   onEditRequestConsumed,
 }: ForwardGroupsContentProps) {
   const utils = trpc.useUtils();
-  const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
+  const { data: groups, isLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
   const { data: hosts } = trpc.hosts.list.useQuery();
   const { data: tunnels } = trpc.tunnels.list.useQuery();
   const { data: settings } = trpc.system.getSettings.useQuery();

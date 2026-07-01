@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import jwt from "jsonwebtoken";
-import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME } from "../../shared/const";
+import { ACCOUNT_DISABLED_ERR_MSG, COOKIE_NAME, SESSION_REPLACED_ERR_MSG } from "../../shared/const";
 import { TRPCError } from "@trpc/server";
 import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
@@ -235,7 +235,12 @@ function verifyEmailCode(email: string, code?: string) {
 
 export const authRouter = router({
   me: publicProcedure.query(({ ctx }) => {
-    if (!ctx.user) return null;
+    if (!ctx.user) {
+      if (ctx.authFailureReason === "session_replaced") {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: SESSION_REPLACED_ERR_MSG });
+      }
+      return null;
+    }
     if ((ctx.user as any).accountEnabled === false) {
       ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
       throw new TRPCError({ code: "UNAUTHORIZED", message: ACCOUNT_DISABLED_ERR_MSG });

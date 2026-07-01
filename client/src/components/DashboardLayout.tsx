@@ -883,21 +883,29 @@ function DashboardLayoutContent({
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         const height = Math.ceil(header.getBoundingClientRect().height || 0);
-        if (height > 0) root.style.setProperty("--forwardx-mobile-header-offset", `${height}px`);
+        const fallbackHeight = 56;
+        const safeAreaTop = Number.parseFloat(getComputedStyle(root).getPropertyValue("--forwardx-safe-area-top")) || 0;
+        const nextHeight = Math.max(height, fallbackHeight + safeAreaTop);
+        root.style.setProperty("--forwardx-mobile-header-offset", `${nextHeight}px`);
       });
     };
 
     syncHeaderOffset();
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(syncHeaderOffset) : null;
     observer?.observe(header);
+    const visualViewport = window.visualViewport;
     window.addEventListener("resize", syncHeaderOffset);
     window.addEventListener("orientationchange", syncHeaderOffset);
+    visualViewport?.addEventListener("resize", syncHeaderOffset);
+    visualViewport?.addEventListener("scroll", syncHeaderOffset);
 
     return () => {
       window.cancelAnimationFrame(frame);
       observer?.disconnect();
       window.removeEventListener("resize", syncHeaderOffset);
       window.removeEventListener("orientationchange", syncHeaderOffset);
+      visualViewport?.removeEventListener("resize", syncHeaderOffset);
+      visualViewport?.removeEventListener("scroll", syncHeaderOffset);
       root.style.removeProperty("--forwardx-mobile-header-offset");
     };
   }, [isMobile]);
@@ -1173,7 +1181,7 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {isMobile && (
-          <div ref={mobileHeaderRef} data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b px-2 md:sticky">
+          <div ref={mobileHeaderRef} data-mobile-header="true" className="glass-surface fixed inset-x-0 top-0 z-40 flex min-h-14 items-center justify-between border-b px-2 md:sticky">
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
               <div className="flex items-center gap-3">
@@ -1197,7 +1205,7 @@ function DashboardLayoutContent({
             </button>
           </div>
         )}
-        <main data-mobile-main="true" className="flex-1 p-3 sm:p-6">
+        <main data-mobile-main="true" className="flex-1 px-3 pb-3 pt-3 sm:p-6">
           <div key={location} className="route-content-enter">
             {children}
           </div>

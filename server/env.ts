@@ -75,6 +75,7 @@ export const ENV = {
   databaseConnectTimeoutMs: readIntEnv(["DATABASE_CONNECT_TIMEOUT_MS", "DB_CONNECT_TIMEOUT_MS"], 6000, 1000, 120000),
   sqlitePath: process.env.SQLITE_PATH ?? "/data/forwardx.db",
   port: Number.parseInt(process.env.PORT || "9810", 10),
+  publicPort: readIntEnv(["FORWARDX_PUBLIC_PORT", "FORWARDX_EXTERNAL_PORT"], 0, 1, 65535),
   portConfigPath: process.env.FORWARDX_PORT_CONFIG_PATH ?? "",
   portManagement: process.env.FORWARDX_PORT_MANAGEMENT ?? "",
   panelSslEnabled: process.env.FORWARDX_PANEL_SSL_ENABLED === "true",

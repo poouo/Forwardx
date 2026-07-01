@@ -6,12 +6,14 @@ import HostStatusLabel from "@/components/HostStatusLabel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 
@@ -173,8 +175,9 @@ export default function HostProbeServiceManager({
   hideViewModeToggle = false,
 }: HostProbeServiceManagerProps) {
   const utils = trpc.useUtils();
+  const confirmDialog = useConfirmDialog();
   const { data: hosts = [] } = trpc.hosts.list.useQuery(undefined, { staleTime: 30000 });
-  const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: 30000 });
+  const { data: services = [], isLoading } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const hostsById = useMemo(() => new Map((hosts as any[]).map((host) => [Number(host.id), host])), [hosts]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -282,8 +285,13 @@ export default function HostProbeServiceManager({
     setDialogOpen(true);
   };
 
-  const confirmDelete = (service: any) => {
-    if (confirm("确定要删除此服务吗？")) deleteMutation.mutate({ id: service.id });
+  const confirmDelete = async (service: any) => {
+    if (await confirmDialog({
+      title: "删除探测服务",
+      description: `确定要删除“${service.name || "此服务"}”吗？删除后主机将不再执行该服务探测。`,
+      confirmText: "删除",
+      tone: "destructive",
+    })) deleteMutation.mutate({ id: service.id });
   };
 
   return (

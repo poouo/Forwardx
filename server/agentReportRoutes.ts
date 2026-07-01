@@ -239,12 +239,16 @@ agentRouter.post("/api/agent/iperf3-result", async (req: Request, res: Response)
 });
 
 agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
+  let logHostId = 0;
+  let logHostName = "";
   try {
     const host = await getAgentHostFromRequest(req);
     if (!host) {
       res.status(401).json({ error: "Invalid token" });
       return;
     }
+    logHostId = Number((host as any).id || 0);
+    logHostName = String((host as any).name || "").trim();
 
     const hasStatsArray = Array.isArray(req.body?.stats);
     const stats: AgentTrafficStat[] = hasStatsArray
@@ -370,7 +374,7 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error("[Agent Traffic] Error:", error);
+    console.error(`[Agent Traffic] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });
   }
 });

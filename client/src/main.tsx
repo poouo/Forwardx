@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { ACCOUNT_DISABLED_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import { ACCOUNT_DISABLED_ERR_MSG, SESSION_REPLACED_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, httpLink, splitLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
@@ -29,7 +29,11 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       retry: (failureCount, error) => {
         if (error instanceof TRPCClientError) {
-          if (error.message === UNAUTHED_ERR_MSG || error.message === ACCOUNT_DISABLED_ERR_MSG) return false;
+          if (
+            error.message === UNAUTHED_ERR_MSG ||
+            error.message === ACCOUNT_DISABLED_ERR_MSG ||
+            error.message === SESSION_REPLACED_ERR_MSG
+          ) return false;
         }
         return failureCount < 1;
       },
@@ -42,10 +46,15 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
 
-  const isUnauthorized = error.message === UNAUTHED_ERR_MSG || error.message === ACCOUNT_DISABLED_ERR_MSG;
+  const isUnauthorized =
+    error.message === UNAUTHED_ERR_MSG ||
+    error.message === ACCOUNT_DISABLED_ERR_MSG ||
+    error.message === SESSION_REPLACED_ERR_MSG;
 
   if (!isUnauthorized) return;
-  const notice = error.message === ACCOUNT_DISABLED_ERR_MSG ? ACCOUNT_DISABLED_ERR_MSG : LOGIN_EXPIRED_NOTICE;
+  const notice = error.message === ACCOUNT_DISABLED_ERR_MSG || error.message === SESSION_REPLACED_ERR_MSG
+    ? error.message
+    : LOGIN_EXPIRED_NOTICE;
   if (mobileAuth.isNative || error.message === ACCOUNT_DISABLED_ERR_MSG) {
     mobileAuth.clear();
   }

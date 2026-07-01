@@ -17,8 +17,10 @@ import {
   Users,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { pollingInterval } from "@/lib/polling";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -57,7 +59,8 @@ function visibleSavedPassword(value: unknown) {
 
 export default function Setup() {
   const utils = trpc.useUtils();
-  const status = trpc.setup.status.useQuery(undefined, { refetchOnWindowFocus: false, retry: false, refetchInterval: 3000 });
+  const confirmDialog = useConfirmDialog();
+  const status = trpc.setup.status.useQuery(undefined, { refetchOnWindowFocus: false, retry: false, refetchInterval: pollingInterval("active") });
   const defaultSqlitePath = status.data?.defaultSqlitePath || "/data/forwardx.db";
   const [step, setStep] = useState(1);
   const [databaseStepReviewed, setDatabaseStepReviewed] = useState(false);
@@ -513,8 +516,13 @@ export default function Setup() {
                         <Button
                           variant="destructive"
                           disabled={resetExistingData.isPending}
-                          onClick={() => {
-                            if (confirm("确定要清空当前数据库中的 ForwardX 面板数据，并作为新面板重新初始化吗？")) {
+                          onClick={async () => {
+                            if (await confirmDialog({
+                              title: "清空面板数据",
+                              description: "确定要清空当前数据库中的 ForwardX 面板数据，并作为新面板重新初始化吗？此操作不可撤销。",
+                              confirmText: "清空",
+                              tone: "destructive",
+                            })) {
                               resetExistingData.mutate();
                             }
                           }}

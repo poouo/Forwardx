@@ -504,6 +504,7 @@ func runEntry(done <-chan struct{}, cfg config) error {
 		if err != nil {
 			return fmt.Errorf("entry udp listen :%d: %w", cfg.ListenPort, err)
 		}
+		tuneUDPConn(udpConn, "entry", fxpUDPListenBufferBytes)
 		log.Printf("entry udp listening on :%d tunnel=%d rule=%d", cfg.ListenPort, cfg.TunnelID, cfg.RuleID)
 		wg.Add(1)
 		go func() {
@@ -1066,7 +1067,7 @@ func newUDPEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, 
 		outLimiter:    outLimiter,
 		counter:       counter,
 		stopReporting: startTrafficReporter(cfg, counter),
-		send:          make(chan []byte, 256),
+		send:          make(chan []byte, fxpUDPStreamQueueSize),
 		done:          make(chan struct{}),
 		remove:        remove,
 	}
@@ -1091,7 +1092,7 @@ func (s *udpEntrySession) enqueue(payload []byte) {
 		return
 	case s.send <- payload:
 	default:
-		log.Printf("entry udp session queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
+		fxpUDPDropLog.Printf("entry udp session queue full tunnel=%d rule=%d client=%s; dropping packet", s.cfg.TunnelID, s.cfg.RuleID, s.clientAddr)
 	}
 }
 
@@ -1203,6 +1204,7 @@ func runExit(done <-chan struct{}, cfg config) error {
 		if err != nil {
 			return fmt.Errorf("exit udp listen :%d: %w", cfg.ListenPort, err)
 		}
+		tuneUDPConn(udpConn, "exit", fxpUDPListenBufferBytes)
 		log.Printf("exit udp listening on :%d tunnel=%d", cfg.ListenPort, cfg.TunnelID)
 		wg.Add(1)
 		go func() {
@@ -1320,6 +1322,7 @@ func handleExitUDP(sec *secureConn, hello helloFrame) error {
 	if err != nil {
 		return err
 	}
+	tuneUDPConn(target, "exit target", fxpUDPSessionBufferBytes)
 	defer target.Close()
 	log.Printf("exit udp session routed tunnel=%d rule=%d peer=%s target=%s:%d", hello.TunnelID, hello.RuleID, sec.conn.RemoteAddr(), hello.TargetIP, hello.TargetPort)
 	var lastActivity atomic.Int64
@@ -1421,6 +1424,7 @@ func runRelay(done <-chan struct{}, cfg config) error {
 		if err != nil {
 			return fmt.Errorf("relay udp listen :%d: %w", cfg.ListenPort, err)
 		}
+		tuneUDPConn(udpConn, "relay", fxpUDPListenBufferBytes)
 		log.Printf("relay udp listening on :%d tunnel=%d next=%s:%d", cfg.ListenPort, cfg.TunnelID, cfg.RelayExitHost, cfg.RelayExitPort)
 		wg.Add(1)
 		go func() {
@@ -1854,10 +1858,14 @@ func (c *secureConn) writeEncryptedFrame(plain []byte) error {
 	dataNonce := fxpNonce(c.writeDir, counter, 1)
 	lenCipher := c.lenWriteAEAD.Seal(nil, lenNonce, lenPlain[:], c.lengthAD)
 	dataCipher := c.dataWriteAEAD.Seal(nil, dataNonce, plain, c.payloadAD)
-	if _, err := writeFull(c.conn, lenCipher); err != nil {
+	buffers := net.Buffers{lenCipher, dataCipher}
+	written, err := buffers.WriteTo(c.conn)
+	if err != nil {
 		return err
 	}
-	_, err := writeFull(c.conn, dataCipher)
+	if written != int64(len(lenCipher)+len(dataCipher)) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 

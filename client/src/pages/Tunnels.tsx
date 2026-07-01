@@ -46,6 +46,7 @@ import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } 
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import { pollingInterval } from "@/lib/polling";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
@@ -1165,7 +1166,7 @@ function TunnelLatencyDialog({
   const [peakCutEnabled, setPeakCutEnabled] = useState(false);
   const { data, isLoading, isFetching } = trpc.tunnels.latencySeries.useQuery(
     { tunnelId, hours: 24 },
-    { enabled: open, refetchInterval: open ? 30000 : false, refetchOnMount: "always" }
+    { enabled: open, refetchInterval: pollingInterval("slow", open), refetchOnMount: "always" }
   );
   const cachedData = tunnelLatencySeriesCache.get(tunnelId);
   const rawSeriesData = (data ?? cachedData) as TunnelLatencySeriesDatum[] | undefined;
@@ -1381,7 +1382,7 @@ function TunnelSelfTestDialog({
   const utils = trpc.useUtils();
   const { data: tunnels } = trpc.tunnels.list.useQuery(undefined, {
     enabled: open,
-    refetchInterval: open ? 1500 : false,
+    refetchInterval: pollingInterval("interactive", open),
     refetchOnWindowFocus: false,
   });
   const tunnel = useMemo(() => tunnels?.find((item: any) => item.id === tunnelId), [tunnels, tunnelId]);
@@ -1684,9 +1685,9 @@ function groupHostSummary(group: any, hosts: any[] | undefined) {
 
 function TunnelsContent() {
   const utils = trpc.useUtils();
-  const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: 3000 });
+  const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: pollingInterval("active") });
   const { data: hosts } = trpc.hosts.list.useQuery();
-  const { data: forwardGroups, isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: 15000 });
+  const { data: forwardGroups, isLoading: forwardGroupsLoading } = trpc.forwardGroups.list.useQuery(undefined, { refetchInterval: pollingInterval("normal") });
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);

@@ -5,6 +5,7 @@ import DatePickerInput, { parseDateInputValue } from "@/components/DatePickerInp
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -217,6 +218,7 @@ function MobileInfoRow({
 
 export default function Billing() {
   const utils = trpc.useUtils();
+  const confirmDialog = useConfirmDialog();
   const { data: users = [], isLoading: usersLoading } = trpc.users.list.useQuery();
   const { data: plans = [] } = trpc.plans.list.useQuery();
   const { data: subscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery({});
@@ -403,12 +405,18 @@ export default function Billing() {
     toast.success(`已导出 ${codes.length} 个兑换码`);
   };
 
-  const deleteSelectedRedemptionCodes = () => {
+  const deleteSelectedRedemptionCodes = async () => {
     if (selectedRedemptionIds.length === 0) {
       toast.error("请先选择兑换码");
       return;
     }
-    if (!window.confirm(`确认删除选中的 ${selectedRedemptionIds.length} 个兑换码？`)) return;
+    const confirmed = await confirmDialog({
+      title: "删除兑换码",
+      description: `确认删除选中的 ${selectedRedemptionIds.length} 个兑换码？此操作不会影响已经完成的兑换记录。`,
+      confirmText: "删除",
+      tone: "destructive",
+    });
+    if (!confirmed) return;
     deleteRedemptionCodes.mutate({ ids: selectedRedemptionIds });
   };
 

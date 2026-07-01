@@ -46,6 +46,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
@@ -325,7 +326,7 @@ function UsersContent() {
   );
   const { data: userSummary, isLoading: summaryLoading } = trpc.users.summary.useQuery(undefined, {
     enabled: currentUser?.role === "admin",
-    refetchInterval: 30000,
+    refetchInterval: pollingInterval("slow"),
   });
   const { data: allSubscriptions = [], isLoading: subscriptionsLoading } = trpc.plans.subscriptions.useQuery(
     {},

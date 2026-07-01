@@ -852,6 +852,23 @@ function canManageWebPort() {
   return process.platform !== "win32" && !isDockerRuntime();
 }
 
+function getPublicWebPort() {
+  if (isDockerRuntime() && ENV.publicPort > 0) return ENV.publicPort;
+  if (isDockerRuntime() && ENV.port === 3000) return 9810;
+  return ENV.port;
+}
+
+function getWebPortManagement(options?: { publicView?: boolean }) {
+  const docker = isDockerRuntime();
+  const publicPort = getPublicWebPort();
+  return {
+    enabled: options?.publicView ? false : canManageWebPort(),
+    docker,
+    publicPort,
+    containerPort: docker ? ENV.port : publicPort,
+  };
+}
+
 function isTcpPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -1210,11 +1227,8 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
       keyPem: "",
       activeProtocol,
     },
-    webPort: ENV.port,
-    webPortManagement: {
-      enabled: false,
-      docker: isDockerRuntime(),
-    },
+    webPort: getPublicWebPort(),
+    webPortManagement: getWebPortManagement({ publicView: true }),
     registrationEnabled: all.registrationEnabled !== "false",
     twoFactorEnabled: all.twoFactorEnabled === "true",
     lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
@@ -1363,11 +1377,8 @@ export const systemRouter = router({
         keyPem: panelSsl.keyPem,
         activeProtocol,
       },
-      webPort: ENV.port,
-      webPortManagement: {
-        enabled: canManageWebPort(),
-        docker: isDockerRuntime(),
-      },
+      webPort: getPublicWebPort(),
+      webPortManagement: getWebPortManagement(),
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",

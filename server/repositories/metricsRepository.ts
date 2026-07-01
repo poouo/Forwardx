@@ -16,6 +16,7 @@ import { executeRaw, getDb, getDatabaseKind, nowDate, queryRaw, rawAffectedRows 
 import { boolLiteral, bucketExpression, limitOffset, quoteIdentifier } from "../dbCompat";
 import { clampPositiveInt, epochSeconds, sqlBool } from "./repositoryUtils";
 import { getSetting, setSetting } from "./settingsRepository";
+import { appendPanelLog } from "../_core/panelLogger";
 
 const TRAFFIC_BUCKET_MINUTES = 30;
 const TRAFFIC_BUCKET_SECONDS = TRAFFIC_BUCKET_MINUTES * 60;
@@ -53,10 +54,15 @@ function rawBoolSql(value: boolean) {
   return boolLiteral(value);
 }
 
-function warnTrafficBucketOnce(error: unknown) {
+function warnTrafficBucketOnce(error: unknown, context?: { ruleId?: number; hostId?: number; userId?: number }) {
   if (trafficBucketUpsertWarned) return;
   trafficBucketUpsertWarned = true;
-  console.warn("[TrafficSummary] Bucket update skipped:", error instanceof Error ? error.message : String(error));
+  const details = [
+    context?.ruleId ? `rule=${context.ruleId}` : "",
+    context?.hostId ? `host=${context.hostId}` : "",
+    context?.userId ? `user=${context.userId}` : "",
+  ].filter(Boolean).join(" ");
+  console.warn(`[TrafficSummary] Bucket update skipped${details ? ` ${details}` : ""}:`, error instanceof Error ? error.message : String(error));
 }
 
 // ==================== Host Metrics Queries ====================
@@ -277,7 +283,7 @@ function nonNegativeCounter(value: unknown) {
 
 function hostTrafficDelta(current: number, previous: number | null) {
   if (previous === null) return 0;
-  return current >= previous ? current - previous : current;
+  return current >= previous ? current - previous : 0;
 }
 
 function nullableRowDate(value: unknown) {
@@ -352,6 +358,13 @@ export async function recordHostTrafficSample(hostId: number, sample: HostTraffi
   const prevOut = existing?.lastSystemOut === null || existing?.lastSystemOut === undefined ? null : nonNegativeCounter(existing.lastSystemOut);
   const deltaIn = hostTrafficDelta(systemIn, prevIn);
   const deltaOut = hostTrafficDelta(systemOut, prevOut);
+  const counterReset = (prevIn !== null && systemIn < prevIn) || (prevOut !== null && systemOut < prevOut);
+  if (counterReset) {
+    appendPanelLog(
+      "warn",
+      `[HostTraffic] counter baseline reset host=${id} prevIn=${prevIn ?? "-"} nextIn=${systemIn} prevOut=${prevOut ?? "-"} nextOut=${systemOut}`,
+    );
+  }
 
   if (existing) {
     await executeRaw(
@@ -462,8 +475,9 @@ export async function insertTrafficStat(stat: InsertTrafficStat, options: { user
   const bytesOut = numeric(stat.bytesOut);
   const connections = Math.max(0, Math.floor(numeric(stat.connections)));
   if (ruleId <= 0 || hostId <= 0 || (bytesIn <= 0 && bytesOut <= 0 && connections <= 0)) return;
+  let userId = Number(options.userId || 0) || 0;
   try {
-    const userId = Number(options.userId || 0) || await getRuleUserId(ruleId);
+    if (userId <= 0) userId = await getRuleUserId(ruleId);
     if (userId > 0) {
       await upsertTrafficStatBucket({
         ruleId,
@@ -476,7 +490,7 @@ export async function insertTrafficStat(stat: InsertTrafficStat, options: { user
       });
     }
   } catch (error) {
-    warnTrafficBucketOnce(error);
+    warnTrafficBucketOnce(error, { ruleId, hostId, userId: userId || undefined });
   }
 }
 

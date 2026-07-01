@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/table";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
+import { pollingInterval } from "@/lib/polling";
 import {
   Plus,
   Trash2,
@@ -2104,7 +2105,7 @@ function RulesContent() {
     return () => window.clearTimeout(timer);
   }, []);
   const { data: rules, isLoading } = trpc.rules.list.useQuery(undefined, {
-    refetchInterval: 15000,
+    refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
@@ -2123,7 +2124,7 @@ function RulesContent() {
   });
   const { data: forwardGroups } = trpc.forwardGroups.list.useQuery(undefined, {
     enabled: secondaryQueriesReady,
-    refetchInterval: 15000,
+    refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
@@ -2201,7 +2202,7 @@ function RulesContent() {
   const [importingRules, setImportingRules] = useState(false);
   const { data: selectedScopeRules } = trpc.rules.list.useQuery(effectiveRulesQuery as any, {
     enabled: selectedScopeQueryEnabled,
-    refetchInterval: 15000,
+    refetchInterval: pollingInterval("normal"),
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
@@ -3191,7 +3192,7 @@ function RulesContent() {
     { hours: 24, range: "total", ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: 15000,
+      refetchInterval: pollingInterval("normal"),
       staleTime: 5000,
       refetchOnWindowFocus: false,
     }
@@ -3200,7 +3201,7 @@ function RulesContent() {
     { hours: 24, range: "24h", ruleIds: visibleRuleIdsForMetrics },
     {
       enabled: secondaryQueriesReady && visibleRuleIdsForMetrics.length > 0,
-      refetchInterval: 15000,
+      refetchInterval: pollingInterval("normal"),
       staleTime: 5000,
       refetchOnWindowFocus: false,
     }
@@ -6529,7 +6530,7 @@ function SelfTestDialog({
     { ruleId },
     {
       enabled: open,
-      refetchInterval: open ? 1500 : false,
+      refetchInterval: pollingInterval("interactive", open),
       refetchOnWindowFocus: false,
     }
   );

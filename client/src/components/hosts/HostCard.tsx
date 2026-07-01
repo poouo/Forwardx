@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { trpc } from "@/lib/trpc";
@@ -96,6 +97,7 @@ export default function HostCard({
   refreshInterval,
   compact = false,
 }: HostCardProps) {
+  const confirmDialog = useConfirmDialog();
   const { data: metrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 2, live: !!refreshInterval },
     { refetchInterval: refreshInterval }
@@ -294,8 +296,13 @@ export default function HostCard({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-destructive hover:text-destructive"
-                onClick={() => {
-                  if (confirm("确定要删除此主机吗？")) onDelete(host.id);
+                onClick={async () => {
+                  if (await confirmDialog({
+                    title: "删除主机",
+                    description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
+                    confirmText: "删除",
+                    tone: "destructive",
+                  })) onDelete(host.id);
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -356,8 +363,13 @@ export default function HostCard({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-destructive hover:text-destructive"
-                onClick={() => {
-                  if (confirm("确定要删除此主机吗？")) onDelete(host.id);
+                onClick={async () => {
+                  if (await confirmDialog({
+                    title: "删除主机",
+                    description: "确定要删除此主机吗？删除后相关状态和配置会同步移除。",
+                    confirmText: "删除",
+                    tone: "destructive",
+                  })) onDelete(host.id);
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />

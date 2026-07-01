@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc } from "@/lib/trpc";
 import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
+import { pollingInterval } from "@/lib/polling";
 import { cn } from "@/lib/utils";
 
 const colors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
@@ -138,7 +139,7 @@ export default function HostProbeServiceLatencyDialog({
   const chartAnimationKey = useMemo(() => `${hostId || "host"}`, [hostId]);
   const { data = [], isLoading } = trpc.hosts.probeServiceSeries.useQuery(
     { serviceIds, hostId, hours: 24 },
-    { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: open ? 30000 : false },
+    { enabled: open && hostId > 0 && serviceIds.length > 0, refetchInterval: pollingInterval("slow", open) },
   );
 
   useEffect(() => {

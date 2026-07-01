@@ -21,6 +21,7 @@ export interface TrpcContext {
   res: Response;
   user: User | null;
   authSession: AuthSession | null;
+  authFailureReason: "session_replaced" | null;
 }
 
 type TokenSource = "cookie" | "bearer";
@@ -54,15 +55,19 @@ function normalizeSessionPayload(req: Request, payload: unknown) {
   };
 }
 
-async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<{ user: User; authSession: AuthSession } | null> {
+type ResolveSessionResult =
+  | { user: User; authSession: AuthSession; failureReason?: never }
+  | { user: null; authSession: null; failureReason: "session_replaced" | null };
+
+async function resolveSessionFromToken(req: Request, res: Response, token: string, source: TokenSource): Promise<ResolveSessionResult> {
   try {
-    if (!ENV.cookieSecret) return null;
+    if (!ENV.cookieSecret) return { user: null, authSession: null, failureReason: null };
     const payload = jwt.verify(token, ENV.cookieSecret);
     const normalized = normalizeSessionPayload(req, payload);
-    if (!normalized) return null;
+    if (!normalized) return { user: null, authSession: null, failureReason: null };
 
     const found = await db.getUserById(normalized.userId);
-    if (!found) return null;
+    if (!found) return { user: null, authSession: null, failureReason: null };
 
     const sessionKind = normalized.sid ? normalized.kind : inferLegacySessionKind(req);
     const field = getSessionKindField(sessionKind);
@@ -70,7 +75,11 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     const valid = normalized.sid ? storedToken === normalized.sid : !storedToken;
     if (!valid) {
       if (source === "cookie") clearSessionCookie(res, req);
-      return null;
+      return {
+        user: null,
+        authSession: null,
+        failureReason: normalized.sid && storedToken && storedToken !== normalized.sid ? "session_replaced" : null,
+      };
     }
 
     return {
@@ -87,22 +96,25 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     if (source === "cookie") {
       clearSessionCookie(res, req);
     }
-    return null;
+    return { user: null, authSession: null, failureReason: null };
   }
 }
 
 export async function createContext({ req, res }: CreateExpressContextOptions): Promise<TrpcContext> {
   let user: User | null = null;
   let authSession: AuthSession | null = null;
+  let authFailureReason: TrpcContext["authFailureReason"] = null;
 
   const session = getRequestToken(req);
   if (session.token) {
     const resolved = await resolveSessionFromToken(req, res, session.token, session.source || "cookie");
-    if (resolved) {
+    if (resolved.user) {
       user = resolved.user;
       authSession = resolved.authSession;
+    } else {
+      authFailureReason = resolved.failureReason;
     }
   }
 
-  return { req, res, user, authSession };
+  return { req, res, user, authSession, authFailureReason };
 }
