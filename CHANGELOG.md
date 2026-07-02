@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.3.211] - 2026-07-03
+
+### 修复
+
+- 修复大量规则同步时 Agent action 队列容量过小，规则数接近或超过队列上限后心跳线程可能被入队阻塞，导致面板出现频繁离线/上线抖动的问题。
+- 修复大量 gost 规则批量恢复时，普通规则 action 会重复触发 runtime reload，导致 190+ / 500+ 规则场景恢复耗时过长的问题；gost runtime 统一由 runtime-sync 重载，单条规则仅处理端口清理、计数链和状态回报。
+- 修正 Docs workflow 中 GitHub Pages deploy timeout 超过 `actions/deploy-pages` 允许最大值导致的误导性 warning。
+
+### 优化
+
+- Agent 在 action 队列繁忙时改为每 10 秒发送 `busy` 保活心跳，面板只更新在线状态和主机指标，不重复下发运行时任务。
+- Agent action 队列扩容到 4096，并在极端满队列时后台入队，避免高压规则同步阻塞主心跳循环。
+- Agent 将同一个 action 内的多条 shell 命令合并为一次批量执行，减少大量规则场景下反复启动 shell 的开销。
+
+### 版本
+
+- 面板版本升级至 `2.3.211`。
+- Agent 目标版本升级至 `2.2.133`。
+- Android APP 版本保持 `2.3.77`。
+
 ## [2.3.210] - 2026-07-02
 
 ### 新增

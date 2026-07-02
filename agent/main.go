@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.132"
+var Version = "2.2.133"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -54,8 +54,8 @@ const agentMemoryCacheRetention = 24 * time.Hour
 const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
-const actionBacklogHeartbeatDelay = 30 * time.Second
-const actionBacklogKeepaliveInterval = 25 * time.Second
+const actionBacklogKeepaliveInterval = 10 * time.Second
+const actionQueueCapacity = 4096
 const actionShellTimeout = 90 * time.Second
 const shellInlineMaxBytes = 32 * 1024
 const protocolGuardSampleMinBytes = 96
@@ -100,7 +100,7 @@ var agentLogMu sync.Mutex
 var agentLogPrunedAt time.Time
 var activeConfigPath string
 var runtimePanelURL atomic.Value
-var actionQueue = make(chan actionJob, 128)
+var actionQueue = make(chan actionJob, actionQueueCapacity)
 var actionEpochMu sync.Mutex
 var latestActionIssuedAt = map[string]int64{}
 var iperf3Mu sync.Mutex
@@ -483,39 +483,25 @@ func main() {
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
-	lastHeartbeatOkAt := time.Time{}
 	for {
 		if pending := atomic.LoadInt64(&actionPendingCount); pending > 0 {
-			delay := actionBacklogHeartbeatDelay
-			if pending <= 3 {
-				delay = 5 * time.Second
-			}
 			if shouldLogAgentReport("heartbeat-backlog", agentReportLogInterval) {
-				logf("heartbeat delayed pendingActions=%d delay=%s", pending, delay)
+				logf("heartbeat busy keepalive pendingActions=%d interval=%s", pending, actionBacklogKeepaliveInterval)
+			}
+			if err := heartbeatKeepalive(cfg); err != nil {
+				if shouldLogAgentReport("heartbeat-keepalive-error", agentReportLogInterval) {
+					logf("heartbeat keepalive error while actions pending=%d: %v", atomic.LoadInt64(&actionPendingCount), err)
+				}
 			}
 			select {
 			case <-heartbeatWakeCh:
-			case <-time.After(delay):
+			case <-time.After(actionBacklogKeepaliveInterval):
 			}
-			if atomic.LoadInt64(&actionPendingCount) > 0 {
-				if lastHeartbeatOkAt.IsZero() || time.Since(lastHeartbeatOkAt) >= actionBacklogKeepaliveInterval {
-					if err := heartbeatKeepalive(cfg); err != nil {
-						if shouldLogAgentReport("heartbeat-keepalive-error", agentReportLogInterval) {
-							logf("heartbeat keepalive error while actions pending=%d: %v", atomic.LoadInt64(&actionPendingCount), err)
-						}
-					} else {
-						lastHeartbeatOkAt = time.Now()
-					}
-				}
-				continue
-			}
+			continue
 		}
 		nextInterval, err := heartbeat(cfg)
 		if err != nil && shouldLogAgentReport("heartbeat-error", agentReportLogInterval) {
 			logf("heartbeat error: %v", err)
-		}
-		if err == nil {
-			lastHeartbeatOkAt = time.Now()
 		}
 		if nextInterval <= 0 {
 			nextInterval = cfg.Interval
@@ -527,6 +513,13 @@ func main() {
 		case <-heartbeatWakeCh:
 		case <-time.After(time.Duration(nextInterval) * time.Second):
 		}
+	}
+}
+
+func wakeHeartbeat() {
+	select {
+	case heartbeatWakeCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -1440,10 +1433,7 @@ func runAgentEventStream(cfg Config) error {
 						go selfUpgrade(cfg, &up)
 					}
 				} else if msg.Type == "agent-refresh" {
-					select {
-					case heartbeatWakeCh <- struct{}{}:
-					default:
-					}
+					wakeHeartbeat()
 				}
 			}
 			data.Reset()
@@ -1479,9 +1469,7 @@ func handleAction(cfg Config, a action) {
 			return
 		}
 		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
-		for _, cmd := range append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...) {
-			ok = runShell(cmd) && ok
-		}
+		ok = runShellBatch(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...)) && ok
 		logGostRuntimeProxySummary(runtimeConfigPath, runtimeServiceName)
 		logGostRuntimeProxySummary(tunnelRuntimeConfigPath, tunnelRuntimeServiceName)
 		if !ok || agentVerboseLogs {
@@ -1498,18 +1486,14 @@ func handleAction(cfg Config, a action) {
 			logf("action preserves already-running fxp rule=%d tunnel=%d port=%d; skipping disruptive apply commands", a.RuleID, a.TunnelID, a.SourcePort)
 		} else {
 			cleanupKernelForwardPortBeforeApply(a)
-			for _, cmd := range a.PreCommands {
-				ok = runShell(cmd) && ok
-			}
+			ok = runShellBatch(a.PreCommands) && ok
 			if a.Unit != "" && a.ServiceName != "" {
 				ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
 			}
 			if a.UnitExtra != "" && a.ServiceNameExtra != "" {
 				ok = writeUnitAndRestart(a.ServiceNameExtra, a.UnitExtra) && ok
 			}
-			for _, cmd := range a.Commands {
-				ok = runShell(cmd) && ok
-			}
+			ok = runShellBatch(a.Commands) && ok
 		}
 		if a.Fxp != nil {
 			fxpOK := startFXP(cfg, *a.Fxp, actionMessage)
@@ -1540,9 +1524,7 @@ func handleAction(cfg Config, a action) {
 			for _, name := range managedServiceNamesForAction(a) {
 				cleanupManagedService(name)
 			}
-			for _, cmd := range a.Commands {
-				ok = runShell(cmd) && ok
-			}
+			ok = runShellBatch(a.Commands) && ok
 			if shouldReportActionStatus(a) {
 				removeState(a.SourcePort)
 			}
@@ -2275,15 +2257,11 @@ func runPostCommands(commands []string, actionMessage *actionMessage) {
 	if len(commands) == 0 {
 		return
 	}
-	failed := 0
-	for _, cmd := range commands {
-		if !runShell(cmd) {
-			failed++
+	if !runShellBatch(commands) {
+		if actionMessage != nil {
+			actionMessage.remember("non-critical post apply commands failed; forwarding service may still be running")
 		}
-	}
-	if failed > 0 {
-		actionMessage.remember("non-critical post apply commands failed=%d; forwarding service may still be running", failed)
-		logf("post apply commands completed with failures=%d total=%d", failed, len(commands))
+		logf("post apply commands completed with failures total=%d", len(commands))
 	}
 }
 
@@ -5150,6 +5128,31 @@ func runShell(cmd string) bool {
 		return false
 	}
 	return true
+}
+
+func runShellBatch(commands []string) bool {
+	filtered := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		if strings.TrimSpace(cmd) != "" {
+			filtered = append(filtered, cmd)
+		}
+	}
+	if len(filtered) == 0 {
+		return true
+	}
+	if len(filtered) == 1 {
+		return runShell(filtered[0])
+	}
+	var script strings.Builder
+	script.WriteString("set +e\n")
+	script.WriteString("__forwardx_status=0\n")
+	for _, cmd := range filtered {
+		script.WriteString("(\n")
+		script.WriteString(cmd)
+		script.WriteString("\n) || __forwardx_status=1\n")
+	}
+	script.WriteString("exit $__forwardx_status\n")
+	return runShell(script.String())
 }
 
 func shellCommand(ctx context.Context, cmd string) (*exec.Cmd, func(), error) {
