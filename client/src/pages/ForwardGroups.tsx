@@ -1018,6 +1018,7 @@ export function ForwardGroupsContent({
       label: t.name,
       meta: getTunnelRouteText(t, hosts),
     }));
+  const showExitAddressColumns = form.groupMode === "exit" && effectiveGroupType === "host";
 
   const addMember = (id: number) => {
     if (!id) return;
@@ -1963,6 +1964,33 @@ export function ForwardGroupsContent({
                     </Select>
                   </div>
                   <div className="space-y-2">
+                    {form.members.length > 0 && (
+                      <>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                          <span className="font-medium text-foreground/70">开关说明</span>
+                          {showExitAddressColumns && (
+                            <>
+                              <span>内网：使用该主机内网 IP</span>
+                              <span>IPv6：使用该主机 IPv6</span>
+                              <span>两者互斥，未配置时不可开启</span>
+                            </>
+                          )}
+                          <span>启用：关闭后该成员不参与当前组</span>
+                        </div>
+                        <div className={`hidden items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid ${showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]"}`}>
+                          <span className="col-span-2">顺序</span>
+                          <span>{effectiveGroupType === "host" ? "主机" : "隧道"}</span>
+                          {showExitAddressColumns && (
+                            <>
+                              <span className="text-center">内网</span>
+                              <span className="text-center">IPv6</span>
+                            </>
+                          )}
+                          <span className="text-center">启用</span>
+                          <span className="text-right">操作</span>
+                        </div>
+                      </>
+                    )}
                     {form.members.map((member, index) => (
                       <div
                         key={member.key}
@@ -1973,7 +2001,7 @@ export function ForwardGroupsContent({
                           if (dragMemberKey) moveMember(dragMemberKey, member.key);
                           setDragMemberKey(null);
                         }}
-                        className="flex items-center gap-3 rounded-md border border-border/60 bg-background/70 px-3 py-2"
+                        className={`flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2 sm:grid sm:gap-1.5 ${showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]"}`}
                       >
                         <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
                         <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
@@ -1985,39 +2013,43 @@ export function ForwardGroupsContent({
                             labelClassName="truncate"
                           />
                         ) : (
-                          <>
+                          <div className="flex min-w-0 items-center gap-2">
                             <Route className="h-4 w-4 text-primary" />
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
                             </div>
-                          </>
+                          </div>
                         )}
                         {form.groupMode === "exit" && member.memberType === "host" && (
-                          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                            <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
-                              <span>内网</span>
+                          <>
+                            <div className="flex h-7 w-[56px] items-center justify-center">
                               <Switch
                                 checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostPrivateAddress(hostById.get(Number(member.hostId || 0))))}
                                 disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
                                 onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
+                                aria-label={`为${memberLabel(member)}使用内网IP`}
                               />
-                            </label>
-                            <label className="flex items-center gap-2 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground">
-                              <span>IPv6</span>
+                            </div>
+                            <div className="flex h-7 w-[56px] items-center justify-center">
                               <Switch
                                 checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostIpv6Address(hostById.get(Number(member.hostId || 0))))}
                                 disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
                                 onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
+                                aria-label={`为${memberLabel(member)}使用IPv6转发`}
                               />
-                            </label>
-                          </div>
+                            </div>
+                          </>
                         )}
-                        <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
-                          setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                        }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex h-7 w-[52px] items-center justify-center">
+                          <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
+                            setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
+                          }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
+                        </div>
+                        <div className="flex h-7 w-9 items-center justify-end">
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </div>
                     ))}
                     {form.members.length === 0 && (

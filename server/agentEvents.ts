@@ -67,12 +67,16 @@ export function pushAgentUpgrade(hostId: number, targetVersion: string | null, p
 }
 
 export function markHostMetricsWatching(hostIds: number[], ttlMs = 6000) {
+  const newlyWatched: number[] = [];
+  const now = Date.now();
   const until = Date.now() + ttlMs;
   for (const id of hostIds) {
     if (Number.isFinite(id) && id > 0) {
+      if ((hostMetricsWatchUntil.get(id) || 0) <= now) newlyWatched.push(id);
       hostMetricsWatchUntil.set(id, until);
     }
   }
+  return newlyWatched;
 }
 
 export function isHostMetricsWatching(hostId: number) {

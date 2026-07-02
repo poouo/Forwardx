@@ -1255,17 +1255,6 @@ function HostsContent() {
     }
   }, [displayHosts, latestAgentVersion]);
 
-  useEffect(() => {
-    if (!hostLiveRefreshInterval || !displayHosts.length) return;
-    const hostIds = displayHosts.map((host: any) => Number(host.id)).filter(Boolean);
-    if (hostIds.length === 0) return;
-    watchMetricsMutation.mutate({ hostIds });
-    const timer = window.setInterval(() => {
-      watchMetricsMutation.mutate({ hostIds });
-    }, hostLiveRefreshInterval);
-    return () => window.clearInterval(timer);
-  }, [hostLiveRefreshInterval, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const resetForm = () => {
     setForm(defaultFormData);
     setEditingId(null);
@@ -1446,6 +1435,16 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
+  useEffect(() => {
+    if (!hostLiveRefreshInterval || !displayHosts.length) return;
+    const hostIds = displayHosts.map((host: any) => Number(host.id)).filter(Boolean);
+    if (hostIds.length === 0) return;
+    watchMetricsMutation.mutate({ hostIds });
+    const timer = window.setInterval(() => {
+      watchMetricsMutation.mutate({ hostIds });
+    }, hostLiveRefreshInterval);
+    return () => window.clearInterval(timer);
+  }, [hostLiveRefreshInterval, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
@@ -1458,11 +1457,16 @@ function HostsContent() {
   }, [hostTrafficRows]);
   const { data: hostLatestMetricRows = [] } = trpc.hosts.latestMetricsSummary.useQuery(
     { hostIds: pagedHostIds },
-    { enabled: !!hostLiveRefreshInterval && viewMode === "table" && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
+    { enabled: !!hostLiveRefreshInterval && pagedHostIds.length > 0, refetchInterval: hostLiveRefreshInterval }
   );
   const hostLatestMetricById = useMemo(() => {
     const map = new Map<number, any>();
     for (const row of hostLatestMetricRows as any[]) map.set(Number(row.hostId), row);
+    return map;
+  }, [hostLatestMetricRows]);
+  const hostLatestMetricSeriesById = useMemo(() => {
+    const map = new Map<number, any[]>();
+    for (const row of hostLatestMetricRows as any[]) map.set(Number(row.hostId), [row]);
     return map;
   }, [hostLatestMetricRows]);
   const requestResetHostTraffic = (host: any) => {
@@ -1789,6 +1793,7 @@ function HostsContent() {
                   onViewProbeLatency={setProbeLatencyHost}
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
+                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostLiveRefreshInterval}
                 />
@@ -1823,6 +1828,7 @@ function HostsContent() {
                   onViewProbeLatency={setProbeLatencyHost}
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
+                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostLiveRefreshInterval}
                 />
@@ -1856,6 +1862,7 @@ function HostsContent() {
                 onViewProbeLatency={setProbeLatencyHost}
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                 traffic={hostTrafficById.get(host.id)}
+                metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
                 latestAgentVersion={latestAgentVersion}
                 refreshInterval={hostLiveRefreshInterval}
                 compact={viewMode === "compact-card"}
@@ -1878,6 +1885,7 @@ function HostsContent() {
                   onViewProbeLatency={setProbeLatencyHost}
                 resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
                   traffic={hostTrafficById.get(host.id)}
+                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
                   latestAgentVersion={latestAgentVersion}
                   refreshInterval={hostLiveRefreshInterval}
                 />

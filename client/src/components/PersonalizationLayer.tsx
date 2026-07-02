@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
 
 const MOBILE_BACKGROUND_MEDIA = "(max-width: 767px), (pointer: coarse)";
 
@@ -13,7 +14,10 @@ function shouldReduceMobileBackground() {
 }
 
 export default function PersonalizationLayer() {
+  const [location] = useLocation();
+  const deferForLogin = location.startsWith("/login");
   const { data } = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: !deferForLogin,
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 60_000,

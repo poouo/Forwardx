@@ -77,6 +77,7 @@ type HostCardProps = {
   onViewProbeLatency?: (host: any) => void;
   resetTrafficPending?: boolean;
   traffic?: { bytesIn?: number | null; bytesOut?: number | null } | null;
+  metrics?: any[] | null;
   canUpgrade: boolean;
   latestAgentVersion?: string;
   refreshInterval: number | false;
@@ -92,18 +93,21 @@ export default function HostCard({
   onViewProbeLatency,
   resetTrafficPending = false,
   traffic = null,
+  metrics: externalMetrics,
   canUpgrade,
   latestAgentVersion,
   refreshInterval,
   compact = false,
 }: HostCardProps) {
   const confirmDialog = useConfirmDialog();
-  const { data: metrics } = trpc.hosts.metrics.useQuery(
+  const hasExternalMetrics = externalMetrics !== undefined;
+  const { data: queriedMetrics } = trpc.hosts.metrics.useQuery(
     { hostId: host.id, limit: 2, live: !!refreshInterval },
-    { refetchInterval: refreshInterval }
+    { enabled: !hasExternalMetrics, refetchInterval: hasExternalMetrics ? false : refreshInterval }
   );
+  const metrics = hasExternalMetrics ? externalMetrics : queriedMetrics;
   const cachedMetrics = useMemo(() => readCachedHostMetrics(host.id), [host.id]);
-  const displayMetrics = metrics === undefined ? cachedMetrics : metrics;
+  const displayMetrics = metrics === undefined || metrics === null || metrics.length === 0 ? cachedMetrics : metrics;
   const latestMetric = displayMetrics?.[0];
   const previousMetric = displayMetrics?.[1];
   const totalNetworkIn = traffic?.bytesIn == null ? null : Number(traffic.bytesIn);
@@ -155,7 +159,14 @@ export default function HostCard({
       : "Swap 未上报",
   ].join("\n");
   const networkSpeed = useMemo(() => {
-    if (!latestMetric || !previousMetric) return { in: null as number | null, out: null as number | null };
+    if (!latestMetric) return { in: null as number | null, out: null as number | null };
+    if (latestMetric.networkSpeedIn != null || latestMetric.networkSpeedOut != null) {
+      return {
+        in: latestMetric.networkSpeedIn == null ? null : Number(latestMetric.networkSpeedIn),
+        out: latestMetric.networkSpeedOut == null ? null : Number(latestMetric.networkSpeedOut),
+      };
+    }
+    if (!previousMetric) return { in: null as number | null, out: null as number | null };
     const latestAt = new Date(latestMetric.recordedAt).getTime();
     const previousAt = new Date(previousMetric.recordedAt).getTime();
     const seconds = Math.max(1, (latestAt - previousAt) / 1000);

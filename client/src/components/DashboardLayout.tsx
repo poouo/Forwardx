@@ -76,6 +76,7 @@ import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult
 import { cn } from "@/lib/utils";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { preloadAppRoute } from "@/lib/routePreload";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
 
@@ -803,12 +804,25 @@ function DashboardLayoutContent({
   const managementMenuItems: SidebarNavItem[] = isAdmin
     ? [profileMenuItem, ...adminMenuItems]
     : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
-  const navigateFromSidebar = (path: string) => {
-    setLocation(path);
+  const navigationRequestRef = useRef(0);
+  const closeMobileNavigation = () => {
     if (isMobile) {
       setAccountMenuOpen(false);
       setOpenMobile(false);
     }
+  };
+  const navigateFromSidebar = (path: string) => {
+    closeMobileNavigation();
+    if (path === currentPath) return;
+
+    const requestId = ++navigationRequestRef.current;
+    preloadAppRoute(path)
+      .catch(() => undefined)
+      .then(() => {
+        if (requestId === navigationRequestRef.current) {
+          setLocation(path);
+        }
+      });
   };
   const navigateFromAccountMenu = (path: string) => {
     setAccountMenuOpen(false);
@@ -846,6 +860,9 @@ function DashboardLayoutContent({
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton
           isActive={isActive}
+          onMouseEnter={() => void preloadAppRoute(item.path).catch(() => undefined)}
+          onFocus={() => void preloadAppRoute(item.path).catch(() => undefined)}
+          onTouchStart={() => void preloadAppRoute(item.path).catch(() => undefined)}
           onClick={() => navigateFromSidebar(item.path)}
           tooltip={item.label}
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}

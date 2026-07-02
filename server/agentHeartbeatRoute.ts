@@ -339,7 +339,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
 
-    const { cpuUsage, cpuInfo, memoryUsage, memoryUsed, memoryTotal, swapUsage, swapUsed, swapTotal, networkIn, networkOut, diskUsage, diskUsed, diskTotal, uptime, agentVersion } = req.body;
+    const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
+    const heartbeatMetric = (key: string, index: number) => req.body?.[key] ?? compactMetrics[index];
+    const cpuUsage = heartbeatMetric("cpuUsage", 0);
+    const memoryUsage = heartbeatMetric("memoryUsage", 1);
+    const memoryUsed = heartbeatMetric("memoryUsed", 2);
+    const memoryTotal = heartbeatMetric("memoryTotal", 3);
+    const swapUsage = heartbeatMetric("swapUsage", 4);
+    const swapUsed = heartbeatMetric("swapUsed", 5);
+    const swapTotal = heartbeatMetric("swapTotal", 6);
+    const networkIn = heartbeatMetric("networkIn", 7);
+    const networkOut = heartbeatMetric("networkOut", 8);
+    const diskUsage = heartbeatMetric("diskUsage", 9);
+    const diskUsed = heartbeatMetric("diskUsed", 10);
+    const diskTotal = heartbeatMetric("diskTotal", 11);
+    const uptime = heartbeatMetric("uptime", 12);
+    const { cpuInfo, agentVersion } = req.body;
     const nextCpuInfo = normalizeAgentText(cpuInfo, 256);
     const nextAgentVersion = normalizeAgentText(agentVersion, 64);
     const previousHost = { ...(host as any) };
@@ -3598,7 +3613,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
     const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, panelUrl, forceTcping, nextInterval });
+    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, panelUrl, forceTcping, nextInterval, compactReports: true });
   } catch (error) {
     console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });

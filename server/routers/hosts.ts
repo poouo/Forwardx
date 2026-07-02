@@ -741,8 +741,8 @@ export const hostsRouter = router({
           await requireHostAccess(ctx, hostId);
           allowed.push(hostId);
         }
-        markHostMetricsWatching(allowed);
-        for (const hostId of allowed) pushAgentRefresh(hostId, "metrics-watch");
+        const newlyWatched = markHostMetricsWatching(allowed);
+        for (const hostId of newlyWatched) pushAgentRefresh(hostId, "metrics-watch");
         return { success: true, count: allowed.length };
       }),
     requestAgentUpgrade: adminProcedure
