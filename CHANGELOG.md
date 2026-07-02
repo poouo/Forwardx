@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.3.212] - 2026-07-03
+
+### 修复
+
+- 修复大量规则或协议守护规则反复同步时，Agent 删除不存在的 systemd 托管服务仍会持续触发 `daemon-reload`，导致 PID 1 / systemd CPU 占用升高的问题。
+- 修复协议守护 backend apply 时会先删除当前要启动的 `forwardx-*-guard-*` 服务再重建，造成守护服务反复 stop/start、规则状态抖动和心跳延迟的问题。
+- 修复已删除的 `forwardx-socat-guard-*` 等失败单元残留在 systemd failed 状态后，后续清理没有执行 `reset-failed`，可能持续干扰状态判断的问题。
+
+### 优化
+
+- 新 Agent 心跳协议新增 desired-state 期望状态同步：面板只声明当前主机应该存在的规则/隧道/runtime 状态，Agent 本地按签名 diff 后只执行新增、删除或配置变化的项，避免 190+ / 500+ 规则场景下每轮心跳重复下发并执行大批 shell。
+- Agent 托管服务写入改为内容比对：unit 文件无变化时不再执行 `systemctl daemon-reload`。
+- Agent 为托管服务记录动作签名，配置未变化且服务仍处于 active 状态时跳过重复 restart，降低 190+ / 500+ 规则场景下的 systemctl 与 shell 阻塞。
+- Agent runtime 同签名同步从 5 分钟重跑一次调整为 30 分钟兜底，并在本地配置对应服务仍 active 时直接跳过，减少大量规则场景下的周期性 shell 压力。
+- 面板下发的托管服务写入/删除命令改为幂等执行，重复 apply/remove 会尽量退化为低成本 no-op。
+
+### 版本
+
+- 面板版本升级至 `2.3.212`。
+- Agent 目标版本升级至 `2.2.134`。
+- Android APP 版本保持 `2.3.77`。
+
 ## [2.3.211] - 2026-07-03
 
 ### 修复

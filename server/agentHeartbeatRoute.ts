@@ -74,6 +74,7 @@ const LEGACY_TUNNEL_SERVICE_NAME = "forwardx-tunnels";
 const MIMIC_CONFIG_DIR = "/etc/mimic";
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
+const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
@@ -384,6 +385,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const upgradedProtocolGuardBackendAgent = !!nextAgentVersion
       && isAgentVersionAtLeast(nextAgentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)
       && !isAgentVersionAtLeast(previousHost.agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION);
+    const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
+    const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
 
     await db.updateHostHeartbeat(host.id, {
       ip: reportedAddress.ip,
@@ -1484,16 +1487,22 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ? { targetIp: "127.0.0.1", targetPort: guardBackendPort(rule), backendPort: guardBackendPort(rule), backendForwardType: String(rule.forwardType || "") }
         : { ...failoverTargetEndpoint(rule), backendPort: 0, backendForwardType: "" }
     );
-    const cleanupGuardBackendCmds = (rule: any) => {
+    const cleanupGuardBackendCmds = (rule: any, keepNames: string[] = []) => {
       const sourcePort = Number(rule?.sourcePort || 0);
       if (!sourcePort) return [];
-      return [
-        removeManagedServiceCmd(`forwardx-realm-guard-${sourcePort}`),
-        removeManagedServiceCmd(`forwardx-socat-guard-${sourcePort}`),
-        removeManagedServiceCmd(`forwardx-socat-guard-tcp-${sourcePort}`),
-        removeManagedServiceCmd(`forwardx-socat-guard-udp-${sourcePort}`),
-        `rm -f ${shQuote(realmGuardConfigPathForPort(sourcePort))} ${shQuote(`${realmGuardConfigPathForPort(sourcePort)}.sha256`)} 2>/dev/null || true`,
+      const keep = new Set(keepNames.map((name) => String(name || "").trim()).filter(Boolean));
+      const realmGuardService = `forwardx-realm-guard-${sourcePort}`;
+      const services = [
+        realmGuardService,
+        `forwardx-socat-guard-${sourcePort}`,
+        `forwardx-socat-guard-tcp-${sourcePort}`,
+        `forwardx-socat-guard-udp-${sourcePort}`,
       ];
+      const cmds = services.filter((name) => !keep.has(name)).map((name) => removeManagedServiceCmd(name));
+      if (!keep.has(realmGuardService)) {
+        cmds.push(`rm -f ${shQuote(realmGuardConfigPathForPort(sourcePort))} ${shQuote(`${realmGuardConfigPathForPort(sourcePort)}.sha256`)} 2>/dev/null || true`);
+      }
+      return cmds;
     };
     const tunnelExitRules = agentAllRules
       .filter((r: any) => {
@@ -2473,7 +2482,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       if (fxpTunnel && tunnelProtocolEnabled && tunnelNeedsMimic(tunnel)) {
         addMimicLocalFilterForPort(fxpListenPort);
       }
-      if (tunnel.isEnabled && tunnelProtocolEnabled && shouldRefreshExit) {
+      if (tunnel.isEnabled && tunnelProtocolEnabled && (supportsDesiredState || shouldRefreshExit)) {
         actions.push({
           tunnelId: tunnel.id,
           statusType: "tunnel",
@@ -2531,7 +2540,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
         const isFXP = isForwardXTunnel(tunnel);
         const multiHopRuntimeReady = isTunnelRuntimeHostReady(Number(tunnel.id), Number(host.id));
-        const shouldApply = tunnel.isEnabled && !multiHopRuntimeReady;
+        const shouldApply = tunnel.isEnabled && (supportsDesiredState || !multiHopRuntimeReady);
         const shouldRemove = isFXP ? !tunnel.isEnabled : !tunnel.isEnabled && (tunnel.isRunning || multiHopRuntimeReady);
 
         if (!shouldApply && !shouldRemove) continue;
@@ -2691,7 +2700,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const shouldRefreshGuardBackend = useRuleGuard
         && shouldUseProcessBackendGuard(rule)
         && !rule.isRunning;
-      if (rule.isEnabled && (!rule.isRunning || shouldRefreshTunnelEntryRule || shouldRefreshForwardXMultiHopRule || shouldRefreshGuardBackend)) {
+      if (rule.isEnabled && (supportsDesiredState || !rule.isRunning || shouldRefreshTunnelEntryRule || shouldRefreshForwardXMultiHopRule || shouldRefreshGuardBackend)) {
         const cmds: string[] = [];
         if (useRuleGuard) {
           const guardTarget = guardTargetForRule(rule, useRuleGuard);
@@ -2712,11 +2721,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               : proxyProtocolEnabled(rule, "send"),
             proxyProtocolVersion: proxyProtocolVersion(rule),
           });
-          const guardCleanupCmds = [
+          const guardBaseCleanupCmds = [
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...buildIptablesForwardCleanupCmds(rule),
             ...buildNftCleanupCmds(rule),
-            ...cleanupGuardBackendCmds(rule),
           ];
           const guardCountingCmds = [
             ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
@@ -2778,21 +2786,24 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               "",
             ].join("\n");
             guardAction.preCommands = [
-              ...guardCleanupCmds,
+              ...guardBaseCleanupCmds,
+              ...cleanupGuardBackendCmds(rule, [svcName]),
               ...buildGostReloadCmds(),
               `mkdir -p ${shQuote(REALM_CONFIG_DIR)}`,
               `printf '%s' '${realmConfigB64}' | base64 -d > ${shQuote(realmConfigPath)}`,
             ];
             guardAction.commands = guardCountingCmds;
           } else if (guardTarget.backendPort > 0 && rule.forwardType === "socat") {
-            const socatPreCmds: string[] = [
-              ...guardCleanupCmds,
-              ...buildGostReloadCmds(),
-              `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
-            ];
+            let socatPreCmds: string[] = [];
             if (normalizeForwardRuleProtocol(rule.protocol) === "both") {
               const svcNameTcp = `forwardx-socat-guard-tcp-${rule.sourcePort}`;
               const svcNameUdp = `forwardx-socat-guard-udp-${rule.sourcePort}`;
+              socatPreCmds = [
+                ...guardBaseCleanupCmds,
+                ...cleanupGuardBackendCmds(rule, [svcNameTcp, svcNameUdp]),
+                ...buildGostReloadCmds(),
+                `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
+              ];
               guardAction.svcName = svcNameTcp;
               guardAction.svcNameExtra = svcNameUdp;
               guardAction.unit = [
@@ -2831,6 +2842,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               const protoUpper = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "UDP" : "TCP";
               const listenProto = protoUpper === "UDP" ? "UDP4" : "TCP4";
               guardAction.svcName = `forwardx-socat-guard-${rule.sourcePort}`;
+              socatPreCmds = [
+                ...guardBaseCleanupCmds,
+                ...cleanupGuardBackendCmds(rule, [guardAction.svcName]),
+                ...buildGostReloadCmds(),
+                `command -v socat >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq socat || yum install -y -q socat || dnf install -y -q socat || zypper -n install socat || apk add --no-cache socat || pacman -Sy --noconfirm socat; } 2>/dev/null`,
+              ];
               guardAction.unit = [
                 "[Unit]",
                 `Description=ForwardX guarded socat ${rule.protocol} backend ${rule.sourcePort}->${rule.targetIp}:${rule.targetPort}`,
@@ -2852,7 +2869,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             guardAction.commands = guardCountingCmds;
           } else {
             guardAction.commands = [
-              ...guardCleanupCmds,
+              ...guardBaseCleanupCmds,
+              ...cleanupGuardBackendCmds(rule),
               ...(rule.forwardType === "nginx" ? [nginxRuntimeVerifyCmd()] : buildGostReloadCmds()),
               ...guardCountingCmds,
             ];
@@ -3584,9 +3602,26 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
 
     const effectiveActions = dropStalePortRemoveActions(actions);
     const actionBatchIssuedAt = resolveActionBatchIssuedAt(Number(host.id), effectiveActions, responseIssuedAt);
+    const ruleByIdForDesired = new Map((rules as any[]).map((rule: any) => [Number(rule.id), rule]));
+    const desiredKnownRunning = (action: any) => {
+      if (action?.op === "remove") return true;
+      if (action?.statusType === "runtime") return true;
+      const ruleId = Number(action?.ruleId || 0);
+      if (ruleId > 0) {
+        const rule = ruleByIdForDesired.get(ruleId) as any;
+        return !!rule?.isRunning;
+      }
+      const tunnelId = Number(action?.tunnelId || 0);
+      if (tunnelId > 0) {
+        const tunnel = tunnelById.get(tunnelId) as any;
+        return !!tunnel?.isRunning || isTunnelRuntimeHostReady(tunnelId, Number(host.id));
+      }
+      return false;
+    };
     const normalizedActions = effectiveActions.map((action: any) => ({
       ...action,
       issuedAt: Number(action.issuedAt) || actionBatchIssuedAt,
+      knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
     const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
@@ -3609,7 +3644,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       action.op === "remove" ? 0 : action.statusType === "runtime" ? 1 : 2
     );
     const orderedActions = normalizedActions.slice().sort((a: any, b: any) => actionRank(a) - actionRank(b));
-    const hasTunnelApplyActions = orderedActions.some((action: any) => action.op === "apply" && (action.statusType === "tunnel" || Number(action.tunnelId) > 0));
+    const activeWorkActions = supportsDesiredState
+      ? orderedActions.filter((action: any) => action.op === "remove" || !action.knownRunning)
+      : orderedActions;
+    const hasTunnelApplyActions = activeWorkActions.some((action: any) => action.op === "apply" && (action.statusType === "tunnel" || Number(action.tunnelId) > 0));
     const hasPendingMultiHopRuntime = (hostTunnels as any[]).some((tunnel: any) => {
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       return !!tunnel?.isEnabled
@@ -3634,7 +3672,30 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
     const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
-    res.json({ success: true, actions: orderedActions, selfTests, runningRules, tunnelProbes, forwardGroupProbes, hostProbeServices, guardRules, dnsWatch: Array.from(dnsWatches.values()), lookingGlassTests, iperf3Tasks, agentUpgrade, panelUrl, forceTcping, nextInterval, compactReports: true });
+    const desiredState = supportsDesiredState ? {
+      version: 1,
+      issuedAt: actionBatchIssuedAt,
+      actions: orderedActions,
+    } : undefined;
+    res.json({
+      success: true,
+      actions: supportsDesiredState ? [] : orderedActions,
+      desiredState,
+      selfTests,
+      runningRules,
+      tunnelProbes,
+      forwardGroupProbes,
+      hostProbeServices,
+      guardRules,
+      dnsWatch: Array.from(dnsWatches.values()),
+      lookingGlassTests,
+      iperf3Tasks,
+      agentUpgrade,
+      panelUrl,
+      forceTcping,
+      nextInterval,
+      compactReports: true,
+    });
   } catch (error) {
     console.error(`[Agent Heartbeat] Error host=${logHostId || "-"} name=${logHostName || "-"}:`, error);
     res.status(500).json({ error: "Internal server error" });

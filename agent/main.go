@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.133"
+var Version = "2.2.134"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -46,7 +46,7 @@ const publicIPRefreshInterval = time.Minute
 const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
-const runtimeActionRefreshInterval = 5 * time.Minute
+const runtimeActionRefreshInterval = 30 * time.Minute
 const agentLogRetention = 72 * time.Hour
 const agentLogMaxBytes int64 = 8 * 1024 * 1024
 const agentLogTailBytes int64 = 4 * 1024 * 1024
@@ -84,6 +84,7 @@ const legacyGostConfigPath = "/etc/forwardx-gost/config.json"
 const legacyTunnelConfigPath = "/etc/forwardx-tunnels/config.json"
 const legacyRuntimeConfigPath = "/etc/forwardx-runtime/config.json"
 const legacyTunnelRuntimeConfigPath = "/etc/forwardx-tunnel-runtime/config.json"
+const desiredStateRecordPath = "/var/lib/forwardx-agent/desired_state_records.json"
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -133,9 +134,11 @@ var compactAgentReports atomic.Bool
 var heartbeatStaticReport heartbeatStaticSnapshot
 
 type actionJob struct {
-	cfg    Config
-	action action
-	done   chan struct{}
+	cfg              Config
+	action           action
+	done             chan struct{}
+	desiredKey       string
+	desiredSignature string
 }
 
 type heartbeatStaticSnapshot struct {
@@ -154,6 +157,7 @@ type heartbeatStaticSnapshot struct {
 type runtimeActionState struct {
 	Signature string
 	CheckedAt time.Time
+	Success   bool
 }
 
 type Config struct {
@@ -178,6 +182,7 @@ type panelErrorResp struct {
 
 type heartbeatResp struct {
 	Actions            []action                `json:"actions"`
+	DesiredState       *desiredState           `json:"desiredState,omitempty"`
 	SelfTests          []selfTest              `json:"selfTests"`
 	RunningRules       []runningRule           `json:"runningRules"`
 	TunnelProbes       []tunnelProbe           `json:"tunnelProbes"`
@@ -203,6 +208,7 @@ type action struct {
 	StatusType       string        `json:"statusType"`
 	RuleID           int           `json:"ruleId"`
 	IssuedAt         int64         `json:"issuedAt,omitempty"`
+	KnownRunning     bool          `json:"knownRunning,omitempty"`
 	Op               string        `json:"op"`
 	ForwardType      string        `json:"forwardType"`
 	SourcePort       int           `json:"sourcePort"`
@@ -219,6 +225,18 @@ type action struct {
 	Fxp              *fxpSpec      `json:"fxp,omitempty"`
 	Failover         *failoverSpec `json:"failover,omitempty"`
 	ReportStatus     *bool         `json:"reportStatus,omitempty"`
+}
+
+type desiredState struct {
+	Version  int      `json:"version"`
+	IssuedAt int64    `json:"issuedAt,omitempty"`
+	Actions  []action `json:"actions"`
+}
+
+type desiredActionRecord struct {
+	Signature string `json:"signature"`
+	Success   bool   `json:"success"`
+	UpdatedAt int64  `json:"updatedAt"`
 }
 
 type runningRule struct {
@@ -820,7 +838,15 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	dnsWatchChanged := updateDNSWatch(resp.DNSWatch)
 	pendingActionPorts := map[string]bool{}
-	actionDone := make([]<-chan struct{}, 0, len(resp.Actions))
+	actionDone := make([]<-chan struct{}, 0, len(resp.Actions)+len(desiredStateActions(resp.DesiredState)))
+	for _, a := range desiredStateActions(resp.DesiredState) {
+		if a.SourcePort > 0 && shouldReportActionStatus(a) {
+			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
+		}
+	}
+	for _, done := range syncDesiredState(cfg, resp.DesiredState) {
+		actionDone = append(actionDone, done)
+	}
 	for _, a := range resp.Actions {
 		if a.SourcePort > 0 && shouldReportActionStatus(a) {
 			pendingActionPorts[strconv.Itoa(a.SourcePort)] = true
@@ -1461,12 +1487,12 @@ func decodeEventData(raw string, token string, out any) error {
 	return json.Unmarshal(plain, out)
 }
 
-func handleAction(cfg Config, a action) {
+func handleAction(cfg Config, a action) bool {
 	ok := true
 	actionMessage := &actionMessage{}
 	if strings.TrimSpace(a.StatusType) == "runtime" {
 		if shouldSkipRuntimeAction(a) {
-			return
+			return true
 		}
 		logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 		ok = runShellBatch(append(append([]string{}, a.PreCommands...), append(a.Commands, a.PostCommands...)...)) && ok
@@ -1475,7 +1501,8 @@ func handleAction(cfg Config, a action) {
 		if !ok || agentVerboseLogs {
 			logf("runtime action complete forwardType=%s ok=%v", a.ForwardType, ok)
 		}
-		return
+		rememberRuntimeActionResult(a, ok)
+		return ok
 	}
 	logVerbosef("action start op=%s statusType=%s rule=%d tunnel=%d forwardType=%s port=%d protocol=%s", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.ForwardType, a.SourcePort, a.Protocol)
 	logIPv6ActionDiagnostic(a)
@@ -1488,10 +1515,10 @@ func handleAction(cfg Config, a action) {
 			cleanupKernelForwardPortBeforeApply(a)
 			ok = runShellBatch(a.PreCommands) && ok
 			if a.Unit != "" && a.ServiceName != "" {
-				ok = writeUnitAndRestart(a.ServiceName, a.Unit) && ok
+				ok = writeUnitAndRestart(a.ServiceName, a.Unit, managedServiceActionSignature(a, a.ServiceName, a.Unit)) && ok
 			}
 			if a.UnitExtra != "" && a.ServiceNameExtra != "" {
-				ok = writeUnitAndRestart(a.ServiceNameExtra, a.UnitExtra) && ok
+				ok = writeUnitAndRestart(a.ServiceNameExtra, a.UnitExtra, managedServiceActionSignature(a, a.ServiceNameExtra, a.UnitExtra)) && ok
 			}
 			ok = runShellBatch(a.Commands) && ok
 		}
@@ -1531,7 +1558,7 @@ func handleAction(cfg Config, a action) {
 		}
 	}
 	if !shouldReportActionStatus(a) {
-		return
+		return ok
 	}
 	running := ok && a.Op == "apply"
 	message := actionMessage.get()
@@ -1542,6 +1569,7 @@ func handleAction(cfg Config, a action) {
 	} else if !running || agentVerboseLogs {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
+	return ok
 }
 
 func shouldSkipRemoveForReassignedPort(a action) bool {
@@ -1628,13 +1656,78 @@ func shouldSkipRuntimeAction(a action) bool {
 	signature := actionCommandSignature(a)
 	now := time.Now()
 	runtimeActionMu.Lock()
-	defer runtimeActionMu.Unlock()
 	state := runtimeActionCache[key]
-	if state.Signature == signature && !state.CheckedAt.IsZero() && now.Sub(state.CheckedAt) < runtimeActionRefreshInterval {
+	recentMatch := state.Success && state.Signature == signature && !state.CheckedAt.IsZero() && now.Sub(state.CheckedAt) < runtimeActionRefreshInterval
+	runtimeActionMu.Unlock()
+	if recentMatch && runtimeActionServicesHealthy() {
 		return true
 	}
-	runtimeActionCache[key] = runtimeActionState{Signature: signature, CheckedAt: now}
+	runtimeActionMu.Lock()
+	runtimeActionCache[key] = runtimeActionState{Signature: signature, CheckedAt: now, Success: false}
+	runtimeActionMu.Unlock()
 	return false
+}
+
+func rememberRuntimeActionResult(a action, ok bool) {
+	key := strings.TrimSpace(a.ForwardType)
+	if key == "" {
+		key = "runtime"
+	}
+	signature := actionCommandSignature(a)
+	runtimeActionMu.Lock()
+	state := runtimeActionCache[key]
+	if state.Signature == signature {
+		state.Success = ok
+		state.CheckedAt = time.Now()
+		runtimeActionCache[key] = state
+	}
+	runtimeActionMu.Unlock()
+}
+
+func runtimeActionServicesHealthy() bool {
+	for _, name := range requiredRuntimeServicesFromLocalConfig() {
+		if !managedServiceActive(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func requiredRuntimeServicesFromLocalConfig() []string {
+	services := []string{}
+	if gostRuntimeConfigHasServices(runtimeConfigPath) {
+		services = append(services, runtimeServiceName)
+	}
+	if gostRuntimeConfigHasServices(tunnelRuntimeConfigPath) {
+		services = append(services, tunnelRuntimeServiceName)
+	}
+	if nginxRuntimeConfigHasServers(nginxConfigPath) {
+		services = append(services, nginxServiceName)
+	}
+	return services
+}
+
+func gostRuntimeConfigHasServices(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var cfg struct {
+		Services []json.RawMessage `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return false
+	}
+	return len(cfg.Services) > 0
+}
+
+func nginxRuntimeConfigHasServers(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	text := string(raw)
+	return strings.Contains(text, "server {") || strings.Contains(text, "server{")
 }
 
 func logGostRuntimeProxySummary(path string, label string) {
@@ -1784,7 +1877,18 @@ func actionCommandSignature(a action) string {
 		_, _ = h.Write([]byte{0})
 	}
 	write(a.Op)
+	write(a.StatusType)
 	write(a.ForwardType)
+	write(strconv.Itoa(a.RuleID))
+	write(strconv.Itoa(a.TunnelID))
+	write(strconv.Itoa(a.SourcePort))
+	write(strings.TrimSpace(a.TargetIP))
+	write(strconv.Itoa(a.TargetPort))
+	write(normalizeRuntimeProtocol(a.Protocol))
+	write(a.ServiceName)
+	write(a.ServiceNameExtra)
+	write(a.Unit)
+	write(a.UnitExtra)
 	for _, cmd := range a.PreCommands {
 		write(cmd)
 	}
@@ -1793,6 +1897,16 @@ func actionCommandSignature(a action) string {
 	}
 	for _, cmd := range a.PostCommands {
 		write(cmd)
+	}
+	if a.Fxp != nil {
+		if raw, err := json.Marshal(a.Fxp); err == nil {
+			write(string(raw))
+		}
+	}
+	if a.Failover != nil {
+		if raw, err := json.Marshal(a.Failover); err == nil {
+			write(string(raw))
+		}
 	}
 	return strconv.FormatUint(h.Sum64(), 16)
 }
@@ -2265,7 +2379,7 @@ func runPostCommands(commands []string, actionMessage *actionMessage) {
 	}
 }
 
-func writeUnitAndRestart(name, unit string) bool {
+func writeUnitAndRestart(name, unit string, signature string) bool {
 	name = sanitizeServiceName(name)
 	if name == "" {
 		logf("write service: empty service name")
@@ -2278,34 +2392,150 @@ func writeUnitAndRestart(name, unit string) bool {
 	}
 	if isSystemdHost() {
 		path := "/etc/systemd/system/" + name + ".service"
-		if err := os.WriteFile(path, []byte(unit), 0644); err != nil {
+		changed, err := writeFileIfChanged(path, []byte(unit), 0644)
+		if err != nil {
 			logf("write systemd unit %s: %v", name, err)
 			return false
 		}
-		return runShell("systemctl daemon-reload") &&
-			runShell("systemctl enable "+shellQuote(name)+".service") &&
-			runShell("systemctl restart "+shellQuote(name)+".service")
+		q := shellQuote(name)
+		if changed && !runShell("systemctl daemon-reload") {
+			return false
+		}
+		_ = runShell("systemctl reset-failed " + q + ".service 2>/dev/null || true")
+		if !changed && managedServiceSignatureMatches(name, signature) && managedServiceActive(name) {
+			logVerbosef("service %s unchanged and active; skip restart", name)
+			return true
+		}
+		ok := runShell("systemctl enable "+q+".service") &&
+			runShell("systemctl restart "+q+".service")
+		if ok {
+			writeManagedServiceSignature(name, signature)
+		}
+		return ok
 	}
 	if commandExists("rc-service") && commandExists("rc-update") {
 		path := "/etc/init.d/" + name
-		if err := os.WriteFile(path, []byte(openRCServiceScript(name, execStart)), 0755); err != nil {
+		changed, err := writeFileIfChanged(path, []byte(openRCServiceScript(name, execStart)), 0755)
+		if err != nil {
 			logf("write openrc service %s: %v", name, err)
 			return false
 		}
-		return runShell("rc-update add "+shellQuote(name)+" default >/dev/null 2>&1 || true") &&
+		if !changed && managedServiceSignatureMatches(name, signature) && managedServiceActive(name) {
+			logVerbosef("service %s unchanged and active; skip restart", name)
+			return true
+		}
+		ok := runShell("rc-update add "+shellQuote(name)+" default >/dev/null 2>&1 || true") &&
 			runShell("rc-service "+shellQuote(name)+" restart")
+		if ok {
+			writeManagedServiceSignature(name, signature)
+		}
+		return ok
 	}
 	if _, err := os.Stat("/etc/init.d"); err == nil {
 		path := "/etc/init.d/" + name
-		if err := os.WriteFile(path, []byte(sysVServiceScript(name, execStart)), 0755); err != nil {
+		changed, err := writeFileIfChanged(path, []byte(sysVServiceScript(name, execStart)), 0755)
+		if err != nil {
 			logf("write sysv service %s: %v", name, err)
 			return false
 		}
-		return runShell("command -v update-rc.d >/dev/null 2>&1 && update-rc.d "+shellQuote(name)+" defaults >/dev/null 2>&1 || true") &&
+		if !changed && managedServiceSignatureMatches(name, signature) && managedServiceActive(name) {
+			logVerbosef("service %s unchanged and active; skip restart", name)
+			return true
+		}
+		ok := runShell("command -v update-rc.d >/dev/null 2>&1 && update-rc.d "+shellQuote(name)+" defaults >/dev/null 2>&1 || true") &&
 			runShell("command -v chkconfig >/dev/null 2>&1 && chkconfig "+shellQuote(name)+" on >/dev/null 2>&1 || true") &&
 			runShell("/etc/init.d/"+shellQuote(name)+" restart")
+		if ok {
+			writeManagedServiceSignature(name, signature)
+		}
+		return ok
 	}
 	logf("write service %s: unsupported init system", name)
+	return false
+}
+
+func writeFileIfChanged(path string, data []byte, perm os.FileMode) (bool, error) {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		_ = os.Chmod(path, perm)
+		return false, nil
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func managedServiceActionSignature(a action, serviceName string, unit string) string {
+	h := sha256.New()
+	write := func(value string) {
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	write(strings.TrimSpace(serviceName))
+	write(unit)
+	write(a.Op)
+	write(a.StatusType)
+	write(a.ForwardType)
+	write(strconv.Itoa(a.RuleID))
+	write(strconv.Itoa(a.TunnelID))
+	write(strconv.Itoa(a.SourcePort))
+	write(strings.TrimSpace(a.TargetIP))
+	write(strconv.Itoa(a.TargetPort))
+	write(normalizeRuntimeProtocol(a.Protocol))
+	for _, cmd := range a.PreCommands {
+		write(cmd)
+	}
+	for _, cmd := range a.Commands {
+		write(cmd)
+	}
+	for _, cmd := range a.PostCommands {
+		write(cmd)
+	}
+	if a.Failover != nil {
+		if raw, err := json.Marshal(a.Failover); err == nil {
+			write(string(raw))
+		}
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func managedServiceSignaturePath(name string) string {
+	return "/var/lib/forwardx-agent/service_" + name + ".signature"
+}
+
+func managedServiceSignatureMatches(name string, signature string) bool {
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return false
+	}
+	raw, err := os.ReadFile(managedServiceSignaturePath(name))
+	return err == nil && strings.TrimSpace(string(raw)) == signature
+}
+
+func writeManagedServiceSignature(name string, signature string) {
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return
+	}
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	_ = os.WriteFile(managedServiceSignaturePath(name), []byte(signature+"\n"), 0644)
+}
+
+func managedServiceActive(name string) bool {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return false
+	}
+	q := shellQuote(name)
+	if isSystemdHost() {
+		return runShellQuiet("systemctl is-active --quiet " + q + ".service")
+	}
+	if commandExists("rc-service") {
+		return runShellQuiet("rc-service " + q + " status >/dev/null 2>&1")
+	}
+	if _, err := os.Stat("/etc/init.d/" + name); err == nil {
+		return runShellQuiet("/etc/init.d/" + q + " status >/dev/null 2>&1")
+	}
 	return false
 }
 
@@ -2448,13 +2678,13 @@ func sysVServiceScript(name, execStart string) string {
 
 func managedServiceCleanupShell(name string) string {
 	q := shellQuote(name)
-	return "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop " + q + ".service 2>/dev/null || true; systemctl disable " + q + ".service 2>/dev/null || true; rm -f /etc/systemd/system/" + name + ".service; systemctl daemon-reload 2>/dev/null || true; fi; " +
+	return "if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then systemctl stop " + q + ".service 2>/dev/null || true; systemctl disable " + q + ".service 2>/dev/null || true; systemd_unit=/etc/systemd/system/" + name + ".service; systemd_removed=0; if [ -e \"$systemd_unit\" ]; then rm -f \"$systemd_unit\"; systemd_removed=1; fi; if [ \"$systemd_removed\" = \"1\" ]; then systemctl daemon-reload 2>/dev/null || true; fi; systemctl reset-failed " + q + ".service 2>/dev/null || true; fi; " +
 		"if command -v rc-service >/dev/null 2>&1; then rc-service " + q + " stop 2>/dev/null || true; fi; " +
 		"if command -v rc-update >/dev/null 2>&1; then rc-update del " + q + " default 2>/dev/null || true; fi; " +
 		"if [ -x /etc/init.d/" + name + " ]; then /etc/init.d/" + name + " stop 2>/dev/null || true; fi; " +
 		"if command -v update-rc.d >/dev/null 2>&1; then update-rc.d -f " + q + " remove >/dev/null 2>&1 || true; fi; " +
 		"if command -v chkconfig >/dev/null 2>&1; then chkconfig " + q + " off >/dev/null 2>&1 || true; fi; " +
-		"rm -f /etc/init.d/" + name
+		"rm -f /etc/init.d/" + name + " /var/lib/forwardx-agent/service_" + name + ".signature"
 }
 
 func writeState(a action) {
@@ -5128,6 +5358,21 @@ func runShell(cmd string) bool {
 		return false
 	}
 	return true
+}
+
+func runShellQuiet(cmd string) bool {
+	if strings.TrimSpace(cmd) == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, cleanup, err := shellCommand(ctx, cmd)
+	if err != nil {
+		return false
+	}
+	defer cleanup()
+	err = c.Run()
+	return err == nil && ctx.Err() != context.DeadlineExceeded
 }
 
 func runShellBatch(commands []string) bool {

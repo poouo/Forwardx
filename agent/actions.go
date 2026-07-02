@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -27,6 +29,197 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 	atomic.AddInt64(&actionPendingCount, 1)
 	enqueueActionJob(actionJob{cfg: cfg, action: a, done: done})
 	return done
+}
+
+func desiredStateActions(state *desiredState) []action {
+	if state == nil {
+		return nil
+	}
+	return state.Actions
+}
+
+func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
+	if state == nil {
+		return nil
+	}
+	records := readDesiredActionRecords()
+	done := make([]<-chan struct{}, 0, len(state.Actions))
+	seen := map[string]bool{}
+	pendingJobs := make([]actionJob, 0, len(state.Actions))
+	for _, a := range state.Actions {
+		if a.IssuedAt <= 0 {
+			a.IssuedAt = state.IssuedAt
+		}
+		key := desiredActionKey(a)
+		if key == "" {
+			doneCh := make(chan struct{})
+			pendingJobs = append(pendingJobs, actionJob{cfg: cfg, action: a, done: doneCh})
+			done = append(done, doneCh)
+			continue
+		}
+		signature := desiredActionSignature(a)
+		seen[key] = true
+		if record, ok := records[key]; ok && record.Success && record.Signature == signature {
+			continue
+		}
+		if _, ok := records[key]; !ok && canAdoptDesiredAction(a) {
+			records[key] = desiredActionRecord{Signature: signature, Success: true, UpdatedAt: time.Now().Unix()}
+			continue
+		}
+		doneCh := make(chan struct{})
+		if isOlderAction(a, true) {
+			close(doneCh)
+			continue
+		}
+		if queueKey := actionQueueKey(a); queueKey != "" && a.IssuedAt > 0 {
+			queuedActionMu.Lock()
+			existing := queuedActionKeys[queueKey]
+			if existing == a.IssuedAt {
+				queuedActionMu.Unlock()
+				close(doneCh)
+				continue
+			}
+			queuedActionKeys[queueKey] = a.IssuedAt
+			queuedActionMu.Unlock()
+		}
+		pendingJobs = append(pendingJobs, actionJob{
+			cfg:              cfg,
+			action:           a,
+			done:             doneCh,
+			desiredKey:       key,
+			desiredSignature: signature,
+		})
+		done = append(done, doneCh)
+	}
+	for key := range records {
+		if !seen[key] {
+			delete(records, key)
+		}
+	}
+	writeDesiredActionRecords(records)
+	for _, job := range pendingJobs {
+		if isOlderAction(job.action, true) {
+			if job.done != nil {
+				close(job.done)
+			}
+			continue
+		}
+		if job.desiredKey == "" {
+			if queueKey := actionQueueKey(job.action); queueKey != "" && job.action.IssuedAt > 0 {
+				queuedActionMu.Lock()
+				existing := queuedActionKeys[queueKey]
+				if existing == job.action.IssuedAt {
+					queuedActionMu.Unlock()
+					if job.done != nil {
+						close(job.done)
+					}
+					continue
+				}
+				queuedActionKeys[queueKey] = job.action.IssuedAt
+				queuedActionMu.Unlock()
+			}
+		}
+		atomic.AddInt64(&actionPendingCount, 1)
+		enqueueActionJob(job)
+	}
+	return done
+}
+
+func desiredActionKey(a action) string {
+	statusType := strings.TrimSpace(a.StatusType)
+	if statusType == "" {
+		if a.RuleID > 0 {
+			statusType = "rule"
+		} else if a.TunnelID > 0 {
+			statusType = "tunnel"
+		}
+	}
+	if statusType == "runtime" {
+		name := strings.TrimSpace(a.ForwardType)
+		if name == "" {
+			name = "runtime"
+		}
+		return "runtime:" + name
+	}
+	if statusType == "tunnel" && a.TunnelID > 0 {
+		return fmt.Sprintf("tunnel:%d:%d:%s", a.TunnelID, a.SourcePort, a.ForwardType)
+	}
+	if a.RuleID > 0 {
+		return fmt.Sprintf("rule:%d:%d:%s", a.RuleID, a.SourcePort, a.ForwardType)
+	}
+	if a.SourcePort > 0 {
+		return fmt.Sprintf("port:%d:%s", a.SourcePort, a.ForwardType)
+	}
+	return ""
+}
+
+func desiredActionSignature(a action) string {
+	return actionCommandSignature(a)
+}
+
+func canAdoptDesiredAction(a action) bool {
+	if strings.TrimSpace(a.Op) != "apply" || !a.KnownRunning {
+		return false
+	}
+	if strings.TrimSpace(a.StatusType) == "runtime" {
+		return runtimeActionServicesHealthy()
+	}
+	if a.SourcePort <= 0 {
+		return false
+	}
+	port := fmt.Sprintf("%d", a.SourcePort)
+	statusType := strings.TrimSpace(a.StatusType)
+	if statusType == "tunnel" || (a.TunnelID > 0 && a.RuleID <= 0) {
+		localTunnelID := readTunnelIDByPort(port)
+		localForwardType := readTunnelForwardTypeByPort(port)
+		return localTunnelID == a.TunnelID && desiredForwardTypeCompatible(localForwardType, a.ForwardType)
+	}
+	localRuleID := readRuleIDByPort(port)
+	localForwardType := readForwardTypeByPort(port)
+	return localRuleID == a.RuleID && desiredForwardTypeCompatible(localForwardType, a.ForwardType)
+}
+
+func desiredForwardTypeCompatible(local string, desired string) bool {
+	local = strings.TrimSpace(local)
+	desired = strings.TrimSpace(desired)
+	if local == "" || desired == "" {
+		return false
+	}
+	if local == desired {
+		return true
+	}
+	if local == "gost" && (desired == "forwardx" || desired == "nginx-tunnel") {
+		return true
+	}
+	if local == "guard" && desired == "guard" {
+		return true
+	}
+	return false
+}
+
+func readDesiredActionRecords() map[string]desiredActionRecord {
+	records := map[string]desiredActionRecord{}
+	raw, err := os.ReadFile(desiredStateRecordPath)
+	if err != nil || len(raw) == 0 {
+		return records
+	}
+	_ = json.Unmarshal(raw, &records)
+	return records
+}
+
+func writeDesiredActionRecords(records map[string]desiredActionRecord) {
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	raw, err := json.Marshal(records)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(desiredStateRecordPath, raw, 0644)
+}
+
+func rememberDesiredActionResult(key string, signature string, ok bool) {
+	records := readDesiredActionRecords()
+	records[key] = desiredActionRecord{Signature: signature, Success: ok, UpdatedAt: time.Now().Unix()}
+	writeDesiredActionRecords(records)
 }
 
 func enqueueActionJob(job actionJob) {
@@ -57,7 +250,10 @@ func actionWorker() {
 			if isOlderAction(job.action, false) {
 				return
 			}
-			handleAction(job.cfg, job.action)
+			ok := handleAction(job.cfg, job.action)
+			if job.desiredKey != "" && job.desiredSignature != "" {
+				rememberDesiredActionResult(job.desiredKey, job.desiredSignature, ok)
+			}
 		}()
 	}
 }
