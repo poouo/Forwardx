@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
 import { CreditCard, Download, Gift, Package, ReceiptText, Shuffle, TicketPercent, Trash2, WalletCards } from "lucide-react";
@@ -22,6 +23,13 @@ const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const BILLING_CODE_BODY_LENGTH = 24;
 type BillingTab = "ledger" | "subscriptions" | "balance" | "redeem" | "discount";
 const BILLING_TABS = ["ledger", "subscriptions", "balance", "redeem", "discount"] as const;
+const BILLING_TAB_ITEMS = [
+  { value: "ledger", label: "账单流水" },
+  { value: "subscriptions", label: "订阅记录" },
+  { value: "balance", label: "余额流水" },
+  { value: "redeem", label: "兑换码" },
+  { value: "discount", label: "折扣码" },
+] as const satisfies readonly SlidingTabItem<BillingTab>[];
 const BILLING_TAB_STORAGE_KEY = "forwardx.billing.tab";
 
 function money(cents?: number, currency = "CNY") {
@@ -465,7 +473,7 @@ export default function Billing() {
             value={money(totalBalance)}
             subtitle={`${users.length} 个用户`}
             icon={WalletCards}
-            tone="bg-gradient-to-br from-blue-500 to-blue-600"
+            tone="bg-gradient-to-br from-teal-500 to-teal-600"
             loading={usersLoading}
             cacheKey="billing.totalBalance"
             fallbackValue={money(0)}
@@ -485,7 +493,7 @@ export default function Billing() {
             value={activeDiscountCodes}
             subtitle="当前可抵扣"
             icon={TicketPercent}
-            tone="bg-gradient-to-br from-violet-500 to-violet-600"
+            tone="bg-gradient-to-br from-orange-500 to-orange-600"
             loading={discountCodesLoading}
             cacheKey="billing.activeDiscountCodes"
             fallbackValue={0}
@@ -509,13 +517,7 @@ export default function Billing() {
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as BillingTab)}>
-          <TabsList className="flex h-auto flex-wrap">
-            <TabsTrigger value="ledger">账单流水</TabsTrigger>
-            <TabsTrigger value="subscriptions">订阅记录</TabsTrigger>
-            <TabsTrigger value="balance">余额流水</TabsTrigger>
-            <TabsTrigger value="redeem">兑换码</TabsTrigger>
-            <TabsTrigger value="discount">折扣码</TabsTrigger>
-          </TabsList>
+          <SlidingTabsList items={BILLING_TAB_ITEMS} activeValue={activeTab} ariaLabel="余额与营销" minItemWidthRem={6.75} />
 
           <TabsContent value="ledger" className="mt-4">
             <Card>

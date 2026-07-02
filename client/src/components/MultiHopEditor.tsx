@@ -54,7 +54,7 @@ const DRAG_GHOST_OFFSET = { x: 14, y: 14 };
 const ROLE_COLORS: Record<HopRole, string> = {
   entry: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
   mid: "border-amber-500/40 bg-amber-500/10 text-amber-600",
-  exit: "border-blue-500/40 bg-blue-500/10 text-blue-600",
+  exit: "border-teal-500/35 bg-teal-500/10 text-teal-700",
 };
 
 const ROLE_LABELS: Record<HopRole, string> = {

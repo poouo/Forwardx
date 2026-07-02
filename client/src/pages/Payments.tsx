@@ -23,7 +23,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { trpc } from "@/lib/trpc";
@@ -91,6 +92,14 @@ type PaymentConfigForm = {
 
 type PaymentTab = "basic" | "easypay" | "alipay" | "wxpay" | "stripe" | "test";
 const PAYMENT_TABS = ["basic", "easypay", "alipay", "wxpay", "stripe", "test"] as const;
+const PAYMENT_TAB_ITEMS = [
+  { value: "basic", label: "基础设置" },
+  { value: "easypay", label: "易支付" },
+  { value: "alipay", label: "支付宝官方" },
+  { value: "wxpay", label: "微信官方" },
+  { value: "stripe", label: "Stripe" },
+  { value: "test", label: "测试下单" },
+] as const satisfies readonly SlidingTabItem<PaymentTab>[];
 const PAYMENT_TAB_STORAGE_KEY = "forwardx.payments.tab";
 
 const emptyForm: PaymentConfigForm = {
@@ -432,7 +441,7 @@ export default function Payments() {
           />
         </div>
 
-        <Alert className="border-blue-200 bg-blue-50/70 text-blue-900">
+        <Alert className="border-primary/15 bg-primary/5 text-foreground">
           <ShieldCheck className="h-4 w-4" />
           <AlertTitle>回调地址</AlertTitle>
           <AlertDescription>
@@ -444,14 +453,7 @@ export default function Payments() {
           <DataSectionLoading label="正在加载支付配置" minHeight="min-h-[260px]" />
         ) : (
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PaymentTab)}>
-          <TabsList className="flex h-auto flex-wrap">
-            <TabsTrigger value="basic">基础设置</TabsTrigger>
-            <TabsTrigger value="easypay">易支付</TabsTrigger>
-            <TabsTrigger value="alipay">支付宝官方</TabsTrigger>
-            <TabsTrigger value="wxpay">微信官方</TabsTrigger>
-            <TabsTrigger value="stripe">Stripe</TabsTrigger>
-            <TabsTrigger value="test">测试下单</TabsTrigger>
-          </TabsList>
+          <SlidingTabsList items={PAYMENT_TAB_ITEMS} activeValue={activeTab} ariaLabel="支付对接" minItemWidthRem={6.75} />
 
           <TabsContent value="basic" className="mt-4">
             <Card>

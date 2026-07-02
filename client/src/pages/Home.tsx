@@ -42,7 +42,7 @@ import {
 } from "recharts";
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
-const TRAFFIC_PIE_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16"];
+const TRAFFIC_PIE_COLORS = ["var(--color-primary)", "#10b981", "#f59e0b", "#ef4444", "#14b8a6", "#ec4899", "#f97316", "#84cc16", "#64748b", "#a3a3a3"];
 const TRAFFIC_PIE_MAX_SEGMENTS = 5;
 
 type TrafficPieDatum = {
@@ -533,7 +533,7 @@ function DashboardContent() {
             value={stats?.totalHosts ?? 0}
             subtitle={`${stats?.onlineHosts ?? 0} 台在线`}
             icon={Server}
-            tone="bg-gradient-to-br from-blue-500 to-blue-600"
+            tone="bg-gradient-to-br from-teal-500 to-teal-600"
             loading={isLoading}
             cacheKey="home.stats.totalHosts"
             fallbackValue={0}
@@ -556,7 +556,7 @@ function DashboardContent() {
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
           subtitle="累计入站"
           icon={ArrowDownToLine}
-          tone="bg-gradient-to-br from-violet-500 to-violet-600"
+          tone="bg-gradient-to-br from-rose-500 to-rose-600"
           loading={trafficTotalsLoading}
           cacheKey="home.stats.totalTrafficIn"
           fallbackValue="0 B"
@@ -925,7 +925,7 @@ function DashboardContent() {
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-6">
-              {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color="#3b82f6" />}
+              {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color="var(--color-primary)" />}
               <div className="space-y-1 text-sm">
                 <div className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-primary" />

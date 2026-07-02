@@ -340,6 +340,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     logHostName = String((host as any).name || "").trim();
 
     const compactMetrics = Array.isArray(req.body?.m) ? req.body.m : [];
+    const busyHeartbeat = req.body?.busy === true || String(req.body?.busy || "").toLowerCase() === "true";
     const heartbeatMetric = (key: string, index: number) => req.body?.[key] ?? compactMetrics[index];
     const cpuUsage = heartbeatMetric("cpuUsage", 0);
     const memoryUsage = heartbeatMetric("memoryUsage", 1);
@@ -444,6 +445,29 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       diskTotal: diskTotal ?? null,
       uptime: uptime ?? null,
     });
+
+    if (busyHeartbeat) {
+      const panelUrl = await resolveAgentAdvertisedPanelUrl();
+      res.json({
+        success: true,
+        actions: [],
+        selfTests: [],
+        runningRules: [],
+        tunnelProbes: [],
+        forwardGroupProbes: [],
+        hostProbeServices: [],
+        guardRules: [],
+        dnsWatch: [],
+        lookingGlassTests: [],
+        iperf3Tasks: [],
+        agentUpgrade: null,
+        panelUrl,
+        forceTcping: false,
+        nextInterval: 5,
+        compactReports: true,
+      });
+      return;
+    }
 
     // 获取该主机的转发规则
     const rules = await db.getForwardRulesForAgent(host.id);

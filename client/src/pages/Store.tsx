@@ -113,7 +113,7 @@ function StorePlanCard({
 
   return (
     <div className="flex min-h-[29rem] flex-col overflow-hidden rounded-lg border border-border/40 bg-card/60 shadow-sm backdrop-blur-md transition-colors hover:border-primary/35">
-      <div className="h-1.5 bg-gradient-to-r from-primary/40 via-emerald-500/25 to-cyan-500/25" />
+      <div className="h-1.5 bg-gradient-to-r from-primary/45 via-primary/20 to-emerald-500/25" />
 
       <div className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex items-start justify-between gap-3">

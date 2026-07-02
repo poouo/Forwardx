@@ -86,7 +86,7 @@ export async function getDashboardStats(userId?: number, opts: { includeTraffic?
   const db = await getDb();
   if (!db) return { totalHosts: 0, onlineHosts: 0, totalRules: 0, activeRules: 0, totalTrafficIn: 0, totalTrafficOut: 0 };
 
-  const heartbeatFreshSince = epochSeconds(new Date(Date.now() - 90 * 1000));
+  const heartbeatFreshSince = epochSeconds(new Date(Date.now() - 150 * 1000));
   const hostConditions = userId ? eq(hosts.userId, userId) : undefined;
   const ruleConditions = [
     eq(forwardRules.pendingDelete, false),

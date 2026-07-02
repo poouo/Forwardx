@@ -536,11 +536,11 @@ export default function LookingGlass() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="gap-1.5 border-primary/30 bg-primary/10 text-primary">
+              <Badge variant="outline" className="gap-1.5 border-chart-1/30 bg-chart-1/10 text-chart-1">
                 <Globe2 className="h-3.5 w-3.5" />
                 网络测试
               </Badge>
-              <Badge variant="outline" className="gap-1.5 text-muted-foreground">
+              <Badge variant="outline" className="gap-1.5 border-chart-4/30 bg-chart-4/10 text-chart-4">
                 <ShieldCheck className="h-3.5 w-3.5" />
                 公网目标限定
               </Badge>
@@ -552,9 +552,9 @@ export default function LookingGlass() {
           </div>
         </div>
 
-        <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-900 dark:text-sky-200">
+        <Alert className="border-chart-1/25 bg-chart-1/10 text-foreground [&>svg]:text-chart-1">
           <Globe2 className="h-4 w-4" />
-          <AlertTitle>网络测试</AlertTitle>
+          <AlertTitle className="text-chart-1">网络测试</AlertTitle>
           <AlertDescription>
             同一时间只允许执行一个测试。普通网络测试会拒绝内网、环回、链路本地或保留地址；iperf3 服务端空闲 3 分钟后会自动停止。
           </AlertDescription>

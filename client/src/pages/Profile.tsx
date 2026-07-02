@@ -453,7 +453,7 @@ function ProfileContent() {
               />
             </div>
             {avatarQuotaExhausted && (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                 今日头像修改次数已用完，明天可继续修改。
               </div>
             )}
@@ -542,7 +542,7 @@ function ProfileContent() {
                 </Button>
               </div>
             ) : telegramStatus?.configured === false ? (
-              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+              <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>管理员尚未配置 Telegram 机器人。</span>
               </div>
@@ -612,7 +612,7 @@ function ProfileContent() {
           </CardHeader>
           <CardContent className="space-y-4">
             {!twoFactorStatus?.globalEnabled ? (
-              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+              <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>管理员尚未启用双重验证功能。</span>
               </div>
@@ -753,7 +753,7 @@ function ProfileContent() {
             <CardDescription>结束当前浏览器或 APP 的登录会话。</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="destructive" className="w-full gap-2 sm:w-auto" onClick={logout}>
+            <Button className="w-full gap-2 sm:w-auto" onClick={logout}>
               <LogOut className="h-4 w-4" />
               退出登录
             </Button>

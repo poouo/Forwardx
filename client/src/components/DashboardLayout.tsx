@@ -854,7 +854,7 @@ function DashboardLayoutContent({
           tooltip={item.label}
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
         >
-          <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]", isActive && "text-primary")} />
+          <item.icon className={cn("sidebar-nav-icon h-4 w-4", isDesktopCollapsed && "h-[18px] w-[18px]")} />
           <span className={cn(isDesktopCollapsed && "sr-only")}>{item.label}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
@@ -1516,7 +1516,7 @@ function DashboardLayoutContent({
           </DialogTitle>
           <DialogDescription>使用 2FA 软件生成动态验证码。</DialogDescription>
           {!twoFactorStatus?.globalEnabled ? (
-            <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
               管理员尚未启用双重验证功能。
             </div>
           ) : twoFactorStatus?.enabled ? (
@@ -1655,7 +1655,7 @@ function DashboardLayoutContent({
       <Dialog open={showTelegramDialog} onOpenChange={setShowTelegramDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogTitle className="flex items-center gap-2">
-            <Send className="h-5 w-5 text-sky-500" />
+            <Send className="h-5 w-5 text-primary" />
             Telegram 绑定
           </DialogTitle>
           <DialogDescription>绑定后可用 Telegram 登录和查询。</DialogDescription>
@@ -1676,7 +1676,7 @@ function DashboardLayoutContent({
                     href={telegramBotUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-between rounded-lg border border-sky-500/25 bg-sky-500/10 p-3 text-sm text-sky-700 transition-colors hover:bg-sky-500/15 dark:text-sky-300"
+                    className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary transition-colors hover:bg-primary/10"
                   >
                     <span>
                       当前机器人：<b>@{telegramBind.botUsername || telegramStatus?.botUsername}</b>
@@ -1724,7 +1724,7 @@ function DashboardLayoutContent({
                     href={telegramBotUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-between rounded-lg border border-sky-500/25 bg-sky-500/10 p-3 text-sm text-sky-700 transition-colors hover:bg-sky-500/15 dark:text-sky-300"
+                    className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary transition-colors hover:bg-primary/10"
                   >
                     <span>
                       当前机器人：<b>@{telegramStatus?.botUsername}</b>
@@ -1732,7 +1732,7 @@ function DashboardLayoutContent({
                     <Send className="h-4 w-4" />
                   </a>
                 )}
-                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm text-muted-foreground">
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm text-primary">
                   {telegramStatus?.configured ? "先生成绑定码。" : "Telegram 尚未配置。"}
                 </div>
               </div>

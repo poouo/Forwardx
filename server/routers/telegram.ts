@@ -180,7 +180,6 @@ async function issueTelegramSession(ctx: any, user: any, sessionKind: SessionKin
   const sid = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
   const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
-  await db.setUserSessionToken(user.id, sessionKind, sid);
   const { password, ...safeUser } = user;
   return { ...safeUser, mobileToken: mobile ? token : null };
 }

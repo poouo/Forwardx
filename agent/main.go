@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.130"
+var Version = "2.2.132"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -55,7 +55,9 @@ const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
 const actionBacklogHeartbeatDelay = 30 * time.Second
+const actionBacklogKeepaliveInterval = 25 * time.Second
 const actionShellTimeout = 90 * time.Second
+const shellInlineMaxBytes = 32 * 1024
 const protocolGuardSampleMinBytes = 96
 const protocolGuardSampleMaxBytes = 512
 const protocolGuardSampleTimeout = 750 * time.Millisecond
@@ -481,6 +483,7 @@ func main() {
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
+	lastHeartbeatOkAt := time.Time{}
 	for {
 		if pending := atomic.LoadInt64(&actionPendingCount); pending > 0 {
 			delay := actionBacklogHeartbeatDelay
@@ -495,12 +498,24 @@ func main() {
 			case <-time.After(delay):
 			}
 			if atomic.LoadInt64(&actionPendingCount) > 0 {
+				if lastHeartbeatOkAt.IsZero() || time.Since(lastHeartbeatOkAt) >= actionBacklogKeepaliveInterval {
+					if err := heartbeatKeepalive(cfg); err != nil {
+						if shouldLogAgentReport("heartbeat-keepalive-error", agentReportLogInterval) {
+							logf("heartbeat keepalive error while actions pending=%d: %v", atomic.LoadInt64(&actionPendingCount), err)
+						}
+					} else {
+						lastHeartbeatOkAt = time.Now()
+					}
+				}
 				continue
 			}
 		}
 		nextInterval, err := heartbeat(cfg)
 		if err != nil && shouldLogAgentReport("heartbeat-error", agentReportLogInterval) {
 			logf("heartbeat error: %v", err)
+		}
+		if err == nil {
+			lastHeartbeatOkAt = time.Now()
 		}
 		if nextInterval <= 0 {
 			nextInterval = cfg.Interval
@@ -850,6 +865,54 @@ func heartbeat(cfg Config) (int, error) {
 		return 2, nil
 	}
 	return resp.NextInterval, nil
+}
+
+func heartbeatKeepalive(cfg Config) error {
+	memInfo := readMeminfo()
+	memoryTotal := memTotalFrom(memInfo)
+	memoryUsed := memUsedFrom(memInfo)
+	swapTotal := swapTotalFrom(memInfo)
+	swapUsed := swapUsedFrom(memInfo)
+	diskUsageValue, diskUsed, diskTotal := diskStats()
+	payload := map[string]any{"busy": true}
+	if compactAgentReports.Load() {
+		payload["m"] = []any{
+			cpuUsage(),
+			usagePercent(memoryUsed, memoryTotal),
+			memoryUsed,
+			memoryTotal,
+			usagePercent(swapUsed, swapTotal),
+			swapUsed,
+			swapTotal,
+			netBytes(0),
+			netBytes(1),
+			diskUsageValue,
+			diskUsed,
+			diskTotal,
+			uptime(),
+		}
+	} else {
+		payload["cpuUsage"] = cpuUsage()
+		payload["memoryUsage"] = usagePercent(memoryUsed, memoryTotal)
+		payload["memoryUsed"] = memoryUsed
+		payload["memoryTotal"] = memoryTotal
+		payload["swapUsage"] = usagePercent(swapUsed, swapTotal)
+		payload["swapUsed"] = swapUsed
+		payload["swapTotal"] = swapTotal
+		payload["networkIn"] = netBytes(0)
+		payload["networkOut"] = netBytes(1)
+		payload["diskUsage"] = diskUsageValue
+		payload["diskUsed"] = diskUsed
+		payload["diskTotal"] = diskTotal
+		payload["uptime"] = uptime()
+	}
+	var resp heartbeatResp
+	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
+		return err
+	}
+	compactAgentReports.Store(resp.CompactReports)
+	syncPanelURLFromResponse(resp.PanelURL)
+	return nil
 }
 
 func tcpingDueInterval(serviceProbes []hostProbeServiceProbe) time.Duration {
@@ -5061,10 +5124,19 @@ func calcMAC(key, iv, ct []byte, ts int64) []byte {
 }
 
 func runShell(cmd string) bool {
-	logVerbosef("exec: %s", cmd)
+	if len(cmd) > shellInlineMaxBytes {
+		logVerbosef("exec: long shell command bytes=%d via temp script", len(cmd))
+	} else {
+		logVerbosef("exec: %s", cmd)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), actionShellTimeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, "sh", "-lc", cmd)
+	c, cleanup, err := shellCommand(ctx, cmd)
+	if err != nil {
+		logf("exec failed: %v", err)
+		return false
+	}
+	defer cleanup()
 	out, err := c.CombinedOutput()
 	if len(out) > 0 && (err != nil || ctx.Err() == context.DeadlineExceeded || agentVerboseLogs) {
 		logf("%s", strings.TrimSpace(string(out)))
@@ -5078,6 +5150,38 @@ func runShell(cmd string) bool {
 		return false
 	}
 	return true
+}
+
+func shellCommand(ctx context.Context, cmd string) (*exec.Cmd, func(), error) {
+	if len(cmd) <= shellInlineMaxBytes {
+		return exec.CommandContext(ctx, "sh", "-lc", cmd), func() {}, nil
+	}
+	dir := filepath.Join(os.TempDir(), "forwardx-agent")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, func() {}, err
+	}
+	file, err := os.CreateTemp(dir, "shell-*.sh")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	path := file.Name()
+	cleanup := func() {
+		_ = os.Remove(path)
+	}
+	if _, err := file.WriteString("#!/bin/sh\n" + cmd + "\n"); err != nil {
+		_ = file.Close()
+		cleanup()
+		return nil, func() {}, err
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	if err := os.Chmod(path, 0700); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	return exec.CommandContext(ctx, "sh", path), cleanup, nil
 }
 
 func listenPortOwnerSummary(port int) string {

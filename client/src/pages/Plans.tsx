@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
@@ -61,6 +62,10 @@ type PlanDialogTab = "settings" | "resources";
 type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
 const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
+const PLAN_MANAGE_TAB_ITEMS = [
+  { value: "plans", label: "订阅套餐", icon: Package },
+  { value: "billing", label: "按量计费资源", icon: Coins },
+] as const satisfies readonly SlidingTabItem<PlanManageTab>[];
 const PLAN_MANAGE_TAB_STORAGE_KEY = "forwardx.plans.tab";
 const PLAN_LIST_VIEW_MODE_STORAGE_KEY = "forwardx.plans.viewMode";
 
@@ -846,14 +851,7 @@ export default function Plans() {
         </div>
 
         <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as PlanManageTab)} className="space-y-4">
-          <TabsList className="grid h-auto w-full grid-cols-2 sm:w-auto">
-            <TabsTrigger value="plans" className="gap-2">
-              <Package className="h-4 w-4" /> 订阅套餐
-            </TabsTrigger>
-            <TabsTrigger value="billing" className="gap-2">
-              <Coins className="h-4 w-4" /> 按量计费资源
-            </TabsTrigger>
-          </TabsList>
+          <SlidingTabsList items={PLAN_MANAGE_TAB_ITEMS} activeValue={activeTab} ariaLabel="套餐管理" minItemWidthRem={9.5} />
 
           <TabsContent value="plans" className="mt-0 space-y-6">
             <Card>

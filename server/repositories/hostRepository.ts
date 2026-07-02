@@ -6,7 +6,7 @@ import { sqlBool } from "./repositoryUtils";
 
 // ==================== Host Queries ====================
 
-export const HOST_ONLINE_TTL_MS = 90 * 1000;
+export const HOST_ONLINE_TTL_MS = 150 * 1000;
 
 export function isFreshHostHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;

@@ -45,6 +45,7 @@ import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
@@ -121,6 +122,7 @@ function formatCurrencyCny(cents: number | string | null | undefined): string {
 }
 
 const USER_MANAGE_TYPES = ["accounts", "subscriptions"] as const;
+type UserManageType = typeof USER_MANAGE_TYPES[number];
 
 function dateText(value?: string | Date | null) {
   if (!value) return "永久";
@@ -269,7 +271,7 @@ function UsersContent() {
   const [trafficResetDay, setTrafficResetDay] = useState(1);
 
   // Subscription management dialogs
-  const [manageType, setManageType] = useUrlTab<"accounts" | "subscriptions">({
+  const [manageType, setManageType] = useUrlTab<UserManageType>({
     values: USER_MANAGE_TYPES,
     defaultValue: "accounts",
     storageKey: "forwardx.users.type",
@@ -620,6 +622,23 @@ function UsersContent() {
     [allSubscriptions, hiddenCancelledSubscriptionIds],
   );
   const activeSubscriptionCount = useMemo(() => visibleSubscriptions.filter(isSubscriptionActive).length, [visibleSubscriptions]);
+  const userManageTabItems = useMemo<SlidingTabItem<UserManageType>[]>(() => [
+    { value: "accounts", label: "账户管理", icon: UsersIcon },
+    {
+      value: "subscriptions",
+      label: "用户订阅管理",
+      icon: Package,
+      badge: (subscriptionsLoading || activeSubscriptionCount > 0) ? (
+        <AnimatedStatValue
+          value={activeSubscriptionCount}
+          loading={subscriptionsLoading}
+          cacheKey="users.tabs.activeSubscriptionCount"
+          fallbackValue={0}
+          className="leading-none"
+        />
+      ) : null,
+    },
+  ], [activeSubscriptionCount, subscriptionsLoading]);
   const userPagination = usePersistentPagination(users || [], {
     storageKey: "forwardx.users.page",
     pageSize: 12,
@@ -1105,7 +1124,7 @@ function UsersContent() {
           value={userSummary?.totalUsers ?? users?.length ?? 0}
           subtitle={`${adminCount} 个管理员`}
           icon={UsersIcon}
-          tone="bg-gradient-to-br from-blue-500 to-blue-600"
+          tone="bg-gradient-to-br from-teal-500 to-teal-600"
           loading={summaryLoading || isLoading}
           cacheKey="users.summary.totalUsers"
           fallbackValue={0}
@@ -1125,7 +1144,7 @@ function UsersContent() {
           value={formatBytes(userSummary?.totalTrafficIn ?? 0)}
           subtitle="所有用户累计入站"
           icon={ArrowDownToLine}
-          tone="bg-gradient-to-br from-violet-500 to-violet-600"
+          tone="bg-gradient-to-br from-rose-500 to-rose-600"
           loading={summaryLoading}
           cacheKey="users.summary.totalTrafficIn"
           fallbackValue="0 B"
@@ -1145,25 +1164,7 @@ function UsersContent() {
       </div>
 
       <Tabs value={manageType} onValueChange={handleManageTypeChange} className="space-y-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 border border-border/30 bg-muted/30 sm:w-auto sm:min-w-[360px]">
-          <TabsTrigger value="accounts" className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
-            <UsersIcon className="h-3.5 w-3.5" />
-            账户管理
-          </TabsTrigger>
-          <TabsTrigger value="subscriptions" className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
-            <Package className="h-3.5 w-3.5" />
-            用户订阅管理
-            {(subscriptionsLoading || activeSubscriptionCount > 0) && (
-              <AnimatedStatValue
-                value={activeSubscriptionCount}
-                loading={subscriptionsLoading}
-                cacheKey="users.tabs.activeSubscriptionCount"
-                fallbackValue={0}
-                className="ml-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
-              />
-            )}
-          </TabsTrigger>
-        </TabsList>
+        <SlidingTabsList items={userManageTabItems} activeValue={manageType} ariaLabel="用户管理" minItemWidthRem={10.5} />
 
         <TabsContent value="accounts" className="space-y-4 data-[state=inactive]:hidden">
 
@@ -1385,7 +1386,7 @@ function UsersContent() {
                         <TableCell className="hidden xl:table-cell">
                           {u.telegramId ? (
                             <div className="flex items-center gap-2">
-                              <Send className="h-3.5 w-3.5 text-sky-500" />
+                              <Send className="h-3.5 w-3.5 text-primary" />
                               <div className="min-w-0">
                                 <p className="truncate text-xs font-medium">
                                   {u.telegramUsername ? `@${u.telegramUsername}` : u.telegramFirstName || u.telegramId}

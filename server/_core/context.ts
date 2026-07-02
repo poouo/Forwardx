@@ -6,7 +6,16 @@ import type { User } from "../../drizzle/schema";
 import { ENV } from "../env";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
-import { getSessionKindField, inferLegacySessionKind, normalizeSessionKind, type SessionKind } from "../session";
+import {
+  encodeSessionLease,
+  getSessionKindField,
+  inferLegacySessionKind,
+  isSessionLeaseActive,
+  normalizeSessionKind,
+  parseSessionLease,
+  shouldRefreshSessionLease,
+  type SessionKind,
+} from "../session";
 import { DEV_ADMIN_USERNAME, isDevPanelMode } from "../devPanel";
 
 export interface AuthSession {
@@ -26,6 +35,9 @@ export interface TrpcContext {
 }
 
 type TokenSource = "cookie" | "bearer";
+
+const MULTI_DEVICE_LOGIN_SETTING_CACHE_MS = 30 * 1000;
+let allowMultiDeviceLoginCache: { value: boolean; loadedAt: number } = { value: false, loadedAt: 0 };
 
 function getRequestToken(req: Request): { token: string; source: TokenSource | null } {
   const authHeader = req.headers.authorization;
@@ -56,6 +68,23 @@ function normalizeSessionPayload(req: Request, payload: unknown) {
   };
 }
 
+async function allowMultiDeviceLogin() {
+  const now = Date.now();
+  if (now - allowMultiDeviceLoginCache.loadedAt < MULTI_DEVICE_LOGIN_SETTING_CACHE_MS) {
+    return allowMultiDeviceLoginCache.value;
+  }
+  const value = (await db.getSetting("allowMultiDeviceLogin").catch(() => null)) === "true";
+  allowMultiDeviceLoginCache = { value, loadedAt: now };
+  return value;
+}
+
+async function refreshActiveSessionLease(userId: number, sessionKind: SessionKind, sid: string, storedToken: string) {
+  const now = Date.now();
+  const lease = parseSessionLease(storedToken);
+  if (!shouldRefreshSessionLease(lease, sid, now)) return;
+  await db.setUserSessionToken(userId, sessionKind, encodeSessionLease(sid, now), { touchUserUpdatedAt: false });
+}
+
 type ResolveSessionResult =
   | { user: User; authSession: AuthSession; failureReason?: never }
   | { user: null; authSession: null; failureReason: "session_replaced" | null };
@@ -73,13 +102,27 @@ async function resolveSessionFromToken(req: Request, res: Response, token: strin
     const sessionKind = normalized.sid ? normalized.kind : inferLegacySessionKind(req);
     const field = getSessionKindField(sessionKind);
     const storedToken = String((found as any)[field] || "").trim();
-    const valid = normalized.sid ? storedToken === normalized.sid : !storedToken;
-    if (!valid) {
+
+    if (normalized.sid) {
+      if (!(await allowMultiDeviceLogin())) {
+        const activeLease = parseSessionLease(storedToken);
+        if (activeLease?.sid && activeLease.sid !== normalized.sid && isSessionLeaseActive(activeLease)) {
+          return {
+            user: null,
+            authSession: null,
+            failureReason: "session_replaced",
+          };
+        }
+        await refreshActiveSessionLease(found.id, sessionKind, normalized.sid, storedToken).catch((error) => {
+          console.warn(`[Auth] refresh session lease failed userId=${found.id} kind=${sessionKind}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    } else if (storedToken) {
       if (source === "cookie") clearSessionCookie(res, req);
       return {
         user: null,
         authSession: null,
-        failureReason: normalized.sid && storedToken && storedToken !== normalized.sid ? "session_replaced" : null,
+        failureReason: null,
       };
     }
 
@@ -132,7 +175,7 @@ export async function createContext({ req, res }: CreateExpressContextOptions): 
       user = resolved.user;
       authSession = resolved.authSession;
     } else {
-      authFailureReason = resolved.failureReason;
+      authFailureReason = resolved.failureReason ?? null;
     }
   }
 

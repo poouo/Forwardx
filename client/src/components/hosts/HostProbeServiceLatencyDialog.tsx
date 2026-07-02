@@ -9,7 +9,7 @@ import { applyLatencyPeakCut, getLatencyYAxisTicks } from "@/lib/latencyChart";
 import { pollingInterval } from "@/lib/polling";
 import { cn } from "@/lib/utils";
 
-const colors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
+const colors = ["var(--color-primary)", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#be123c", "#f97316", "#64748b"];
 const hostServiceLatencyAnimatedKeys = new Set<number>();
 const HOST_SERVICE_CHART_POINT_BUDGET = 3200;
 const HOST_SERVICE_CHART_MIN_POINTS = 260;

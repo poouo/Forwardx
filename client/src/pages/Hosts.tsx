@@ -56,12 +56,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { pollingInterval, visiblePollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   Activity,
   ArrowDownToLine,
@@ -548,16 +550,16 @@ function HostWorldMap({
             globeImageUrl={GLOBE_EARTH_IMAGE_URL}
             bumpImageUrl={GLOBE_BUMP_IMAGE_URL}
             showAtmosphere
-            atmosphereColor="#38bdf8"
+            atmosphereColor="#64748b"
             atmosphereAltitude={0.22}
             showGraticules={false}
             globeCurvatureResolution={4}
             polygonsData={countries}
             polygonGeoJsonGeometry="geometry"
             polygonAltitude={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? 0.014 : 0.004}
-            polygonCapColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.42)" : "rgba(15,23,42,.05)"}
-            polygonSideColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.28)" : "rgba(2,6,23,.14)"}
-            polygonStrokeColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(125,211,252,.96)" : "rgba(148,163,184,.22)"}
+            polygonCapColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.38)" : "rgba(15,23,42,.05)"}
+            polygonSideColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.24)" : "rgba(2,6,23,.14)"}
+            polygonStrokeColor={(country) => countryFeatureHasCode(country as GlobeCountryFeature, hostCountryCodes) ? "rgba(94,234,212,.88)" : "rgba(148,163,184,.22)"}
             polygonCapCurvatureResolution={4}
             polygonsTransitionDuration={0}
             pathsData={leaderPaths}
@@ -566,7 +568,7 @@ function HostWorldMap({
             pathPointLng="lng"
             pathPointAlt="alt"
             pathResolution={2}
-            pathColor={(path: object) => ((path as HostGlobeLeaderPath).point.host.isOnline ? "rgba(125,211,252,.8)" : "rgba(251,191,36,.78)")}
+            pathColor={(path: object) => ((path as HostGlobeLeaderPath).point.host.isOnline ? "rgba(94,234,212,.78)" : "rgba(251,191,36,.78)")}
             pathStroke={1.35}
             pathTransitionDuration={0}
             pointsData={points}
@@ -581,7 +583,7 @@ function HostWorldMap({
             ringLat="lat"
             ringLng="lng"
             ringAltitude={0.048}
-            ringColor={() => ["rgba(74,222,128,.85)", "rgba(125,211,252,.28)", "rgba(74,222,128,0)"]}
+            ringColor={() => ["rgba(74,222,128,.85)", "rgba(94,234,212,.26)", "rgba(74,222,128,0)"]}
             ringMaxRadius={2.5}
             ringPropagationSpeed={0.72}
             ringRepeatPeriod={2600}
@@ -834,7 +836,7 @@ function HostListFlowPair({
         <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{inValue}</span>
       </div>
-      <div className="flex items-center gap-1.5 text-sky-500" title={outTitle || outValue}>
+      <div className="flex items-center gap-1.5 text-primary" title={outTitle || outValue}>
         <ArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{outValue}</span>
       </div>
@@ -859,6 +861,7 @@ function HostSummaryCard({
   icon: Icon,
   leadingIcon: LeadingIcon,
   leadingTone = "bg-emerald-500",
+  iconTone = "bg-chart-2/10 text-chart-2",
   tone,
   loading,
   cacheKey,
@@ -870,6 +873,7 @@ function HostSummaryCard({
   icon: typeof ActivitySquare;
   leadingIcon?: typeof ActivitySquare;
   leadingTone?: string;
+  iconTone?: string;
   tone: string;
   loading?: boolean;
   cacheKey: string;
@@ -880,7 +884,7 @@ function HostSummaryCard({
       <div className={`absolute inset-0 opacity-[0.035] transition-opacity group-hover:opacity-[0.07] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[112px] flex-col justify-center p-3.5 sm:min-h-[112px] sm:p-4">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-        <div className="absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+        <div className={`absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
           <Icon className="h-5 w-5" />
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2.5 pr-12">
@@ -956,6 +960,8 @@ function HostTrafficSummaryCard({
   inValue,
   outValue,
   icon: Icon,
+  tone = "bg-gradient-to-br from-chart-1/10 to-transparent",
+  iconTone = "bg-chart-1/10 text-chart-1",
   loading,
   cacheKey,
   className,
@@ -964,19 +970,21 @@ function HostTrafficSummaryCard({
   inValue: string;
   outValue: string;
   icon: typeof ActivitySquare;
+  tone?: string;
+  iconTone?: string;
   loading?: boolean;
   cacheKey: string;
   className?: string;
 }) {
   return (
     <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
-      <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
+      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full flex-col justify-start p-3.5 sm:p-4">
         <div className="flex min-h-0 items-start justify-between gap-3">
           <div className="min-w-0 space-y-1 pr-12">
             <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
           </div>
-          <div className="pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+          <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
             <Icon className="h-5 w-5" />
           </div>
         </div>
@@ -1009,6 +1017,15 @@ type HostDialogTab = "basic" | "other";
 
 const HOST_MANAGE_TABS_ADMIN = ["hosts", "groups", "tokens", "services"] as const;
 const HOST_MANAGE_TABS_USER = ["hosts"] as const;
+const HOST_MANAGE_TAB_ITEMS_ADMIN = [
+  { value: "hosts", label: "主机管理", icon: Server },
+  { value: "groups", label: "分组管理", icon: FolderKanban },
+  { value: "tokens", label: "Token 管理", icon: Key },
+  { value: "services", label: "服务管理", icon: Rows3 },
+] as const satisfies readonly SlidingTabItem<HostManageTab>[];
+const HOST_MANAGE_TAB_ITEMS_USER = [
+  { value: "hosts", label: "主机管理", icon: Server },
+] as const satisfies readonly SlidingTabItem<HostManageTab>[];
 
 const HOST_DIALOG_TABS = [
   { value: "basic", label: "基础信息", icon: Server },
@@ -1129,7 +1146,7 @@ function HostGroupFilterBar({
   const chipClass = (active: boolean) => [
     "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm transition-colors",
     active
-      ? "border-primary/35 bg-primary/10 text-primary shadow-sm"
+      ? "border-chart-1/35 bg-chart-1/10 text-chart-1 shadow-sm"
       : "border-border/45 bg-card/60 text-muted-foreground hover:bg-muted/45 hover:text-foreground",
   ].join(" ");
   const countForGroup = (group: HostGroupView) => hostGroupHostIds(group).filter((hostId) => hostsById.has(hostId)).length;
@@ -1139,7 +1156,7 @@ function HostGroupFilterBar({
       <button type="button" className={chipClass(selectedGroupId === "all")} onClick={() => onSelectGroup("all")}>
         <Server className="h-3.5 w-3.5" />
         <span>全部</span>
-        <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{hosts.length}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-[11px] tabular-nums", selectedGroupId === "all" ? "bg-chart-1/15 text-chart-1" : "bg-background/70 text-muted-foreground")}>{hosts.length}</span>
       </button>
       {enabledGroups.map((group) => (
         <button
@@ -1151,7 +1168,7 @@ function HostGroupFilterBar({
         >
           <FolderKanban className="h-3.5 w-3.5" />
           <span className="max-w-[160px] truncate">{group.name}</span>
-          <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{countForGroup(group)}</span>
+          <span className={cn("rounded px-1.5 py-0.5 text-[11px] tabular-nums", selectedGroupId === Number(group.id) ? "bg-chart-1/15 text-chart-1" : "bg-background/70 text-muted-foreground")}>{countForGroup(group)}</span>
         </button>
       ))}
     </div>
@@ -1212,6 +1229,7 @@ function HostsContent() {
     defaultValue: "hosts",
     storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
   });
+  const hostManageTabItems = user?.role === "admin" ? HOST_MANAGE_TAB_ITEMS_ADMIN : HOST_MANAGE_TAB_ITEMS_USER;
   const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
   const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery(undefined, {
     enabled: !!hostLiveRefreshInterval && baseDisplayHosts.length > 0,
@@ -1924,31 +1942,7 @@ function HostsContent() {
         onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
         className="space-y-4"
       >
-        <TabsList className={`host-management-tabs grid h-auto w-full ${user?.role === "admin" ? "grid-cols-4" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-grid sm:w-auto`}>
-          <TabsTrigger value="hosts" className="min-w-0 gap-1.5 px-3 sm:w-32">
-            <Server className="h-3.5 w-3.5" />
-            主机管理
-          </TabsTrigger>
-          {user?.role === "admin" && (
-            <TabsTrigger value="groups" className="min-w-0 gap-1.5 px-3 sm:w-32">
-              <FolderKanban className="h-3.5 w-3.5" />
-              分组管理
-            </TabsTrigger>
-          )}
-          {user?.role === "admin" && (
-            <TabsTrigger value="tokens" className="min-w-0 gap-1.5 px-3 sm:w-32">
-              <Key className="h-3.5 w-3.5" />
-              Token 管理
-            </TabsTrigger>
-          )}
-
-          {user?.role === "admin" && (
-            <TabsTrigger value="services" className="min-w-0 gap-1.5 px-3 sm:w-32">
-              <Rows3 className="h-3.5 w-3.5" />
-              服务管理
-            </TabsTrigger>
-          )}
-        </TabsList>
+        <SlidingTabsList items={hostManageTabItems} activeValue={activeManageTab} ariaLabel="主机管理" minItemWidthRem={7.5} />
 
         <TabsContent value="hosts" className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -1974,6 +1968,8 @@ function HostsContent() {
             inValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
             outValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
+            tone="bg-gradient-to-br from-chart-1/10 to-transparent"
+            iconTone="bg-chart-1/10 text-chart-1"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.currentTraffic"
           />
@@ -1982,6 +1978,8 @@ function HostsContent() {
             inValue={formatBytes(effectiveHostSummary?.totalTrafficIn)}
             outValue={formatBytes(effectiveHostSummary?.totalTrafficOut)}
             icon={ArrowRightLeft}
+            tone="bg-gradient-to-br from-chart-4/10 to-transparent"
+            iconTone="bg-chart-4/10 text-chart-4"
             loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.totalTraffic"
           />
@@ -2196,7 +2194,7 @@ function HostsContent() {
                                   </Badge>
                                 )}
                                 {host.agentUpgradeRequested && (
-                                  <Badge variant="outline" className={`shrink-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-blue-500/30 text-blue-500"}`}>
+                                  <Badge variant="outline" className={`shrink-0 text-[10px] ${agentUpgradeTimedOut ? "border-destructive/30 text-destructive" : "border-primary/25 text-primary"}`}>
                                     {agentUpgradeTimedOut ? "升级失败" : "升级中"}
                                   </Badge>
                                 )}

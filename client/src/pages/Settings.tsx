@@ -20,11 +20,13 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SlidingTabsList } from "@/components/ui/sliding-tabs";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { pollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { compressImageFile, imageDataUrlSize } from "@/lib/imageUpload";
+import { applyPersonalizationTheme } from "@/lib/personalizationTheme";
 import { cn } from "@/lib/utils";
 import {
   FORWARD_PROTOCOL_LABELS,
@@ -72,9 +74,13 @@ import { BRAND_LOGO_MAX_BYTES } from "@shared/avatar";
 import {
   BUILTIN_WALLPAPERS,
   DEFAULT_PERSONALIZATION_BACKGROUND,
+  PERSONALIZATION_THEME_PRESETS,
   clampBackgroundBlur,
   clampBackgroundOpacity,
+  getPersonalizationThemePreset,
+  normalizePersonalizationThemePresetId,
   type PersonalizationBackgroundConfig,
+  type PersonalizationThemePresetId,
   type PersonalizationBackgroundImage,
   type PersonalizationBackgroundUrlType,
 } from "@shared/personalization";
@@ -257,22 +263,58 @@ const manualPanelUpgradeCommands = [
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
 const tunnelForwardProtocolKeys = TUNNEL_PROTOCOLS.filter((key) => key !== "nginx_tls");
 const LOG_PAGE_SIZE = 200;
-const settingsTabTriggerClass = "min-w-0 justify-center gap-1.5 px-2 text-xs sm:w-[7.5rem] sm:px-3 sm:text-sm [&>svg]:shrink-0";
 
-const defaultHomepageHtml = `<!doctype html>
+function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
+  const theme = getPersonalizationThemePreset(themeId);
+  return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ForwardX</title>
   <style>
+    :root {
+      --fx-primary: ${theme.light.primary};
+      --fx-primary-foreground: ${theme.light.primaryForeground};
+      --fx-ring: ${theme.light.ring};
+      --fx-chart-1: ${theme.light.chart1};
+      --fx-chart-2: ${theme.light.chart2};
+      --fx-chart-3: ${theme.light.chart3};
+      --fx-chart-4: ${theme.light.chart4};
+      --fx-bg: #f8fafc;
+      --fx-ink: #0f172a;
+      --fx-muted: #475569;
+      --fx-border: rgba(15, 23, 42, .10);
+      --fx-card: rgba(255, 255, 255, .76);
+      --fx-card-soft: rgba(248, 250, 252, .72);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fx-primary: ${theme.dark.primary};
+        --fx-primary-foreground: ${theme.dark.primaryForeground};
+        --fx-ring: ${theme.dark.ring};
+        --fx-chart-1: ${theme.dark.chart1};
+        --fx-chart-2: ${theme.dark.chart2};
+        --fx-chart-3: ${theme.dark.chart3};
+        --fx-chart-4: ${theme.dark.chart4};
+        --fx-bg: #0b1020;
+        --fx-ink: #f8fafc;
+        --fx-muted: #a8b3c7;
+        --fx-border: rgba(226, 232, 240, .14);
+        --fx-card: rgba(15, 23, 42, .72);
+        --fx-card-soft: rgba(15, 23, 42, .56);
+      }
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #0f172a;
-      background: linear-gradient(135deg, #f8fafc 0%, #ecfeff 48%, #fff7ed 100%);
+      color: var(--fx-ink);
+      background:
+        radial-gradient(circle at 16% -10%, color-mix(in oklch, var(--fx-chart-1) 20%, transparent) 0, transparent 34rem),
+        radial-gradient(circle at 92% 0%, color-mix(in oklch, var(--fx-chart-2) 16%, transparent) 0, transparent 30rem),
+        linear-gradient(135deg, color-mix(in oklch, var(--fx-bg) 94%, white 6%) 0%, var(--fx-bg) 52%, color-mix(in oklch, var(--fx-bg) 88%, var(--fx-chart-4) 12%) 100%);
     }
     .page {
       min-height: 100vh;
@@ -291,9 +333,9 @@ const defaultHomepageHtml = `<!doctype html>
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      border: 1px solid rgba(16, 185, 129, .28);
-      background: rgba(255, 255, 255, .72);
-      color: #047857;
+      border: 1px solid color-mix(in oklch, var(--fx-primary) 28%, transparent);
+      background: var(--fx-card);
+      color: var(--fx-primary);
       padding: 8px 12px;
       border-radius: 999px;
       font-size: 13px;
@@ -303,7 +345,7 @@ const defaultHomepageHtml = `<!doctype html>
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: #10b981;
+      background: var(--fx-primary);
     }
     h1 {
       margin: 18px 0 14px;
@@ -313,7 +355,7 @@ const defaultHomepageHtml = `<!doctype html>
     }
     p {
       max-width: 620px;
-      color: #475569;
+      color: var(--fx-muted);
       font-size: 17px;
       line-height: 1.8;
     }
@@ -334,20 +376,21 @@ const defaultHomepageHtml = `<!doctype html>
       font-weight: 700;
     }
     .btn.primary {
-      color: white;
-      background: #0f172a;
+      color: var(--fx-primary-foreground);
+      background: var(--fx-primary);
+      box-shadow: 0 14px 30px color-mix(in oklch, var(--fx-primary) 26%, transparent);
     }
     .btn.secondary {
-      color: #0f172a;
-      border: 1px solid rgba(15, 23, 42, .16);
-      background: rgba(255, 255, 255, .7);
+      color: var(--fx-ink);
+      border: 1px solid var(--fx-border);
+      background: var(--fx-card);
     }
     .panel {
-      border: 1px solid rgba(15, 23, 42, .08);
-      background: rgba(255, 255, 255, .76);
+      border: 1px solid var(--fx-border);
+      background: var(--fx-card);
       border-radius: 16px;
       padding: 18px;
-      box-shadow: 0 24px 80px rgba(15, 23, 42, .12);
+      box-shadow: 0 24px 80px color-mix(in oklch, var(--fx-primary) 14%, transparent);
       backdrop-filter: blur(18px);
     }
     .grid {
@@ -356,17 +399,17 @@ const defaultHomepageHtml = `<!doctype html>
       gap: 12px;
     }
     .item {
-      border: 1px solid rgba(15, 23, 42, .08);
+      border: 1px solid var(--fx-border);
       border-radius: 12px;
       padding: 16px;
-      background: rgba(248, 250, 252, .72);
+      background: var(--fx-card-soft);
     }
     .item b {
       display: block;
       margin-bottom: 6px;
     }
     .item span {
-      color: #64748b;
+      color: var(--fx-muted);
       font-size: 13px;
       line-height: 1.6;
     }
@@ -400,6 +443,7 @@ const defaultHomepageHtml = `<!doctype html>
   </main>
 </body>
 </html>`;
+}
 
 function formatCountdown(seconds: number) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -427,6 +471,14 @@ function downloadTextFile(filename: string, content: string, mimeType = "text/pl
 
 const settingsTabs = ["system", "telegram", "email", "personalization", "backup", "logs"] as const;
 type SettingsTab = typeof settingsTabs[number];
+const settingsTabItems = [
+  { value: "system", label: "系统配置", icon: Settings2 },
+  { value: "telegram", label: "Telegram", icon: Send },
+  { value: "email", label: "邮箱设置", icon: Mail },
+  { value: "personalization", label: "个性化配置", icon: Palette },
+  { value: "backup", label: "备份恢复", icon: Database },
+  { value: "logs", label: "面板日志", icon: FileText },
+] as const;
 type DatabaseType = "sqlite" | "mysql" | "postgresql";
 type BackupSummaryCache = {
   userCount: number;
@@ -641,36 +693,7 @@ function SettingsContent() {
       </div>
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
-        <div className="w-full sm:flex sm:justify-start">
-          <div className="w-full sm:w-auto">
-            <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:inline-flex sm:w-auto sm:flex-wrap">
-              <TabsTrigger value="system" className={settingsTabTriggerClass}>
-                <Settings2 className="h-3.5 w-3.5" />
-                系统配置
-              </TabsTrigger>
-              <TabsTrigger value="telegram" className={settingsTabTriggerClass}>
-                <Send className="h-3.5 w-3.5" />
-                Telegram
-              </TabsTrigger>
-              <TabsTrigger value="email" className={settingsTabTriggerClass}>
-                <Mail className="h-3.5 w-3.5" />
-                邮箱设置
-              </TabsTrigger>
-              <TabsTrigger value="personalization" className={settingsTabTriggerClass}>
-                <Palette className="h-3.5 w-3.5" />
-                个性化配置
-              </TabsTrigger>
-              <TabsTrigger value="backup" className={settingsTabTriggerClass}>
-                <Database className="h-3.5 w-3.5" />
-                备份恢复
-              </TabsTrigger>
-              <TabsTrigger value="logs" className={settingsTabTriggerClass}>
-                <FileText className="h-3.5 w-3.5" />
-                面板日志
-              </TabsTrigger>
-            </TabsList>
-          </div>
-        </div>
+        <SlidingTabsList items={settingsTabItems} activeValue={activeTab} ariaLabel="系统设置" minItemWidthRem={7.5} />
 
         {/* System Info Tab */}
         <TabsContent value="system" className="space-y-4">
@@ -737,7 +760,7 @@ function PanelLogsSection() {
   const logLevelClass = (level: string) => {
     if (level === "error") return "text-destructive";
     if (level === "warn") return "text-amber-600 dark:text-amber-400";
-    if (level === "info") return "text-sky-600 dark:text-sky-400";
+    if (level === "info") return "text-primary";
     return "text-muted-foreground";
   };
   const panelLogEntries = panelLogs?.logs || [];
@@ -1558,7 +1581,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
             ))}
           </div>
 
-          <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-800 dark:text-sky-200">
+          <Alert className="border-primary/20 bg-primary/5 text-primary">
             <Database className="h-4 w-4" />
             <AlertTitle>数据库版本要求</AlertTitle>
             <AlertDescription>
@@ -1879,7 +1902,7 @@ function BackupRestoreSection({ panelUrl }: { panelUrl: string }) {
               迁移会保留当前数据 ID；如果目标数据库已有业务数据，后端会阻止切换以避免覆盖或混合数据。
             </AlertDescription>
           </Alert>
-          <Alert className="border-sky-500/25 bg-sky-500/10 text-sky-800 dark:text-sky-200">
+          <Alert className="border-primary/20 bg-primary/5 text-primary">
             <Database className="h-4 w-4" />
             <AlertTitle>请确认数据库版本</AlertTitle>
             <AlertDescription>
@@ -2009,12 +2032,12 @@ function TelegramBotSettingsCard() {
 
   return (
     <>
-    <Card className="border-sky-500/25 bg-sky-500/5 backdrop-blur-md">
+    <Card className="border-primary/20 bg-primary/5 backdrop-blur-md">
       <CardHeader>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2 text-base">
-              <Send className="h-4 w-4 text-sky-500" />
+              <Send className="h-4 w-4 text-primary" />
               Telegram 机器人
             </CardTitle>
             <CardDescription className="mt-1">
@@ -2645,6 +2668,7 @@ type SystemSettingsSaveKey =
   | "panelUrl"
   | "registration"
   | "twoFactor"
+  | "sessionPolicy"
   | "ddns"
   | "hostMonitor"
   | "forwardProtocols"
@@ -2668,11 +2692,12 @@ function normalizePublicHostMonitorPathInput(value: string) {
     .toLowerCase();
 }
 
-type PersonalizationSaveKey = "title" | "logo" | "background" | "homepage";
+type PersonalizationSaveKey = "title" | "logo" | "theme" | "background" | "homepage";
 
 const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
   title: "网站标题已保存",
   logo: "Logo 已保存",
+  theme: "默认配色已保存",
   background: "自定义背景已保存",
   homepage: "公开首页已保存",
 };
@@ -2680,6 +2705,7 @@ const personalizationSaveMessages: Record<PersonalizationSaveKey, string> = {
 const personalizationSaveErrorMessages: Record<PersonalizationSaveKey, string> = {
   title: "网站标题保存失败",
   logo: "Logo 保存失败",
+  theme: "默认配色保存失败",
   background: "自定义背景保存失败",
   homepage: "公开首页保存失败",
 };
@@ -2693,6 +2719,8 @@ function PersonalizationSettingsSection() {
   const savingSectionRef = useRef<PersonalizationSaveKey | null>(null);
   const [siteTitleInput, setSiteTitleInput] = useState("ForwardX");
   const [siteLogoDataUrl, setSiteLogoDataUrl] = useState("");
+  const [personalizationTheme, setPersonalizationTheme] = useState<PersonalizationThemePresetId>("ink");
+  const [savedPersonalizationTheme, setSavedPersonalizationTheme] = useState<PersonalizationThemePresetId>("ink");
   const [homepageEnabled, setHomepageEnabled] = useState(true);
   const [homepageCustomEnabled, setHomepageCustomEnabled] = useState(false);
   const [homepageHtml, setHomepageHtml] = useState("");
@@ -2711,6 +2739,9 @@ function PersonalizationSettingsSection() {
     );
     setSiteTitleInput(settings.siteTitle || "ForwardX");
     setSiteLogoDataUrl(settings.siteLogoDataUrl || "");
+    const nextTheme = normalizePersonalizationThemePresetId((settings as any).personalizationTheme);
+    setPersonalizationTheme(nextTheme);
+    setSavedPersonalizationTheme(nextTheme);
     setHomepageEnabled(settings.homepageEnabled ?? true);
     setHomepageCustomEnabled(!!settings.homepageCustomEnabled);
     setHomepageHtml(settings.homepageHtml || "");
@@ -2722,11 +2753,15 @@ function PersonalizationSettingsSection() {
 
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
     onSuccess: async () => {
+      const key = savingSectionRef.current;
+      if (key === "theme") {
+        setSavedPersonalizationTheme(personalizationTheme);
+        applyPersonalizationTheme(personalizationTheme);
+      }
       await Promise.all([
         utils.system.getSettings.invalidate(),
         utils.system.publicInfo.invalidate(),
       ]);
-      const key = savingSectionRef.current;
       toast.success(key ? personalizationSaveMessages[key] : "个性化配置已保存");
     },
     onError: (err) => {
@@ -2741,10 +2776,12 @@ function PersonalizationSettingsSection() {
 
   const personalizationSaving = updateSettingsMutation.isPending;
   const isSavingPersonalization = (key: PersonalizationSaveKey) => savingSection === key && personalizationSaving;
+  const themeDirty = personalizationTheme !== savedPersonalizationTheme;
   const savePersonalizationSection = (
     key: PersonalizationSaveKey,
     payload: Parameters<typeof updateSettingsMutation.mutate>[0],
   ) => {
+    if (personalizationSaving) return;
     savingSectionRef.current = key;
     setSavingSection(key);
     updateSettingsMutation.mutate(payload);
@@ -2891,7 +2928,7 @@ function PersonalizationSettingsSection() {
       });
       if (!confirmed) return;
     }
-    setHomepageHtml(defaultHomepageHtml);
+    setHomepageHtml(createDefaultHomepageHtml(personalizationTheme));
   };
 
   const handleSaveTitle = () => {
@@ -2904,6 +2941,14 @@ function PersonalizationSettingsSection() {
       return;
     }
     savePersonalizationSection("logo", { siteLogoDataUrl });
+  };
+
+  const handleThemePresetSelect = (theme: PersonalizationThemePresetId) => {
+    setPersonalizationTheme(theme);
+  };
+
+  const handleSaveThemePreset = () => {
+    savePersonalizationSection("theme", { personalizationTheme });
   };
 
   const handleSaveBackground = () => {
@@ -2963,7 +3008,7 @@ function PersonalizationSettingsSection() {
                 placeholder="ForwardX"
                 className="flex-1"
               />
-              <Button type="button" onClick={handleSaveTitle} disabled={personalizationSaving} className="gap-2">
+              <Button type="button" onClick={handleSaveTitle} disabled={isSavingPersonalization("title")} className="gap-2">
                 {isSavingPersonalization("title") && <Loader2 className="h-4 w-4 animate-spin" />}
                 保存
               </Button>
@@ -3005,15 +3050,15 @@ function PersonalizationSettingsSection() {
                     className="hidden"
                     onChange={(event) => handleLogoUpload(event.target.files?.[0])}
                   />
-                  <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()} disabled={compressingLogo || personalizationSaving}>
+                  <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()} disabled={compressingLogo || isSavingPersonalization("logo")}>
                     {compressingLogo ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
                     上传 Logo
                   </Button>
-                  <Button type="button" variant="outline" onClick={() => setSiteLogoDataUrl("")} disabled={!siteLogoDataUrl || compressingLogo || personalizationSaving}>
+                  <Button type="button" variant="outline" onClick={() => setSiteLogoDataUrl("")} disabled={!siteLogoDataUrl || compressingLogo || isSavingPersonalization("logo")}>
                     <RefreshCw className="mr-2 h-4 w-4" />
                     还原默认
                   </Button>
-                  <Button type="button" onClick={handleSaveLogo} disabled={compressingLogo || personalizationSaving} className="gap-2">
+                  <Button type="button" onClick={handleSaveLogo} disabled={compressingLogo || isSavingPersonalization("logo")} className="gap-2">
                     {isSavingPersonalization("logo") && <Loader2 className="h-4 w-4 animate-spin" />}
                     保存 Logo
                   </Button>
@@ -3032,6 +3077,74 @@ function PersonalizationSettingsSection() {
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Palette className="h-4 w-4 text-primary" />
+              默认配色
+            </CardTitle>
+            <CardDescription>
+              选择后保存，按钮、选中态、提示框、侧边栏主色和背景轻微渐变会同步变化。
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            onClick={handleSaveThemePreset}
+            disabled={isSavingPersonalization("theme") || !themeDirty}
+            className="w-full gap-2 sm:w-auto"
+          >
+            {isSavingPersonalization("theme") && <Loader2 className="h-4 w-4 animate-spin" />}
+            保存配色
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            {PERSONALIZATION_THEME_PRESETS.map((preset) => {
+              const active = personalizationTheme === preset.id;
+              const saving = isSavingPersonalization("theme") && active;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => handleThemePresetSelect(preset.id)}
+                  disabled={isSavingPersonalization("theme")}
+                  className={cn(
+                    "group flex min-h-32 flex-col justify-between rounded-lg border bg-background/50 p-3 text-left text-foreground transition hover:-translate-y-0.5 hover:border-primary/50 hover:bg-primary/5 disabled:pointer-events-none disabled:opacity-70",
+                    active ? "border-primary bg-primary/5 ring-2 ring-primary/15" : "border-border/40",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium">{preset.name}</p>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        {preset.description}
+                      </p>
+                    </div>
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                      {saving ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                      ) : active ? (
+                        <CheckCircle2 className="h-4 w-4 text-primary" />
+                      ) : null}
+                    </span>
+                  </div>
+                  <div className="mt-4 flex items-center gap-2">
+                    {preset.swatches.map((color) => (
+                      <span
+                        key={color}
+                        className="h-7 w-7 rounded-full border border-background shadow-sm ring-1 ring-border/60"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Palette className="h-4 w-4 text-primary" />
               自定义背景
             </CardTitle>
             <CardDescription>
@@ -3039,11 +3152,11 @@ function PersonalizationSettingsSection() {
             </CardDescription>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-            <Button type="button" variant="outline" onClick={handleResetBackground} disabled={personalizationSaving} className="w-full gap-2 sm:w-auto">
+            <Button type="button" variant="outline" onClick={handleResetBackground} disabled={isSavingPersonalization("background")} className="w-full gap-2 sm:w-auto">
               <RefreshCw className="h-4 w-4" />
               恢复默认
             </Button>
-            <Button type="button" onClick={handleSaveBackground} disabled={compressingBackground || personalizationSaving} className="w-full gap-2 sm:w-auto">
+            <Button type="button" onClick={handleSaveBackground} disabled={compressingBackground || isSavingPersonalization("background")} className="w-full gap-2 sm:w-auto">
               {isSavingPersonalization("background") && <Loader2 className="h-4 w-4 animate-spin" />}
               保存背景
             </Button>
@@ -3239,7 +3352,7 @@ function PersonalizationSettingsSection() {
                         className="hidden"
                         onChange={(event) => handleBackgroundUpload(event.target.files?.[0])}
                       />
-                      <Button type="button" variant="outline" onClick={() => backgroundInputRef.current?.click()} disabled={compressingBackground || personalizationSaving}>
+                      <Button type="button" variant="outline" onClick={() => backgroundInputRef.current?.click()} disabled={compressingBackground || isSavingPersonalization("background")}>
                         {compressingBackground ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
                         上传背景
                       </Button>
@@ -3336,7 +3449,7 @@ function PersonalizationSettingsSection() {
               设置未登录时展示的首页。
             </CardDescription>
           </div>
-          <Button type="button" onClick={handleSaveHomepage} disabled={personalizationSaving} className="w-full gap-2 sm:w-auto">
+          <Button type="button" onClick={handleSaveHomepage} disabled={isSavingPersonalization("homepage")} className="w-full gap-2 sm:w-auto">
             {isSavingPersonalization("homepage") && <Loader2 className="h-4 w-4 animate-spin" />}
             保存首页
           </Button>
@@ -3453,6 +3566,7 @@ function SystemInfoSection() {
   const [publicHostMonitorEnabled, setPublicHostMonitorEnabled] = useState(false);
   const [publicHostMonitorPath, setPublicHostMonitorPath] = useState("dev");
   const [publicHostMonitorTitle, setPublicHostMonitorTitle] = useState("");
+  const [allowMultiDeviceLogin, setAllowMultiDeviceLogin] = useState(false);
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [savingSetting, setSavingSetting] = useState<SystemSettingsSaveKey | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -3475,6 +3589,7 @@ function SystemInfoSection() {
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
+      setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
       setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
@@ -3808,6 +3923,10 @@ function SystemInfoSection() {
     });
   };
 
+  const handleSaveSessionPolicy = () => {
+    saveSystemSettings("sessionPolicy", { allowMultiDeviceLogin });
+  };
+
   const resetForwardProtocolDraft = () => {
     setForwardProtocols(normalizeForwardProtocolSettings(settings?.forwardProtocols));
   };
@@ -3928,13 +4047,13 @@ function SystemInfoSection() {
       label: "Telegram 双向消息机器人",
       url: settings?.telegramBotUrl || "#",
       icon: Send,
-      iconClassName: "text-sky-500",
+      iconClassName: "text-primary",
     },
     {
       label: "Telegram 群组",
       url: "https://t.me/ForwardX_panel",
       icon: UserPlus,
-      iconClassName: "text-blue-500",
+      iconClassName: "text-primary",
     },
     ...(androidApkDownloadUrl ? [{
       label: "Android APK 下载",
@@ -4611,75 +4730,94 @@ function SystemInfoSection() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Monitor className="h-4 w-4 text-primary" />
-            主机监控配置
-          </CardTitle>
-          <CardDescription>
-            开启后可通过独立链接免登录查看主机监控面板，仅展示状态与流量数据。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">允许免登录查看主机监控</p>
-              <p className="text-xs text-muted-foreground">
-                开启后公开监控页只读可见，不提供编辑、删除、升级等管理操作。
-              </p>
-            </div>
-            <Switch className="shrink-0" checked={publicHostMonitorEnabled} onCheckedChange={setPublicHostMonitorEnabled} />
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
-            <div className="space-y-2 lg:col-span-2">
-              <Label>展示标题</Label>
-              <Input
-                value={publicHostMonitorTitle}
-                onChange={(e) => setPublicHostMonitorTitle(e.target.value.slice(0, 80))}
-                placeholder="留空默认使用站点标题 + 主机监控"
-                maxLength={80}
-              />
-              <p className="text-xs text-muted-foreground">
-                用于公开主机监控页顶部展示，例如 ForwardX Dev 主机监控。留空则自动使用当前站点标题。
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label>主机监控面板路径</Label>
-              <Input
-                value={publicHostMonitorPath}
-                onChange={(e) => setPublicHostMonitorPath(e.target.value)}
-                placeholder="dev"
-              />
-              <p className="text-xs text-muted-foreground">
-                留空默认使用 dev，仅支持字母、数字、短横线和下划线，例如 monitor 或 host-monitor。
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label>访问地址</Label>
-              <div className="flex min-w-0 gap-2">
-                <Input value={publicHostMonitorUrl} readOnly className="font-mono text-xs" />
-                <Button type="button" variant="outline" size="icon" title="打开主机监控面板" asChild>
-                  <a href={publicHostMonitorUrl} target="_blank" rel="noreferrer">
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                </Button>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Monitor className="h-4 w-4 text-primary" />
+              主机监控配置
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">允许免登录查看主机监控</p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                未开启时该地址不会返回监控数据。
-              </p>
+              <Switch className="shrink-0" checked={publicHostMonitorEnabled} onCheckedChange={setPublicHostMonitorEnabled} />
             </div>
-          </div>
 
-          <div className="flex justify-end">
-            <Button onClick={handleSavePublicHostMonitor} disabled={isSavingSetting("hostMonitor")}>
-              {isSavingSetting("hostMonitor") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isSavingSetting("hostMonitor") ? "保存中..." : "保存主机监控配置"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
+              <div className="space-y-2 lg:col-span-2">
+                <Label>展示标题</Label>
+                <Input
+                  value={publicHostMonitorTitle}
+                  onChange={(e) => setPublicHostMonitorTitle(e.target.value.slice(0, 80))}
+                  placeholder="留空默认使用站点标题 + 主机监控"
+                  maxLength={80}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>主机监控面板路径</Label>
+                <Input
+                  value={publicHostMonitorPath}
+                  onChange={(e) => setPublicHostMonitorPath(e.target.value)}
+                  placeholder="dev"
+                />
+                <p className="text-xs text-muted-foreground">
+                  支持字母、数字、短横线和下划线。
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>访问地址</Label>
+                <div className="flex min-w-0 gap-2">
+                  <Input value={publicHostMonitorUrl} readOnly className="font-mono text-xs" />
+                  <Button type="button" variant="outline" size="icon" title="打开主机监控面板" asChild>
+                    <a href={publicHostMonitorUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button onClick={handleSavePublicHostMonitor} disabled={isSavingSetting("hostMonitor")}>
+                {isSavingSetting("hostMonitor") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isSavingSetting("hostMonitor") ? "保存中..." : "保存主机监控配置"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              登录会话配置
+            </CardTitle>
+            <CardDescription>
+              控制同一账户在多台设备上的后台访问策略。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">允许多设备在线</p>
+                <p className="text-xs text-muted-foreground">
+                  开启后同一账户不再限制仅一个地方登录。
+                </p>
+              </div>
+              <Switch className="shrink-0" checked={allowMultiDeviceLogin} onCheckedChange={setAllowMultiDeviceLogin} />
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={handleSaveSessionPolicy} disabled={isSavingSetting("sessionPolicy")}>
+                {isSavingSetting("sessionPolicy") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isSavingSetting("sessionPolicy") ? "保存中..." : "保存登录会话配置"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
 
       <Dialog

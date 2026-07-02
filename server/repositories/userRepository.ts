@@ -30,13 +30,19 @@ export async function getUserById(id: number) {
   return r[0];
 }
 
-export async function setUserSessionToken(userId: number, sessionKind: SessionKind, sessionToken: string | null) {
+export async function setUserSessionToken(
+  userId: number,
+  sessionKind: SessionKind,
+  sessionToken: string | null,
+  options: { touchUserUpdatedAt?: boolean } = {},
+) {
   const db = await getDb();
   if (!db) return;
   const field = getSessionKindField(sessionKind);
-  const patch: Record<string, unknown> = {
-    updatedAt: nowDate(),
-  };
+  const patch: Record<string, unknown> = {};
+  if (options.touchUserUpdatedAt !== false) {
+    patch.updatedAt = nowDate();
+  }
   patch[field] = sessionToken || null;
   await db.update(users).set(patch as any).where(eq(users.id, userId));
 }

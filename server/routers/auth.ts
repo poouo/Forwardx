@@ -7,7 +7,7 @@ import { getSessionCookieOptions } from "../_core/cookies";
 import { publicProcedure, protectedProcedure, router } from "../_core/trpc";
 import { ENV } from "../env";
 import * as db from "../db";
-import { resolveRequestedSessionKind, type SessionKind } from "../session";
+import { getSessionKindField, isSessionLeaseActive, parseSessionLease, resolveRequestedSessionKind, type SessionKind } from "../session";
 import { getEmailConfig, sendVerificationCode } from "../email";
 import { createTotpSecret, createTotpUri, verifyTotpToken } from "../totp";
 import { clearTwoFactorChallenge, createTwoFactorChallenge, getTwoFactorChallenge, recordTwoFactorChallengeFailure } from "../twoFactorChallenges";
@@ -173,7 +173,6 @@ async function issueLoginSession(ctx: any, user: any, sessionKind: SessionKind, 
   const sid = nanoid(24);
   const token = jwt.sign({ userId: user.id, sid, kind: sessionKind }, ENV.cookieSecret, { expiresIn: "10d" });
   ctx.res.cookie(COOKIE_NAME, token, getSessionCookieOptions(ctx.req));
-  await db.setUserSessionToken(user.id, sessionKind, sid);
   const { password, twoFactorSecret: _twoFactorSecret, ...safeUser } = user;
   return { ...safeUser, mobileToken: mobile ? token : null };
 }
@@ -440,7 +439,11 @@ export const authRouter = router({
     const cookieOptions = getSessionCookieOptions(ctx.req);
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     if (ctx.user && ctx.authSession?.kind) {
-      await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
+      const field = getSessionKindField(ctx.authSession.kind);
+      const activeLease = parseSessionLease((ctx.user as any)[field]);
+      if (!ctx.authSession.sid || !activeLease || activeLease.sid === ctx.authSession.sid || !isSessionLeaseActive(activeLease)) {
+        await db.clearUserSessionToken(ctx.user.id, ctx.authSession.kind);
+      }
     }
     if (ctx.user) {
       console.info(`[Auth] Logout userId=${ctx.user.id} username=${maskIdentifier(ctx.user.username)} ip=${getRequestIp(ctx)}`);

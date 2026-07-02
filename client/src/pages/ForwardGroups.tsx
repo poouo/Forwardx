@@ -1252,7 +1252,7 @@ export function ForwardGroupsContent({
     if (configState.status === "disabled") return <Badge variant="outline">停用</Badge>;
     if (mode === "chain") {
       return configState.available
-        ? <Badge className="border-sky-500/20 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-500/20 dark:hover:text-sky-100">链路</Badge>
+        ? <Badge className="border-primary/20 bg-primary/10 text-primary hover:bg-primary/15">链路</Badge>
         : <Badge variant="destructive">不可用</Badge>;
     }
     if (mode === "entry") {
@@ -1263,7 +1263,7 @@ export function ForwardGroupsContent({
     }
     if (mode === "exit") {
       return configState.available
-        ? <Badge className="border-indigo-500/20 bg-indigo-500/10 text-indigo-700 hover:bg-indigo-500/20 hover:text-indigo-900 dark:text-indigo-300 dark:hover:bg-indigo-500/20 dark:hover:text-indigo-100">可选出口</Badge>
+        ? <Badge className="border-primary/20 bg-primary/10 text-primary hover:bg-primary/15">可选出口</Badge>
         : <Badge variant="destructive">不可用</Badge>;
     }
     if (configState.status === "error") return <Badge variant="destructive">DDNS 异常</Badge>;
@@ -1471,7 +1471,7 @@ export function ForwardGroupsContent({
         </div>
         {!hideHeaderActions && <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className={`h-3 w-3 ${isChainMode ? "text-sky-500" : "text-emerald-500"}`} />
+            <Activity className={`h-3 w-3 ${isChainMode ? "text-primary" : "text-emerald-500"}`} />
             <AnimatedStatValue
               value={`${activeCount} / ${modeTotal} ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
               loading={isLoading || !groups}

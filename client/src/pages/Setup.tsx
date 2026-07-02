@@ -378,8 +378,8 @@ export default function Setup() {
                     ))}
                   </div>
 
-                  <Alert className="border-sky-500/25 bg-sky-50/80 text-sky-950">
-                    <Database className="h-4 w-4 text-sky-700" />
+                  <Alert className="border-primary/20 bg-primary/5 text-primary">
+                    <Database className="h-4 w-4" />
                     <AlertTitle>数据库版本要求</AlertTitle>
                     <AlertDescription>
                       MySQL 需要 8.0.13 或以上版本；PostgreSQL 建议 12 或以上版本；SQLite 使用本地数据文件，无需额外准备数据库服务。
@@ -557,8 +557,8 @@ export default function Setup() {
                         <AlertTitle>迁移码规则</AlertTitle>
                         <AlertDescription>迁移码 5 分钟有效，使用后失效。</AlertDescription>
                       </Alert>
-                      <Alert className="border-sky-500/25 bg-sky-50/80 text-sky-950">
-                        <Database className="h-4 w-4 text-sky-700" />
+                      <Alert className="border-primary/20 bg-primary/5 text-primary">
+                        <Database className="h-4 w-4" />
                         <AlertTitle>迁移前请确认数据库版本</AlertTitle>
                         <AlertDescription>
                           新面板连接 MySQL 时需要 8.0.13 或以上版本；连接 PostgreSQL 时建议 12 或以上版本。

@@ -50,6 +50,7 @@ import {
   clampBackgroundBlur,
   clampBackgroundOpacity,
   isBuiltinWallpaperId,
+  normalizePersonalizationThemePresetId,
   type PersonalizationBackgroundConfig,
 } from "../../shared/personalization";
 
@@ -1279,6 +1280,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     agentVersion: AGENT_VERSION,
     siteTitle: all.siteTitle || "ForwardX",
     siteLogoDataUrl: all.siteLogoDataUrl || "",
+    personalizationTheme: normalizePersonalizationThemePresetId(all.personalizationTheme),
     personalizationBackground: publicPersonalizationBackground(all),
     panelPublicUrl: all.panelPublicUrl ?? "",
     panelSsl: {
@@ -1295,6 +1297,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     registrationEnabled: all.registrationEnabled !== "false",
     twoFactorEnabled: all.twoFactorEnabled === "true",
     lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+    allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
     publicHostMonitor: {
       enabled: all.publicHostMonitorEnabled === "true",
       path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
@@ -1417,10 +1420,12 @@ export const systemRouter = router({
       agentVersion: AGENT_VERSION,
       siteTitle: all.siteTitle || "ForwardX",
       siteLogoDataUrl: all.siteLogoDataUrl || "",
+      personalizationTheme: normalizePersonalizationThemePresetId(all.personalizationTheme),
       personalizationBackground: publicPersonalizationBackground(all),
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+      allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
       publicHostMonitor: {
         enabled: all.publicHostMonitorEnabled === "true",
         path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
@@ -1661,9 +1666,11 @@ export const systemRouter = router({
         panelPublicUrl: z.string().max(256).optional(),
         siteTitle: siteTitleSchema.optional(),
         siteLogoDataUrl: brandLogoSchema.optional(),
+        personalizationTheme: z.string().max(32).optional(),
         registrationEnabled: z.boolean().optional(),
         twoFactorEnabled: z.boolean().optional(),
         lookingGlassUserEnabled: z.boolean().optional(),
+        allowMultiDeviceLogin: z.boolean().optional(),
         publicHostMonitor: z.object({
           enabled: z.boolean().optional(),
           path: z.string().max(128).optional(),
@@ -1776,6 +1783,11 @@ export const systemRouter = router({
         await db.setSetting("siteLogoDataUrl", logo || null);
         console.info(`[Settings] site logo ${logo ? "updated" : "cleared"}`);
       }
+      if (input.personalizationTheme !== undefined) {
+        const theme = normalizePersonalizationThemePresetId(input.personalizationTheme);
+        await db.setSetting("personalizationTheme", theme);
+        console.info(`[Settings] personalization theme updated theme=${theme}`);
+      }
       if (input.registrationEnabled !== undefined) {
         await db.setSetting("registrationEnabled", input.registrationEnabled ? "true" : "false");
         console.info(`[Settings] public registration ${input.registrationEnabled ? "enabled" : "disabled"}`);
@@ -1787,6 +1799,10 @@ export const systemRouter = router({
       if (input.lookingGlassUserEnabled !== undefined) {
         await db.setSetting("lookingGlassUserEnabled", input.lookingGlassUserEnabled ? "true" : "false");
         console.info(`[Settings] network test for users ${input.lookingGlassUserEnabled ? "enabled" : "disabled"}`);
+      }
+      if (input.allowMultiDeviceLogin !== undefined) {
+        await db.setSetting("allowMultiDeviceLogin", input.allowMultiDeviceLogin ? "true" : "false");
+        console.info(`[Settings] multi-device login ${input.allowMultiDeviceLogin ? "enabled" : "disabled"}`);
       }
       if (input.publicHostMonitor) {
         const next: Record<string, string | null> = {};

@@ -827,7 +827,7 @@ export default function Login() {
                   </div>
                   <div className="min-h-[132px] rounded-lg border border-border/50 bg-muted/20 p-3 transition-colors">
                     <div className="mb-3 flex items-center justify-center gap-2 text-sm font-medium">
-                      <Send className="h-4 w-4 text-sky-500" />
+                      <Send className="h-4 w-4 text-primary" />
                       Telegram 快捷登录
                     </div>
                     <div className="space-y-2">

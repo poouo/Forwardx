@@ -4,7 +4,7 @@ import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
 // ==================== Agent Token Queries ====================
 
-const HOST_ONLINE_TTL_MS = 90 * 1000;
+const HOST_ONLINE_TTL_MS = 150 * 1000;
 
 function isFreshHeartbeat(lastHeartbeat: unknown) {
   if (!lastHeartbeat) return false;

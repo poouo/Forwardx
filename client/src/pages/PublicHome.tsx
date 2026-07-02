@@ -62,8 +62,8 @@ export default function PublicHome() {
       <main>
         <section className="mx-auto grid min-h-[calc(100vh-84px)] w-full max-w-6xl items-center gap-8 px-4 pb-12 pt-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="space-y-6">
-            <Badge variant="outline" className="w-fit gap-2 border-emerald-500/30 bg-background/55 px-3 py-1.5 text-emerald-700 backdrop-blur dark:text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <Badge variant="outline" className="w-fit gap-2 border-primary/25 bg-background/55 px-3 py-1.5 text-primary backdrop-blur">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
               面向 Linux 服务器的转发管理面板
             </Badge>
             <div className="space-y-4">
@@ -107,11 +107,11 @@ export default function PublicHome() {
 
             <div className="grid grid-cols-3 gap-3">
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
-                <Zap className="mx-auto h-4 w-4 text-amber-500" />
+                <Zap className="mx-auto h-4 w-4 text-chart-4" />
                 <p className="mt-2 text-xs text-muted-foreground">在线升级</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">
-                <WalletCards className="mx-auto h-4 w-4 text-emerald-600" />
+                <WalletCards className="mx-auto h-4 w-4 text-chart-2" />
                 <p className="mt-2 text-xs text-muted-foreground">套餐支付</p>
               </div>
               <div className="rounded-lg border border-border/50 bg-card/80 p-3 text-center shadow-sm backdrop-blur">

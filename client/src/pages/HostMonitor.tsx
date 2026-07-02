@@ -54,7 +54,7 @@ import NotFound from "@/pages/NotFound";
 type HostMonitorViewMode = "card" | "compact-card" | "table";
 
 const HOST_MONITOR_VIEW_MODE_STORAGE_KEY = "forwardx.publicHostMonitor.viewMode";
-const serviceChartColors = ["#2563eb", "#16a34a", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#be123c", "#4f46e5"];
+const serviceChartColors = ["var(--color-primary)", "#16a34a", "#d97706", "#dc2626", "#0d9488", "#be123c", "#f97316", "#64748b"];
 
 function getStoredHostMonitorViewMode(): HostMonitorViewMode {
   if (typeof window === "undefined") return "card";
@@ -186,6 +186,8 @@ function HostMonitorStatCard({
   icon: Icon,
   leadingIcon: LeadingIcon,
   leadingTone = "bg-emerald-500",
+  tone = "bg-gradient-to-br from-chart-2/10 to-transparent",
+  iconTone = "bg-chart-2/10 text-chart-2",
 }: {
   title: string;
   value: string;
@@ -193,12 +195,14 @@ function HostMonitorStatCard({
   icon: LucideIcon;
   leadingIcon?: LucideIcon;
   leadingTone?: string;
+  tone?: string;
+  iconTone?: string;
 }) {
   return (
     <Card className="group relative h-full overflow-hidden border-border/40 bg-card/70 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
-      <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
+      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[108px] flex-col justify-center p-4">
-        <div className="pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+        <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
           <Icon className="h-5 w-5" />
         </div>
         <p className="pr-12 text-xs font-medium text-muted-foreground">{title}</p>
@@ -249,17 +253,21 @@ function HostMonitorTrafficStatCard({
   inValue,
   outValue,
   icon: Icon,
+  tone = "bg-gradient-to-br from-chart-1/10 to-transparent",
+  iconTone = "bg-chart-1/10 text-chart-1",
 }: {
   title: string;
   inValue: string;
   outValue: string;
   icon: LucideIcon;
+  tone?: string;
+  iconTone?: string;
 }) {
   return (
     <Card className="group relative h-full overflow-hidden border-border/40 bg-card/70 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5">
-      <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-[0.035] transition-opacity group-hover:opacity-[0.07]" />
+      <div className={`absolute inset-0 opacity-[0.04] transition-opacity group-hover:opacity-[0.08] ${tone}`} />
       <CardContent className="relative flex h-full min-h-[108px] flex-col justify-center p-4">
-        <div className="pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+        <div className={`pointer-events-none absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${iconTone}`}>
           <Icon className="h-5 w-5" />
         </div>
         <p className="mb-2.5 pr-12 text-xs font-medium text-muted-foreground">{title}</p>
@@ -465,7 +473,7 @@ function PublicHostListFlowPair({
         <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{inValue}</span>
       </div>
-      <div className="flex items-center gap-1.5 text-sky-500" title={outTitle || outValue}>
+      <div className="flex items-center gap-1.5 text-primary" title={outTitle || outValue}>
         <ArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{outValue}</span>
       </div>
@@ -1002,6 +1010,8 @@ export default function HostMonitor() {
                 inValue={formatBytes(summary?.totalTrafficIn || 0)}
                 outValue={formatBytes(summary?.totalTrafficOut || 0)}
                 icon={ArrowRightLeft}
+                tone="bg-gradient-to-br from-chart-4/10 to-transparent"
+                iconTone="bg-chart-4/10 text-chart-4"
               />
             </div>
 

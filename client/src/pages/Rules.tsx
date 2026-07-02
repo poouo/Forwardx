@@ -28,7 +28,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
@@ -411,7 +412,7 @@ const RULE_GLOBE_PATH_MAX_ALTITUDE = 0.11;
 const RULE_GLOBE_PATH_LAYER_ALTITUDE_STEP = 0.006;
 const RULE_GLOBE_PATH_LAYER_ALTITUDE_MAX = 0.018;
 const RULE_GLOBE_TARGET_OFFSET_DEGREES = 5.8;
-const RULE_GLOBE_COLORS = ["#38bdf8", "#4ade80", "#f59e0b", "#a78bfa", "#fb7185", "#2dd4bf", "#f97316", "#84cc16", "#60a5fa", "#f472b6"];
+const RULE_GLOBE_COLORS = ["#334155", "#4ade80", "#f59e0b", "#fb7185", "#2dd4bf", "#f97316", "#84cc16", "#64748b", "#f472b6", "#14b8a6"];
 let reactGlobePrefetchStarted = false;
 
 function getStoredRuleViewMode(): RuleViewMode {
@@ -1803,7 +1804,7 @@ function RuleTrafficGlobe({
               backgroundColor="rgba(3,7,18,1)"
               globeImageUrl={RULE_GLOBE_EARTH_IMAGE_URL}
               showAtmosphere
-              atmosphereColor="#38bdf8"
+              atmosphereColor="#64748b"
               atmosphereAltitude={0.22}
               showGraticules={false}
               globeCurvatureResolution={6}
@@ -3207,6 +3208,13 @@ function RulesContent() {
       });
     return counts;
   }, [baseScopedRules, forwardGroupById, ruleFilters, selectedScopeQueryEnabled, selectedScopedRules]);
+  const ruleCategoryItems = useMemo<SlidingTabItem<RuleCategory>[]>(() => [
+    { value: "all", label: "全部", icon: LayoutGrid, badge: ruleCategoryCounts.all },
+    { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, badge: ruleCategoryCounts.local },
+    { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, badge: ruleCategoryCounts.tunnel },
+    { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, badge: ruleCategoryCounts.chain },
+    { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, badge: ruleCategoryCounts.group },
+  ], [ruleCategoryCounts]);
   const visibleRuleIdsForMetrics = useMemo(() => (
     Array.from(new Set(filteredRules.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isInteger(id) && id > 0)))
   ), [filteredRules]);
@@ -5415,24 +5423,7 @@ function RulesContent() {
           </div>
 
           <Tabs value={ruleCategory} onValueChange={handleRuleCategoryChange}>
-            <TabsList className="grid h-auto w-full grid-cols-2 border border-border/30 bg-muted/30 sm:grid-cols-5">
-              {([
-                { value: "all", label: "全部", icon: LayoutGrid, count: ruleCategoryCounts.all },
-                { value: "local", label: desktopRuleTypeLabels.local, icon: ArrowRightLeft, count: ruleCategoryCounts.local },
-                { value: "tunnel", label: desktopRuleTypeLabels.tunnel, icon: Network, count: ruleCategoryCounts.tunnel },
-                { value: "chain", label: desktopRuleTypeLabels.chain, icon: GitBranch, count: ruleCategoryCounts.chain },
-                { value: "group", label: desktopRuleTypeLabels.group, icon: Layers3, count: ruleCategoryCounts.group },
-              ] as Array<{ value: RuleCategory; label: string; icon: typeof LayoutGrid; count: number }>).map((item) => {
-                const Icon = item.icon;
-                return (
-                  <TabsTrigger key={item.value} value={item.value} className="min-w-0 justify-center gap-1.5 text-xs sm:text-sm">
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{item.label}</span>
-                    <Badge variant="secondary" className="ml-0.5 h-5 shrink-0 px-1.5 text-[10px]">{item.count}</Badge>
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
+            <SlidingTabsList items={ruleCategoryItems} activeValue={ruleCategory} ariaLabel="转发规则分类" minItemWidthRem={8.5} />
           </Tabs>
         </div>
       )}

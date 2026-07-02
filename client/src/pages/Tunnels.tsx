@@ -30,7 +30,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
@@ -232,7 +233,7 @@ const tunnelLatencyColors = [
   "var(--color-chart-3)",
   "var(--color-chart-4)",
   "var(--color-chart-5)",
-  "#0ea5e9",
+  "var(--color-primary)",
   "#f97316",
 ];
 
@@ -719,6 +720,13 @@ type TunnelSection = "tunnels" | "chains" | "groups" | "entries" | "exits";
 type TunnelGroupMode = "failover" | "entry" | "exit";
 
 const TUNNEL_SECTIONS = ["tunnels", "chains", "groups", "entries", "exits"] as const;
+const TUNNEL_SECTION_ITEMS = [
+  { value: "tunnels", label: "隧道链路", icon: Network },
+  { value: "chains", label: "端口转发链", icon: Route },
+  { value: "groups", label: "转发组", icon: ShieldCheck },
+  { value: "entries", label: "入口组", icon: LogIn },
+  { value: "exits", label: "出口组", icon: LogOut },
+] as const satisfies readonly SlidingTabItem<TunnelSection>[];
 
 const TUNNEL_SECTION_STORAGE_KEY = "forwardx.tunnels.section";
 const TUNNEL_VIEW_MODE_STORAGE_KEY = "forwardx.tunnels.viewMode";
@@ -874,9 +882,9 @@ function TunnelWorldGlobe({
         routeHosts,
         statusText: enabled ? "已启用" : "已停用",
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
-        color: enabled ? "#38bdf8" : "#94a3b8",
-        trackColor: enabled ? "#0e7490" : "#475569",
-        glowColor: enabled ? "rgba(56,189,248,.85)" : "rgba(148,163,184,.6)",
+        color: enabled ? "#14b8a6" : "#94a3b8",
+        trackColor: enabled ? "#0f766e" : "#475569",
+        glowColor: enabled ? "rgba(20,184,166,.78)" : "rgba(148,163,184,.6)",
       });
     });
 
@@ -973,9 +981,9 @@ function TunnelWorldGlobe({
         name: String(group.name || `转发链 #${group.id}`),
         statusText: enabled ? "已启用" : "已停用",
         latencyText: formatGlobeLatency(group.latestLatencyMs, group.latestLatencyIsTimeout),
-        color: enabled ? "#38bdf8" : "#94a3b8",
-        trackColor: enabled ? "#0e7490" : "#475569",
-        glowColor: enabled ? "rgba(56,189,248,.85)" : "rgba(148,163,184,.6)",
+        color: enabled ? "#14b8a6" : "#94a3b8",
+        trackColor: enabled ? "#0f766e" : "#475569",
+        glowColor: enabled ? "rgba(20,184,166,.78)" : "rgba(148,163,184,.6)",
       });
     });
     return map;
@@ -1071,16 +1079,16 @@ function TunnelWorldGlobe({
               backgroundColor="rgba(3,7,18,1)"
               globeImageUrl={TUNNEL_GLOBE_EARTH_IMAGE_URL}
               showAtmosphere
-              atmosphereColor="#38bdf8"
+              atmosphereColor="#64748b"
               atmosphereAltitude={0.22}
               showGraticules={false}
               globeCurvatureResolution={4}
               polygonsData={countries}
               polygonGeoJsonGeometry="geometry"
               polygonAltitude={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? 0.014 : 0.004}
-              polygonCapColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.38)" : "rgba(15,23,42,.05)"}
-              polygonSideColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(14,165,233,.24)" : "rgba(2,6,23,.14)"}
-              polygonStrokeColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(125,211,252,.9)" : "rgba(148,163,184,.22)"}
+              polygonCapColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.36)" : "rgba(15,23,42,.05)"}
+              polygonSideColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(20,184,166,.22)" : "rgba(2,6,23,.14)"}
+              polygonStrokeColor={(country) => countryFeatureHasCode(country as TunnelGlobeCountryFeature, hostCountryCodes) ? "rgba(94,234,212,.86)" : "rgba(148,163,184,.22)"}
               polygonCapCurvatureResolution={4}
               polygonsTransitionDuration={0}
               pointsData={globeData.hostPoints}
@@ -1138,7 +1146,7 @@ function TunnelWorldGlobe({
               运行中隧道
             </div>
             <div className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-black/35 px-3 py-2 shadow-lg backdrop-blur-md">
-              <span className="h-2 w-6 rounded-full bg-[#38bdf8]" />
+              <span className="h-2 w-6 rounded-full bg-[#14b8a6]" />
               端口转发链
             </div>
           </div>
@@ -2245,7 +2253,7 @@ function TunnelsContent() {
     }
     const trafficMultiplierValue = Number(submitForm.trafficMultiplier);
     if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
-      toast.error("端口转发流量倍率必须在 0.01 - 50 之间");
+      toast.error("流量倍率必须在 0.01 - 50 之间");
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
@@ -2370,7 +2378,7 @@ function TunnelsContent() {
     );
     const trafficMultiplierValue = Number(chainCreateForm.trafficMultiplier);
     if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
-      toast.error("端口转发流量倍率必须在 0.01 - 50 之间");
+      toast.error("流量倍率必须在 0.01 - 50 之间");
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
@@ -2462,13 +2470,13 @@ function TunnelsContent() {
           ? `exits-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : exitGroups.length > 0 ? "list" : "empty"}`
           : `tunnels-${viewMode}-${isLoading || !tunnels ? "loading" : tunnels.length > 0 ? "list" : "empty"}`;
   const headerStat = activeSection === "chains"
-    ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-sky-500" }
+    ? { value: `${activeChainCount} / ${chainGroups.length} 启用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.chainsActive", fallback: "0 / 0 启用", iconClass: "text-primary" }
     : activeSection === "groups"
-      ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-violet-500" }
+      ? { value: `${activeFailoverGroupCount} / ${failoverGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.forwardGroupsActive", fallback: "0 / 0 健康", iconClass: "text-primary" }
       : activeSection === "entries"
         ? { value: `${activeEntryGroupCount} / ${entryGroups.length} 健康`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.entryGroupsActive", fallback: "0 / 0 健康", iconClass: "text-emerald-500" }
         : activeSection === "exits"
-          ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-indigo-500" }
+          ? { value: `${activeExitGroupCount} / ${exitGroups.length} 可用`, loading: forwardGroupsLoading || !forwardGroups, cacheKey: "tunnels.header.exitGroupsActive", fallback: "0 / 0 可用", iconClass: "text-primary" }
           : { value: `${activeCount} / ${tunnels?.length ?? 0} 活跃`, loading: isLoading || !tunnels, cacheKey: "tunnels.header.active", fallback: "0 / 0 活跃", iconClass: "text-chart-2" };
   const handleGlobeChainEdit = (group: any) => {
     const groupId = Number(group?.id || 0);
@@ -2616,28 +2624,7 @@ function TunnelsContent() {
       </div>
 
       <Tabs value={activeSection} onValueChange={(value) => setActiveSection(value as TunnelSection)} className="space-y-4">
-        <TabsList className="grid h-auto w-full grid-cols-2 justify-start gap-1 bg-muted/50 sm:grid-cols-5 sm:inline-flex sm:w-auto">
-          <TabsTrigger value="tunnels" className="gap-1.5 px-4">
-            <Network className="h-4 w-4" />
-            隧道链路
-          </TabsTrigger>
-          <TabsTrigger value="chains" className="gap-1.5 px-4">
-            <Route className="h-4 w-4" />
-            端口转发链
-          </TabsTrigger>
-          <TabsTrigger value="groups" className="gap-1.5 px-4">
-            <ShieldCheck className="h-4 w-4" />
-            转发组
-          </TabsTrigger>
-          <TabsTrigger value="entries" className="gap-1.5 px-4">
-            <LogIn className="h-4 w-4" />
-            入口组
-          </TabsTrigger>
-          <TabsTrigger value="exits" className="gap-1.5 px-4">
-            <LogOut className="h-4 w-4" />
-            出口组
-          </TabsTrigger>
-        </TabsList>
+        <SlidingTabsList items={TUNNEL_SECTION_ITEMS} activeValue={activeSection} ariaLabel="链路管理" minItemWidthRem={7.75} />
 
         <TabsContent value="tunnels" className="space-y-4">
           <div className="min-w-0">
@@ -3305,7 +3292,7 @@ function TunnelsContent() {
                         <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
                       </div>
                       <div className="space-y-2">
-                        <Label>端口转发流量倍率</Label>
+                        <Label>流量倍率</Label>
                         <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
                       </div>
                     </div>
@@ -3611,7 +3598,7 @@ function TunnelsContent() {
                 <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
               </div>
               <div className="space-y-2">
-                <Label>端口转发流量倍率</Label>
+                <Label>流量倍率</Label>
                 <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
               </div>
             </div>
