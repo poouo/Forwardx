@@ -273,6 +273,53 @@ async function seedHostMetrics(hostIds: number[]) {
   }
 }
 
+async function seedHostGroups(adminId: number, hostIds: number[]) {
+  const groupRows = [
+    {
+      name: "入口节点",
+      isEnabled: true,
+      sortOrder: 1,
+      hostIds: [hostIds[0], hostIds[1]].filter(Boolean),
+    },
+    {
+      name: "出口节点",
+      isEnabled: true,
+      sortOrder: 2,
+      hostIds: [hostIds[2], hostIds[3]].filter(Boolean),
+    },
+    {
+      name: "游戏转发组",
+      isEnabled: true,
+      sortOrder: 3,
+      hostIds: [hostIds[0], hostIds[2], hostIds[3]].filter(Boolean),
+    },
+    {
+      name: "停用示例",
+      isEnabled: false,
+      sortOrder: 4,
+      hostIds: [hostIds[1]].filter(Boolean),
+    },
+  ];
+  for (const group of groupRows) {
+    const id = await insertAndGetId("host_groups", {
+      name: group.name,
+      isEnabled: group.isEnabled,
+      sortOrder: group.sortOrder,
+      userId: adminId,
+      createdAt: nowDate(),
+      updatedAt: nowDate(),
+    });
+    for (const [index, hostId] of group.hostIds.entries()) {
+      await insertAndGetId("host_group_members", {
+        groupId: id,
+        hostId,
+        sortOrder: index,
+        createdAt: nowDate(),
+      });
+    }
+  }
+}
+
 type DevForwardResources = {
   tunnels: {
     primaryTunnelId: number;
@@ -689,26 +736,52 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]) {
 }
 
 async function seedProbeServices(adminId: number, hostIds: number[]) {
-  const serviceId = await insertAndGetId("host_probe_services", {
-    userId: adminId,
-    name: "目标服务 TCPing",
-    method: "tcping",
-    targetIp: "speedtest.example.com",
-    targetPort: 443,
-    hostScope: "all",
-    intervalSeconds: 30,
-    isEnabled: true,
-    createdAt: nowDate(),
-    updatedAt: nowDate(),
-  });
-  for (const [index, hostId] of hostIds.entries()) {
-    await insertAndGetId("host_probe_service_stats", {
-      serviceId,
-      hostId,
-      latencyMs: index === 3 ? null : 12 + index * 18,
-      isTimeout: index === 3,
-      recordedAt: nowDate(),
+  const services = [
+    { name: "广东联通", targetIp: "probe-cu.dev.forwardx.local", targetPort: 443, base: 7, jitter: 4 },
+    { name: "广东移动", targetIp: "probe-cm.dev.forwardx.local", targetPort: 443, base: 24, jitter: 9 },
+    { name: "广东电信", targetIp: "probe-ct.dev.forwardx.local", targetPort: 443, base: 12, jitter: 6 },
+    { name: "云南联通", targetIp: "probe-yn-cu.dev.forwardx.local", targetPort: 443, base: 47, jitter: 14 },
+    { name: "云南移动", targetIp: "probe-yn-cm.dev.forwardx.local", targetPort: 443, base: 58, jitter: 18 },
+    { name: "云南电信", targetIp: "probe-yn-ct.dev.forwardx.local", targetPort: 443, base: 50, jitter: 12 },
+    { name: "CF", targetIp: "probe-cf.dev.forwardx.local", targetPort: 443, base: 2, jitter: 2 },
+    { name: "谷歌", targetIp: "probe-google.dev.forwardx.local", targetPort: 443, base: 3, jitter: 3 },
+  ];
+  const now = Date.now();
+  const hostBias = [0, 14, 33, 86, 41, 22, 65, 110];
+
+  for (const [serviceIndex, service] of services.entries()) {
+    const serviceId = await insertAndGetId("host_probe_services", {
+      userId: adminId,
+      name: service.name,
+      method: "tcping",
+      targetIp: service.targetIp,
+      targetPort: service.targetPort,
+      hostScope: "all",
+      intervalSeconds: 30,
+      isEnabled: true,
+      createdAt: nowDate(),
+      updatedAt: nowDate(),
     });
+
+    for (const [hostIndex, hostId] of hostIds.entries()) {
+      for (let step = 95; step >= 0; step -= 1) {
+        const recordedAt = new Date(now - step * 15 * 60 * 1000);
+        const wave = Math.sin((step + serviceIndex * 7 + hostIndex * 3) / 5) * service.jitter;
+        const smallJitter = ((step * (serviceIndex + 3) + hostIndex * 11) % 7) - 3;
+        const spike = ((step + serviceIndex * 11 + hostIndex * 5) % 37 === 0) ? 120 + serviceIndex * 42 : 0;
+        const timeout = (serviceIndex === 4 && hostIndex === 3 && step % 41 === 0) || (serviceIndex === 7 && step % 89 === 0);
+        const latencyMs = timeout
+          ? null
+          : Math.max(1, Math.round(service.base + (hostBias[hostIndex] || 0) + wave + smallJitter + spike));
+        await insertAndGetId("host_probe_service_stats", {
+          serviceId,
+          hostId,
+          latencyMs,
+          isTimeout: timeout,
+          recordedAt,
+        });
+      }
+    }
   }
 }
 
@@ -764,6 +837,9 @@ async function seedSettings() {
     siteTitle: "ForwardX Dev",
     registrationEnabled: "true",
     lookingGlassUserEnabled: "true",
+    publicHostMonitorEnabled: "true",
+    publicHostMonitorPath: "dev",
+    publicHostMonitorTitle: "ForwardX Dev 主机监控",
     latestAgentVersion: "2.2.129",
     agentVersion: "2.2.129",
     telegramBotEnabled: "false",
@@ -778,6 +854,7 @@ export async function seedDevPanelData() {
   const adminId = await ensureDevAdmin();
   await clearDevData();
   const hostIds = await seedHosts(adminId);
+  await seedHostGroups(adminId, hostIds);
   await seedHostMetrics(hostIds);
   const forwardResources = await seedTunnelsAndGroups(adminId, hostIds);
   await seedRules(adminId, hostIds, forwardResources);

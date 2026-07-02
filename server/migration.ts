@@ -388,6 +388,8 @@ type PreparedImportRow = {
 const IMPORT_TABLE_ORDER = [
   "users",
   "hosts",
+  "host_groups",
+  "host_group_members",
   "tunnels",
   "tunnel_exit_nodes",
   "forward_groups",
@@ -507,6 +509,15 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.agentUpgradeTargetVersion = null;
       row.agentUpgradeRequestedAt = null;
       return { row, existingWhere: row.agentToken ? { agentToken: row.agentToken } : undefined };
+
+    case "host_groups":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      return { row };
+
+    case "host_group_members":
+      row.groupId = mapRequiredId(maps, "host_groups", source.groupId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      return { row, existingWhere: { groupId: row.groupId, hostId: row.hostId } };
 
     case "tunnels":
       row.entryHostId = mapRequiredId(maps, "hosts", source.entryHostId);

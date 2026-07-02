@@ -8,6 +8,7 @@ import DateTimePickerInput, {
   parseDateInputValue as parseDateTimeLocal,
 } from "@/components/DatePickerInput";
 import HostCard from "@/components/hosts/HostCard";
+import HostGroupManager, { type HostGroupView, type HostGroupViewMode } from "@/components/hosts/HostGroupManager";
 import HostProbeServiceManager, { type HostProbeServiceViewMode } from "@/components/hosts/HostProbeServiceManager";
 import HostProbeServiceLatencyDialog from "@/components/hosts/HostProbeServiceLatencyDialog";
 import {
@@ -67,6 +68,7 @@ import {
   ArrowUpFromLine,
   ArrowRightLeft,
   CalendarDays,
+  CircleCheck,
   Clock,
   Cpu,
   Plus,
@@ -89,6 +91,7 @@ import {
   Rows3,
   RotateCcw,
   ActivitySquare,
+  FolderKanban,
   Wifi,
 } from "lucide-react";
 import type { GlobeMethods } from "react-globe.gl";
@@ -854,6 +857,8 @@ function HostSummaryCard({
   value,
   subtitle,
   icon: Icon,
+  leadingIcon: LeadingIcon,
+  leadingTone = "bg-emerald-500",
   tone,
   loading,
   cacheKey,
@@ -863,6 +868,8 @@ function HostSummaryCard({
   value: string;
   subtitle?: string;
   icon: typeof ActivitySquare;
+  leadingIcon?: typeof ActivitySquare;
+  leadingTone?: string;
   tone: string;
   loading?: boolean;
   cacheKey: string;
@@ -871,27 +878,34 @@ function HostSummaryCard({
   return (
     <Card className={`group relative h-full overflow-hidden border-border/40 bg-card/60 backdrop-blur-md transition-all duration-300 hover:-translate-y-0.5 hover:border-border/70 hover:shadow-lg hover:shadow-primary/5 ${className || ""}`.trim()}>
       <div className={`absolute inset-0 opacity-[0.035] transition-opacity group-hover:opacity-[0.07] ${tone}`} />
-      <CardContent className="relative min-h-[112px] p-3.5 sm:min-h-[112px] sm:p-4">
+      <CardContent className="relative flex h-full min-h-[112px] flex-col justify-center p-3.5 sm:min-h-[112px] sm:p-4">
         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{title}</p>
-        <div className={`absolute right-4 top-4 hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl shadow-sm sm:flex ${tone}`}>
-          <Icon className="h-5 w-5 text-white" />
+        <div className="absolute right-4 top-3.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm sm:flex">
+          <Icon className="h-5 w-5" />
         </div>
-        <div className="absolute inset-x-4 top-1/2 -translate-x-3 -translate-y-1/2 px-8 text-center sm:-translate-x-4 sm:px-14">
-          <AnimatedStatValue
-            as="p"
-            value={value}
-            loading={loading}
-            cacheKey={cacheKey}
-            fallbackValue="0"
-            className="break-words text-2xl font-bold leading-none tracking-tight tabular-nums sm:text-[28px]"
-            title={value}
-          />
+        <div className="mt-1 flex min-w-0 items-center gap-2.5 pr-12">
+          {LeadingIcon && (
+            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg shadow-sm ${leadingTone}`}>
+              <LeadingIcon className="h-4 w-4 text-white" />
+            </div>
+          )}
+          <div className="min-w-0">
+            <AnimatedStatValue
+              as="span"
+              value={value}
+              loading={loading}
+              cacheKey={cacheKey}
+              fallbackValue="0"
+              className="block truncate text-2xl font-bold leading-none tracking-tight tabular-nums"
+              title={value}
+            />
+            {subtitle && (
+              <p className="mt-2 truncate text-xs text-muted-foreground" title={subtitle}>
+                {subtitle}
+              </p>
+            )}
+          </div>
         </div>
-        {subtitle && (
-          <p className="absolute bottom-3 right-4 max-w-[55%] truncate text-right text-xs leading-5 text-muted-foreground/80" title={subtitle}>
-            {subtitle}
-          </p>
-        )}
       </CardContent>
     </Card>
   );
@@ -990,10 +1004,10 @@ function HostTrafficSummaryCard({
 }
 
 type HostViewMode = "card" | "compact-card" | "table" | "map" | "flat-map";
-type HostManageTab = "hosts" | "services" | "tokens";
+type HostManageTab = "hosts" | "groups" | "services" | "tokens";
 type HostDialogTab = "basic" | "other";
 
-const HOST_MANAGE_TABS_ADMIN = ["hosts", "tokens", "services"] as const;
+const HOST_MANAGE_TABS_ADMIN = ["hosts", "groups", "tokens", "services"] as const;
 const HOST_MANAGE_TABS_USER = ["hosts"] as const;
 
 const HOST_DIALOG_TABS = [
@@ -1005,6 +1019,7 @@ const HOST_MANAGE_TAB_STORAGE_KEY = "forwardx.hosts.manageTab";
 const HOST_VIEW_MODE_STORAGE_KEY = "forwardx.hosts.viewMode";
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 const HOST_PROBE_SERVICE_VIEW_MODE_STORAGE_KEY = "forwardx.hostProbeServices.viewMode";
+const HOST_GROUP_VIEW_MODE_STORAGE_KEY = "forwardx.hostGroups.viewMode";
 
 function getStoredHostViewMode(): HostViewMode {
   if (typeof window === "undefined") return "card";
@@ -1063,18 +1078,99 @@ function storeHostProbeServiceViewMode(viewMode: HostProbeServiceViewMode) {
   }
 }
 
+function getStoredHostGroupViewMode(): HostGroupViewMode {
+  if (typeof window === "undefined") return "card";
+  try {
+    const value = window.localStorage.getItem(HOST_GROUP_VIEW_MODE_STORAGE_KEY);
+    return value === "table" ? "table" : "card";
+  } catch {
+    return "card";
+  }
+}
+
+function storeHostGroupViewMode(viewMode: HostGroupViewMode) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HOST_GROUP_VIEW_MODE_STORAGE_KEY, viewMode);
+  } catch {
+    // Ignore storage failures so the page still works in restricted browsers.
+  }
+}
+
+function hostGroupHostIds(group: HostGroupView | null | undefined) {
+  if (!group) return [];
+  const rawIds = Array.isArray(group.hostIds)
+    ? group.hostIds
+    : (group.members || []).map((member) => member.hostId);
+  return Array.from(new Set(rawIds
+    .map((id) => Math.floor(Number(id)))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+}
+
+function HostGroupFilterBar({
+  groups,
+  hosts,
+  selectedGroupId,
+  onSelectGroup,
+}: {
+  groups: HostGroupView[];
+  hosts: any[];
+  selectedGroupId: number | "all";
+  onSelectGroup: (groupId: number | "all") => void;
+}) {
+  const hostsById = useMemo(() => new Map((hosts || []).map((host: any) => [Number(host.id), host])), [hosts]);
+  const enabledGroups = useMemo(
+    () => [...(groups || [])]
+      .filter((group) => group.isEnabled !== false)
+      .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(b.id || 0) - Number(a.id || 0)),
+    [groups],
+  );
+  if (enabledGroups.length === 0) return null;
+  const chipClass = (active: boolean) => [
+    "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm transition-colors",
+    active
+      ? "border-primary/35 bg-primary/10 text-primary shadow-sm"
+      : "border-border/45 bg-card/60 text-muted-foreground hover:bg-muted/45 hover:text-foreground",
+  ].join(" ");
+  const countForGroup = (group: HostGroupView) => hostGroupHostIds(group).filter((hostId) => hostsById.has(hostId)).length;
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-card/50 p-2 backdrop-blur-md">
+      <button type="button" className={chipClass(selectedGroupId === "all")} onClick={() => onSelectGroup("all")}>
+        <Server className="h-3.5 w-3.5" />
+        <span>全部</span>
+        <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{hosts.length}</span>
+      </button>
+      {enabledGroups.map((group) => (
+        <button
+          key={group.id}
+          type="button"
+          className={chipClass(selectedGroupId === Number(group.id))}
+          onClick={() => onSelectGroup(Number(group.id))}
+          title={group.name}
+        >
+          <FolderKanban className="h-3.5 w-3.5" />
+          <span className="max-w-[160px] truncate">{group.name}</span>
+          <span className="rounded bg-background/70 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{countForGroup(group)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function HostsContent() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
   const confirmDialog = useConfirmDialog();
   const pageVisible = usePageVisible();
-  const hostRefreshInterval = visiblePollingInterval("live", pageVisible);
+  const hostListRefreshInterval = visiblePollingInterval("slow", pageVisible);
   const { data: hosts, isLoading, isError, error, refetch } = trpc.hosts.list.useQuery(undefined, {
-    refetchInterval: hostRefreshInterval,
+    refetchInterval: hostListRefreshInterval,
     refetchOnWindowFocus: true,
+    staleTime: 25_000,
   });
   const [cachedHosts, setCachedHosts] = useState<any[]>(() => readCachedHosts());
-  const displayHosts = useMemo<any[]>(() => {
+  const baseDisplayHosts = useMemo<any[]>(() => {
     const source = ((hosts as any[] | undefined) || cachedHosts) as any[];
     return [...source].sort((a: any, b: any) => {
       const sortA = normalizeHostSortOrder(a?.sortOrder);
@@ -1088,8 +1184,6 @@ function HostsContent() {
       return Number(b?.id || 0) - Number(a?.id || 0);
     });
   }, [hosts, cachedHosts]);
-  const hasDisplayHosts = displayHosts.length > 0;
-  const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const latestAgentVersion = useMemo(
     () => systemSettings?.agentVersion || "",
@@ -1112,16 +1206,99 @@ function HostsContent() {
   const [hostCardModeTransitionKey, setHostCardModeTransitionKey] = useState(0);
   const [tokenViewMode, setTokenViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
   const [serviceViewMode, setServiceViewMode] = useState<HostProbeServiceViewMode>(() => getStoredHostProbeServiceViewMode());
+  const [hostGroupViewMode, setHostGroupViewMode] = useState<HostGroupViewMode>(() => getStoredHostGroupViewMode());
   const [activeManageTab, setActiveManageTab] = useUrlTab<HostManageTab>({
     values: user?.role === "admin" ? HOST_MANAGE_TABS_ADMIN : HOST_MANAGE_TABS_USER,
     defaultValue: "hosts",
     storageKey: HOST_MANAGE_TAB_STORAGE_KEY,
   });
   const hostLiveRefreshInterval = visiblePollingInterval("live", pageVisible && activeManageTab === "hosts");
+  const { data: hostStatusRows = [] } = trpc.hosts.statusSummary.useQuery(undefined, {
+    enabled: !!hostLiveRefreshInterval && baseDisplayHosts.length > 0,
+    refetchInterval: hostLiveRefreshInterval,
+    refetchOnWindowFocus: false,
+  });
+  const hostStatusById = useMemo(() => {
+    const map = new Map<number, any>();
+    for (const row of hostStatusRows as any[]) {
+      const hostId = Number(row?.id);
+      if (Number.isInteger(hostId) && hostId > 0) map.set(hostId, row);
+    }
+    return map;
+  }, [hostStatusRows]);
+  const displayHosts = useMemo<any[]>(() => baseDisplayHosts.map((host: any) => {
+    const status = hostStatusById.get(Number(host?.id));
+    return status ? { ...host, ...status } : host;
+  }), [baseDisplayHosts, hostStatusById]);
+  const hasDisplayHosts = displayHosts.length > 0;
+  const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
+  const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
+  const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
+  const { data: hostGroups = [], isLoading: isHostGroupsLoading } = trpc.hosts.hostGroups.useQuery(undefined, {
+    enabled: user?.role === "admin",
+    staleTime: 30_000,
+  });
+  const enabledHostGroups = useMemo(
+    () => (hostGroups as HostGroupView[]).filter((group) => group.isEnabled !== false),
+    [hostGroups],
+  );
+  const selectedHostGroup = useMemo(
+    () => selectedHostGroupId === "all"
+      ? null
+      : enabledHostGroups.find((group) => Number(group.id) === Number(selectedHostGroupId)) || null,
+    [enabledHostGroups, selectedHostGroupId],
+  );
+  const filteredDisplayHosts = useMemo(() => {
+    if (selectedHostGroupId === "all") return displayHosts;
+    const selectedIds = new Set(hostGroupHostIds(selectedHostGroup));
+    return displayHosts.filter((host: any) => selectedIds.has(Number(host.id)));
+  }, [displayHosts, selectedHostGroup, selectedHostGroupId]);
+  const hasFilteredDisplayHosts = filteredDisplayHosts.length > 0;
+  const isHostGroupFiltered = selectedHostGroupId !== "all";
+  const filteredHostIds = useMemo(
+    () => filteredDisplayHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
+    [filteredDisplayHosts],
+  );
+  const filteredHostIdKey = useMemo(() => filteredHostIds.join(","), [filteredHostIds]);
   const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery(undefined, {
     enabled: activeManageTab === "hosts",
     refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
   });
+  const { data: groupSummaryTrafficRows = [], isLoading: isGroupSummaryTrafficLoading } = trpc.hosts.trafficSummary.useQuery(
+    { hostIds: filteredHostIds },
+    { enabled: activeManageTab === "hosts" && isHostGroupFiltered && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
+  );
+  const { data: groupSummaryMetricRows = [], isLoading: isGroupSummaryMetricLoading } = trpc.hosts.latestMetricsSummary.useQuery(
+    { hostIds: filteredHostIds },
+    { enabled: activeManageTab === "hosts" && isHostGroupFiltered && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
+  );
+  const groupHostSummary = useMemo(() => {
+    if (!isHostGroupFiltered) return null;
+    let currentTrafficIn = 0;
+    let currentTrafficOut = 0;
+    let totalTrafficIn = 0;
+    let totalTrafficOut = 0;
+    for (const row of groupSummaryMetricRows as any[]) {
+      currentTrafficIn += Math.max(0, Number(row?.networkSpeedIn) || 0);
+      currentTrafficOut += Math.max(0, Number(row?.networkSpeedOut) || 0);
+    }
+    for (const row of groupSummaryTrafficRows as any[]) {
+      totalTrafficIn += Math.max(0, Number(row?.bytesIn) || 0);
+      totalTrafficOut += Math.max(0, Number(row?.bytesOut) || 0);
+    }
+    return {
+      totalHosts: filteredDisplayHosts.length,
+      onlineHosts: filteredDisplayHosts.filter((host: any) => !!host.isOnline).length,
+      currentTrafficIn,
+      currentTrafficOut,
+      totalTrafficIn,
+      totalTrafficOut,
+    };
+  }, [filteredDisplayHosts, groupSummaryMetricRows, groupSummaryTrafficRows, isHostGroupFiltered]);
+  const effectiveHostSummary = groupHostSummary || hostSummary;
+  const isEffectiveHostSummaryLoading = isHostGroupFiltered
+    ? (isGroupSummaryTrafficLoading || isGroupSummaryMetricLoading)
+    : isHostSummaryLoading;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
   const [serviceCreateSignal, setServiceCreateSignal] = useState(0);
   const [checkingAgentUpdate, setCheckingAgentUpdate] = useState(false);
@@ -1167,9 +1344,20 @@ function HostsContent() {
     storeHostProbeServiceViewMode(mode);
   };
 
+  const handleHostGroupViewModeChange = (mode: HostGroupViewMode) => {
+    setHostGroupViewMode(mode);
+    storeHostGroupViewMode(mode);
+  };
+
   useEffect(() => {
     if (user?.role !== "admin" && activeManageTab !== "hosts") setActiveManageTab("hosts");
   }, [activeManageTab, setActiveManageTab, user?.role]);
+
+  useEffect(() => {
+    if (selectedHostGroupId === "all" || isHostGroupsLoading) return;
+    const stillVisible = enabledHostGroups.some((group) => Number(group.id) === Number(selectedHostGroupId));
+    if (!stillVisible) setSelectedHostGroupId("all");
+  }, [enabledHostGroups, isHostGroupsLoading, selectedHostGroupId]);
 
   const createMutation = trpc.hosts.create.useMutation({
     onSuccess: () => {
@@ -1263,6 +1451,10 @@ function HostsContent() {
   const openCreate = () => {
     if (activeManageTab === "services") {
       setServiceCreateSignal((value) => value + 1);
+      return;
+    }
+    if (activeManageTab === "groups") {
+      setHostGroupCreateSignal((value) => value + 1);
       return;
     }
     setTokenCreateSignal((value) => value + 1);
@@ -1412,20 +1604,20 @@ function HostsContent() {
   };
   const isPending = createMutation.isPending || updateMutation.isPending;
   const customPortInputState = useMemo(() => parseCustomPortsInput(form.portAllowlist), [form.portAllowlist]);
-  const onlineCount = useMemo(() => displayHosts.filter((h) => h.isOnline).length, [displayHosts]);
+  const onlineCount = useMemo(() => filteredDisplayHosts.filter((h) => h.isOnline).length, [filteredDisplayHosts]);
   const updateCount = useMemo(
-    () => displayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
-    [displayHosts, latestAgentVersion]
+    () => filteredDisplayHosts.filter((h) => isAgentVersionBehind(h.agentVersion, latestAgentVersion)).length,
+    [filteredDisplayHosts, latestAgentVersion]
   );
   const bulkUpgradeableHosts = useMemo(
-    () => displayHosts.filter((h: any) => {
+    () => filteredDisplayHosts.filter((h: any) => {
       const timedOut = isAgentUpgradeTimedOut(h);
       const pending = !!h.agentUpgradeRequested && !timedOut;
       return !pending && (timedOut || isAgentVersionBehind(h.agentVersion, latestAgentVersion));
     }),
-    [displayHosts, latestAgentVersion]
+    [filteredDisplayHosts, latestAgentVersion]
   );
-  const hostPagination = usePersistentPagination<any>(displayHosts, {
+  const hostPagination = usePersistentPagination<any>(filteredDisplayHosts, {
     storageKey: "forwardx.hosts.page",
     pageSize: 12,
     isReady: hasDisplayHosts,
@@ -1435,16 +1627,25 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
+  const hostCardListMotionKey = useMemo(
+    () => [
+      viewMode,
+      hostCardModeTransitionKey,
+      selectedHostGroupId === "all" ? "all" : `group-${selectedHostGroupId}`,
+      hostPagination.currentPage,
+    ].join(":"),
+    [hostCardModeTransitionKey, hostPagination.currentPage, selectedHostGroupId, viewMode],
+  );
   useEffect(() => {
-    if (!hostLiveRefreshInterval || !displayHosts.length) return;
-    const hostIds = displayHosts.map((host: any) => Number(host.id)).filter(Boolean);
+    if (!hostLiveRefreshInterval || !filteredHostIds.length) return;
+    const hostIds = filteredHostIds;
     if (hostIds.length === 0) return;
     watchMetricsMutation.mutate({ hostIds });
     const timer = window.setInterval(() => {
       watchMetricsMutation.mutate({ hostIds });
     }, hostLiveRefreshInterval);
     return () => window.clearInterval(timer);
-  }, [hostLiveRefreshInterval, displayHosts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hostLiveRefreshInterval, filteredHostIdKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const { data: probeServices = [] } = trpc.hosts.probeServices.useQuery(undefined, { refetchInterval: pollingInterval("slow") });
   const { data: hostTrafficRows = [] } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: pagedHostIds },
@@ -1557,7 +1758,7 @@ function HostsContent() {
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
             <Server className="h-3 w-3 text-chart-2" />
             <AnimatedStatValue
-              value={`${onlineCount} / ${displayHosts.length} 在线`}
+              value={`${onlineCount} / ${filteredDisplayHosts.length} 在线`}
               loading={isInitialLoadingWithoutCache}
               cacheKey="hosts.header.online"
               fallbackValue="0 / 0 在线"
@@ -1665,6 +1866,28 @@ function HostsContent() {
               </Button>
             </div>
           )}
+          {activeManageTab === "groups" && user?.role === "admin" && (
+            <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
+              <Button
+                variant={hostGroupViewMode === "card" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="卡片视图"
+                onClick={() => handleHostGroupViewModeChange("card")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={hostGroupViewMode === "table" ? "secondary" : "ghost"}
+                size="icon"
+                className="h-8 w-8 rounded-none"
+                title="列表视图"
+                onClick={() => handleHostGroupViewModeChange("table")}
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           {activeManageTab === "services" && user?.role === "admin" && (
             <div className="hidden items-center overflow-hidden rounded-md border border-border/40 sm:flex">
               <Button
@@ -1690,7 +1913,7 @@ function HostsContent() {
           {user?.role === "admin" && (
             <Button onClick={openCreate} className="col-span-2 w-full gap-2 sm:col-span-1 sm:w-auto">
               <Plus className="h-4 w-4" />
-              {activeManageTab === "services" ? "添加服务" : "添加主机"}
+              {activeManageTab === "services" ? "添加服务" : activeManageTab === "groups" ? "添加分组" : "添加主机"}
             </Button>
           )}
         </div>
@@ -1701,11 +1924,17 @@ function HostsContent() {
         onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
         className="space-y-4"
       >
-        <TabsList className={`host-management-tabs grid h-auto w-full ${user?.role === "admin" ? "grid-cols-3" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-grid sm:w-auto`}>
+        <TabsList className={`host-management-tabs grid h-auto w-full ${user?.role === "admin" ? "grid-cols-4" : "grid-cols-1"} justify-start gap-1 bg-muted/50 sm:inline-grid sm:w-auto`}>
           <TabsTrigger value="hosts" className="min-w-0 gap-1.5 px-3 sm:w-32">
             <Server className="h-3.5 w-3.5" />
             主机管理
           </TabsTrigger>
+          {user?.role === "admin" && (
+            <TabsTrigger value="groups" className="min-w-0 gap-1.5 px-3 sm:w-32">
+              <FolderKanban className="h-3.5 w-3.5" />
+              分组管理
+            </TabsTrigger>
+          )}
           {user?.role === "admin" && (
             <TabsTrigger value="tokens" className="min-w-0 gap-1.5 px-3 sm:w-32">
               <Key className="h-3.5 w-3.5" />
@@ -1725,35 +1954,46 @@ function HostsContent() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           <HostSummaryCard
             title="在线状态"
-            value={`${hostSummary?.onlineHosts ?? onlineCount} / ${hostSummary?.totalHosts ?? displayHosts.length}`}
-            subtitle={hostSummary
+            value={`${effectiveHostSummary?.onlineHosts ?? onlineCount} / ${effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length}`}
+            subtitle={effectiveHostSummary
               ? (() => {
-                const offlineCount = Math.max(0, (hostSummary?.totalHosts ?? displayHosts.length) - (hostSummary?.onlineHosts ?? onlineCount));
+                const total = effectiveHostSummary?.totalHosts ?? filteredDisplayHosts.length;
+                const online = effectiveHostSummary?.onlineHosts ?? onlineCount;
+                const offlineCount = Math.max(0, total - online);
                 return offlineCount > 0 ? `离线 ${offlineCount} 台` : "全部在线";
               })()
               : "状态正常"}
             icon={Server}
+            leadingIcon={CircleCheck}
             tone="bg-gradient-to-br from-emerald-500 to-emerald-600"
-            loading={isHostSummaryLoading && !hostSummary}
+            loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.online"
           />
           <HostTrafficSummaryCard
             title="当前瞬时流量"
-            inValue={formatBytesPerSecond(hostSummary?.currentTrafficIn)}
-            outValue={formatBytesPerSecond(hostSummary?.currentTrafficOut)}
+            inValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficIn)}
+            outValue={formatBytesPerSecond(effectiveHostSummary?.currentTrafficOut)}
             icon={ActivitySquare}
-            loading={isHostSummaryLoading && !hostSummary}
+            loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.currentTraffic"
           />
           <HostTrafficSummaryCard
             title="累计流量"
-            inValue={formatBytes(hostSummary?.totalTrafficIn)}
-            outValue={formatBytes(hostSummary?.totalTrafficOut)}
+            inValue={formatBytes(effectiveHostSummary?.totalTrafficIn)}
+            outValue={formatBytes(effectiveHostSummary?.totalTrafficOut)}
             icon={ArrowRightLeft}
-            loading={isHostSummaryLoading && !hostSummary}
+            loading={isEffectiveHostSummaryLoading && !effectiveHostSummary}
             cacheKey="hosts.summary.totalTraffic"
           />
         </div>
+        {user?.role === "admin" && (
+          <HostGroupFilterBar
+            groups={hostGroups as HostGroupView[]}
+            hosts={displayHosts}
+            selectedGroupId={selectedHostGroupId}
+            onSelectGroup={setSelectedHostGroupId}
+          />
+        )}
       {/* Content */}
       {isInitialLoadingWithoutCache ? (
         <DataSectionLoading label="正在加载主机数据" minHeight="min-h-[260px]" />
@@ -1775,11 +2015,11 @@ function HostsContent() {
             </div>
           </CardContent>
         </Card>
-      ) : hasDisplayHosts ? (
+      ) : hasFilteredDisplayHosts ? (
         <>
         {viewMode === "map" ? (
           <>
-            <HostWorldMap hosts={displayHosts} onEdit={openEdit} />
+            <HostWorldMap hosts={filteredDisplayHosts} onEdit={openEdit} />
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => (
                 <HostCard
@@ -1813,7 +2053,7 @@ function HostsContent() {
                 </div>
               }
             >
-              <HostFlatMap hosts={displayHosts} onEdit={openEdit} />
+              <HostFlatMap hosts={filteredDisplayHosts} onEdit={openEdit} />
             </Suspense>
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
               {pagedHosts.map((host) => (
@@ -1841,7 +2081,7 @@ function HostsContent() {
         ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
           <AutoAnimateContainer
-            key={`host-card-mode-${viewMode}-${hostCardModeTransitionKey}`}
+            key={`host-card-mode-${hostCardListMotionKey}`}
             duration={220}
             layout={false}
             className={
@@ -2089,9 +2329,9 @@ function HostsContent() {
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <Server className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">暂无主机</p>
+              <p className="text-lg font-medium">{isHostGroupFiltered ? "当前分组暂无主机" : "暂无主机"}</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                {user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
+                {isHostGroupFiltered ? "可以在分组管理中为该分组添加主机" : user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
               </p>
             </div>
           </CardContent>
@@ -2109,13 +2349,23 @@ function HostsContent() {
         )}
 
         {user?.role === "admin" && (
+          <TabsContent value="groups" className="space-y-4">
+            <HostGroupManager
+              hosts={displayHosts}
+              groups={hostGroups as HostGroupView[]}
+              isLoading={isHostGroupsLoading}
+              createSignal={hostGroupCreateSignal}
+              onCreateSignalHandled={() => setHostGroupCreateSignal(0)}
+              viewMode={hostGroupViewMode}
+            />
+          </TabsContent>
+        )}
+
+        {user?.role === "admin" && (
           <TabsContent value="services" className="space-y-4">
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold tracking-tight sm:text-xl">服务管理</h2>
-              <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-                管理主机 Ping / TCPing 探测服务。
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground sm:text-sm">
+              管理主机 Ping / TCPing 探测服务。
+            </p>
             <HostProbeServiceManager
               createSignal={serviceCreateSignal}
               onCreateSignalHandled={() => setServiceCreateSignal(0)}

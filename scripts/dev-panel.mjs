@@ -104,6 +104,7 @@ const baseUrl = localUrls[0] || `http://${host}:${clientPort}/`;
 console.log("");
 console.log("[ForwardX] 本地真实开发后台已启动");
 console.log(`[ForwardX] 访问地址：${baseUrl}`);
+console.log(`[ForwardX] 公开主机监控：${new URL("dev", baseUrl).toString()}`);
 console.log(`[ForwardX] 本地 SQLite：${sqlitePath}`);
 console.log(`[ForwardX] 开发管理员：dev.admin@forwardx.local / forwardx-dev`);
 console.log("[ForwardX] 该模式使用真实页面、真实路由和真实组件，只是数据为本地开发数据。");

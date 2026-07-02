@@ -1,4 +1,5 @@
-import { protectedProcedure, adminProcedure, router } from "../_core/trpc";
+import { protectedProcedure, adminProcedure, publicProcedure, router } from "../_core/trpc";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "../db";
@@ -70,6 +71,12 @@ const hostProbeServiceInputSchema = z.object({
   intervalSeconds: z.number().int().min(5).max(86400).default(30),
   isEnabled: z.boolean().optional(),
 });
+const hostGroupInputSchema = z.object({
+  name: z.string().trim().min(1).max(128),
+  hostIds: z.array(z.number().int().positive()).max(500).optional(),
+  isEnabled: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(200).optional(),
+});
 
 function normalizeHostProbeServiceInput(input: z.infer<typeof hostProbeServiceInputSchema>) {
   if (input.method === "tcping" && !input.targetPort) throw new Error("TCPing 服务需要填写目标端口");
@@ -84,6 +91,23 @@ function normalizeHostProbeServiceInput(input: z.infer<typeof hostProbeServiceIn
     intervalSeconds: Math.max(5, Number(input.intervalSeconds) || 30),
     isEnabled: input.isEnabled !== false,
   };
+}
+
+function normalizeHostGroupInput(input: z.infer<typeof hostGroupInputSchema>) {
+  return {
+    name: input.name.trim(),
+    hostIds: Array.from(new Set((input.hostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))),
+    isEnabled: input.isEnabled !== false,
+    sortOrder: Math.max(0, Math.floor(Number(input.sortOrder) || 0)),
+  };
+}
+
+async function assertHostGroupHostIdsExist(hostIds: number[]) {
+  if (hostIds.length === 0) return;
+  const allHosts = await db.getHosts();
+  const existingIds = new Set((allHosts as any[]).map((host) => Number(host.id)));
+  const missing = hostIds.filter((hostId) => !existingIds.has(hostId));
+  if (missing.length > 0) throw new Error(`主机不存在：${missing.join(", ")}`);
 }
 
 function parseOptionalDateInput(value: string | null | undefined, label: string) {
@@ -297,11 +321,12 @@ async function getHostsWithUpgradeStateCleanup(userId?: number) {
   return clearCompletedHostAgentUpgradeRequests(await db.getHosts(userId));
 }
 
-async function getVisibleHostsForUser(user: { id: number; role: string }) {
+async function getVisibleHostsForUser(user: { id: number; role: string }, options: { scheduleGeoRefresh?: boolean } = {}) {
+  const shouldScheduleGeoRefresh = options.scheduleGeoRefresh !== false;
   const isAdmin = user.role === "admin";
   if (isAdmin) {
     const hosts = await getHostsWithUpgradeStateCleanup();
-    scheduleHostGeoRefresh(hosts);
+    if (shouldScheduleGeoRefresh) scheduleHostGeoRefresh(hosts);
     return hosts;
   }
   // 鏅€氱敤鎴凤細杩斿洖鑷繁鍒涘缓鐨勪富鏈?+ 鏅€氭巿鏉冧富鏈?+ 宸叉巿鏉冪殑娴侀噺璁¤垂涓绘満
@@ -312,8 +337,134 @@ async function getVisibleHostsForUser(user: { id: number; role: string }) {
   const allHosts = await getHostsWithUpgradeStateCleanup();
   const allowedSet = new Set([...allowedHostIds, ...billingResourceIds.hostIds]);
   const visibleHosts = allHosts.filter((h: any) => allowedSet.has(h.id) || h.userId === user.id);
-  scheduleHostGeoRefresh(visibleHosts);
+  if (shouldScheduleGeoRefresh) scheduleHostGeoRefresh(visibleHosts);
   return visibleHosts;
+}
+
+function compactHostForList(host: any) {
+  const { agentToken, ...rest } = host || {};
+  return rest;
+}
+
+function compactHostStatus(host: any) {
+  return {
+    id: Number(host?.id || 0),
+    isOnline: !!host?.isOnline,
+    lastHeartbeat: host?.lastHeartbeat || null,
+    agentVersion: host?.agentVersion || null,
+    agentUpgradeRequested: !!host?.agentUpgradeRequested,
+    agentUpgradeTargetVersion: host?.agentUpgradeTargetVersion || null,
+    agentUpgradeRequestedAt: host?.agentUpgradeRequestedAt || null,
+    updatedAt: host?.updatedAt || null,
+  };
+}
+
+function compactHostMetricSummary(row: any) {
+  return {
+    hostId: Number(row?.hostId || 0),
+    cpuUsage: row?.cpuUsage ?? null,
+    memoryUsage: row?.memoryUsage ?? null,
+    memoryUsed: row?.memoryUsed ?? null,
+    swapUsage: row?.swapUsage ?? null,
+    swapUsed: row?.swapUsed ?? null,
+    swapTotal: row?.swapTotal ?? null,
+    networkSpeedIn: row?.networkSpeedIn == null ? null : Math.round(Number(row.networkSpeedIn) || 0),
+    networkSpeedOut: row?.networkSpeedOut == null ? null : Math.round(Number(row.networkSpeedOut) || 0),
+    diskUsage: row?.diskUsage ?? null,
+    diskUsed: row?.diskUsed ?? null,
+    diskTotal: row?.diskTotal ?? null,
+    uptime: row?.uptime ?? null,
+    recordedAt: row?.recordedAt || null,
+  };
+}
+
+function compactHostTrafficSummary(row: any) {
+  return {
+    hostId: Number(row?.hostId || 0),
+    bytesIn: Math.max(0, Number(row?.bytesIn) || 0),
+    bytesOut: Math.max(0, Number(row?.bytesOut) || 0),
+  };
+}
+
+function normalizePublicHostMonitorPath(value: unknown) {
+  const text = String(value || "dev")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+  return text || "dev";
+}
+
+function compactPublicMonitorHost(host: any) {
+  return {
+    id: Number(host?.id || 0),
+    name: host?.name || "",
+    memoryTotal: host?.memoryTotal ?? null,
+    agentVersion: host?.agentVersion || null,
+    stoppedAt: host?.stoppedAt || null,
+    trafficLimit: host?.trafficLimit ?? 0,
+    trafficMeasureMode: host?.trafficMeasureMode || "both",
+    isOnline: !!host?.isOnline,
+    lastHeartbeat: host?.lastHeartbeat || null,
+    sortOrder: Number(host?.sortOrder || 0),
+    geoCountryCode: host?.geoCountryCode || null,
+    geoCountryName: host?.geoCountryName || null,
+    geoRegion: host?.geoRegion || null,
+    geoEmoji: host?.geoEmoji || null,
+  };
+}
+
+function compactPublicMonitorGroup(group: any, visibleHostIds: Set<number>) {
+  const hostIds = (group?.hostIds || [])
+    .map((id: unknown) => Number(id))
+    .filter((id: number) => Number.isInteger(id) && id > 0 && visibleHostIds.has(id));
+  return {
+    id: Number(group?.id || 0),
+    name: String(group?.name || ""),
+    sortOrder: Number(group?.sortOrder || 0),
+    hostIds,
+  };
+}
+
+function publicProbeServiceAppliesToHost(service: any, hostId: number) {
+  const id = Number(hostId);
+  if (!id || service?.isEnabled === false) return false;
+  const scope = String(service?.hostScope || "all");
+  if (scope === "specific") return (service.hostIds || []).map(Number).includes(id);
+  if (scope === "exclude") return !(service.excludeHostIds || []).map(Number).includes(id);
+  return true;
+}
+
+function compactPublicProbeService(service: any, latest?: any) {
+  return {
+    id: Number(service?.id || 0),
+    name: String(service?.name || ""),
+    method: service?.method === "ping" ? "ping" : "tcping",
+    latest: latest ? {
+      latencyMs: latest.latencyMs == null ? null : Number(latest.latencyMs),
+      isTimeout: !!latest.isTimeout,
+      recordedAt: latest.recordedAt || null,
+    } : null,
+  };
+}
+
+function compactPublicProbeSeries(row: any) {
+  return {
+    serviceId: Number(row?.serviceId || 0),
+    hostId: Number(row?.hostId || 0),
+    latencyMs: row?.latencyMs == null ? null : Number(row.latencyMs),
+    isTimeout: !!row?.isTimeout,
+    recordedAt: row?.recordedAt || null,
+  };
+}
+
+async function assertPublicHostMonitorRequest(path: unknown) {
+  const settings = await db.getAllSettings();
+  const configuredPath = normalizePublicHostMonitorPath(settings.publicHostMonitorPath);
+  const requestedPath = normalizePublicHostMonitorPath(path);
+  if (settings.publicHostMonitorEnabled !== "true" || requestedPath !== configuredPath) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "主机监控面板未开启或路径不正确" });
+  }
+  return { settings, configuredPath };
 }
 
 function scheduleStaleHostUpgradeCleanup() {
@@ -331,9 +482,99 @@ function scheduleStaleHostUpgradeCleanup() {
 }
 
 export const hostsRouter = router({
+    publicMonitor: publicProcedure
+      .input(z.object({ path: z.string().max(128).optional() }).optional())
+      .query(async ({ input }) => {
+        const { configuredPath } = await assertPublicHostMonitorRequest(input?.path);
+        const hosts = (await db.getHosts() as any[]).map(compactPublicMonitorHost).filter((host) => host.id > 0);
+        const hostIds = hosts.map((host) => host.id);
+        const visibleHostIds = new Set(hostIds);
+        const [metricRows, trafficRows] = await Promise.all([
+          db.getLatestHostMetricRows(hostIds),
+          db.getHostTrafficSummary(hostIds),
+        ]);
+        const groups = ((await db.getHostGroups()) as any[])
+          .filter((group) => !!group?.isEnabled)
+          .map((group) => compactPublicMonitorGroup(group, visibleHostIds))
+          .filter((group) => group.id > 0 && group.name && group.hostIds.length > 0)
+          .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+        const compactMetrics = (metricRows as any[]).map(compactHostMetricSummary).filter((row) => row.hostId > 0);
+        const compactTraffic = (trafficRows as any[]).map(compactHostTrafficSummary).filter((row) => row.hostId > 0);
+        let currentTrafficIn = 0;
+        let currentTrafficOut = 0;
+        for (const row of compactMetrics) {
+          currentTrafficIn += Math.max(0, Number(row.networkSpeedIn) || 0);
+          currentTrafficOut += Math.max(0, Number(row.networkSpeedOut) || 0);
+        }
+        let totalTrafficIn = 0;
+        let totalTrafficOut = 0;
+        for (const row of compactTraffic) {
+          totalTrafficIn += Math.max(0, Number(row.bytesIn) || 0);
+          totalTrafficOut += Math.max(0, Number(row.bytesOut) || 0);
+        }
+        return {
+          path: configuredPath,
+          refreshedAt: new Date().toISOString(),
+          hosts,
+          groups,
+          metrics: compactMetrics,
+          traffic: compactTraffic,
+          summary: {
+            totalHosts: hosts.length,
+            onlineHosts: hosts.filter((host) => !!host.isOnline).length,
+            currentTrafficIn,
+            currentTrafficOut,
+            totalTrafficIn,
+            totalTrafficOut,
+          },
+        };
+      }),
+    publicMonitorHostDetail: publicProcedure
+      .input(z.object({
+        path: z.string().max(128).optional(),
+        hostId: z.number().int().positive(),
+        hours: z.number().int().min(1).max(72).default(24),
+      }))
+      .query(async ({ input }) => {
+        const { configuredPath } = await assertPublicHostMonitorRequest(input.path);
+        const hosts = (await db.getHosts() as any[]);
+        const rawHost = hosts.find((host) => Number(host?.id) === Number(input.hostId));
+        if (!rawHost) throw new TRPCError({ code: "NOT_FOUND", message: "主机不存在" });
+        const host = compactPublicMonitorHost(rawHost);
+        const [metricRows, trafficRows, allServices] = await Promise.all([
+          db.getLatestHostMetricRows([host.id]),
+          db.getHostTrafficSummary([host.id]),
+          db.getHostProbeServices(),
+        ]);
+        const services = (allServices as any[])
+          .filter((service) => publicProbeServiceAppliesToHost(service, host.id));
+        const serviceIds = services.map((service) => Number(service.id)).filter((id) => Number.isInteger(id) && id > 0);
+        const series = serviceIds.length > 0
+          ? (await db.getHostProbeServiceSeries({ serviceIds, hostId: host.id, hours: input.hours, limit: 20_000 }) as any[])
+            .map(compactPublicProbeSeries)
+            .filter((row) => row.serviceId > 0 && row.hostId === host.id)
+          : [];
+        const latestByService = new Map<number, any>();
+        for (const row of series) latestByService.set(Number(row.serviceId), row);
+        return {
+          path: configuredPath,
+          refreshedAt: new Date().toISOString(),
+          host,
+          metric: (metricRows as any[]).map(compactHostMetricSummary).find((row) => row.hostId === host.id) || null,
+          traffic: (trafficRows as any[]).map(compactHostTrafficSummary).find((row) => row.hostId === host.id) || compactHostTrafficSummary({ hostId: host.id }),
+          services: services.map((service) => compactPublicProbeService(service, latestByService.get(Number(service.id))))
+            .filter((service) => service.id > 0 && service.name),
+          serviceSeries: series,
+        };
+      }),
     list: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role === "admin") scheduleStaleHostUpgradeCleanup();
-      return getVisibleHostsForUser(ctx.user);
+      const hosts = await getVisibleHostsForUser(ctx.user);
+      return hosts.map(compactHostForList);
+    }),
+    statusSummary: protectedProcedure.query(async ({ ctx }) => {
+      const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
+      return hosts.map(compactHostStatus).filter((host) => host.id > 0);
     }),
     summary: protectedProcedure.query(async ({ ctx }) => hostQueryCache.get(
       `summary:${ctx.user.id}`,
@@ -407,6 +648,33 @@ export const hostsRouter = router({
         const service = await db.getHostProbeServiceById(input.id);
         if (!service) throw new Error("服务不存在");
         await db.deleteHostProbeService(input.id);
+        return { success: true };
+      }),
+    hostGroups: adminProcedure.query(async () => db.getHostGroups()),
+    createHostGroup: adminProcedure
+      .input(hostGroupInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const payload = normalizeHostGroupInput(input);
+        await assertHostGroupHostIdsExist(payload.hostIds);
+        const id = await db.createHostGroup({ ...payload, userId: ctx.user.id });
+        return { id };
+      }),
+    updateHostGroup: adminProcedure
+      .input(hostGroupInputSchema.extend({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        const group = await db.getHostGroupById(input.id);
+        if (!group) throw new Error("主机分组不存在");
+        const payload = normalizeHostGroupInput(input);
+        await assertHostGroupHostIdsExist(payload.hostIds);
+        await db.updateHostGroup(input.id, payload);
+        return { success: true };
+      }),
+    deleteHostGroup: adminProcedure
+      .input(z.object({ id: z.number().int().positive() }))
+      .mutation(async ({ input }) => {
+        const group = await db.getHostGroupById(input.id);
+        if (!group) throw new Error("主机分组不存在");
+        await db.deleteHostGroup(input.id);
         return { success: true };
       }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
@@ -704,7 +972,8 @@ export const hostsRouter = router({
           .filter((id) => Number.isInteger(id) && id > 0)));
         if (hostIds.length === 0) return [];
         for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
-        return db.getLatestHostMetricRows(hostIds);
+        const rows = await db.getLatestHostMetricRows(hostIds);
+        return (rows as any[]).map(compactHostMetricSummary).filter((row) => row.hostId > 0);
       }),
     traffic: protectedProcedure
       .input(z.object({ hostId: z.number() }))
@@ -721,9 +990,11 @@ export const hostsRouter = router({
         if (ctx.user.role !== "admin" && hostIds.length === 0) return [];
         if (ctx.user.role !== "admin" || hostIds.length > 0) {
           for (const hostId of hostIds) await requireHostAccess(ctx, hostId);
-          return db.getHostTrafficSummary(hostIds);
+          const rows = await db.getHostTrafficSummary(hostIds);
+          return (rows as any[]).map(compactHostTrafficSummary).filter((row) => row.hostId > 0);
         }
-        return db.getHostTrafficSummary();
+        const rows = await db.getHostTrafficSummary();
+        return (rows as any[]).map(compactHostTrafficSummary).filter((row) => row.hostId > 0);
       }),
     resetTraffic: adminProcedure
       .input(z.object({ hostId: z.number() }))

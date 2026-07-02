@@ -2647,8 +2647,8 @@ function TunnelsContent() {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
               return (
-                <Card key={tunnel.id} className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
-                  <CardContent className="space-y-3 p-4">
+                <Card key={tunnel.id} className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
+                  <CardContent className="action-card-content space-y-3 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
@@ -2689,7 +2689,7 @@ function TunnelsContent() {
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
-                    <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                    <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
                           <Button variant="ghost" size="icon" className="h-8 w-8" title="查看延迟" onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>
@@ -2725,8 +2725,8 @@ function TunnelsContent() {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
               return (
-                <Card key={tunnel.id} className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
-                  <CardContent className="space-y-3 p-4">
+                <Card key={tunnel.id} className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
+                  <CardContent className="action-card-content space-y-3 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
@@ -2767,7 +2767,7 @@ function TunnelsContent() {
                       {renderTunnelLatencyBreakdown(tunnel, true)}
                     </div>
 
-                    <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                    <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                       {supported && (
                         <>
                           <Button variant="ghost" size="icon" className="h-8 w-8" title="查看延迟" onClick={() => setLatencyTunnel({ id: tunnel.id, name: tunnel.name })}>

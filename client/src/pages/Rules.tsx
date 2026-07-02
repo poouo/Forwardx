@@ -2304,6 +2304,7 @@ function RulesContent() {
     }));
   };
 
+  const [pendingToggleRuleIds, setPendingToggleRuleIds] = useState<Set<number>>(() => new Set());
   const toggleMutation = trpc.rules.toggle.useMutation({
     onSuccess: () => {
       utils.rules.list.invalidate();
@@ -2311,6 +2312,15 @@ function RulesContent() {
       utils.billing.me.invalidate();
     },
     onError: (err) => toast.error(err.message || "操作失败"),
+    onSettled: (_data, _error, variables) => {
+      const id = Number(variables?.id || 0);
+      if (!id) return;
+      setPendingToggleRuleIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    },
   });
 
   const isTrafficBillingRule = (rule: any) => {
@@ -2323,6 +2333,8 @@ function RulesContent() {
   };
 
   const handleToggleRule = (rule: any, checked: boolean) => {
+    const id = Number(rule?.id || 0);
+    if (!id || pendingToggleRuleIds.has(id)) return;
     if (
       checked &&
       user?.role !== "admin" &&
@@ -2334,7 +2346,32 @@ function RulesContent() {
       toast.error("流量计费余额不足，请充值后再启用规则");
       return;
     }
-    toggleMutation.mutate({ id: rule.id, isEnabled: checked });
+    setPendingToggleRuleIds((current) => new Set(current).add(id));
+    toggleMutation.mutate({ id, isEnabled: checked });
+  };
+
+  const renderRuleEnabledSwitch = (rule: any) => {
+    const supported = isRuleSupported(rule);
+    const enabled = !!rule.isEnabled;
+    const title = enabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发";
+    const content = supported ? (
+      <label className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground" title={title}>
+        <span className={enabled ? "font-medium text-chart-2" : "font-medium text-muted-foreground"}>{enabled ? "启用" : "停用"}</span>
+        <Switch
+          checked={enabled}
+          disabled={pendingToggleRuleIds.has(Number(rule.id))}
+          onCheckedChange={(checked) => handleToggleRule(rule, checked)}
+          className="scale-75"
+          aria-label={`${enabled ? "停用" : "启用"}转发规则 ${rule.name || ""}`}
+        />
+      </label>
+    ) : (
+      <span className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground opacity-70">
+        <span className="font-medium text-muted-foreground">停用</span>
+        <Switch checked={false} disabled className="scale-75" />
+      </span>
+    );
+    return supported ? content : renderUnsupportedHint(content);
   };
 
   const resetForm = () => {
@@ -4971,17 +5008,10 @@ function RulesContent() {
         <TableCell className="px-3 py-2">{renderTableRuleTotalTraffic(rule)}</TableCell>
         <TableCell className="px-3 py-2">{renderTableRuleDailyTraffic(rule)}</TableCell>
         <TableCell className="px-3 py-2">{renderTableRuleLatency(rule)}</TableCell>
-        <TableCell className="px-3 py-2 text-center">
-          {supported ? (
-            <Switch
-              checked={rule.isEnabled}
-              onCheckedChange={(checked) => handleToggleRule(rule, checked)}
-              className="scale-75"
-              title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
-            />
-          ) : (
-            renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
-          )}
+        <TableCell className="px-3 py-2">
+          <div className="flex justify-center">
+            {renderRuleEnabledSwitch(rule)}
+          </div>
         </TableCell>
         <TableCell className="px-3 py-2 text-right">{renderRuleActions(rule)}</TableCell>
       </TableRow>
@@ -4995,10 +5025,10 @@ function RulesContent() {
       return (
         <Card
           key={rule.id}
-          className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
+          className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
           title={!supported ? unsupportedProtocolTitle : undefined}
         >
-          <CardContent className="space-y-2.5 p-3">
+          <CardContent className="action-card-content space-y-2.5 p-3">
             <div className="flex min-w-0 items-start justify-between gap-2">
               <div className="flex min-w-0 items-start gap-2">
                 <div className="mt-1.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
@@ -5011,16 +5041,7 @@ function RulesContent() {
                   </div>
                 </div>
               </div>
-              {supported ? (
-                <Switch
-                  checked={rule.isEnabled}
-                  onCheckedChange={(checked) => handleToggleRule(rule, checked)}
-                  className="shrink-0 scale-75"
-                  title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
-                />
-              ) : (
-                renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="shrink-0 scale-75" /></span>)
-              )}
+              {renderRuleEnabledSwitch(rule)}
             </div>
 
             <div className="min-w-0">
@@ -5059,7 +5080,7 @@ function RulesContent() {
               </div>
             </div>
 
-            <div className="flex justify-end border-t border-border/40 pt-1.5">
+            <div className="action-card-footer flex justify-end border-t border-border/40 pt-1.5">
               {renderRuleActions(rule)}
             </div>
           </CardContent>
@@ -5069,10 +5090,10 @@ function RulesContent() {
     return (
       <Card
         key={rule.id}
-        className={`border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
+        className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
         title={!supported ? unsupportedProtocolTitle : undefined}
       >
-        <CardContent className="space-y-3 p-4">
+        <CardContent className="action-card-content space-y-3 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-start gap-2">
               <div className="mt-2 flex h-4 w-4 flex-shrink-0 items-center justify-center">
@@ -5098,16 +5119,7 @@ function RulesContent() {
                 )}
               </div>
             </div>
-            {supported ? (
-              <Switch
-                checked={rule.isEnabled}
-                onCheckedChange={(checked) => handleToggleRule(rule, checked)}
-                className="scale-75"
-                title={rule.isEnabled ? "关闭后该转发规则将停止下发和转发" : "开启后该转发规则将重新下发并恢复转发"}
-              />
-            ) : (
-              renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
-            )}
+            {renderRuleEnabledSwitch(rule)}
           </div>
 
           <div className="min-w-0">
@@ -5141,7 +5153,7 @@ function RulesContent() {
               {renderLatestLatency(rule)}
             </div>
           </div>
-          <div className="flex justify-end border-t border-border/40 pt-2">
+          <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
             {renderRuleActions(rule)}
           </div>
         </CardContent>

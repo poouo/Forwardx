@@ -86,6 +86,53 @@ const forwardProtocolSettingsSchema = z.object(
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
+const RESERVED_PUBLIC_HOST_MONITOR_PATHS = new Set([
+  "api",
+  "setup",
+  "login",
+  "homepage-preview",
+  "profile",
+  "hosts",
+  "rules",
+  "looking-glass",
+  "forward-groups",
+  "tunnels",
+  "users",
+  "email-settings",
+  "payments",
+  "billing",
+  "traffic-billing",
+  "plans",
+  "store",
+  "subscriptions",
+  "wallet",
+  "announcements",
+  "settings",
+  "404",
+]);
+
+function normalizePublicHostMonitorPath(value: unknown) {
+  const text = String(value || "dev")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+  return text || "dev";
+}
+
+function assertPublicHostMonitorPath(value: unknown) {
+  const path = normalizePublicHostMonitorPath(value);
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(path)) {
+    throw new Error("主机监控面板路径只能包含小写字母、数字、短横线或下划线，且不能超过 64 个字符");
+  }
+  if (RESERVED_PUBLIC_HOST_MONITOR_PATHS.has(path)) {
+    throw new Error("主机监控面板路径不能与系统内置路径冲突");
+  }
+  return path;
+}
+
+function normalizePublicHostMonitorTitle(value: unknown) {
+  return String(value || "").trim().slice(0, 80);
+}
 const aiProviderSchema = z.enum(["deepseek", "siliconflow", "custom"]);
 type AiProvider = z.infer<typeof aiProviderSchema>;
 const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
@@ -1233,6 +1280,11 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     registrationEnabled: all.registrationEnabled !== "false",
     twoFactorEnabled: all.twoFactorEnabled === "true",
     lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+    publicHostMonitor: {
+      enabled: all.publicHostMonitorEnabled === "true",
+      path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
+      title: normalizePublicHostMonitorTitle(all.publicHostMonitorTitle),
+    },
     homepageEnabled: all.homepageEnabled !== "false",
     homepageCustomEnabled: all.homepageCustomEnabled === "true",
     homepageHtml: all.homepageHtml ?? "",
@@ -1354,6 +1406,11 @@ export const systemRouter = router({
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+      publicHostMonitor: {
+        enabled: all.publicHostMonitorEnabled === "true",
+        path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
+        title: normalizePublicHostMonitorTitle(all.publicHostMonitorTitle),
+      },
     }));
   }),
 
@@ -1592,6 +1649,11 @@ export const systemRouter = router({
         registrationEnabled: z.boolean().optional(),
         twoFactorEnabled: z.boolean().optional(),
         lookingGlassUserEnabled: z.boolean().optional(),
+        publicHostMonitor: z.object({
+          enabled: z.boolean().optional(),
+          path: z.string().max(128).optional(),
+          title: z.string().max(80).optional(),
+        }).optional(),
         homepageEnabled: z.boolean().optional(),
         homepageCustomEnabled: z.boolean().optional(),
         homepageHtml: z.string().max(60000).optional(),
@@ -1710,6 +1772,20 @@ export const systemRouter = router({
       if (input.lookingGlassUserEnabled !== undefined) {
         await db.setSetting("lookingGlassUserEnabled", input.lookingGlassUserEnabled ? "true" : "false");
         console.info(`[Settings] network test for users ${input.lookingGlassUserEnabled ? "enabled" : "disabled"}`);
+      }
+      if (input.publicHostMonitor) {
+        const next: Record<string, string | null> = {};
+        if (input.publicHostMonitor.enabled !== undefined) {
+          next.publicHostMonitorEnabled = input.publicHostMonitor.enabled ? "true" : "false";
+        }
+        if (input.publicHostMonitor.path !== undefined) {
+          next.publicHostMonitorPath = assertPublicHostMonitorPath(input.publicHostMonitor.path);
+        }
+        if (input.publicHostMonitor.title !== undefined) {
+          next.publicHostMonitorTitle = normalizePublicHostMonitorTitle(input.publicHostMonitor.title);
+        }
+        await db.setSettings(next);
+        console.info("[Settings] public host monitor settings updated");
       }
       if (input.homepageEnabled !== undefined) {
         await db.setSetting("homepageEnabled", input.homepageEnabled ? "true" : "false");

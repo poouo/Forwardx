@@ -1503,8 +1503,8 @@ export function ForwardGroupsContent({
         {viewMode === "card" ? (
           <AutoAnimateContainer className="standard-card-grid gap-4">
             {pagedGroups.map((group: any) => (
-              <Card key={group.id} className="border-border/40 bg-card/60">
-                <CardContent className="space-y-3 p-4">
+              <Card key={group.id} className="action-card border-border/40 bg-card/60">
+                <CardContent className="action-card-content space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1551,7 +1551,7 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                  <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />
@@ -1576,8 +1576,8 @@ export function ForwardGroupsContent({
           <>
           <div className="grid gap-3 sm:hidden">
             {pagedGroups.map((group: any) => (
-              <Card key={group.id} className="border-border/40 bg-card/60">
-                <CardContent className="space-y-3 p-4">
+              <Card key={group.id} className="action-card border-border/40 bg-card/60">
+                <CardContent className="action-card-content space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1624,7 +1624,7 @@ export function ForwardGroupsContent({
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-1 border-t border-border/40 pt-2">
+                  <div className="action-card-footer flex justify-end gap-1 border-t border-border/40 pt-2">
                     {chainLatencyActions(group)}
                     <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
                       <RefreshCw className="h-3.5 w-3.5" />

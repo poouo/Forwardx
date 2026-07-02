@@ -229,8 +229,8 @@ function AgentTokenCard({
   onDelete: (tokenItem: any) => void;
 }) {
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-      <CardContent className="space-y-4 p-4">
+    <Card className="action-card border-border/40 bg-card/60 backdrop-blur-md">
+      <CardContent className="action-card-content space-y-4 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -261,7 +261,7 @@ function AgentTokenCard({
           </div>
         </div>
 
-        <div className="flex justify-end border-t border-border/40 pt-2">
+        <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
           <TokenActionButtons
             tokenItem={tokenItem}
             loadingScriptTokenId={loadingScriptTokenId}

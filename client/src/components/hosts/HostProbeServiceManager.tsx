@@ -96,11 +96,43 @@ function ServiceActionButtons({
   );
 }
 
-function ServiceStatusBadge({ service }: { service: any }) {
-  return service.isEnabled !== false ? (
-    <Badge className="shrink-0 border-chart-2/25 bg-chart-2/10 text-chart-2 hover:bg-chart-2/15">启用</Badge>
-  ) : (
-    <Badge variant="outline" className="shrink-0 text-muted-foreground">停用</Badge>
+function buildServiceUpdatePayload(service: any, isEnabled = service?.isEnabled !== false) {
+  const method = service?.method === "ping" ? "ping" : "tcping";
+  return {
+    id: Number(service?.id),
+    name: String(service?.name || "").trim(),
+    method,
+    targetIp: String(service?.targetIp || "").trim(),
+    targetPort: method === "tcping" ? Number(service?.targetPort || 0) : null,
+    hostScope: service?.hostScope === "exclude" || service?.hostScope === "specific" ? service.hostScope : "all",
+    hostIds: Array.isArray(service?.hostIds) ? service.hostIds.map(Number).filter(Boolean) : [],
+    excludeHostIds: Array.isArray(service?.excludeHostIds) ? service.excludeHostIds.map(Number).filter(Boolean) : [],
+    intervalSeconds: Math.max(5, Number(service?.intervalSeconds) || 30),
+    isEnabled,
+  };
+}
+
+function ServiceEnabledSwitch({
+  service,
+  disabled,
+  onToggle,
+}: {
+  service: any;
+  disabled?: boolean;
+  onToggle: (service: any, checked: boolean) => void;
+}) {
+  const enabled = service.isEnabled !== false;
+  return (
+    <label className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border/45 bg-background/65 px-2.5 py-1 text-xs text-muted-foreground">
+      <span className={enabled ? "font-medium text-chart-2" : "font-medium text-muted-foreground"}>{enabled ? "启用" : "停用"}</span>
+      <Switch
+        checked={enabled}
+        disabled={disabled}
+        onCheckedChange={(checked) => onToggle(service, checked)}
+        className="scale-75"
+        aria-label={`${enabled ? "停用" : "启用"}服务 ${service.name || ""}`}
+      />
+    </label>
   );
 }
 
@@ -109,17 +141,21 @@ function ServiceCard({
   hostsById,
   onEdit,
   onDelete,
+  onToggle,
+  togglePending,
 }: {
   service: any;
   hostsById: Map<number, any>;
   onEdit: (service: any) => void;
   onDelete: (service: any) => void;
+  onToggle: (service: any, checked: boolean) => void;
+  togglePending?: boolean;
 }) {
   const target = serviceTarget(service);
   const scope = scopeText(service, hostsById);
   return (
-    <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-      <CardContent className="space-y-4 p-4">
+    <Card className="action-card border-border/40 bg-card/60 backdrop-blur-md">
+      <CardContent className="action-card-content space-y-4 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
@@ -132,7 +168,7 @@ function ServiceCard({
               </div>
             </div>
           </div>
-          <ServiceStatusBadge service={service} />
+          <ServiceEnabledSwitch service={service} disabled={togglePending} onToggle={onToggle} />
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -151,7 +187,7 @@ function ServiceCard({
           <p className="truncate text-sm" title={scope}>{scope}</p>
         </div>
 
-        <div className="flex justify-end border-t border-border/40 pt-2">
+        <div className="action-card-footer flex justify-end border-t border-border/40 pt-2">
           <ServiceActionButtons service={service} onEdit={onEdit} onDelete={onDelete} />
         </div>
       </CardContent>
@@ -183,6 +219,7 @@ export default function HostProbeServiceManager({
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<ServiceForm>(defaultForm);
   const [internalViewMode, setInternalViewMode] = useState<HostProbeServiceViewMode>(() => getStoredServiceViewMode());
+  const [pendingToggleServiceIds, setPendingToggleServiceIds] = useState<Set<number>>(() => new Set());
   const viewMode = controlledViewMode ?? internalViewMode;
   const selectedScopeHostIds = form.hostScope === "exclude" ? form.excludeHostIds : form.hostIds;
   const selectedScopeHostIdSet = useMemo(() => new Set(selectedScopeHostIds.map(Number)), [selectedScopeHostIds]);
@@ -209,6 +246,22 @@ export default function HostProbeServiceManager({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); setDialogOpen(false); setEditingId(null); setForm(defaultForm); toast.success("服务已更新"); },
     onError: (err) => toast.error(err.message || "更新服务失败"),
   });
+  const toggleMutation = trpc.hosts.updateProbeService.useMutation({
+    onSuccess: (_data, variables) => {
+      utils.hosts.probeServices.invalidate();
+      toast.success(variables.isEnabled ? "服务已启用" : "服务已停用");
+    },
+    onError: (err) => toast.error(err.message || "切换服务状态失败"),
+    onSettled: (_data, _error, variables) => {
+      const id = Number(variables?.id || 0);
+      if (!id) return;
+      setPendingToggleServiceIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    },
+  });
   const deleteMutation = trpc.hosts.deleteProbeService.useMutation({
     onSuccess: () => { utils.hosts.probeServices.invalidate(); toast.success("服务已删除"); },
     onError: (err) => toast.error(err.message || "删除服务失败"),
@@ -218,6 +271,13 @@ export default function HostProbeServiceManager({
     if (controlledViewMode === undefined) setInternalViewMode(nextViewMode);
     storeServiceViewMode(nextViewMode);
     onViewModeChange?.(nextViewMode);
+  };
+
+  const toggleServiceEnabled = (service: any, checked: boolean) => {
+    const id = Number(service?.id || 0);
+    if (!id || pendingToggleServiceIds.has(id)) return;
+    setPendingToggleServiceIds((current) => new Set(current).add(id));
+    toggleMutation.mutate(buildServiceUpdatePayload(service, checked));
   };
 
   useEffect(() => {
@@ -335,14 +395,30 @@ export default function HostProbeServiceManager({
           ) : viewMode === "card" ? (
             <AutoAnimateContainer key="host-probe-service-card-view" className="standard-card-grid card-mode-transition gap-4 p-3" duration={220}>
               {(services as any[]).map((service) => (
-                <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
+                <ServiceCard
+                  key={service.id}
+                  service={service}
+                  hostsById={hostsById}
+                  onEdit={openEdit}
+                  onDelete={confirmDelete}
+                  onToggle={toggleServiceEnabled}
+                  togglePending={pendingToggleServiceIds.has(Number(service.id))}
+                />
               ))}
             </AutoAnimateContainer>
           ) : (
             <div key="host-probe-service-table-view" className="card-mode-transition">
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 p-3 sm:hidden" duration={220}>
               {(services as any[]).map((service) => (
-                <ServiceCard key={service.id} service={service} hostsById={hostsById} onEdit={openEdit} onDelete={confirmDelete} />
+                <ServiceCard
+                  key={service.id}
+                  service={service}
+                  hostsById={hostsById}
+                  onEdit={openEdit}
+                  onDelete={confirmDelete}
+                  onToggle={toggleServiceEnabled}
+                  togglePending={pendingToggleServiceIds.has(Number(service.id))}
+                />
               ))}
             </AutoAnimateContainer>
             <div className="overflow-x-auto">
@@ -353,6 +429,7 @@ export default function HostProbeServiceManager({
                     <TableHead>目标</TableHead>
                     <TableHead>主机范围</TableHead>
                     <TableHead>运行时间</TableHead>
+                    <TableHead className="w-[120px]">状态</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -371,6 +448,9 @@ export default function HostProbeServiceManager({
                       <TableCell className="font-mono text-xs">{serviceTarget(service)}</TableCell>
                       <TableCell className="max-w-[360px] truncate text-sm" title={scopeText(service, hostsById)}>{scopeText(service, hostsById)}</TableCell>
                       <TableCell className="text-sm tabular-nums">{service.intervalSeconds || 30}S</TableCell>
+                      <TableCell>
+                        <ServiceEnabledSwitch service={service} disabled={pendingToggleServiceIds.has(Number(service.id))} onToggle={toggleServiceEnabled} />
+                      </TableCell>
                       <TableCell className="text-right">
                         <ServiceActionButtons service={service} onEdit={openEdit} onDelete={confirmDelete} />
                       </TableCell>

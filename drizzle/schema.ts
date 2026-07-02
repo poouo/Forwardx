@@ -257,6 +257,28 @@ export const hosts = table("hosts", {
 export type Host = typeof hosts.$inferSelect;
 export type InsertHost = typeof hosts.$inferInsert;
 
+export const hostGroups = table("host_groups", {
+  id: serial("id"),
+  name: text("name").notNull(),
+  isEnabled: boolean("isEnabled").notNull().default(true),
+  sortOrder: int("sortOrder").notNull().default(0),
+  userId: int("userId").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type HostGroup = typeof hostGroups.$inferSelect;
+export type InsertHostGroup = typeof hostGroups.$inferInsert;
+
+export const hostGroupMembers = table("host_group_members", {
+  id: serial("id"),
+  groupId: int("groupId").notNull(),
+  hostId: int("hostId").notNull(),
+  sortOrder: int("sortOrder").notNull().default(0),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type HostGroupMember = typeof hostGroupMembers.$inferSelect;
+export type InsertHostGroupMember = typeof hostGroupMembers.$inferInsert;
+
 export const forwardRules = table("forward_rules", {
   id: serial("id"),
   hostId: int("hostId").notNull(),

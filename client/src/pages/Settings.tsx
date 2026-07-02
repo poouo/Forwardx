@@ -62,6 +62,7 @@ import {
   Loader2,
   Palette,
   Image as ImageIcon,
+  Monitor,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
@@ -2645,6 +2646,7 @@ type SystemSettingsSaveKey =
   | "registration"
   | "twoFactor"
   | "ddns"
+  | "hostMonitor"
   | "forwardProtocols"
   | "agentInstall";
 
@@ -2657,6 +2659,13 @@ function normalizeTtl(value: string, fallback: number) {
   const ttl = Math.floor(Number(value));
   if (!Number.isFinite(ttl)) return fallback;
   return Math.min(86400, Math.max(60, ttl));
+}
+
+function normalizePublicHostMonitorPathInput(value: string) {
+  return String(value || "dev")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
 }
 
 type PersonalizationSaveKey = "title" | "logo" | "background" | "homepage";
@@ -3441,6 +3450,9 @@ function SystemInfoSection() {
   const [ddnsWebhookUrl, setDdnsWebhookUrl] = useState("");
   const [ddnsWebhookMethod, setDdnsWebhookMethod] = useState<"POST" | "PUT" | "GET">("POST");
   const [ddnsWebhookHeaders, setDdnsWebhookHeaders] = useState("");
+  const [publicHostMonitorEnabled, setPublicHostMonitorEnabled] = useState(false);
+  const [publicHostMonitorPath, setPublicHostMonitorPath] = useState("dev");
+  const [publicHostMonitorTitle, setPublicHostMonitorTitle] = useState("");
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
   const [savingSetting, setSavingSetting] = useState<SystemSettingsSaveKey | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -3487,6 +3499,11 @@ function SystemInfoSection() {
       setDdnsWebhookUrl(settings.ddns?.webhookUrl || "");
       setDdnsWebhookMethod((settings.ddns?.webhookMethod === "PUT" || settings.ddns?.webhookMethod === "GET") ? settings.ddns.webhookMethod : "POST");
       setDdnsWebhookHeaders(settings.ddns?.webhookHeaders || "");
+      if (settings.publicHostMonitor) {
+        setPublicHostMonitorEnabled(!!settings.publicHostMonitor.enabled);
+        setPublicHostMonitorPath(settings.publicHostMonitor.path || "dev");
+        setPublicHostMonitorTitle(settings.publicHostMonitor.title || "");
+      }
     }
   }, [settings]);
 
@@ -3598,6 +3615,11 @@ function SystemInfoSection() {
   const webPortDisplay = Number(settings?.webPort || webPortManagement?.publicPort || 3000);
   const webContainerPort = Number(webPortManagement?.containerPort || webPortDisplay);
   const isDockerWebPort = !!webPortManagement?.docker;
+  const publicHostMonitorNormalizedPath = normalizePublicHostMonitorPathInput(publicHostMonitorPath) || "dev";
+  const publicHostMonitorUrl = useMemo(() => {
+    const base = (settings?.panelPublicUrl || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "");
+    return base ? `${base}/${publicHostMonitorNormalizedPath}` : `/${publicHostMonitorNormalizedPath}`;
+  }, [publicHostMonitorNormalizedPath, settings?.panelPublicUrl]);
 
   const handleSavePanelUrl = () => {
     const v = panelUrlInput.trim();
@@ -3755,6 +3777,28 @@ function SystemInfoSection() {
         setDdnsHuaweiCloudSecretKey("");
         setDdnsAliyunAccessKeySecret("");
         setDdnsTencentCloudSecretKey("");
+      },
+    });
+  };
+
+  const handleSavePublicHostMonitor = () => {
+    const path = normalizePublicHostMonitorPathInput(publicHostMonitorPath) || "dev";
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(path)) {
+      toast.error("主机监控面板路径只能包含小写字母、数字、短横线或下划线，且不能超过 64 个字符");
+      return;
+    }
+    saveSystemSettings("hostMonitor", {
+      publicHostMonitor: {
+        enabled: publicHostMonitorEnabled,
+        path,
+        title: publicHostMonitorTitle.trim(),
+      },
+    }, {
+      onSuccess: () => {
+        setPublicHostMonitorPath(path);
+        setPublicHostMonitorTitle(publicHostMonitorTitle.trim());
+        utils.system.getSettings.invalidate();
+        utils.system.publicInfo.invalidate();
       },
     });
   };
@@ -4556,6 +4600,76 @@ function SystemInfoSection() {
             <Button onClick={handleSaveDdns} disabled={isSavingSetting("ddns")}>
               {isSavingSetting("ddns") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {isSavingSetting("ddns") ? "保存中..." : "保存 DDNS 配置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Monitor className="h-4 w-4 text-primary" />
+            主机监控配置
+          </CardTitle>
+          <CardDescription>
+            开启后可通过独立链接免登录查看主机监控面板，仅展示状态与流量数据。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">允许免登录查看主机监控</p>
+              <p className="text-xs text-muted-foreground">
+                开启后公开监控页只读可见，不提供编辑、删除、升级等管理操作。
+              </p>
+            </div>
+            <Switch className="shrink-0" checked={publicHostMonitorEnabled} onCheckedChange={setPublicHostMonitorEnabled} />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
+            <div className="space-y-2 lg:col-span-2">
+              <Label>展示标题</Label>
+              <Input
+                value={publicHostMonitorTitle}
+                onChange={(e) => setPublicHostMonitorTitle(e.target.value.slice(0, 80))}
+                placeholder="留空默认使用站点标题 + 主机监控"
+                maxLength={80}
+              />
+              <p className="text-xs text-muted-foreground">
+                用于公开主机监控页顶部展示，例如 ForwardX Dev 主机监控。留空则自动使用当前站点标题。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>主机监控面板路径</Label>
+              <Input
+                value={publicHostMonitorPath}
+                onChange={(e) => setPublicHostMonitorPath(e.target.value)}
+                placeholder="dev"
+              />
+              <p className="text-xs text-muted-foreground">
+                留空默认使用 dev，仅支持字母、数字、短横线和下划线，例如 monitor 或 host-monitor。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>访问地址</Label>
+              <div className="flex min-w-0 gap-2">
+                <Input value={publicHostMonitorUrl} readOnly className="font-mono text-xs" />
+                <Button type="button" variant="outline" size="icon" title="打开主机监控面板" asChild>
+                  <a href={publicHostMonitorUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                未开启时该地址不会返回监控数据。
+              </p>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button onClick={handleSavePublicHostMonitor} disabled={isSavingSetting("hostMonitor")}>
+              {isSavingSetting("hostMonitor") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isSavingSetting("hostMonitor") ? "保存中..." : "保存主机监控配置"}
             </Button>
           </div>
         </CardContent>

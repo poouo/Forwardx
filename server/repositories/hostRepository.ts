@@ -1,5 +1,5 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
-import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostMetrics, hostTrafficCounters, trafficStats } from "../../drizzle/schema";
+import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostGroupMembers, hostMetrics, hostTrafficCounters, trafficStats } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { sqlBool } from "./repositoryUtils";
@@ -52,6 +52,7 @@ export async function deleteHost(id: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
+  await db.delete(hostGroupMembers).where(eq(hostGroupMembers.hostId, id));
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
   await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));
   await db.delete(trafficStats).where(eq(trafficStats.hostId, id));

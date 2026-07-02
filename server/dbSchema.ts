@@ -25,6 +25,8 @@ const c = (name: string, type: ColumnType, opts: Omit<ColumnDef, "name" | "type"
 export const MIGRATION_TABLES = [
   "users",
   "hosts",
+  "host_groups",
+  "host_group_members",
   "tunnels",
   "tunnel_exit_nodes",
   "tunnel_hops",
@@ -122,6 +124,24 @@ const tables: TableDef[] = [
       c("updatedAt", "epoch", { notNull: true, default: "now" }),
     ],
     indexes: [["userId"], ["userId", "createdAt"], ["agentToken"]],
+  },
+  {
+    name: "host_groups",
+    columns: [
+      c("id", "id"), c("name", "text", { notNull: true }), c("isEnabled", "bool", { notNull: true, default: true }),
+      c("sortOrder", "int", { notNull: true, default: 0 }), c("userId", "int", { notNull: true }),
+      c("createdAt", "epoch", { notNull: true, default: "now" }), c("updatedAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    indexes: [["userId", "sortOrder"], ["userId", "createdAt"], ["isEnabled"]],
+  },
+  {
+    name: "host_group_members",
+    columns: [
+      c("id", "id"), c("groupId", "int", { notNull: true }), c("hostId", "int", { notNull: true }),
+      c("sortOrder", "int", { notNull: true, default: 0 }), c("createdAt", "epoch", { notNull: true, default: "now" }),
+    ],
+    unique: [["groupId", "hostId"]],
+    indexes: [["groupId", "sortOrder"], ["hostId"]],
   },
   {
     name: "forward_rules",
@@ -257,6 +277,9 @@ const seedSettings = [
   ["homepageEnabled", "true"],
   ["homepageCustomEnabled", "false"],
   ["lookingGlassUserEnabled", "true"],
+  ["publicHostMonitorEnabled", "false"],
+  ["publicHostMonitorPath", "dev"],
+  ["publicHostMonitorTitle", ""],
   ["redemptionEnabled", "true"],
   ["discountEnabled", "true"],
   ["trafficBillingEnabled", "false"],

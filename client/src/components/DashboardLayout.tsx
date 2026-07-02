@@ -76,9 +76,9 @@ import { checkMobileAppUpdate, openMobileReleasePage, type MobileAppUpdateResult
 import { cn } from "@/lib/utils";
 import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REFRESH_DELAY_SECONDS } from "@/lib/panelUpgrade";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { preloadAppRoute } from "@/lib/routePreload";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
+import DataSectionLoading from "@/components/DataSectionLoading";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
@@ -218,13 +218,13 @@ export default function DashboardLayout({
 }) {
   const { loading, user } = useAuth();
 
-  if (loading) return null;
+  if (loading) return <DashboardLayoutLoading label="正在校验登录状态" />;
 
   if (!user) {
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
-    return null;
+    return <DashboardLayoutLoading label="正在跳转登录" />;
   }
 
   return (
@@ -233,6 +233,14 @@ export default function DashboardLayout({
         {children}
       </DashboardLayoutContent>
     </SidebarProvider>
+  );
+}
+
+function DashboardLayoutLoading({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-screen w-full items-center justify-center bg-background/40 p-6">
+      <DataSectionLoading label={label} minHeight="min-h-[220px]" className="max-w-2xl" />
+    </div>
   );
 }
 
@@ -804,7 +812,6 @@ function DashboardLayoutContent({
   const managementMenuItems: SidebarNavItem[] = isAdmin
     ? [profileMenuItem, ...adminMenuItems]
     : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
-  const navigationRequestRef = useRef(0);
   const closeMobileNavigation = () => {
     if (isMobile) {
       setAccountMenuOpen(false);
@@ -814,15 +821,7 @@ function DashboardLayoutContent({
   const navigateFromSidebar = (path: string) => {
     closeMobileNavigation();
     if (path === currentPath) return;
-
-    const requestId = ++navigationRequestRef.current;
-    preloadAppRoute(path)
-      .catch(() => undefined)
-      .then(() => {
-        if (requestId === navigationRequestRef.current) {
-          setLocation(path);
-        }
-      });
+    setLocation(path);
   };
   const navigateFromAccountMenu = (path: string) => {
     setAccountMenuOpen(false);
@@ -860,9 +859,6 @@ function DashboardLayoutContent({
       <SidebarMenuItem key={item.path}>
         <SidebarMenuButton
           isActive={isActive}
-          onMouseEnter={() => void preloadAppRoute(item.path).catch(() => undefined)}
-          onFocus={() => void preloadAppRoute(item.path).catch(() => undefined)}
-          onTouchStart={() => void preloadAppRoute(item.path).catch(() => undefined)}
           onClick={() => navigateFromSidebar(item.path)}
           tooltip={item.label}
           className={cn("h-10 transition-all font-normal mobile-sidebar-menu-button", isDesktopCollapsed && "justify-center", mobileAuth.isNative && "text-[13px]")}
