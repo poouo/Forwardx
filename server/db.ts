@@ -16,7 +16,7 @@ import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { randomAvataaarsValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
-import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
+import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/trafficBillingRepository";
@@ -117,14 +117,17 @@ export async function initDatabase() {
     await backfillTrafficBillingRuleUsageFromStats().catch((error) => {
       console.warn("[TrafficBilling] Rule usage backfill skipped:", error instanceof Error ? error.message : String(error));
     });
+    await ensureTrafficStatBucketsBackfilled().catch((error) => {
+      console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await ensureUserTrafficCountersBackfilled().catch((error) => {
+      console.warn("[TrafficCounter] Startup cumulative counter backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
     await cleanOldTrafficStats(72).catch((error) => {
       console.warn("[TrafficSummary] Startup traffic stats cleanup skipped:", error instanceof Error ? error.message : String(error));
     });
     await cleanOldTrafficStatBuckets(72).catch((error) => {
       console.warn("[TrafficSummary] Startup traffic bucket cleanup skipped:", error instanceof Error ? error.message : String(error));
-    });
-    await ensureTrafficStatBucketsBackfilled().catch((error) => {
-      console.warn("[TrafficSummary] Startup bucket backfill skipped:", error instanceof Error ? error.message : String(error));
     });
     await backfillManualEntitlementsFromEffectiveUsers().catch((error) => {
       console.warn("[Database] Manual entitlement backfill skipped:", error instanceof Error ? error.message : String(error));

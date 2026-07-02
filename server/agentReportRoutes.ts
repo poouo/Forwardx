@@ -20,6 +20,7 @@ import { recordTunnelAutoHopLatency } from "./tunnelAutoLatencyState";
 import { completeLookingGlassAgentTask, updateLookingGlassAgentTaskProgress, type LookingGlassMethod } from "./lookingGlassAgentTasks";
 import { completeIperf3AgentTask } from "./iperf3AgentTasks";
 import { getAgentHostFromRequest } from "./agentAuth";
+import { applyTrafficMultiplier, normalizeTrafficMultiplier } from "../shared/trafficMultiplier";
 
 const VERBOSE_AGENT_REPORTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_REPORTS || ""));
 
@@ -72,6 +73,18 @@ async function shouldAccountForwardRuleTraffic(rule: any) {
     .filter((member: any) => !!member.isEnabled)
     .sort((a: any, b: any) => Number(a.priority) - Number(b.priority));
   return Number(members[0]?.id || 0) === memberId;
+}
+
+async function quotaTrafficMultiplierForRule(rule: any, tunnel: any | null) {
+  const groupId = Number(rule?.forwardGroupId || 0);
+  if (groupId > 0) {
+    const group = await db.getForwardGroupById(groupId) as any;
+    if (String(group?.groupMode || "failover") === "chain") {
+      return normalizeTrafficMultiplier(group?.trafficMultiplier);
+    }
+  }
+  if (tunnel) return normalizeTrafficMultiplier((tunnel as any).trafficMultiplier);
+  return 100;
 }
 
 const trafficReportLogIntervalMs = 10_000;
@@ -368,7 +381,8 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
             await refreshUserRuleAgents(rule.userId, "traffic-billing-balance-negative");
           }
         } else {
-          quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + ruleBytes);
+          const quotaBytes = applyTrafficMultiplier(ruleBytes, await quotaTrafficMultiplierForRule(rule, tunnel));
+          quotaTrafficByUser.set(rule.userId, (quotaTrafficByUser.get(rule.userId) || 0) + quotaBytes);
         }
       }
     }

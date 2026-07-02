@@ -76,6 +76,10 @@ import {
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
+import {
+  trafficMultiplierFromInput,
+  trafficMultiplierToInputValue,
+} from "@shared/trafficMultiplier";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   CartesianGrid,
@@ -129,6 +133,7 @@ type TunnelForm = {
   certKeyPem: string;
   listenPort: number;
   rateLimitMbps: number;
+  trafficMultiplier: number;
   networkType: "public" | "private";
   connectHost: string;
   loadBalanceEnabled: boolean;
@@ -145,6 +150,7 @@ type ChainCreateForm = {
   entryGroupId: number | null;
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
+  trafficMultiplier: number;
   isEnabled: boolean;
 };
 
@@ -266,6 +272,7 @@ const defaultForm: TunnelForm = {
   certKeyPem: "",
   listenPort: 0,
   rateLimitMbps: 0,
+  trafficMultiplier: 1,
   networkType: "public",
   connectHost: "",
   loadBalanceEnabled: false,
@@ -282,6 +289,7 @@ const defaultChainCreateForm: ChainCreateForm = {
   entryGroupId: null,
   hopHostIds: [],
   hopConnectHosts: [],
+  trafficMultiplier: 1,
   isEnabled: true,
 };
 
@@ -2120,6 +2128,7 @@ function TunnelsContent() {
       certKeyPem: String(tunnel.certKeyPem || ""),
       listenPort: tunnel.listenPort,
       rateLimitMbps: Number(tunnel.rateLimitMbps || 0),
+      trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
       loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
@@ -2234,6 +2243,12 @@ function TunnelsContent() {
       toast.error("隧道限速必须为 0 或正整数 Mbps，0 表示不限速");
       return;
     }
+    const trafficMultiplierValue = Number(submitForm.trafficMultiplier);
+    if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
+      toast.error("端口转发流量倍率必须在 0.01 - 50 之间");
+      return;
+    }
+    const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     if (!isTunnelSupported(submitForm)) {
       toast.error(unsupportedProtocolTitle);
       return;
@@ -2310,6 +2325,7 @@ function TunnelsContent() {
       certKeyPem: isNginxTunnelModeValue(submitForm.mode) ? certKeyPem || null : null,
       listenPort: submitForm.listenPort,
       rateLimitMbps,
+      trafficMultiplier,
       networkType: isMultiHopTunnel
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
@@ -2352,6 +2368,12 @@ function TunnelsContent() {
       hosts,
       !!chainCreateForm.entryGroupId,
     );
+    const trafficMultiplierValue = Number(chainCreateForm.trafficMultiplier);
+    if (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50) {
+      toast.error("端口转发流量倍率必须在 0.01 - 50 之间");
+      return;
+    }
+    const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     createChainMutation.mutate({
       name,
       entryGroupId: chainCreateForm.entryGroupId || null,
@@ -2361,6 +2383,7 @@ function TunnelsContent() {
       recordType: "A",
       failoverSeconds: 60,
       recoverSeconds: 120,
+      trafficMultiplier,
       autoFailback: true,
       isEnabled: chainCreateForm.isEnabled,
       members: chainCreateForm.hopHostIds.map((hostId, index) => ({
@@ -3272,7 +3295,7 @@ function TunnelsContent() {
                         <p className="text-xs text-muted-foreground">仅使用出口组多出口时生效，单出口隧道固定直连主出口。</p>
                       </div>
                     )}
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-2">
                         <Label>出口监听端口</Label>
                         <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
@@ -3281,11 +3304,15 @@ function TunnelsContent() {
                         <Label>隧道限速 (Mbps)</Label>
                         <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
                       </div>
+                      <div className="space-y-2">
+                        <Label>端口转发流量倍率</Label>
+                        <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
+                      </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_170px_140px]">
                       <div className="space-y-2">
                         <Label>链名称</Label>
                         <Input
@@ -3293,6 +3320,10 @@ function TunnelsContent() {
                           onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
                           placeholder="例如: 华东-香港转发链"
                         />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>流量倍率</Label>
+                        <Input type="number" min={0.01} max={50} step={0.01} value={chainCreateForm.trafficMultiplier || ""} onChange={(e) => setChainCreateForm({ ...chainCreateForm, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
                       </div>
                       <div className="flex items-end">
                         <label className="flex h-10 w-full items-center justify-between rounded-md border border-border/60 px-3">
@@ -3570,7 +3601,7 @@ function TunnelsContent() {
                 <p className="text-xs text-muted-foreground">仅使用出口组多出口时生效，单出口隧道固定直连主出口。</p>
               </div>
             )}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="space-y-2">
                 <Label>出口监听端口</Label>
                 <Input type="number" min={0} max={65535} step={1} value={form.listenPort || ""} onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) || 0 })} placeholder="自动分配" />
@@ -3578,6 +3609,10 @@ function TunnelsContent() {
               <div className="space-y-2">
                 <Label>隧道限速 (Mbps)</Label>
                 <Input type="number" min={0} max={1000000} step={1} value={form.rateLimitMbps || ""} onChange={(e) => setForm({ ...form, rateLimitMbps: Number(e.target.value) || 0 })} placeholder="不限速" />
+              </div>
+              <div className="space-y-2">
+                <Label>端口转发流量倍率</Label>
+                <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier || ""} onChange={(e) => setForm({ ...form, trafficMultiplier: Number(e.target.value) || 1 })} placeholder="1" />
               </div>
             </div>
           </div>

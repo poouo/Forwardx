@@ -72,6 +72,10 @@ import {
 } from "recharts";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { addHostNodeMeta, addNodeMetaAliases, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import {
+  trafficMultiplierFromInput,
+  trafficMultiplierToInputValue,
+} from "@shared/trafficMultiplier";
 
 type GroupType = "host" | "tunnel";
 type GroupMode = "failover" | "chain" | "entry" | "exit";
@@ -94,6 +98,7 @@ type GroupForm = {
   recordType: "A" | "AAAA" | "CNAME";
   failoverSeconds: string;
   recoverSeconds: string;
+  trafficMultiplier: string;
   chinaHealthCheckEnabled: boolean;
   chinaHealthCheckTarget: string;
   telegramSwitchNotifyEnabled: boolean;
@@ -112,6 +117,7 @@ const makeDefaultForm = (): GroupForm => ({
   recordType: "A",
   failoverSeconds: "60",
   recoverSeconds: "120",
+  trafficMultiplier: "1",
   chinaHealthCheckEnabled: false,
   chinaHealthCheckTarget: "",
   telegramSwitchNotifyEnabled: false,
@@ -934,6 +940,7 @@ export function ForwardGroupsContent({
       recordType: group.recordType || "A",
       failoverSeconds: String(Number(group.failoverSeconds || 60)),
       recoverSeconds: String(Number(group.recoverSeconds || 120)),
+      trafficMultiplier: String(trafficMultiplierToInputValue(group.trafficMultiplier)).replace(/\.?0+$/, ""),
       chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: group.chinaHealthCheckTarget || "",
       telegramSwitchNotifyEnabled: !!group.telegramSwitchNotifyEnabled,
@@ -1199,6 +1206,11 @@ export function ForwardGroupsContent({
     if (!Number.isInteger(recoverSeconds) || recoverSeconds < 10 || recoverSeconds > 3600) {
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
+    const trafficMultiplierValue = Number(form.trafficMultiplier);
+    if (isChainGroup && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
+      return toast.error("流量倍率必须在 0.01 - 50 之间");
+    }
+    const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
     const chinaHealthTarget = normalizeChinaHealthTargetInput(form.chinaHealthCheckTarget);
     if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
       return toast.error("入口健康度检测目标格式不正确");
@@ -1216,6 +1228,7 @@ export function ForwardGroupsContent({
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
       recoverSeconds,
+      trafficMultiplier: isChainGroup ? trafficMultiplier : 100,
       chinaHealthCheckEnabled: supportsChinaHealth && form.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: supportsChinaHealth && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
       telegramSwitchNotifyEnabled: supportsSwitchNotify && form.telegramSwitchNotifyEnabled,
@@ -1748,11 +1761,17 @@ export function ForwardGroupsContent({
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            <div className={`grid gap-3 ${isChainMode ? "" : "sm:grid-cols-2"}`}>
+            <div className={`grid gap-3 ${isChainMode ? "sm:grid-cols-[minmax(0,1fr)_170px]" : "sm:grid-cols-2"}`}>
               <div className="space-y-2">
                 <Label>{isChainMode ? "链名称" : "组名称"}</Label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"} />
               </div>
+              {isChainMode && (
+                <div className="space-y-2">
+                  <Label>流量倍率</Label>
+                  <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier} onChange={(e) => setForm({ ...form, trafficMultiplier: e.target.value })} placeholder="1" />
+                </div>
+              )}
               {form.groupMode === "failover" && (
               <div className="space-y-2">
                 <Label>组类型</Label>

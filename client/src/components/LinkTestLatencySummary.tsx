@@ -622,7 +622,7 @@ export function LinkTestProbeView({
           alt={countryCode}
           loading="lazy"
           referrerPolicy="no-referrer"
-          className="h-3.5 w-5 rounded-[2px] object-cover shadow-sm"
+          className="h-3.5 w-5 rounded-[2px] object-cover"
           onError={(event) => {
             event.currentTarget.style.display = "none";
             const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;

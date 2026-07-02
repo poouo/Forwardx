@@ -36,6 +36,7 @@ WORKDIR /app
 ARG FORWARDX_VERSION=unknown
 ENV NODE_ENV=production \
     PORT=3000 \
+    FORWARDX_PORT_MANAGEMENT=docker \
     DATABASE_CONFIG_PATH=/data/database.json \
     SQLITE_PATH=/data/forwardx.db \
     MYSQL_CONFIG_PATH=/data/mysql.json \

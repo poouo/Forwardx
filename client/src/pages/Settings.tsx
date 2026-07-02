@@ -3615,6 +3615,7 @@ function SystemInfoSection() {
   const webPortDisplay = Number(settings?.webPort || webPortManagement?.publicPort || 3000);
   const webContainerPort = Number(webPortManagement?.containerPort || webPortDisplay);
   const isDockerWebPort = !!webPortManagement?.docker;
+  const webPortChangeDisabled = !settings?.webPortManagement?.enabled || updateWebPortMutation.isPending;
   const publicHostMonitorNormalizedPath = normalizePublicHostMonitorPathInput(publicHostMonitorPath) || "dev";
   const publicHostMonitorUrl = useMemo(() => {
     const base = (settings?.panelPublicUrl || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "");
@@ -3637,6 +3638,10 @@ function SystemInfoSection() {
   };
 
   const openWebPortConfirm = () => {
+    if (!settings?.webPortManagement?.enabled) {
+      toast.info(isDockerWebPort ? "Docker 部署的访问端口由宿主机端口映射管理，请在部署配置中修改。" : "当前环境不支持在后台修改 Web 端口。");
+      return;
+    }
     const port = Math.floor(Number(webPortInput));
     if (!isValidWebPort(webPortInput)) {
       toast.error("端口必须是 1-65535 的数字");
@@ -4069,7 +4074,7 @@ function SystemInfoSection() {
               Web 服务监听端口
             </CardTitle>
             <CardDescription>
-              {isDockerWebPort ? "Docker 部署会显示宿主机映射端口，容器内仍固定监听 3000。" : "修改本地部署面板的 Web 访问端口。"}
+              {isDockerWebPort ? "Docker 部署的宿主机访问端口由端口映射管理，容器内固定监听 3000。" : "修改本地部署面板的 Web 访问端口。"}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -4086,23 +4091,24 @@ function SystemInfoSection() {
               />
               <Button
                 onClick={openWebPortConfirm}
-                disabled={!settings?.webPortManagement?.enabled || updateWebPortMutation.isPending}
+                disabled={webPortChangeDisabled}
+                variant={isDockerWebPort ? "outline" : "default"}
               >
-                修改端口
+                {isDockerWebPort ? "不可修改" : "修改端口"}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
               {isDockerWebPort
-                ? `当前宿主机映射端口：${webPortDisplay}，容器内监听端口：${webContainerPort}。Docker 部署请通过 docker-compose 或安装脚本修改端口映射。`
+                ? `当前宿主机映射端口：${webPortDisplay}，容器内监听端口：${webContainerPort}。如需调整，请修改部署目录 .env 的 PORT 或 docker-compose.yml 端口映射后重启容器。`
                 : `当前监听端口：${webPortDisplay}。修改后服务会重启，请使用新端口访问后台。`}
             </p>
             {!settings?.webPortManagement?.enabled && (
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>{isDockerWebPort ? "Docker 部署不支持后台修改端口" : "当前环境不支持后台修改端口"}</AlertTitle>
+                <AlertTitle>{isDockerWebPort ? "Docker 部署端口由映射管理" : "当前环境不支持后台修改端口"}</AlertTitle>
                 <AlertDescription>
                   {isDockerWebPort
-                    ? "请修改宿主机的 docker-compose 端口映射或重新运行 Docker 安装脚本；面板升级检测不依赖该端口，不会因此影响新版本检测。"
+                    ? "面板不会修改 Docker 端口映射，避免容器内监听端口和宿主机访问端口混用。升级脚本会尽量保留当前映射端口。"
                     : "请在服务环境变量或启动脚本中修改监听端口。"}
                 </AlertDescription>
               </Alert>

@@ -9,7 +9,7 @@ import { pushAgentUpgrade } from "./agentEvents";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
 import { maintainCurrentMysqlDatabase } from "./mysqlMaintenance";
 import { AGENT_VERSION, APP_VERSION } from "../shared/versions";
-import { ensureTrafficStatBucketsBackfilled } from "./repositories/metricsRepository";
+import { ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import {
   consumeApprovedMigrationRequest,
   consumeTakeoverToken,
@@ -402,6 +402,8 @@ const IMPORT_TABLE_ORDER = [
   "user_tunnel_permissions",
   "host_metrics",
   "host_traffic_counters",
+  "user_traffic_counters",
+  "forward_rule_traffic_counters",
   "tunnel_latency_stats",
   "forward_group_latency_stats",
   "traffic_stats",
@@ -580,6 +582,16 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
     case "host_traffic_counters":
       row.hostId = mapRequiredId(maps, "hosts", source.hostId);
       return { row, existingWhere: { hostId: row.hostId } };
+
+    case "user_traffic_counters":
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      return { row, existingWhere: { userId: row.userId } };
+
+    case "forward_rule_traffic_counters":
+      row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
+      row.hostId = mapRequiredId(maps, "hosts", source.hostId);
+      row.userId = mapRequiredId(maps, "users", source.userId);
+      return { row, existingWhere: { ruleId: row.ruleId, hostId: row.hostId } };
 
     case "traffic_stats":
       row.ruleId = mapRequiredId(maps, "forward_rules", source.ruleId);
@@ -899,6 +911,9 @@ export async function importMigrationSnapshot(
   onProgress?.(96, "正在重建流量汇总缓存");
   await ensureTrafficStatBucketsBackfilled({ force: true }).catch((error) => {
     console.warn("[TrafficSummary] Post-migration bucket backfill skipped:", error instanceof Error ? error.message : String(error));
+  });
+  await ensureUserTrafficCountersBackfilled().catch((error) => {
+    console.warn("[TrafficCounter] Post-migration cumulative counter backfill skipped:", error instanceof Error ? error.message : String(error));
   });
 
   onProgress?.(97, "正在优化数据库查询性能");

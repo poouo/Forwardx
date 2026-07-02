@@ -97,8 +97,8 @@ export const trafficRulesRouter = router({
       })
     )
     .query(async ({ input, ctx }) => {
-      const hours = input.range === "total" ? TRAFFIC_RETENTION_HOURS : Math.min(input.hours, TRAFFIC_RETENTION_HOURS);
-      const since = new Date(Date.now() - hours * 3600 * 1000);
+      const hours = input.range === "total" ? 0 : Math.min(input.hours, TRAFFIC_RETENTION_HOURS);
+      const since = input.range === "total" ? undefined : new Date(Date.now() - hours * 3600 * 1000);
       const isAdmin = ctx.user.role === "admin";
       const ruleIds = Array.from(new Set((input.ruleIds || [])
         .map((id) => Number(id))
@@ -108,12 +108,18 @@ export const trafficRulesRouter = router({
       return trafficQueryCache.get(
         `summary:${ctx.user.id}:${input.range}:${hours}:${input.hostId || 0}:${ruleKey}`,
         { ttlMs: 5_000, staleMs: 0 },
-        () => db.getTrafficSummaryByRule({
-          userId: isAdmin ? undefined : ctx.user.id,
-          hostId: input.hostId,
-          since,
-          ruleIds,
-        }),
+        () => input.range === "total"
+          ? db.getTrafficCounterSummaryByRule({
+            userId: isAdmin ? undefined : ctx.user.id,
+            hostId: input.hostId,
+            ruleIds,
+          })
+          : db.getTrafficSummaryByRule({
+            userId: isAdmin ? undefined : ctx.user.id,
+            hostId: input.hostId,
+            since,
+            ruleIds,
+          }),
       );
     }),
   trafficSeries: protectedProcedure

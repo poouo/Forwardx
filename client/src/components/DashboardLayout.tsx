@@ -78,7 +78,6 @@ import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REF
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
-import DataSectionLoading from "@/components/DataSectionLoading";
 
 const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
@@ -218,13 +217,13 @@ export default function DashboardLayout({
 }) {
   const { loading, user } = useAuth();
 
-  if (loading) return <DashboardLayoutLoading label="正在校验登录状态" />;
+  if (loading) return null;
 
   if (!user) {
     if (typeof window !== "undefined" && window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
-    return <DashboardLayoutLoading label="正在跳转登录" />;
+    return null;
   }
 
   return (
@@ -233,14 +232,6 @@ export default function DashboardLayout({
         {children}
       </DashboardLayoutContent>
     </SidebarProvider>
-  );
-}
-
-function DashboardLayoutLoading({ label }: { label: string }) {
-  return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-background/40 p-6">
-      <DataSectionLoading label={label} minHeight="min-h-[220px]" className="max-w-2xl" />
-    </div>
   );
 }
 

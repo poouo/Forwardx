@@ -137,7 +137,7 @@ export function HostRegionBadge({ host, compact = false }: { host: any; compact?
   const title = hasGeo ? [fallbackCode, regionText].filter(Boolean).join(" ") : "地区获取中";
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full shrink items-center gap-1 rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
+      className={`inline-flex min-w-0 max-w-full shrink items-center gap-1 text-muted-foreground ${hasGeo ? "" : "opacity-70"} ${compact ? "text-[10px]" : "text-xs"}`}
       title={title}
     >
       {flagUrl && (
@@ -147,7 +147,7 @@ export function HostRegionBadge({ host, compact = false }: { host: any; compact?
             alt={fallbackCode}
             loading="lazy"
             referrerPolicy="no-referrer"
-            className={`${compact ? "h-3 w-4" : "h-3.5 w-5"} shrink-0 rounded-[2px] object-cover shadow-sm`}
+            className={`${compact ? "h-3 w-4" : "h-3.5 w-5"} shrink-0 rounded-[2px] object-cover`}
             onError={(event) => {
               event.currentTarget.style.display = "none";
               const fallback = event.currentTarget.nextElementSibling as HTMLElement | null;

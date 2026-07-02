@@ -10,8 +10,6 @@ import { Redirect, Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import PersonalizationLayer from "./components/PersonalizationLayer";
-import DashboardLayout from "./components/DashboardLayout";
-import DataSectionLoading from "./components/DataSectionLoading";
 import Setup from "./pages/Setup";
 import AnnouncementsPage from "@/pages/Announcements";
 import BillingPage from "@/pages/Billing";
@@ -37,22 +35,6 @@ import WalletPage from "@/pages/Wallet";
 
 type RoutableComponent = ComponentType<any>;
 
-function AppLoading({ label = "正在加载页面" }: { label?: string }) {
-  return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-background/40 p-6">
-      <DataSectionLoading label={label} minHeight="min-h-[220px]" className="max-w-2xl" />
-    </div>
-  );
-}
-
-function DashboardRouteLoading({ label = "正在加载页面" }: { label?: string }) {
-  return (
-    <DashboardLayout>
-      <DataSectionLoading label={label} minHeight="min-h-[320px]" />
-    </DashboardLayout>
-  );
-}
-
 function routeComponent(Component: RoutableComponent) {
   return () => <Component />;
 }
@@ -63,7 +45,7 @@ function isLoginRoute(location: string) {
 
 function AdminRoute({ component: Component }: { component: RoutableComponent }) {
   const { user, loading } = useAuth();
-  if (loading) return <AppLoading label="正在校验登录状态" />;
+  if (loading) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
   return <Component />;
@@ -77,10 +59,8 @@ function LookingGlassRoute() {
     refetchOnWindowFocus: false,
   });
 
-  if (loading) return <AppLoading label="正在校验登录状态" />;
-  if (user && publicInfo.isLoading && !publicInfo.data) {
-    return <DashboardRouteLoading label="正在加载网络测试权限" />;
-  }
+  if (loading) return null;
+  if (user && publicInfo.isLoading && !publicInfo.data) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
   return <LookingGlassPage />;
@@ -142,7 +122,7 @@ function SetupGate() {
     return <Router />;
   }
 
-  if (setup.isLoading) return <AppLoading label="正在检查面板状态" />;
+  if (setup.isLoading) return null;
 
   const ready = !!setup.data?.setupComplete;
   if (!ready && location !== "/setup") return <Redirect to="/setup" />;

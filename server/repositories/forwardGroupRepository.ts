@@ -1198,6 +1198,7 @@ export function filterForwardGroupFieldsForUse(groups: any[]) {
     forwardType: group.forwardType,
     domain: group.domain,
     recordType: group.recordType,
+    trafficMultiplier: group.trafficMultiplier,
     failoverSeconds: group.failoverSeconds,
     recoverSeconds: group.recoverSeconds,
     chinaHealthCheckEnabled: !!group.chinaHealthCheckEnabled,

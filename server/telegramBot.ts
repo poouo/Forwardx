@@ -4272,7 +4272,7 @@ async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[], options: { 
   const ids = Array.from(new Set(ruleIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
   const map = new Map<number, AiRuleTrafficSummary>();
   if (ids.length === 0) return map;
-  const rows = await db.getTrafficSummaryByRule({
+  const rows = await db.getTrafficCounterSummaryByRule({
     userId: user.role === "admin" ? undefined : user.id,
     ruleIds: ids,
     includeLatency: !!options.includeLatency,
@@ -4433,7 +4433,7 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
   const ids = matched.map((rule: any) => Number(rule.id)).filter((id: number) => Number.isFinite(id) && id > 0);
   const summaryByRuleId = new Map<number, AiRuleTrafficSummary & { latestLatencyMs?: number | null; latestLatencyIsTimeout?: boolean }>();
   for (const id of ids) summaryByRuleId.set(id, emptyAiRuleTrafficSummary());
-  const rows = await db.getTrafficSummaryByRule({
+  const rows = await db.getTrafficCounterSummaryByRule({
     userId: user.role === "admin" ? undefined : user.id,
     ruleIds: ids,
     includeLatency: true,

@@ -888,8 +888,19 @@ function normalizePort(value: unknown) {
   return port;
 }
 
+function portManagementMode() {
+  return ENV.portManagement.trim().toLowerCase();
+}
+
 function isDockerRuntime() {
-  return fs.existsSync("/.dockerenv");
+  if (portManagementMode() === "docker") return true;
+  if (fs.existsSync("/.dockerenv")) return true;
+  try {
+    const cgroup = fs.readFileSync("/proc/1/cgroup", "utf8");
+    return /docker|containerd|kubepods|libpod/i.test(cgroup);
+  } catch {
+    return false;
+  }
 }
 
 function webPortConfigPath() {
@@ -897,7 +908,11 @@ function webPortConfigPath() {
 }
 
 function canManageWebPort() {
-  return process.platform !== "win32" && !isDockerRuntime();
+  const mode = portManagementMode();
+  if (mode === "docker") return false;
+  if (isDockerRuntime()) return false;
+  if (mode === "local") return process.platform !== "win32";
+  return process.platform !== "win32";
 }
 
 function getPublicWebPort() {
@@ -2020,7 +2035,10 @@ export const systemRouter = router({
     .input(z.object({ port: z.number().int().min(1).max(65535), confirmed: z.literal(true) }))
     .mutation(async ({ input }) => {
       if (!canManageWebPort()) {
-        throw new Error("Docker 部署不支持在后台修改 Web 端口，请自行配置端口映射");
+        if (isDockerRuntime()) {
+          throw new Error("Docker 部署的 Web 端口由宿主机端口映射管理，面板内不支持修改。请调整部署目录 .env 的 PORT 或 docker-compose.yml 后重启容器。");
+        }
+        throw new Error("当前环境不支持在后台修改 Web 端口，请在服务环境变量或启动脚本中修改。");
       }
       const port = normalizePort(input.port);
       const currentPort = normalizePort(ENV.port || 9810);

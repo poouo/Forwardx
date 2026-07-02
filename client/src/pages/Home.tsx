@@ -554,7 +554,7 @@ function DashboardContent() {
         <StatCard
           title="入站流量"
           value={formatBytes(trafficTotals?.totalTrafficIn ?? 0)}
-          subtitle="近 3 天入站"
+          subtitle="累计入站"
           icon={ArrowDownToLine}
           tone="bg-gradient-to-br from-violet-500 to-violet-600"
           loading={trafficTotalsLoading}
@@ -566,7 +566,7 @@ function DashboardContent() {
         <StatCard
           title="出站流量"
           value={formatBytes(trafficTotals?.totalTrafficOut ?? 0)}
-          subtitle="近 3 天出站"
+          subtitle="累计出站"
           icon={ArrowUpFromLine}
           tone="bg-gradient-to-br from-amber-500 to-amber-600"
           loading={trafficTotalsLoading}

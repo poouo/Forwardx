@@ -4,6 +4,7 @@ import { appendPanelLog } from "../_core/panelLogger";
 import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
 import { ENV } from "../env";
+import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 
 export type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
@@ -27,6 +28,7 @@ export type ForwardGroupInput = {
   recordType?: "A" | "AAAA" | "CNAME";
   failoverSeconds: number;
   recoverSeconds: number;
+  trafficMultiplier?: number;
   chinaHealthCheckEnabled?: boolean;
   chinaHealthCheckTarget?: string | null;
   telegramSwitchNotifyEnabled?: boolean;
@@ -146,6 +148,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     forwardType: groupType === "tunnel" ? "gost" : "iptables",
     domain,
     recordType,
+    trafficMultiplier: groupMode === "chain" ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
     failoverSeconds: input.failoverSeconds,
     recoverSeconds: input.recoverSeconds,
     chinaHealthCheckEnabled,

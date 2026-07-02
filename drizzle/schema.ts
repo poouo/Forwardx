@@ -343,6 +343,7 @@ export const forwardGroups = table("forward_groups", {
   protocol: varchar("protocol", { length: 16 }).notNull().default("both"),
   targetIp: text("targetIp").notNull(),
   targetPort: int("targetPort").notNull().default(1),
+  trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
   failoverSeconds: int("failoverSeconds").notNull().default(60),
   recoverSeconds: int("recoverSeconds").notNull().default(120),
   chinaHealthCheckEnabled: boolean("chinaHealthCheckEnabled").notNull().default(false),
@@ -413,6 +414,7 @@ export const tunnels = table("tunnels", {
   secret: text("secret"),
   listenPort: int("listenPort").notNull(),
   rateLimitMbps: int("rateLimitMbps").notNull().default(0),
+  trafficMultiplier: int("trafficMultiplier").notNull().default(100), // 0.01x = 1, 1x = 100, 50x = 5000
   portRangeStart: int("portRangeStart"),
   portRangeEnd: int("portRangeEnd"),
   networkType: varchar("networkType", { length: 32 }).notNull().default("public"),
@@ -510,6 +512,33 @@ export const hostTrafficCounters = table("host_traffic_counters", {
 });
 export type HostTrafficCounter = typeof hostTrafficCounters.$inferSelect;
 export type InsertHostTrafficCounter = typeof hostTrafficCounters.$inferInsert;
+
+export const userTrafficCounters = table("user_traffic_counters", {
+  id: serial("id"),
+  userId: int("userId").notNull().unique(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  connections: int("connections").notNull().default(0),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type UserTrafficCounter = typeof userTrafficCounters.$inferSelect;
+export type InsertUserTrafficCounter = typeof userTrafficCounters.$inferInsert;
+
+export const forwardRuleTrafficCounters = table("forward_rule_traffic_counters", {
+  id: serial("id"),
+  ruleId: int("ruleId").notNull(),
+  hostId: int("hostId").notNull(),
+  userId: int("userId").notNull(),
+  bytesIn: bigint("bytesIn", { mode: "number" }).notNull().default(0),
+  bytesOut: bigint("bytesOut", { mode: "number" }).notNull().default(0),
+  connections: int("connections").notNull().default(0),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type ForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferSelect;
+export type InsertForwardRuleTrafficCounter = typeof forwardRuleTrafficCounters.$inferInsert;
+
 export const trafficStats = table("traffic_stats", {
   id: serial("id"),
   ruleId: int("ruleId").notNull(),

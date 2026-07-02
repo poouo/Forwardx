@@ -14,6 +14,7 @@ import { createQueryCache } from "../queryCache";
 import { isPortAllowedByPolicy, portPolicyErrorMessage, portPolicyFrom } from "../portPolicy";
 import { structuredLinkTestMessage } from "../linkTestMessages";
 import { isValidHostOrIp } from "../networkAddress";
+import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
@@ -415,6 +416,7 @@ export const tunnelsRouter = router({
         mode: tunnelModeSchema.default("forwardx"),
         listenPort: z.number().min(0).max(65535).optional().default(0),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional().default(0),
+        trafficMultiplier: z.number().int().min(1).max(5000).optional().default(100),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
@@ -520,6 +522,7 @@ export const tunnelsRouter = router({
           loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
           loadBalanceStrategy: loadBalanceEnabled && extraExitNodes.length > 0 ? loadBalanceStrategy : "round_robin",
           listenPort,
+          trafficMultiplier: normalizeTrafficMultiplier(input.trafficMultiplier),
           secret,
           userId: ctx.user.id,
         } as any);
@@ -562,6 +565,7 @@ export const tunnelsRouter = router({
         mode: tunnelModeSchema.optional(),
         listenPort: z.number().min(0).max(65535).optional(),
         rateLimitMbps: z.number().int().min(0).max(1_000_000).optional(),
+        trafficMultiplier: z.number().int().min(1).max(5000).optional(),
         portRangeStart: z.number().int().min(1).max(65535).nullable().optional(),
         portRangeEnd: z.number().int().min(1).max(65535).nullable().optional(),
         certDomain: z.string().max(253).nullable().optional(),
@@ -634,6 +638,9 @@ export const tunnelsRouter = router({
         } = input as any;
         if ((data as any).mode !== undefined) {
           (data as any).mode = normalizeTunnelMode((data as any).mode);
+        }
+        if ((data as any).trafficMultiplier !== undefined) {
+          (data as any).trafficMultiplier = normalizeTrafficMultiplier((data as any).trafficMultiplier);
         }
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;

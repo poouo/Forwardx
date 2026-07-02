@@ -291,7 +291,7 @@ export default function HostGroupManager({
 
   const renderEmptyState = (className = "") => (
     <Card className={`border-dashed border-border/55 bg-card/45 backdrop-blur-md ${className}`}>
-      <CardContent className="flex min-h-[180px] flex-col items-center justify-center px-5 py-8 text-center">
+      <CardContent className="flex min-h-[240px] flex-col items-center justify-center px-5 py-12 text-center">
         <span className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
           <FolderKanban className="h-5 w-5" />
         </span>
@@ -395,7 +395,7 @@ export default function HostGroupManager({
         </div>
       ) : (
         <AutoAnimateContainer key="host-group-card-view" className="standard-card-grid gap-4" duration={220}>
-          {sortedGroups.length === 0 ? renderEmptyState("sm:col-span-2 xl:col-span-3") : sortedGroups.map(renderGroupCard)}
+          {sortedGroups.length === 0 ? renderEmptyState("col-span-full") : sortedGroups.map(renderGroupCard)}
         </AutoAnimateContainer>
       )}
 

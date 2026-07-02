@@ -5,7 +5,8 @@ ACTION="${1:-install}"
 APP_DIR="${FORWARDX_DOCKER_DIR:-/opt/forwardx-docker}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-forwardx}"
 CONTAINER_NAME="${FORWARDX_CONTAINER_NAME:-forwardx-panel}"
-PORT="${PORT:-9810}"
+EXPLICIT_PORT="${PORT:-}"
+PORT="${EXPLICIT_PORT:-9810}"
 REPO_SLUG="${FORWARDX_GITHUB_REPO:-poouo/Forwardx}"
 IMAGE_REPO="${FORWARDX_IMAGE_REPO:-ghcr.io/poouo/forwardx}"
 ASSETS_PENDING_EXIT_CODE=12
@@ -77,6 +78,54 @@ get_env_value() {
     return 0
   fi
   grep -E "^${key}=" "$file" | tail -1 | sed -E "s/^${key}=//; s/^\"//; s/\"$//"
+}
+
+get_compose_host_port() {
+  local file="$APP_DIR/docker-compose.yml"
+  local port=""
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+
+  port="$(sed -nE 's/^[[:space:]]*-[[:space:]]*"?([0-9]{1,5}):3000(\/[a-zA-Z]+)?"?[[:space:]]*$/\1/p' "$file" | head -1 || true)"
+  if valid_port "$port"; then
+    printf "%s" "$port"
+    return
+  fi
+
+  port="$(sed -nE 's/^[[:space:]]*-[[:space:]]*"?[^"]+:([0-9]{1,5}):3000(\/[a-zA-Z]+)?"?[[:space:]]*$/\1/p' "$file" | head -1 || true)"
+  if valid_port "$port"; then
+    printf "%s" "$port"
+    return
+  fi
+}
+
+get_container_host_port() {
+  local id=""
+  local output=""
+  local port=""
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+
+  output="$(docker port "$CONTAINER_NAME" 3000/tcp 2>/dev/null || true)"
+  port="$(printf "%s\n" "$output" | sed -nE 's/.*:([0-9]{1,5})$/\1/p' | head -1 || true)"
+  if valid_port "$port"; then
+    printf "%s" "$port"
+    return
+  fi
+
+  id="$(docker ps -aq \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=forwardx" 2>/dev/null | head -1 || true)"
+  if [ -z "$id" ]; then
+    return 0
+  fi
+  output="$(docker port "$id" 3000/tcp 2>/dev/null || true)"
+  port="$(printf "%s\n" "$output" | sed -nE 's/.*:([0-9]{1,5})$/\1/p' | head -1 || true)"
+  if valid_port "$port"; then
+    printf "%s" "$port"
+  fi
 }
 
 json_escape() {
@@ -219,13 +268,38 @@ write_database_config_to_volume() {
 }
 
 load_existing_env() {
-  local value
-  value="$(get_env_value PORT || true)"
-  if [ -n "$value" ] && valid_port "$value"; then PORT="$value"; fi
+  local value public_value compose_port container_port port_source
   value="$(get_env_value COMPOSE_PROJECT_NAME || true)"
   if [ -n "$value" ]; then PROJECT_NAME="$value"; fi
   value="$(get_env_value FORWARDX_CONTAINER_NAME || true)"
   if [ -n "$value" ]; then CONTAINER_NAME="$value"; fi
+
+  if [ -n "$EXPLICIT_PORT" ] && valid_port "$EXPLICIT_PORT"; then
+    PORT="$EXPLICIT_PORT"
+    port_source="environment"
+  else
+    container_port="$(get_container_host_port || true)"
+    compose_port="$(get_compose_host_port || true)"
+    value="$(get_env_value PORT || true)"
+    public_value="$(get_env_value FORWARDX_PUBLIC_PORT || true)"
+    if [ -n "$container_port" ] && valid_port "$container_port"; then
+      PORT="$container_port"
+      port_source="running container"
+    elif [ -n "$compose_port" ] && valid_port "$compose_port"; then
+      PORT="$compose_port"
+      port_source="docker-compose.yml"
+    elif [ -n "$value" ] && valid_port "$value"; then
+      PORT="$value"
+      port_source=".env PORT"
+    elif [ -n "$public_value" ] && valid_port "$public_value"; then
+      PORT="$public_value"
+      port_source=".env FORWARDX_PUBLIC_PORT"
+    fi
+  fi
+  if [ -n "${port_source:-}" ]; then
+    echo "[INFO] Reusing Docker public port from ${port_source}: ${PORT}"
+  fi
+
   value="$(get_env_value FORWARDX_IMAGE || true)"
   if [ -n "$value" ] && [ -z "${FORWARDX_IMAGE:-}" ] && [ "$ACTION" = "install" ]; then FORWARDX_IMAGE="$value"; fi
 }
