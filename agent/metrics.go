@@ -67,6 +67,15 @@ type tcpingTaskResult struct {
 	Payload map[string]any
 }
 
+func compactTrafficStat(stat map[string]any) []any {
+	return []any{
+		stat["ruleId"],
+		stat["bytesIn"],
+		stat["bytesOut"],
+		stat["connections"],
+	}
+}
+
 func hostTrafficSnapshot() map[string]any {
 	return map[string]any{
 		"bytesIn":  netBytes(0),
@@ -106,6 +115,16 @@ func collectTraffic(cfg Config) {
 	}
 	hostTraffic := hostTrafficSnapshot()
 	payload := map[string]any{"stats": stats, "hostTraffic": hostTraffic}
+	if compactAgentReports.Load() {
+		compactStats := make([][]any, 0, len(stats))
+		for _, stat := range stats {
+			compactStats = append(compactStats, compactTrafficStat(stat))
+		}
+		payload = map[string]any{
+			"s": compactStats,
+			"h": []any{hostTraffic["bytesIn"], hostTraffic["bytesOut"]},
+		}
+	}
 	if len(stats) > 0 || hostTraffic != nil {
 		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
 			if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {

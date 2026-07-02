@@ -977,7 +977,7 @@ function DashboardContent() {
 
 export default function Home() {
   const { user, loading } = useAuth();
-  const { data: settings, isLoading: settingsLoading } = trpc.system.getSettings.useQuery(undefined, {
+  const { data: settings } = trpc.system.getSettings.useQuery(undefined, {
     enabled: !user && (!mobileAuth.isNative || mobileAuth.hasPanelUrl()),
     retry: false,
     refetchOnWindowFocus: false,
@@ -994,7 +994,6 @@ export default function Home() {
   if (loading) return null;
 
   if (!user) {
-    if (settingsLoading) return null;
     if (mobileAuth.isNative) {
       if (typeof window !== "undefined") window.location.href = "/login";
       return null;

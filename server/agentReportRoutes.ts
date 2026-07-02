@@ -144,6 +144,29 @@ function logTcpingReportSummary(
   console.info(`[Agent TCPing] host=${hostId} rules=${results.length} tunnels=${tunnelResults.length} groups=${forwardGroupResults.length} services=${serviceResults.length} timeouts=${timeouts}/${all.length} avg=${avgLatency}`);
 }
 
+function compactTrafficStats(value: unknown): AgentTrafficStat[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!Array.isArray(row)) return null;
+      return {
+        ruleId: Number(row[0]),
+        bytesIn: Number(row[1]) || 0,
+        bytesOut: Number(row[2]) || 0,
+        connections: Number(row[3]) || 0,
+      };
+    })
+    .filter((row): row is AgentTrafficStat => !!row && Number.isFinite(Number(row.ruleId)));
+}
+
+function compactHostTraffic(value: unknown): AgentHostTrafficStat | null {
+  if (!Array.isArray(value)) return null;
+  const bytesIn = Number(value[0]) || 0;
+  const bytesOut = Number(value[1]) || 0;
+  if (!Number.isFinite(bytesIn) && !Number.isFinite(bytesOut)) return null;
+  return { bytesIn, bytesOut };
+}
+
 export function registerAgentReportRoutes(agentRouter: Router) {
 agentRouter.post("/api/agent/looking-glass-result", async (req: Request, res: Response) => {
   try {
@@ -250,14 +273,15 @@ agentRouter.post("/api/agent/traffic", async (req: Request, res: Response) => {
     logHostId = Number((host as any).id || 0);
     logHostName = String((host as any).name || "").trim();
 
-    const hasStatsArray = Array.isArray(req.body?.stats);
-    const stats: AgentTrafficStat[] = hasStatsArray
+    const objectStats = Array.isArray(req.body?.stats)
       ? req.body.stats.filter(isAgentTrafficStat)
       : [];
+    const compactStats = compactTrafficStats(req.body?.s);
+    const stats: AgentTrafficStat[] = objectStats.length > 0 ? objectStats : compactStats;
     const hostTraffic: AgentHostTrafficStat | null = isAgentHostTrafficStat(req.body?.hostTraffic)
       ? req.body.hostTraffic
-      : null;
-    if (!hasStatsArray && !hostTraffic) {
+      : compactHostTraffic(req.body?.h);
+    if (!Array.isArray(req.body?.stats) && !Array.isArray(req.body?.s) && !hostTraffic) {
       res.status(400).json({ error: "stats array or hostTraffic is required" });
       return;
     }

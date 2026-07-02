@@ -73,12 +73,18 @@ export const mobileAuth = {
 
   async hydrateNative() {
     if (!isCapacitorRuntime() || typeof window === "undefined") return;
-    await Promise.all(
+    const syncFromNative = Promise.all(
       PERSISTED_KEYS.map(async (key) => {
         const { value } = await Preferences.get({ key });
         setLocalValue(key, value);
       }),
     );
+    const hasLocalState = PERSISTED_KEYS.some((key) => !!getLocalValue(key));
+    if (hasLocalState) {
+      syncFromNative.catch(() => undefined);
+      return;
+    }
+    await syncFromNative;
   },
 
   getPanelUrl() {

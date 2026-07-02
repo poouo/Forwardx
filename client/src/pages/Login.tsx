@@ -127,23 +127,13 @@ export default function Login() {
 
   const utils = trpc.useUtils();
   const { data: emailConfig } = trpc.auth.emailConfig.useQuery(undefined, {
-    enabled: hasMobilePanelUrl,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-  const { data: publicInfo } = trpc.system.publicInfo.useQuery(undefined, {
-    enabled: hasMobilePanelUrl,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-  const { data: telegramLoginStatus } = trpc.telegram.loginStatus.useQuery(undefined, {
-    enabled: hasMobilePanelUrl,
+    enabled: hasMobilePanelUrl && mode === "register",
     retry: false,
     refetchOnWindowFocus: false,
   });
   const registrationEnabled = emailConfig?.registrationEnabled !== false;
-  const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
-  const logoSrc = publicInfo?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
+  const siteTitle = "ForwardX";
+  const logoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
 
   useEffect(() => {
     if (mode === "register" && !registrationEnabled) {
@@ -450,8 +440,6 @@ export default function Login() {
     telegramLoginMutation.mutate({ code, mobile: mobileAuth.isNative });
   }, [location, telegramLoginCode, telegramLoginMutation]);
 
-  const showTelegramLogin = mode === "login" && !!telegramLoginStatus?.enabled && !!telegramLoginStatus?.configured;
-
   useEffect(() => {
     if (!mobileTelegramLogin) return;
     let cancelled = false;
@@ -627,7 +615,7 @@ export default function Login() {
   const isTwoFactorPending = verifyTwoFactorLoginMutation.isPending;
   const isTelegramPending = telegramLoginMutation.isPending || telegramWebAppLoginMutation.isPending;
   const isMobileTelegramWaiting = startMobileTelegramLoginMutation.isPending || !!mobileTelegramLogin;
-  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && !getTelegramWebAppInitData() && (!telegramLoginStatus || showTelegramLogin);
+  const showTelegramLoginSlot = mode === "login" && hasMobilePanelUrl && !getTelegramWebAppInitData();
 
   return (
     <div className="mobile-login-screen auth-shell relative min-h-screen overflow-hidden">
@@ -842,54 +830,47 @@ export default function Login() {
                       <Send className="h-4 w-4 text-sky-500" />
                       Telegram 快捷登录
                     </div>
-                    {!telegramLoginStatus ? (
-                      <div className="flex min-h-[72px] items-center justify-center gap-2 text-xs text-muted-foreground">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>正在加载 Telegram</span>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="w-full gap-2"
-                          onClick={handleMobileTelegramLogin}
-                          disabled={!hasMobilePanelUrl || isMobileTelegramWaiting}
-                        >
-                          {isMobileTelegramWaiting ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              等待 Telegram 确认
-                            </>
-                          ) : (
-                            <>
-                              <Send className="h-4 w-4" />
-                              打开 Telegram 登录
-                            </>
-                          )}
-                        </Button>
-                        {mobileTelegramLogin ? (
-                          <div className="space-y-2">
-                            <p className="text-center text-xs leading-5 text-muted-foreground">
-                              请在 Telegram 中确认登录。
-                            </p>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="w-full text-xs"
-                              onClick={() => setMobileTelegramLogin(null)}
-                            >
-                              取消本次登录
-                            </Button>
-                          </div>
+                    <div className="space-y-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full gap-2"
+                        onClick={handleMobileTelegramLogin}
+                        disabled={!hasMobilePanelUrl || isMobileTelegramWaiting}
+                      >
+                        {isMobileTelegramWaiting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            等待 Telegram 确认
+                          </>
                         ) : (
-                          <p className="text-center text-xs leading-5 text-muted-foreground">
-                            已绑定账户可用。
-                          </p>
+                          <>
+                            <Send className="h-4 w-4" />
+                            打开 Telegram 登录
+                          </>
                         )}
-                      </div>
-                    )}
+                      </Button>
+                      {mobileTelegramLogin ? (
+                        <div className="space-y-2">
+                          <p className="text-center text-xs leading-5 text-muted-foreground">
+                            请在 Telegram 中确认登录。
+                          </p>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="w-full text-xs"
+                            onClick={() => setMobileTelegramLogin(null)}
+                          >
+                            取消本次登录
+                          </Button>
+                        </div>
+                      ) : (
+                        <p className="text-center text-xs leading-5 text-muted-foreground">
+                          已绑定账户可用，点击后再连接后端校验。
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

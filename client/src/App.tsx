@@ -2,42 +2,66 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { useAuth } from "@/_core/hooks/useAuth";
-import type { ComponentType } from "react";
+import { Suspense, type ComponentType, type ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import { mobileAuth } from "@/lib/mobileAuth";
 import NotFound from "@/pages/NotFound";
-import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import PersonalizationLayer from "./components/PersonalizationLayer";
-import Home from "./pages/Home";
-import Hosts from "./pages/Hosts";
-import Rules from "./pages/Rules";
-import ForwardGroups from "./pages/ForwardGroups";
-import Tunnels from "./pages/Tunnels";
-import Users from "./pages/Users";
-import Profile from "./pages/Profile";
-import Settings from "./pages/Settings";
-import Payments from "./pages/Payments";
-import Plans from "./pages/Plans";
-import Store from "./pages/Store";
-import Subscriptions from "./pages/Subscriptions";
-import Billing from "./pages/Billing";
-import Wallet from "./pages/Wallet";
-import Announcements from "./pages/Announcements";
 import Setup from "./pages/Setup";
-import EmailSettings from "./pages/EmailSettings";
-import HomepagePreview from "./pages/HomepagePreview";
-import LookingGlass from "./pages/LookingGlass";
-import TrafficBilling from "./pages/TrafficBilling";
+import {
+  AnnouncementsPage,
+  BillingPage,
+  EmailSettingsPage,
+  ForwardGroupsPage,
+  HomePage,
+  HomepagePreviewPage,
+  HostsPage,
+  LoginPage,
+  LookingGlassPage,
+  PaymentsPage,
+  PlansPage,
+  ProfilePage,
+  RulesPage,
+  SettingsPage,
+  StorePage,
+  SubscriptionsPage,
+  TrafficBillingPage,
+  TunnelsPage,
+  UsersPage,
+  WalletPage,
+} from "@/lib/routePreload";
 
-function AdminRoute({ component: Component }: { component: ComponentType }) {
+type RoutableComponent = ComponentType<any>;
+
+function RouteSuspense({ children }: { children: ReactNode }) {
+  return <Suspense fallback={null}>{children}</Suspense>;
+}
+
+function routeComponent(Component: RoutableComponent) {
+  return () => (
+    <RouteSuspense>
+      <Component />
+    </RouteSuspense>
+  );
+}
+
+function isLoginRoute(location: string) {
+  return location.startsWith("/login");
+}
+
+function AdminRoute({ component: Component }: { component: RoutableComponent }) {
   const { user, loading } = useAuth();
   if (loading) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin") return <Redirect to="/" />;
-  return <Component />;
+  return (
+    <RouteSuspense>
+      <Component />
+    </RouteSuspense>
+  );
 }
 
 function LookingGlassRoute() {
@@ -51,33 +75,37 @@ function LookingGlassRoute() {
   if (loading || (user && publicInfo.isLoading && !publicInfo.data)) return null;
   if (!user) return <Redirect to="/login" />;
   if (user.role !== "admin" && publicInfo.data?.lookingGlassUserEnabled !== true) return <Redirect to="/" />;
-  return <LookingGlass />;
+  return (
+    <RouteSuspense>
+      <LookingGlassPage />
+    </RouteSuspense>
+  );
 }
 
 function Router() {
   return (
     <Switch>
       <Route path="/setup" component={Setup} />
-      <Route path="/login" component={Login} />
-      <Route path="/homepage-preview" component={HomepagePreview} />
-      <Route path="/" component={Home} />
-      <Route path="/profile" component={Profile} />
-      <Route path="/hosts">{() => <AdminRoute component={Hosts} />}</Route>
-      <Route path="/rules" component={Rules} />
+      <Route path="/login">{routeComponent(LoginPage)}</Route>
+      <Route path="/homepage-preview">{routeComponent(HomepagePreviewPage)}</Route>
+      <Route path="/">{routeComponent(HomePage)}</Route>
+      <Route path="/profile">{routeComponent(ProfilePage)}</Route>
+      <Route path="/hosts">{() => <AdminRoute component={HostsPage} />}</Route>
+      <Route path="/rules">{routeComponent(RulesPage)}</Route>
       <Route path="/looking-glass" component={LookingGlassRoute} />
-      <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroups} />}</Route>
-      <Route path="/tunnels">{() => <AdminRoute component={Tunnels} />}</Route>
-      <Route path="/users">{() => <AdminRoute component={Users} />}</Route>
-      <Route path="/email-settings">{() => <AdminRoute component={EmailSettings} />}</Route>
-      <Route path="/payments">{() => <AdminRoute component={Payments} />}</Route>
-      <Route path="/billing">{() => <AdminRoute component={Billing} />}</Route>
-      <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBilling} />}</Route>
-      <Route path="/plans">{() => <AdminRoute component={Plans} />}</Route>
-      <Route path="/store" component={Store} />
-      <Route path="/subscriptions" component={Subscriptions} />
-      <Route path="/wallet" component={Wallet} />
-      <Route path="/announcements" component={Announcements} />
-      <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
+      <Route path="/forward-groups">{() => <AdminRoute component={ForwardGroupsPage} />}</Route>
+      <Route path="/tunnels">{() => <AdminRoute component={TunnelsPage} />}</Route>
+      <Route path="/users">{() => <AdminRoute component={UsersPage} />}</Route>
+      <Route path="/email-settings">{() => <AdminRoute component={EmailSettingsPage} />}</Route>
+      <Route path="/payments">{() => <AdminRoute component={PaymentsPage} />}</Route>
+      <Route path="/billing">{() => <AdminRoute component={BillingPage} />}</Route>
+      <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBillingPage} />}</Route>
+      <Route path="/plans">{() => <AdminRoute component={PlansPage} />}</Route>
+      <Route path="/store">{routeComponent(StorePage)}</Route>
+      <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
+      <Route path="/wallet">{routeComponent(WalletPage)}</Route>
+      <Route path="/announcements">{routeComponent(AnnouncementsPage)}</Route>
+      <Route path="/settings">{() => <AdminRoute component={SettingsPage} />}</Route>
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
@@ -87,8 +115,9 @@ function Router() {
 function SetupGate() {
   const [location] = useLocation();
   const hasMobilePanelUrl = !mobileAuth.isNative || mobileAuth.hasPanelUrl();
+  const loginRoute = isLoginRoute(location);
   const setup = trpc.setup.status.useQuery(undefined, {
-    enabled: hasMobilePanelUrl,
+    enabled: hasMobilePanelUrl && !loginRoute,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -97,6 +126,8 @@ function SetupGate() {
     if (location !== "/login") return <Redirect to="/login" />;
     return <Router />;
   }
+
+  if (loginRoute) return <Router />;
 
   if (setup.isError) {
     if (mobileAuth.isNative) {

@@ -192,6 +192,8 @@ const REDEEM_SESSION_TTL_MS = 10 * 60 * 1000;
 const USER_PAGE_SIZE = 10;
 const RULE_PAGE_SIZE = 10;
 const AI_QUERY_RESULT_LIMIT = 10;
+const AI_PROCESSING_MESSAGE_DELAY_MS = 800;
+const AI_PROCESSING_MESSAGE_TEXT = "正在处理，请稍候…";
 type AiProvider = "deepseek" | "siliconflow" | "custom";
 type DeepSeekSettings = {
   provider: AiProvider;
@@ -685,11 +687,54 @@ async function deleteMessage(chatId: number | string, messageId: number) {
   });
 }
 
+async function sendChatAction(chatId: number | string, action: "typing" = "typing") {
+  await telegramApi("sendChatAction", {
+    chat_id: chatId,
+    action,
+  });
+}
+
 function deleteMessageLater(chatId: number | string, messageId: number, delayMs: number) {
   const timer = setTimeout(() => {
     deleteMessage(chatId, messageId).catch(() => undefined);
   }, delayMs);
   (timer as any).unref?.();
+}
+
+async function withTemporaryProcessingMessage<T>(
+  chatId: number | string,
+  task: () => Promise<T>,
+  options: { delayMs?: number; text?: string } = {},
+) {
+  const delayMs = Math.max(0, Number(options.delayMs ?? AI_PROCESSING_MESSAGE_DELAY_MS));
+  const text = options.text || AI_PROCESSING_MESSAGE_TEXT;
+  let completed = false;
+  let processingMessage: TelegramSentMessage | null = null;
+  let sendPending: Promise<void> | null = null;
+  const timer = setTimeout(() => {
+    if (completed) return;
+    sendPending = sendMessage(chatId, text)
+      .then((message) => {
+        if (completed) {
+          deleteMessage(chatId, message.message_id).catch(() => undefined);
+          return;
+        }
+        processingMessage = message;
+      })
+      .catch(() => undefined);
+  }, delayMs);
+  (timer as any).unref?.();
+  sendChatAction(chatId).catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    completed = true;
+    clearTimeout(timer);
+    if (sendPending) await sendPending.catch(() => undefined);
+    if (processingMessage?.message_id) {
+      await deleteMessage(chatId, processingMessage.message_id).catch(() => undefined);
+    }
+  }
 }
 
 async function answerCallback(callbackId: string, text?: string) {
@@ -1099,8 +1144,9 @@ async function rulesText(user: any) {
   const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
   const visible = user.role === "admin" ? rules.slice(0, 10) : rules.slice(0, 15);
   if (visible.length === 0) return "<b>转发规则</b>\n\n暂无转发规则。";
+  const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)), { includeLatency: true });
   const lines = visible.map((rule: any) => {
-    const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+    const status = effectiveRuleStatusText(rule, trafficByRuleId.get(Number(rule.id)));
     return [
       `#${rule.id} <b>${escapeHtml(rule.name)}</b>`,
       `${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
@@ -1115,6 +1161,9 @@ async function rulesView(user: any, page = 0) {
   const rules = await db.getForwardRules(user.role === "admin" ? undefined : user.id);
   const { page: safePage, totalPages } = clampPage(page, rules.length, RULE_PAGE_SIZE);
   const visible = rules.slice(safePage * RULE_PAGE_SIZE, safePage * RULE_PAGE_SIZE + RULE_PAGE_SIZE);
+  const trafficByRuleId = visible.length > 0
+    ? await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)), { includeLatency: true })
+    : new Map<number, AiRuleTrafficSummary>();
   const text = visible.length === 0
     ? "<b>转发规则</b>\n\n暂无转发规则。"
     : [
@@ -1122,7 +1171,7 @@ async function rulesView(user: any, page = 0) {
         `第 ${safePage + 1}/${totalPages} 页，共 ${rules.length} 条`,
         "",
         ...visible.map((rule: any) => {
-          const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+          const status = effectiveRuleStatusText(rule, trafficByRuleId.get(Number(rule.id)));
           return `#${rule.id} <b>${escapeHtml(shortText(rule.name, 24))}</b>\n${status} · ${escapeHtml(rule.forwardType)} ${escapeHtml(formatForwardRuleProtocol(rule.protocol))} · :${rule.sourcePort}`;
         }),
       ].join("\n\n");
@@ -1147,12 +1196,15 @@ async function rulesView(user: any, page = 0) {
 async function ruleDetailText(ruleId: number, user: any) {
   const rule = await db.getForwardRuleById(ruleId);
   if (!rule || (user.role !== "admin" && rule.userId !== user.id)) return "规则不存在或无权查看。";
-  const status = rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+  const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)], { includeLatency: true })).get(Number(rule.id));
+  const statusInfo = effectiveRuleStatusInfo(rule, traffic);
+  const status = effectiveRuleStatusText(rule, traffic);
   return [
     `<b>规则 #${rule.id}</b>`,
     "",
     `名称：${escapeHtml(rule.name)}`,
     `状态：${status}`,
+    statusInfo.detail ? `说明：${escapeHtml(statusInfo.detail)}` : "",
     `类型：${escapeHtml(rule.forwardType)} / ${escapeHtml(formatForwardRuleProtocol(rule.protocol))}`,
     `入口端口：${rule.sourcePort}`,
     `目标：${escapeHtml(rule.targetIp)}:${rule.targetPort}`,
@@ -1593,8 +1645,8 @@ function textAsksRuleDetail(text: string) {
 function normalizeAiRuleStatusFilter(value: unknown): AiRuleStatusFilter | undefined {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return undefined;
-  if (/(abnormal|problem|error|failed|fail|invalid|异常|不正常|有问题|出问题|故障|失效|不通)/i.test(raw)) return "abnormal";
-  if (/(pending|waiting|sync|not\s*running|stopped|等待同步|待同步|未同步|没同步|未运行|没运行|不运行|已停止|停止)/i.test(raw)) return "pending";
+  if (/(abnormal|problem|error|failed|fail|invalid|timeout|unreachable|异常|不正常|有问题|出问题|故障|失效|不通|不可达|超时|探测失败|探测超时|目标不可达|目标不通|端口不通|端口未监听|链路不可用)/i.test(raw)) return "abnormal";
+  if (/(pending|waiting|sync|not\s*running|stopped|等待同步|待同步|未同步|没同步|等待\s*agent|等待应用|等待生效|等待下发|未运行|没运行|不运行|已停止|停止)/i.test(raw)) return "pending";
   if (/(disabled|disable|off|closed|已停用|停用|禁用|关闭|未启用)/i.test(raw)) return "disabled";
   if (/(running|enabled|online|normal|ok|运行中|正在运行|已运行|正常|可用|启用中)/i.test(raw)) return "running";
   return undefined;
@@ -1609,7 +1661,7 @@ function stripAiRuleStatusKeyword(value: unknown, status?: AiRuleStatusFilter) {
   if (!raw) return "";
   if (!status) return normalizeAiQueryKeyword(raw);
   const cleaned = raw
-    .replace(/(abnormal|problem|error|failed|fail|invalid|pending|waiting|sync|not\s*running|stopped|disabled|disable|off|closed|running|enabled|online|normal|ok|异常|不正常|有问题|出问题|故障|失效|不通|等待同步|待同步|未同步|没同步|未运行|没运行|不运行|已停止|停止|已停用|停用|禁用|关闭|未启用|运行中|正在运行|已运行|正常|可用|启用中)/gi, " ")
+    .replace(/(abnormal|problem|error|failed|fail|invalid|timeout|unreachable|pending|waiting|sync|not\s*running|stopped|disabled|disable|off|closed|running|enabled|online|normal|ok|异常|不正常|有问题|出问题|故障|失效|不通|不可达|超时|探测失败|探测超时|目标不可达|目标不通|端口不通|端口未监听|链路不可用|等待同步|待同步|未同步|没同步|等待\s*agent|等待应用|等待生效|等待下发|未运行|没运行|不运行|已停止|停止|已停用|停用|禁用|关闭|未启用|运行中|正在运行|已运行|正常|可用|启用中)/gi, " ")
     .replace(/(有没有|没有|有无|是否|是不是|有|没|哪些|哪条|哪个|转发规则|规则|端口|转发|状态|查询|查看|看下|看看|帮我|请|给我|的|吗)/gi, " ")
     .replace(/[，,。？?！!：:、]/g, " ")
     .replace(/\s+/g, " ")
@@ -1858,7 +1910,7 @@ async function parseAiQueryIntent(text: string): Promise<AiQueryIntent> {
               "You classify ForwardX Telegram user messages into read-only query intents.",
               "Return only JSON with keys: intent, id, keyword, ruleStatus, rankMetric, rankOrder, limit.",
               "Allowed intents: usage, rules, rule_detail, rule_usage, rule_rank, hosts, tunnels, forward_groups, users, account, help, unsupported.",
-              "For rule status queries such as 异常规则有没有 / 未运行规则 / 等待同步规则 / 停用规则 / 运行中的规则, classify as rules and set ruleStatus to abnormal/pending/disabled/running.",
+              "For rule status queries such as 异常规则有没有 / 未运行规则 / 等待应用规则 / 停用规则 / 运行中的规则, classify as rules and set ruleStatus to abnormal/pending/disabled/running.",
               "Use rule_usage when the user asks how much traffic a specific rule used; include id when a rule number is present.",
               "Use rule_detail only when the user asks for detail/status or explicitly refers to #12 / 12号规则; rule 443 usually means keyword/port search.",
               "Use rule_rank when the user asks which rules rank highest/lowest by traffic, connections, or latency; set rankMetric to traffic/connections/latency and rankOrder to desc/asc.",
@@ -3978,7 +4030,8 @@ function searchMatches(keyword: string | undefined, values: unknown[]) {
   return values.some((value) => String(value ?? "").toLowerCase().includes(needle));
 }
 
-function ruleSearchValues(rule: any) {
+function ruleSearchValues(rule: any, summary?: AiRuleTrafficSummary) {
+  const status = effectiveRuleStatusInfo(rule, summary);
   return [
     rule.id,
     rule.name,
@@ -3992,7 +4045,8 @@ function ruleSearchValues(rule: any) {
     rule.remark,
     rule.remarks,
     rule.description,
-    ruleStatusText(rule),
+    status.label,
+    status.detail,
     rule.entryIp,
     rule.entryDomain,
   ];
@@ -4053,14 +4107,14 @@ function forwardGroupSearchValues(group: any) {
 }
 
 function ruleStatusText(rule: any) {
-  return rule.isEnabled ? (rule.isRunning ? "运行中" : "等待同步") : "已停用";
+  return effectiveRuleStatusText(rule);
 }
 
 function aiRuleStatusFilterLabel(status: AiRuleStatusFilter) {
   if (status === "running") return "运行中";
-  if (status === "pending") return "等待同步";
+  if (status === "pending") return "等待 Agent 应用";
   if (status === "disabled") return "已停用";
-  return "异常/非运行中";
+  return "异常/不可用";
 }
 
 function ruleMatchesStatusFilter(rule: any, status: AiRuleStatusFilter) {
@@ -4068,6 +4122,70 @@ function ruleMatchesStatusFilter(rule: any, status: AiRuleStatusFilter) {
   if (status === "pending") return !!rule.isEnabled && !rule.isRunning;
   if (status === "disabled") return !rule.isEnabled;
   return !rule.isEnabled || !rule.isRunning;
+}
+
+type AiEffectiveRuleStatusKind = "running" | "pending" | "disabled" | "abnormal";
+
+function isForwardGroupSurfaceRule(rule: any) {
+  return !!rule?.forwardGroupId && !rule?.forwardGroupRuleId && !rule?.forwardGroupMemberId;
+}
+
+function hasRuleTraffic(summary?: AiRuleTrafficSummary) {
+  return Math.max(0, Number(summary?.bytesIn || 0)) + Math.max(0, Number(summary?.bytesOut || 0)) > 0;
+}
+
+function effectiveRuleStatusInfo(rule: any, summary?: AiRuleTrafficSummary): { kind: AiEffectiveRuleStatusKind; label: string; detail?: string } {
+  const latencyMs = summary?.latestLatencyMs == null ? null : Number(summary.latestLatencyMs);
+  const hasLatency = Number.isFinite(latencyMs) && latencyMs !== null && latencyMs >= 0;
+  if (rule?.protocolBlockReason) {
+    return {
+      kind: "abnormal",
+      label: "协议屏蔽已拦截",
+      detail: shortText(String(rule.protocolBlockReason || ""), 80),
+    };
+  }
+  if (!rule?.isEnabled) {
+    if (rule?.disabledByUser) return { kind: "disabled", label: "已手动停用" };
+    if (rule?.disabledByTunnel) return { kind: "disabled", label: "隧道/链路停用" };
+    return { kind: "disabled", label: "已停用" };
+  }
+  if (summary?.latestLatencyIsTimeout) {
+    return {
+      kind: "abnormal",
+      label: "目标探测超时",
+      detail: "最近一次探测失败，可能是目标不可达、端口未监听或链路不可用。",
+    };
+  }
+  if (rule?.isRunning) {
+    return hasLatency
+      ? { kind: "running", label: `运行中（${Math.round(latencyMs!)}ms）` }
+      : { kind: "running", label: "运行中" };
+  }
+  if (isForwardGroupSurfaceRule(rule) && (hasLatency || hasRuleTraffic(summary))) {
+    return hasLatency
+      ? { kind: "running", label: `转发组入口可用（${Math.round(latencyMs!)}ms）` }
+      : { kind: "running", label: "转发组入口可用" };
+  }
+  return {
+    kind: "pending",
+    label: isForwardGroupSurfaceRule(rule) ? "等待转发组应用" : "等待 Agent 应用",
+    detail: "面板已保存规则，正在等待 Agent 拉取配置并回报运行状态。",
+  };
+}
+
+function effectiveRuleStatusText(rule: any, summary?: AiRuleTrafficSummary) {
+  return effectiveRuleStatusInfo(rule, summary).label;
+}
+
+function effectiveRuleStatusFilterLabel(status: AiRuleStatusFilter) {
+  if (status === "running") return "运行正常";
+  if (status === "pending") return "等待 Agent 应用";
+  if (status === "disabled") return "已停用";
+  return "异常/不可用";
+}
+
+function ruleMatchesEffectiveStatusFilter(rule: any, status: AiRuleStatusFilter, summary?: AiRuleTrafficSummary) {
+  return effectiveRuleStatusInfo(rule, summary).kind === status;
 }
 
 function runningStatusText(value: unknown) {
@@ -4150,14 +4268,14 @@ function formatRuleTrafficSummaryLines(summary: AiRuleTrafficSummary | undefined
     connections > 0 ? `连接：<b>${connections}</b>` : "",
   ].filter(Boolean);
 }
-async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[]) {
+async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[], options: { includeLatency?: boolean } = {}) {
   const ids = Array.from(new Set(ruleIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)));
   const map = new Map<number, AiRuleTrafficSummary>();
   if (ids.length === 0) return map;
   const rows = await db.getTrafficSummaryByRule({
     userId: user.role === "admin" ? undefined : user.id,
     ruleIds: ids,
-    includeLatency: false,
+    includeLatency: !!options.includeLatency,
   }).catch(() => [] as any[]);
   for (const row of rows as any[]) {
     const ruleId = Number(row?.ruleId || 0);
@@ -4166,6 +4284,10 @@ async function aiRuleTrafficSummaryMap(user: any, ruleIds: number[]) {
     prev.bytesIn += Math.max(0, Number(row?.bytesIn || 0));
     prev.bytesOut += Math.max(0, Number(row?.bytesOut || 0));
     prev.connections += Math.max(0, Number(row?.connections || 0));
+    if (options.includeLatency) {
+      prev.latestLatencyIsTimeout = !!row?.latestLatencyIsTimeout;
+      prev.latestLatencyMs = row?.latestLatencyMs == null ? null : Number(row.latestLatencyMs);
+    }
     map.set(ruleId, prev);
   }
   for (const id of ids) if (!map.has(id)) map.set(id, emptyAiRuleTrafficSummary());
@@ -4212,9 +4334,13 @@ async function aiRulesWithFilters(user: any, filters: AiRuleFilters = {}) {
       if (searchMatches(hostKeyword, hostSearchValues(host))) hostIds.add(Number(host.id));
     }
   }
+  const statusByRuleId = (ruleStatus || keyword)
+    ? await aiRuleTrafficSummaryMap(user, (rules as any[]).map((rule: any) => Number(rule.id)), { includeLatency: true })
+    : new Map<number, AiRuleTrafficSummary>();
   const matched = (rules as any[]).filter((rule: any) => {
-    if (ruleStatus && !ruleMatchesStatusFilter(rule, ruleStatus)) return false;
-    if (keyword && !searchMatches(keyword, ruleSearchValues(rule))) return false;
+    const statusSummary = statusByRuleId.get(Number(rule.id));
+    if (ruleStatus && !ruleMatchesEffectiveStatusFilter(rule, ruleStatus, statusSummary)) return false;
+    if (keyword && !searchMatches(keyword, ruleSearchValues(rule, statusSummary))) return false;
     if (userKeyword && !userIds.has(Number(rule.userId))) return false;
     if (hostKeyword && !hostIds.has(Number(rule.hostId))) return false;
     return true;
@@ -4226,7 +4352,7 @@ function aiRuleFilterSuffix(filters: { keyword?: string; userKeyword?: string; h
   return [
     filters.userKeyword ? aiFilterPart("用户", filters.userKeyword) : "",
     filters.hostKeyword ? aiFilterPart("主机", filters.hostKeyword) : "",
-    filters.ruleStatus ? aiFilterPart("状态", aiRuleStatusFilterLabel(filters.ruleStatus)) : "",
+    filters.ruleStatus ? aiFilterPart("状态", effectiveRuleStatusFilterLabel(filters.ruleStatus)) : "",
     filters.keyword ? aiFilterPart("关键字", filters.keyword) : "",
   ].filter(Boolean).join("，");
 }
@@ -4238,16 +4364,19 @@ async function aiRulesText(user: any, keywordOrFilters?: string | AiRuleFilters)
   const header = aiResultHeader("转发规则查询", matched.length, rules.length, "条", filterText);
   if (matched.length === 0) return `${header}\n\n没有找到匹配的规则。`;
   const visible = matched.slice(0, AI_QUERY_RESULT_LIMIT);
-  const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)));
+  const trafficByRuleId = await aiRuleTrafficSummaryMap(user, visible.map((rule: any) => Number(rule.id)), { includeLatency: true });
   const lines = visible.map((rule: any) => {
     const host = hostById.get(Number(rule.hostId));
+    const trafficSummary = trafficByRuleId.get(Number(rule.id));
+    const statusInfo = effectiveRuleStatusInfo(rule, trafficSummary);
     const note = String(rule.remark || rule.remarks || rule.description || "").trim();
     const title = shortText(note || rule.name || `规则 #${rule.id}`, 30);
     const location = rule.tunnelId
       ? `归属：隧道 ${aiCode(`#${rule.tunnelId}`)}`
       : `归属：主机 ${aiCode(`#${rule.hostId}`)}${host?.name ? `（${escapeHtml(shortText(host.name, 18))}）` : ""}`;
     const details = [
-      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+      `状态：<b>${escapeHtml(effectiveRuleStatusText(rule, trafficSummary))}</b>`,
+      statusInfo.detail ? `说明：${escapeHtml(statusInfo.detail)}` : "",
       `类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
       `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)}`,
       `目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
@@ -4307,7 +4436,7 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
   const rows = await db.getTrafficSummaryByRule({
     userId: user.role === "admin" ? undefined : user.id,
     ruleIds: ids,
-    includeLatency: metric === "latency",
+    includeLatency: true,
   }).catch(() => [] as any[]);
   for (const row of rows as any[]) {
     const ruleId = Number(row?.ruleId || 0);
@@ -4316,10 +4445,8 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
     prev.bytesIn += Math.max(0, Number(row?.bytesIn || 0));
     prev.bytesOut += Math.max(0, Number(row?.bytesOut || 0));
     prev.connections += Math.max(0, Number(row?.connections || 0));
-    if (metric === "latency") {
-      prev.latestLatencyIsTimeout = !!row?.latestLatencyIsTimeout;
-      prev.latestLatencyMs = row?.latestLatencyMs == null ? null : Number(row.latestLatencyMs);
-    }
+    prev.latestLatencyIsTimeout = !!row?.latestLatencyIsTimeout;
+    prev.latestLatencyMs = row?.latestLatencyMs == null ? null : Number(row.latestLatencyMs);
     summaryByRuleId.set(ruleId, prev);
   }
 
@@ -4335,6 +4462,7 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
   const lines = visible.map((item, index) => {
     const rule = item.rule;
     const summary = item.summary;
+    const statusInfo = effectiveRuleStatusInfo(rule, summary);
     const host = hostById.get(Number(rule.hostId));
     const note = String(rule.remark || rule.remarks || rule.description || "").trim();
     const title = shortText(note || rule.name || `规则 #${rule.id}`, 30);
@@ -4345,7 +4473,8 @@ async function aiRuleRankText(user: any, options: { metric?: AiRuleRankMetric; o
       `排名值：${aiRuleRankValueText(metric, summary)}`,
       metric !== "traffic" ? `流量：${aiCode(formatBytes(summary.bytesIn + summary.bytesOut))}` : `入 / 出：${aiCode(formatBytes(summary.bytesIn))} / ${aiCode(formatBytes(summary.bytesOut))}`,
       metric !== "connections" && summary.connections > 0 ? `连接：<b>${summary.connections}</b>` : "",
-      `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+      `状态：<b>${escapeHtml(effectiveRuleStatusText(rule, summary))}</b>`,
+      statusInfo.detail ? `说明：${escapeHtml(statusInfo.detail)}` : "",
       `入口：${aiCode(`:${rule.sourcePort ?? "-"}`)} → 目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
       location,
       note && note !== rule.name ? `备注：${escapeHtml(shortText(note, 32))}` : "",
@@ -4359,12 +4488,14 @@ async function aiRuleDetailText(user: any, ruleId: number) {
   const rules = await visibleRulesForTelegramUser(user);
   const rule = rules.find((item: any) => Number(item.id) === Number(ruleId));
   if (!rule) return "规则不存在或无权查看。";
-  const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)])).get(Number(rule.id));
+  const traffic = (await aiRuleTrafficSummaryMap(user, [Number(rule.id)], { includeLatency: true })).get(Number(rule.id));
+  const statusInfo = effectiveRuleStatusInfo(rule, traffic);
   return [
     `<b>规则 #${rule.id}</b>`,
     "",
     `名称：${escapeHtml(rule.name)}`,
-    `状态：<b>${escapeHtml(ruleStatusText(rule))}</b>`,
+    `状态：<b>${escapeHtml(effectiveRuleStatusText(rule, traffic))}</b>`,
+    statusInfo.detail ? `说明：${escapeHtml(statusInfo.detail)}` : "",
     `类型：${aiCode(`${rule.forwardType || "-"} / ${formatForwardRuleProtocol(rule.protocol)}`)}`,
     `入口端口：${aiCode(`:${rule.sourcePort ?? "-"}`)}`,
     `目标：${aiCode(`${rule.targetIp || "-"}:${rule.targetPort ?? "-"}`)}`,
@@ -4603,8 +4734,32 @@ async function aiQueryText(user: any, rawText: string) {
 }
 
 async function handleAiQuery(message: TelegramMessage, user: any, rawText: string) {
-  const sent = await sendMessage(message.chat.id, await aiQueryText(user, rawText));
+  let text: string;
+  try {
+    text = await aiQueryText(user, rawText);
+  } catch (error: any) {
+    console.warn("[TelegramBot] AI query failed:", error);
+    text = `查询失败：${escapeHtml(error?.message || "请稍后重试")}`;
+  }
+  const sent = await sendMessage(message.chat.id, text);
   await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+}
+
+async function handleAiInteraction(message: TelegramMessage, user: any, rawText: string) {
+  let text: string;
+  try {
+    await withTemporaryProcessingMessage(message.chat.id, async () => {
+      if (await tryHandleManageAction(message, user, rawText)) return;
+      text = await aiQueryText(user, rawText);
+      const sent = await sendMessage(message.chat.id, text);
+      await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+    });
+  } catch (error: any) {
+    console.warn("[TelegramBot] AI query failed:", error);
+    text = `查询失败：${escapeHtml(error?.message || "请稍后重试")}`;
+    const sent = await sendMessage(message.chat.id, text);
+    await scheduleAiMessageAutoRecall(message.chat.id, message.message_id, sent);
+  }
 }
 async function handleUsage(message: TelegramMessage, user: any) {
   await sendMessage(message.chat.id, await usageText(user));
@@ -4764,7 +4919,7 @@ async function handleRuleToggle(message: TelegramMessage, user: any, ruleIdRaw: 
     await db.toggleForwardRule(rule.id, false);
   }
   await refreshRuleEndpoint(rule, enabled ? "telegram-rule-enabled" : "telegram-rule-disabled");
-  await sendMessage(message.chat.id, `规则 #${rule.id} ${enabled ? "已启用，等待 Agent 同步" : "已停用"}。`);
+  await sendMessage(message.chat.id, `规则 #${rule.id} ${enabled ? "已启用，等待 Agent 应用配置" : "已停用"}。`);
 }
 
 async function toggleRuleForUser(user: any, ruleId: number, enabled: boolean) {
@@ -5117,8 +5272,7 @@ async function handleMessage(message: TelegramMessage) {
   if (command === "/usage") return handleUsage(message, user);
   if (command === "/rules") return handleRules(message, user);
   if (command === "/ask") {
-    if (await tryHandleManageAction(message, user, text)) return;
-    return handleAiQuery(message, user, text);
+    return handleAiInteraction(message, user, text);
   }
   if (command === "/redeem") return handleRedeem(message, user, args.join(" "));
   if (command === "/login") return handleLogin(message, user);
@@ -5137,8 +5291,7 @@ async function handleMessage(message: TelegramMessage) {
   if (user.role === "admin" && command === "/updateagent") return handleUpdateAgent(message, user);
 
   if (!text.startsWith("/")) {
-    if (await tryHandleManageAction(message, user, text)) return;
-    return handleAiQuery(message, user, text);
+    return handleAiInteraction(message, user, text);
   }
 
   await sendMessage(message.chat.id, helpText(true, user.role === "admin"));

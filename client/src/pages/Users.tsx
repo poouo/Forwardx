@@ -1311,7 +1311,7 @@ function UsersContent() {
                     <TableHead className="hidden w-[120px] whitespace-nowrap md:table-cell">余额</TableHead>
                     <TableHead className="hidden w-[140px] whitespace-nowrap md:table-cell">到期时间</TableHead>
                     <TableHead className="hidden w-[160px] whitespace-nowrap lg:table-cell">转发总开关</TableHead>
-                    <TableHead className="hidden w-[150px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
+                    <TableHead className="hidden w-[240px] whitespace-nowrap lg:table-cell">规则限制</TableHead>
                     <TableHead className="w-[150px] whitespace-nowrap text-center">账户状态</TableHead>
                     <TableHead className="w-[190px] whitespace-nowrap text-right">操作</TableHead>
                   </TableRow>
@@ -1329,17 +1329,17 @@ function UsersContent() {
                         <TableCell>
                           <span className="text-xs text-muted-foreground font-mono">#{u.id}</span>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="py-3">
                           <div className="flex items-center gap-2.5">
                             <UserAvatar user={u} className="h-8 w-8 shrink-0" />
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium leading-none">{u.username || "未命名"}</p>
-                              <div className="mt-1 flex flex-wrap items-center gap-1">
-                                <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit px-1.5 text-[10px]">
+                            <div className="min-w-0 py-0.5">
+                              <p className="truncate text-sm font-medium leading-5">{u.username || "未命名"}</p>
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                                <Badge variant={u.role === "admin" ? "default" : "outline"} className="h-5 w-fit px-1.5 text-[10px] leading-4">
                                   {u.role === "admin" ? "管理员" : "普通用户"}
                                 </Badge>
                                 {u.id === currentUser?.id && (
-                                  <span className="text-[10px] font-medium text-primary">当前登录</span>
+                                  <span className="text-[10px] font-medium leading-4 text-primary">当前登录</span>
                                 )}
                               </div>
                               {u.displayRemark && (
@@ -1449,14 +1449,14 @@ function UsersContent() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="hidden min-w-[150px] lg:table-cell">
-                          <div className="flex min-w-[130px] flex-col gap-0.5 whitespace-nowrap text-xs leading-5 text-muted-foreground">
-                            <span>规则: {u.maxRules ? `最多 ${u.maxRules} 条` : "不限"}</span>
-                            <span>端口: {u.maxPorts ? `最多 ${u.maxPorts} 个` : "不限"}</span>
-                            <span>连接: {u.maxConnections ? `最多 ${u.maxConnections}` : "不限"}</span>
-                            <span>单 IP: {u.maxIPs ? `最多 ${u.maxIPs}` : "不限"}</span>
+                        <TableCell className="hidden min-w-[240px] lg:table-cell">
+                          <div className="flex min-w-[220px] flex-wrap items-center gap-1.5 text-[11px] leading-none text-muted-foreground">
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">规则 {u.maxRules ? `${u.maxRules} 条` : "不限"}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">端口 {u.maxPorts ? `${u.maxPorts} 个` : "不限"}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">连接 {u.maxConnections ? `${u.maxConnections}` : "不限"}</span>
+                            <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">单 IP {u.maxIPs ? `${u.maxIPs}` : "不限"}</span>
                             {(Number(u.gostRateLimitIn) > 0 || Number(u.gostRateLimitOut) > 0) && (
-                              <span>隧道限速: {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
+                              <span className="inline-flex h-6 items-center whitespace-nowrap rounded-md border border-border/50 bg-muted/20 px-2">隧道限速 {formatTunnelRateLimit(u.gostRateLimitIn, u.gostRateLimitOut)}</span>
                             )}
                           </div>
                         </TableCell>

@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.129"
+var Version = "2.2.130"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -43,6 +43,7 @@ const selfTestActivePollInterval = 2 * time.Second
 const selfTestActiveWindow = 2 * time.Minute
 const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute
+const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
 const runtimeActionRefreshInterval = 5 * time.Minute
@@ -126,11 +127,26 @@ var heartbeatWakeCh = make(chan struct{}, 1)
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
+var compactAgentReports atomic.Bool
+var heartbeatStaticReport heartbeatStaticSnapshot
 
 type actionJob struct {
 	cfg    Config
 	action action
 	done   chan struct{}
+}
+
+type heartbeatStaticSnapshot struct {
+	PrimaryIP   string
+	IPv4        string
+	IPv6        string
+	CPUInfo     string
+	MemoryTotal uint64
+	SwapTotal   uint64
+	DiskTotal   uint64
+	Version     string
+	ReportedAt  time.Time
+	Initialized bool
 }
 
 type runtimeActionState struct {
@@ -173,6 +189,7 @@ type heartbeatResp struct {
 	PanelURL           string                  `json:"panelUrl"`
 	ForceTCPing        bool                    `json:"forceTcping"`
 	NextInterval       int                     `json:"nextInterval"`
+	CompactReports     bool                    `json:"compactReports"`
 }
 
 type selfTestResp struct {
@@ -679,6 +696,17 @@ func register(cfg Config) error {
 	return post(cfg, "/api/agent/register", payload, &out)
 }
 
+func heartbeatStaticChanged(a, b heartbeatStaticSnapshot) bool {
+	return a.PrimaryIP != b.PrimaryIP ||
+		a.IPv4 != b.IPv4 ||
+		a.IPv6 != b.IPv6 ||
+		a.CPUInfo != b.CPUInfo ||
+		a.MemoryTotal != b.MemoryTotal ||
+		a.SwapTotal != b.SwapTotal ||
+		a.DiskTotal != b.DiskTotal ||
+		a.Version != b.Version
+}
+
 func heartbeat(cfg Config) (int, error) {
 	pruneAgentRuntimeData()
 	ipv4, ipv6 := publicIPs()
@@ -692,31 +720,72 @@ func heartbeat(cfg Config) (int, error) {
 	memoryUsed := memUsedFrom(memInfo)
 	swapTotal := swapTotalFrom(memInfo)
 	swapUsed := swapUsedFrom(memInfo)
-	payload := map[string]any{
-		"cpuUsage":     cpuUsage(),
-		"memoryUsage":  usagePercent(memoryUsed, memoryTotal),
-		"memoryUsed":   memoryUsed,
-		"memoryTotal":  memoryTotal,
-		"swapUsage":    usagePercent(swapUsed, swapTotal),
-		"swapUsed":     swapUsed,
-		"swapTotal":    swapTotal,
-		"networkIn":    netBytes(0),
-		"networkOut":   netBytes(1),
-		"diskUsage":    diskUsage(),
-		"diskUsed":     diskBytes("used"),
-		"diskTotal":    diskBytes("total"),
-		"uptime":       uptime(),
-		"cpuInfo":      cpuInfo(),
-		"agentVersion": Version,
+	diskUsageValue, diskUsed, diskTotal := diskStats()
+	cpuUsageValue := cpuUsage()
+	uptimeValue := uptime()
+	compactEnabled := compactAgentReports.Load()
+	currentStatic := heartbeatStaticSnapshot{
+		PrimaryIP:   primaryIP,
+		IPv4:        ipv4,
+		IPv6:        ipv6,
+		CPUInfo:     cpuInfo(),
+		MemoryTotal: memoryTotal,
+		SwapTotal:   swapTotal,
+		DiskTotal:   diskTotal,
+		Version:     Version,
 	}
-	if primaryIP != "" {
+	previousStatic := heartbeatStaticReport
+	shouldReportStatic := !previousStatic.Initialized ||
+		heartbeatStaticChanged(currentStatic, previousStatic) ||
+		time.Since(previousStatic.ReportedAt) >= heartbeatStaticReportInterval
+	payload := map[string]any{}
+	if compactEnabled {
+		payload["m"] = []any{
+			cpuUsageValue,
+			usagePercent(memoryUsed, memoryTotal),
+			memoryUsed,
+			memoryTotal,
+			usagePercent(swapUsed, swapTotal),
+			swapUsed,
+			swapTotal,
+			netBytes(0),
+			netBytes(1),
+			diskUsageValue,
+			diskUsed,
+			diskTotal,
+			uptimeValue,
+		}
+	} else {
+		payload = map[string]any{
+			"cpuUsage":     cpuUsageValue,
+			"memoryUsage":  usagePercent(memoryUsed, memoryTotal),
+			"memoryUsed":   memoryUsed,
+			"memoryTotal":  memoryTotal,
+			"swapUsage":    usagePercent(swapUsed, swapTotal),
+			"swapUsed":     swapUsed,
+			"swapTotal":    swapTotal,
+			"networkIn":    netBytes(0),
+			"networkOut":   netBytes(1),
+			"diskUsage":    diskUsageValue,
+			"diskUsed":     diskUsed,
+			"diskTotal":    diskTotal,
+			"uptime":       uptimeValue,
+			"cpuInfo":      currentStatic.CPUInfo,
+			"agentVersion": Version,
+		}
+	}
+	if (!compactEnabled || shouldReportStatic) && primaryIP != "" {
 		payload["ip"] = primaryIP
 	}
-	if ipv4 != "" {
+	if (!compactEnabled || shouldReportStatic) && ipv4 != "" {
 		payload["ipv4"] = ipv4
 	}
-	if ipv6 != "" {
+	if (!compactEnabled || shouldReportStatic) && ipv6 != "" {
 		payload["ipv6"] = ipv6
+	}
+	if compactEnabled && shouldReportStatic {
+		payload["cpuInfo"] = currentStatic.CPUInfo
+		payload["agentVersion"] = Version
 	}
 	if len(dnsChanges) > 0 {
 		payload["dnsChanged"] = dnsChanges
@@ -730,6 +799,12 @@ func heartbeat(cfg Config) (int, error) {
 			return cfg.Interval, nil
 		}
 		return cfg.Interval, err
+	}
+	compactAgentReports.Store(resp.CompactReports)
+	if !compactEnabled || shouldReportStatic {
+		currentStatic.ReportedAt = time.Now()
+		currentStatic.Initialized = true
+		heartbeatStaticReport = currentStatic
 	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.AgentUpgrade != nil {
@@ -4705,6 +4780,9 @@ func detectSocksProtocol(data []byte) bool {
 	if data[0] != 0x05 {
 		return false
 	}
+	if len(data) < 4 {
+		return false
+	}
 	nMethods := int(data[1])
 	if nMethods <= 0 || nMethods > protocolGuardSOCKS5MaxMethods || len(data) < 2+nMethods {
 		return false
@@ -5354,26 +5432,22 @@ func netBytes(idx int) uint64 {
 	return total
 }
 
-func diskUsage() int {
-	out, err := exec.Command("sh", "-lc", `df -P / | awk 'NR==2 {gsub("%","",$5); print $5}'`).Output()
+func diskStats() (usage int, used uint64, total uint64) {
+	out, err := exec.Command("sh", "-lc", `df -P -B1 / | awk 'NR==2 {gsub("%","",$5); print $5, $3, $2}'`).Output()
 	if err != nil {
-		return 0
+		return 0, 0, 0
 	}
-	v, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return v
-}
-
-func diskBytes(kind string) uint64 {
-	col := "$2"
-	if kind == "used" {
-		col = "$3"
+	fields := strings.Fields(string(out))
+	if len(fields) >= 1 {
+		usage, _ = strconv.Atoi(fields[0])
 	}
-	out, err := exec.Command("sh", "-lc", fmt.Sprintf(`df -P -B1 / | awk 'NR==2 {print %s}'`, col)).Output()
-	if err != nil {
-		return 0
+	if len(fields) >= 2 {
+		used, _ = strconv.ParseUint(fields[1], 10, 64)
 	}
-	v, _ := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
-	return v
+	if len(fields) >= 3 {
+		total, _ = strconv.ParseUint(fields[2], 10, 64)
+	}
+	return usage, used, total
 }
 
 func shellQuote(s string) string {
