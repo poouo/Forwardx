@@ -2429,7 +2429,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           targetPort: rule.targetPort,
           protocol: rule.protocol,
           commands: [
-            ...buildGostReloadCmds(),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ],
@@ -3176,7 +3175,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             networkInterface: hostInterface,
             commands: [
               ...cleanupGuardBackendCmds(rule),
-              ...buildGostReloadCmds(),
               ...buildCountingChainCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildRuleAccessLimitCmds(rule),
             ],
@@ -3292,7 +3290,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ? (await forwardXEntryRoute(tunnel)).key
             : "";
           const removeCmds: string[] = [
-            ...buildGostReloadCmds(),
             ...buildManagedPortCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...cleanupGuardBackendCmds(rule),
           ];

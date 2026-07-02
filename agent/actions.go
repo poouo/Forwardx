@@ -25,8 +25,21 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 		queuedActionMu.Unlock()
 	}
 	atomic.AddInt64(&actionPendingCount, 1)
-	actionQueue <- actionJob{cfg: cfg, action: a, done: done}
+	enqueueActionJob(actionJob{cfg: cfg, action: a, done: done})
 	return done
+}
+
+func enqueueActionJob(job actionJob) {
+	select {
+	case actionQueue <- job:
+	default:
+		if shouldLogAgentReport("action-queue-saturated", agentReportLogInterval) {
+			logf("action queue saturated pendingActions=%d capacity=%d; enqueueing asynchronously", atomic.LoadInt64(&actionPendingCount), actionQueueCapacity)
+		}
+		go func() {
+			actionQueue <- job
+		}()
+	}
 }
 
 func actionWorker() {
@@ -35,7 +48,11 @@ func actionWorker() {
 			if job.done != nil {
 				defer close(job.done)
 			}
-			defer atomic.AddInt64(&actionPendingCount, -1)
+			defer func() {
+				if atomic.AddInt64(&actionPendingCount, -1) == 0 {
+					wakeHeartbeat()
+				}
+			}()
 			defer releaseQueuedAction(job.action)
 			if isOlderAction(job.action, false) {
 				return
