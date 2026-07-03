@@ -215,13 +215,13 @@ func desiredActionLocalRuntimeReady(a action) bool {
 	checkedService := false
 	if strings.TrimSpace(a.ServiceName) != "" {
 		checkedService = true
-		if !managedServiceActive(a.ServiceName) {
+		if !desiredManagedServiceReady(a, a.ServiceName, a.Unit) {
 			return false
 		}
 	}
 	if strings.TrimSpace(a.ServiceNameExtra) != "" {
 		checkedService = true
-		if !managedServiceActive(a.ServiceNameExtra) {
+		if !desiredManagedServiceReady(a, a.ServiceNameExtra, a.UnitExtra) {
 			return false
 		}
 	}
@@ -245,10 +245,10 @@ func desiredActionLocalRuntimeReady(a action) bool {
 }
 
 func desiredKnownRunningActionReady(a action) bool {
-	if strings.TrimSpace(a.ServiceName) != "" && !managedServiceActive(a.ServiceName) {
+	if !desiredManagedServiceReady(a, a.ServiceName, a.Unit) {
 		return false
 	}
-	if strings.TrimSpace(a.ServiceNameExtra) != "" && !managedServiceActive(a.ServiceNameExtra) {
+	if !desiredManagedServiceReady(a, a.ServiceNameExtra, a.UnitExtra) {
 		return false
 	}
 	if a.Fxp != nil && !fxpMatchesRunning(a.Fxp) {
@@ -266,6 +266,27 @@ func desiredKnownRunningActionReady(a action) bool {
 	default:
 		return true
 	}
+}
+
+func desiredManagedServiceReady(a action, serviceName string, unit string) bool {
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" {
+		return true
+	}
+	if !managedServiceActive(serviceName) {
+		return false
+	}
+	if strings.TrimSpace(unit) == "" {
+		return true
+	}
+	signature := managedServiceActionSignature(a, serviceName, unit)
+	if !managedServiceSignatureMatches(serviceName, signature) {
+		if shouldLogAgentReport("desired-service-signature-mismatch:"+serviceName, agentReportLogInterval) {
+			logf("desired service signature mismatch; reapply needed service=%s %s", serviceName, actionLogSummary(a))
+		}
+		return false
+	}
+	return true
 }
 
 func desiredRuntimeServicesHealthy() bool {
