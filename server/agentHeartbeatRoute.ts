@@ -56,6 +56,7 @@ const tunnelRouteLogCache = new Map<string, string>();
 const nginxRuntimeLogCache = new Map<number, string>();
 const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
+const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const RUNTIME_BIN = "/usr/local/bin/forwardx-runtime";
 const RUNTIME_SERVICE_NAME = "forwardx-runtime";
 const TUNNEL_RUNTIME_SERVICE_NAME = "forwardx-tunnel-runtime";
@@ -76,6 +77,8 @@ const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
+const AGENT_DESIRED_STATE_ACTIVE_RESEND_MS = 60 * 1000;
+const AGENT_DESIRED_STATE_RESEND_MS = 10 * 60 * 1000;
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
 
@@ -108,6 +111,13 @@ function stableActionSignature(actions: any[]) {
   })));
 }
 
+export function invalidateAgentDesiredStateCache(hostId: number) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  agentActionBatchCache.delete(id);
+  agentDesiredStateSendCache.delete(id);
+}
+
 function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssuedAt: number) {
   if (actions.length === 0) {
     agentActionBatchCache.delete(hostId);
@@ -122,6 +132,22 @@ function resolveActionBatchIssuedAt(hostId: number, actions: any[], fallbackIssu
   }
   agentActionBatchCache.set(hostId, { signature, issuedAt: fallbackIssuedAt, seenAt: now });
   return fallbackIssuedAt;
+}
+
+function shouldSendDesiredState(hostId: number, actions: any[], activeWorkActions: any[], now: number) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return actions.length > 0;
+  const signature = stableActionSignature(actions);
+  const cached = agentDesiredStateSendCache.get(id);
+  const hasActiveWork = activeWorkActions.length > 0;
+  const changed = !cached || cached.signature !== signature;
+  const activeResync = hasActiveWork && !!cached && now - cached.sentAt >= AGENT_DESIRED_STATE_ACTIVE_RESEND_MS;
+  const periodicResync = !!cached && now - cached.sentAt >= AGENT_DESIRED_STATE_RESEND_MS;
+  const shouldSend = changed || activeResync || periodicResync;
+  if (shouldSend) {
+    agentDesiredStateSendCache.set(id, { signature, sentAt: now });
+  }
+  return shouldSend;
 }
 
 function actionPortKey(action: any) {
@@ -3672,7 +3698,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
     const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
-    const desiredState = supportsDesiredState ? {
+    const sendDesiredState = supportsDesiredState
+      && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt);
+    const desiredState = sendDesiredState ? {
       version: 1,
       issuedAt: actionBatchIssuedAt,
       actions: orderedActions,

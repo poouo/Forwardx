@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const desiredActionFailureRetryInterval = 5 * time.Minute
+
 func enqueueAction(cfg Config, a action) <-chan struct{} {
 	done := make(chan struct{})
 	if isOlderAction(a, true) {
@@ -46,6 +48,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	done := make([]<-chan struct{}, 0, len(state.Actions))
 	seen := map[string]bool{}
 	pendingJobs := make([]actionJob, 0, len(state.Actions))
+	adoptedStatusReports := make([]action, 0)
 	for _, a := range state.Actions {
 		if a.IssuedAt <= 0 {
 			a.IssuedAt = state.IssuedAt
@@ -59,11 +62,20 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		}
 		signature := desiredActionSignature(a)
 		seen[key] = true
-		if record, ok := records[key]; ok && record.Success && record.Signature == signature {
-			continue
+		if record, ok := records[key]; ok && record.Signature == signature {
+			if record.Success {
+				continue
+			}
+			if time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
+				continue
+			}
 		}
-		if _, ok := records[key]; !ok && canAdoptDesiredAction(a) {
+		if canAdoptDesiredAction(a) {
 			records[key] = desiredActionRecord{Signature: signature, Success: true, UpdatedAt: time.Now().Unix()}
+			if shouldReportDesiredAdoptionStatus(a) {
+				writeState(a)
+				adoptedStatusReports = append(adoptedStatusReports, a)
+			}
 			continue
 		}
 		doneCh := make(chan struct{})
@@ -97,6 +109,9 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		}
 	}
 	writeDesiredActionRecords(records)
+	if len(adoptedStatusReports) > 0 {
+		go reportAdoptedDesiredActions(cfg, adoptedStatusReports)
+	}
 	for _, job := range pendingJobs {
 		if isOlderAction(job.action, true) {
 			if job.done != nil {
@@ -123,6 +138,17 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		enqueueActionJob(job)
 	}
 	return done
+}
+
+func reportAdoptedDesiredActions(cfg Config, actions []action) {
+	for _, a := range actions {
+		reportActionStatus(cfg, a, true, "local runtime already matches desired state")
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func shouldReportDesiredAdoptionStatus(a action) bool {
+	return strings.TrimSpace(a.StatusType) != "runtime" && shouldReportActionStatus(a)
 }
 
 func desiredActionKey(a action) string {
@@ -158,11 +184,11 @@ func desiredActionSignature(a action) string {
 }
 
 func canAdoptDesiredAction(a action) bool {
-	if strings.TrimSpace(a.Op) != "apply" || !a.KnownRunning {
+	if strings.TrimSpace(a.Op) != "apply" {
 		return false
 	}
 	if strings.TrimSpace(a.StatusType) == "runtime" {
-		return runtimeActionServicesHealthy()
+		return a.KnownRunning && runtimeActionServicesHealthy()
 	}
 	if a.SourcePort <= 0 {
 		return false
@@ -172,11 +198,69 @@ func canAdoptDesiredAction(a action) bool {
 	if statusType == "tunnel" || (a.TunnelID > 0 && a.RuleID <= 0) {
 		localTunnelID := readTunnelIDByPort(port)
 		localForwardType := readTunnelForwardTypeByPort(port)
-		return localTunnelID == a.TunnelID && desiredForwardTypeCompatible(localForwardType, a.ForwardType)
+		return localTunnelID == a.TunnelID && desiredForwardTypeCompatible(localForwardType, a.ForwardType) && desiredActionLocalRuntimeReady(a)
 	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
-	return localRuleID == a.RuleID && desiredForwardTypeCompatible(localForwardType, a.ForwardType)
+	return localRuleID == a.RuleID && desiredForwardTypeCompatible(localForwardType, a.ForwardType) && desiredActionLocalRuntimeReady(a)
+}
+
+func desiredActionLocalRuntimeReady(a action) bool {
+	if a.KnownRunning {
+		return true
+	}
+	checkedService := false
+	if strings.TrimSpace(a.ServiceName) != "" {
+		checkedService = true
+		if !managedServiceActive(a.ServiceName) {
+			return false
+		}
+	}
+	if strings.TrimSpace(a.ServiceNameExtra) != "" {
+		checkedService = true
+		if !managedServiceActive(a.ServiceNameExtra) {
+			return false
+		}
+	}
+	if a.Fxp != nil {
+		checkedService = true
+		if !fxpMatchesRunning(a.Fxp) {
+			return false
+		}
+	}
+	if a.Failover != nil && a.Failover.Enabled {
+		return false
+	}
+	forwardType := strings.TrimSpace(a.ForwardType)
+	if forwardType == "gost" || forwardType == "forwardx" || forwardType == "nginx-tunnel" || forwardType == "guard" {
+		return desiredRuntimeServicesHealthy() && desiredRuntimeConfigUsesPort(a.SourcePort)
+	}
+	return checkedService
+}
+
+func desiredRuntimeServicesHealthy() bool {
+	services := requiredRuntimeServicesFromLocalConfig()
+	if len(services) == 0 {
+		return false
+	}
+	for _, name := range services {
+		if !managedServiceActive(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func desiredRuntimeConfigUsesPort(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	for _, item := range managedRuntimeConfigs() {
+		if managedRuntimeConfigUsesPort(item.path, port) {
+			return true
+		}
+	}
+	return false
 }
 
 func desiredForwardTypeCompatible(local string, desired string) bool {

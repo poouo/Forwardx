@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -83,8 +84,18 @@ func hostTrafficSnapshot() map[string]any {
 	}
 }
 
-func collectTraffic(cfg Config) {
+func collectTraffic(cfg Config) time.Duration {
+	started := time.Now()
 	states := readLocalRuleStates()
+	nextInterval := trafficCollectIntervalForRuleCount(len(states))
+	defer func() {
+		elapsed := time.Since(started)
+		if elapsed >= nextInterval/2 {
+			if shouldLogAgentReport("traffic-collect-slow", 5*time.Minute) {
+				logf("traffic collect slow rules=%d duration=%s nextInterval=%s", len(states), elapsed.Truncate(time.Millisecond), trafficCollectBackoffInterval(nextInterval, elapsed))
+			}
+		}
+	}()
 	iptablesCounters := iptablesCounterSnapshot()
 	nftCounters := nftablesCounterSnapshot()
 	connCounts := conntrackConnectionsSnapshot(states)
@@ -134,6 +145,38 @@ func collectTraffic(cfg Config) {
 			logf("traffic report ok watched=%d stats=%d", watched, len(stats))
 		}
 	}
+	return trafficCollectBackoffInterval(nextInterval, time.Since(started))
+}
+
+func trafficCollectIntervalForRuleCount(count int) time.Duration {
+	switch {
+	case count >= 500:
+		return 15 * time.Second
+	case count >= 300:
+		return 12 * time.Second
+	case count >= 150:
+		return 8 * time.Second
+	case count >= 50:
+		return 5 * time.Second
+	default:
+		return trafficCollectInterval
+	}
+}
+
+func trafficCollectBackoffInterval(base time.Duration, elapsed time.Duration) time.Duration {
+	next := base
+	if elapsed >= 5*time.Second {
+		next = base * 3
+	} else if elapsed >= 2*time.Second {
+		next = base * 2
+	}
+	if next < trafficCollectInterval {
+		next = trafficCollectInterval
+	}
+	if next > trafficCollectMaxInterval {
+		next = trafficCollectMaxInterval
+	}
+	return next
 }
 
 func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) {
@@ -559,6 +602,11 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 	if count < 1 {
 		count = 1
 	}
+	if latency, ok, detail, err := nativePingLatencyWithCount(target, timeout, count); err == nil {
+		return latency, ok, detail
+	} else if shouldLogAgentReport("native-ping-fallback", 5*time.Minute) {
+		logf("native ping unavailable target=%s: %v; falling back to system ping", target, err)
+	}
 	start := time.Now()
 	ctxTimeout := timeout + time.Second
 	if count > 1 {
@@ -603,6 +651,143 @@ func pingLatencyWithCount(host string, timeout time.Duration, count int) (int, b
 		return 0, false, detail
 	}
 	return elapsed, true, ""
+}
+
+func nativePingLatencyWithCount(target string, timeout time.Duration, count int) (int, bool, string, error) {
+	if runtime.GOOS == "windows" {
+		return 0, false, "", fmt.Errorf("native ping unsupported on windows")
+	}
+	if timeout <= 0 {
+		timeout = tcpingProbeTimeout
+	}
+	targets := []string{target}
+	if net.ParseIP(target) == nil {
+		resolved := resolveNetworkTargetIPs(target, timeout)
+		if len(resolved) == 0 {
+			return 0, false, "resolve failed", nil
+		}
+		targets = resolved
+	}
+	var lastErr error
+	for _, value := range targets {
+		ip := net.ParseIP(value)
+		if ip == nil {
+			continue
+		}
+		latency, ok, err := nativePingIP(ip, timeout, count)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ok {
+			return latency, true, value, nil
+		}
+	}
+	if lastErr != nil {
+		return 0, false, "", lastErr
+	}
+	return 0, false, "timeout", nil
+}
+
+func nativePingIP(ip net.IP, timeout time.Duration, count int) (int, bool, error) {
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return 0, false, fmt.Errorf("native ping currently supports ipv4 only")
+	}
+	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	if err != nil {
+		return 0, false, err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, false, err
+	}
+	id := os.Getpid() & 0xffff
+	baseSeq := int(time.Now().UnixNano()) & 0xffff
+	sentAt := map[int]time.Time{}
+	for i := 0; i < count; i++ {
+		seq := (baseSeq + i) & 0xffff
+		packet := buildICMPEchoRequest(8, id, seq)
+		sentAt[seq] = time.Now()
+		if _, err := conn.WriteTo(packet, &net.IPAddr{IP: ipv4}); err != nil {
+			return 0, false, err
+		}
+	}
+	buf := make([]byte, 1500)
+	totalLatency := 0
+	successes := 0
+	for {
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+		if ipAddr, ok := addr.(*net.IPAddr); ok && !ipAddr.IP.Equal(ipv4) {
+			continue
+		}
+		msg := stripIPv4Header(buf[:n])
+		if len(msg) < 8 || msg[0] != 0 || msg[1] != 0 {
+			continue
+		}
+		if int(binary.BigEndian.Uint16(msg[4:6])) != id {
+			continue
+		}
+		seq := int(binary.BigEndian.Uint16(msg[6:8]))
+		started, ok := sentAt[seq]
+		if !ok {
+			continue
+		}
+		delete(sentAt, seq)
+		latency := int(time.Since(started).Milliseconds())
+		if latency < 1 {
+			latency = 1
+		}
+		totalLatency += latency
+		successes++
+		if successes >= count {
+			break
+		}
+	}
+	if successes == 0 {
+		return 0, false, nil
+	}
+	return totalLatency / successes, true, nil
+}
+
+func buildICMPEchoRequest(typ byte, id int, seq int) []byte {
+	payload := make([]byte, 24)
+	payload[0] = typ
+	binary.BigEndian.PutUint16(payload[4:6], uint16(id))
+	binary.BigEndian.PutUint16(payload[6:8], uint16(seq))
+	binary.BigEndian.PutUint64(payload[8:16], uint64(time.Now().UnixNano()))
+	copy(payload[16:], []byte("forwardx"))
+	checksum := icmpChecksum(payload)
+	binary.BigEndian.PutUint16(payload[2:4], checksum)
+	return payload
+}
+
+func stripIPv4Header(packet []byte) []byte {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return packet
+	}
+	headerLen := int(packet[0]&0x0f) * 4
+	if headerLen < 20 || len(packet) < headerLen+8 {
+		return packet
+	}
+	return packet[headerLen:]
+}
+
+func icmpChecksum(data []byte) uint16 {
+	sum := uint32(0)
+	for i := 0; i+1 < len(data); i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(data[i : i+2]))
+	}
+	if len(data)%2 == 1 {
+		sum += uint32(data[len(data)-1]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
 }
 
 func parsePingLatencyMs(output string) int {
