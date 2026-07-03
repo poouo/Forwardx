@@ -374,6 +374,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }

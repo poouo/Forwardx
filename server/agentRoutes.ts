@@ -60,6 +60,13 @@ function prepareAgentDesiredStateResync(hostId: number) {
   invalidateAgentDesiredStateCache(hostId);
 }
 
+function setAgentEventStreamHeaders(res: Response, connection: "keep-alive" | "close") {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Connection", connection);
+}
+
 async function openAgentEventStream(input: {
   req: Request;
   res: Response;
@@ -70,9 +77,7 @@ async function openAgentEventStream(input: {
   const migratedTo = await db.getSetting("migratedToPanelUrl");
   if (migratedTo) {
     res.status(200);
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "close");
+    setAgentEventStreamHeaders(res, "close");
     res.flushHeaders?.();
     res.write(`event: message\n`);
     res.write(`data: ${JSON.stringify(encryptPayload({ type: "agent-upgrade", data: migratedAgentPayload(migratedTo).agentUpgrade }, token))}\n\n`);
@@ -117,9 +122,7 @@ async function openAgentEventStream(input: {
   }
 
   res.status(200);
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  setAgentEventStreamHeaders(res, "keep-alive");
   res.flushHeaders?.();
 
   const writeEncryptedEvent = (type: string, data: any) => {
