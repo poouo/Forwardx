@@ -263,6 +263,19 @@ const manualPanelUpgradeCommands = [
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
 const tunnelForwardProtocolKeys = TUNNEL_PROTOCOLS.filter((key) => key !== "nginx_tls");
 const LOG_PAGE_SIZE = 200;
+type PanelLogLevel = "all" | "info" | "warn" | "error" | "log";
+type PanelLogSummary = Record<PanelLogLevel, number>;
+const EMPTY_PANEL_LOG_SUMMARY: PanelLogSummary = { all: 0, info: 0, warn: 0, error: 0, log: 0 };
+
+function normalizePanelLogSummary(summary?: Partial<PanelLogSummary> | null): PanelLogSummary {
+  return {
+    all: Number(summary?.all) || 0,
+    info: Number(summary?.info) || 0,
+    warn: Number(summary?.warn) || 0,
+    error: Number(summary?.error) || 0,
+    log: Number(summary?.log) || 0,
+  };
+}
 
 function createDefaultHomepageHtml(themeId: PersonalizationThemePresetId) {
   const theme = getPersonalizationThemePreset(themeId);
@@ -732,14 +745,16 @@ function SettingsContent() {
 }
 
 function PanelLogsSection() {
-  const [panelLogLevel, setPanelLogLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
-  const [exportLevel, setExportLevel] = useState<"all" | "info" | "warn" | "error" | "log">("all");
+  const [panelLogLevel, setPanelLogLevel] = useState<PanelLogLevel>("all");
+  const [exportLevel, setExportLevel] = useState<PanelLogLevel>("all");
   const [panelLogOffset, setPanelLogOffset] = useState(0);
+  const panelLogSummaryRef = useRef<PanelLogSummary>(EMPTY_PANEL_LOG_SUMMARY);
   const { data: panelLogs, isLoading: panelLogsLoading, isFetching: panelLogsFetching, refetch: refetchPanelLogs } = trpc.system.panelLogs.useQuery({
     level: panelLogLevel,
     limit: LOG_PAGE_SIZE,
     offset: panelLogOffset,
   }, {
+    placeholderData: (previousData) => previousData,
     refetchInterval: pollingInterval("log"),
   });
   const exportLogsMutation = trpc.system.exportPanelLogs.useMutation({
@@ -764,7 +779,7 @@ function PanelLogsSection() {
     return "text-muted-foreground";
   };
   const panelLogEntries = panelLogs?.logs || [];
-  const resetPanelLogs = (level: typeof panelLogLevel) => {
+  const resetPanelLogs = (level: PanelLogLevel) => {
     setPanelLogLevel(level);
     setPanelLogOffset(0);
   };
@@ -777,7 +792,10 @@ function PanelLogsSection() {
   };
   const panelLogStart = panelLogEntries.length > 0 ? (panelLogs?.offset || 0) + 1 : 0;
   const panelLogEnd = (panelLogs?.offset || 0) + panelLogEntries.length;
-  const summary = (panelLogs?.summary || {}) as Record<"all" | "info" | "warn" | "error" | "log", number>;
+  if (panelLogs?.summary) {
+    panelLogSummaryRef.current = normalizePanelLogSummary(panelLogs.summary as Partial<PanelLogSummary>);
+  }
+  const summary = panelLogSummaryRef.current;
   const levelTabs = [
     { value: "all", label: "全部", count: summary.all || 0 },
     { value: "info", label: "Info", count: summary.info || 0 },

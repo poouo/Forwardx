@@ -14,7 +14,7 @@ import { normalizeAgentAddress, normalizeAgentText } from "./agentInputValidatio
 import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
-import { registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
+import { invalidateAgentDesiredStateCache, registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
 import { hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
@@ -54,6 +54,10 @@ async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: stri
   clearTunnelRuntimeStatusForHost(hostId);
   await refreshAgentsAffectedByHostAddress(hostId, reason);
   appendPanelLog("info", `[AgentRecovery] host=${hostId} reason=${reason} runtime state marked for reapply`);
+}
+
+function prepareAgentDesiredStateResync(hostId: number) {
+  invalidateAgentDesiredStateCache(hostId);
 }
 
 async function openAgentEventStream(input: {
@@ -267,7 +271,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
           console.warn(`[HostStatus] Online notify failed host=${existingHost.id}: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
-      await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-registered");
+      prepareAgentDesiredStateResync(existingHost.id);
       res.json({ success: true, hostId: existingHost.id, message: "Host updated" });
       return;
     }
@@ -292,7 +296,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
     });
 
     await db.markAgentTokenUsed(token, hostId);
-    await resetAgentRuntimeStateAfterReconnect(hostId, "agent-registered");
+    prepareAgentDesiredStateResync(hostId);
     res.json({ success: true, hostId, message: "Host registered" });
   } catch (error) {
     console.error("[Agent Register] Error:", error);

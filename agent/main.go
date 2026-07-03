@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.134"
+var Version = "2.2.135"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -45,6 +45,7 @@ const agentClockSyncCooldown = 10 * time.Minute
 const publicIPRefreshInterval = time.Minute
 const heartbeatStaticReportInterval = 10 * time.Minute
 const trafficCollectInterval = 3 * time.Second
+const trafficCollectMaxInterval = 30 * time.Second
 const countingChainRefreshInterval = 6 * time.Hour
 const runtimeActionRefreshInterval = 30 * time.Minute
 const agentLogRetention = 72 * time.Hour
@@ -114,6 +115,10 @@ var publicIPv4Cache string
 var publicIPv6Cache string
 var publicIPCheckedAt time.Time
 var lastTrafficCollectAt time.Time
+var nextTrafficCollectInterval = trafficCollectInterval
+var cpuUsageMu sync.Mutex
+var previousCPUTimes cpuTimes
+var previousCPUReady bool
 var countingChainMu sync.Mutex
 var countingChainSignatures = map[string]string{}
 var countingChainCheckedAt = map[string]time.Time{}
@@ -871,8 +876,8 @@ func heartbeat(cfg Config) (int, error) {
 		ensureCountingChainsIfNeeded(r)
 	}
 	syncProtocolGuards(cfg, resp.GuardRules)
-	if lastTrafficCollectAt.IsZero() || time.Since(lastTrafficCollectAt) >= trafficCollectInterval {
-		collectTraffic(cfg)
+	if lastTrafficCollectAt.IsZero() || time.Since(lastTrafficCollectAt) >= nextTrafficCollectInterval {
+		nextTrafficCollectInterval = collectTraffic(cfg)
 		lastTrafficCollectAt = time.Now()
 	}
 	tcpingInterval := tcpingDueInterval(resp.HostProbeServices)
@@ -1561,7 +1566,14 @@ func handleAction(cfg Config, a action) bool {
 		return ok
 	}
 	running := ok && a.Op == "apply"
-	message := actionMessage.get()
+	reportActionStatus(cfg, a, running, actionMessage.get())
+	return ok
+}
+
+func reportActionStatus(cfg Config, a action, running bool, message string) {
+	if !shouldReportActionStatus(a) {
+		return
+	}
 	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": running, "message": message}
 	var out map[string]any
 	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
@@ -1569,7 +1581,6 @@ func handleAction(cfg Config, a action) bool {
 	} else if !running || agentVerboseLogs {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
-	return ok
 }
 
 func shouldSkipRemoveForReassignedPort(a action) bool {
@@ -5753,14 +5764,113 @@ func cpuInfo() string {
 	return model
 }
 
+type cpuTimes struct {
+	Idle  uint64
+	Total uint64
+}
+
 func cpuUsage() int {
+	current, ok := readCPUTimes()
+	if !ok {
+		return cpuLoadAveragePercentFallback()
+	}
+	cpuUsageMu.Lock()
+	ready := previousCPUReady
+	if !ready {
+		previousCPUTimes = current
+		previousCPUReady = true
+	}
+	cpuUsageMu.Unlock()
+	if !ready {
+		time.Sleep(200 * time.Millisecond)
+		if next, ok := readCPUTimes(); ok {
+			current = next
+		}
+	}
+	return cpuUsageFromTimes(current)
+}
+
+func cpuUsageFromTimes(current cpuTimes) int {
+	cpuUsageMu.Lock()
+	defer cpuUsageMu.Unlock()
+	previous := previousCPUTimes
+	previousCPUTimes = current
+	previousCPUReady = true
+	if current.Total <= previous.Total {
+		return 0
+	}
+	totalDelta := current.Total - previous.Total
+	idleDelta := uint64(0)
+	if current.Idle > previous.Idle {
+		idleDelta = current.Idle - previous.Idle
+	}
+	if idleDelta >= totalDelta {
+		return 0
+	}
+	busyDelta := totalDelta - idleDelta
+	usage := int((busyDelta*100 + totalDelta/2) / totalDelta)
+	if usage < 0 {
+		return 0
+	}
+	if usage > 100 {
+		return 100
+	}
+	return usage
+}
+
+func readCPUTimes() (cpuTimes, bool) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return cpuTimes{}, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[0] != "cpu" {
+			continue
+		}
+		values := make([]uint64, 0, len(fields)-1)
+		for _, field := range fields[1:] {
+			value, err := strconv.ParseUint(field, 10, 64)
+			if err != nil {
+				value = 0
+			}
+			values = append(values, value)
+		}
+		total := uint64(0)
+		for _, value := range values {
+			total += value
+		}
+		idle := values[3]
+		if len(values) > 4 {
+			idle += values[4]
+		}
+		if total == 0 {
+			return cpuTimes{}, false
+		}
+		return cpuTimes{Idle: idle, Total: total}, true
+	}
+	return cpuTimes{}, false
+}
+
+func cpuLoadAveragePercentFallback() int {
 	b, _ := os.ReadFile("/proc/loadavg")
 	f := strings.Fields(string(b))
 	if len(f) == 0 {
 		return 0
 	}
 	v, _ := strconv.ParseFloat(f[0], 64)
-	return int(v)
+	cores := runtime.NumCPU()
+	if cores <= 0 {
+		cores = 1
+	}
+	usage := int((v/float64(cores))*100 + 0.5)
+	if usage < 0 {
+		return 0
+	}
+	if usage > 100 {
+		return 100
+	}
+	return usage
 }
 
 func netBytes(idx int) uint64 {

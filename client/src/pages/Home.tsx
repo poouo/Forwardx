@@ -42,7 +42,8 @@ import {
 } from "recharts";
 
 const LOGIN_WELCOME_TOAST_KEY = "forwardx.loginWelcome";
-const TRAFFIC_PIE_COLORS = ["var(--color-primary)", "#10b981", "#f59e0b", "#ef4444", "#14b8a6", "#ec4899", "#f97316", "#84cc16", "#64748b", "#a3a3a3"];
+const TRAFFIC_PIE_COLORS = ["#2563eb", "#10b981", "#f59e0b", "#ef4444", "#14b8a6", "#ec4899", "#f97316", "#84cc16", "#64748b", "#a3a3a3"];
+const DASHBOARD_RULE_ACTIVE_COLOR = "#2563eb";
 const TRAFFIC_PIE_MAX_SEGMENTS = 5;
 
 type TrafficPieDatum = {
@@ -186,6 +187,15 @@ function CircularProgress({ value, color }: { value: number; color: string }) {
   );
 }
 
+function FixedColorProgress({ value, color, className = "" }: { value: number; color: string; className?: string }) {
+  const normalized = Math.max(0, Math.min(100, Number(value) || 0));
+  return (
+    <div className={`relative h-4 w-full overflow-hidden rounded-full bg-secondary ${className}`}>
+      <div className="h-full rounded-full transition-all" style={{ width: `${normalized}%`, backgroundColor: color }} />
+    </div>
+  );
+}
+
 function TrafficTooltipContent({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const data = payload[0]?.payload;
@@ -233,7 +243,7 @@ function TrafficPieLoadingState() {
       <div className="flex h-44 min-w-0 items-center justify-center">
         <div className="relative flex h-32 w-32 items-center justify-center">
           <div className="absolute inset-0 rounded-full border-[18px] border-muted/70" />
-          <div className="absolute inset-0 animate-spin rounded-full border-[18px] border-transparent border-t-primary/80 border-r-primary/30" />
+          <div className="absolute inset-0 animate-spin rounded-full border-[18px] border-transparent border-r-blue-600/30 border-t-blue-600/80" />
           <div className="absolute inset-7 rounded-full bg-card/90 shadow-inner" />
           <div className="relative space-y-2 text-center">
             <Skeleton className="mx-auto h-4 w-16" />
@@ -925,10 +935,10 @@ function DashboardContent() {
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-6">
-              {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color="var(--color-primary)" />}
+              {isLoading ? <Skeleton className="h-20 w-20 rounded-full" /> : <CircularProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} />}
               <div className="space-y-1 text-sm">
                 <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-primary" />
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DASHBOARD_RULE_ACTIVE_COLOR }} />
                   活跃 {stats?.activeRules ?? 0}
                 </div>
                 <div className="flex items-center gap-2 text-muted-foreground">
@@ -951,7 +961,7 @@ function DashboardContent() {
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">规则负载</span>
               <div className="flex w-32 items-center gap-2">
-                <Progress value={activeRate} className="h-1.5" />
+                <FixedColorProgress value={activeRate} color={DASHBOARD_RULE_ACTIVE_COLOR} className="h-1.5" />
                 <span className="w-8 text-right text-xs font-medium tabular-nums">{activeRate}%</span>
               </div>
             </div>
