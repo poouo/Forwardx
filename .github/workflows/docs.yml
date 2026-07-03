@@ -49,6 +49,29 @@ jobs:
           VITEPRESS_BASE: ${{ vars.VITEPRESS_BASE || format('/{0}/', github.event.repository.name) }}
         run: pnpm docs:build
 
+      - name: Validate Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="docs/.vitepress/dist"
+          if [ ! -d "$artifact_dir" ]; then
+            echo "::error::Pages artifact directory does not exist: $artifact_dir"
+            exit 1
+          fi
+          if [ ! -f "$artifact_dir/index.html" ]; then
+            echo "::error::Pages artifact is missing index.html: $artifact_dir/index.html"
+            exit 1
+          fi
+          file_count="$(find "$artifact_dir" -type f | wc -l | tr -d '[:space:]')"
+          total_bytes="$(du -sb "$artifact_dir" | awk '{print $1}')"
+          echo "Pages artifact directory: $artifact_dir"
+          echo "Pages artifact files: $file_count"
+          echo "Pages artifact bytes: $total_bytes"
+          if [ "$file_count" -le 0 ]; then
+            echo "::error::Pages artifact is empty: $artifact_dir"
+            exit 1
+          fi
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
