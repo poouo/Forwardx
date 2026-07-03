@@ -95,12 +95,13 @@ export async function markHostOffline(hostId: number) {
   return markHostsOffline([hostId]);
 }
 
-export async function requestHostAgentUpgrade(hostId: number, targetVersion: string | null) {
+export async function requestHostAgentUpgrade(hostId: number, targetVersion: string | null, releaseVersion?: string | null) {
   const db = await getDb();
   if (!db) return;
   await db.update(hosts).set({
     agentUpgradeRequested: true,
     agentUpgradeTargetVersion: targetVersion,
+    agentUpgradeReleaseVersion: releaseVersion || null,
     agentUpgradeRequestedAt: nowDate(),
     updatedAt: nowDate(),
   }).where(eq(hosts.id, hostId));
@@ -112,6 +113,7 @@ export async function clearHostAgentUpgradeRequest(hostId: number) {
   await db.update(hosts).set({
     agentUpgradeRequested: false,
     agentUpgradeTargetVersion: null,
+    agentUpgradeReleaseVersion: null,
     updatedAt: nowDate(),
   }).where(eq(hosts.id, hostId));
 }
@@ -125,6 +127,7 @@ export async function clearStaleHostAgentUpgradeRequests(timeoutMs = 10 * 60 * 1
     `UPDATE ${quoteIdentifier("hosts")}
      SET ${quoteIdentifier("agentUpgradeRequested")} = ?,
          ${quoteIdentifier("agentUpgradeTargetVersion")} = NULL,
+         ${quoteIdentifier("agentUpgradeReleaseVersion")} = NULL,
          ${quoteIdentifier("updatedAt")} = ?
      WHERE ${quoteIdentifier("agentUpgradeRequested")} = ?
        AND ${quoteIdentifier("agentUpgradeRequestedAt")} IS NOT NULL

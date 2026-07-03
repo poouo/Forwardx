@@ -213,6 +213,7 @@ export const hosts = table("hosts", {
   agentVersion: text("agentVersion"),
   agentUpgradeRequested: boolean("agentUpgradeRequested").notNull().default(false),
   agentUpgradeTargetVersion: text("agentUpgradeTargetVersion"),
+  agentUpgradeReleaseVersion: text("agentUpgradeReleaseVersion"),
   agentUpgradeRequestedAt: epoch("agentUpgradeRequestedAt"),
   purchasedAt: epoch("purchasedAt"),
   stoppedAt: epoch("stoppedAt"),

@@ -8,6 +8,20 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1" />
     <title>ForwardX</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <script>
+      (function () {
+        try {
+          var theme = window.localStorage.getItem("forwardx-theme") || "light";
+          var resolved = theme === "system"
+            ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+            : theme;
+          document.documentElement.classList.remove("light", "dark");
+          document.documentElement.classList.add(resolved === "dark" ? "dark" : "light");
+        } catch (error) {
+          document.documentElement.classList.add("light");
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />

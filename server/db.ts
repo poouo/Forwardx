@@ -20,6 +20,7 @@ import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBuck
 import { getSetting, setSetting } from "./repositories/settingsRepository";
 import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/trafficBillingRepository";
+import { purgeSettledPendingForwardRuleDeletes } from "./repositories/forwardRuleRepository";
 import { markLocalSetupComplete } from "./setupState";
 import { seedDevPanelData } from "./devPanel";
 
@@ -108,6 +109,11 @@ export async function initDatabase() {
     }
 
     await ensureDatabaseSchema();
+    await purgeSettledPendingForwardRuleDeletes().then((count) => {
+      if (count > 0) console.log(`[Database] Purged settled pending forward rules count=${count}`);
+    }).catch((error) => {
+      console.warn("[Database] Pending forward rule purge skipped:", error instanceof Error ? error.message : String(error));
+    });
     await backfillTunnelProxyProtocolSplit().catch((error) => {
       console.warn("[Database] PROXY Protocol split backfill skipped:", error instanceof Error ? error.message : String(error));
     });

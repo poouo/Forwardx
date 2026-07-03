@@ -36,6 +36,13 @@ import {
   type ForwardProtocolSettings,
 } from "@shared/forwardTypes";
 import {
+  SIDEBAR_MENU_KEYS,
+  SIDEBAR_MENU_LABELS,
+  normalizeSidebarMenuSettings,
+  type SidebarMenuKey,
+  type SidebarMenuSettings,
+} from "@shared/sidebarMenu";
+import {
   Trash2,
   Key,
   Copy,
@@ -65,6 +72,7 @@ import {
   Palette,
   Image as ImageIcon,
   Monitor,
+  PanelLeft,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
@@ -87,12 +95,14 @@ import {
 
 function getUpgradeProgress(job: any) {
   const status = job?.status || "idle";
+  const isRollback = job?.mode === "rollback";
+  const actionLabel = isRollback ? "回退" : "升级";
   const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
   const matched = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(logs));
   const steps = [
     {
-      label: "准备升级",
-      done: status !== "idle" && matched([/开始升级/i, /start/i]),
+      label: `准备${actionLabel}`,
+      done: status !== "idle" && matched([/开始升级/i, /开始回退/i, /Starting panel/i, /start/i]),
     },
     {
       label: "检查发布资产",
@@ -131,7 +141,7 @@ function getUpgradeProgress(job: any) {
   ];
 
   if (status === "success") {
-    return { percent: 100, label: "升级完成", steps: steps.map((step) => ({ ...step, done: true, active: false })) };
+    return { percent: 100, label: `${actionLabel}完成`, steps: steps.map((step) => ({ ...step, done: true, active: false })) };
   }
   if (status === "waiting_assets") {
     return { percent: 34, label: "等待 GitHub Actions 构建发布资产", steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
@@ -139,7 +149,7 @@ function getUpgradeProgress(job: any) {
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    return { percent: Math.max(10, doneCount * 22), label: "升级异常", steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
+    return { percent: Math.max(10, doneCount * 22), label: `${actionLabel}异常`, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
   if (status === "running") {
     const doneCount = steps.filter((step) => step.done).length;
@@ -147,7 +157,7 @@ function getUpgradeProgress(job: any) {
     const activeStep = steps[activeIndex]?.label || "等待服务重启";
     return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: activeStep, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
-  return { percent: 0, label: "等待升级", steps: steps.map((step) => ({ ...step, active: false })) };
+  return { percent: 0, label: `等待${actionLabel}`, steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
 const panelLocalScriptUrl = "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-local.sh";
@@ -259,6 +269,16 @@ const manualPanelUpgradeCommands = [
     command: panelDockerUpgradeCommand,
   },
 ];
+
+function panelVersionCommand(command: string, targetVersion: string) {
+  const target = String(targetVersion || "").trim().replace(/^v/i, "");
+  if (!target) return command;
+  const env = `FORWARDX_TARGET_VERSION=${target}`;
+  return command
+    .replace(/\|\s*sudo\s+bash\s+-s\s+--\s+upgrade/g, `| sudo env ${env} bash -s -- upgrade`)
+    .replace(/\|\s*bash\s+-s\s+--\s+upgrade/g, `| env ${env} bash -s -- upgrade`)
+    .replace(/^\/bin\/bash\s+/i, `${env} /bin/bash `);
+}
 
 const directForwardProtocolKeys = [...FORWARD_TYPES] as const;
 const tunnelForwardProtocolKeys = TUNNEL_PROTOCOLS.filter((key) => key !== "nginx_tls");
@@ -2690,6 +2710,7 @@ type SystemSettingsSaveKey =
   | "ddns"
   | "hostMonitor"
   | "forwardProtocols"
+  | "sidebarMenu"
   | "agentInstall";
 
 function isValidWebPort(value: string | number) {
@@ -3555,6 +3576,7 @@ function SystemInfoSection() {
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
+  const [sidebarMenu, setSidebarMenu] = useState<SidebarMenuSettings>(() => normalizeSidebarMenuSettings());
   const [githubAcceleratorEnabled, setGithubAcceleratorEnabled] = useState(false);
   const [githubAcceleratorUrlInput, setGithubAcceleratorUrlInput] = useState(defaultGithubAcceleratorUrl);
   const [agentPreferPanelInstall, setAgentPreferPanelInstall] = useState(false);
@@ -3586,13 +3608,21 @@ function SystemInfoSection() {
   const [publicHostMonitorTitle, setPublicHostMonitorTitle] = useState("");
   const [allowMultiDeviceLogin, setAllowMultiDeviceLogin] = useState(false);
   const [showForwardProtocolDialog, setShowForwardProtocolDialog] = useState(false);
+  const [showSidebarMenuDialog, setShowSidebarMenuDialog] = useState(false);
   const [savingSetting, setSavingSetting] = useState<SystemSettingsSaveKey | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpgradeConfirm, setShowUpgradeConfirm] = useState(false);
+  const [showRollbackDialog, setShowRollbackDialog] = useState(false);
+  const [rollbackType, setRollbackType] = useState<"panel" | "agent">("panel");
+  const [selectedRollbackVersion, setSelectedRollbackVersion] = useState("");
   const [showDockerUpgradeScript, setShowDockerUpgradeScript] = useState(false);
   const previousUpgradeStatus = useRef<string | null>(null);
   const shownDockerUpgradeVersion = useRef<string | null>(null);
   const lastPanelUpdateCheck = useRef(0);
+  const rollbackVersionsQuery = trpc.system.rollbackVersions.useQuery(
+    { force: false },
+    { enabled: showRollbackDialog, refetchOnWindowFocus: false, retry: false }
+  );
 
   useEffect(() => {
     if (settings) {
@@ -3609,6 +3639,7 @@ function SystemInfoSection() {
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
       setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
+      setSidebarMenu(normalizeSidebarMenuSettings(settings.sidebarMenu));
       setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
       setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
@@ -3674,17 +3705,38 @@ function SystemInfoSection() {
     const status = upgradeStatus?.job?.status;
     if (!status || status === "idle") return;
     const previous = previousUpgradeStatus.current;
+    const actionLabel = upgradeStatus?.job?.mode === "rollback" ? "回退" : "升级";
     if (previous === "running" && status === "success") {
-      toast.success(`面板升级成功，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`);
+      toast.success(`面板${actionLabel}成功，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`);
     }
     if (previous === "running" && status === "waiting_assets") {
       toast.info(upgradeStatus?.job?.error || "发布资产仍在构建中，请稍后重试");
     }
     if (previous === "running" && status === "error") {
-      toast.error(upgradeStatus?.job?.error || "面板升级失败");
+      toast.error(upgradeStatus?.job?.error || `面板${actionLabel}失败`);
     }
     previousUpgradeStatus.current = status;
   }, [upgradeStatus?.job?.status, upgradeStatus?.job?.error]);
+
+  useEffect(() => {
+    if (!showRollbackDialog) return;
+    const versions = rollbackType === "panel"
+      ? (rollbackVersionsQuery.data?.panelVersions || []).map((item: any) => item.panelVersion)
+      : (rollbackVersionsQuery.data?.agentVersions || []).map((item: any) => item.agentVersion);
+    if (versions.length === 0) {
+      setSelectedRollbackVersion("");
+      return;
+    }
+    if (!selectedRollbackVersion || !versions.includes(selectedRollbackVersion)) {
+      setSelectedRollbackVersion(versions[0]);
+    }
+  }, [
+    rollbackType,
+    rollbackVersionsQuery.data?.agentVersions,
+    rollbackVersionsQuery.data?.panelVersions,
+    selectedRollbackVersion,
+    showRollbackDialog,
+  ]);
 
   const updateSettingsMutation = trpc.system.updateSettings.useMutation({
     onSuccess: () => {
@@ -3967,6 +4019,33 @@ function SystemInfoSection() {
     );
   };
 
+  const resetSidebarMenuDraft = () => {
+    setSidebarMenu(normalizeSidebarMenuSettings(settings?.sidebarMenu));
+  };
+
+  const openSidebarMenuDialog = () => {
+    resetSidebarMenuDraft();
+    setShowSidebarMenuDialog(true);
+  };
+
+  const closeSidebarMenuDialog = () => {
+    resetSidebarMenuDraft();
+    setShowSidebarMenuDialog(false);
+  };
+
+  const handleSaveSidebarMenu = () => {
+    saveSystemSettings(
+      "sidebarMenu",
+      { sidebarMenu },
+      {
+        onSuccess: () => {
+          setShowSidebarMenuDialog(false);
+          utils.system.publicInfo.invalidate();
+        },
+      },
+    );
+  };
+
   const handleSaveAgentInstall = () => {
     const acceleratorUrl = normalizeConfigUrl(githubAcceleratorUrlInput);
     if (acceleratorUrl && !/^https?:\/\//i.test(acceleratorUrl)) {
@@ -3984,6 +4063,10 @@ function SystemInfoSection() {
 
   const setForwardProtocolEnabled = (key: keyof ForwardProtocolSettings, enabled: boolean) => {
     setForwardProtocols((prev) => ({ ...prev, [key]: enabled }));
+  };
+
+  const setSidebarMenuEnabled = (key: SidebarMenuKey, enabled: boolean) => {
+    setSidebarMenu((prev) => ({ ...prev, [key]: enabled }));
   };
 
   const copyTextToClipboard = async (text: string) => {
@@ -4017,6 +4100,38 @@ function SystemInfoSection() {
     },
     onError: (err) => toast.error(err.message || "启动升级失败"),
   });
+
+  const startRollbackMutation = trpc.system.startVersionRollback.useMutation({
+    onSuccess: async (result) => {
+      if ((result as any)?.pendingReason) {
+        toast.info((result as any).pendingReason);
+      } else if ((result as any)?.type === "agent") {
+        toast.success(`Agent 回退任务已下发 ${((result as any).requested || 0)} 台，实时推送 ${((result as any).pushed || 0)} 台`);
+      } else {
+        toast.success("面板回退任务已启动");
+      }
+      setShowRollbackDialog(false);
+      await refetchUpgradeStatus();
+      utils.hosts.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "启动回退失败"),
+  });
+
+  const refreshRollbackVersions = async () => {
+    await utils.system.rollbackVersions.fetch({ force: true });
+    await rollbackVersionsQuery.refetch();
+  };
+
+  const openRollbackDialog = async () => {
+    setRollbackType("panel");
+    setSelectedRollbackVersion("");
+    setShowRollbackDialog(true);
+    try {
+      await refreshRollbackVersions();
+    } catch {
+      // The dialog will render the query error.
+    }
+  };
 
   const handleCheckUpdate = async () => {
     const now = Date.now();
@@ -4053,6 +4168,18 @@ function SystemInfoSection() {
     (updateInfo.hasUpdate || (!!updateInfo.pendingReason && !updateInfo.error));
   const canStartPanelUpgrade =
     isDockerDeployment ? canShowDockerUpgradeScript : !!updateInfo?.hasUpdate;
+  const rollbackPanelVersions = rollbackVersionsQuery.data?.panelVersions || [];
+  const rollbackAgentVersions = rollbackVersionsQuery.data?.agentVersions || [];
+  const selectedRollbackTarget = rollbackType === "panel"
+    ? rollbackPanelVersions.find((item: any) => item.panelVersion === selectedRollbackVersion)
+    : rollbackAgentVersions.find((item: any) => item.agentVersion === selectedRollbackVersion);
+  const selectedRollbackPanelCommand = rollbackType === "panel" && selectedRollbackVersion
+    ? panelVersionCommand(
+        upgradeStatus?.manualUpgradeCommand || settings?.upgrade?.manualUpgradeCommand || manualPanelUpgradeCommands[isDockerDeployment ? 1 : 0].command,
+        selectedRollbackVersion,
+      )
+    : "";
+  const canRunPanelRollback = rollbackType !== "panel" || (!!upgradeEnabled && !isDockerDeployment);
   const androidApkDownloadUrl = settings?.androidApkDownloadUrl || "";
   const contactLinks = [
     {
@@ -4087,6 +4214,7 @@ function SystemInfoSection() {
   const tunnelProtocolEnabledCount = tunnelForwardProtocolKeys.filter((key) => forwardProtocols[key]).length;
   const totalProtocolEnabledCount = directProtocolEnabledCount + tunnelProtocolEnabledCount;
   const totalProtocolCount = directForwardProtocolKeys.length + tunnelForwardProtocolKeys.length;
+  const sidebarMenuEnabledCount = SIDEBAR_MENU_KEYS.filter((key) => sidebarMenu[key]).length;
   const panelSslSourceLabel = panelSslMode === "pem" ? "粘贴 PEM 内容" : "服务器文件路径";
   const panelSslPathActive = panelSslMode === "path";
   const panelSslPemActive = panelSslMode === "pem";
@@ -4748,65 +4876,65 @@ function SystemInfoSection() {
         </CardContent>
       </Card>
 
+      <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Monitor className="h-4 w-4 text-primary" />
+            主机监控配置
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">允许免登录查看主机监控</p>
+            </div>
+            <Switch className="shrink-0" checked={publicHostMonitorEnabled} onCheckedChange={setPublicHostMonitorEnabled} />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
+            <div className="space-y-2 lg:col-span-2">
+              <Label>展示标题</Label>
+              <Input
+                value={publicHostMonitorTitle}
+                onChange={(e) => setPublicHostMonitorTitle(e.target.value.slice(0, 80))}
+                placeholder="留空默认使用站点标题 + 主机监控"
+                maxLength={80}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>主机监控面板路径</Label>
+              <Input
+                value={publicHostMonitorPath}
+                onChange={(e) => setPublicHostMonitorPath(e.target.value)}
+                placeholder="dev"
+              />
+              <p className="text-xs text-muted-foreground">
+                支持字母、数字、短横线和下划线。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>访问地址</Label>
+              <div className="flex min-w-0 gap-2">
+                <Input value={publicHostMonitorUrl} readOnly className="font-mono text-xs" />
+                <Button type="button" variant="outline" size="icon" title="打开主机监控面板" asChild>
+                  <a href={publicHostMonitorUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button onClick={handleSavePublicHostMonitor} disabled={isSavingSetting("hostMonitor")}>
+              {isSavingSetting("hostMonitor") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isSavingSetting("hostMonitor") ? "保存中..." : "保存主机监控配置"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Monitor className="h-4 w-4 text-primary" />
-              主机监控配置
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">允许免登录查看主机监控</p>
-              </div>
-              <Switch className="shrink-0" checked={publicHostMonitorEnabled} onCheckedChange={setPublicHostMonitorEnabled} />
-            </div>
-
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
-              <div className="space-y-2 lg:col-span-2">
-                <Label>展示标题</Label>
-                <Input
-                  value={publicHostMonitorTitle}
-                  onChange={(e) => setPublicHostMonitorTitle(e.target.value.slice(0, 80))}
-                  placeholder="留空默认使用站点标题 + 主机监控"
-                  maxLength={80}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>主机监控面板路径</Label>
-                <Input
-                  value={publicHostMonitorPath}
-                  onChange={(e) => setPublicHostMonitorPath(e.target.value)}
-                  placeholder="dev"
-                />
-                <p className="text-xs text-muted-foreground">
-                  支持字母、数字、短横线和下划线。
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label>访问地址</Label>
-                <div className="flex min-w-0 gap-2">
-                  <Input value={publicHostMonitorUrl} readOnly className="font-mono text-xs" />
-                  <Button type="button" variant="outline" size="icon" title="打开主机监控面板" asChild>
-                    <a href={publicHostMonitorUrl} target="_blank" rel="noreferrer">
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <Button onClick={handleSavePublicHostMonitor} disabled={isSavingSetting("hostMonitor")}>
-                {isSavingSetting("hostMonitor") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isSavingSetting("hostMonitor") ? "保存中..." : "保存主机监控配置"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -4832,6 +4960,30 @@ function SystemInfoSection() {
                 {isSavingSetting("sessionPolicy") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {isSavingSetting("sessionPolicy") ? "保存中..." : "保存登录会话配置"}
               </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
+          <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1.5">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <PanelLeft className="h-4 w-4 text-primary" />
+                左侧导航栏菜单展示设置
+              </CardTitle>
+              <CardDescription>
+                控制左侧导航栏常用入口是否展示。
+              </CardDescription>
+            </div>
+            <Button variant="outline" className="w-full gap-2 sm:w-auto" onClick={openSidebarMenuDialog}>
+              <Settings2 className="h-4 w-4" />
+              管理菜单开关
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-3">
+              <p className="text-xs text-muted-foreground">已开启菜单</p>
+              <p className="mt-1 text-lg font-semibold">{sidebarMenuEnabledCount} / {SIDEBAR_MENU_KEYS.length}</p>
             </div>
           </CardContent>
         </Card>
@@ -4900,6 +5052,49 @@ function SystemInfoSection() {
             </Button>
             <Button onClick={handleSaveForwardProtocols} disabled={isSavingSetting("forwardProtocols")}>
               保存协议开关
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={showSidebarMenuDialog}
+        onOpenChange={(open) => {
+          if (open) {
+            openSidebarMenuDialog();
+          } else {
+            closeSidebarMenuDialog();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PanelLeft className="h-5 w-5 text-primary" />
+              左侧导航栏菜单展示设置
+            </DialogTitle>
+            <DialogDescription>
+              关闭后对应入口不再显示在左侧导航栏中。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {SIDEBAR_MENU_KEYS.map((key) => (
+              <div
+                key={key}
+                className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/60 px-3 py-2"
+              >
+                <span className="text-sm">{SIDEBAR_MENU_LABELS[key]}</span>
+                <Switch checked={sidebarMenu[key]} onCheckedChange={(checked) => setSidebarMenuEnabled(key, checked)} />
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={closeSidebarMenuDialog}>
+              取消
+            </Button>
+            <Button onClick={handleSaveSidebarMenu} disabled={isSavingSetting("sidebarMenu")}>
+              {isSavingSetting("sidebarMenu") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isSavingSetting("sidebarMenu") ? "保存中..." : "保存菜单开关"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -5011,6 +5206,15 @@ function SystemInfoSection() {
               <Rocket className="h-4 w-4" />
               {isDockerDeployment ? "查看升级脚本" : "升级并重启"}
             </Button>
+            <Button
+              variant="outline"
+              onClick={openRollbackDialog}
+              disabled={isUpgradeRunning || startRollbackMutation.isPending}
+              className="gap-2"
+            >
+              <RefreshCw className="h-4 w-4" />
+              版本回退
+            </Button>
             <Button variant="ghost" asChild className="gap-2">
               <a href={upgradeChangelogUrl} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="h-4 w-4" />
@@ -5045,20 +5249,20 @@ function SystemInfoSection() {
                   <div>
                     <p className="text-sm font-semibold">
                       {upgradeStatus.job.status === "success"
-                        ? "升级成功"
+                        ? (upgradeStatus.job.mode === "rollback" ? "回退成功" : "升级成功")
                         : upgradeStatus.job.status === "waiting_assets"
                           ? "发布资产构建中"
                         : upgradeStatus.job.status === "error"
-                          ? "升级出现异常"
-                          : "正在升级"}
+                          ? (upgradeStatus.job.mode === "rollback" ? "回退出现异常" : "升级出现异常")
+                          : (upgradeStatus.job.mode === "rollback" ? "正在回退" : "正在升级")}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {upgradeStatus.job.status === "success"
-                        ? `已完成 ${upgradeStatus.job.targetVersion || ""} 升级，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`
+                        ? `已完成 ${upgradeStatus.job.targetVersion || ""} ${upgradeStatus.job.mode === "rollback" ? "回退" : "升级"}，${PANEL_UPGRADE_REFRESH_DELAY_SECONDS} 秒后自动刷新`
                         : upgradeStatus.job.status === "waiting_assets"
                           ? "GitHub Actions 仍在生成面板安装包或镜像，请稍后重新检查更新"
                         : upgradeStatus.job.status === "error"
-                          ? "升级未完成，请查看下方异常信息"
+                          ? `${upgradeStatus.job.mode === "rollback" ? "回退" : "升级"}未完成，请查看下方异常信息`
                           : upgradeProgress.label}
                     </p>
                   </div>
@@ -5116,7 +5320,7 @@ function SystemInfoSection() {
                     {upgradeErrorLogs || "暂无异常日志"}
                   </pre>
                   <div className="rounded-lg border border-destructive/25 bg-background/80 p-3 text-xs">
-                    <p className="font-medium text-destructive">自动升级失败时，可以在服务器执行对应的一键脚本手动升级：</p>
+                    <p className="font-medium text-destructive">自动版本任务失败时，可以在服务器执行对应的一键脚本手动处理：</p>
                     <div className="mt-2 space-y-2">
                       {manualPanelUpgradeCommands.map((item) => (
                         <div key={item.label} className="space-y-1">
@@ -5222,6 +5426,180 @@ function SystemInfoSection() {
             >
               <Rocket className="h-4 w-4" />
               确认升级
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showRollbackDialog} onOpenChange={setShowRollbackDialog}>
+        <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="h-5 w-5 text-primary" />
+              版本回退
+            </DialogTitle>
+            <DialogDescription>
+              选择最近 5 个以内的可回退版本。
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs
+            value={rollbackType}
+            onValueChange={(value) => {
+              setRollbackType(value === "agent" ? "agent" : "panel");
+              setSelectedRollbackVersion("");
+            }}
+          >
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="panel">面板</TabsTrigger>
+              <TabsTrigger value="agent">Agent</TabsTrigger>
+            </TabsList>
+
+            {rollbackVersionsQuery.data?.error && (
+              <Alert variant="destructive" className="mt-4">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>获取版本失败</AlertTitle>
+                <AlertDescription>{rollbackVersionsQuery.data.error}</AlertDescription>
+              </Alert>
+            )}
+
+            <TabsContent value="panel" className="mt-4 space-y-4">
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">当前面板版本</span>
+                  <code>v{rollbackVersionsQuery.data?.currentPanelVersion || upgradeStatus?.currentVersion || settings?.version}</code>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">当前兼容 Agent</span>
+                  <code>v{rollbackVersionsQuery.data?.currentAgentVersion || settings?.agentVersion || "-"}</code>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>回退到面板版本</Label>
+                <Select
+                  value={rollbackType === "panel" ? selectedRollbackVersion : ""}
+                  onValueChange={setSelectedRollbackVersion}
+                  disabled={rollbackVersionsQuery.isLoading || rollbackPanelVersions.length === 0}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={rollbackVersionsQuery.isLoading ? "正在获取 GitHub 版本..." : "选择面板版本"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {rollbackPanelVersions.map((item: any) => (
+                      <SelectItem key={item.panelVersion} value={item.panelVersion}>
+                        v{item.panelVersion}{item.compatibleAgentVersion ? ` / Agent v${item.compatibleAgentVersion}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {rollbackPanelVersions.length === 0 && !rollbackVersionsQuery.isLoading && (
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>暂无可回退面板版本</AlertTitle>
+                  <AlertDescription>未从 GitHub Release 获取到低于当前版本的最近 5 个版本。</AlertDescription>
+                </Alert>
+              )}
+
+              {selectedRollbackTarget && (
+                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  目标版本：v{(selectedRollbackTarget as any).panelVersion}
+                  {(selectedRollbackTarget as any).publishedAt ? `，发布时间：${new Date((selectedRollbackTarget as any).publishedAt).toLocaleString()}` : ""}
+                </div>
+              )}
+
+              {!canRunPanelRollback && selectedRollbackPanelCommand && (
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>当前环境请使用脚本回退</AlertTitle>
+                  <AlertDescription>
+                    后台未启用一键回退或当前为 Docker 部署，请在服务器执行下方命令。
+                  </AlertDescription>
+                </Alert>
+              )}
+              {!canRunPanelRollback && selectedRollbackPanelCommand && (
+                <code className="block max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-lg border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+                  {selectedRollbackPanelCommand}
+                </code>
+              )}
+            </TabsContent>
+
+            <TabsContent value="agent" className="mt-4 space-y-4">
+              <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">当前面板内置 Agent</span>
+                  <code>v{rollbackVersionsQuery.data?.currentAgentVersion || settings?.agentVersion || "-"}</code>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>回退到 Agent 版本</Label>
+                <Select
+                  value={rollbackType === "agent" ? selectedRollbackVersion : ""}
+                  onValueChange={setSelectedRollbackVersion}
+                  disabled={rollbackVersionsQuery.isLoading || rollbackAgentVersions.length === 0}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={rollbackVersionsQuery.isLoading ? "正在获取 GitHub 版本..." : "选择 Agent 版本"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {rollbackAgentVersions.map((item: any) => (
+                      <SelectItem key={`${item.agentVersion}:${item.panelVersion}`} value={item.agentVersion}>
+                        Agent v{item.agentVersion} / Release v{item.panelVersion}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {rollbackAgentVersions.length === 0 && !rollbackVersionsQuery.isLoading && (
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>暂无可回退 Agent 版本</AlertTitle>
+                  <AlertDescription>未从最近 5 个面板 Release 中获取到低于当前 Agent 的版本。</AlertDescription>
+                </Alert>
+              )}
+
+              {selectedRollbackTarget && (
+                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-xs text-muted-foreground">
+                  将下发 Agent v{(selectedRollbackTarget as any).agentVersion}，资产来源 Release v{(selectedRollbackTarget as any).panelVersion}。
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowRollbackDialog(false)}>
+              取消
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => refreshRollbackVersions()}
+              disabled={rollbackVersionsQuery.isFetching}
+            >
+              {rollbackVersionsQuery.isFetching ? "刷新中..." : "刷新版本"}
+            </Button>
+            <Button
+              className="gap-2"
+              disabled={
+                rollbackVersionsQuery.isLoading ||
+                !selectedRollbackVersion ||
+                startRollbackMutation.isPending ||
+                isUpgradeRunning
+              }
+              onClick={() => {
+                if (!selectedRollbackVersion) return;
+                if (rollbackType === "panel" && !canRunPanelRollback) {
+                  copyTextToClipboard(selectedRollbackPanelCommand);
+                  return;
+                }
+                startRollbackMutation.mutate({ type: rollbackType, targetVersion: selectedRollbackVersion });
+              }}
+            >
+              <RefreshCw className={`h-4 w-4 ${startRollbackMutation.isPending ? "forwardx-icon-spin" : ""}`} />
+              {rollbackType === "panel" && !canRunPanelRollback ? "复制回退脚本" : "确认回退"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -8,7 +8,7 @@ import { markHostMetricsWatching, pushAgentRefresh, pushAgentUpgrade } from "../
 import { AGENT_ASSET_NAMES, getMissingBundledAgentAssets } from "../agentAssets";
 import { pushTunnelEndpointRefresh, requireHostAccess } from "./helpers";
 import { AGENT_VERSION, APP_VERSION, REPO_URL } from "../_core/systemRouter";
-import { isAgentVersionAtLeast } from "../agentRouteUtils";
+import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "../agentRouteUtils";
 import { scheduleHostGeoRefresh } from "../hostGeo";
 import { refreshHostAddressRuntime } from "../hostAddressRuntime";
 import { scheduleHostDdnsUpdate } from "../hostDdns";
@@ -303,12 +303,13 @@ async function clearCompletedHostAgentUpgradeRequests<T extends any[]>(hostRows:
   const completedIds: number[] = [];
   const cleanedRows = hostRows.map((host: any) => {
     const targetVersion = host.agentUpgradeTargetVersion || AGENT_VERSION;
-    if (host.agentUpgradeRequested && host.agentVersion && isAgentVersionAtLeast(host.agentVersion, targetVersion)) {
+    if (host.agentUpgradeRequested && host.agentVersion && isAgentUpgradeTargetSatisfied(host.agentVersion, targetVersion, AGENT_VERSION)) {
       completedIds.push(Number(host.id));
       return {
         ...host,
         agentUpgradeRequested: false,
         agentUpgradeTargetVersion: null,
+        agentUpgradeReleaseVersion: null,
       };
     }
     return host;

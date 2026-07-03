@@ -22,6 +22,7 @@ func enqueueAction(cfg Config, a action) <-chan struct{} {
 		existing := queuedActionKeys[key]
 		if existing == a.IssuedAt {
 			queuedActionMu.Unlock()
+			logActionDuplicateSkip(a, key)
 			close(done)
 			return done
 		}
@@ -88,6 +89,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 			existing := queuedActionKeys[queueKey]
 			if existing == a.IssuedAt {
 				queuedActionMu.Unlock()
+				logActionDuplicateSkip(a, queueKey)
 				close(doneCh)
 				continue
 			}
@@ -125,6 +127,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 				existing := queuedActionKeys[queueKey]
 				if existing == job.action.IssuedAt {
 					queuedActionMu.Unlock()
+					logActionDuplicateSkip(job.action, queueKey)
 					if job.done != nil {
 						close(job.done)
 					}
@@ -188,7 +191,7 @@ func canAdoptDesiredAction(a action) bool {
 		return false
 	}
 	if strings.TrimSpace(a.StatusType) == "runtime" {
-		return a.KnownRunning && runtimeActionServicesHealthy()
+		return false
 	}
 	if a.SourcePort <= 0 {
 		return false
@@ -207,7 +210,7 @@ func canAdoptDesiredAction(a action) bool {
 
 func desiredActionLocalRuntimeReady(a action) bool {
 	if a.KnownRunning {
-		return true
+		return desiredKnownRunningActionReady(a)
 	}
 	checkedService := false
 	if strings.TrimSpace(a.ServiceName) != "" {
@@ -227,6 +230,9 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		if !fxpMatchesRunning(a.Fxp) {
 			return false
 		}
+		if a.ForwardType == "forwardx" || a.ForwardType == "forwardx-tunnel" {
+			return true
+		}
 	}
 	if a.Failover != nil && a.Failover.Enabled {
 		return false
@@ -236,6 +242,30 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		return desiredRuntimeServicesHealthy() && desiredRuntimeConfigUsesPort(a.SourcePort)
 	}
 	return checkedService
+}
+
+func desiredKnownRunningActionReady(a action) bool {
+	if strings.TrimSpace(a.ServiceName) != "" && !managedServiceActive(a.ServiceName) {
+		return false
+	}
+	if strings.TrimSpace(a.ServiceNameExtra) != "" && !managedServiceActive(a.ServiceNameExtra) {
+		return false
+	}
+	if a.Fxp != nil && !fxpMatchesRunning(a.Fxp) {
+		return false
+	}
+	if a.Failover != nil && a.Failover.Enabled {
+		return false
+	}
+	if a.Fxp != nil && (a.ForwardType == "forwardx" || a.ForwardType == "forwardx-tunnel") {
+		return true
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "gost", "forwardx", "gost-tunnel", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "guard":
+		return desiredRuntimeServicesHealthy() && desiredRuntimeConfigUsesPort(a.SourcePort)
+	default:
+		return true
+	}
 }
 
 func desiredRuntimeServicesHealthy() bool {
@@ -307,6 +337,13 @@ func rememberDesiredActionResult(key string, signature string, ok bool) {
 }
 
 func enqueueActionJob(job actionJob) {
+	if job.enqueuedAt.IsZero() {
+		job.enqueuedAt = time.Now()
+	}
+	pending := atomic.LoadInt64(&actionPendingCount)
+	if pending >= actionQueueBacklogLogThreshold && shouldLogAgentReport("action-queue-backlog", agentReportLogInterval) {
+		logf("action queue backlog pendingActions=%d queued=%d capacity=%d next=%s", pending, len(actionQueue), actionQueueCapacity, actionLogSummary(job.action))
+	}
 	select {
 	case actionQueue <- job:
 	default:
@@ -322,6 +359,12 @@ func enqueueActionJob(job actionJob) {
 func actionWorker() {
 	for job := range actionQueue {
 		func() {
+			if !job.enqueuedAt.IsZero() {
+				waited := time.Since(job.enqueuedAt)
+				if waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-queue-wait:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
+					logf("action queue wait slow waited=%s pendingActions=%d queued=%d %s", waited.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+				}
+			}
 			if job.done != nil {
 				defer close(job.done)
 			}
@@ -334,7 +377,15 @@ func actionWorker() {
 			if isOlderAction(job.action, false) {
 				return
 			}
+			started := time.Now()
 			ok := handleAction(job.cfg, job.action)
+			elapsed := time.Since(started)
+			if elapsed >= actionSlowHandleThreshold && shouldLogAgentReport("action-handle-slow:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
+				logf("action handle slow duration=%s ok=%v pendingActions=%d queued=%d %s", elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+			}
+			if !ok && shouldLogAgentReport("action-handle-failed:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
+				logf("action handle failed duration=%s pendingActions=%d queued=%d %s", elapsed.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+			}
 			if job.desiredKey != "" && job.desiredSignature != "" {
 				rememberDesiredActionResult(job.desiredKey, job.desiredSignature, ok)
 			}
@@ -359,6 +410,43 @@ func waitForActionBatch(done []<-chan struct{}, timeout time.Duration) {
 			return
 		}
 	}
+}
+
+func logActionDuplicateSkip(a action, key string) {
+	pending := atomic.LoadInt64(&actionPendingCount)
+	if agentVerboseLogs {
+		logf("action queue duplicate skip key=%s pendingActions=%d %s", key, pending, actionLogSummary(a))
+		return
+	}
+	if pending >= actionQueueBacklogLogThreshold && shouldLogAgentReport("action-queue-duplicate:"+key, agentReportLogInterval) {
+		logf("action queue duplicate skip key=%s pendingActions=%d queued=%d %s", key, pending, len(actionQueue), actionLogSummary(a))
+	}
+}
+
+func actionLogSummary(a action) string {
+	return fmt.Sprintf(
+		"op=%s statusType=%s rule=%d tunnel=%d port=%d forwardType=%s protocol=%s issuedAt=%d",
+		strings.TrimSpace(a.Op),
+		strings.TrimSpace(a.StatusType),
+		a.RuleID,
+		a.TunnelID,
+		a.SourcePort,
+		strings.TrimSpace(a.ForwardType),
+		strings.TrimSpace(a.Protocol),
+		a.IssuedAt,
+	)
+}
+
+func actionDiagnosticKey(a action) string {
+	key := actionQueueKey(a)
+	if key != "" {
+		return key
+	}
+	statusType := strings.TrimSpace(a.StatusType)
+	if statusType == "" {
+		statusType = "unknown"
+	}
+	return fmt.Sprintf("%s:%s:%d:%d:%d", statusType, strings.TrimSpace(a.Op), a.RuleID, a.TunnelID, a.SourcePort)
 }
 
 func actionStaleKeys(a action) []string {

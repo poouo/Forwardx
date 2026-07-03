@@ -173,6 +173,40 @@ export async function markForwardRulePendingDelete(id: number) {
   }).where(eq(forwardRules.id, id));
 }
 
+export async function finalizeForwardRuleDelete(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.ruleId, id));
+  await db.update(forwardGroupMembers).set({
+    ruleId: null,
+    updatedAt: nowDate(),
+  } as any).where(eq(forwardGroupMembers.ruleId, id));
+  await db.delete(forwardRules).where(and(
+    eq(forwardRules.id, id),
+    eq(forwardRules.pendingDelete, true),
+  ));
+}
+
+export async function purgeSettledPendingForwardRuleDeletes() {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db
+    .select({ id: forwardRules.id })
+    .from(forwardRules)
+    .where(and(
+      eq(forwardRules.pendingDelete, true),
+      eq(forwardRules.isRunning, false),
+    ));
+  let count = 0;
+  for (const row of rows as any[]) {
+    const id = Number(row?.id || 0);
+    if (id <= 0) continue;
+    await finalizeForwardRuleDelete(id);
+    count += 1;
+  }
+  return count;
+}
+
 export async function toggleForwardRule(id: number, isEnabled: boolean) {
   const db = await getDb();
   if (!db) return;
@@ -190,7 +224,7 @@ export async function updateRuleRunningStatus(id: number, isRunning: boolean) {
   if (!db) return;
   const rule = await getForwardRuleById(id);
   if (rule && (rule as any).pendingDelete && !isRunning) {
-    await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.id, id));
+    await finalizeForwardRuleDelete(id);
     return;
   }
   await db.update(forwardRules).set({ isRunning, updatedAt: nowDate() }).where(eq(forwardRules.id, id));

@@ -21,7 +21,8 @@ import {
 } from "../migration";
 import { sendMail } from "../email";
 import { refreshTelegramBotProfile, resetTelegramBotPolling, startTelegramBot } from "../telegramBot";
-import { pushAgentRefresh } from "../agentEvents";
+import { pushAgentRefresh, pushAgentUpgrade } from "../agentEvents";
+import { AGENT_ASSET_NAMES } from "../agentAssets";
 import { maskSecret } from "../ddns";
 import type { DatabaseConfig } from "../dbRuntime";
 import { defaultSqlitePath } from "../dbRuntime";
@@ -36,6 +37,10 @@ import {
   TUNNEL_PROTOCOLS,
   normalizeForwardProtocolSettings,
 } from "../../shared/forwardTypes";
+import {
+  SIDEBAR_MENU_KEYS,
+  normalizeSidebarMenuSettings,
+} from "../../shared/sidebarMenu";
 import { getAvatarDataUrlByteLength, isValidBrandLogoValue } from "../../shared/avatar";
 import { generateSelfSignedPanelSslCertificate, readPanelSslSettings, validatePanelSslConfig } from "../panelSsl";
 import {
@@ -43,6 +48,8 @@ import {
   ANDROID_APK_RELEASE_VERSION,
   ANDROID_APP_VERSION,
   APP_VERSION,
+  PANEL_AGENT_COMPATIBILITY,
+  PANEL_AGENT_COMPATIBILITY_LIMIT,
 } from "../../shared/versions";
 import {
   DEFAULT_PERSONALIZATION_BACKGROUND,
@@ -84,6 +91,11 @@ const forwardProtocolSettingsSchema = z.object(
   Object.fromEntries(
     [...FORWARD_TYPES, ...TUNNEL_PROTOCOLS].map((key) => [key, z.boolean().optional()])
   ) as Record<(typeof FORWARD_TYPES[number] | typeof TUNNEL_PROTOCOLS[number]), z.ZodOptional<z.ZodBoolean>>
+);
+const sidebarMenuSettingsSchema = z.object(
+  Object.fromEntries(
+    SIDEBAR_MENU_KEYS.map((key) => [key, z.boolean().optional()])
+  ) as Record<typeof SIDEBAR_MENU_KEYS[number], z.ZodOptional<z.ZodBoolean>>
 );
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
@@ -207,6 +219,42 @@ type UpdateInfo = {
   error?: string;
 };
 
+type GithubReleaseInfo = {
+  tag_name?: string;
+  html_url?: string;
+  published_at?: string;
+  prerelease?: boolean;
+  draft?: boolean;
+  assets?: Array<{ name?: string; state?: string; size?: number }>;
+};
+
+type VersionCompatibilityInfo = {
+  panelVersion: string;
+  agentVersion: string;
+  releaseUrl: string | null;
+  publishedAt: string | null;
+};
+
+type RollbackVersionInfo = {
+  currentPanelVersion: string;
+  currentAgentVersion: string;
+  panelVersions: Array<{
+    panelVersion: string;
+    releaseUrl: string | null;
+    publishedAt: string | null;
+    compatibleAgentVersion: string | null;
+  }>;
+  agentVersions: Array<{
+    agentVersion: string;
+    panelVersion: string;
+    releaseUrl: string | null;
+    publishedAt: string | null;
+  }>;
+  compatibility: VersionCompatibilityInfo[];
+  checkedAt: string;
+  error?: string;
+};
+
 type DeploymentInfo = {
   docker: boolean;
   dockerSocket: boolean;
@@ -215,6 +263,7 @@ type DeploymentInfo = {
 
 type UpgradeJob = {
   status: "idle" | "running" | "success" | "error" | "waiting_assets";
+  mode: "upgrade" | "rollback" | null;
   startedAt: string | null;
   finishedAt: string | null;
   targetVersion: string | null;
@@ -224,8 +273,11 @@ type UpgradeJob = {
 
 let lastUpdateInfo: UpdateInfo | null = null;
 let updateCheckInFlight: Promise<UpdateInfo> | null = null;
+let rollbackVersionInfo: RollbackVersionInfo | null = null;
+let rollbackVersionCheckInFlight: Promise<RollbackVersionInfo> | null = null;
 let upgradeJob: UpgradeJob = {
   status: "idle",
+  mode: null,
   startedAt: null,
   finishedAt: null,
   targetVersion: null,
@@ -360,6 +412,11 @@ function githubRawMainUrl(repoUrl: string, path: string) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/main/${path.replace(/^\/+/, "")}`;
 }
 
+function githubRawRefUrl(repoUrl: string, ref: string, path: string) {
+  const { owner, repo } = githubRepoParts(repoUrl);
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${path.replace(/^\/+/, "")}`;
+}
+
 function panelBundleAssetUrl(version: string) {
   const normalized = normalizeVersion(version);
   return `${REPO_URL}/releases/download/v${normalized}/forwardx-panel-v${normalized}.tar.gz`;
@@ -410,6 +467,157 @@ async function fetchPanelBundleAssetStatus(version: string): Promise<{ ready: bo
     },
   });
   return { ready: res.ok, status: res.status, url };
+}
+
+function parseAgentVersionFromVersionsText(text: string) {
+  const match = text.match(/AGENT_VERSION\s*=\s*["']v?([^"']+)["']/);
+  return match?.[1] ? normalizeVersion(match[1]) : "";
+}
+
+function releaseSemver(release: GithubReleaseInfo) {
+  const version = normalizeVersion(release.tag_name || "");
+  return /^\d+\.\d+\.\d+$/.test(version) ? version : "";
+}
+
+async function fetchReleaseAgentVersion(panelVersion: string) {
+  const normalized = normalizeVersion(panelVersion);
+  const refs = [`v${normalized}`, normalized];
+  for (const ref of refs) {
+    try {
+      const text = await fetchTextNoCache(githubRawRefUrl(REPO_URL, ref, "shared/versions.ts"));
+      const agentVersion = parseAgentVersionFromVersionsText(text);
+      if (agentVersion) return agentVersion;
+    } catch {
+      // Try the next tag format.
+    }
+  }
+  return "";
+}
+
+function mergeCompatibilityRecords(records: VersionCompatibilityInfo[]) {
+  const seen = new Set<string>();
+  const output: VersionCompatibilityInfo[] = [];
+  for (const record of records) {
+    const panelVersion = normalizeVersion(record.panelVersion);
+    const agentVersion = normalizeVersion(record.agentVersion);
+    if (!panelVersion || !agentVersion) continue;
+    const key = `${panelVersion}:${agentVersion}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push({
+      panelVersion,
+      agentVersion,
+      releaseUrl: record.releaseUrl || `${REPO_URL}/releases/tag/v${panelVersion}`,
+      publishedAt: record.publishedAt || null,
+    });
+    if (output.length >= PANEL_AGENT_COMPATIBILITY_LIMIT) break;
+  }
+  return output;
+}
+
+async function fetchRollbackVersionInfo(): Promise<RollbackVersionInfo> {
+  const checkedAt = new Date().toISOString();
+  const api = githubApiBase(REPO_URL);
+  const releases = await fetchGithubJson<GithubReleaseInfo[]>(`${api}/releases?per_page=30`);
+  const releaseVersions = releases
+    .filter((release) => !release.draft && !release.prerelease)
+    .map((release) => ({ release, panelVersion: releaseSemver(release) }))
+    .filter((item) => !!item.panelVersion)
+    .sort((a, b) => compareVersions(b.panelVersion, a.panelVersion));
+
+  const rollbackPanelReleases = releaseVersions
+    .filter((item) => compareVersions(item.panelVersion, APP_VERSION) < 0)
+    .slice(0, PANEL_AGENT_COMPATIBILITY_LIMIT);
+
+  const releaseCompatibility = await Promise.all(rollbackPanelReleases.map(async ({ release, panelVersion }) => {
+    const agentVersion = await fetchReleaseAgentVersion(panelVersion);
+    return {
+      panelVersion,
+      agentVersion,
+      releaseUrl: release.html_url || `${REPO_URL}/releases/tag/v${panelVersion}`,
+      publishedAt: release.published_at || null,
+    };
+  }));
+
+  const builtinCompatibility = PANEL_AGENT_COMPATIBILITY.map((item) => ({
+    panelVersion: normalizeVersion(item.panelVersion),
+    agentVersion: normalizeVersion(item.agentVersion),
+    releaseUrl: `${REPO_URL}/releases/tag/v${normalizeVersion(item.panelVersion)}`,
+    publishedAt: null,
+  }));
+  const compatibility = mergeCompatibilityRecords([...releaseCompatibility, ...builtinCompatibility]);
+
+  const panelVersions = rollbackPanelReleases.map(({ release, panelVersion }) => {
+    const compatible = compatibility.find((item) => item.panelVersion === panelVersion);
+    return {
+      panelVersion,
+      releaseUrl: release.html_url || `${REPO_URL}/releases/tag/v${panelVersion}`,
+      publishedAt: release.published_at || null,
+      compatibleAgentVersion: compatible?.agentVersion || null,
+    };
+  });
+
+  const agentVersions: RollbackVersionInfo["agentVersions"] = [];
+  const seenAgentVersions = new Set<string>();
+  for (const item of compatibility) {
+    if (!item.agentVersion || compareVersions(item.agentVersion, AGENT_VERSION) >= 0) continue;
+    if (seenAgentVersions.has(item.agentVersion)) continue;
+    seenAgentVersions.add(item.agentVersion);
+    agentVersions.push({
+      agentVersion: item.agentVersion,
+      panelVersion: item.panelVersion,
+      releaseUrl: item.releaseUrl,
+      publishedAt: item.publishedAt,
+    });
+    if (agentVersions.length >= PANEL_AGENT_COMPATIBILITY_LIMIT) break;
+  }
+
+  return {
+    currentPanelVersion: APP_VERSION,
+    currentAgentVersion: AGENT_VERSION,
+    panelVersions,
+    agentVersions,
+    compatibility,
+    checkedAt,
+  };
+}
+
+async function getRollbackVersionInfoCached(force = false): Promise<RollbackVersionInfo> {
+  if (!force && rollbackVersionInfo) {
+    const checkedAt = new Date(rollbackVersionInfo.checkedAt).getTime();
+    if (Number.isFinite(checkedAt) && Date.now() - checkedAt < UPDATE_CHECK_COOLDOWN_MS) {
+      return rollbackVersionInfo;
+    }
+  }
+  if (!force && rollbackVersionCheckInFlight) return rollbackVersionCheckInFlight;
+  const request = fetchRollbackVersionInfo()
+    .then((info) => {
+      rollbackVersionInfo = info;
+      return info;
+    });
+  if (force) return request;
+  rollbackVersionCheckInFlight = request.finally(() => {
+    rollbackVersionCheckInFlight = null;
+  });
+  return rollbackVersionCheckInFlight;
+}
+
+async function fetchGithubReleaseByVersion(version: string) {
+  const normalized = normalizeVersion(version);
+  const api = githubApiBase(REPO_URL);
+  return fetchGithubJson<GithubReleaseInfo>(`${api}/releases/tags/${encodeURIComponent(`v${normalized}`)}`);
+}
+
+async function assertAgentReleaseAssetsReadyForRollback(releaseVersion: string, agentVersion: string) {
+  const release = await fetchGithubReleaseByVersion(releaseVersion);
+  const assets = new Map((release.assets || []).map((asset) => [asset.name || "", asset]));
+  const missing = AGENT_ASSET_NAMES.filter((name) => {
+    const asset = assets.get(name);
+    return !asset || asset.state !== "uploaded" || Number(asset.size || 0) <= 0;
+  });
+  if (missing.length > 0) {
+    throw new Error(`Agent v${normalizeVersion(agentVersion)} 所需的 Release v${normalizeVersion(releaseVersion)} 资产还未构建完成：${missing.join(", ")}`);
+  }
 }
 
 function dockerImageReference() {
@@ -579,7 +787,7 @@ async function ensureUpdateDeployable(info: UpdateInfo): Promise<UpdateInfo> {
   }
 }
 
-async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<string | null> {
+async function getPanelAssetsPendingReason(targetVersion: string, operationLabel = "升级"): Promise<string | null> {
   const expected = normalizeVersion(targetVersion);
   if (isDockerRuntime()) {
     try {
@@ -587,9 +795,9 @@ async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<str
       const imageVersion = await fetchDockerImageVersion(imageRef);
       if (imageVersion && compareVersions(imageVersion, expected) >= 0) return null;
       const artifactVersion = imageVersion ? `v${normalizeVersion(imageVersion)}` : null;
-      return `已发现新版本 v${expected}，但 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}，正在等待 GitHub Actions 构建完成。请稍后重试。`;
+      return `目标${operationLabel}版本 v${expected} 的 Docker 镜像 ${imageRef}${artifactVersion ? ` 当前仍是 ${artifactVersion}` : " 尚未构建完成"}，请稍后重试。`;
     } catch (error: any) {
-      return `已发现新版本 v${expected}，但暂时无法确认 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}`;
+      return `暂时无法确认目标${operationLabel}版本 v${expected} 的 Docker 镜像 ${dockerImageReferenceForVersion(expected)} 是否构建完成：${error?.message || "未知错误"}`;
     }
   }
 
@@ -597,12 +805,16 @@ async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<str
     const asset = await fetchPanelBundleAssetStatus(expected);
     if (asset.ready) return null;
     if (asset.status === 404) {
-      return `已发现新版本 v${expected}，但面板安装包 forwardx-panel-v${expected}.tar.gz 尚未上传到 GitHub Release，正在等待 GitHub Actions 构建完成。请稍后重试。`;
+      return `目标${operationLabel}版本 v${expected} 的面板安装包 forwardx-panel-v${expected}.tar.gz 尚未上传到 GitHub Release，请稍后重试。`;
     }
-    return `已发现新版本 v${expected}，但暂时无法确认面板安装包是否可下载（HTTP ${asset.status}）。请稍后重试。`;
+    return `暂时无法确认目标${operationLabel}版本 v${expected} 的面板安装包是否可下载（HTTP ${asset.status}）。请稍后重试。`;
   } catch (error: any) {
-    return `已发现新版本 v${expected}，但暂时无法确认面板安装包是否构建完成：${error?.message || "未知错误"}`;
+    return `暂时无法确认目标${operationLabel}版本 v${expected} 的面板安装包是否构建完成：${error?.message || "未知错误"}`;
   }
+}
+
+async function getUpgradeAssetsPendingReason(targetVersion: string): Promise<string | null> {
+  return getPanelAssetsPendingReason(targetVersion, "升级");
 }
 
 function makeUpdateInfo(
@@ -741,15 +953,16 @@ function appendManualUpgradeHint() {
   appendUpgradeLog(`[ForwardX] Docker: ${MANUAL_DOCKER_UPGRADE_COMMAND}`);
 }
 
-function setUpgradeWaitingForAssets(targetVersion: string, reason: string) {
+function setUpgradeWaitingForAssets(targetVersion: string, reason: string, mode: "upgrade" | "rollback" = "upgrade") {
   upgradeJob = {
     status: "waiting_assets",
+    mode,
     startedAt: new Date().toISOString(),
     finishedAt: new Date().toISOString(),
     targetVersion,
     logs: [
       `[ForwardX] Current version v${APP_VERSION}`,
-      `[ForwardX] Selected latest upgrade target ${targetVersion}`,
+      `[ForwardX] Selected target ${targetVersion}`,
       "[ForwardX] Release assets are still building on GitHub Actions.",
       `[ForwardX] ${reason}`,
     ],
@@ -768,52 +981,69 @@ export function getPanelUpgradeRuntimeStatus() {
   };
 }
 
-export async function startPanelUpgradeTask(targetVersionInput?: string | null) {
+async function startPanelVersionTask(targetVersionInput: string | null | undefined, mode: "upgrade" | "rollback") {
   const command = normalizeUpgradeCommand(ENV.upgradeCommand);
   if (!command) {
-    console.warn("[Upgrade] Start requested but FORWARDX_UPGRADE_COMMAND is not configured");
-    throw new Error("未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查更新，不能自动升级");
+    console.warn(`[Upgrade] ${mode} requested but FORWARDX_UPGRADE_COMMAND is not configured`);
+    throw new Error(`未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查版本，不能自动${mode === "rollback" ? "回退" : "升级"}`);
   }
   if (upgradeJob.status === "running") {
-    console.warn("[Upgrade] Start requested while another upgrade is running");
-    throw new Error("已有升级任务正在执行");
+    console.warn(`[Upgrade] ${mode} requested while another version task is running`);
+    throw new Error("已有版本任务正在执行");
   }
 
-  let update = await fetchLatestUpdateInfo();
-  if (update.error && lastUpdateInfo) {
-    update = lastUpdateInfo;
-  }
-  lastUpdateInfo = update;
   const requestedVersion = String(targetVersionInput || "").trim();
-  const targetVersion =
-    update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
-      ? update.latestVersion
-      : requestedVersion;
+  let targetVersion = requestedVersion;
+  if (mode === "upgrade") {
+    let update = await fetchLatestUpdateInfo();
+    if (update.error && lastUpdateInfo) {
+      update = lastUpdateInfo;
+    }
+    lastUpdateInfo = update;
+    targetVersion =
+      update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
+        ? update.latestVersion
+        : requestedVersion;
+    if (!targetVersion) throw new Error("No upgrade target version found");
+    if (compareVersions(targetVersion, APP_VERSION) <= 0) {
+      throw new Error("Already on the latest version");
+    }
+    if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
+      const reason = update.pendingReason || "新版本发布资产尚未构建完成，请稍后重试。";
+      setUpgradeWaitingForAssets(targetVersion, reason, mode);
+      return { success: false, targetVersion, pendingReason: reason };
+    }
+  } else {
+    targetVersion = normalizeVersion(targetVersion);
+    if (!targetVersion) throw new Error("请选择要回退的版本");
+    if (!/^\d+\.\d+\.\d+$/.test(targetVersion)) throw new Error("回退版本格式不正确");
+    if (compareVersions(targetVersion, APP_VERSION) >= 0) {
+      throw new Error("只能回退到低于当前面板的版本");
+    }
+    const rollbackInfo = await getRollbackVersionInfoCached();
+    if (!rollbackInfo.panelVersions.some((item) => normalizeVersion(item.panelVersion) === targetVersion)) {
+      throw new Error("目标版本不在最近 5 个可回退版本内，请重新获取版本列表");
+    }
+  }
   if (!targetVersion) throw new Error("No upgrade target version found");
-  if (compareVersions(targetVersion, APP_VERSION) <= 0) {
-    throw new Error("Already on the latest version");
-  }
-  if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
-    const reason = update.pendingReason || "新版本发布资产尚未构建完成，请稍后重试。";
-    setUpgradeWaitingForAssets(targetVersion, reason);
-    return { success: false, targetVersion, pendingReason: reason };
-  }
-  const pendingReason = await getUpgradeAssetsPendingReason(targetVersion);
+  const pendingReason = await getPanelAssetsPendingReason(targetVersion, mode === "rollback" ? "回退" : "升级");
   if (pendingReason) {
-    setUpgradeWaitingForAssets(targetVersion, pendingReason);
+    setUpgradeWaitingForAssets(targetVersion, pendingReason, mode);
     return { success: false, targetVersion, pendingReason };
   }
-  console.info(`[Upgrade] Starting panel upgrade current=v${APP_VERSION} target=${targetVersion}`);
+  const operationText = mode === "rollback" ? "回退" : "升级";
+  console.info(`[Upgrade] Starting panel ${mode} current=v${APP_VERSION} target=${targetVersion}`);
 
   upgradeJob = {
     status: "running",
+    mode,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     targetVersion,
     logs: [
       `[ForwardX] Current version v${APP_VERSION}`,
-      `[ForwardX] Selected latest upgrade target ${targetVersion}`,
-      `[ForwardX] Starting upgrade to ${targetVersion}`,
+      `[ForwardX] Selected ${mode} target ${targetVersion}`,
+      `[ForwardX] Starting panel ${operationText} to ${targetVersion}`,
     ],
     error: null,
   };
@@ -843,8 +1073,8 @@ export async function startPanelUpgradeTask(targetVersionInput?: string | null) 
     upgradeJob.finishedAt = new Date().toISOString();
     if (code === 0) {
       upgradeJob.status = "success";
-      console.info(`[Upgrade] Panel upgrade command completed target=${targetVersion}`);
-      appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
+      console.info(`[Upgrade] Panel ${mode} command completed target=${targetVersion}`);
+      appendUpgradeLog(`[ForwardX] Panel ${operationText} command completed. The service may be restarting, refresh the page later.`);
     } else if (code === UPGRADE_ASSETS_PENDING_EXIT_CODE) {
       const reason = `v${normalizeVersion(targetVersion)} 的发布资产仍在 GitHub Actions 构建或上传中，请稍后重新检查更新。`;
       upgradeJob.status = "waiting_assets";
@@ -863,6 +1093,14 @@ export async function startPanelUpgradeTask(targetVersionInput?: string | null) 
   return { success: true, targetVersion };
 }
 
+export async function startPanelUpgradeTask(targetVersionInput?: string | null) {
+  return startPanelVersionTask(targetVersionInput, "upgrade");
+}
+
+export async function startPanelRollbackTask(targetVersionInput: string) {
+  return startPanelVersionTask(targetVersionInput, "rollback");
+}
+
 function getDeploymentInfo(): DeploymentInfo {
   const docker = isDockerRuntime();
   return {
@@ -873,6 +1111,15 @@ function getDeploymentInfo(): DeploymentInfo {
 }
 
 function parseForwardProtocolSettings(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseSidebarMenuSettings(value: string | null | undefined) {
   if (!value) return null;
   try {
     return JSON.parse(value) as Record<string, unknown>;
@@ -1309,6 +1556,9 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     forwardProtocols: normalizeForwardProtocolSettings(
       parseForwardProtocolSettings(all.forwardProtocols),
     ),
+    sidebarMenu: normalizeSidebarMenuSettings(
+      parseSidebarMenuSettings(all.sidebarMenu),
+    ),
     tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
     githubAccelerator: {
       enabled: all.githubAcceleratorEnabled === "true",
@@ -1431,6 +1681,9 @@ export const systemRouter = router({
         path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
         title: normalizePublicHostMonitorTitle(all.publicHostMonitorTitle),
       },
+      sidebarMenu: normalizeSidebarMenuSettings(
+        parseSidebarMenuSettings(all.sidebarMenu),
+      ),
     }));
   }),
 
@@ -1466,6 +1719,9 @@ export const systemRouter = router({
       homepageHtml: all.homepageHtml ?? "",
       forwardProtocols: normalizeForwardProtocolSettings(
         parseForwardProtocolSettings(all.forwardProtocols),
+      ),
+      sidebarMenu: normalizeSidebarMenuSettings(
+        parseSidebarMenuSettings(all.sidebarMenu),
       ),
       tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
       githubAccelerator: {
@@ -1681,6 +1937,7 @@ export const systemRouter = router({
         homepageHtml: z.string().max(60000).optional(),
         personalizationBackground: personalizationBackgroundSchema.optional(),
         forwardProtocols: forwardProtocolSettingsSchema.optional(),
+        sidebarMenu: sidebarMenuSettingsSchema.optional(),
         tunnelRuntimeDefault: z.enum(["forwardx", "gost"]).optional(),
         githubAccelerator: z.object({
           enabled: z.boolean().optional(),
@@ -1847,6 +2104,11 @@ export const systemRouter = router({
           pushAgentRefresh(host.id, "forward-protocol-settings-updated");
         }
         console.info("[Settings] forward protocol switches updated");
+      }
+      if (input.sidebarMenu !== undefined) {
+        const normalized = normalizeSidebarMenuSettings(input.sidebarMenu);
+        await db.setSetting("sidebarMenu", JSON.stringify(normalized));
+        console.info("[Settings] sidebar menu switches updated");
       }
       if (input.tunnelRuntimeDefault !== undefined) {
         const runtime = input.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx";
@@ -2291,6 +2553,29 @@ export const systemRouter = router({
     };
   }),
 
+  rollbackVersions: adminProcedure
+    .input(z.object({ force: z.boolean().optional() }).optional())
+    .query(async ({ input }) => {
+      try {
+        return await getRollbackVersionInfoCached(!!input?.force);
+      } catch (error: any) {
+        return {
+          currentPanelVersion: APP_VERSION,
+          currentAgentVersion: AGENT_VERSION,
+          panelVersions: [],
+          agentVersions: [],
+          compatibility: mergeCompatibilityRecords(PANEL_AGENT_COMPATIBILITY.map((item) => ({
+            panelVersion: item.panelVersion,
+            agentVersion: item.agentVersion,
+            releaseUrl: `${REPO_URL}/releases/tag/v${normalizeVersion(item.panelVersion)}`,
+            publishedAt: null,
+          }))),
+          checkedAt: new Date().toISOString(),
+          error: error?.message || "获取可回退版本失败",
+        };
+      }
+    }),
+
   /** 启动后台升级任务。实际命令由 FORWARDX_UPGRADE_COMMAND 提供。 */
   panelLogs: adminProcedure
     .input(logPageInputSchema.optional())
@@ -2331,100 +2616,57 @@ export const systemRouter = router({
     console.info("[PanelLogs] Cleared panel logs");
     return { success: true };
   }),
+  startVersionRollback: adminProcedure
+    .input(z.object({
+      type: z.enum(["panel", "agent"]),
+      targetVersion: z.string().min(1).max(64),
+    }))
+    .mutation(async ({ input }) => {
+      const targetVersion = normalizeVersion(input.targetVersion);
+      if (!/^\d+\.\d+\.\d+$/.test(targetVersion)) throw new Error("回退版本格式不正确");
+      const info = await getRollbackVersionInfoCached();
+      if (input.type === "panel") {
+        if (!info.panelVersions.some((item) => normalizeVersion(item.panelVersion) === targetVersion)) {
+          throw new Error("目标面板版本不在最近 5 个可回退版本内");
+        }
+        return startPanelRollbackTask(targetVersion);
+      }
+
+      const target = info.agentVersions.find((item) => normalizeVersion(item.agentVersion) === targetVersion);
+      if (!target) throw new Error("目标 Agent 版本不在最近 5 个可回退版本内");
+      await assertAgentReleaseAssetsReadyForRollback(target.panelVersion, target.agentVersion);
+      const hosts = await db.getHosts();
+      const configuredPanelUrl = (await db.getSetting("panelPublicUrl")) || "";
+      const panelUrl = /^https?:\/\//.test(configuredPanelUrl) ? configuredPanelUrl.replace(/\/+$/, "") : "";
+      let requested = 0;
+      let pushed = 0;
+      let skippedSame = 0;
+      for (const host of hosts as any[]) {
+        const hostId = Number(host?.id);
+        if (!Number.isInteger(hostId) || hostId <= 0) continue;
+        const currentAgentVersion = normalizeVersion(host.agentVersion);
+        if (currentAgentVersion && currentAgentVersion === target.agentVersion) {
+          skippedSame += 1;
+          continue;
+        }
+        await db.requestHostAgentUpgrade(hostId, target.agentVersion, target.panelVersion);
+        requested += 1;
+        if (pushAgentUpgrade(hostId, target.agentVersion, panelUrl, target.panelVersion)) pushed += 1;
+      }
+      console.info(`[AgentRollback] targetAgent=v${target.agentVersion} release=v${target.panelVersion} requested=${requested} pushed=${pushed} skippedSame=${skippedSame}`);
+      return {
+        success: true,
+        type: "agent" as const,
+        targetVersion: target.agentVersion,
+        releaseVersion: target.panelVersion,
+        requested,
+        pushed,
+        skippedSame,
+      };
+    }),
   startUpgrade: adminProcedure
     .input(z.object({ targetVersion: z.string().min(1).max(64).optional() }).optional())
     .mutation(async ({ input }) => {
-      const command = normalizeUpgradeCommand(ENV.upgradeCommand);
-      if (!command) {
-        console.warn("[Upgrade] Start requested but FORWARDX_UPGRADE_COMMAND is not configured");
-        throw new Error("未配置 FORWARDX_UPGRADE_COMMAND，当前环境只能检查更新，不能自动升级");
-      }
-      if (upgradeJob.status === "running") {
-        console.warn("[Upgrade] Start requested while another upgrade is running");
-        throw new Error("已有升级任务正在执行");
-      }
-
-      let update = await fetchLatestUpdateInfo();
-      if (update.error && lastUpdateInfo) {
-        update = lastUpdateInfo;
-      }
-      lastUpdateInfo = update;
-      const requestedVersion = input?.targetVersion;
-      const targetVersion =
-        update.latestVersion && (!requestedVersion || compareVersions(update.latestVersion, requestedVersion) >= 0)
-          ? update.latestVersion
-          : requestedVersion;
-      if (!targetVersion) throw new Error("No upgrade target version found");
-      if (compareVersions(targetVersion, APP_VERSION) <= 0) {
-        throw new Error("Already on the latest version");
-      }
-      if (update.latestVersion && compareVersions(update.latestVersion, APP_VERSION) > 0 && !update.hasUpdate) {
-        const reason = update.pendingReason || "新版本发布资产尚未构建完成，请稍后重试。";
-        setUpgradeWaitingForAssets(targetVersion, reason);
-        return { success: false, targetVersion, pendingReason: reason };
-      }
-      const pendingReason = await getUpgradeAssetsPendingReason(targetVersion);
-      if (pendingReason) {
-        setUpgradeWaitingForAssets(targetVersion, pendingReason);
-        return { success: false, targetVersion, pendingReason };
-      }
-      console.info(`[Upgrade] Starting panel upgrade current=v${APP_VERSION} target=${targetVersion}`);
-
-      upgradeJob = {
-        status: "running",
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        targetVersion,
-        logs: [
-          `[ForwardX] Current version v${APP_VERSION}`,
-          `[ForwardX] Selected latest upgrade target ${targetVersion}`,
-          `[ForwardX] Starting upgrade to ${targetVersion}`,
-        ],
-        error: null,
-      };
-      const child = spawn(command, {
-        shell: true,
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          FORWARDX_TARGET_VERSION: targetVersion,
-          FORWARDX_CURRENT_VERSION: APP_VERSION,
-          FORWARDX_REPO_URL: REPO_URL,
-        },
-        windowsHide: true,
-      });
-
-      child.stdout?.on("data", (chunk) => appendUpgradeLog(String(chunk)));
-      child.stderr?.on("data", (chunk) => appendUpgradeLog(String(chunk)));
-      child.on("error", (err) => {
-        upgradeJob.status = "error";
-        upgradeJob.error = `${err.message}. Please run the one-click script manually.`;
-        upgradeJob.finishedAt = new Date().toISOString();
-        console.error(`[Upgrade] Failed to start upgrade command: ${err.message}`);
-        appendUpgradeLog(`[ForwardX] Upgrade command failed to start: ${err.message}`);
-        appendManualUpgradeHint();
-      });
-      child.on("close", (code) => {
-        upgradeJob.finishedAt = new Date().toISOString();
-        if (code === 0) {
-          upgradeJob.status = "success";
-          console.info(`[Upgrade] Panel upgrade command completed target=${targetVersion}`);
-          appendUpgradeLog("[ForwardX] Upgrade command completed. The service may be restarting, refresh the page later.");
-        } else if (code === UPGRADE_ASSETS_PENDING_EXIT_CODE) {
-          const reason = `v${normalizeVersion(targetVersion)} 的发布资产仍在 GitHub Actions 构建或上传中，请稍后重新检查更新。`;
-          upgradeJob.status = "waiting_assets";
-          upgradeJob.error = reason;
-          console.warn(`[Upgrade] Panel upgrade assets pending target=${targetVersion} exitCode=${code}`);
-          appendUpgradeLog(`[ForwardX] ${reason}`);
-        } else {
-          upgradeJob.status = "error";
-          upgradeJob.error = `Upgrade command exited with code ${code}. Please run the one-click script manually.`;
-          console.error(`[Upgrade] Panel upgrade failed target=${targetVersion} exitCode=${code}`);
-          appendUpgradeLog(`[ForwardX] Upgrade failed, exit code: ${code}`);
-          appendManualUpgradeHint();
-        }
-      });
-
-      return { success: true, targetVersion };
+      return startPanelUpgradeTask(input?.targetVersion);
     }),
 });

@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.135"
+var Version = "2.2.137"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -57,8 +57,12 @@ const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
 const actionBacklogKeepaliveInterval = 10 * time.Second
 const actionQueueCapacity = 4096
+const actionQueueBacklogLogThreshold = 50
+const actionQueueSlowWaitThreshold = 3 * time.Second
+const actionSlowHandleThreshold = 15 * time.Second
 const actionShellTimeout = 90 * time.Second
-const shellInlineMaxBytes = 32 * 1024
+const actionShellSlowThreshold = 5 * time.Second
+const shellInlineMaxBytes = 8 * 1024
 const protocolGuardSampleMinBytes = 96
 const protocolGuardSampleMaxBytes = 512
 const protocolGuardSampleTimeout = 750 * time.Millisecond
@@ -137,6 +141,12 @@ var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
 var compactAgentReports atomic.Bool
 var heartbeatStaticReport heartbeatStaticSnapshot
+var heartbeatStateMu sync.Mutex
+var heartbeatStateCache heartbeatStateSnapshot
+var heartbeatStateSignatures = map[string]string{}
+var localRuntimeStateMu sync.Mutex
+var lastLocalRuntimeStateSignature string
+var forceSendLocalRuntimeState = true
 
 type actionJob struct {
 	cfg              Config
@@ -144,6 +154,7 @@ type actionJob struct {
 	done             chan struct{}
 	desiredKey       string
 	desiredSignature string
+	enqueuedAt       time.Time
 }
 
 type heartbeatStaticSnapshot struct {
@@ -198,10 +209,322 @@ type heartbeatResp struct {
 	LookingGlassTests  []lookingGlassTask      `json:"lookingGlassTests"`
 	Iperf3Tasks        []iperf3Task            `json:"iperf3Tasks"`
 	AgentUpgrade       *agentUpgrade           `json:"agentUpgrade"`
+	StateSignatures    map[string]string       `json:"stateSignatures,omitempty"`
+	RequestLocalState  bool                    `json:"requestLocalState,omitempty"`
 	PanelURL           string                  `json:"panelUrl"`
 	ForceTCPing        bool                    `json:"forceTcping"`
 	NextInterval       int                     `json:"nextInterval"`
 	CompactReports     bool                    `json:"compactReports"`
+}
+
+type heartbeatStateSnapshot struct {
+	RunningRules       []runningRule
+	TunnelProbes       []tunnelProbe
+	ForwardGroupProbes []forwardGroupProbe
+	HostProbeServices  []hostProbeServiceProbe
+	GuardRules         []guardRule
+	DNSWatch           []dnsWatchItem
+}
+
+type localRuntimeStatePayload struct {
+	Rules    []localRuntimeRuleState    `json:"rules,omitempty"`
+	Tunnels  []localRuntimeTunnelState  `json:"tunnels,omitempty"`
+	Services []localRuntimeServiceState `json:"services,omitempty"`
+}
+
+type localRuntimeRuleState struct {
+	Port        int    `json:"port"`
+	RuleID      int    `json:"ruleId"`
+	ForwardType string `json:"forwardType"`
+	TargetIP    string `json:"targetIp,omitempty"`
+	TargetPort  int    `json:"targetPort,omitempty"`
+	Protocol    string `json:"protocol,omitempty"`
+	Ready       bool   `json:"ready"`
+}
+
+type localRuntimeTunnelState struct {
+	Port        int    `json:"port"`
+	TunnelID    int    `json:"tunnelId"`
+	ForwardType string `json:"forwardType"`
+	Ready       bool   `json:"ready"`
+}
+
+type localRuntimeServiceState struct {
+	Name    string `json:"name"`
+	Active  bool   `json:"active"`
+	HasWork bool   `json:"hasWork"`
+}
+
+type localRuntimeReadiness struct {
+	runtimePorts       map[int]bool
+	sharedRuntimeReady bool
+	serviceStates      []localRuntimeServiceState
+	serviceActiveCache map[string]bool
+}
+
+func heartbeatStateSignaturePayload() map[string]string {
+	heartbeatStateMu.Lock()
+	defer heartbeatStateMu.Unlock()
+	if len(heartbeatStateSignatures) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(heartbeatStateSignatures))
+	for key, value := range heartbeatStateSignatures {
+		if strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
+	heartbeatStateMu.Lock()
+	defer heartbeatStateMu.Unlock()
+	if resp.RunningRules != nil {
+		heartbeatStateCache.RunningRules = append([]runningRule(nil), resp.RunningRules...)
+	}
+	if resp.TunnelProbes != nil {
+		heartbeatStateCache.TunnelProbes = append([]tunnelProbe(nil), resp.TunnelProbes...)
+	}
+	if resp.ForwardGroupProbes != nil {
+		heartbeatStateCache.ForwardGroupProbes = append([]forwardGroupProbe(nil), resp.ForwardGroupProbes...)
+	}
+	if resp.HostProbeServices != nil {
+		heartbeatStateCache.HostProbeServices = append([]hostProbeServiceProbe(nil), resp.HostProbeServices...)
+	}
+	if resp.GuardRules != nil {
+		heartbeatStateCache.GuardRules = append([]guardRule(nil), resp.GuardRules...)
+	}
+	if resp.DNSWatch != nil {
+		heartbeatStateCache.DNSWatch = append([]dnsWatchItem(nil), resp.DNSWatch...)
+	}
+	if len(resp.StateSignatures) > 0 {
+		for key, value := range resp.StateSignatures {
+			if strings.TrimSpace(value) != "" {
+				heartbeatStateSignatures[key] = value
+			}
+		}
+	}
+	return heartbeatStateSnapshot{
+		RunningRules:       append([]runningRule(nil), heartbeatStateCache.RunningRules...),
+		TunnelProbes:       append([]tunnelProbe(nil), heartbeatStateCache.TunnelProbes...),
+		ForwardGroupProbes: append([]forwardGroupProbe(nil), heartbeatStateCache.ForwardGroupProbes...),
+		HostProbeServices:  append([]hostProbeServiceProbe(nil), heartbeatStateCache.HostProbeServices...),
+		GuardRules:         append([]guardRule(nil), heartbeatStateCache.GuardRules...),
+		DNSWatch:           append([]dnsWatchItem(nil), heartbeatStateCache.DNSWatch...),
+	}
+}
+
+func readLocalRuntimeReadiness() localRuntimeReadiness {
+	readiness := localRuntimeReadiness{
+		runtimePorts:       map[int]bool{},
+		sharedRuntimeReady: true,
+		serviceActiveCache: map[string]bool{},
+	}
+	configs := []struct {
+		path    string
+		service string
+		nginx   bool
+	}{
+		{runtimeConfigPath, runtimeServiceName, false},
+		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, false},
+		{nginxConfigPath, nginxServiceName, true},
+	}
+	for _, cfg := range configs {
+		var addrs []string
+		var ok bool
+		if cfg.nginx {
+			addrs, ok = nginxRuntimeListenAddrs(cfg.path)
+		} else {
+			addrs, ok = readGostRuntimeServiceAddrs(cfg.path)
+		}
+		hasWork := ok && len(addrs) > 0
+		for _, addr := range addrs {
+			if port := addrPort(addr); port > 0 {
+				readiness.runtimePorts[port] = true
+			}
+		}
+		active := false
+		if hasWork {
+			active = managedServiceActive(cfg.service)
+		}
+		readiness.serviceActiveCache[cfg.service] = active
+		if hasWork && !active {
+			readiness.sharedRuntimeReady = false
+		}
+		readiness.serviceStates = append(readiness.serviceStates, localRuntimeServiceState{
+			Name:    cfg.service,
+			Active:  active,
+			HasWork: hasWork,
+		})
+	}
+	return readiness
+}
+
+func (r *localRuntimeReadiness) managedServiceActiveCached(name string) bool {
+	name = sanitizeServiceName(name)
+	if name == "" {
+		return false
+	}
+	if r.serviceActiveCache == nil {
+		r.serviceActiveCache = map[string]bool{}
+	}
+	if active, ok := r.serviceActiveCache[name]; ok {
+		return active
+	}
+	active := managedServiceActive(name)
+	r.serviceActiveCache[name] = active
+	return active
+}
+
+func addrPort(addr string) int {
+	text := strings.TrimSpace(addr)
+	if text == "" {
+		return 0
+	}
+	_, rawPort, err := net.SplitHostPort(text)
+	if err != nil {
+		idx := strings.LastIndex(text, ":")
+		if idx < 0 || idx >= len(text)-1 {
+			return 0
+		}
+		rawPort = text[idx+1:]
+	}
+	port, err := strconv.Atoi(strings.Trim(strings.TrimSpace(rawPort), "[]"))
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
+func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness) bool {
+	port := atoi(state.Port)
+	if port <= 0 || readiness == nil {
+		return false
+	}
+	forwardType := strings.TrimSpace(state.ForwardType)
+	switch forwardType {
+	case "realm":
+		return readiness.managedServiceActiveCached("forwardx-realm-" + state.Port)
+	case "socat":
+		if normalizeRuntimeProtocol(state.Protocol) == "both" {
+			return readiness.managedServiceActiveCached("forwardx-socat-tcp-"+state.Port) &&
+				readiness.managedServiceActiveCached("forwardx-socat-udp-"+state.Port)
+		}
+		return readiness.managedServiceActiveCached("forwardx-socat-" + state.Port)
+	case "gost", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "gost-tunnel":
+		return readiness.sharedRuntimeReady && readiness.runtimePorts[port]
+	case "forwardx":
+		return fxpRuntimeProcessExistsForRulePort(state.RuleID, port)
+	default:
+		return true
+	}
+}
+
+func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness *localRuntimeReadiness) bool {
+	if tunnelID <= 0 || port <= 0 || readiness == nil {
+		return false
+	}
+	switch strings.TrimSpace(forwardType) {
+	case "gost-tunnel", "nginx-tunnel", "nginx-tunnel-exit":
+		return readiness.sharedRuntimeReady && readiness.runtimePorts[port]
+	case "forwardx-tunnel":
+		return fxpRuntimeProcessExistsForTunnelPort(tunnelID, port)
+	default:
+		return true
+	}
+}
+
+func readLocalRuntimeStatePayload() localRuntimeStatePayload {
+	readiness := readLocalRuntimeReadiness()
+	ruleStates := readLocalRuleStates()
+	rules := make([]localRuntimeRuleState, 0, len(ruleStates))
+	for _, state := range ruleStates {
+		port := atoi(state.Port)
+		if port <= 0 {
+			continue
+		}
+		rules = append(rules, localRuntimeRuleState{
+			Port:        port,
+			RuleID:      state.RuleID,
+			ForwardType: strings.TrimSpace(state.ForwardType),
+			TargetIP:    strings.TrimSpace(state.TargetIP),
+			TargetPort:  state.TargetPort,
+			Protocol:    strings.TrimSpace(state.Protocol),
+			Ready:       localRuleStateReady(state, &readiness),
+		})
+	}
+	tunnels := []localRuntimeTunnelState{}
+	files, err := os.ReadDir(agentStateDir)
+	if err == nil {
+		for _, f := range files {
+			name := f.Name()
+			if !strings.HasPrefix(name, "tunnel_") || !strings.HasSuffix(name, ".id") {
+				continue
+			}
+			port := strings.TrimSuffix(strings.TrimPrefix(name, "tunnel_"), ".id")
+			portValue := atoi(port)
+			if portValue <= 0 {
+				continue
+			}
+			tunnelID := readTunnelIDByPort(port)
+			if tunnelID <= 0 {
+				continue
+			}
+			forwardType := strings.TrimSpace(readTunnelForwardTypeByPort(port))
+			tunnels = append(tunnels, localRuntimeTunnelState{
+				Port:        portValue,
+				TunnelID:    tunnelID,
+				ForwardType: forwardType,
+				Ready:       localTunnelStateReady(tunnelID, portValue, forwardType, &readiness),
+			})
+		}
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Port == rules[j].Port {
+			return rules[i].RuleID < rules[j].RuleID
+		}
+		return rules[i].Port < rules[j].Port
+	})
+	sort.Slice(tunnels, func(i, j int) bool {
+		if tunnels[i].Port == tunnels[j].Port {
+			return tunnels[i].TunnelID < tunnels[j].TunnelID
+		}
+		return tunnels[i].Port < tunnels[j].Port
+	})
+	return localRuntimeStatePayload{Rules: rules, Tunnels: tunnels, Services: readiness.serviceStates}
+}
+
+func localRuntimeStateSignature(state localRuntimeStatePayload) string {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(raw)
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+func localRuntimeStateForHeartbeat() (string, *localRuntimeStatePayload) {
+	state := readLocalRuntimeStatePayload()
+	signature := localRuntimeStateSignature(state)
+	localRuntimeStateMu.Lock()
+	sendFull := forceSendLocalRuntimeState || signature != lastLocalRuntimeStateSignature
+	if sendFull {
+		lastLocalRuntimeStateSignature = signature
+		forceSendLocalRuntimeState = false
+	}
+	localRuntimeStateMu.Unlock()
+	if sendFull {
+		return signature, &state
+	}
+	return signature, nil
+}
+
+func requestLocalRuntimeStateUpload() {
+	localRuntimeStateMu.Lock()
+	forceSendLocalRuntimeState = true
+	localRuntimeStateMu.Unlock()
 }
 
 type selfTestResp struct {
@@ -315,8 +638,9 @@ type dnsChangeReport struct {
 }
 
 type agentUpgrade struct {
-	TargetVersion string `json:"targetVersion"`
-	PanelURL      string `json:"panelUrl"`
+	TargetVersion  string `json:"targetVersion"`
+	PanelURL       string `json:"panelUrl"`
+	ReleaseVersion string `json:"releaseVersion"`
 }
 
 type agentEventMessage struct {
@@ -821,6 +1145,15 @@ func heartbeat(cfg Config) (int, error) {
 	if len(dnsChanges) > 0 {
 		payload["dnsChanged"] = dnsChanges
 	}
+	if signatures := heartbeatStateSignaturePayload(); len(signatures) > 0 {
+		payload["stateSignatures"] = signatures
+	}
+	if signature, localState := localRuntimeStateForHeartbeat(); signature != "" {
+		payload["localStateSignature"] = signature
+		if localState != nil {
+			payload["localState"] = localState
+		}
+	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
 		queuePendingDNSChanges(dnsChanges)
@@ -841,7 +1174,11 @@ func heartbeat(cfg Config) (int, error) {
 	if resp.AgentUpgrade != nil {
 		go selfUpgrade(cfg, resp.AgentUpgrade)
 	}
-	dnsWatchChanged := updateDNSWatch(resp.DNSWatch)
+	if resp.RequestLocalState {
+		requestLocalRuntimeStateUpload()
+	}
+	state := applyHeartbeatState(resp)
+	dnsWatchChanged := updateDNSWatch(state.DNSWatch)
 	pendingActionPorts := map[string]bool{}
 	actionDone := make([]<-chan struct{}, 0, len(resp.Actions)+len(desiredStateActions(resp.DesiredState)))
 	for _, a := range desiredStateActions(resp.DesiredState) {
@@ -870,19 +1207,19 @@ func heartbeat(cfg Config) (int, error) {
 	for _, task := range resp.Iperf3Tasks {
 		go handleIperf3Task(cfg, task)
 	}
-	syncRunningRuleState(resp.RunningRules, pendingActionPorts)
-	for _, r := range resp.RunningRules {
+	syncRunningRuleState(state.RunningRules, pendingActionPorts)
+	for _, r := range state.RunningRules {
 		writeRunningRuleState(r)
 		ensureCountingChainsIfNeeded(r)
 	}
-	syncProtocolGuards(cfg, resp.GuardRules)
+	syncProtocolGuards(cfg, state.GuardRules)
 	if lastTrafficCollectAt.IsZero() || time.Since(lastTrafficCollectAt) >= nextTrafficCollectInterval {
 		nextTrafficCollectInterval = collectTraffic(cfg)
 		lastTrafficCollectAt = time.Now()
 	}
-	tcpingInterval := tcpingDueInterval(resp.HostProbeServices)
+	tcpingInterval := tcpingDueInterval(state.HostProbeServices)
 	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
-		collectTCPing(cfg, resp.TunnelProbes, resp.ForwardGroupProbes, resp.HostProbeServices, resp.ForceTCPing)
+		collectTCPing(cfg, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing)
 		lastTCPingAt = time.Now()
 	}
 	if dnsWatchChanged && resp.NextInterval > 2 {
@@ -936,6 +1273,9 @@ func heartbeatKeepalive(cfg Config) error {
 	}
 	compactAgentReports.Store(resp.CompactReports)
 	syncPanelURLFromResponse(resp.PanelURL)
+	if resp.RequestLocalState {
+		requestLocalRuntimeStateUpload()
+	}
 	return nil
 }
 
@@ -3325,6 +3665,34 @@ func fxpRuntimeProcessExists(configPath string) bool {
 	return len(fxpRuntimePIDs(configPath)) > 0
 }
 
+func fxpRuntimeProcessExistsForRulePort(ruleID int, port int) bool {
+	if ruleID <= 0 || port <= 0 {
+		return false
+	}
+	pattern := fmt.Sprintf("/run/forwardx-agent/fxp-*-*-%d-%d.json", ruleID, port)
+	paths, _ := filepath.Glob(pattern)
+	for _, path := range paths {
+		if fxpRuntimeProcessExists(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func fxpRuntimeProcessExistsForTunnelPort(tunnelID int, port int) bool {
+	if tunnelID <= 0 || port <= 0 {
+		return false
+	}
+	pattern := fmt.Sprintf("/run/forwardx-agent/fxp-*-%d-*-%d.json", tunnelID, port)
+	paths, _ := filepath.Glob(pattern)
+	for _, path := range paths {
+		if fxpRuntimeProcessExists(path) {
+			return true
+		}
+	}
+	return false
+}
+
 func killFXPByConfigPath(configPath string) {
 	for _, pid := range fxpRuntimePIDs(configPath) {
 		if proc, err := os.FindProcess(pid); err == nil {
@@ -5348,25 +5716,43 @@ func runShell(cmd string) bool {
 	} else {
 		logVerbosef("exec: %s", cmd)
 	}
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), actionShellTimeout)
 	defer cancel()
-	c, cleanup, err := shellCommand(ctx, cmd)
+	c, cleanup, viaTemp, err := shellCommand(ctx, cmd)
 	if err != nil {
-		logf("exec failed: %v", err)
+		logf("exec failed before start err=%v %s", err, shellCommandLogSummary(cmd))
 		return false
 	}
-	defer cleanup()
 	out, err := c.CombinedOutput()
+	cleanup()
+	retriedViaTemp := false
+	if isArgumentListTooLong(err) && !viaTemp && ctx.Err() != context.DeadlineExceeded {
+		logf("exec retry via temp script after argument list too long bytes=%d", len(cmd))
+		c, cleanup, _, err = shellCommandTempScript(ctx, cmd)
+		if err != nil {
+			logf("exec failed before temp retry err=%v %s", err, shellCommandLogSummary(cmd))
+			return false
+		}
+		retriedViaTemp = true
+		viaTemp = true
+		out, err = c.CombinedOutput()
+		cleanup()
+	}
+	elapsed := time.Since(started)
 	if len(out) > 0 && (err != nil || ctx.Err() == context.DeadlineExceeded || agentVerboseLogs) {
 		logf("%s", strings.TrimSpace(string(out)))
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		logf("exec failed: command timeout after %s", actionShellTimeout)
+		logf("exec timeout duration=%s temp=%v retriedTemp=%v outputBytes=%d %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), shellCommandLogSummary(cmd))
 		return false
 	}
 	if err != nil {
-		logf("exec failed: %v", err)
+		logf("exec failed duration=%s temp=%v retriedTemp=%v outputBytes=%d err=%v %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), err, shellCommandLogSummary(cmd))
 		return false
+	}
+	if elapsed >= actionShellSlowThreshold {
+		logf("exec slow duration=%s temp=%v retriedTemp=%v outputBytes=%d %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, len(out), shellCommandLogSummary(cmd))
 	}
 	return true
 }
@@ -5375,15 +5761,34 @@ func runShellQuiet(cmd string) bool {
 	if strings.TrimSpace(cmd) == "" {
 		return true
 	}
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, cleanup, err := shellCommand(ctx, cmd)
+	c, cleanup, viaTemp, err := shellCommand(ctx, cmd)
 	if err != nil {
 		return false
 	}
-	defer cleanup()
 	err = c.Run()
-	return err == nil && ctx.Err() != context.DeadlineExceeded
+	cleanup()
+	retriedViaTemp := false
+	if isArgumentListTooLong(err) && !viaTemp && ctx.Err() != context.DeadlineExceeded {
+		c, cleanup, _, err = shellCommandTempScript(ctx, cmd)
+		if err != nil {
+			return false
+		}
+		retriedViaTemp = true
+		viaTemp = true
+		err = c.Run()
+		cleanup()
+	}
+	elapsed := time.Since(started)
+	ok := err == nil && ctx.Err() != context.DeadlineExceeded
+	if ctx.Err() == context.DeadlineExceeded {
+		logf("exec quiet timeout duration=%s temp=%v retriedTemp=%v %s", elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, shellCommandLogSummary(cmd))
+	} else if elapsed >= actionShellSlowThreshold {
+		logf("exec quiet slow ok=%v duration=%s temp=%v retriedTemp=%v %s", ok, elapsed.Round(time.Millisecond), viaTemp, retriedViaTemp, shellCommandLogSummary(cmd))
+	}
+	return ok
 }
 
 func runShellBatch(commands []string) bool {
@@ -5411,17 +5816,31 @@ func runShellBatch(commands []string) bool {
 	return runShell(script.String())
 }
 
-func shellCommand(ctx context.Context, cmd string) (*exec.Cmd, func(), error) {
+func isArgumentListTooLong(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "argument list too long")
+}
+
+func shellCommandLogSummary(cmd string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cmd))
+	return fmt.Sprintf("cmdHash=%016x cmdBytes=%d", h.Sum64(), len(cmd))
+}
+
+func shellCommand(ctx context.Context, cmd string) (*exec.Cmd, func(), bool, error) {
 	if len(cmd) <= shellInlineMaxBytes {
-		return exec.CommandContext(ctx, "sh", "-lc", cmd), func() {}, nil
+		return exec.CommandContext(ctx, "sh", "-lc", cmd), func() {}, false, nil
 	}
+	return shellCommandTempScript(ctx, cmd)
+}
+
+func shellCommandTempScript(ctx context.Context, cmd string) (*exec.Cmd, func(), bool, error) {
 	dir := filepath.Join(os.TempDir(), "forwardx-agent")
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, func() {}, err
+		return nil, func() {}, true, err
 	}
 	file, err := os.CreateTemp(dir, "shell-*.sh")
 	if err != nil {
-		return nil, func() {}, err
+		return nil, func() {}, true, err
 	}
 	path := file.Name()
 	cleanup := func() {
@@ -5430,17 +5849,17 @@ func shellCommand(ctx context.Context, cmd string) (*exec.Cmd, func(), error) {
 	if _, err := file.WriteString("#!/bin/sh\n" + cmd + "\n"); err != nil {
 		_ = file.Close()
 		cleanup()
-		return nil, func() {}, err
+		return nil, func() {}, true, err
 	}
 	if err := file.Close(); err != nil {
 		cleanup()
-		return nil, func() {}, err
+		return nil, func() {}, true, err
 	}
 	if err := os.Chmod(path, 0700); err != nil {
 		cleanup()
-		return nil, func() {}, err
+		return nil, func() {}, true, err
 	}
-	return exec.CommandContext(ctx, "sh", path), cleanup, nil
+	return exec.CommandContext(ctx, "sh", path), cleanup, true, nil
 }
 
 func listenPortOwnerSummary(port int) string {

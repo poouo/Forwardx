@@ -24,10 +24,16 @@ func selfUpgrade(cfg Config, up *agentUpgrade) {
 	if panel == "" {
 		panel = currentPanelURL(cfg)
 	}
-	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --connect-timeout 15 --speed-limit 1024 --speed-time 60 "%s/api/agent/install.sh" | PANEL_URL=%s bash -s -- upgrade %s`, panel, shellQuote(panel), shellQuote(cfg.Token))
+	releaseVersion := strings.TrimSpace(up.ReleaseVersion)
+	installEnv := fmt.Sprintf("PANEL_URL=%s", shellQuote(panel))
+	if releaseVersion != "" {
+		installEnv += fmt.Sprintf(" FORWARDX_AGENT_RELEASE_VERSION=%s", shellQuote(releaseVersion))
+	}
+	upgradeCmd := fmt.Sprintf(`sleep 1; curl -fsSL --connect-timeout 15 --speed-limit 1024 --speed-time 60 "%s/api/agent/install.sh" | %s bash -s -- upgrade %s`, panel, installEnv, shellQuote(cfg.Token))
 	cmd := fmt.Sprintf(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=forwardx-agent-upgrade --collect /bin/sh -lc %s; else nohup sh -lc %s >/var/log/forwardx-agent/agent-upgrade.log 2>&1 < /dev/null & fi`, shellQuote(upgradeCmd), shellQuote(upgradeCmd))
-	logf("self-upgrade requested target=%s", up.TargetVersion)
+	logf("self-upgrade requested target=%s release=%s", up.TargetVersion, releaseVersion)
 	if !runShell(cmd) {
+		logf("self-upgrade launcher failed; clearing upgrade lock target=%s release=%s", up.TargetVersion, releaseVersion)
 		atomic.StoreInt32(&upgradeStarted, 0)
 		atomic.StoreInt64(&upgradeStartedAt, 0)
 	}

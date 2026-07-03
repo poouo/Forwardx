@@ -509,6 +509,7 @@ async function prepareImportRow(table: string, source: Record<string, any>, maps
       row.lastHeartbeat = null;
       row.agentUpgradeRequested = false;
       row.agentUpgradeTargetVersion = null;
+      row.agentUpgradeReleaseVersion = null;
       row.agentUpgradeRequestedAt = null;
       return { row, existingWhere: row.agentToken ? { agentToken: row.agentToken } : undefined };
 
@@ -808,6 +809,7 @@ async function resetImportedRuntimeState(maps: ImportMaps) {
     lastHeartbeat: null,
     agentUpgradeRequested: false,
     agentUpgradeTargetVersion: null,
+    agentUpgradeReleaseVersion: null,
     agentUpgradeRequestedAt: null,
     updatedAt: now,
   });

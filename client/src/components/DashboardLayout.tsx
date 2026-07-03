@@ -57,6 +57,7 @@ import {
   ExternalLink,
   Image,
   Globe2,
+  BellOff,
   type LucideIcon,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -78,36 +79,49 @@ import { getPanelChangelogUrl, PANEL_UPGRADE_REFRESH_DELAY_MS, PANEL_UPGRADE_REF
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { UserAvatar } from "@/components/UserAvatar";
+import { normalizeSidebarMenuSettings, type SidebarMenuKey } from "@shared/sidebarMenu";
 
-const announcementsMenuItem = { icon: Megaphone, label: "公告", path: "/announcements" };
 const TWO_FACTOR_SETUP_SECONDS = 5 * 60;
-type SidebarNavItem = { icon: LucideIcon; label: string; path: string };
+const SITE_LOGO_CACHE_KEY = "forwardx.siteLogoDataUrl";
+type SidebarNavItem = { icon: LucideIcon; label: string; path: string; menuKey?: SidebarMenuKey };
+
+const announcementsMenuItem: SidebarNavItem = { icon: Megaphone, label: "公告", path: "/announcements", menuKey: "announcements" };
 
 const mainMenuItems: SidebarNavItem[] = [
-  { icon: LayoutDashboard, label: "仪表盘", path: "/" },
+  { icon: LayoutDashboard, label: "仪表盘", path: "/", menuKey: "dashboard" },
   { icon: Server, label: "主机管理", path: "/hosts" },
   { icon: Route, label: "链路管理", path: "/tunnels" },
   { icon: ArrowRightLeft, label: "转发规则", path: "/rules" },
 ];
-const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile" };
-const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass" };
+const profileMenuItem: SidebarNavItem = { icon: UserRound, label: "个人资料", path: "/profile", menuKey: "profile" };
+const lookingGlassMenuItem: SidebarNavItem = { icon: Globe2, label: "网络测试", path: "/looking-glass", menuKey: "lookingGlass" };
 
 const adminMenuItems: SidebarNavItem[] = [
-  { icon: CreditCard, label: "支付对接", path: "/payments" },
-  { icon: WalletCards, label: "账单与兑换", path: "/billing" },
-  { icon: Package, label: "套餐管理", path: "/plans" },
-  { icon: Users, label: "用户管理", path: "/users" },
+  { icon: CreditCard, label: "支付对接", path: "/payments", menuKey: "payments" },
+  { icon: WalletCards, label: "账单与兑换", path: "/billing", menuKey: "billing" },
+  { icon: Package, label: "套餐管理", path: "/plans", menuKey: "plans" },
+  { icon: Users, label: "用户管理", path: "/users", menuKey: "users" },
   lookingGlassMenuItem,
-  { icon: Settings, label: "系统设置", path: "/settings" },
+  { icon: Settings, label: "系统设置", path: "/settings", menuKey: "settings" },
 ];
 
 const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
+const PANEL_UPGRADE_NOTICE_DISMISSED_KEY = "forwardx.panel.upgrade.dismissedVersion";
 const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
 const DEFAULT_DOCKER_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
 
-type PanelUpgradeSession = { targetVersion: string; startedAt: number };
+type PanelUpgradeSession = { targetVersion: string; startedAt: number; mode?: "upgrade" | "rollback" };
+
+function readCachedSiteLogo() {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(SITE_LOGO_CACHE_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
 
 function normalizePanelVersion(version: string | null | undefined) {
   return String(version || "").trim().replace(/^v/i, "");
@@ -133,6 +147,15 @@ function clearPanelUpgradeSession() {
   }
 }
 
+function readDismissedPanelUpgradeNoticeVersion() {
+  if (typeof window === "undefined") return "";
+  try {
+    return normalizePanelVersion(window.localStorage.getItem(PANEL_UPGRADE_NOTICE_DISMISSED_KEY));
+  } catch {
+    return "";
+  }
+}
+
 function readPanelUpgradeSession(): PanelUpgradeSession | null {
   if (typeof window === "undefined") return null;
   try {
@@ -148,7 +171,8 @@ function readPanelUpgradeSession(): PanelUpgradeSession | null {
       clearPanelUpgradeSession();
       return null;
     }
-    return { targetVersion: String(value.targetVersion), startedAt };
+    const mode = value?.mode === "rollback" ? "rollback" : "upgrade";
+    return { targetVersion: String(value.targetVersion), startedAt, mode };
   } catch {
     clearPanelUpgradeSession();
     return null;
@@ -157,10 +181,12 @@ function readPanelUpgradeSession(): PanelUpgradeSession | null {
 
 function getLayoutUpgradeProgress(job: any) {
   const status = job?.status || "idle";
+  const isRollback = job?.mode === "rollback";
+  const actionLabel = isRollback ? "回退" : "升级";
   const logs = Array.isArray(job?.logs) ? job.logs.join("\n") : "";
   const matched = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(logs));
   const steps = [
-    { label: "准备升级", done: status !== "idle" && matched([/开始升级/i, /start/i]) },
+    { label: `准备${actionLabel}`, done: status !== "idle" && matched([/开始升级/i, /开始回退/i, /Starting panel/i, /start/i]) },
     {
       label: "检查发布资产",
       done: matched([
@@ -192,7 +218,7 @@ function getLayoutUpgradeProgress(job: any) {
   ];
 
   if (status === "success") {
-    return { percent: 100, label: "升级完成，正在等待面板恢复", steps: steps.map((step) => ({ ...step, done: true, active: false })) };
+    return { percent: 100, label: `${actionLabel}完成，正在等待面板恢复`, steps: steps.map((step) => ({ ...step, done: true, active: false })) };
   }
   if (status === "waiting_assets") {
     return { percent: 34, label: "等待 GitHub Actions 构建发布资产", steps: steps.map((step, index) => ({ ...step, done: index === 0, active: index === 1 })) };
@@ -200,14 +226,14 @@ function getLayoutUpgradeProgress(job: any) {
   if (status === "error") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    return { percent: Math.max(10, doneCount * 22), label: "升级异常", steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
+    return { percent: Math.max(10, doneCount * 22), label: `${actionLabel}异常`, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
   if (status === "running") {
     const doneCount = steps.filter((step) => step.done).length;
     const activeIndex = Math.min(doneCount, steps.length - 1);
-    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: steps[activeIndex]?.label || "正在升级", steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
+    return { percent: Math.min(92, Math.max(12, doneCount * 22 + 8)), label: steps[activeIndex]?.label || `正在${actionLabel}`, steps: steps.map((step, index) => ({ ...step, active: index === activeIndex && !step.done })) };
   }
-  return { percent: 0, label: "等待确认升级", steps: steps.map((step) => ({ ...step, active: false })) };
+  return { percent: 0, label: `等待确认${actionLabel}`, steps: steps.map((step) => ({ ...step, active: false })) };
 }
 
 export default function DashboardLayout({
@@ -288,16 +314,25 @@ function DashboardLayoutContent({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const sidebarMenuSettings = useMemo(
+    () => normalizeSidebarMenuSettings(publicInfo?.sidebarMenu),
+    [publicInfo?.sidebarMenu]
+  );
   const siteTitle = (publicInfo?.siteTitle || "ForwardX").trim() || "ForwardX";
-  const logoSrc = publicInfo?.siteLogoDataUrl || (resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png");
+  const [cachedSiteLogo, setCachedSiteLogo] = useState(() => readCachedSiteLogo());
+  const defaultLogoSrc = resolvedTheme === "dark" ? "/logo-dark.png" : "/logo-light.png";
+  const logoSrc = publicInfo?.siteLogoDataUrl || (publicInfo ? defaultLogoSrc : cachedSiteLogo);
+  const [displayLogoSrc, setDisplayLogoSrc] = useState(logoSrc);
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
   const logoMark = logoLoadFailed ? (
     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
       <Zap className="h-4 w-4" />
     </div>
+  ) : !displayLogoSrc ? (
+    <span className="h-7 w-7 shrink-0" aria-hidden="true" />
   ) : (
     <img
-      src={logoSrc}
+      src={displayLogoSrc}
       alt={siteTitle}
       className="h-7 w-7 shrink-0 object-contain"
       onError={() => setLogoLoadFailed(true)}
@@ -314,6 +349,7 @@ function DashboardLayoutContent({
   const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
   const [upgradeRefreshCountdown, setUpgradeRefreshCountdown] = useState<number | null>(null);
   const [backgroundUpgrade, setBackgroundUpgrade] = useState<PanelUpgradeSession | null>(() => readPanelUpgradeSession());
+  const [dismissedPanelUpgradeNoticeVersion, setDismissedPanelUpgradeNoticeVersion] = useState(() => readDismissedPanelUpgradeNoticeVersion());
   const [telegramBind, setTelegramBind] = useState<any | null>(null);
   const [telegramBindTick, setTelegramBindTick] = useState(Date.now());
   const [showTwoFactorDialog, setShowTwoFactorDialog] = useState(false);
@@ -336,7 +372,7 @@ function DashboardLayoutContent({
     onSuccess: (data) => {
       const targetVersion = data?.targetVersion || upgradeTargetVersion || "";
       if (targetVersion) {
-        const next = { targetVersion, startedAt: Date.now() };
+        const next: PanelUpgradeSession = { targetVersion, startedAt: Date.now(), mode: "upgrade" };
         setBackgroundUpgrade(next);
         try {
           window.sessionStorage.setItem(PANEL_UPGRADE_SESSION_KEY, JSON.stringify(next));
@@ -384,8 +420,41 @@ function DashboardLayoutContent({
   }, [popupAnnouncement?.id]);
 
   useEffect(() => {
+    if (!publicInfo) return;
+    const nextLogo = publicInfo.siteLogoDataUrl || "";
+    setCachedSiteLogo(nextLogo);
+    try {
+      if (nextLogo) {
+        window.localStorage.setItem(SITE_LOGO_CACHE_KEY, nextLogo);
+      } else {
+        window.localStorage.removeItem(SITE_LOGO_CACHE_KEY);
+      }
+    } catch {
+      // Logo caching only prevents refresh flicker; it is safe to skip when storage is unavailable.
+    }
+  }, [publicInfo]);
+
+  useEffect(() => {
     setLogoLoadFailed(false);
-  }, [logoSrc]);
+    if (!logoSrc) {
+      setDisplayLogoSrc("");
+      return;
+    }
+    if (logoSrc === displayLogoSrc) return;
+
+    let disposed = false;
+    const image = new window.Image();
+    image.onload = () => {
+      if (!disposed) setDisplayLogoSrc(logoSrc);
+    };
+    image.onerror = () => {
+      if (!disposed && !displayLogoSrc) setLogoLoadFailed(true);
+    };
+    image.src = logoSrc;
+    return () => {
+      disposed = true;
+    };
+  }, [displayLogoSrc, logoSrc]);
 
   useEffect(() => {
     if (typeof document !== "undefined") {
@@ -402,9 +471,10 @@ function DashboardLayoutContent({
     if (upgradeStatus?.job?.status !== "running" || backgroundUpgrade) return;
     const targetVersion = upgradeStatus.job.targetVersion;
     if (!targetVersion) return;
-    const next = {
+    const next: PanelUpgradeSession = {
       targetVersion,
       startedAt: upgradeStatus.job.startedAt ? new Date(upgradeStatus.job.startedAt).getTime() : Date.now(),
+      mode: upgradeStatus.job.mode === "rollback" ? "rollback" : "upgrade",
     };
     setBackgroundUpgrade(next);
     try {
@@ -412,7 +482,7 @@ function DashboardLayoutContent({
     } catch {
       // Ignore storage failures.
     }
-  }, [backgroundUpgrade, upgradeStatus?.job?.startedAt, upgradeStatus?.job?.status, upgradeStatus?.job?.targetVersion]);
+  }, [backgroundUpgrade, upgradeStatus?.job?.mode, upgradeStatus?.job?.startedAt, upgradeStatus?.job?.status, upgradeStatus?.job?.targetVersion]);
 
   useEffect(() => {
     if (upgradeStatus?.job?.status !== "success") return;
@@ -429,13 +499,19 @@ function DashboardLayoutContent({
       return;
     }
 
-    if (comparePanelVersions(upgradeStatus.currentVersion, backgroundUpgrade.targetVersion) < 0) return;
+    const compareResult = comparePanelVersions(upgradeStatus.currentVersion, backgroundUpgrade.targetVersion);
+    if (backgroundUpgrade.mode === "rollback") {
+      if (compareResult > 0) return;
+    } else if (compareResult < 0) {
+      return;
+    }
 
     clearPanelUpgradeSession();
     setBackgroundUpgrade(null);
     scheduleUpgradeRefresh();
   }, [
     backgroundUpgrade?.startedAt,
+    backgroundUpgrade?.mode,
     backgroundUpgrade?.targetVersion,
     scheduleUpgradeRefresh,
     upgradeStatus?.currentVersion,
@@ -743,10 +819,14 @@ function DashboardLayoutContent({
   };
 
   const hiddenNormalUserMainPaths = ["/hosts", "/tunnels"];
-  const visibleMainMenuItems = isAdmin
-    ? mainMenuItems
-    : mainMenuItems.filter((item) => !hiddenNormalUserMainPaths.includes(item.path));
-  const canShowNetworkTest = isAdmin || publicInfo?.lookingGlassUserEnabled === true;
+  const isSidebarNavItemVisible = (item: SidebarNavItem) => !item.menuKey || sidebarMenuSettings[item.menuKey] !== false;
+  const filterSidebarNavItems = (items: SidebarNavItem[]) => items.filter(isSidebarNavItemVisible);
+  const visibleMainMenuItems = filterSidebarNavItems(
+    isAdmin
+      ? mainMenuItems
+      : mainMenuItems.filter((item) => !hiddenNormalUserMainPaths.includes(item.path))
+  );
+  const canShowNetworkTest = (isAdmin || publicInfo?.lookingGlassUserEnabled === true) && sidebarMenuSettings.lookingGlass !== false;
   const userStoreMenuItems = !isAdmin
     ? [
         { icon: Package, label: "我的订阅", path: "/subscriptions" },
@@ -754,10 +834,14 @@ function DashboardLayoutContent({
         ...(storeStatus?.enabled ? [{ icon: ShoppingBag, label: "商店", path: "/store" }] : []),
       ]
     : [];
+  const visibleAnnouncementsMenuItems = isSidebarNavItemVisible(announcementsMenuItem) ? [announcementsMenuItem] : [];
+  const visibleProfileMenuItems = isSidebarNavItemVisible(profileMenuItem) ? [profileMenuItem] : [];
+  const visibleAdminMenuItems = filterSidebarNavItems(adminMenuItems);
+  const primaryMenuItems = [...visibleMainMenuItems, ...userStoreMenuItems, ...visibleAnnouncementsMenuItems];
 
   const allMenuItems = isAdmin
-    ? [...visibleMainMenuItems, announcementsMenuItem, profileMenuItem, ...adminMenuItems]
-    : [...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
+    ? [...primaryMenuItems, ...visibleProfileMenuItems, ...visibleAdminMenuItems]
+    : [...primaryMenuItems, ...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems];
 
   const currentPath = location.split("?")[0] || "/";
   const activeMenuItem = allMenuItems.find((item) => item.path === currentPath);
@@ -771,6 +855,7 @@ function DashboardLayoutContent({
         targetVersion: upgradeJob?.targetVersion || backgroundUpgrade?.targetVersion || upgradeStatus?.currentVersion || "",
         logs: upgradeJob?.logs || ["[ForwardX] Upgrade completed; browser refresh scheduled"],
         error: null,
+        mode: upgradeJob?.mode || backgroundUpgrade?.mode || "upgrade",
       };
     }
     if (upgradeJob?.status && upgradeJob.status !== "idle") return upgradeJob;
@@ -782,11 +867,19 @@ function DashboardLayoutContent({
       targetVersion: backgroundUpgrade.targetVersion,
       logs: ["[ForwardX] Starting upgrade in background"],
       error: null,
+      mode: backgroundUpgrade.mode || "upgrade",
     };
   }, [backgroundUpgrade, upgradeJob, upgradeRefreshScheduled, upgradeStatus?.currentVersion]);
   const upgradeProgress = getLayoutUpgradeProgress(displayUpgradeJob);
-  const upgradeTargetVersion = updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || displayUpgradeJob?.targetVersion || "";
-  const upgradeChangelogUrl = getPanelChangelogUrl(upgradeTargetVersion, updateInfo?.releaseUrl || upgradeStatus?.update?.releaseUrl);
+  const isPanelVersionTaskVisible = !!displayUpgradeJob?.status && displayUpgradeJob.status !== "idle";
+  const isPanelRollbackTask = displayUpgradeJob?.mode === "rollback";
+  const panelVersionActionLabel = isPanelRollbackTask ? "回退" : "升级";
+  const upgradeTargetVersion = isPanelVersionTaskVisible
+    ? (displayUpgradeJob?.targetVersion || "")
+    : (updateInfo?.latestVersion || upgradeStatus?.update?.latestVersion || "");
+  const upgradeChangelogUrl = getPanelChangelogUrl(upgradeTargetVersion, isPanelVersionTaskVisible ? null : (updateInfo?.releaseUrl || upgradeStatus?.update?.releaseUrl));
+  const normalizedUpgradeTargetVersion = normalizePanelVersion(upgradeTargetVersion);
+  const isPanelUpdateNoticeDismissed = !!normalizedUpgradeTargetVersion && dismissedPanelUpgradeNoticeVersion === normalizedUpgradeTargetVersion;
   const isDockerDeployment = !!upgradeStatus?.docker;
   const dockerUpgradeCommand = upgradeStatus?.manualUpgradeCommand || DEFAULT_DOCKER_UPGRADE_COMMAND;
   const upgradeRefreshText = upgradeRefreshCountdown !== null
@@ -794,15 +887,27 @@ function DashboardLayoutContent({
     : "系统恢复后将自动刷新";
   const hasPanelUpdate = isAdmin && !!updateInfo?.hasUpdate && !!upgradeTargetVersion;
   const showUpgradeNotice = isAdmin && (
-    hasPanelUpdate ||
+    (hasPanelUpdate && !isPanelUpdateNoticeDismissed) ||
     displayUpgradeJob?.status === "running" ||
     displayUpgradeJob?.status === "success" ||
     displayUpgradeJob?.status === "waiting_assets" ||
     displayUpgradeJob?.status === "error"
   );
+  const canDismissPanelUpdateNotice = hasPanelUpdate && !isPanelVersionTaskVisible && !!normalizedUpgradeTargetVersion;
+  const dismissPanelUpdateNotice = () => {
+    if (!canDismissPanelUpdateNotice) return;
+    setDismissedPanelUpgradeNoticeVersion(normalizedUpgradeTargetVersion);
+    try {
+      window.localStorage.setItem(PANEL_UPGRADE_NOTICE_DISMISSED_KEY, normalizedUpgradeTargetVersion);
+    } catch {
+      // Local dismissal only affects the sidebar notice.
+    }
+    setShowUpgradeDialog(false);
+    toast.success(`v${normalizedUpgradeTargetVersion} 不再在左下角提醒`);
+  };
   const managementMenuItems: SidebarNavItem[] = isAdmin
-    ? [profileMenuItem, ...adminMenuItems]
-    : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), profileMenuItem];
+    ? [...visibleProfileMenuItems, ...visibleAdminMenuItems]
+    : [...(canShowNetworkTest ? [lookingGlassMenuItem] : []), ...visibleProfileMenuItems];
   const closeMobileNavigation = () => {
     if (isMobile) {
       setAccountMenuOpen(false);
@@ -994,23 +1099,27 @@ function DashboardLayoutContent({
         </SidebarHeader>
 
         <SidebarContent className="gap-1 pb-2 mobile-sidebar-content">
-          <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
-            <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-              主菜单
-            </SidebarGroupLabel>
-            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
-              {renderSidebarItems([...visibleMainMenuItems, ...userStoreMenuItems, announcementsMenuItem])}
-            </SidebarMenu>
-          </SidebarGroup>
+          {primaryMenuItems.length > 0 && (
+            <SidebarGroup className={cn("pb-2 mobile-sidebar-group", mobileAuth.isNative && "pb-1.5")}>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+                主菜单
+              </SidebarGroupLabel>
+              <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
+                {renderSidebarItems(primaryMenuItems)}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
 
-          <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
-            <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
-              管理
-            </SidebarGroupLabel>
-            <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
-              {renderSidebarItems(managementMenuItems)}
-            </SidebarMenu>
-          </SidebarGroup>
+          {managementMenuItems.length > 0 && (
+            <SidebarGroup className={cn("mt-1 shrink-0 pt-2 mobile-sidebar-group mobile-sidebar-admin-group", !mobileAuth.isNative && "border-t border-sidebar-border/50", mobileAuth.isNative && "mt-0 pt-2 border-t border-sidebar-border/50")}>
+              <SidebarGroupLabel className="text-xs text-muted-foreground/60 uppercase tracking-wider">
+                管理
+              </SidebarGroupLabel>
+              <SidebarMenu className={cn("py-1 mobile-sidebar-menu", isDesktopCollapsed ? "items-center px-0" : "px-2")}>
+                {renderSidebarItems(managementMenuItems)}
+              </SidebarMenu>
+            </SidebarGroup>
+          )}
 
           {/* Theme toggle for collapsed sidebar */}
           {isDesktopCollapsed && (
@@ -1052,7 +1161,7 @@ function DashboardLayoutContent({
                     : displayUpgradeJob?.status === "waiting_assets"
                       ? "发布资产构建中"
                     : displayUpgradeJob?.status === "error"
-                      ? "升级失败"
+                      ? `${panelVersionActionLabel}失败`
                       : `发现新版本 ${upgradeTargetVersion}`
               }
             >
@@ -1071,13 +1180,13 @@ function DashboardLayoutContent({
                 <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
                   <p className="truncate text-xs font-semibold">
                     {displayUpgradeJob?.status === "running"
-                      ? "正在升级"
+                      ? `正在${panelVersionActionLabel}`
                       : displayUpgradeJob?.status === "success"
-                        ? "升级完成，正在重启"
+                        ? `${panelVersionActionLabel}完成，正在重启`
                         : displayUpgradeJob?.status === "waiting_assets"
                           ? "发布资产构建中"
                         : displayUpgradeJob?.status === "error"
-                          ? "升级失败"
+                          ? `${panelVersionActionLabel}失败`
                           : "发现新版本"}
                   </p>
                   <p className="mt-1 truncate text-[11px] text-primary/75">
@@ -1170,6 +1279,15 @@ function DashboardLayoutContent({
                   <span>{checkingMobileUpdate ? "检查中..." : "软件更新"}</span>
                 </DropdownMenuItem>
               )}
+              {isAdmin && (
+                <DropdownMenuItem
+                  onClick={() => navigateFromAccountMenu("/settings")}
+                  className="cursor-pointer"
+                >
+                  <Settings className="mr-2 h-4 w-4" />
+                  <span>系统设置</span>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={logout}
@@ -1259,10 +1377,12 @@ function DashboardLayoutContent({
         <DialogContent className="w-[calc(100vw-2rem)] max-w-[560px] overflow-x-hidden sm:max-w-xl">
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5 text-primary" />
-            发现新版本
+            {isPanelRollbackTask ? "面板版本回退" : "发现新版本"}
           </DialogTitle>
           <DialogDescription>
-            {isDockerDeployment ? "复制一键脚本后在服务器执行，脚本会重建 ForwardX 容器。" : "后台升级，完成后自动重启。"}
+            {isPanelRollbackTask
+              ? "后台回退，完成后自动重启。"
+              : (isDockerDeployment ? "复制一键脚本后在服务器执行，脚本会重建 ForwardX 容器。" : "后台升级，完成后自动重启。")}
           </DialogDescription>
           {(() => {
             const job = displayUpgradeJob;
@@ -1288,7 +1408,7 @@ function DashboardLayoutContent({
 
                 {upgradeStatus?.upgradeEnabled === false && (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
-                    {isDockerDeployment ? "Docker 部署请复制下方一键脚本到服务器执行升级。" : "当前环境未配置自动升级命令，无法在面板内一键升级。"}
+                    {isDockerDeployment ? `Docker 部署请复制下方一键脚本到服务器执行${panelVersionActionLabel}。` : `当前环境未配置自动${panelVersionActionLabel}命令，无法在面板内一键${panelVersionActionLabel}。`}
                   </div>
                 )}
 
@@ -1336,7 +1456,7 @@ function DashboardLayoutContent({
                       发布资产构建中
                     </div>
                     <p className="mt-2 break-words text-xs leading-5">
-                      {job?.error || "GitHub Actions 正在生成面板安装包或 Docker 镜像，请稍后重新检查更新。"}
+                      {job?.error || `GitHub Actions 正在生成面板安装包或 Docker 镜像，请稍后重新检查${panelVersionActionLabel}。`}
                     </p>
                   </div>
                 )}
@@ -1345,15 +1465,15 @@ function DashboardLayoutContent({
                   <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
                     <div className="flex items-center gap-2 font-medium">
                       <AlertTriangle className="h-4 w-4" />
-                      升级失败
+                      {panelVersionActionLabel}失败
                     </div>
-                    <p className="mt-1 text-xs">{job?.error || "升级命令执行失败，请到系统设置查看日志。"}</p>
+                    <p className="mt-1 text-xs">{job?.error || `${panelVersionActionLabel}命令执行失败，请到系统设置查看日志。`}</p>
                   </div>
                 )}
 
                 {isSuccess && (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
-                    升级任务已完成，面板正在重启。{upgradeRefreshText}。
+                    {panelVersionActionLabel}任务已完成，面板正在重启。{upgradeRefreshText}。
                   </div>
                 )}
 
@@ -1364,9 +1484,15 @@ function DashboardLayoutContent({
             <Button className="w-full gap-2 sm:w-auto" variant="ghost" asChild>
               <a href={upgradeChangelogUrl} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="h-4 w-4" />
-                升级日志
+                {panelVersionActionLabel}日志
               </a>
             </Button>
+            {canDismissPanelUpdateNotice && (
+              <Button className="w-full gap-2 sm:w-auto" variant="outline" onClick={dismissPanelUpdateNotice}>
+                <BellOff className="h-4 w-4" />
+                不再提醒
+              </Button>
+            )}
             <Button className="w-full sm:w-auto" variant="outline" onClick={() => setShowUpgradeDialog(false)}>
               {displayUpgradeJob?.status === "running" ? "后台执行" : "取消"}
             </Button>
@@ -1380,6 +1506,7 @@ function DashboardLayoutContent({
                 className="w-full gap-2 sm:w-auto"
                 disabled={
                   !upgradeTargetVersion ||
+                  isPanelRollbackTask ||
                   upgradeStatus?.upgradeEnabled === false ||
                   displayUpgradeJob?.status === "running" ||
                   displayUpgradeJob?.status === "success" ||
@@ -1392,7 +1519,9 @@ function DashboardLayoutContent({
                 ) : (
                   <Rocket className="h-4 w-4" />
                 )}
-                {displayUpgradeJob?.status === "running" ? "升级中..." : "确认升级"}
+                {isPanelRollbackTask
+                  ? (displayUpgradeJob?.status === "running" ? "回退中..." : "请到系统设置处理")
+                  : (displayUpgradeJob?.status === "running" ? "升级中..." : "确认升级")}
               </Button>
             )}
           </DialogFooter>

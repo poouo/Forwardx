@@ -59,10 +59,11 @@ export function pushAgentRefresh(hostId: number, reason: string) {
   return sendAgentEvent(hostId, "agent-refresh", { reason, ts: Date.now() });
 }
 
-export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string) {
+export function pushAgentUpgrade(hostId: number, targetVersion: string | null, panelUrl: string, releaseVersion?: string | null) {
   return sendAgentEvent(hostId, "agent-upgrade", {
     targetVersion: targetVersion || AGENT_VERSION,
     panelUrl,
+    releaseVersion: releaseVersion || null,
   });
 }
 

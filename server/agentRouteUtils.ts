@@ -21,6 +21,21 @@ export function isAgentVersionAtLeast(version: string | null | undefined, target
   return compareVersions(version, target) >= 0;
 }
 
+export function isAgentUpgradeTargetSatisfied(
+  version: string | null | undefined,
+  target: string | null | undefined,
+  currentSupportedVersion?: string | null,
+) {
+  if (!version || !target) return false;
+  const normalizedVersion = normalizeVersion(version);
+  const normalizedTarget = normalizeVersion(target);
+  if (!normalizedVersion || !normalizedTarget) return false;
+  if (currentSupportedVersion && compareVersions(normalizedTarget, currentSupportedVersion) < 0) {
+    return normalizedVersion === normalizedTarget;
+  }
+  return compareVersions(normalizedVersion, normalizedTarget) >= 0;
+}
+
 export function isAgentVersionBehind(version: string | null | undefined, target: string | null | undefined) {
   if (!version || !target) return false;
   return compareVersions(version, target) < 0;
