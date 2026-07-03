@@ -339,6 +339,22 @@ async function settleTrafficBillingForDeletedRule(rule: any) {
   return billed;
 }
 
+async function markTemplateChildrenPendingDelete(templateRuleId: number, reason: string) {
+  const childRules = await db.getForwardGroupChildRulesForTemplate(templateRuleId);
+  for (const child of childRules as any[]) {
+    await settleTrafficBillingForDeletedRule(child);
+    const tunnelId = Number((child as any).tunnelId || 0);
+    if (tunnelId) {
+      const tunnel = await db.getTunnelById(tunnelId);
+      await db.updateTunnel(tunnelId, { isRunning: false } as any);
+      if (tunnel) await pushTunnelEndpointRefresh(tunnel, reason);
+    }
+    await db.markForwardRulePendingDelete(Number(child.id));
+    if (Number(child.hostId || 0) > 0) pushAgentRefresh(Number(child.hostId), reason);
+  }
+  return childRules;
+}
+
 export const crudRulesRouter = router({
   create: protectedProcedure
     .input(z.object({
@@ -657,6 +673,160 @@ export const crudRulesRouter = router({
 
       if ((rule as any).isForwardGroupTemplate) {
         const groupId = Number((rule as any).forwardGroupId || 0);
+        if (input.forwardGroupId === null) {
+          if (!groupId) throw new Error("Forward group does not exist");
+          const childRules = await db.getForwardGroupChildRulesForTemplate(input.id);
+          const excludeRuleIds = [
+            Number(rule.id),
+            ...(childRules as any[]).map((child: any) => Number(child.id)),
+          ].filter((id) => Number.isInteger(id) && id > 0);
+          const nextForwardType = input.forwardType ?? (rule as any).forwardType;
+          const nextTunnelId = nextForwardType === "gost"
+            ? Number(input.tunnelId !== undefined ? input.tunnelId : (rule as any).tunnelId) || null
+            : null;
+          let selectedTunnelForRule: any = null;
+          let nextHostId = Number(input.hostId ?? (rule as any).hostId);
+          let isTrafficBillingRule = false;
+          if (nextTunnelId) {
+            const access = await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId);
+            selectedTunnelForRule = access.tunnel;
+            isTrafficBillingRule = !!access.isTrafficBillingResource;
+            if (!selectedTunnelForRule.isEnabled) throw new Error("Selected tunnel is disabled");
+            nextHostId = Number(selectedTunnelForRule.entryHostId);
+            if (input.hostId !== undefined && Number(input.hostId) !== nextHostId) {
+              throw new Error("Tunnel entry host must match the rule host");
+            }
+            if (ctx.user.role !== "admin" && String(selectedTunnelForRule.mode || "").toLowerCase() === "forwardx") {
+              const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
+              if (!(owner as any)?.canAddRules) {
+                throw new Error("No permission to use custom encrypted tunnels");
+              }
+            }
+          } else {
+            if (!nextHostId) throw new Error("Please select a host");
+            const access = await requireHostUseAccess(ctx, nextHostId);
+            isTrafficBillingRule = !!access.isTrafficBillingResource;
+          }
+
+          if (ctx.user.role !== "admin") {
+            const owner = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
+            await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
+            if (owner?.expiresAt && new Date(owner.expiresAt) <= new Date()) {
+              throw new Error("Plan expired, please renew before enabling rules");
+            }
+          }
+
+          const nextProtocol = input.protocol ?? (rule as any).protocol;
+          const nextSourcePort = Number(input.sourcePort ?? (rule as any).sourcePort);
+          const nextMainBackupEnabled = input.failoverEnabled ?? (rule as any).failoverEnabled;
+          requireMainBackupAllowed({
+            enabled: nextMainBackupEnabled,
+            protocol: nextProtocol,
+            forwardType: nextForwardType,
+            tunnelId: nextTunnelId,
+            isAdmin: ctx.user.role === "admin",
+          });
+          await requireRuleProtocolEnabled({ ...rule, forwardType: nextForwardType, tunnelId: nextTunnelId }, selectedTunnelForRule);
+          await assertRulePortWithinEntryPolicy({
+            hostId: nextHostId,
+            sourcePort: nextSourcePort,
+            tunnelId: nextTunnelId,
+            tunnel: selectedTunnelForRule,
+          });
+          if (ctx.user.role !== "admin") {
+            const planRange = await db.getUserPlanPortRange(ctx.user.id, nextHostId, nextTunnelId || undefined);
+            if (planRange && (nextSourcePort < planRange.start || nextSourcePort > planRange.end)) {
+              throw new Error(`套餐端口必须在 ${planRange.start}-${planRange.end} 区间内`);
+            }
+          }
+          const used = await db.isPortUsedOnHost(nextHostId, nextSourcePort, excludeRuleIds);
+          if (used) throw new Error(`Port ${nextSourcePort} is already used`);
+
+          let tunnelExitPort: number | null = null;
+          if (nextTunnelId) {
+            const tunnel = selectedTunnelForRule ?? (await requireTunnelUseOrTrafficBillingAccess(ctx, nextTunnelId)).tunnel;
+            const exit = await db.getHostById(tunnel.exitHostId);
+            tunnelExitPort = Number((rule as any).tunnelExitPort || 0) || await db.findAvailableTunnelExitPort(
+              tunnel.exitHostId,
+              (exit as any)?.portRangeStart,
+              (exit as any)?.portRangeEnd,
+              [],
+              excludeRuleIds,
+            );
+            if (!tunnelExitPort) throw new Error("Tunnel exit agent has no available port");
+          }
+
+          const failoverData = normalizeFailoverInput({
+            failoverEnabled: nextMainBackupEnabled,
+            failoverStrategy: input.failoverStrategy ?? (rule as any).failoverStrategy ?? "fallback",
+            failoverTargets: input.failoverTargets ?? parseFailoverTargets((rule as any).failoverTargets),
+            failoverSeconds: input.failoverSeconds ?? (rule as any).failoverSeconds,
+            recoverSeconds: input.recoverSeconds ?? (rule as any).recoverSeconds,
+            autoFailback: input.autoFailback ?? (rule as any).autoFailback,
+          }, nextProtocol);
+          const data: any = {
+            name: input.name ?? (rule as any).name,
+            hostId: nextHostId,
+            forwardType: nextForwardType,
+            protocol: nextProtocol,
+            gostMode: "direct",
+            gostRelayHost: null,
+            gostRelayPort: null,
+            tunnelId: nextTunnelId,
+            tunnelExitPort,
+            forwardGroupId: null,
+            forwardGroupRuleId: null,
+            forwardGroupMemberId: null,
+            isForwardGroupTemplate: false,
+            sourcePort: nextSourcePort,
+            targetIp: normalizeRuleTargetIp(input.targetIp ?? (rule as any).targetIp, { tunnelId: nextTunnelId }),
+            targetPort: Number(input.targetPort ?? (rule as any).targetPort),
+            telegramErrorNotifyEnabled: input.telegramErrorNotifyEnabled ?? (rule as any).telegramErrorNotifyEnabled,
+            blockHttp: false,
+            blockSocks: false,
+            blockTls: false,
+            ...normalizeProxyProtocolInput({
+              proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
+              proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
+              proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
+              proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
+              proxyProtocolVersion: input.proxyProtocolVersion ?? (rule as any).proxyProtocolVersion,
+              failoverEnabled: nextMainBackupEnabled,
+            }, nextProtocol, nextForwardType, false, { clearUnsupported: true, tunnelRoute: !!nextTunnelId }),
+            ...normalizeTransportTuningInput({
+              tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
+              zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+              udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
+              udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
+            }, nextProtocol, nextForwardType, false, {
+              clearUnsupported: true,
+              tunnelRoute: !!nextTunnelId,
+              forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx",
+            }),
+            ...failoverData,
+            isEnabled: input.isEnabled ?? (rule as any).isEnabled,
+            isRunning: false,
+            pendingDelete: false,
+          };
+          if (data.isEnabled) {
+            data.disabledByUser = false;
+            data.disabledByTunnel = false;
+            data.protocolBlockReason = null;
+          }
+
+          await db.updateForwardRule(input.id, data);
+          if (nextTunnelId && selectedTunnelForRule) {
+            await db.reconcileForwardRuleTunnelExits({ ...rule, ...data, id: input.id, tunnelId: nextTunnelId, tunnelExitPort }, selectedTunnelForRule);
+            await db.updateTunnel(nextTunnelId, { isRunning: false } as any);
+            await pushTunnelEndpointRefresh(selectedTunnelForRule, "forward-group-rule-converted");
+          } else {
+            await db.clearForwardRuleTunnelExits(input.id);
+            pushAgentRefresh(nextHostId, "forward-group-rule-converted");
+          }
+          await markTemplateChildrenPendingDelete(input.id, "forward-group-rule-converted");
+          await db.runForwardGroupFailover(groupId);
+          return { success: true, reset: true };
+        }
         if (!groupId) throw new Error("转发组不存在");
         if (ctx.user.role !== "admin") {
           const hasPermission = await db.checkUserForwardGroupPermission(ctx.user.id, groupId);
