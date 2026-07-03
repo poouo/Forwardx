@@ -4027,7 +4027,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     }));
     const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
     for (const action of normalizedActions) {
-      if (!action?.failover || action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
+      if (action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
       const key = `${Number(action.ruleId)}:${Number(action.sourcePort)}`;
       if (runningRuleKeys.has(key)) continue;
       addRunningRule({
