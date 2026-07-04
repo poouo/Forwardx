@@ -3463,12 +3463,11 @@ function RulesContent() {
       { type: "group" as const, label: desktopRuleTypeLabels.group, rules: [] as any[] },
     ];
     const groupByType = new Map(groups.map((group) => [group.type, group]));
-    const groupedRules = ruleCategory === "all" ? filteredRules : pagedRules;
-    groupedRules.forEach((rule: any) => {
+    pagedRules.forEach((rule: any) => {
       groupByType.get(getRuleDisplayType(rule, forwardGroupById))?.rules.push(rule);
     });
     return groups.filter((group) => group.rules.length > 0);
-  }, [filteredRules, forwardGroupById, pagedRules, ruleCategory]);
+  }, [forwardGroupById, pagedRules]);
   const shouldGroupRuleCards = ruleCategory === "all";
 
   const getHostName = (hostId: number) => {

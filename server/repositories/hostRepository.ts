@@ -1,5 +1,24 @@
-import { asc, desc, eq, sql } from "drizzle-orm";
-import { hosts, InsertHost, forwardRules, forwardGroupMembers, hostGroupMembers, hostMetrics, hostTrafficCounters, trafficStats } from "../../drizzle/schema";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import {
+  agentTokens,
+  forwardGroupMembers,
+  forwardRuleTunnelExits,
+  forwardRules,
+  hostGroupMembers,
+  hostMetrics,
+  hostProbeServiceStats,
+  hosts,
+  hostTrafficCounters,
+  InsertHost,
+  subscriptionPlanHosts,
+  trafficBillingConfigs,
+  trafficStats,
+  trafficStatBuckets,
+  tunnelExitNodes,
+  tunnelHops,
+  tunnels,
+  userHostPermissions,
+} from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { sqlBool } from "./repositoryUtils";
@@ -52,11 +71,68 @@ export async function deleteHost(id: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(forwardRules).where(eq(forwardRules.hostId, id));
+  await db.delete(forwardRuleTunnelExits).where(eq(forwardRuleTunnelExits.exitHostId, id));
+  await db.delete(agentTokens).where(eq(agentTokens.hostId, id));
+  await db.delete(userHostPermissions).where(eq(userHostPermissions.hostId, id));
+  await db.delete(subscriptionPlanHosts).where(eq(subscriptionPlanHosts.hostId, id));
   await db.delete(hostGroupMembers).where(eq(hostGroupMembers.hostId, id));
   await db.delete(hostMetrics).where(eq(hostMetrics.hostId, id));
+  await db.delete(hostProbeServiceStats).where(eq(hostProbeServiceStats.hostId, id));
   await db.delete(hostTrafficCounters).where(eq(hostTrafficCounters.hostId, id));
   await db.delete(trafficStats).where(eq(trafficStats.hostId, id));
+  await db.delete(trafficStatBuckets).where(eq(trafficStatBuckets.hostId, id));
+  await db.delete(trafficBillingConfigs).where(and(
+    eq(trafficBillingConfigs.resourceType, "host"),
+    eq(trafficBillingConfigs.resourceId, id),
+  ));
   await db.delete(hosts).where(eq(hosts.id, id));
+}
+
+async function hostHasLiveReferences(hostId: number) {
+  const db = await getDb();
+  if (!db) return true;
+  const [ruleBlockers, forwardGroupRows, tunnelRows, tunnelHopRows, tunnelExitRows, planRows, tokenRows] = await Promise.all([
+    getHostRuleDeleteBlockers(hostId),
+    db.select({ count: sqlCountAll() }).from(forwardGroupMembers).where(and(
+      eq(forwardGroupMembers.memberType, "host"),
+      eq(forwardGroupMembers.hostId, hostId),
+    )),
+    db.select({ count: sqlCountAll() }).from(tunnels).where(sql`${tunnels.entryHostId} = ${hostId} OR ${tunnels.exitHostId} = ${hostId}`),
+    db.select({ count: sqlCountAll() }).from(tunnelHops).where(eq(tunnelHops.hostId, hostId)),
+    db.select({ count: sqlCountAll() }).from(tunnelExitNodes).where(eq(tunnelExitNodes.hostId, hostId)),
+    db.select({ count: sqlCountAll() }).from(subscriptionPlanHosts).where(eq(subscriptionPlanHosts.hostId, hostId)),
+    db.select({ count: sqlCountAll() }).from(agentTokens).where(eq(agentTokens.hostId, hostId)),
+  ]);
+  return ruleBlockers.ruleCount > 0
+    || ruleBlockers.managedRuleCount > 0
+    || Number(forwardGroupRows[0]?.count) > 0
+    || Number(tunnelRows[0]?.count) > 0
+    || Number(tunnelHopRows[0]?.count) > 0
+    || Number(tunnelExitRows[0]?.count) > 0
+    || Number(planRows[0]?.count) > 0
+    || Number(tokenRows[0]?.count) > 0;
+}
+
+export async function deleteHostIfUnreferenced(hostId: number) {
+  const id = Number(hostId || 0);
+  if (!Number.isInteger(id) || id <= 0) return false;
+  if (await hostHasLiveReferences(id)) return false;
+  await deleteHost(id);
+  return true;
+}
+
+export async function purgeOrphanedAgentHosts() {
+  const db = await getDb();
+  if (!db) return 0;
+  const rows = await db.select({ id: hosts.id }).from(hosts).where(sql`
+    (${hosts.agentToken} IS NULL OR ${hosts.agentToken} = '')
+    AND ${hosts.agentVersion} IS NOT NULL
+  `);
+  let removed = 0;
+  for (const row of rows as any[]) {
+    if (await deleteHostIfUnreferenced(Number(row.id || 0))) removed += 1;
+  }
+  return removed;
 }
 
 export async function updateHostHeartbeat(id: number, metrics?: Partial<InsertHost>) {

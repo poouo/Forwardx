@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.217] - 2026-07-04
+
+### 修复
+
+- 修复 `nginx_stream`/`nginx-tunnel` 规则已由 `forwardx-nginx` 正常接管端口时，Agent 仍受旧 GOST runtime 状态影响而上报 `running=false`，面板随后反复下发 remove/apply 导致 WARN 刷屏和链路抖动的问题；现在 nginx 隧道状态以 `forwardx-nginx` 服务和 nginx 配置监听端口为准。
+- 优化面板 runtime-sync 触发条件，普通 FXP 动作和未变化的 runtime 服务异常不再每轮心跳强制下发完整共享 runtime 包，减少规则较多时的无效流量和 Agent shell 压力。
+- 修复转发规则列表在“全部”分组视图中点击第二页后，页码和显示范围已变化但列表内容仍使用全量规则数据、看起来停留在第一页的问题。
+- 修复转发组主备规则延迟展示会取所有健康成员最小值的问题，避免备用节点的低延迟覆盖当前活动成员；同时健康判断忽略已停用/待删除模板规则的子规则，避免停用规则拖累主成员并错误切到备用。
+- 修复 Agent Token 删除后仅解绑主机、导致已卸载 Agent 的主机仍在主机管理中计入离线数量的问题；现在删除 Token 会在无转发规则、转发组、隧道和套餐引用时同步移除关联主机，并清理历史残留的无引用 Agent 主机。
+- 修复 Agent 安装/升级时可能安装系统 nginx 包并停止或禁用用户机器上已有 nginx 服务的问题；现在安装依赖不再主动安装 nginx，检测到系统 nginx 正在运行时也只提示并保持不变，ForwardX 仅使用独立的 `forwardx-nginx` 运行时和 `/etc/forwardx/nginx` 配置目录。
+
+### 版本
+
+- 面板版本升级至 `2.3.217`。
+- Agent 目标版本保持 `2.2.138`。
+- Android APP 版本保持 `2.3.77`。
+
 ## [2.3.216] - 2026-07-03
 
 ### 修复
@@ -8,8 +25,6 @@
 - 修复转发链模板规则在编辑时切换为独立隧道转发或普通转发后，服务端仍按原转发链模板保存，导致旧链路子规则继续占用端口且保存后不生效的问题。
 - 修复端口可用性检查只排除模板规则本身、未排除其生成的链路子规则，导致从转发链切换到隧道转发时误报端口不可用的问题；隧道出口端口分配也会排除即将删除的旧子规则。
 - 修复转发链子规则刚下发 apply 后，Agent 本地对账可能因 `runningRules` 期望集合尚未包含该规则而将其误判为 stale 并清理，导致面板显示 running=true 但链路随后不通的问题。
-- 修复 `nginx_stream`/`nginx-tunnel` 规则已由 `forwardx-nginx` 正常接管端口时，Agent 仍受旧 GOST runtime 状态影响而上报 `running=false`，面板随后反复下发 remove/apply 导致 WARN 刷屏和链路抖动的问题；现在 nginx 隧道状态以 `forwardx-nginx` 服务和 nginx 配置监听端口为准。
-- 优化面板 runtime-sync 触发条件，普通 FXP 动作和未变化的 runtime 服务异常不再每轮心跳强制下发完整共享 runtime 包，减少规则较多时的无效流量和 Agent shell 压力。
 
 ### 版本
 

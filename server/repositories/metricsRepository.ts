@@ -1201,6 +1201,12 @@ type ForwardGroupTrafficChildRow = {
   hostId: number;
 };
 
+type ForwardGroupLatencyChildRow = {
+  id: number;
+  groupId: number;
+  memberId: number;
+};
+
 async function getFirstEnabledMemberByGroup(groupIds: number[]) {
   const db = await getDb();
   const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
@@ -1223,6 +1229,26 @@ async function getFirstEnabledMemberByGroup(groupIds: number[]) {
     if (!prev || priority < prev.priority || (priority === prev.priority && id < prev.id)) {
       map.set(groupId, { id, priority });
     }
+  }
+  return map;
+}
+
+async function getActiveMemberByGroup(groupIds: number[]) {
+  const db = await getDb();
+  const ids = Array.from(new Set(groupIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+  const map = new Map<number, number>();
+  if (!db || ids.length === 0) return map;
+  const rows = await db
+    .select({
+      id: forwardGroups.id,
+      activeMemberId: forwardGroups.activeMemberId,
+    })
+    .from(forwardGroups)
+    .where(sql`${forwardGroups.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  for (const row of rows as any[]) {
+    const groupId = Number(row.id || 0);
+    const activeMemberId = Number(row.activeMemberId || 0);
+    if (groupId > 0 && activeMemberId > 0) map.set(groupId, activeMemberId);
   }
   return map;
 }
@@ -1620,13 +1646,16 @@ export async function getTrafficSummaryByRule(opts: {
   const latencyGroupModeById = await getForwardGroupModeMap((childLatencyRows as any[]).map((row: any) => Number(row.groupId || 0)));
   const parentChainChildren = new Map<number, number[]>();
   const parentFailoverChildren = new Map<number, number[]>();
+  const parentFailoverChildRows = new Map<number, ForwardGroupLatencyChildRow[]>();
   const parentByChildRule = new Map<number, number>();
   const chainParentRuleIds = new Set<number>();
   for (const row of childLatencyRows as any[]) {
     const childId = Number(row.id);
     const parentId = Number(row.parentId);
+    const groupId = Number(row.groupId || 0);
+    const memberId = Number(row.memberId || 0);
     if (childId <= 0 || parentId <= 0) continue;
-    if (latencyGroupModeById.get(Number(row.groupId || 0)) === "chain") {
+    if (latencyGroupModeById.get(groupId) === "chain") {
       chainParentRuleIds.add(parentId);
       const children = parentChainChildren.get(parentId) || [];
       children.push(childId);
@@ -1637,6 +1666,9 @@ export async function getTrafficSummaryByRule(opts: {
     const children = parentFailoverChildren.get(parentId) || [];
     children.push(childId);
     parentFailoverChildren.set(parentId, children);
+    const childRows = parentFailoverChildRows.get(parentId) || [];
+    childRows.push({ id: childId, groupId, memberId });
+    parentFailoverChildRows.set(parentId, childRows);
   }
   const latencyRuleIds = Array.from(new Set([
     ...ruleIds,
@@ -1677,35 +1709,31 @@ export async function getTrafficSummaryByRule(opts: {
     const rowRuleId = Number(row.ruleId);
     if (!latestByRawRule.has(rowRuleId)) latestByRawRule.set(rowRuleId, row);
   }
-  for (const [parentId, childIds] of parentFailoverChildren.entries()) {
-    let recordedAt: Date | null = null;
-    const healthyLatencies: number[] = [];
-    let hasAnyResult = false;
-    for (const childId of childIds) {
-      const latest = latestByRawRule.get(childId);
-      if (!latest) continue;
-      hasAnyResult = true;
-      if (!recordedAt || new Date(latest.recordedAt).getTime() > new Date(recordedAt).getTime()) {
-        recordedAt = latest.recordedAt;
-      }
-      if (!latest.isTimeout && latest.latencyMs !== null && latest.latencyMs !== undefined) {
-        const latency = Number(latest.latencyMs);
-        if (Number.isFinite(latency) && latency > 0) healthyLatencies.push(latency);
-      }
-    }
-    if (healthyLatencies.length > 0) {
+  const failoverGroupIds = Array.from(new Set(Array.from(parentFailoverChildRows.values())
+    .flat()
+    .map((row) => row.groupId)
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  const [activeMemberByGroup, firstMemberByGroup] = await Promise.all([
+    getActiveMemberByGroup(failoverGroupIds),
+    getFirstEnabledMemberByGroup(failoverGroupIds),
+  ]);
+  for (const [parentId, childRows] of parentFailoverChildRows.entries()) {
+    const groupId = Number(childRows.find((row) => row.groupId > 0)?.groupId || 0);
+    const preferredMemberIds = Array.from(new Set([
+      Number(activeMemberByGroup.get(groupId) || 0),
+      Number(firstMemberByGroup.get(groupId)?.id || 0),
+    ].filter((id) => Number.isInteger(id) && id > 0)));
+    let selectedChild = preferredMemberIds
+      .map((memberId) => childRows.find((row) => Number(row.memberId) === Number(memberId)))
+      .find(Boolean);
+    if (!selectedChild) selectedChild = childRows.find((row) => latestByRawRule.has(row.id)) || childRows[0];
+    const latest = selectedChild ? latestByRawRule.get(selectedChild.id) : null;
+    if (latest) {
       latestByRule.set(parentId, {
         ruleId: parentId,
-        latencyMs: Math.min(...healthyLatencies),
-        isTimeout: false,
-        recordedAt,
-      });
-    } else if (hasAnyResult) {
-      latestByRule.set(parentId, {
-        ruleId: parentId,
-        latencyMs: null,
-        isTimeout: true,
-        recordedAt,
+        latencyMs: latest.isTimeout || latest.latencyMs === null || latest.latencyMs === undefined ? null : Number(latest.latencyMs),
+        isTimeout: !!latest.isTimeout,
+        recordedAt: latest.recordedAt,
       });
     } else {
       latestByRule.delete(parentId);

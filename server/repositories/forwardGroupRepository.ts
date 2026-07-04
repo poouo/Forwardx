@@ -61,6 +61,10 @@ function nullableString(value: unknown) {
   return text || null;
 }
 
+function dbBool(value: unknown) {
+  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+}
+
 function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncForwardGroupRulesOptions) {
   if (!options.preserveRuntime || !existing?.isEnabled || existing?.pendingDelete) return false;
   const numberKeys = [
@@ -1860,6 +1864,7 @@ async function latestTcping(ruleId: number) {
 }
 
 async function evaluateMemberHealth(member: any, group: any) {
+  const db = await getDb();
   const now = nowDate();
   const childRules = await getForwardGroupChildRulesForMember(Number(member.id));
   let healthy = false;
@@ -1871,48 +1876,71 @@ async function evaluateMemberHealth(member: any, group: any) {
   } else if (childRules.length === 0) {
     message = "No forwarding rule is using this group yet";
   } else {
-    healthy = true;
-    const latencies: number[] = [];
-    for (const rule of childRules as any[]) {
-      if (!rule.isEnabled || rule.pendingDelete) {
-        healthy = false;
-        message = "Member rule disabled";
-        break;
+    const templateRuleIds = Array.from(new Set((childRules as any[])
+      .map((rule: any) => Number(rule.forwardGroupRuleId || 0))
+      .filter((id: number) => Number.isInteger(id) && id > 0)));
+    const templateRows = templateRuleIds.length > 0
+      ? await db
+        .select({
+          id: forwardRules.id,
+          isEnabled: forwardRules.isEnabled,
+          pendingDelete: forwardRules.pendingDelete,
+        })
+        .from(forwardRules)
+        .where(inArray(forwardRules.id, templateRuleIds))
+      : [];
+    const enabledTemplateIds = new Set((templateRows as any[])
+      .filter((rule: any) => dbBool(rule.isEnabled) && !dbBool(rule.pendingDelete))
+      .map((rule: any) => Number(rule.id || 0))
+      .filter((id: number) => id > 0));
+    const activeChildRules = (childRules as any[])
+      .filter((rule: any) => enabledTemplateIds.has(Number(rule.forwardGroupRuleId || 0)));
+
+    if (activeChildRules.length === 0) {
+      message = "No enabled forwarding rule is using this group member";
+    } else {
+      healthy = true;
+      const latencies: number[] = [];
+      for (const rule of activeChildRules as any[]) {
+        if (!dbBool(rule.isEnabled) || dbBool(rule.pendingDelete)) {
+          healthy = false;
+          message = "Member rule disabled";
+          break;
+        }
+        if (!dbBool(rule.isRunning)) {
+          healthy = false;
+          message = "Member rule not running yet";
+          break;
+        }
+        const stat = await latestTcping(Number(rule.id));
+        if (stat?.isTimeout) {
+          healthy = false;
+          message = "Latency probe timeout";
+          break;
+        }
+        if (stat && typeof stat.latencyMs !== "undefined" && stat.latencyMs !== null) {
+          latencies.push(Number(stat.latencyMs));
+        }
       }
-      if (!rule.isRunning) {
-        healthy = false;
-        message = "Member rule not running yet";
-        break;
+      if (healthy && group.chinaHealthCheckEnabled) {
+        const chinaStatus = String(member.chinaHealthStatus || "unknown");
+        if (chinaStatus === "unhealthy") {
+          healthy = false;
+          message = "国内健康度检测超时";
+        } else if (chinaStatus !== "healthy") {
+          healthy = false;
+          message = "等待国内健康度检测数据";
+        } else if (typeof member.chinaHealthLatencyMs === "number") {
+          latencies.push(Number(member.chinaHealthLatencyMs));
+        }
       }
-      const stat = await latestTcping(Number(rule.id));
-      if (stat?.isTimeout) {
-        healthy = false;
-        message = "Latency probe timeout";
-        break;
+      if (healthy) {
+        latencyMs = latencies.length > 0 ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length) : null;
+        message = latencies.length > 0 ? "Latency probe normal" : "Rule is running, waiting for latency probe data";
       }
-      if (stat && typeof stat.latencyMs !== "undefined" && stat.latencyMs !== null) {
-        latencies.push(Number(stat.latencyMs));
-      }
-    }
-    if (healthy && group.chinaHealthCheckEnabled) {
-      const chinaStatus = String(member.chinaHealthStatus || "unknown");
-      if (chinaStatus === "unhealthy") {
-        healthy = false;
-        message = "国内健康度检测超时";
-      } else if (chinaStatus !== "healthy") {
-        healthy = false;
-        message = "等待国内健康度检测数据";
-      } else if (typeof member.chinaHealthLatencyMs === "number") {
-        latencies.push(Number(member.chinaHealthLatencyMs));
-      }
-    }
-    if (healthy) {
-      latencyMs = latencies.length > 0 ? Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length) : null;
-      message = latencies.length > 0 ? "Latency probe normal" : "Rule is running, waiting for latency probe data";
     }
   }
 
-  const db = await getDb();
   const prevFailure = toDate(member.failureSince);
   const prevHealthy = toDate(member.healthySince);
   const failureSince = healthy ? null : (prevFailure || now);

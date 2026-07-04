@@ -24,6 +24,9 @@ const hostQueryCache = createQueryCache(500);
 
 let lastHostUpgradeCleanupAt = 0;
 let hostUpgradeCleanupRunning = false;
+const ORPHANED_AGENT_HOST_CLEANUP_INTERVAL_MS = 60 * 1000;
+let lastOrphanedAgentHostCleanupAt = 0;
+let orphanedAgentHostCleanupRunning = false;
 const hostProtocolPolicyFields = ["blockHttp", "blockSocks", "blockTls"] as const;
 
 async function refreshHostPolicyRuntime(hostId: number, reason: string) {
@@ -482,6 +485,23 @@ function scheduleStaleHostUpgradeCleanup() {
     });
 }
 
+function scheduleOrphanedAgentHostCleanup() {
+  const now = Date.now();
+  if (orphanedAgentHostCleanupRunning || now - lastOrphanedAgentHostCleanupAt < ORPHANED_AGENT_HOST_CLEANUP_INTERVAL_MS) return;
+  orphanedAgentHostCleanupRunning = true;
+  lastOrphanedAgentHostCleanupAt = now;
+  void db.purgeOrphanedAgentHosts()
+    .then((count) => {
+      if (count > 0) console.info(`[Hosts] Purged orphaned Agent host records count=${count}`);
+    })
+    .catch((error) => {
+      console.warn("[Hosts] Failed to purge orphaned Agent hosts:", error instanceof Error ? error.message : String(error));
+    })
+    .finally(() => {
+      orphanedAgentHostCleanupRunning = false;
+    });
+}
+
 export const hostsRouter = router({
     publicMonitor: publicProcedure
       .input(z.object({ path: z.string().max(128).optional() }).optional())
@@ -569,7 +589,10 @@ export const hostsRouter = router({
         };
       }),
     list: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role === "admin") scheduleStaleHostUpgradeCleanup();
+      if (ctx.user.role === "admin") {
+        scheduleStaleHostUpgradeCleanup();
+        scheduleOrphanedAgentHostCleanup();
+      }
       const hosts = await getVisibleHostsForUser(ctx.user);
       return hosts.map(compactHostForList);
     }),

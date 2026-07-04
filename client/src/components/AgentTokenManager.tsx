@@ -395,10 +395,15 @@ export default function AgentTokenManager({
     onSuccess: (data) => {
       utils.agentTokens.list.invalidate();
       utils.hosts.list.invalidate();
+      utils.hosts.summary.invalidate();
+      utils.hosts.statusSummary.invalidate();
       const released = Number(data?.releasedPendingCleanup || 0);
+      const removedHosts = Number(data?.removedHosts || 0);
       toast.success(released > 0
-        ? `Token 已删除，已按面板状态释放 ${released} 条待清理规则`
-        : "Token 已删除，关联主机已解除绑定");
+        ? `Token 已删除，已释放 ${released} 条待清理规则并移除 ${removedHosts} 台关联主机`
+        : removedHosts > 0
+          ? `Token 已删除，已移除 ${removedHosts} 台关联主机`
+          : "Token 已删除");
     },
     onError: (err) => toast.error(err.message || "删除 Token 失败"),
   });
@@ -790,7 +795,7 @@ export default function AgentTokenManager({
               删除 Agent Token
             </DialogTitle>
             <DialogDescription>
-              删除后关联主机会离线。
+              删除后该 Token 将失效；如果关联主机没有转发规则、转发组或隧道引用，会同步从主机管理中移除。
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-lg border border-border/50 bg-muted/30 p-3 text-sm">

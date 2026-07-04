@@ -62,7 +62,11 @@ export const agentTokensRouter = router({
         releasedPendingCleanup += await db.releaseHostPendingRuleCleanup(hostId);
       }
       await db.deleteAgentToken(input.id);
-      return { success: true, releasedPendingCleanup };
+      let removedHosts = 0;
+      for (const hostId of hostIds) {
+        if (await db.deleteHostIfUnreferenced(hostId)) removedHosts += 1;
+      }
+      return { success: true, releasedPendingCleanup, removedHosts };
     }),
   getInstallToken: protectedProcedure
     .input(z.object({ id: z.number().optional(), token: z.string().optional() }))
