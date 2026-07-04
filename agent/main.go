@@ -257,6 +257,12 @@ type localRuntimeServiceState struct {
 
 type localRuntimeReadiness struct {
 	runtimePorts       map[int]bool
+	gostRuntimePorts   map[int]bool
+	tunnelRuntimePorts map[int]bool
+	nginxRuntimePorts  map[int]bool
+	gostRuntimeReady   bool
+	tunnelRuntimeReady bool
+	nginxRuntimeReady  bool
 	sharedRuntimeReady bool
 	serviceStates      []localRuntimeServiceState
 	serviceActiveCache map[string]bool
@@ -318,22 +324,28 @@ func applyHeartbeatState(resp heartbeatResp) heartbeatStateSnapshot {
 func readLocalRuntimeReadiness() localRuntimeReadiness {
 	readiness := localRuntimeReadiness{
 		runtimePorts:       map[int]bool{},
+		gostRuntimePorts:   map[int]bool{},
+		tunnelRuntimePorts: map[int]bool{},
+		nginxRuntimePorts:  map[int]bool{},
+		gostRuntimeReady:   true,
+		tunnelRuntimeReady: true,
+		nginxRuntimeReady:  true,
 		sharedRuntimeReady: true,
 		serviceActiveCache: map[string]bool{},
 	}
 	configs := []struct {
 		path    string
 		service string
-		nginx   bool
+		kind    string
 	}{
-		{runtimeConfigPath, runtimeServiceName, false},
-		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, false},
-		{nginxConfigPath, nginxServiceName, true},
+		{runtimeConfigPath, runtimeServiceName, "gost"},
+		{tunnelRuntimeConfigPath, tunnelRuntimeServiceName, "tunnel-gost"},
+		{nginxConfigPath, nginxServiceName, "nginx"},
 	}
 	for _, cfg := range configs {
 		var addrs []string
 		var ok bool
-		if cfg.nginx {
+		if cfg.kind == "nginx" {
 			addrs, ok = nginxRuntimeListenAddrs(cfg.path)
 		} else {
 			addrs, ok = readGostRuntimeServiceAddrs(cfg.path)
@@ -342,6 +354,14 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		for _, addr := range addrs {
 			if port := addrPort(addr); port > 0 {
 				readiness.runtimePorts[port] = true
+				switch cfg.kind {
+				case "nginx":
+					readiness.nginxRuntimePorts[port] = true
+				case "tunnel-gost":
+					readiness.tunnelRuntimePorts[port] = true
+				default:
+					readiness.gostRuntimePorts[port] = true
+				}
 			}
 		}
 		active := false
@@ -351,6 +371,14 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		readiness.serviceActiveCache[cfg.service] = active
 		if hasWork && !active {
 			readiness.sharedRuntimeReady = false
+			switch cfg.kind {
+			case "nginx":
+				readiness.nginxRuntimeReady = false
+			case "tunnel-gost":
+				readiness.tunnelRuntimeReady = false
+			default:
+				readiness.gostRuntimeReady = false
+			}
 		}
 		readiness.serviceStates = append(readiness.serviceStates, localRuntimeServiceState{
 			Name:    cfg.service,
@@ -375,6 +403,21 @@ func (r *localRuntimeReadiness) managedServiceActiveCached(name string) bool {
 	active := managedServiceActive(name)
 	r.serviceActiveCache[name] = active
 	return active
+}
+
+func (r *localRuntimeReadiness) gostReadyForPort(port int) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
+	return (r.gostRuntimeReady && r.gostRuntimePorts[port]) ||
+		(r.tunnelRuntimeReady && r.tunnelRuntimePorts[port])
+}
+
+func (r *localRuntimeReadiness) nginxReadyForPort(port int) bool {
+	if r == nil || port <= 0 {
+		return false
+	}
+	return r.nginxRuntimeReady && r.nginxRuntimePorts[port]
 }
 
 func addrPort(addr string) int {
@@ -412,8 +455,10 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 				readiness.managedServiceActiveCached("forwardx-socat-udp-"+state.Port)
 		}
 		return readiness.managedServiceActiveCached("forwardx-socat-" + state.Port)
-	case "gost", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "gost-tunnel":
-		return readiness.sharedRuntimeReady && readiness.runtimePorts[port]
+	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
+		return readiness.gostReadyForPort(port)
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return readiness.nginxReadyForPort(port)
 	case "forwardx":
 		return fxpRuntimeProcessExistsForRulePort(state.RuleID, port)
 	default:
@@ -426,8 +471,10 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 		return false
 	}
 	switch strings.TrimSpace(forwardType) {
-	case "gost-tunnel", "nginx-tunnel", "nginx-tunnel-exit":
-		return readiness.sharedRuntimeReady && readiness.runtimePorts[port]
+	case "gost-tunnel":
+		return readiness.gostReadyForPort(port)
+	case "nginx-tunnel", "nginx-tunnel-exit":
+		return readiness.nginxReadyForPort(port)
 	case "forwardx-tunnel":
 		return fxpRuntimeProcessExistsForTunnelPort(tunnelID, port)
 	default:

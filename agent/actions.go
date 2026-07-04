@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const desiredActionFailureRetryInterval = 5 * time.Minute
+const desiredRuntimeReadyCacheTTL = 2 * time.Second
+
+type desiredRuntimeReadyCacheEntry struct {
+	value     bool
+	checkedAt time.Time
+}
+
+var desiredRuntimeReadyMu sync.Mutex
+var desiredNginxRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
+var desiredGostRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
 
 func enqueueAction(cfg Config, a action) <-chan struct{} {
 	done := make(chan struct{})
@@ -238,8 +249,11 @@ func desiredActionLocalRuntimeReady(a action) bool {
 		return false
 	}
 	forwardType := strings.TrimSpace(a.ForwardType)
-	if forwardType == "gost" || forwardType == "forwardx" || forwardType == "nginx-tunnel" || forwardType == "guard" {
-		return desiredRuntimeServicesHealthy() && desiredRuntimeConfigUsesPort(a.SourcePort)
+	switch forwardType {
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return desiredNginxRuntimeReady(a.SourcePort)
+	case "gost", "forwardx", "gost-tunnel", "guard":
+		return desiredGostRuntimeReady(a.SourcePort)
 	}
 	return checkedService
 }
@@ -261,8 +275,10 @@ func desiredKnownRunningActionReady(a action) bool {
 		return true
 	}
 	switch strings.TrimSpace(a.ForwardType) {
-	case "gost", "forwardx", "gost-tunnel", "nginx", "nginx-tunnel", "nginx-tunnel-exit", "guard":
-		return desiredRuntimeServicesHealthy() && desiredRuntimeConfigUsesPort(a.SourcePort)
+	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
+		return desiredNginxRuntimeReady(a.SourcePort)
+	case "gost", "forwardx", "gost-tunnel", "guard":
+		return desiredGostRuntimeReady(a.SourcePort)
 	default:
 		return true
 	}
@@ -300,6 +316,63 @@ func desiredRuntimeServicesHealthy() bool {
 		}
 	}
 	return true
+}
+
+func desiredNginxRuntimeReady(port int) bool {
+	return cachedDesiredRuntimeReady(desiredNginxRuntimeReadyCache, port, func() bool {
+		return port > 0 &&
+			nginxRuntimeConfigUsesPort(nginxConfigPath, port) &&
+			managedServiceActive(nginxServiceName)
+	})
+}
+
+func desiredGostRuntimeReady(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	return cachedDesiredRuntimeReady(desiredGostRuntimeReadyCache, port, func() bool {
+		matched := false
+		for _, item := range []struct {
+			path    string
+			service string
+		}{
+			{runtimeConfigPath, runtimeServiceName},
+			{tunnelRuntimeConfigPath, tunnelRuntimeServiceName},
+		} {
+			if managedRuntimeConfigUsesPort(item.path, port) {
+				matched = true
+				if !managedServiceActive(item.service) {
+					return false
+				}
+			}
+		}
+		return matched
+	})
+}
+
+func cachedDesiredRuntimeReady(cache map[int]desiredRuntimeReadyCacheEntry, port int, compute func() bool) bool {
+	if port <= 0 {
+		return false
+	}
+	now := time.Now()
+	desiredRuntimeReadyMu.Lock()
+	if entry, ok := cache[port]; ok && now.Sub(entry.checkedAt) <= desiredRuntimeReadyCacheTTL {
+		desiredRuntimeReadyMu.Unlock()
+		return entry.value
+	}
+	desiredRuntimeReadyMu.Unlock()
+	value := compute()
+	desiredRuntimeReadyMu.Lock()
+	cache[port] = desiredRuntimeReadyCacheEntry{value: value, checkedAt: now}
+	if len(cache) > 2048 {
+		for key, entry := range cache {
+			if now.Sub(entry.checkedAt) > desiredRuntimeReadyCacheTTL {
+				delete(cache, key)
+			}
+		}
+	}
+	desiredRuntimeReadyMu.Unlock()
+	return value
 }
 
 func desiredRuntimeConfigUsesPort(port int) bool {

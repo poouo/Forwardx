@@ -8,6 +8,8 @@
 - 修复转发链模板规则在编辑时切换为独立隧道转发或普通转发后，服务端仍按原转发链模板保存，导致旧链路子规则继续占用端口且保存后不生效的问题。
 - 修复端口可用性检查只排除模板规则本身、未排除其生成的链路子规则，导致从转发链切换到隧道转发时误报端口不可用的问题；隧道出口端口分配也会排除即将删除的旧子规则。
 - 修复转发链子规则刚下发 apply 后，Agent 本地对账可能因 `runningRules` 期望集合尚未包含该规则而将其误判为 stale 并清理，导致面板显示 running=true 但链路随后不通的问题。
+- 修复 `nginx_stream`/`nginx-tunnel` 规则已由 `forwardx-nginx` 正常接管端口时，Agent 仍受旧 GOST runtime 状态影响而上报 `running=false`，面板随后反复下发 remove/apply 导致 WARN 刷屏和链路抖动的问题；现在 nginx 隧道状态以 `forwardx-nginx` 服务和 nginx 配置监听端口为准。
+- 优化面板 runtime-sync 触发条件，普通 FXP 动作和未变化的 runtime 服务异常不再每轮心跳强制下发完整共享 runtime 包，减少规则较多时的无效流量和 Agent shell 压力。
 
 ### 版本
 

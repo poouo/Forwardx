@@ -79,6 +79,17 @@ const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const AGENT_DESIRED_STATE_ACTIVE_RESEND_MS = 60 * 1000;
+const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
+const SHARED_RUNTIME_FORWARD_TYPES = new Set([
+  "gost",
+  "gost-tunnel",
+  "gost-tunnel-exit",
+  "gost-tunnel-hop",
+  "nginx",
+  "nginx-tunnel",
+  "nginx-tunnel-exit",
+]);
+const SHARED_NGINX_FORWARD_TYPES = new Set(["nginx", "nginx-tunnel", "nginx-tunnel-exit"]);
 const VERBOSE_AGENT_ACTIONS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_ACTIONS || ""));
 const BYTES_PER_MEGABIT = 1_000_000 / 8;
 const AGENT_STATE_SECTION_NAMES = [
@@ -297,13 +308,14 @@ function shouldSendDesiredState(hostId: number, actions: any[], activeWorkAction
   return shouldSend;
 }
 
-function shouldSendRuntimeSyncAction(hostId: number, action: any, force: boolean, now: number) {
+function shouldSendRuntimeSyncAction(hostId: number, action: any, force: boolean, now: number, resendAfterMs = 0) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return true;
   const signature = stableActionSignature([action]);
   const cached = agentRuntimeSyncActionCache.get(id);
   const changed = !cached || cached.signature !== signature;
-  if (force || changed) {
+  const shouldResend = !!cached && resendAfterMs > 0 && now - cached.sentAt >= resendAfterMs;
+  if (force || changed || shouldResend) {
     agentRuntimeSyncActionCache.set(id, { signature, sentAt: now });
     return true;
   }
@@ -338,9 +350,8 @@ function actionMayAffectSharedRuntime(action: any) {
   if (!action || action.statusType === "runtime") return false;
   const op = String(action.op || "").trim();
   if (op !== "apply" && op !== "remove") return false;
-  return Number(action.sourcePort || 0) > 0
-    || Number(action.ruleId || 0) > 0
-    || Number(action.tunnelId || 0) > 0;
+  if (action.fxp) return false;
+  return SHARED_RUNTIME_FORWARD_TYPES.has(String(action.forwardType || "").trim());
 }
 
 function cleanEndpointHost(value: unknown) {
@@ -2722,39 +2733,61 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     };
     const buildGenericLocalRuleRemovalAction = (local: AgentLocalRuntimeRuleState) => {
       const port = Number(local.port || 0);
+      const forwardType = String(local.forwardType || "").trim() || "unknown";
+      const protocol = local.protocol || "both";
+      const cleanupCmds = SHARED_NGINX_FORWARD_TYPES.has(forwardType)
+        ? buildNginxPortCleanupCmds({
+          sourcePort: port,
+          targetIp: local.targetIp || "",
+          targetPort: Number(local.targetPort || 0),
+          protocol,
+        })
+        : [
+          ...buildManagedPortCleanupCmds(port, local.targetIp, local.targetPort, protocol),
+          `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
+          `rm -f /run/forwardx-agent/fxp-*-${port}.json /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
+        ];
       return {
         ruleId: Number(local.ruleId || 0),
         statusType: "rule",
         op: "remove",
-        forwardType: local.forwardType || "unknown",
+        forwardType,
         sourcePort: port,
         targetIp: local.targetIp || "",
         targetPort: Number(local.targetPort || 0),
-        protocol: local.protocol || "both",
-        commands: [
-          ...buildManagedPortCleanupCmds(port, local.targetIp, local.targetPort, local.protocol || "both"),
-          `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
-          `rm -f /run/forwardx-agent/fxp-*-${port}.json /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
-        ],
+        protocol,
+        commands: cleanupCmds,
       };
     };
     const buildGenericLocalTunnelRemovalAction = (local: AgentLocalRuntimeTunnelState) => {
       const port = Number(local.port || 0);
+      const forwardType = String(local.forwardType || "").trim() || "gost-tunnel";
+      const cleanupCmds = SHARED_NGINX_FORWARD_TYPES.has(forwardType)
+        ? [
+          ...buildNginxPortCleanupCmds({
+            sourcePort: port,
+            targetIp: "",
+            targetPort: port,
+            protocol: "tcp",
+          }),
+          `rm -f /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
+        ]
+        : [
+          ...buildManagedPortCleanupCmds(port),
+          `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
+          `rm -f /run/forwardx-agent/fxp-*-${port}.json /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
+        ];
       return {
         tunnelId: Number(local.tunnelId || 0),
         statusType: "tunnel",
         ruleId: 0,
         op: "remove",
-        forwardType: local.forwardType || "gost-tunnel",
+        forwardType,
         sourcePort: port,
         targetIp: "",
         targetPort: port,
         protocol: "tcp",
-        commands: [
-          ...buildManagedPortCleanupCmds(port),
-          `for pid in $(pgrep -f '[f]orwardx-fxp.*fxp-.*-${port}\\\\.json' 2>/dev/null || true); do if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then continue; fi; kill "$pid" 2>/dev/null || true; done`,
-          `rm -f /run/forwardx-agent/fxp-*-${port}.json /var/lib/forwardx-agent/tunnel_${port}.id /var/lib/forwardx-agent/tunnel_${port}.fwtype 2>/dev/null || true`,
-        ],
+        commands: cleanupCmds,
       };
     };
     const localRuleNeedsRemoval = (rule: any) => {
@@ -3972,9 +4005,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       releaseVersion: (host as any).agentUpgradeReleaseVersion || null,
     } : null;
 
-    const runtimeSyncRequired = actions.some(actionMayAffectSharedRuntime) || dnsChangedReports.length > 0 || runtimeServiceUnhealthy;
-    const runtimeSyncBootstrap = !runtimeSyncRequired && (!supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState);
-    if (runtimeSyncRequired || runtimeSyncBootstrap) {
+    const runtimeConfigChanged = actions.some(actionMayAffectSharedRuntime) || dnsChangedReports.length > 0;
+    const mimicRuntimeSyncWanted = mimicFiltersByInterface.size > 0;
+    const runtimeSyncWanted = runtimeConfigChanged || runtimeServiceUnhealthy || mimicRuntimeSyncWanted;
+    const runtimeSyncBootstrap = !runtimeSyncWanted && (!supportsDesiredState || !hasReportedRuntimeState || localRuntimeState.requestLocalState);
+    if (runtimeSyncWanted || runtimeSyncBootstrap) {
       const runtimeSyncAction = {
         statusType: "runtime",
         ruleId: 0,
@@ -3988,7 +4023,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         knownRunning: false,
         commands: await buildGostRuntimeSyncCmds(),
       } as any;
-      if (runtimeSyncRequired || shouldSendRuntimeSyncAction(Number(host.id), runtimeSyncAction, false, responseIssuedAt)) {
+      const runtimeRepairResendMs = runtimeServiceUnhealthy ? AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS : 0;
+      if (shouldSendRuntimeSyncAction(Number(host.id), runtimeSyncAction, runtimeConfigChanged, responseIssuedAt, runtimeRepairResendMs)) {
         actions.push(runtimeSyncAction);
       }
     }
