@@ -5,6 +5,7 @@ import {
   forwardGroupMembers,
   forwardGroups,
   forwardRules,
+  tunnels,
   type InsertForwardGroup,
   type InsertForwardGroupMember,
 } from "../../drizzle/schema";
@@ -88,6 +89,7 @@ type ForwardGroupFailoverOptions = {
   forcePriority?: boolean;
   forceSync?: boolean;
   manual?: boolean;
+  suppressSwitchNotify?: boolean;
 };
 
 const DEFAULT_CHINA_HEALTH_TARGET = "www.189.cn:80";
@@ -437,7 +439,7 @@ function normalizeHealthReason(message: unknown) {
 }
 
 function switchNotifySuppressed(options: ForwardGroupFailoverOptions) {
-  return !!options.manual || !!options.forcePriority || !!options.forceSync;
+  return !!options.manual || !!options.forcePriority || !!options.forceSync || !!options.suppressSwitchNotify;
 }
 
 function groupSwitchNotifyEnabled(group: any) {
@@ -1852,6 +1854,50 @@ export async function syncForwardChainsForHost(hostId: number, previousHost?: an
       await refreshForwardChainRuntime(groupId, "host-address-updated");
     }
   }
+}
+
+export async function runForwardGroupsForHostAddressChange(hostId: number, reason = "host-address-changed") {
+  const db = await getDb();
+  if (!db) return 0;
+  const id = Number(hostId || 0);
+  if (!Number.isInteger(id) || id <= 0) return 0;
+
+  const directRows = await db
+    .select({ groupId: forwardGroupMembers.groupId })
+    .from(forwardGroupMembers)
+    .where(and(
+      eq(forwardGroupMembers.memberType, "host"),
+      eq(forwardGroupMembers.hostId, id),
+      eq(forwardGroupMembers.isEnabled, true),
+    ));
+  const tunnelRows = await db
+    .select({ groupId: forwardGroupMembers.groupId })
+    .from(forwardGroupMembers)
+    .innerJoin(tunnels, eq(forwardGroupMembers.tunnelId, tunnels.id))
+    .where(and(
+      eq(forwardGroupMembers.memberType, "tunnel"),
+      eq(tunnels.entryHostId, id),
+      eq(forwardGroupMembers.isEnabled, true),
+    ));
+  const groupIds = Array.from(new Set([
+    ...directRows.map((row: any) => Number(row.groupId || 0)),
+    ...tunnelRows.map((row: any) => Number(row.groupId || 0)),
+  ].filter((value) => Number.isInteger(value) && value > 0)));
+  if (groupIds.length === 0) return 0;
+
+  const groups = await Promise.all(groupIds.map((groupId) => getForwardGroupById(groupId)));
+  const activeGroups = (groups as any[]).filter((group: any) => {
+    const mode = groupModeOf(group);
+    return group?.isEnabled !== false && (mode === "failover" || mode === "entry");
+  });
+  if (activeGroups.length === 0) return 0;
+
+  appendPanelLog("info", `[HostAddress] host=${id} refreshing ${activeGroups.length} DDNS group(s) reason=${reason}`);
+  await runForwardGroupFailoverForGroups(activeGroups, {
+    forceSync: true,
+    suppressSwitchNotify: true,
+  });
+  return activeGroups.length;
 }
 
 async function latestTcping(ruleId: number) {

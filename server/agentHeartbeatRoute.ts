@@ -35,10 +35,9 @@ import {
   stopManagedServiceCmd,
   writeManagedServiceCmd,
 } from "./agentActionCommands";
-import { hostIngressAddress, hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { handleHostAddressChanged, hostIngressAddress, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
-import { scheduleHostDdnsUpdate } from "./hostDdns";
 import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import {
   forwardRuleProtocols,
@@ -619,16 +618,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
-    if (addressChanged) {
-      scheduleHostDdnsUpdate(host, "agent-address-changed");
-    }
     if (!wasOnline) {
       void notifyHostOnlineIfNeeded(host).catch((error) => {
         console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
-    if (addressChanged && hostUsesAutomaticIngress(previousHost)) {
-      await refreshHostAddressRuntime(host.id, previousHost, "agent-address-changed");
+    if (addressChanged) {
+      await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
     }
     if (upgradedFirewallCounterAgent) {
       await db.resetAgentRuntimeStateForHost(host.id);

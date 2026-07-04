@@ -55,3 +55,19 @@ export function scheduleHostDdnsUpdate(host: any, reason = "agent-address-change
     }
   })();
 }
+
+export async function reconcileHostDdnsRecords(reason = "host-ddns-reconcile") {
+  const hosts = await db.getHosts();
+  let queued = 0;
+  for (const host of hosts as any[]) {
+    const hostId = Number(host?.id || 0);
+    const domain = String(host?.ddnsDomain || "").trim();
+    if (!hostId || !host?.ddnsEnabled || !domain) continue;
+    const target = hostDdnsTargetValue(host);
+    if (!target.value) continue;
+    if (String(host?.lastDdnsValue || "") === target.value && !host?.lastDdnsError) continue;
+    scheduleHostDdnsUpdate(host, reason);
+    queued += 1;
+  }
+  return queued;
+}

@@ -10,6 +10,7 @@ import { primeHostStatusNotifier, sweepOfflineHostsAndNotify } from "./hostStatu
 import { normalizeLinkProbeMethod } from "@shared/latencyProbe";
 import { structuredLinkTestMessage, tunnelHopLatencyMode, tunnelHopModeText } from "./linkTestMessages";
 import { cleanOldAddressGeoCache } from "./hostGeo";
+import { reconcileHostDdnsRecords } from "./hostDdns";
 
 type TimedOutForwardTest = {
   id: number;
@@ -443,6 +444,15 @@ async function runForwardGroupFailover() {
   }
 }
 
+async function runHostDdnsReconcile() {
+  try {
+    const queued = await reconcileHostDdnsRecords();
+    if (queued > 0) console.log(`[Scheduler] Host DDNS reconcile queued ${queued} update(s)`);
+  } catch (error) {
+    console.error("[Scheduler] Host DDNS reconcile error:", error);
+  }
+}
+
 async function runHostStatusSweep() {
   try {
     if (hostStatusPrimePromise) await hostStatusPrimePromise;
@@ -505,6 +515,7 @@ export function startScheduler() {
 
   setInterval(async () => {
     await runForwardGroupFailover();
+    await runHostDdnsReconcile();
   }, 30 * 1000);
 
   setInterval(async () => {
@@ -523,10 +534,11 @@ export function startScheduler() {
     await runSelfTestTimeoutSweep();
     await runTcpingCleanup();
     await runForwardGroupFailover();
+    await runHostDdnsReconcile();
     await runHostStatusSweep();
     await runEmailReminders();
     await runTelegramReminders();
   }, 5000);
 
-  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host status + email/telegram reminders)");
+  console.log("[Scheduler] Scheduled tasks started (monthly reset + subscription/account expiration check + selftest timeout sweep + tcping cleanup + forward-group failover + host DDNS reconcile + host status + email/telegram reminders)");
 }

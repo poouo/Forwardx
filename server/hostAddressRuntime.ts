@@ -2,6 +2,7 @@ import * as db from "./db";
 import { pushAgentRefresh } from "./agentEvents";
 import * as hopRepo from "./repositories/tunnelRepository";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
+import { scheduleHostDdnsUpdate } from "./hostDdns";
 
 export function hostIngressAddress(hostLike: any) {
   return String(hostLike?.entryIp || hostLike?.ipv4 || hostLike?.ipv6 || hostLike?.ip || "").trim();
@@ -47,4 +48,14 @@ export async function refreshHostAddressRuntime(hostId: number, previousHost: an
   await db.resetAgentRuntimeStateForHost(hostId);
   clearTunnelRuntimeStatusForHost(hostId);
   await refreshAgentsAffectedByHostAddress(hostId, reason);
+}
+
+export async function handleHostAddressChanged(hostId: number, currentHost: any, previousHost: any, reason: string) {
+  scheduleHostDdnsUpdate(currentHost, reason);
+  await db.runForwardGroupsForHostAddressChange(hostId, reason).catch((error) => {
+    console.warn(`[HostAddress] Forward group DDNS refresh failed host=${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (hostUsesAutomaticIngress(previousHost)) {
+    await refreshHostAddressRuntime(hostId, previousHost, reason);
+  }
 }

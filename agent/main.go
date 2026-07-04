@@ -1276,12 +1276,31 @@ func heartbeat(cfg Config) (int, error) {
 }
 
 func heartbeatKeepalive(cfg Config) error {
+	ipv4, ipv6 := publicIPs()
+	primaryIP := ipv4
+	if primaryIP == "" {
+		primaryIP = ipv6
+	}
 	memInfo := readMeminfo()
 	memoryTotal := memTotalFrom(memInfo)
 	memoryUsed := memUsedFrom(memInfo)
 	swapTotal := swapTotalFrom(memInfo)
 	swapUsed := swapUsedFrom(memInfo)
 	diskUsageValue, diskUsed, diskTotal := diskStats()
+	currentStatic := heartbeatStaticSnapshot{
+		PrimaryIP:   primaryIP,
+		IPv4:        ipv4,
+		IPv6:        ipv6,
+		CPUInfo:     cpuInfo(),
+		MemoryTotal: memoryTotal,
+		SwapTotal:   swapTotal,
+		DiskTotal:   diskTotal,
+		Version:     Version,
+	}
+	previousStatic := heartbeatStaticReport
+	shouldReportStatic := !previousStatic.Initialized ||
+		heartbeatStaticChanged(currentStatic, previousStatic) ||
+		time.Since(previousStatic.ReportedAt) >= heartbeatStaticReportInterval
 	payload := map[string]any{"busy": true}
 	if compactAgentReports.Load() {
 		payload["m"] = []any{
@@ -1314,11 +1333,29 @@ func heartbeatKeepalive(cfg Config) error {
 		payload["diskTotal"] = diskTotal
 		payload["uptime"] = uptime()
 	}
+	if shouldReportStatic && primaryIP != "" {
+		payload["ip"] = primaryIP
+	}
+	if shouldReportStatic && ipv4 != "" {
+		payload["ipv4"] = ipv4
+	}
+	if shouldReportStatic && ipv6 != "" {
+		payload["ipv6"] = ipv6
+	}
+	if compactAgentReports.Load() && shouldReportStatic {
+		payload["cpuInfo"] = currentStatic.CPUInfo
+		payload["agentVersion"] = Version
+	}
 	var resp heartbeatResp
 	if err := post(cfg, "/api/agent/heartbeat", payload, &resp); err != nil {
 		return err
 	}
 	compactAgentReports.Store(resp.CompactReports)
+	if shouldReportStatic {
+		currentStatic.ReportedAt = time.Now()
+		currentStatic.Initialized = true
+		heartbeatStaticReport = currentStatic
+	}
 	syncPanelURLFromResponse(resp.PanelURL)
 	if resp.RequestLocalState {
 		requestLocalRuntimeStateUpload()

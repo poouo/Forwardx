@@ -15,7 +15,7 @@ import { registerAgentStatusRoutes } from "./agentStatusRoutes";
 import { registerAgentSelfTestRoutes } from "./agentSelfTestRoutes";
 import { registerAgentReportRoutes } from "./agentReportRoutes";
 import { invalidateAgentDesiredStateCache, registerAgentHeartbeatRoute } from "./agentHeartbeatRoute";
-import { hostUsesAutomaticIngress, refreshAgentsAffectedByHostAddress, refreshHostAddressRuntime } from "./hostAddressRuntime";
+import { handleHostAddressChanged, refreshAgentsAffectedByHostAddress } from "./hostAddressRuntime";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { clearTunnelRuntimeStatusForHost } from "./tunnelRuntimeStatus";
 
@@ -266,8 +266,13 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         isOnline: true,
         lastHeartbeat: new Date(),
       });
-      if (entryChanged && hostUsesAutomaticIngress(existingHost)) {
-        await refreshHostAddressRuntime(existingHost.id, existingHost, "agent-address-changed");
+      if (entryChanged) {
+        await handleHostAddressChanged(
+          existingHost.id,
+          { ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 },
+          existingHost,
+          "agent-address-changed",
+        );
       }
       if (!wasOnline) {
         void notifyHostOnlineIfNeeded({ ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 }).catch((error) => {
