@@ -74,6 +74,7 @@ import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type Re
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
+  isNginxForwardProtocolEnabled,
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
@@ -708,10 +709,10 @@ function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
     : "forwardx";
 }
 
-function getTunnelModeDisplay(mode: unknown) {
+function getTunnelModeDisplay(mode: unknown, showNginxLabel = true) {
   const normalized = String(mode || "").toLowerCase() as TunnelForm["mode"];
   const label = tunnelModeLabels[normalized] || String(mode || "").toUpperCase();
-  if (isNginxTunnelModeValue(normalized)) return "Nginx";
+  if (isNginxTunnelModeValue(normalized)) return showNginxLabel ? "Nginx" : "Stream";
   return gostTunnelModes.includes(normalized) ? `GOST ${label}` : label;
 }
 
@@ -1846,6 +1847,21 @@ function TunnelsContent() {
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
   );
+  const nginxTunnelEnabled = useMemo(
+    () => isNginxForwardProtocolEnabled({
+      nginx: false,
+      nginx_stream: forwardProtocolSettings.nginx_stream,
+      nginx_tls: forwardProtocolSettings.nginx_tls,
+    }),
+    [forwardProtocolSettings.nginx_stream, forwardProtocolSettings.nginx_tls]
+  );
+  const tunnelProtocolLabel = (protocolKey: ForwardProtocolKey | null | undefined) => {
+    const genericLabel = "\u8be5\u534f\u8bae";
+    if (!protocolKey) return genericLabel;
+    if (!nginxTunnelEnabled && protocolKey === "nginx_stream") return genericLabel;
+    return FORWARD_PROTOCOL_LABELS[protocolKey] || genericLabel;
+  };
+
   const getTunnelProtocolKey = (tunnel: any | null | undefined): ForwardProtocolKey | null => {
     const mode = String(tunnel?.mode || "").toLowerCase();
     if (mode === "nginx_tls") return "nginx_stream";
@@ -1862,8 +1878,8 @@ function TunnelsContent() {
     [forwardProtocolSettings]
   );
   const enabledNginxTunnelModes = useMemo(
-    () => nginxTunnelModes.filter((mode) => forwardProtocolSettings[mode] !== false),
-    [forwardProtocolSettings]
+    () => nginxTunnelEnabled ? nginxTunnelModes.filter((mode) => forwardProtocolSettings[mode] !== false) : [],
+    [forwardProtocolSettings, nginxTunnelEnabled]
   );
   const resolveDefaultTunnelMode = () => {
     return forwardProtocolSettings.forwardx !== false
@@ -2408,7 +2424,6 @@ function TunnelsContent() {
   const isPending = createMutation.isPending || updateMutation.isPending;
   const isCreateTypePending = selectedCreateType === "chain" ? createChainMutation.isPending : createMutation.isPending;
   const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
-  const nginxRuntimeDisabled = enabledNginxTunnelModes.length === 0;
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
   const renderNginxCertFields = () => (
     <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
@@ -2668,7 +2683,7 @@ function TunnelsContent() {
                           <p className="truncate font-medium">{tunnel.name}</p>
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
-                              {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                              {tunnelProtocolLabel(protocolKey)} 当前不支持
                             </p>
                           )}
                         </div>
@@ -2689,7 +2704,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode)}
+                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
                         </Badge>
                       </div>
                     </div>
@@ -2746,7 +2761,7 @@ function TunnelsContent() {
                           <p className="truncate font-medium">{tunnel.name}</p>
                           {!supported && (
                             <p className="mt-1 text-[11px] text-destructive">
-                              {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                              {tunnelProtocolLabel(protocolKey)} 当前不支持
                             </p>
                           )}
                         </div>
@@ -2767,7 +2782,7 @@ function TunnelsContent() {
                       {renderTunnelRoute(tunnel, true)}
                       <div className="flex flex-wrap gap-1.5">
                         <Badge variant="outline" className="text-[10px]">
-                          {getTunnelModeDisplay(tunnel.mode)}
+                          {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
                         </Badge>
                       </div>
                     </div>
@@ -2836,7 +2851,7 @@ function TunnelsContent() {
                         <span className="font-medium">{tunnel.name}</span>
                         {!supported && (
                           <span className="mt-1 block text-[11px] text-destructive">
-                            {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                            {tunnelProtocolLabel(protocolKey)} 当前不支持
                           </span>
                         )}
                       </TableCell>
@@ -2848,7 +2863,7 @@ function TunnelsContent() {
                       <TableCell className="hidden md:table-cell">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px]">
-                            {getTunnelModeDisplay(tunnel.mode)}
+                            {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
                           </Badge>
                         </div>
                       </TableCell>
@@ -3205,7 +3220,7 @@ function TunnelsContent() {
                     </div>
                     <div className="space-y-2">
                       <Label>隧道类型</Label>
-                      <div className={`${segmentedControlClassName} grid grid-cols-3 gap-1`}>
+                      <div className={`${segmentedControlClassName} grid ${nginxTunnelEnabled ? "grid-cols-3" : "grid-cols-2"} gap-1`}>
                         <button
                           type="button"
                           onClick={() => {
@@ -3236,17 +3251,15 @@ function TunnelsContent() {
                           <ShieldCheck className={segmentedIconClassName(form.mode === "forwardx")} />
                           <span className="truncate">ForwardX</span>
                         </button>
-                        <button
+                        {nginxTunnelEnabled && <button
                           type="button"
                           onClick={() => setForm({ ...form, mode: "nginx_stream" })}
-                          disabled={nginxRuntimeDisabled}
-                          title={enabledNginxTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
                           aria-pressed={isNginxTunnelModeValue(form.mode)}
-                          className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), nginxRuntimeDisabled, "px-2")}
+                          className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), false, "px-2")}
                         >
                           <Server className={segmentedIconClassName(isNginxTunnelModeValue(form.mode))} />
                           <span className="truncate">Nginx</span>
-                        </button>
+                        </button>}
                       </div>
                     </div>
                     {gostTunnelModes.includes(form.mode) && enabledGostTunnelModes.length === 0 && (
@@ -3267,8 +3280,8 @@ function TunnelsContent() {
                         </Select>
                       </div>
                     )}
-                    {isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
-                    {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
+                    {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
+                    {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
                         <Label>出口组负载模式</Label>
                         <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>
@@ -3511,7 +3524,7 @@ function TunnelsContent() {
             </div>
             <div className="space-y-2">
               <Label>隧道类型</Label>
-              <div className={`${segmentedControlClassName} grid grid-cols-3 gap-1`}>
+              <div className={`${segmentedControlClassName} grid ${nginxTunnelEnabled ? "grid-cols-3" : "grid-cols-2"} gap-1`}>
                 <button
                   type="button"
                   onClick={() => {
@@ -3542,17 +3555,15 @@ function TunnelsContent() {
                   <ShieldCheck className={segmentedIconClassName(form.mode === "forwardx")} />
                   <span className="truncate">ForwardX</span>
                 </button>
-                <button
+                {nginxTunnelEnabled && <button
                   type="button"
                   onClick={() => setForm({ ...form, mode: "nginx_stream" })}
-                  disabled={nginxRuntimeDisabled}
-                  title={enabledNginxTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
                   aria-pressed={isNginxTunnelModeValue(form.mode)}
-                  className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), nginxRuntimeDisabled, "px-2")}
+                  className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), false, "px-2")}
                 >
                   <Server className={segmentedIconClassName(isNginxTunnelModeValue(form.mode))} />
                   <span className="truncate">Nginx</span>
-                </button>
+                </button>}
               </div>
             </div>
             {gostTunnelModes.includes(form.mode) && enabledGostTunnelModes.length === 0 && (
@@ -3573,8 +3584,8 @@ function TunnelsContent() {
                 </Select>
               </div>
             )}
-            {isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
-            {form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
+            {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
+            {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
                 <Label>出口组负载模式</Label>
                 <Select value={form.loadBalanceStrategy} onValueChange={(v) => setForm({ ...form, loadBalanceStrategy: v as TunnelForm["loadBalanceStrategy"] })}>

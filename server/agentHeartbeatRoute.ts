@@ -2516,13 +2516,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       runningRules.push(rule);
     };
 
+    const isKernelForwardRule = (rule: any) => {
+      const forwardType = String(rule?.forwardType || "").trim();
+      return forwardType === "iptables" || forwardType === "nftables";
+    };
     const buildDisabledRuleRemovalAction = async (rule: any) => {
       const tunnel = (rule as any).tunnelId ? tunnelById.get((rule as any).tunnelId) as any : null;
       if (rule.forwardType === "iptables") {
         const cmds: string[] = [
           ...buildIptablesForwardCleanupCmds(rule),
-          `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
-          `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
           ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
           ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
         ];
@@ -2538,7 +2540,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         };
       }
       if (rule.forwardType === "nftables") {
-        const cmds = buildNftCleanupCmds(rule);
+        const cmds = buildNftCleanupCmds(rule, { removeStateFiles: false });
         cmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
         return {
           ruleId: rule.id,
@@ -2791,8 +2793,12 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const port = Number(rule?.sourcePort || 0);
       if (port <= 0) return true;
       const local = localRulesByPort.get(port);
-      return !!local && Number(local.ruleId || 0) === Number(rule?.id || 0);
+      if (!local) return true;
+      if (isKernelForwardRule(rule)) return true;
+      return Number(local.ruleId || 0) === Number(rule?.id || 0);
     };
+    const shouldForceStoppedKernelRuleCleanup = (rule: any) => supportsDesiredState && isKernelForwardRule(rule) && localRuleNeedsRemoval(rule);
+
     const settleStoppedRule = async (rule: any) => {
       const id = Number(rule?.id || 0);
       if (id <= 0) return;
@@ -2996,8 +3002,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         await collectMimicFiltersForRule(rule, ruleTunnel);
       }
       if (!ruleProtocolEnabled) {
-        if (rule.isRunning) {
-          if (!localRuleNeedsRemoval(rule)) {
+        const forceKernelCleanup = shouldForceStoppedKernelRuleCleanup(rule);
+        if (rule.isRunning || forceKernelCleanup) {
+          if (!localRuleNeedsRemoval(rule) && !forceKernelCleanup) {
             await settleStoppedRule(rule);
             continue;
           }
@@ -3578,8 +3585,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             failover: tunnel ? undefined : actionFailover(rule, { listenPort: failoverProxyPort(rule), bindAddress: "127.0.0.1" }),
           });
         }
-      } else if (!rule.isEnabled && rule.isRunning) {
-        if (!localRuleNeedsRemoval(rule)) {
+      } else if (!rule.isEnabled && (rule.isRunning || shouldForceStoppedKernelRuleCleanup(rule))) {
+        const forceKernelCleanup = shouldForceStoppedKernelRuleCleanup(rule);
+        if (!localRuleNeedsRemoval(rule) && !forceKernelCleanup) {
           await settleStoppedRule(rule);
           continue;
         }
@@ -3587,8 +3595,6 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (rule.forwardType === "iptables") {
           cmds.push(
             ...buildIptablesForwardCleanupCmds(rule),
-            `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
-            `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
             ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
           );
@@ -3602,6 +3608,9 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             protocol: rule.protocol,
             commands: cmds,
           });
+        } else if (rule.forwardType === "nftables") {
+          const removeAction = await buildDisabledRuleRemovalAction(rule);
+          if (removeAction) actions.push(removeAction);
         } else if (rule.forwardType === "realm") {
           const svcName = `forwardx-realm-${rule.sourcePort}`;
           const realmConfigPath = realmConfigPathForPort(rule.sourcePort);

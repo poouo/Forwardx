@@ -785,7 +785,7 @@ function isForwardRuleVisibleByFilters(rule: any, filters: RuleFilterState) {
   return true;
 }
 
-function getTunnelDisplay(tunnel: any | null | undefined) {
+function getTunnelDisplay(tunnel: any | null | undefined, showNginxLabel = true) {
   const mode = String(tunnel?.mode || "").toLowerCase();
   if (mode === "forwardx") {
     return {
@@ -802,10 +802,17 @@ function getTunnelDisplay(tunnel: any | null | undefined) {
     };
   }
   if (nginxTunnelModes.has(mode)) {
+    if (!showNginxLabel) {
+      return {
+        shortLabel: "\u96a7\u9053",
+        badgeLabel: "\u96a7\u9053",
+        toolLabel: "\u96a7\u9053\u8f6c\u53d1",
+      };
+    }
     return {
       shortLabel: "Nginx",
-      badgeLabel: "隧道 / Nginx",
-      toolLabel: "Nginx Stream 隧道",
+      badgeLabel: "\u96a7\u9053 / Nginx",
+      toolLabel: "Nginx Stream \u96a7\u9053",
     };
   }
   return {
@@ -2496,6 +2503,20 @@ function RulesContent() {
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
   );
+  const nginxTunnelEnabled = forwardProtocolSettings.nginx_stream !== false || forwardProtocolSettings.nginx_tls !== false;
+  const protocolUnsupportedLabel = useCallback((protocolKey: ForwardProtocolKey | null | undefined) => {
+    const genericLabel = "\u8be5\u534f\u8bae";
+    if (!protocolKey) return genericLabel;
+    if (protocolKey === "nginx" && forwardProtocolSettings.nginx === false) return genericLabel;
+    if (protocolKey === "nginx_stream" && !nginxTunnelEnabled) return genericLabel;
+    return FORWARD_PROTOCOL_LABELS[protocolKey] || genericLabel;
+  }, [forwardProtocolSettings.nginx, nginxTunnelEnabled]);
+  const forwardTypeDisplayLabel = useCallback((forwardType: unknown) => {
+    const type = String(forwardType || "");
+    if (type === "nginx" && forwardProtocolSettings.nginx === false) return "\u8f6c\u53d1\u5de5\u5177";
+    return FORWARD_TYPE_LABELS[type as ForwardType] || type || "-";
+  }, [forwardProtocolSettings.nginx]);
+
   const isProtocolEnabled = useCallback((key: ForwardProtocolKey | null | undefined) => {
     if (!key) return true;
     return forwardProtocolSettings[key] !== false;
@@ -2570,7 +2591,7 @@ function RulesContent() {
     (hosts || []).forEach((host: any) => map.set(Number(host.id), host));
     return map;
   }, [hosts]);
-  const selectedTunnelDisplay = useMemo(() => getTunnelDisplay(selectedTunnel), [selectedTunnel]);
+  const selectedTunnelDisplay = useMemo(() => getTunnelDisplay(selectedTunnel, nginxTunnelEnabled), [selectedTunnel, nginxTunnelEnabled]);
   const userById = useMemo(() => {
     const map = new Map<number, any>();
     (users || []).forEach((item: any) => map.set(Number(item.id), item));
@@ -4629,7 +4650,7 @@ function RulesContent() {
 
   const renderForwardToolBadge = (rule: any) => {
     const forwardType = String(rule.forwardType || "");
-    const label = FORWARD_TYPE_LABELS[forwardType as ForwardType] || forwardType || "-";
+    const label = forwardTypeDisplayLabel(forwardType);
     return (
       <Badge
         variant="outline"
@@ -4696,11 +4717,13 @@ function RulesContent() {
         {rule.forwardGroupId ? (
           <><Layers3 className="h-3 w-3 mr-1" />{isChainRoute ? "端口转发链" : "转发组"}</>
         ) : tunnel ? (
-          <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel).badgeLabel}</>
+          <><Network className="h-3 w-3 mr-1" />{getTunnelDisplay(tunnel, nginxTunnelEnabled).badgeLabel}</>
         ) : rule.forwardType === "iptables" ? (
           <><Shield className="h-3 w-3 mr-1" />iptables</>
         ) : rule.forwardType === "nftables" ? (
           <><Shield className="h-3 w-3 mr-1" />nftables</>
+        ) : rule.forwardType === "nginx" ? (
+          <><Zap className="h-3 w-3 mr-1" />{forwardTypeDisplayLabel(rule.forwardType)}</>
         ) : rule.forwardType === "socat" ? (
           <><ArrowRightLeft className="h-3 w-3 mr-1" />socat</>
         ) : rule.forwardType === "gost" ? (
@@ -5041,7 +5064,7 @@ function RulesContent() {
           <span className="block truncate font-medium" title={rule.name}>{rule.name}</span>
           {!supported && (
             <span className="mt-1 block text-[11px] text-destructive">
-              {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+              {protocolUnsupportedLabel(protocolKey)} 当前不支持
             </span>
           )}
           {rule.protocolBlockReason && (
@@ -5118,7 +5141,7 @@ function RulesContent() {
               </Badge>
               {!supported && (
                 <Badge variant="outline" className="h-5 border-destructive/30 px-1.5 text-[10px] text-destructive">
-                  {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "协议"} 不支持
+                  {protocolUnsupportedLabel(protocolKey)} 不支持
                 </Badge>
               )}
             </div>
@@ -5172,7 +5195,7 @@ function RulesContent() {
                 </div>
                 {!supported && (
                   <div className="mt-1 text-[11px] text-destructive">
-                    {protocolKey ? FORWARD_PROTOCOL_LABELS[protocolKey] : "该协议"} 当前不支持
+                    {protocolUnsupportedLabel(protocolKey)} 当前不支持
                   </div>
                 )}
                 {rule.protocolBlockReason && (
@@ -6464,7 +6487,7 @@ function RulesContent() {
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{rule.name}</span>
                         <span className="mt-1 block text-xs text-muted-foreground">
-                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {rule.forwardType} / {formatForwardRuleProtocol(rule.protocol)}
+                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)} / {formatForwardRuleProtocol(rule.protocol)}
                         </span>
                       </span>
                     </label>

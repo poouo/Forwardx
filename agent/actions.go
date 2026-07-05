@@ -22,23 +22,30 @@ var desiredRuntimeReadyMu sync.Mutex
 var desiredNginxRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
 var desiredGostRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
 
-func enqueueAction(cfg Config, a action) <-chan struct{} {
-	done := make(chan struct{})
-	if isOlderAction(a, true) {
-		close(done)
-		return done
-	}
+func reserveQueuedAction(a action) bool {
 	if key := actionQueueKey(a); key != "" && a.IssuedAt > 0 {
 		queuedActionMu.Lock()
 		existing := queuedActionKeys[key]
 		if existing == a.IssuedAt {
 			queuedActionMu.Unlock()
 			logActionDuplicateSkip(a, key)
-			close(done)
-			return done
+			return false
 		}
 		queuedActionKeys[key] = a.IssuedAt
 		queuedActionMu.Unlock()
+	}
+	return true
+}
+
+func enqueueAction(cfg Config, a action) <-chan struct{} {
+	done := make(chan struct{})
+	if isOlderAction(a, true) {
+		close(done)
+		return done
+	}
+	if !reserveQueuedAction(a) {
+		close(done)
+		return done
 	}
 	atomic.AddInt64(&actionPendingCount, 1)
 	enqueueActionJob(actionJob{cfg: cfg, action: a, done: done})
@@ -56,6 +63,7 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 	if state == nil {
 		return nil
 	}
+	kernelSnapshot := newKernelForwardSnapshot()
 	records := readDesiredActionRecords()
 	done := make([]<-chan struct{}, 0, len(state.Actions))
 	seen := map[string]bool{}
@@ -76,9 +84,14 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 		seen[key] = true
 		if record, ok := records[key]; ok && record.Signature == signature {
 			if record.Success {
-				continue
-			}
-			if time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
+				if kernelSnapshot.desiredActionConsistent(a) {
+					continue
+				}
+				delete(records, key)
+				if shouldLogAgentReport("desired-kernel-drift:"+key, agentReportLogInterval) {
+					logf("desired state kernel drift detected; reapply queued key=%s %s", key, actionLogSummary(a))
+				}
+			} else if time.Since(time.Unix(record.UpdatedAt, 0)) < desiredActionFailureRetryInterval {
 				continue
 			}
 		}
@@ -95,17 +108,9 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 			close(doneCh)
 			continue
 		}
-		if queueKey := actionQueueKey(a); queueKey != "" && a.IssuedAt > 0 {
-			queuedActionMu.Lock()
-			existing := queuedActionKeys[queueKey]
-			if existing == a.IssuedAt {
-				queuedActionMu.Unlock()
-				logActionDuplicateSkip(a, queueKey)
-				close(doneCh)
-				continue
-			}
-			queuedActionKeys[queueKey] = a.IssuedAt
-			queuedActionMu.Unlock()
+		if !reserveQueuedAction(a) {
+			close(doneCh)
+			continue
 		}
 		pendingJobs = append(pendingJobs, actionJob{
 			cfg:              cfg,
@@ -133,19 +138,11 @@ func syncDesiredState(cfg Config, state *desiredState) []<-chan struct{} {
 			continue
 		}
 		if job.desiredKey == "" {
-			if queueKey := actionQueueKey(job.action); queueKey != "" && job.action.IssuedAt > 0 {
-				queuedActionMu.Lock()
-				existing := queuedActionKeys[queueKey]
-				if existing == job.action.IssuedAt {
-					queuedActionMu.Unlock()
-					logActionDuplicateSkip(job.action, queueKey)
-					if job.done != nil {
-						close(job.done)
-					}
-					continue
+			if !reserveQueuedAction(job.action) {
+				if job.done != nil {
+					close(job.done)
 				}
-				queuedActionKeys[queueKey] = job.action.IssuedAt
-				queuedActionMu.Unlock()
+				continue
 			}
 		}
 		atomic.AddInt64(&actionPendingCount, 1)
@@ -250,6 +247,8 @@ func desiredActionLocalRuntimeReady(a action) bool {
 	}
 	forwardType := strings.TrimSpace(a.ForwardType)
 	switch forwardType {
+	case "iptables", "nftables":
+		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort)
 	case "gost", "forwardx", "gost-tunnel", "guard":
@@ -277,6 +276,8 @@ func desiredKnownRunningActionReady(a action) bool {
 	switch strings.TrimSpace(a.ForwardType) {
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
 		return desiredNginxRuntimeReady(a.SourcePort)
+	case "iptables", "nftables":
+		return newKernelForwardSnapshot().actionApplyReady(a)
 	case "gost", "forwardx", "gost-tunnel", "guard":
 		return desiredGostRuntimeReady(a.SourcePort)
 	default:

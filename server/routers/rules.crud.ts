@@ -1353,6 +1353,7 @@ export const crudRulesRouter = router({
       } else {
         await db.toggleForwardRule(input.id, false);
       }
+      pushAgentRefresh(Number(rule.hostId), input.isEnabled ? "forward-rule-enabled" : "forward-rule-disabled");
       return { success: true };
     })
 });

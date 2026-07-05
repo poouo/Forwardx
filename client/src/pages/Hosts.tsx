@@ -60,6 +60,7 @@ import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-ta
 import { Switch } from "@/components/ui/switch";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
+import { normalizeForwardProtocolSettings } from "@shared/forwardTypes";
 import { useUrlTab } from "@/hooks/useUrlTab";
 import { pollingInterval, visiblePollingInterval } from "@/lib/polling";
 import { trpc } from "@/lib/trpc";
@@ -1202,6 +1203,11 @@ function HostsContent() {
     });
   }, [hosts, cachedHosts]);
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
+  const forwardProtocolSettings = useMemo(
+    () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
+    [systemSettings?.forwardProtocols]
+  );
+  const nginxFeatureEnabled = forwardProtocolSettings.nginx !== false || forwardProtocolSettings.nginx_stream !== false || forwardProtocolSettings.nginx_tls !== false;
   const latestAgentVersion = useMemo(
     () => systemSettings?.agentVersion || "",
     [systemSettings?.agentVersion]
@@ -2684,7 +2690,7 @@ function HostsContent() {
                       <span className="text-xs text-muted-foreground">访问策略</span>
                     </div>
                     <p className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-                      协议屏蔽支持自定义加密隧道，以及 realm / gost / socat / nginx 等用户态转发；iptables / nftables 内核转发暂不支持。
+{nginxFeatureEnabled ? "协议屏蔽支持自定义加密隧道，以及 realm / gost / socat / nginx 等用户态转发；iptables / nftables 内核转发暂不支持。" : "协议屏蔽支持自定义加密隧道，以及 realm / gost / socat 等用户态转发；iptables / nftables 内核转发暂不支持。"}
                     </p>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <label className="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/35 px-2.5 py-2">
