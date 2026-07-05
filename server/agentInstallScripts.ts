@@ -13,6 +13,7 @@ type AgentInstallScriptOptions = {
   githubAcceleratorEnabled?: boolean;
   githubAcceleratorUrl?: string | null;
   preferPanelInstall?: boolean;
+  installNginx?: boolean;
 };
 
 function shellQuote(value: string) {
@@ -37,6 +38,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
   const defaultGithubAcceleratorUrl = String(options.githubAcceleratorUrl || "").trim().replace(/\/+$/, "");
   const defaultGithubAcceleratorEnabled = !!options.githubAcceleratorEnabled && !!defaultGithubAcceleratorUrl;
   const defaultPreferPanelInstall = !!options.preferPanelInstall;
+  const defaultInstallNginx = !!options.installNginx;
   const lines = [
     '#!/bin/bash',
     '# ForwardX Agent (Go) 一键安装/管理脚本',
@@ -58,6 +60,8 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     'GITHUB_ACCELERATOR_ENABLED="${GITHUB_ACCELERATOR_ENABLED:-$GITHUB_ACCELERATOR_DEFAULT_ENABLED}"',
     'GITHUB_ACCELERATOR_URL="${GITHUB_ACCELERATOR_URL:-$GITHUB_ACCELERATOR_DEFAULT_URL}"',
     'FORWARDX_AGENT_PANEL_FIRST="${FORWARDX_AGENT_PANEL_FIRST:-$FORWARDX_AGENT_PANEL_FIRST_DEFAULT}"',
+    `FORWARDX_INSTALL_NGINX_DEFAULT="${defaultInstallNginx ? "true" : "false"}"`,
+    'FORWARDX_INSTALL_NGINX="${FORWARDX_INSTALL_NGINX:-$FORWARDX_INSTALL_NGINX_DEFAULT}"',
     "FORWARDX_CURL_CONNECT_TIMEOUT=\"${FORWARDX_CURL_CONNECT_TIMEOUT:-15}\"",
     "FORWARDX_CURL_LOW_SPEED_LIMIT=\"${FORWARDX_CURL_LOW_SPEED_LIMIT:-1024}\"",
     "FORWARDX_CURL_ASSET_LOW_SPEED_TIME=\"${FORWARDX_CURL_ASSET_LOW_SPEED_TIME:-180}\"",
@@ -72,6 +76,7 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     'FXP_BIN="/usr/local/bin/forwardx-fxp"',
     'RUNTIME_BIN="/usr/local/bin/forwardx-runtime"',
     'NGINX_BIN="/usr/local/bin/forwardx-nginx"',
+    'NGINX_SERVICE_NAME="forwardx-nginx"',
 
     'CONFIG_DIR="/etc/forwardx/agent"',
     'LEGACY_CONFIG_DIR="/etc/forwardx-agent"',
@@ -1076,7 +1081,15 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
     '',
     '  # 安装可选转发工具',
     '  install_realm || true',
-    '  install_nginx_runtime || true',
+    '  if is_enabled_value "${FORWARDX_INSTALL_NGINX:-}"; then',
+    '    install_nginx_runtime || true',
+    '  else',
+    '    remove_service_by_name "$NGINX_SERVICE_NAME"',
+    '    for pid in $(pgrep -f "[/]usr/local/bin/forwardx-nginx" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done',
+    '    rm -f "$NGINX_BIN" 2>/dev/null || true',
+    '    rm -rf /etc/forwardx/nginx 2>/dev/null || true',
+    '    rm -f /run/forwardx-nginx.pid 2>/dev/null || true',
+    '  fi',
     '  if ! install_runtime; then',
     '    echo "[错误] gost runtime 安装失败，安装中止"',
     '    exit 1',
@@ -1160,7 +1173,15 @@ export function generateInstallScript(defaultPanelUrl: string, options: AgentIns
 
     '    install_deps',
     '    sync_system_time',
-    '    install_nginx_runtime || true',
+    '    if is_enabled_value "${FORWARDX_INSTALL_NGINX:-}"; then',
+    '      install_nginx_runtime || true',
+    '    else',
+    '      remove_service_by_name "$NGINX_SERVICE_NAME"',
+    '      for pid in $(pgrep -f "[/]usr/local/bin/forwardx-nginx" 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done',
+    '      rm -f "$NGINX_BIN" 2>/dev/null || true',
+    '      rm -rf /etc/forwardx/nginx 2>/dev/null || true',
+    '      rm -f /run/forwardx-nginx.pid 2>/dev/null || true',
+    '    fi',
     '    if ! install_runtime; then',
     '      echo "[错误] gost runtime 安装失败，升级中止"',
     '      return 1',

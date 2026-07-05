@@ -24,6 +24,10 @@ function iptablesBinaryForTarget(targetIp: unknown): IptablesBinary {
 function ignoreShellFailure(command: string) {
   return `${command}; true`;
 }
+function shellQuote(value: string) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
 
 function iptablesCommand(binary: IptablesBinary, args: string, optional = false) {
   if (binary === "ip6tables") {
@@ -49,6 +53,15 @@ function iptablesEnsure(binary: IptablesBinary, table: string | null, rule: stri
 function iptablesDelete(binary: IptablesBinary, table: string | null, rule: string) {
   const tableArg = table ? `-t ${table} ` : "";
   const command = `while ${binary} ${tableArg}-C ${rule} 2>/dev/null; do if ${binary} ${tableArg}-D ${rule} 2>/dev/null; then :; else break; fi; done`;
+  if (binary === "ip6tables") {
+    return `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`;
+  }
+  return ignoreShellFailure(command);
+}
+
+function iptablesDeleteByComment(binary: IptablesBinary, table: string | null, marker: string) {
+  const tableArg = table ? `-t ${table} ` : "";
+  const command = `while rule=$(${binary} ${tableArg}-S 2>/dev/null | awk -v marker=${shellQuote(marker)} '$0 ~ marker {sub(/^-A/, "-D"); print; exit}') && [ -n "$rule" ]; do ${binary} ${tableArg}$rule 2>/dev/null || break; done`;
   if (binary === "ip6tables") {
     return `if command -v ip6tables >/dev/null 2>&1; then ${command}; fi; true`;
   }
@@ -107,8 +120,15 @@ export function buildCountingChainCmds(port: number, targetIp?: string, targetPo
     const target = cleanAddress(targetIp);
     if (isIpAddress(target) && Number(targetPort) > 0) {
       const targetBinary = iptablesBinaryForTarget(target);
-      cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker));
-      cmds.push(addStatRule(targetBinary, "FORWARD", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker));
+      const targetRules = [
+        ["OUTPUT", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
+        ["POSTROUTING", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
+        ["PREROUTING", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
+        ["INPUT", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
+        ["FORWARD", `-p ${proto} -d ${target} --dport ${targetPort}`, inMarker],
+        ["FORWARD", `-p ${proto} -s ${target} --sport ${targetPort}`, outMarker],
+      ] as const;
+      for (const [chain, rule, marker] of targetRules) cmds.push(addStatRule(targetBinary, chain, rule, marker));
     }
   }
   return cmds;
@@ -126,6 +146,8 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
       iptablesDelete(binary, "mangle", `POSTROUTING -p tcp --sport ${port} -j FWX_OUT_${port}`),
       iptablesDelete(binary, "mangle", `POSTROUTING -p udp --sport ${port} -j FWX_OUT_${port}`),
       iptablesDelete(binary, "mangle", `INPUT -p tcp --dport ${port} -j FWX_IN_${port}`),
+      iptablesDeleteByComment(binary, "mangle", inMarker),
+      iptablesDeleteByComment(binary, "mangle", outMarker),
       iptablesDelete(binary, "mangle", `INPUT -p udp --dport ${port} -j FWX_IN_${port}`),
       iptablesDelete(binary, "mangle", `OUTPUT -p tcp --sport ${port} -j FWX_OUT_${port}`),
       iptablesDelete(binary, "mangle", `OUTPUT -p udp --sport ${port} -j FWX_OUT_${port}`),
@@ -156,6 +178,10 @@ export function buildCountingCleanupCmds(port: number, targetIp?: string, target
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `OUTPUT -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `POSTROUTING -p ${proto} -d ${target} --dport ${targetPort} -j FWX_IN_${port}`));
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `PREROUTING -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `OUTPUT -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `POSTROUTING -p ${proto} -d ${target} --dport ${targetPort} -m comment --comment "${inMarker}"`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `PREROUTING -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
+      cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -m comment --comment "${outMarker}"`));
       cmds.unshift(iptablesDelete(targetBinary, "mangle", `INPUT -p ${proto} -s ${target} --sport ${targetPort} -j FWX_OUT_${port}`));
     }
   }
@@ -245,10 +271,10 @@ function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
   return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v colon='comment "${comment}:' -v dash='comment "${comment}-' 'index($0, exact) || index($0, colon) || index($0, dash) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
 
-export function buildNftCleanupCmds(rule: any): string[] {
+export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boolean } = {}): string[] {
   const ruleId = Number(rule.id) || 0;
   const comment = nftComment(rule);
-  return [
+  const cmds = [
     ...buildNftPortCleanupCmds(Number(rule.sourcePort)),
     ...buildNftForwardTargetCleanupCmds(rule),
     ...buildNftPostroutingTargetCleanupCmds(rule),
@@ -262,8 +288,11 @@ export function buildNftCleanupCmds(rule: any): string[] {
     nftOptional(`nft delete chain inet ${nftTable} ${nftChain("in", ruleId)}`),
     nftOptional(`nft flush chain inet ${nftTable} ${nftChain("out", ruleId)}`),
     nftOptional(`nft delete chain inet ${nftTable} ${nftChain("out", ruleId)}`),
-    `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`,
   ];
+  if (options.removeStateFiles !== false) {
+    cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`);
+  }
+  return cmds;
 }
 
 export function buildNftForwardCmds(rule: any): string[] {

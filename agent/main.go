@@ -34,7 +34,7 @@ import (
 	"time"
 )
 
-var Version = "2.2.138"
+var Version = "2.2.139"
 
 const selfUpgradeLockTimeout = 10 * time.Minute
 const iperf3IdleTimeout = 3 * time.Minute
@@ -266,6 +266,7 @@ type localRuntimeReadiness struct {
 	sharedRuntimeReady bool
 	serviceStates      []localRuntimeServiceState
 	serviceActiveCache map[string]bool
+	kernelSnapshot     *kernelForwardSnapshot
 }
 
 func heartbeatStateSignaturePayload() map[string]string {
@@ -332,6 +333,7 @@ func readLocalRuntimeReadiness() localRuntimeReadiness {
 		nginxRuntimeReady:  true,
 		sharedRuntimeReady: true,
 		serviceActiveCache: map[string]bool{},
+		kernelSnapshot:     newKernelForwardSnapshot(),
 	}
 	configs := []struct {
 		path    string
@@ -455,6 +457,10 @@ func localRuleStateReady(state localRuleState, readiness *localRuntimeReadiness)
 				readiness.managedServiceActiveCached("forwardx-socat-udp-"+state.Port)
 		}
 		return readiness.managedServiceActiveCached("forwardx-socat-" + state.Port)
+	case "iptables":
+		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
+	case "nftables":
+		return readiness.kernelSnapshot != nil && readiness.kernelSnapshot.localRuleStateReady(state)
 	case "gost", "gost-tunnel", "gost-tunnel-exit", "gost-tunnel-hop":
 		return readiness.gostReadyForPort(port)
 	case "nginx", "nginx-tunnel", "nginx-tunnel-exit":
@@ -482,9 +488,466 @@ func localTunnelStateReady(tunnelID int, port int, forwardType string, readiness
 	}
 }
 
+type kernelForwardSnapshot struct {
+	nftLoaded       bool
+	nftTable        string
+	iptablesLoaded  map[string]bool
+	iptablesNatRule map[string]string
+}
+
+func newKernelForwardSnapshot() *kernelForwardSnapshot {
+	return &kernelForwardSnapshot{
+		iptablesLoaded:  map[string]bool{},
+		iptablesNatRule: map[string]string{},
+	}
+}
+
+func actionRequiresKernelForwardConsistency(a action) bool {
+	if a.SourcePort <= 0 || strings.TrimSpace(a.StatusType) == "runtime" || strings.TrimSpace(a.StatusType) == "tunnel" {
+		return false
+	}
+	switch strings.TrimSpace(a.ForwardType) {
+	case "iptables", "nftables":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *kernelForwardSnapshot) desiredActionConsistent(a action) bool {
+	if !actionRequiresKernelForwardConsistency(a) {
+		return true
+	}
+	switch strings.TrimSpace(a.Op) {
+	case "apply":
+		return s.actionApplyReady(a)
+	case "remove":
+		return s.actionRemoveDone(a)
+	default:
+		return true
+	}
+}
+
+func (s *kernelForwardSnapshot) actionApplyReady(a action) bool {
+	return s.kernelRuleApplyPresent(a.ForwardType, a.RuleID, a.SourcePort, a.TargetIP, a.TargetPort, a.Protocol)
+}
+
+func (s *kernelForwardSnapshot) actionRemoveDone(a action) bool {
+	return !s.kernelRuleResiduePresent(a.ForwardType, a.RuleID, a.SourcePort, a.Protocol)
+}
+
+func (s *kernelForwardSnapshot) localRuleStateReady(state localRuleState) bool {
+	return s.kernelRuleApplyPresent(state.ForwardType, state.RuleID, atoi(state.Port), state.TargetIP, state.TargetPort, state.Protocol)
+}
+
+func readLocalRuntimeRuleStates() []localRuleState {
+	states := readLocalRuleStates()
+	return appendKernelForwardResidueStates(states)
+}
+
+type kernelForwardResidueState struct {
+	state localRuleState
+	tcp   bool
+	udp   bool
+}
+
+func appendKernelForwardResidueStates(states []localRuleState) []localRuleState {
+	existingPorts := map[string]bool{}
+	for _, state := range states {
+		if strings.TrimSpace(state.Port) != "" {
+			existingPorts[state.Port] = true
+		}
+	}
+	residue := newKernelForwardSnapshot().localResidueStates(existingPorts)
+	if len(residue) == 0 {
+		return states
+	}
+	return append(states, residue...)
+}
+
+func (s *kernelForwardSnapshot) localResidueStates(existingPorts map[string]bool) []localRuleState {
+	byPort := map[string]*kernelForwardResidueState{}
+	add := func(forwardType string, ruleID int, port int, proto string, targetIP string, targetPort int) {
+		if port <= 0 {
+			return
+		}
+		portText := strconv.Itoa(port)
+		if existingPorts != nil && existingPorts[portText] {
+			return
+		}
+		item := byPort[portText]
+		if item == nil {
+			item = &kernelForwardResidueState{
+				state: localRuleState{
+					Port:        portText,
+					RuleID:      ruleID,
+					ForwardType: forwardType,
+					TargetIP:    targetIP,
+					TargetPort:  targetPort,
+				},
+			}
+			byPort[portText] = item
+		}
+		if item.state.RuleID <= 0 && ruleID > 0 {
+			item.state.RuleID = ruleID
+		}
+		if item.state.TargetIP == "" && targetIP != "" {
+			item.state.TargetIP = targetIP
+		}
+		if item.state.TargetPort <= 0 && targetPort > 0 {
+			item.state.TargetPort = targetPort
+		}
+		switch proto {
+		case "udp":
+			item.udp = true
+		default:
+			item.tcp = true
+		}
+	}
+	for _, rawLine := range strings.Split(s.nftTableText(), "\n") {
+		line := kernelNormalizeLine(rawLine)
+		if line == "" || !strings.Contains(line, "dnat") {
+			continue
+		}
+		proto, port, ok := kernelLineDport(line)
+		if !ok {
+			continue
+		}
+		ruleID := kernelLineRuleID(line)
+		targetIP, targetPort, _ := kernelLineDnatTarget(line)
+		add("nftables", ruleID, port, proto, targetIP, targetPort)
+	}
+	for _, binary := range iptablesAgentBinaries() {
+		for _, rawLine := range strings.Split(s.iptablesNatPreroutingText(binary), "\n") {
+			line := kernelNormalizeLine(rawLine)
+			if line == "" || !strings.Contains(line, "-j DNAT") {
+				continue
+			}
+			proto, port, ok := kernelLineDport(line)
+			if !ok || !iptablesForwardxMarkerSeenForPort(port) {
+				continue
+			}
+			targetIP, targetPort, _ := kernelLineDnatTarget(line)
+			add("iptables", 0, port, proto, targetIP, targetPort)
+		}
+	}
+	if len(byPort) == 0 {
+		return nil
+	}
+	ports := make([]string, 0, len(byPort))
+	for port := range byPort {
+		ports = append(ports, port)
+	}
+	sort.Slice(ports, func(i, j int) bool { return atoi(ports[i]) < atoi(ports[j]) })
+	out := make([]localRuleState, 0, len(ports))
+	for _, port := range ports {
+		item := byPort[port]
+		if item.tcp && item.udp {
+			item.state.Protocol = "both"
+		} else if item.udp {
+			item.state.Protocol = "udp"
+		} else {
+			item.state.Protocol = "tcp"
+		}
+		out = append(out, item.state)
+	}
+	return out
+}
+
+func (s *kernelForwardSnapshot) kernelRuleApplyPresent(forwardType string, ruleID int, sourcePort int, targetIP string, targetPort int, protocol string) bool {
+	if sourcePort <= 0 {
+		return false
+	}
+	switch strings.TrimSpace(forwardType) {
+	case "nftables":
+		return s.nftForwardRulePresent(ruleID, sourcePort, targetIP, targetPort, protocol)
+	case "iptables":
+		return s.iptablesForwardRulePresent(sourcePort, targetIP, targetPort, protocol)
+	default:
+		return true
+	}
+}
+
+func (s *kernelForwardSnapshot) kernelRuleResiduePresent(forwardType string, ruleID int, sourcePort int, protocol string) bool {
+	if sourcePort <= 0 {
+		return false
+	}
+	switch strings.TrimSpace(forwardType) {
+	case "nftables":
+		return s.nftForwardRuleResiduePresent(ruleID, sourcePort, protocol)
+	case "iptables":
+		return s.iptablesForwardRuleResiduePresent(sourcePort, protocol)
+	default:
+		return false
+	}
+}
+
+func (s *kernelForwardSnapshot) nftTableText() string {
+	if s == nil {
+		return ""
+	}
+	if s.nftLoaded {
+		return s.nftTable
+	}
+	s.nftLoaded = true
+	if !commandExists("nft") {
+		return ""
+	}
+	raw, err := exec.Command("nft", "-a", "list", "table", "inet", "forwardx").Output()
+	if err != nil {
+		return ""
+	}
+	s.nftTable = string(raw)
+	return s.nftTable
+}
+
+func (s *kernelForwardSnapshot) iptablesNatPreroutingText(binary string) string {
+	if s == nil || strings.TrimSpace(binary) == "" {
+		return ""
+	}
+	if s.iptablesLoaded == nil {
+		s.iptablesLoaded = map[string]bool{}
+	}
+	if s.iptablesNatRule == nil {
+		s.iptablesNatRule = map[string]string{}
+	}
+	if s.iptablesLoaded[binary] {
+		return s.iptablesNatRule[binary]
+	}
+	s.iptablesLoaded[binary] = true
+	if binary == "ip6tables" && !commandExists("ip6tables") {
+		return ""
+	}
+	raw, err := exec.Command(binary, "-t", "nat", "-S", "PREROUTING").Output()
+	if err != nil {
+		return ""
+	}
+	s.iptablesNatRule[binary] = string(raw)
+	return s.iptablesNatRule[binary]
+}
+
+func (s *kernelForwardSnapshot) nftForwardRulePresent(ruleID int, sourcePort int, targetIP string, targetPort int, protocol string) bool {
+	text := s.nftTableText()
+	if text == "" {
+		return false
+	}
+	for _, proto := range runtimeProtocols(protocol) {
+		if !nftDnatLinePresent(text, ruleID, proto, sourcePort, targetIP, targetPort) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *kernelForwardSnapshot) nftForwardRuleResiduePresent(ruleID int, sourcePort int, protocol string) bool {
+	text := s.nftTableText()
+	if text == "" {
+		return false
+	}
+	marker := ""
+	if ruleID > 0 {
+		marker = "fwx-rule-" + strconv.Itoa(ruleID)
+	}
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := kernelNormalizeLine(rawLine)
+		if line == "" {
+			continue
+		}
+		if marker != "" && strings.Contains(line, marker) {
+			return true
+		}
+		if strings.Contains(line, "dnat") {
+			for _, proto := range runtimeProtocols(protocol) {
+				if kernelLineHasProtoDport(line, proto, sourcePort) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func nftDnatLinePresent(text string, ruleID int, proto string, sourcePort int, targetIP string, targetPort int) bool {
+	marker := ""
+	if ruleID > 0 {
+		marker = "fwx-rule-" + strconv.Itoa(ruleID)
+	}
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := kernelNormalizeLine(rawLine)
+		if line == "" || !strings.Contains(line, "dnat") || !kernelLineHasProtoDport(line, proto, sourcePort) {
+			continue
+		}
+		if marker != "" && !strings.Contains(line, marker) && !kernelLineDnatTargetMatches(line, targetIP, targetPort) {
+			continue
+		}
+		if !kernelLineDnatTargetMatches(line, targetIP, targetPort) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (s *kernelForwardSnapshot) iptablesForwardRulePresent(sourcePort int, targetIP string, targetPort int, protocol string) bool {
+	target := kernelCleanAddress(targetIP)
+	for _, proto := range runtimeProtocols(protocol) {
+		if !iptablesDnatLinePresent(s.iptablesNatPreroutingText(iptablesAgentBinaryForTarget(target)), proto, sourcePort, target, targetPort) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *kernelForwardSnapshot) iptablesForwardRuleResiduePresent(sourcePort int, protocol string) bool {
+	for _, binary := range iptablesAgentBinaries() {
+		text := s.iptablesNatPreroutingText(binary)
+		for _, rawLine := range strings.Split(text, "\n") {
+			line := kernelNormalizeLine(rawLine)
+			if line == "" || !strings.Contains(line, "-j DNAT") {
+				continue
+			}
+			for _, proto := range runtimeProtocols(protocol) {
+				if kernelLineHasProtoDport(line, proto, sourcePort) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func iptablesDnatLinePresent(text string, proto string, sourcePort int, targetIP string, targetPort int) bool {
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := kernelNormalizeLine(rawLine)
+		if line == "" || !strings.Contains(line, "-j DNAT") || !kernelLineHasProtoDport(line, proto, sourcePort) {
+			continue
+		}
+		if kernelLineDnatTargetMatches(line, targetIP, targetPort) {
+			return true
+		}
+	}
+	return false
+}
+
+func kernelNormalizeLine(line string) string {
+	return strings.Join(strings.Fields(line), " ")
+}
+
+func kernelCleanAddress(value string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(value), "[]"))
+}
+
+func kernelLineHasProtoDport(line string, proto string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	lineProto, linePort, ok := kernelLineDport(line)
+	return ok && lineProto == strings.TrimSpace(proto) && linePort == port
+}
+
+func kernelLineDnatTargetMatches(line string, targetIP string, targetPort int) bool {
+	target := kernelCleanAddress(targetIP)
+	if target == "" || targetPort <= 0 || net.ParseIP(target) == nil {
+		return true
+	}
+	lineTarget, linePort, ok := kernelLineDnatTarget(strings.ToLower(line))
+	if ok == false {
+		return false
+	}
+	return kernelCleanAddress(lineTarget) == target && linePort == targetPort
+}
+
+func kernelLineDport(line string) (string, int, bool) {
+	for _, proto := range []string{"tcp", "udp"} {
+		prefixes := []string{"--dport ", proto + " dport "}
+		if !strings.Contains(line, "-p "+proto+" ") && !strings.Contains(line, "meta l4proto "+proto) && !strings.Contains(line, proto+" dport ") {
+			continue
+		}
+		for _, prefix := range prefixes {
+			idx := strings.Index(line, prefix)
+			if idx < 0 {
+				continue
+			}
+			rest := strings.TrimSpace(line[idx+len(prefix):])
+			if rest == "" {
+				continue
+			}
+			fields := strings.Fields(rest)
+			if len(fields) == 0 {
+				continue
+			}
+			portText := strings.Trim(fields[0], "[];,")
+			port, err := strconv.Atoi(portText)
+			if err == nil && port > 0 && port <= 65535 {
+				return proto, port, true
+			}
+		}
+	}
+	return "", 0, false
+}
+
+func kernelLineRuleID(line string) int {
+	match := regexp.MustCompile(`fwx-rule-([0-9]+)`).FindStringSubmatch(line)
+	if len(match) < 2 {
+		return 0
+	}
+	id, _ := strconv.Atoi(match[1])
+	return id
+}
+
+func kernelLineDnatTarget(line string) (string, int, bool) {
+	tail := line
+	if idx := strings.Index(tail, "--to-destination "); idx >= 0 {
+		tail = tail[idx+len("--to-destination "):]
+	} else if idx := strings.Index(tail, " to "); idx >= 0 {
+		tail = tail[idx+len(" to "):]
+	} else {
+		return "", 0, false
+	}
+	fields := strings.Fields(tail)
+	if len(fields) == 0 {
+		return "", 0, false
+	}
+	token := strings.Trim(fields[0], "\"'`;")
+	if strings.HasPrefix(token, "[") {
+		if end := strings.Index(token, "]"); end > 0 && len(token) > end+2 && token[end+1] == ':' {
+			port, err := strconv.Atoi(strings.Trim(token[end+2:], "[];,"))
+			if err == nil && port > 0 {
+				return strings.Trim(token[1:end], "[]"), port, true
+			}
+		}
+	}
+	idx := strings.LastIndex(token, ":")
+	if idx <= 0 || idx >= len(token)-1 {
+		return strings.Trim(token, "[]"), 0, false
+	}
+	port, err := strconv.Atoi(strings.Trim(token[idx+1:], "[];,"))
+	if err != nil || port <= 0 {
+		return strings.Trim(token, "[]"), 0, false
+	}
+	return strings.Trim(token[:idx], "[]"), port, true
+}
+
+func iptablesForwardxMarkerSeenForPort(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	marker := "fwx-stat-" + strconv.Itoa(port) + ":"
+	for _, binary := range iptablesAgentBinaries() {
+		if binary == "ip6tables" && !commandExists("ip6tables") {
+			continue
+		}
+		raw, err := exec.Command(binary, "-t", "mangle", "-S").Output()
+		if err == nil && strings.Contains(string(raw), marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 	readiness := readLocalRuntimeReadiness()
-	ruleStates := readLocalRuleStates()
+	ruleStates := readLocalRuntimeRuleStates()
 	rules := make([]localRuntimeRuleState, 0, len(ruleStates))
 	for _, state := range ruleStates {
 		port := atoi(state.Port)
@@ -1919,6 +2382,7 @@ func decodeEventData(raw string, token string, out any) error {
 func handleAction(cfg Config, a action) bool {
 	ok := true
 	actionMessage := &actionMessage{}
+	skippedStaleRemove := false
 	if strings.TrimSpace(a.StatusType) == "runtime" {
 		if shouldSkipRuntimeAction(a) {
 			return true
@@ -1972,6 +2436,7 @@ func handleAction(cfg Config, a action) bool {
 	} else {
 		if shouldSkipRemoveForReassignedPort(a) {
 			ok = true
+			skippedStaleRemove = true
 		} else {
 			stopFailoverProxy(a.RuleID, a.SourcePort)
 			if a.Fxp != nil {
@@ -1981,10 +2446,23 @@ func handleAction(cfg Config, a action) bool {
 				cleanupManagedService(name)
 			}
 			ok = runShellBatch(a.Commands) && ok
-			if shouldReportActionStatus(a) {
+			if shouldReportActionStatus(a) && !actionRequiresKernelForwardConsistency(a) {
 				removeState(a.SourcePort)
 			}
 		}
+	}
+	if ok && !skippedStaleRemove && actionRequiresKernelForwardConsistency(a) && !newKernelForwardSnapshot().desiredActionConsistent(a) {
+		ok = false
+		message := fmt.Sprintf("kernel firewall state mismatch after %s", strings.TrimSpace(a.Op))
+		actionMessage.set(message)
+		if shouldLogAgentReport(fmt.Sprintf("kernel-forward-mismatch:%d:%d:%s:%s", a.RuleID, a.SourcePort, a.ForwardType, a.Op), agentReportLogInterval) {
+			logf("%s %s", message, actionLogSummary(a))
+		}
+		requestLocalRuntimeStateUpload()
+	}
+
+	if ok && !skippedStaleRemove && a.Op == "remove" && shouldReportActionStatus(a) && actionRequiresKernelForwardConsistency(a) {
+		removeState(a.SourcePort)
 	}
 	if !shouldReportActionStatus(a) {
 		return ok
@@ -3349,6 +3827,18 @@ func iptablesAgentDelete(binary string, table string, rule string) string {
 	return cmd + "; true"
 }
 
+func iptablesAgentDeleteByComment(binary string, table string, marker string) string {
+	tableArg := ""
+	if table != "" {
+		tableArg = "-t " + table + " "
+	}
+	cmd := fmt.Sprintf(`while rule=$(%s %s-S 2>/dev/null | awk -v marker=%s '$0 ~ marker {sub(/^-A/, "-D"); print; exit}') && [ -n "$rule" ]; do %s %s$rule 2>/dev/null || break; done`, binary, tableArg, shellQuote(marker), binary, tableArg)
+	if binary == "ip6tables" {
+		return "if command -v ip6tables >/dev/null 2>&1; then " + cmd + "; fi; true"
+	}
+	return cmd + "; true"
+}
+
 func iptablesAgentFlush(binary string, table string, chain string) string {
 	return iptablesAgentCommand(binary, "-t "+table+" -F "+chain+" 2>/dev/null", true)
 }
@@ -3402,6 +3892,10 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 	}
 	cmds = append(cmds, nftPortCleanupCmd(port, "both"))
 	for _, binary := range iptablesAgentBinaries() {
+		cmds = append(cmds,
+			iptablesAgentDeleteByComment(binary, "mangle", inMarker),
+			iptablesAgentDeleteByComment(binary, "mangle", outMarker),
+		)
 		cmds = append(cmds, iptablesAgentDeleteDnatRulesForPort(binary, port, "both"))
 		directRules := []string{
 			fmt.Sprintf(`PREROUTING -p tcp --dport %s -m comment --comment %q`, port, inMarker),
@@ -3461,6 +3955,10 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 				{"", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j ACCEPT`, proto, target, tp)},
 				{"", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s %s-j ACCEPT`, proto, target, tp, stateMatch)},
 				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
+				{"mangle", fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
+				{"mangle", fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)},
+				{"mangle", fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
+				{"mangle", fmt.Sprintf(`INPUT -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
 				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)},
 				{"mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -j FWX_IN_%s`, proto, target, tp, port)},
 				{"mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -j FWX_OUT_%s`, proto, target, tp, port)},
@@ -3526,6 +4024,10 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 	}
 	commands := []string{}
 	for _, binary := range iptablesAgentBinaries() {
+		commands = append(commands,
+			iptablesAgentDeleteByComment(binary, "mangle", inMarker),
+			iptablesAgentDeleteByComment(binary, "mangle", outMarker),
+		)
 		legacyRules := []string{
 			fmt.Sprintf(`PREROUTING -p tcp --dport %s -j FWX_IN_%s`, p, p),
 			fmt.Sprintf(`PREROUTING -p udp --dport %s -j FWX_IN_%s`, p, p),
@@ -3567,10 +4069,17 @@ func ensureCountingChains(port int, targetIP string, targetPort int, protocol st
 			for _, rule := range cleanupRules {
 				commands = append(commands, iptablesAgentDelete(binary, "mangle", rule))
 			}
-			commands = append(commands,
-				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker)),
-				iptablesAgentEnsure(binary, "mangle", fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker)),
-			)
+			targetRules := []string{
+				fmt.Sprintf(`OUTPUT -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
+				fmt.Sprintf(`POSTROUTING -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
+				fmt.Sprintf(`PREROUTING -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
+				fmt.Sprintf(`INPUT -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
+				fmt.Sprintf(`FORWARD -p %s -d %s --dport %s -m comment --comment %q`, proto, target, tp, inMarker),
+				fmt.Sprintf(`FORWARD -p %s -s %s --sport %s -m comment --comment %q`, proto, target, tp, outMarker),
+			}
+			for _, rule := range targetRules {
+				commands = append(commands, iptablesAgentEnsure(binary, "mangle", rule))
+			}
 		}
 	}
 	for _, binary := range iptablesAgentBinaries() {

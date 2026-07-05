@@ -81,7 +81,7 @@ export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
   realm: true,
   socat: true,
   gost: true,
-  nginx: true,
+  nginx: false,
   forwardx: true,
   tls: true,
   wss: true,
@@ -89,8 +89,8 @@ export const DEFAULT_FORWARD_PROTOCOL_SETTINGS: ForwardProtocolSettings = {
   mtls: true,
   mwss: true,
   mtcp: true,
-  nginx_stream: true,
-  nginx_tls: true,
+  nginx_stream: false,
+  nginx_tls: false,
 };
 
 export function normalizeForwardProtocolSettings(input?: Partial<Record<string, unknown>> | null): ForwardProtocolSettings {
@@ -106,4 +106,9 @@ export function normalizeForwardProtocolSettings(input?: Partial<Record<string, 
 
 export function isForwardProtocolEnabled(settings: Partial<Record<string, unknown>> | null | undefined, key: ForwardProtocolKey) {
   return normalizeForwardProtocolSettings(settings)[key] !== false;
+}
+
+export function isNginxForwardProtocolEnabled(settings: Partial<Record<string, unknown>> | null | undefined) {
+  const normalized = normalizeForwardProtocolSettings(settings);
+  return normalized.nginx !== false || normalized.nginx_stream !== false || normalized.nginx_tls !== false;
 }

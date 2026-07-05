@@ -4,6 +4,7 @@ import { AGENT_VERSION } from "./_core/systemRouter";
 import { AGENT_ASSET_NAME_SET, getOrFetchAgentAssetPath } from "./agentAssets";
 import { appendPanelLog } from "./_core/panelLogger";
 import { generateInstallScript } from "./agentInstallScripts";
+import { isNginxForwardProtocolEnabled } from "../shared/forwardTypes";
 import { registerAgentEventClient, unregisterAgentEventClient } from "./agentEvents";
 import { agentEncryptionMiddleware, getAgentTunneledPath } from "./agentEncryptionMiddleware";
 import { isAgentUpgradeTargetSatisfied, isAgentVersionAtLeast } from "./agentRouteUtils";
@@ -23,6 +24,15 @@ const agentRouter = Router();
 const agentApiRouter = Router();
 const VERBOSE_AGENT_EVENTS = /^(1|true|yes|on)$/i.test(String(process.env.FORWARDX_VERBOSE_AGENT_EVENTS || ""));
 const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
+
+function parseForwardProtocolSettings(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
@@ -328,6 +338,7 @@ agentRouter.get("/api/agent/install.sh", async (req: Request, res: Response) => 
     githubAcceleratorEnabled: settings.githubAcceleratorEnabled === "true",
     githubAcceleratorUrl: settings.githubAcceleratorUrl || "",
     preferPanelInstall: settings.agentPreferPanelInstall === "true",
+    installNginx: isNginxForwardProtocolEnabled(parseForwardProtocolSettings(settings.forwardProtocols)),
   }));
 });
 
