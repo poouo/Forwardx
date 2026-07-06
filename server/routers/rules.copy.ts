@@ -26,6 +26,10 @@ async function requireTrafficBillingBalanceForCopy(userId: number, isTrafficBill
   }
 }
 
+function isDirectHostRuleCopyDisabled() {
+  return true;
+}
+
 export const copyRulesRouter = router({
   copyToHosts: protectedProcedure
     .input(z.object({
@@ -34,6 +38,9 @@ export const copyRulesRouter = router({
       conflictStrategy: conflictStrategySchema.default("skip"),
     }))
     .mutation(async ({ input, ctx }) => {
+      if (isDirectHostRuleCopyDisabled()) {
+        throw new Error("直接复制到主机已停用，请先创建转发组或转发链后再新增规则。");
+      }
       let currentUser = await db.getUserById(ctx.user.id);
       if (ctx.user.role !== "admin") {
         currentUser = await requireForwardAccessReady(ctx.user.id);

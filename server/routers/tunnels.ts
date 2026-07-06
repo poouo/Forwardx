@@ -18,6 +18,7 @@ import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
 
 const tunnelNetworkTypeSchema = z.enum(["public", "private"]);
 const tunnelModeSchema = z.enum(["forwardx", "tls", "wss", "tcp", "mtls", "mwss", "mtcp", "nginx_stream", "nginx_tls"]);
+const proxyProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
 const tunnelLoadBalanceStrategySchema = z.enum(["round_robin", "random", "least_conn", "ip_hash", "fallback"]);
 const MAX_TUNNEL_HOPS = 10;
 const MAX_EXTRA_TUNNEL_EXITS = 4;
@@ -27,6 +28,35 @@ const tunnelQueryCache = createQueryCache(300);
 function normalizeTunnelMode(mode: unknown) {
   const value = String(mode || "").trim().toLowerCase();
   return value === "nginx_tls" ? "nginx_stream" : value;
+}
+
+function isTunnelProxyProtocolSupported(mode: unknown) {
+  const normalized = normalizeTunnelMode(mode);
+  return normalized === "forwardx" || ["tls", "wss", "tcp", "mtls", "mwss", "mtcp"].includes(normalized);
+}
+
+function isTunnelForwardXMode(mode: unknown) {
+  return normalizeTunnelMode(mode) === "forwardx";
+}
+
+function normalizeTunnelRuntimeOptions(input: any, mode: unknown) {
+  const proxySupported = isTunnelProxyProtocolSupported(mode);
+  const forwardxMode = isTunnelForwardXMode(mode);
+  const proxyAny = proxySupported && (
+    !!input.proxyProtocolReceive ||
+    !!input.proxyProtocolSend ||
+    !!input.proxyProtocolExitReceive ||
+    !!input.proxyProtocolExitSend
+  );
+  return {
+    proxyProtocolReceive: proxySupported && !!input.proxyProtocolReceive,
+    proxyProtocolSend: proxySupported && !!input.proxyProtocolSend,
+    proxyProtocolExitReceive: proxySupported && !!input.proxyProtocolExitReceive,
+    proxyProtocolExitSend: proxySupported && !!input.proxyProtocolExitSend,
+    proxyProtocolVersion: proxyAny && Number(input.proxyProtocolVersion) === 2 ? 2 : 1,
+    tcpFastOpen: forwardxMode && !!input.tcpFastOpen,
+    udpOverTcp: forwardxMode && !!input.udpOverTcp,
+  };
 }
 
 function normalizeCertDomain(value: unknown) {
@@ -424,6 +454,13 @@ export const tunnelsRouter = router({
         certKeyPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional().default("public"),
         connectHost: z.string().max(128).nullable().optional(),
+        proxyProtocolReceive: z.boolean().optional().default(false),
+        proxyProtocolSend: z.boolean().optional().default(false),
+        proxyProtocolExitReceive: z.boolean().optional().default(false),
+        proxyProtocolExitSend: z.boolean().optional().default(false),
+        proxyProtocolVersion: proxyProtocolVersionSchema.optional().default(1),
+        tcpFastOpen: z.boolean().optional().default(false),
+        udpOverTcp: z.boolean().optional().default(false),
         blockHttp: z.boolean().optional().default(false),
         blockSocks: z.boolean().optional().default(false),
         blockTls: z.boolean().optional().default(false),
@@ -494,6 +531,7 @@ export const tunnelsRouter = router({
           exits: input.loadBalanceExits || [],
           explicitListenPort: requestedListenPort > 0 ? requestedListenPort : 0,
         });
+        const runtimeOptions = normalizeTunnelRuntimeOptions(input, normalizedMode);
         const {
           hopHostIds: _ignoredHopHostIds,
           hopConnectHosts: _ignoredHopConnectHosts,
@@ -519,6 +557,7 @@ export const tunnelsRouter = router({
           blockHttp: false,
           blockSocks: false,
           blockTls: false,
+          ...runtimeOptions,
           loadBalanceEnabled: loadBalanceEnabled && extraExitNodes.length > 0,
           loadBalanceStrategy: loadBalanceEnabled && extraExitNodes.length > 0 ? loadBalanceStrategy : "round_robin",
           listenPort,
@@ -573,6 +612,13 @@ export const tunnelsRouter = router({
         certKeyPem: z.string().max(MAX_NGINX_CERT_BYTES).nullable().optional(),
         networkType: tunnelNetworkTypeSchema.optional(),
         connectHost: z.string().max(128).nullable().optional(),
+        proxyProtocolReceive: z.boolean().optional(),
+        proxyProtocolSend: z.boolean().optional(),
+        proxyProtocolExitReceive: z.boolean().optional(),
+        proxyProtocolExitSend: z.boolean().optional(),
+        proxyProtocolVersion: proxyProtocolVersionSchema.optional(),
+        tcpFastOpen: z.boolean().optional(),
+        udpOverTcp: z.boolean().optional(),
         blockHttp: z.boolean().optional(),
         blockSocks: z.boolean().optional(),
         blockTls: z.boolean().optional(),
@@ -592,6 +638,13 @@ export const tunnelsRouter = router({
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const nextModeForRuntime = normalizeTunnelMode(input.mode ?? (tunnel as any).mode);
+        if (input.mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode)) {
+          const usedRules = await db.getForwardRulesByTunnel(input.id);
+          const activeRules = (usedRules as any[]).filter((rule) => !rule?.pendingDelete);
+          if (activeRules.length > 0) {
+            throw new Error("该隧道已有转发规则使用，不能直接修改隧道协议；请新建隧道后把规则切换过去。");
+          }
+        }
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
@@ -642,6 +695,25 @@ export const tunnelsRouter = router({
         if ((data as any).trafficMultiplier !== undefined) {
           (data as any).trafficMultiplier = normalizeTrafficMultiplier((data as any).trafficMultiplier);
         }
+        const tunnelRuntimeKeys = [
+          "proxyProtocolReceive",
+          "proxyProtocolSend",
+          "proxyProtocolExitReceive",
+          "proxyProtocolExitSend",
+          "proxyProtocolVersion",
+          "tcpFastOpen",
+          "udpOverTcp",
+        ] as const;
+        const runtimeOptionsProvided = tunnelRuntimeKeys.some((key) => (data as any)[key] !== undefined);
+        if (runtimeOptionsProvided || (data as any).mode !== undefined) {
+          const runtimeSource: any = {};
+          for (const key of tunnelRuntimeKeys) {
+            runtimeSource[key] = (data as any)[key] !== undefined ? (data as any)[key] : (tunnel as any)[key];
+          }
+          Object.assign(data as any, normalizeTunnelRuntimeOptions(runtimeSource, nextModeForRuntime));
+        }
+        const runtimeOptionsChanged = tunnelRuntimeKeys.some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]);
+        const modeChanged = (data as any).mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode);
         if ((data as any).certDomain !== undefined || (data as any).mode !== undefined) {
           const certSource = (data as any).certDomain !== undefined ? (data as any).certDomain : (tunnel as any).certDomain;
           (data as any).certDomain = nextModeForRuntime === "nginx_stream" ? normalizeCertDomain(certSource) : null;
@@ -741,10 +813,13 @@ export const tunnelsRouter = router({
         const loadBalanceChanged = (data as any).loadBalanceEnabled !== !!(tunnel as any).loadBalanceEnabled
           || (data as any).loadBalanceStrategy !== normalizeTunnelLoadBalanceStrategy((tunnel as any).loadBalanceStrategy)
           || existingExtraSignature !== nextExtraSignature;
-        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost"].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
+        const keyChanged = ["entryGroupId", "entryHostId", "exitHostId", "mode", "certDomain", "certPem", "certKeyPem", "listenPort", "rateLimitMbps", "isEnabled", "portRangeStart", "portRangeEnd", "networkType", "connectHost", ...tunnelRuntimeKeys].some((key) => (data as any)[key] !== undefined && (data as any)[key] !== (tunnel as any)[key]) || hopChanged || loadBalanceChanged;
         const enabledChanged = (data as any).isEnabled !== undefined && (data as any).isEnabled !== (tunnel as any).isEnabled;
         if (keyChanged) (data as any).isRunning = false;
         await db.updateTunnel(id, data as any);
+        if (runtimeOptionsChanged || modeChanged) {
+          await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
+        }
         const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
         const hopIdsToWrite = hopHostIds || existingHopHostIds;
         if (shouldWriteHops && hopIdsToWrite.length >= 3) {

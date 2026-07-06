@@ -3374,6 +3374,9 @@ async function executePendingManageAction(pending: PendingManageAction, callback
 
     if (pending.action === "rule_create") {
       const mode: ManageForwardMode = pending.forwardMode === "tunnel" ? "tunnel" : "host";
+      if (mode === "host") {
+        throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
+      }
       const hostId = Number(pending.hostId || 0);
       const tunnelId = mode === "tunnel" ? Number(pending.tunnelId || 0) : 0;
       const targetIp = normalizeManageTargetIp(pending.targetIp || "");

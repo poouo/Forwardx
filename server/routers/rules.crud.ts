@@ -201,8 +201,60 @@ export function normalizeTransportTuningInput(input: {
   return { tcpFastOpen, zeroCopy, udpOverTcp, udpOverTcpPort: null };
 }
 
+function tunnelRuntimeOptionInput(tunnel: any | null | undefined) {
+  if (!tunnel) return {};
+  return {
+    proxyProtocolReceive: !!tunnel.proxyProtocolReceive,
+    proxyProtocolSend: !!tunnel.proxyProtocolSend,
+    proxyProtocolExitReceive: !!tunnel.proxyProtocolExitReceive,
+    proxyProtocolExitSend: !!tunnel.proxyProtocolExitSend,
+    proxyProtocolVersion: Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1,
+    tcpFastOpen: !!tunnel.tcpFastOpen,
+    zeroCopy: false,
+    udpOverTcp: !!tunnel.udpOverTcp,
+    udpOverTcpPort: null,
+  };
+}
+
 function normalizeRuleTargetIp(input: string, _options: { tunnelId?: number | null }) {
   return String(input || "").trim();
+}
+
+function normalizeLockedForwardType(value: unknown) {
+  const parsed = forwardTypeSchema.safeParse(String(value || ""));
+  return parsed.success ? parsed.data : "iptables";
+}
+
+function lockedForwardTypeForGroup(group: any, fallback: unknown = "iptables") {
+  const groupMode = String(group?.groupMode || "failover");
+  const groupType = String(group?.groupType || "host");
+  if (groupMode !== "chain" && groupType === "tunnel") return "gost";
+  return normalizeLockedForwardType(group?.forwardType || fallback);
+}
+
+function assertForwardTypeLocked(current: unknown, requested: unknown) {
+  if (requested === undefined || requested === null) return;
+  if (String(requested) !== String(current)) {
+    throw new Error("转发协议创建后已锁定，请新建规则使用其他协议。");
+  }
+}
+
+function assertRuleRouteLocked(rule: any, input: { forwardType?: unknown; tunnelId?: number | null; forwardGroupId?: number | null }) {
+  const currentForwardType = String(rule?.forwardType || "");
+  const currentTunnelId = Number(rule?.tunnelId || 0) || null;
+  assertForwardTypeLocked(currentForwardType, input.forwardType);
+  if (input.forwardGroupId !== undefined && Number(input.forwardGroupId || 0) !== Number(rule?.forwardGroupId || 0)) {
+    throw new Error("规则路由类型创建后已锁定，请新建规则使用其他路由类型。");
+  }
+  if (currentTunnelId) {
+    if (input.tunnelId === null) {
+      throw new Error("隧道转发规则必须保留隧道；如需改为普通转发，请新建规则。");
+    }
+    return;
+  }
+  if (input.tunnelId !== undefined && input.tunnelId !== null) {
+    throw new Error("普通转发规则不能直接改为隧道转发，请新建隧道转发规则。");
+  }
 }
 
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
@@ -432,7 +484,7 @@ export const crudRulesRouter = router({
           throw new Error("端口转发链不支持出站策略");
         }
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
-        const forwardType = !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : input.forwardType;
+        const forwardType = lockedForwardTypeForGroup(group, input.forwardType);
         requireMainBackupAllowed({
           enabled: isForwardChain ? false : input.failoverEnabled,
           protocol: input.protocol,
@@ -470,18 +522,18 @@ export const crudRulesRouter = router({
           blockSocks: false,
           blockTls: false,
           ...normalizeProxyProtocolInput(
-            input,
+            {},
             input.protocol,
             forwardType,
             isForwardChain,
-            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" },
+            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", clearUnsupported: true },
           ),
           ...normalizeTransportTuningInput(
-            input,
+            {},
             input.protocol,
             forwardType,
             isForwardChain,
-            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", forwardxTunnel: false },
+            { tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel", forwardxTunnel: false, clearUnsupported: true },
           ),
           ...normalizeFailoverInput(isForwardChain ? { failoverEnabled: false, failoverTargets: [] } : input, input.protocol),
           isRunning: false,
@@ -492,8 +544,14 @@ export const crudRulesRouter = router({
         return { id, sourcePort };
       }
 
-      if (!input.hostId) throw new Error("请选择所属主机");
+      if (input.tunnelId && input.forwardType !== "gost") {
+        throw new Error("隧道转发必须使用已创建的隧道协议，请先创建隧道后再选择使用。");
+      }
       const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
+      if (!tunnelId) {
+        throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
+      }
+      if (!input.hostId) throw new Error("请选择所属主机");
       requireMainBackupAllowed({
         enabled: input.failoverEnabled,
         protocol: input.protocol,
@@ -605,12 +663,14 @@ export const crudRulesRouter = router({
         if (!tunnelExitPort) throw new Error("出口 Agent 已无可用隧道端口");
       }
 
-      const transportTuning = normalizeTransportTuningInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx" });
+      const runtimeOptionInput = tunnelId ? tunnelRuntimeOptionInput(selectedTunnelForRule) : input;
+      const proxyProtocol = normalizeProxyProtocolInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, clearUnsupported: !!tunnelId });
+      const transportTuning = normalizeTransportTuningInput(runtimeOptionInput, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId, forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx", clearUnsupported: !!tunnelId });
 
       const id = await db.createForwardRule({
         ...input,
         ...normalizeFailoverInput(input, input.protocol),
-        ...normalizeProxyProtocolInput(input, input.protocol, input.forwardType, false, { tunnelRoute: !!tunnelId }),
+        ...proxyProtocol,
         ...transportTuning,
         telegramErrorNotifyEnabled: !!input.telegramErrorNotifyEnabled,
         blockHttp: false,
@@ -849,7 +909,8 @@ export const crudRulesRouter = router({
         if (isForwardChain && input.failoverEnabled) {
           throw new Error("端口转发链不支持出站策略");
         }
-        const nextForwardType = !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (input.forwardType ?? rule.forwardType);
+        const nextForwardType = lockedForwardTypeForGroup(group, (rule as any).forwardType);
+        assertForwardTypeLocked(nextForwardType, input.forwardType);
         const nextMainBackupEnabled = isForwardChain ? false : input.failoverEnabled ?? (rule as any).failoverEnabled;
         requireMainBackupAllowed({
           enabled: nextMainBackupEnabled,
@@ -882,47 +943,23 @@ export const crudRulesRouter = router({
             : {}),
           ...(input.targetIp !== undefined ? { targetIp: normalizeRuleTargetIp(input.targetIp, { tunnelId: !isForwardChain && (group as any).groupType === "tunnel" ? 1 : null }) } : {}),
           forwardType: nextForwardType,
-          ...(
-            input.proxyProtocolReceive !== undefined ||
-            input.proxyProtocolSend !== undefined ||
-            input.proxyProtocolExitReceive !== undefined ||
-            input.proxyProtocolExitSend !== undefined ||
-            input.proxyProtocolVersion !== undefined ||
-            input.tcpFastOpen !== undefined ||
-            input.zeroCopy !== undefined ||
-            input.udpOverTcp !== undefined ||
-            input.udpOverTcpPort !== undefined ||
-            input.protocol !== undefined ||
-            input.forwardType !== undefined ||
-            input.failoverEnabled !== undefined
-              ? normalizeProxyProtocolInput({
-                  proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
-                  proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
-                  proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
-                  proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
-                  proxyProtocolVersion: input.proxyProtocolVersion ?? (rule as any).proxyProtocolVersion,
-                  failoverEnabled: nextMainBackupEnabled,
-                }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" })
-              : {}
+          ...normalizeProxyProtocolInput(
+            {},
+            input.protocol ?? (rule as any).protocol,
+            nextForwardType,
+            isForwardChain,
+            { clearUnsupported: true, tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel" },
           ),
-          ...(
-            input.tcpFastOpen !== undefined ||
-            input.zeroCopy !== undefined ||
-            input.udpOverTcp !== undefined ||
-            input.udpOverTcpPort !== undefined ||
-            input.protocol !== undefined ||
-            input.forwardType !== undefined
-              ? normalizeTransportTuningInput({
-                  tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
-                  zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
-                  udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
-                  udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
-                }, input.protocol ?? (rule as any).protocol, nextForwardType, isForwardChain, {
-                  clearUnsupported: true,
-                  tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
-                  forwardxTunnel: false,
-                })
-              : {}
+          ...normalizeTransportTuningInput(
+            {},
+            input.protocol ?? (rule as any).protocol,
+            nextForwardType,
+            isForwardChain,
+            {
+              clearUnsupported: true,
+              tunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
+              forwardxTunnel: false,
+            },
           ),
           gostMode: "direct",
           gostRelayHost: null,
@@ -953,6 +990,7 @@ export const crudRulesRouter = router({
       // 如果修改了源端口，检查端口区间和占用
       let selectedTunnelForRule: any = null;
       let nextTunnelIdForRule: number | null = null;
+      assertRuleRouteLocked(rule, input);
       let nextForwardTypeForRule = rule.forwardType;
       let nextHostIdForRule = Number(input.hostId ?? rule.hostId);
       {
@@ -1077,12 +1115,18 @@ export const crudRulesRouter = router({
         input.forwardType !== undefined ||
         input.failoverEnabled !== undefined
       ) {
+        const proxySource = nextTunnelIdForRule && selectedTunnelForRule
+          ? tunnelRuntimeOptionInput(selectedTunnelForRule)
+          : {
+              proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
+              proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
+              proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
+              proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
+              proxyProtocolVersion: input.proxyProtocolVersion ?? (rule as any).proxyProtocolVersion,
+              failoverEnabled: nextMainBackupEnabled,
+            };
         Object.assign(data as any, normalizeProxyProtocolInput({
-          proxyProtocolReceive: input.proxyProtocolReceive ?? (rule as any).proxyProtocolReceive,
-          proxyProtocolSend: input.proxyProtocolSend ?? (rule as any).proxyProtocolSend,
-          proxyProtocolExitReceive: input.proxyProtocolExitReceive ?? (rule as any).proxyProtocolExitReceive,
-          proxyProtocolExitSend: input.proxyProtocolExitSend ?? (rule as any).proxyProtocolExitSend,
-          proxyProtocolVersion: input.proxyProtocolVersion ?? (rule as any).proxyProtocolVersion,
+          ...proxySource,
           failoverEnabled: nextMainBackupEnabled,
         }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, { clearUnsupported: true, tunnelRoute: !!nextTunnelIdForRule }));
       }
@@ -1094,12 +1138,15 @@ export const crudRulesRouter = router({
         input.protocol !== undefined ||
         input.forwardType !== undefined
       ) {
-        const transportTuning = normalizeTransportTuningInput({
-          tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
-          zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
-          udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
-          udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
-        }, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, {
+        const transportSource = nextTunnelIdForRule && selectedTunnelForRule
+          ? tunnelRuntimeOptionInput(selectedTunnelForRule)
+          : {
+              tcpFastOpen: input.tcpFastOpen ?? (rule as any).tcpFastOpen,
+              zeroCopy: input.zeroCopy ?? (rule as any).zeroCopy,
+              udpOverTcp: input.udpOverTcp ?? (rule as any).udpOverTcp,
+              udpOverTcpPort: input.udpOverTcpPort ?? (rule as any).udpOverTcpPort,
+            };
+        const transportTuning = normalizeTransportTuningInput(transportSource, input.protocol ?? (rule as any).protocol, nextForwardTypeForRule, false, {
           clearUnsupported: true,
           tunnelRoute: !!nextTunnelIdForRule,
           forwardxTunnel: String(selectedTunnelForRule?.mode || "").toLowerCase() === "forwardx",

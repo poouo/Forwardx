@@ -252,12 +252,6 @@ type RuleFormData = {
 
 type ProxyProtocolVersion = 1 | 2;
 
-type ProxyProtocolField =
-  | "proxyProtocolReceive"
-  | "proxyProtocolSend"
-  | "proxyProtocolExitReceive"
-  | "proxyProtocolExitSend";
-
 type FailoverStrategy = "fallback" | "round_robin" | "random" | "ip_hash";
 type FailoverMode = "disabled" | FailoverStrategy;
 
@@ -358,6 +352,7 @@ const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: str
   { value: "chain", label: "转发链" },
   { value: "group", label: "转发组" },
 ];
+const importRuleTransferScopeOptions = ruleTransferScopeOptions.filter((option) => option.value !== "local");
 
 type RuleTransferFileRule = {
   name: string;
@@ -1939,6 +1934,12 @@ function normalizeRuleForwardType(value: unknown): ForwardType {
   return FORWARD_TYPES.includes(value as ForwardType) ? (value as ForwardType) : "iptables";
 }
 
+function getForwardGroupRuleForwardType(group: any | null | undefined, fallback: ForwardType | undefined = "iptables"): ForwardType {
+  if (!group) return fallback || "iptables";
+  if (!isForwardChainGroup(group) && String(group?.groupType || "") === "tunnel") return "gost";
+  return normalizeRuleForwardType(group?.forwardType || fallback);
+}
+
 function normalizePositiveRuleNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -2159,7 +2160,6 @@ function RulesContent() {
   const [resetTrafficTarget, setResetTrafficTarget] = useState<{ scope: "all" } | { scope: "rule"; rule: any } | null>(null);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [form, setForm] = useState<RuleFormData>(defaultForm);
-  const [proxyProtocolPanelOpen, setProxyProtocolPanelOpen] = useState(false);
   const [filterHost, setFilterHost] = useState<string>(() => getStoredString(RULE_FILTER_HOST_STORAGE_KEY, "all"));
   const [filterUser, setFilterUser] = useState<string>(() => getStoredString(RULE_FILTER_USER_STORAGE_KEY, "self"));
   const [ruleSearchQuery, setRuleSearchQuery] = useState("");
@@ -2202,7 +2202,7 @@ function RulesContent() {
   const [exportScopeType, setExportScopeType] = useState<RuleTransferScopeType>("local");
   const [exportResourceId, setExportResourceId] = useState("");
   const [exportResourceSearch, setExportResourceSearch] = useState("");
-  const [importScopeType, setImportScopeType] = useState<RuleTransferScopeType>("local");
+  const [importScopeType, setImportScopeType] = useState<RuleTransferScopeType>("tunnel");
   const [importResourceId, setImportResourceId] = useState("");
   const [importResourceSearch, setImportResourceSearch] = useState("");
   const [importFile, setImportFile] = useState<RuleTransferFile | null>(null);
@@ -2278,6 +2278,14 @@ function RulesContent() {
 
   const setRouteMode = (mode: RuleRouteMode) => {
     if (mode === form.routeMode) return;
+    if (mode === "local" && !editingId) {
+      toast.info("普通端口转发请先创建转发组或转发链后再新增规则。");
+      return;
+    }
+    if (editingId) {
+      toast.info("已有规则的路由类型已锁定；如需更换运行协议，请创建新规则。");
+      return;
+    }
     if (mode === "local" && !canUseLocalForward) return;
     if (mode === "tunnel" && !canUseGost) return;
     const nextGroups = mode === "chain"
@@ -2296,8 +2304,8 @@ function RulesContent() {
       : null;
     const nextForwardType = mode === "tunnel"
       ? "gost"
-      : mode === "group" && nextGroup?.groupType === "tunnel"
-      ? "gost"
+      : isForwardGroupRouteModeValue(mode)
+      ? getForwardGroupRuleForwardType(nextGroup, usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0])
       : (usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0]);
     if (!nextForwardType) return;
     latestPortCheckRef.current += 1;
@@ -2386,35 +2394,40 @@ function RulesContent() {
 
   const resetForm = () => {
     setForm({ ...defaultForm, failoverTargetsText: "" });
-    setProxyProtocolPanelOpen(false);
     setEditingId(null);
     setPortStatus("idle");
   };
 
   const openCreate = () => {
     resetForm();
-    const firstForwardType = canUseLocalForward ? usableForwardTypes[0] : undefined;
     const firstTunnel = canUseGost
       ? supportedTunnels[0]
       : null;
     const firstChain = canUseForwardChain ? availableForwardChainGroups[0] : null;
     const firstGroup = canUseFailoverGroup ? availableFailoverForwardGroups[0] : null;
     const firstForwardGroup = firstChain || firstGroup;
-    if (firstForwardType || firstTunnel || firstForwardGroup) {
+    if (firstTunnel || firstForwardGroup) {
       setForm({
         ...defaultForm,
         failoverTargetsText: "",
-        routeMode: firstForwardType ? "local" : firstTunnel ? "tunnel" : firstChain ? "chain" : firstGroup ? "group" : "local",
-        hostId: firstForwardType ? hosts?.[0]?.id ?? null : firstTunnel ? firstTunnel.entryHostId : null,
-        forwardType: firstTunnel && !firstForwardType ? "gost" : firstGroup && firstGroup?.groupType === "tunnel" ? "gost" : firstForwardType ?? "iptables",
-        tunnelId: firstTunnel && !firstForwardType ? firstTunnel.id : null,
-        forwardGroupId: !firstForwardType && !firstTunnel && firstForwardGroup ? Number(firstForwardGroup.id) : null,
+        routeMode: firstTunnel ? "tunnel" : firstChain ? "chain" : firstGroup ? "group" : "tunnel",
+        hostId: firstTunnel ? firstTunnel.entryHostId : null,
+        forwardType: firstTunnel ? "gost" : firstGroup ? getForwardGroupRuleForwardType(firstGroup, "iptables") : "iptables",
+        tunnelId: firstTunnel ? firstTunnel.id : null,
+        forwardGroupId: !firstTunnel && firstForwardGroup ? Number(firstForwardGroup.id) : null,
       });
+    } else {
+      toast.error("请先创建可用隧道、转发链或转发组后再新增规则。");
+      return;
     }
     setShowDialog(true);
   };
 
   const openCopyDialog = () => {
+    if (directHostRuleCopyDisabled) {
+      toast.info("直接复制到主机已停用，请先创建转发组或转发链后再新增规则。");
+      return;
+    }
     if (!canAdd) {
       toast.error("您暂无添加转发规则的权限，请联系管理员开通");
       return;
@@ -2434,12 +2447,6 @@ function RulesContent() {
     const editForwardGroup = rule.forwardGroupId
       ? (forwardGroups || []).find((group: any) => Number(group.id) === Number(rule.forwardGroupId))
       : null;
-    const hasProxyProtocolConfig = Boolean(
-      rule.proxyProtocolReceive ||
-      rule.proxyProtocolSend ||
-      rule.proxyProtocolExitReceive ||
-      rule.proxyProtocolExitSend
-    );
     setForm({
       hostId: rule.hostId,
       name: rule.name,
@@ -2474,7 +2481,6 @@ function RulesContent() {
       recoverSeconds: Number(rule.recoverSeconds || 120),
       autoFailback: rule.autoFailback !== false,
     });
-    setProxyProtocolPanelOpen(hasProxyProtocolConfig);
     setEditingId(rule.id);
     setPortStatus("idle");
     setShowDialog(true);
@@ -2676,6 +2682,14 @@ function RulesContent() {
     if (!form.forwardGroupId) return null;
     return forwardGroupById.get(Number(form.forwardGroupId)) || null;
   }, [form.forwardGroupId, forwardGroupById]);
+  const routeModeLocked = !!editingId;
+  const effectiveRouteForwardType = useMemo<ForwardType>(() => {
+    if (form.routeMode === "tunnel") return "gost";
+    if (isForwardGroupRouteModeValue(form.routeMode)) {
+      return getForwardGroupRuleForwardType(selectedForwardGroup, form.forwardType);
+    }
+    return form.forwardType;
+  }, [form.forwardType, form.routeMode, selectedForwardGroup]);
   /**
    * 当前用户被允许使用的转发方式。
    * - 管理员：不受限制（返回全部）
@@ -2699,17 +2713,19 @@ function RulesContent() {
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardChain = availableForwardChainGroups.length > 0;
   const canUseFailoverGroup = availableFailoverForwardGroups.length > 0;
-  const canCreateRule = canUseLocalForward || canUseGost || canUseForwardChain || canUseFailoverGroup;
+  const canCreateRule = canUseGost || canUseForwardChain || canUseFailoverGroup;
+  const directHostRuleCopyDisabled = true;
   const isForwardGroupRouteMode = isForwardGroupRouteModeValue(form.routeMode);
   const telegramBotReady = !!systemSettings?.telegram?.enabled && !!systemSettings?.telegram?.configured;
   const selectedForwardGroupIsChain = form.routeMode === "chain" || isForwardChainGroup(selectedForwardGroup);
-  const mainBackupForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel") ? "gost" : form.forwardType;
+  const mainBackupForwardType = effectiveRouteForwardType;
   const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
   const canAutoSwitchMainBackupToGost = !selectedForwardGroupIsChain
     && mainBackupForwardType !== "gost"
     && usableForwardTypes.includes("gost")
+    && !routeModeLocked
     && user?.role === "admin"
-    && (form.routeMode === "local" || (form.routeMode === "group" && selectedForwardGroup?.groupType === "host"));
+    && form.routeMode === "local";
   const canUseMainBackup = !selectedForwardGroupIsChain
     && (
       (mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute))
@@ -2724,40 +2740,6 @@ function RulesContent() {
     : form.protocol !== "tcp"
     ? "出站策略仅支持 TCP 协议。"
     : "";
-  const proxyProtocolForwardType = mainBackupForwardType;
-  const proxyProtocolProtocolSupported = form.protocol === "tcp" || form.protocol === "both";
-  const isTunnelProxyProtocolMode = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
-  const canUseProxyProtocol = !selectedForwardGroupIsChain
-    && proxyProtocolProtocolSupported
-    && (proxyProtocolForwardType === "gost" || proxyProtocolForwardType === "realm");
-  const proxyProtocolDisabledText = selectedForwardGroupIsChain
-    ? "端口转发链不支持 PROXY Protocol。"
-    : !proxyProtocolProtocolSupported
-    ? "PROXY Protocol 仅支持 TCP 协议。"
-    : proxyProtocolForwardType !== "gost" && proxyProtocolForwardType !== "realm"
-    ? "当前转发工具不支持 PROXY Protocol。"
-    : "";
-  const proxyProtocolAnyEnabled = form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend;
-  const proxyProtocolPanelActive = canUseProxyProtocol && proxyProtocolPanelOpen;
-  const effectiveProxyProtocolAnyEnabled = proxyProtocolPanelActive && proxyProtocolAnyEnabled;
-  const isForwardXTunnelMode = isTunnelProxyProtocolMode && String(selectedTunnel?.mode || "").toLowerCase() === "forwardx";
-  const canUseTcpFastOpen = !selectedForwardGroupIsChain
-    && proxyProtocolProtocolSupported
-    && (proxyProtocolForwardType === "realm" || (proxyProtocolForwardType === "gost" && isForwardXTunnelMode));
-  const canUseZeroCopy = !selectedForwardGroupIsChain
-    && proxyProtocolProtocolSupported
-    && proxyProtocolForwardType === "realm"
-    && !isTunnelProxyProtocolMode;
-  const canUseUdpOverTcp = !selectedForwardGroupIsChain
-    && (form.protocol === "udp" || form.protocol === "both")
-    && proxyProtocolForwardType === "gost"
-    && isForwardXTunnelMode;
-  const transportTuningDisabledText = selectedForwardGroupIsChain
-    ? "端口转发链不支持传输优化。"
-    : !proxyProtocolProtocolSupported && form.protocol !== "udp"
-    ? "当前协议不支持可用传输优化。"
-    : "当前转发工具不支持该优化。";
-
   const kernelForwardWarning = useMemo(() => buildKernelForwardWarning({
     rule: form,
     host: selectedHost,
@@ -2831,11 +2813,12 @@ function RulesContent() {
 
   useEffect(() => {
     if (form.routeMode !== "local") return;
+    if (editingId) return;
     if (usableForwardTypes.length === 0) return;
     if (!usableForwardTypes.includes(form.forwardType)) {
       setForm((prev) => ({ ...prev, forwardType: usableForwardTypes[0], tunnelId: null }));
     }
-  }, [form.forwardType, form.routeMode, usableForwardTypes]);
+  }, [editingId, form.forwardType, form.routeMode, usableForwardTypes]);
 
   useEffect(() => {
     if (!isForwardGroupRouteMode) return;
@@ -2853,8 +2836,9 @@ function RulesContent() {
       }));
       return;
     }
-    if (!isForwardChainGroup(selectedForwardGroup) && selectedForwardGroup?.groupType === "tunnel" && form.forwardType !== "gost") {
-      setForm((prev) => ({ ...prev, forwardType: "gost" }));
+    const groupForwardType = getForwardGroupRuleForwardType(selectedForwardGroup, form.forwardType);
+    if (selectedForwardGroup && form.forwardType !== groupForwardType) {
+      setForm((prev) => ({ ...prev, forwardType: groupForwardType }));
     }
   }, [availableFailoverForwardGroups, availableForwardChainGroups, form.forwardType, form.routeMode, isForwardGroupRouteMode, selectedForwardGroup]);
 
@@ -2868,29 +2852,6 @@ function RulesContent() {
     if (telegramBotReady || !form.telegramErrorNotifyEnabled) return;
     setForm((prev) => prev.telegramErrorNotifyEnabled ? { ...prev, telegramErrorNotifyEnabled: false } : prev);
   }, [form.telegramErrorNotifyEnabled, systemSettingsFetched, telegramBotReady]);
-
-  useEffect(() => {
-    if (canUseProxyProtocol) return;
-    if (!form.proxyProtocolReceive && !form.proxyProtocolSend && !form.proxyProtocolExitReceive && !form.proxyProtocolExitSend) return;
-    setForm((prev) => ({
-      ...prev,
-      proxyProtocolReceive: false,
-      proxyProtocolSend: false,
-      proxyProtocolExitReceive: false,
-      proxyProtocolExitSend: false,
-    }));
-  }, [canUseProxyProtocol, form.proxyProtocolExitReceive, form.proxyProtocolExitSend, form.proxyProtocolReceive, form.proxyProtocolSend]);
-
-  useEffect(() => {
-    if ((canUseTcpFastOpen || !form.tcpFastOpen) && (canUseZeroCopy || !form.zeroCopy) && (canUseUdpOverTcp || !form.udpOverTcp) && !form.udpOverTcpPort) return;
-    setForm((prev) => ({
-      ...prev,
-      tcpFastOpen: canUseTcpFastOpen ? prev.tcpFastOpen : false,
-      zeroCopy: canUseZeroCopy ? prev.zeroCopy : false,
-      udpOverTcp: canUseUdpOverTcp ? prev.udpOverTcp : false,
-      udpOverTcpPort: 0,
-    }));
-  }, [canUseTcpFastOpen, canUseZeroCopy, canUseUdpOverTcp, form.tcpFastOpen, form.zeroCopy, form.udpOverTcp, form.udpOverTcpPort]);
 
   // 随机分配端口
   const handleRandomPort = async () => {
@@ -2925,6 +2886,10 @@ function RulesContent() {
   };
 
   const handleCopyRules = () => {
+    if (directHostRuleCopyDisabled) {
+      toast.info("直接复制到主机已停用，请先创建转发组或转发链后再新增规则。");
+      return;
+    }
     if (copyRuleIds.length === 0) {
       toast.error("请选择要复制的规则");
       return;
@@ -2955,83 +2920,14 @@ function RulesContent() {
     });
   };
 
-  const setProxyProtocolFlag = (field: ProxyProtocolField, checked: boolean) => {
-    setForm((prev) => ({
-      ...prev,
-      [field]: checked,
-    }));
-  };
-
-  const setProxyProtocolPanelEnabled = (enabled: boolean) => {
-    if (!enabled) {
-      setProxyProtocolPanelOpen(false);
-      setForm((prev) => ({
-        ...prev,
-        proxyProtocolReceive: false,
-        proxyProtocolSend: false,
-        proxyProtocolExitReceive: false,
-        proxyProtocolExitSend: false,
-        proxyProtocolVersion: 1,
-      }));
-      return;
-    }
-    setProxyProtocolPanelOpen(true);
-  };
-
-  const renderProxyProtocolSwitch = (label: string, field: ProxyProtocolField) => (
-    <div className="flex min-h-9 items-center justify-between gap-3 rounded-md bg-background/65 px-3 py-1.5 ring-1 ring-border/40">
-      <Label className="min-w-0 text-sm" title={label}>{label}</Label>
-      <Switch
-        checked={form[field]}
-        disabled={!canUseProxyProtocol}
-        onCheckedChange={(checked) => setProxyProtocolFlag(field, checked)}
-      />
-    </div>
-  );
-
-  const renderProxyProtocolRow = (
-    title: string,
-    firstLabel: string,
-    firstField: ProxyProtocolField,
-    secondLabel: string,
-    secondField: ProxyProtocolField,
-  ) => (
-    <div className="grid gap-2 rounded-md border border-border/45 bg-background/35 p-2 sm:grid-cols-[3.75rem_minmax(0,1fr)_minmax(0,1fr)] sm:items-center">
-      <div className="flex h-9 items-center rounded-md bg-muted/60 px-3 text-sm font-medium text-muted-foreground sm:justify-center sm:px-2">
-        {title}
-      </div>
-      {renderProxyProtocolSwitch(firstLabel, firstField)}
-      {renderProxyProtocolSwitch(secondLabel, secondField)}
-    </div>
-  );
-
-  const renderTransportTuningSwitch = (
-    label: string,
-    description: string,
-    field: "tcpFastOpen" | "zeroCopy" | "udpOverTcp",
-    enabled: boolean,
-  ) => (
-    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md bg-background/65 px-3 py-2 ring-1 ring-border/40">
-      <div className="min-w-0">
-        <Label className="block truncate text-sm" title={label}>{label}</Label>
-        <p className="truncate text-[11px] text-muted-foreground" title={enabled ? description : transportTuningDisabledText}>
-          {enabled ? description : transportTuningDisabledText}
-        </p>
-      </div>
-      <Switch
-        checked={enabled ? form[field] : false}
-        disabled={!enabled}
-        onCheckedChange={(checked) => setForm((prev) => ({ ...prev, [field]: checked }))}
-      />
-    </div>
-  );
-
   const handleSubmit = () => {
-    const submitForwardType = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel")
-      ? "gost"
-      : form.forwardType;
+    const submitForwardType = effectiveRouteForwardType;
     if (!form.name || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && !form.hostId)) {
       toast.error("请填写所有必填字段（目标端口必须填写）");
+      return;
+    }
+    if (!editingId && form.routeMode === "local") {
+      toast.error("普通端口转发请先创建转发组或转发链后再新增规则。");
       return;
     }
     if (isForwardGroupRouteMode && !form.forwardGroupId) {
@@ -3062,6 +2958,10 @@ function RulesContent() {
       toast.error(unsupportedProtocolTitle);
       return;
     }
+    if (isForwardGroupRouteMode && !isProtocolEnabled(effectiveRouteForwardType)) {
+      toast.error(unsupportedProtocolTitle);
+      return;
+    }
     if (form.routeMode === "group" && !selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel" && !isProtocolEnabled("gost")) {
       toast.error(unsupportedProtocolTitle);
       return;
@@ -3076,10 +2976,6 @@ function RulesContent() {
     }
     if (form.telegramErrorNotifyEnabled && !telegramBotReady) {
       toast.error("请先在系统设置中配置并启用 Telegram 机器人，再开启异常TG提醒");
-      return;
-    }
-    if (proxyProtocolPanelOpen && proxyProtocolAnyEnabled && !canUseProxyProtocol) {
-      toast.error(proxyProtocolDisabledText || "当前规则不支持 PROXY Protocol");
       return;
     }
     const failoverSubmit = normalizeFailoverTargetsForSubmit(form.failoverTargetsText);
@@ -3118,19 +3014,6 @@ function RulesContent() {
       recoverSeconds: form.recoverSeconds || 120,
       autoFailback: form.autoFailback,
     };
-    const proxyProtocolPayload = {
-      proxyProtocolReceive: proxyProtocolPanelActive ? form.proxyProtocolReceive : false,
-      proxyProtocolSend: proxyProtocolPanelActive ? form.proxyProtocolSend : false,
-      proxyProtocolExitReceive: proxyProtocolPanelActive && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
-      proxyProtocolExitSend: proxyProtocolPanelActive && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
-      proxyProtocolVersion: effectiveProxyProtocolAnyEnabled ? form.proxyProtocolVersion : 1,
-    };
-    const transportTuningPayload = {
-      tcpFastOpen: canUseTcpFastOpen ? form.tcpFastOpen : false,
-      zeroCopy: canUseZeroCopy ? form.zeroCopy : false,
-      udpOverTcp: canUseUdpOverTcp ? form.udpOverTcp : false,
-      udpOverTcpPort: null,
-    };
     if (!isForwardGroupRouteMode && portStatus === "used") {
       toast.error("源端口已被占用，请更换端口或使用随机分配");
       return;
@@ -3159,8 +3042,6 @@ function RulesContent() {
         targetIp: form.targetIp,
         targetPort: form.targetPort,
         telegramErrorNotifyEnabled: form.telegramErrorNotifyEnabled,
-        ...proxyProtocolPayload,
-        ...transportTuningPayload,
         ...failoverPayload,
       });
     } else {
@@ -3178,8 +3059,6 @@ function RulesContent() {
         targetIp: form.targetIp,
         targetPort: form.targetPort,
         telegramErrorNotifyEnabled: form.telegramErrorNotifyEnabled,
-        ...proxyProtocolPayload,
-        ...transportTuningPayload,
         ...failoverPayload,
       });
     }
@@ -4082,6 +3961,9 @@ function RulesContent() {
     }
     const fileScopeType = normalizeRuleTransferScopeType(importFile.scope?.type);
     if (!fileScopeType) return { ok: false, message: "文件缺少导出类型", rules: [] };
+    if (fileScopeType === "local") {
+      return { ok: false, message: "主机直连规则不再支持导入，请通过转发组、转发链或隧道新增规则", rules: [] };
+    }
     if (fileScopeType !== importScopeType) {
       return {
         ok: false,
@@ -4126,7 +4008,20 @@ function RulesContent() {
       toast.error("当前没有添加规则权限");
       return;
     }
-    const preferredType = ruleCategory === "all" ? "local" : ruleCategory;
+    const preferredType =
+      ruleCategory !== "all" && ruleCategory !== "local"
+        ? ruleCategory
+        : canUseGost
+        ? "tunnel"
+        : canUseForwardChain
+        ? "chain"
+        : canUseFailoverGroup
+        ? "group"
+        : null;
+    if (!preferredType) {
+      toast.error("请先创建可用隧道、转发链或转发组后再导入规则。");
+      return;
+    }
     setImportScopeType(preferredType as RuleTransferScopeType);
     resetImportDialog();
     setShowImportDialog(true);
@@ -4167,15 +4062,6 @@ function RulesContent() {
       targetIp: rule.targetIp,
       targetPort: rule.targetPort,
       telegramErrorNotifyEnabled: telegramBotReady && !!rule.telegramErrorNotifyEnabled,
-      proxyProtocolReceive: rule.proxyProtocolReceive,
-      proxyProtocolSend: rule.proxyProtocolSend,
-      proxyProtocolExitReceive: rule.proxyProtocolExitReceive,
-      proxyProtocolExitSend: rule.proxyProtocolExitSend,
-      proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
-      tcpFastOpen: rule.tcpFastOpen,
-      zeroCopy: rule.zeroCopy,
-      udpOverTcp: rule.udpOverTcp,
-      udpOverTcpPort: rule.udpOverTcpPort,
       failoverEnabled: importScopeType === "chain" ? false : rule.failoverEnabled,
       failoverStrategy: rule.failoverStrategy,
       failoverTargets: importScopeType === "chain" || !rule.failoverEnabled ? [] : rule.failoverTargets,
@@ -5319,8 +5205,8 @@ function RulesContent() {
             variant="outline"
             onClick={openCopyDialog}
             className="gap-2"
-            disabled={rulePermissionLoading || !canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
-            title={!canAdd && !rulePermissionLoading ? "需要管理员授权后才能复制规则" : undefined}
+            disabled={directHostRuleCopyDisabled || rulePermissionLoading || !canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
+            title={directHostRuleCopyDisabled ? "直接复制到主机已停用，请使用转发组或转发链新增规则" : !canAdd && !rulePermissionLoading ? "需要管理员授权后才能复制规则" : undefined}
           >
             <ClipboardCopy className="h-4 w-4" />
             复制规则
@@ -5353,7 +5239,7 @@ function RulesContent() {
               onClick={openCreate}
               className="col-span-2 gap-2 sm:col-span-1"
               disabled={!canCreateRule}
-              title={!canCreateRule ? "暂无可用主机或隧道" : undefined}
+              title={!canCreateRule ? "暂无可用隧道、转发链或转发组" : undefined}
             >
               <Plus className="h-4 w-4" />
               添加规则
@@ -5710,7 +5596,7 @@ function RulesContent() {
                 <p className="text-sm mt-1 text-muted-foreground/60">
                   {canCreateRule
                     ? "创建转发规则开始端口转发"
-                    : "请先获得可用主机或隧道授权，然后创建转发规则"}
+                    : "请先获得可用隧道、转发链或转发组授权，然后创建转发规则"}
                 </p>
                 {canAdd && canCreateRule && (
                   <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
@@ -5767,21 +5653,21 @@ function RulesContent() {
               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward)}
+                  className={routeModeOptionClass(form.routeMode === "local", (!routeModeLocked || !canUseLocalForward) || (routeModeLocked && form.routeMode !== "local"))}
                   aria-pressed={form.routeMode === "local"}
                   onClick={() => setRouteMode("local")}
-                  disabled={!canUseLocalForward}
-                  title={!canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
+                  disabled={(!routeModeLocked || !canUseLocalForward) || (routeModeLocked && form.routeMode !== "local")}
+                  title={!routeModeLocked ? "普通端口转发请先创建转发组或转发链" : !canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
                   <span className="truncate">端口转发</span>
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost)}
+                  className={routeModeOptionClass(form.routeMode === "tunnel", !canUseGost || (routeModeLocked && form.routeMode !== "tunnel"))}
                   aria-pressed={form.routeMode === "tunnel"}
                   onClick={() => setRouteMode("tunnel")}
-                  disabled={!canUseGost}
+                  disabled={!canUseGost || (routeModeLocked && form.routeMode !== "tunnel")}
                   title={!canUseGost ? "暂无可用隧道" : undefined}
                 >
                   <Network className="h-4 w-4 shrink-0" />
@@ -5789,10 +5675,10 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "chain", !canUseForwardChain)}
+                  className={routeModeOptionClass(form.routeMode === "chain", !canUseForwardChain || (routeModeLocked && form.routeMode !== "chain"))}
                   aria-pressed={form.routeMode === "chain"}
                   onClick={() => setRouteMode("chain")}
-                  disabled={!canUseForwardChain}
+                  disabled={!canUseForwardChain || (routeModeLocked && form.routeMode !== "chain")}
                   title={!canUseForwardChain ? "暂无可用转发链" : undefined}
                 >
                   <GitBranch className="h-4 w-4 shrink-0" />
@@ -5800,10 +5686,10 @@ function RulesContent() {
                 </button>
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "group", !canUseFailoverGroup)}
+                  className={routeModeOptionClass(form.routeMode === "group", !canUseFailoverGroup || (routeModeLocked && form.routeMode !== "group"))}
                   aria-pressed={form.routeMode === "group"}
                   onClick={() => setRouteMode("group")}
-                  disabled={!canUseFailoverGroup}
+                  disabled={!canUseFailoverGroup || (routeModeLocked && form.routeMode !== "group")}
                   title={!canUseFailoverGroup ? "暂无可用转发组" : undefined}
                 >
                   <Layers3 className="h-4 w-4 shrink-0" />
@@ -5872,7 +5758,7 @@ function RulesContent() {
                         setForm({
                           ...form,
                           forwardGroupId: nextGroupId,
-                          forwardType: !isForwardChainGroup(group) && group?.groupType === "tunnel" ? "gost" : form.forwardType,
+                          forwardType: getForwardGroupRuleForwardType(group, form.forwardType),
                           hostId: null,
                           tunnelId: null,
                           failoverEnabled: isForwardChainGroup(group) ? false : form.failoverEnabled,
@@ -5925,14 +5811,6 @@ function RulesContent() {
                     ...form,
                     protocol: v as any,
                     failoverEnabled: v === "tcp" ? form.failoverEnabled : false,
-                    proxyProtocolReceive: v !== "udp" ? form.proxyProtocolReceive : false,
-                    proxyProtocolSend: v !== "udp" ? form.proxyProtocolSend : false,
-                    proxyProtocolExitReceive: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitReceive : false,
-                    proxyProtocolExitSend: v !== "udp" && isTunnelProxyProtocolMode ? form.proxyProtocolExitSend : false,
-                    tcpFastOpen: v !== "udp" ? form.tcpFastOpen : false,
-                    zeroCopy: v !== "udp" ? form.zeroCopy : false,
-                    udpOverTcp: v === "udp" || v === "both" ? form.udpOverTcp : false,
-                    udpOverTcpPort: 0,
                   })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -5946,55 +5824,47 @@ function RulesContent() {
               {form.routeMode === "local" && (
                 <div className="space-y-2">
                   <Label>所属主机</Label>
-                  <Select
-                    value={form.hostId ? String(form.hostId) : ""}
-                    onValueChange={(v) => {
-                      latestPortCheckRef.current += 1;
-                      setPortStatus("idle");
-                      setPortRangeError(null);
-                      setForm({ ...form, hostId: parseInt(v), tunnelId: null });
-                    }}
-                  >
-                    <SelectTrigger><SelectValue placeholder="选择主机" /></SelectTrigger>
-                    <SelectContent>
-                      {hosts?.map((h: any) => (
-                        <SelectItem key={h.id} value={String(h.id)} textValue={getHostOptionText(h)}>
-                          {renderHostStatusLabel(h)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {routeModeLocked ? (
+                    <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm">
+                      <span className="truncate">{selectedHost ? renderHostStatusLabel(selectedHost) : "主机已删除"}</span>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                      普通端口转发请先创建转发组或转发链后再新增规则。
+                    </div>
+                  )}
                 </div>
               )}
-              {(form.routeMode === "local" || (isForwardGroupRouteMode && (selectedForwardGroupIsChain || selectedForwardGroup?.groupType === "host"))) && (
+              {(form.routeMode === "local" || isForwardGroupRouteMode) && (
                 <div className="space-y-2">
                   <Label>转发工具</Label>
-                  <Select
-                    value={form.forwardType}
-                    onValueChange={(v) => setForm({
-                      ...form,
-                      forwardType: v as any,
-                      gostMode: "direct" as const,
-                      gostRelayHost: "",
-                      gostRelayPort: 0,
-                      tunnelId: null,
-                      proxyProtocolReceive: v === "gost" || v === "realm" ? form.proxyProtocolReceive : false,
-                      proxyProtocolSend: v === "gost" || v === "realm" ? form.proxyProtocolSend : false,
-                      proxyProtocolExitReceive: false,
-                      proxyProtocolExitSend: false,
-                      tcpFastOpen: v === "realm" ? form.tcpFastOpen : false,
-                      zeroCopy: v === "realm" ? form.zeroCopy : false,
-                      udpOverTcp: false,
-                      udpOverTcpPort: 0,
-                    })}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {usableForwardTypes.map((t) => (
-                        <SelectItem key={t} value={t}>{FORWARD_TYPE_LABELS[t]}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {!routeModeLocked && form.routeMode === "local" ? (
+                    <Select
+                      value={form.forwardType}
+                      onValueChange={(v) => setForm({
+                        ...form,
+                        forwardType: v as any,
+                        gostMode: "direct" as const,
+                        gostRelayHost: "",
+                        gostRelayPort: 0,
+                        tunnelId: null,
+                      })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {usableForwardTypes.map((t) => (
+                          <SelectItem key={t} value={t}>{FORWARD_TYPE_LABELS[t]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="flex h-10 items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-3 text-sm">
+                      <span className="truncate">{FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}</span>
+                      <Badge variant="outline" className="shrink-0 text-[10px]">
+                        {isForwardGroupRouteMode ? "上级决定" : "已锁定"}
+                      </Badge>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -6097,92 +5967,6 @@ function RulesContent() {
                 </div>
               </div>
             )}
-            <div className={`space-y-2 rounded-md border p-2.5 transition-colors ${proxyProtocolPanelActive ? "border-border/60 bg-muted/20" : "border-border/45 bg-background/45"}`}>
-              <div className="flex min-w-0 items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                  <Label className="text-sm">PROXY Protocol</Label>
-                  <span className={`rounded-full border px-2 py-0.5 text-[11px] leading-none ${proxyProtocolPanelActive ? "border-primary/25 bg-primary/10 text-primary" : "border-border/50 bg-muted/35 text-muted-foreground"}`}>
-                    {proxyProtocolPanelActive ? (proxyProtocolAnyEnabled ? `已配置 V${form.proxyProtocolVersion}` : "已开启") : "关闭"}
-                  </span>
-                  {!canUseProxyProtocol && proxyProtocolDisabledText && (
-                    <span className="text-xs text-amber-600">{proxyProtocolDisabledText}</span>
-                  )}
-                </div>
-                <Switch
-                  checked={proxyProtocolPanelActive}
-                  disabled={!canUseProxyProtocol}
-                  onCheckedChange={setProxyProtocolPanelEnabled}
-                  aria-label="启用 PROXY Protocol 配置"
-                />
-              </div>
-              {proxyProtocolPanelActive && (
-                <div className="space-y-2 border-t border-border/45 pt-2">
-                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                    {isTunnelProxyProtocolMode ? (
-                      <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">入口和目标配置</span>
-                    )}
-                    <div className={segmentedControlClassName}>
-                      <div className="grid grid-cols-2 gap-1">
-                        {([1, 2] as ProxyProtocolVersion[]).map((version) => (
-                          <button
-                            key={version}
-                            type="button"
-                            className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
-                            aria-pressed={form.proxyProtocolVersion === version}
-                            disabled={!proxyProtocolAnyEnabled}
-                            onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
-                            title={!proxyProtocolAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
-                          >
-                            V{version}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  {isTunnelProxyProtocolMode ? (
-                    <div className="space-y-2">
-                      {renderProxyProtocolRow("入口", "接收上游", "proxyProtocolReceive", "发送到出口", "proxyProtocolSend")}
-                      {renderProxyProtocolRow("出口", "接收入口", "proxyProtocolExitReceive", "发送到目标", "proxyProtocolExitSend")}
-                    </div>
-                  ) : (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {renderProxyProtocolSwitch("接收上游 PROXY", "proxyProtocolReceive")}
-                      {renderProxyProtocolSwitch("发送到目标", "proxyProtocolSend")}
-                    </div>
-                  )}
-                  {(form.proxyProtocolSend || form.proxyProtocolExitSend) && (
-                    <p className="text-[11px] leading-4 text-muted-foreground">
-                      发送到下游时，对端服务需启用 PROXY Protocol 解析。
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                <Label className="text-sm">传输优化</Label>
-                {!canUseTcpFastOpen && !canUseZeroCopy && !canUseUdpOverTcp && (
-                  <span className="text-xs text-amber-600">{transportTuningDisabledText}</span>
-                )}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {renderTransportTuningSwitch("TCP Fast Open", "降低 TCP 建连等待", "tcpFastOpen", canUseTcpFastOpen)}
-                {renderTransportTuningSwitch("zero-copy", "减少内核与用户态拷贝", "zeroCopy", canUseZeroCopy)}
-                {renderTransportTuningSwitch("mimic UDP 混淆", "专为 UDP 封锁环境优化，适合游戏场景", "udpOverTcp", canUseUdpOverTcp)}
-              </div>
-              {canUseUdpOverTcp && form.udpOverTcp && (
-                <div className="space-y-1.5 text-[11px] leading-4">
-                  <p className="text-muted-foreground">
-                    开启后 ForwardX UDP 仍走原生 UDP 加密通道，并在配置网卡的 Agent 上通过 mimic 做 TCP 外观混淆；需要 Agent 系统已安装 mimic 和 mimic-dkms。
-                  </p>
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-amber-700 dark:text-amber-300">
-                    mimic TCP 外观伪装会增加封装开销。游戏、直播或 UDP 测速在 1400 以上明显丢包时，建议把客户端或业务 UDP MTU 调整到 1200-1300。
-                  </div>
-                </div>
-              )}
-            </div>
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
@@ -6272,7 +6056,7 @@ function RulesContent() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
+              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && portStatus === "used") || (!editingId && form.routeMode === "local") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
             </Button>
@@ -6373,7 +6157,7 @@ function RulesContent() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {ruleTransferScopeOptions.map((option) => (
+                    {importRuleTransferScopeOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
                         {option.label}
                       </SelectItem>

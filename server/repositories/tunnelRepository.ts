@@ -185,6 +185,38 @@ export async function resetForwardRulesByTunnel(tunnelId: number) {
   await db.update(forwardRules).set({ isRunning: false, updatedAt: nowDate() }).where(eq(forwardRules.tunnelId, tunnelId));
 }
 
+export async function updateForwardRuleRuntimeOptionsByTunnel(tunnelId: number, _data: Partial<InsertTunnel>) {
+  const db = await getDb();
+  if (!db) return;
+  const tunnel = await getTunnelById(tunnelId) as any;
+  if (!tunnel) return;
+  const mode = String(tunnel.mode || "").toLowerCase();
+  const proxySupported = mode && mode !== "nginx_stream" && mode !== "nginx_tls";
+  const forwardx = mode === "forwardx";
+  const rules = await db
+    .select({ id: forwardRules.id, protocol: forwardRules.protocol })
+    .from(forwardRules)
+    .where(eq(forwardRules.tunnelId, tunnelId));
+  for (const rule of rules as any[]) {
+    const protocol = String(rule.protocol || "both");
+    const tcpSupported = protocol === "tcp" || protocol === "both";
+    const udpSupported = protocol === "udp" || protocol === "both";
+    await db.update(forwardRules).set({
+      proxyProtocolReceive: proxySupported && tcpSupported && !!tunnel.proxyProtocolReceive,
+      proxyProtocolSend: proxySupported && tcpSupported && !!tunnel.proxyProtocolSend,
+      proxyProtocolExitReceive: proxySupported && tcpSupported && !!tunnel.proxyProtocolExitReceive,
+      proxyProtocolExitSend: proxySupported && tcpSupported && !!tunnel.proxyProtocolExitSend,
+      proxyProtocolVersion: proxySupported && tcpSupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1,
+      tcpFastOpen: forwardx && tcpSupported && !!tunnel.tcpFastOpen,
+      zeroCopy: false,
+      udpOverTcp: forwardx && udpSupported && !!tunnel.udpOverTcp,
+      udpOverTcpPort: null,
+      isRunning: false,
+      updatedAt: nowDate(),
+    } as any).where(eq(forwardRules.id, Number(rule.id)));
+  }
+}
+
 export async function resetAgentRuntimeStateForHost(hostId: number) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return;

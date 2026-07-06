@@ -138,6 +138,13 @@ type TunnelForm = {
   trafficMultiplier: number;
   networkType: "public" | "private";
   connectHost: string;
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
+  proxyProtocolExitReceive: boolean;
+  proxyProtocolExitSend: boolean;
+  proxyProtocolVersion: 1 | 2;
+  tcpFastOpen: boolean;
+  udpOverTcp: boolean;
   loadBalanceEnabled: boolean;
   loadBalanceStrategy: "round_robin" | "random" | "least_conn" | "ip_hash" | "fallback";
   loadBalanceExits: Array<{ hostId: number | null; connectHost: string }>;
@@ -277,6 +284,13 @@ const defaultForm: TunnelForm = {
   trafficMultiplier: 1,
   networkType: "public",
   connectHost: "",
+  proxyProtocolReceive: false,
+  proxyProtocolSend: false,
+  proxyProtocolExitReceive: false,
+  proxyProtocolExitSend: false,
+  proxyProtocolVersion: 1,
+  tcpFastOpen: false,
+  udpOverTcp: false,
   loadBalanceEnabled: false,
   loadBalanceStrategy: "round_robin",
   loadBalanceExits: [],
@@ -699,6 +713,15 @@ const unsupportedProtocolTitle = "当前不支持，请联系管理员";
 function isNginxTunnelModeValue(mode: unknown) {
   const normalized = String(mode || "").toLowerCase();
   return normalized === "nginx_stream" || normalized === "nginx_tls";
+}
+
+function isTunnelProxyProtocolSupported(mode: unknown) {
+  const normalized = normalizeTunnelModeForForm(mode);
+  return normalized === "forwardx" || gostTunnelModes.includes(normalized);
+}
+
+function isTunnelTransportTuningSupported(mode: unknown) {
+  return normalizeTunnelModeForForm(mode) === "forwardx";
 }
 
 function normalizeTunnelModeForForm(mode: unknown): TunnelForm["mode"] {
@@ -1819,6 +1842,7 @@ function TunnelsContent() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
+  const [tunnelProxyPanelOpen, setTunnelProxyPanelOpen] = useState(false);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
@@ -2091,6 +2115,7 @@ function TunnelsContent() {
   const resetForm = () => {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
+    setTunnelProxyPanelOpen(false);
     setEditingId(null);
   };
 
@@ -2139,6 +2164,15 @@ function TunnelsContent() {
     const entryGroupId = tunnel.entryGroupId ? Number(tunnel.entryGroupId) : null;
     const exitGroupId = inferExitGroupIdForTunnel(tunnel, hopHostIds);
     const displayRoute = stripExternalTunnelHosts(hopHostIds, hopConnectHosts, entryGroupId, exitGroupId);
+    const mode = normalizeTunnelModeForForm(tunnel.mode || "tls");
+    const proxySupported = isTunnelProxyProtocolSupported(mode);
+    const transportTuningSupported = isTunnelTransportTuningSupported(mode);
+    const proxyAnyEnabled = proxySupported && (
+      !!tunnel.proxyProtocolReceive ||
+      !!tunnel.proxyProtocolSend ||
+      !!tunnel.proxyProtocolExitReceive ||
+      !!tunnel.proxyProtocolExitSend
+    );
     const nextForm: TunnelForm = {
       name: tunnel.name,
       entryGroupId,
@@ -2146,7 +2180,7 @@ function TunnelsContent() {
       exitHostId: tunnel.exitHostId,
       hopHostIds: displayRoute.hopHostIds,
       hopConnectHosts: displayRoute.hopConnectHosts,
-      mode: normalizeTunnelModeForForm(tunnel.mode || "tls"),
+      mode,
       certDomain: String(tunnel.certDomain || ""),
       certPem: String(tunnel.certPem || ""),
       certKeyPem: String(tunnel.certKeyPem || ""),
@@ -2155,6 +2189,13 @@ function TunnelsContent() {
       trafficMultiplier: trafficMultiplierToInputValue((tunnel as any).trafficMultiplier),
       networkType: tunnel.networkType === "private" ? "private" : "public",
       connectHost: tunnel.connectHost || "",
+      proxyProtocolReceive: proxySupported && !!tunnel.proxyProtocolReceive,
+      proxyProtocolSend: proxySupported && !!tunnel.proxyProtocolSend,
+      proxyProtocolExitReceive: proxySupported && !!tunnel.proxyProtocolExitReceive,
+      proxyProtocolExitSend: proxySupported && !!tunnel.proxyProtocolExitSend,
+      proxyProtocolVersion: Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1,
+      tcpFastOpen: transportTuningSupported && !!tunnel.tcpFastOpen,
+      udpOverTcp: transportTuningSupported && !!tunnel.udpOverTcp,
       loadBalanceEnabled: exitGroupId ? !!tunnel.loadBalanceEnabled : false,
       loadBalanceStrategy: (["round_robin", "random", "least_conn", "ip_hash", "fallback"].includes(String(tunnel.loadBalanceStrategy || ""))
         ? tunnel.loadBalanceStrategy
@@ -2166,6 +2207,7 @@ function TunnelsContent() {
       blockTls: false,
     };
     setForm(exitGroupId ? applyExitGroupToForm(nextForm, exitGroupId) : nextForm);
+    setTunnelProxyPanelOpen(proxyAnyEnabled);
     setEditingId(tunnel.id);
     setShowDialog(true);
   };
@@ -2341,6 +2383,14 @@ function TunnelsContent() {
         }
       }
     }
+    const proxySupported = isTunnelProxyProtocolSupported(submitForm.mode);
+    const proxyAnyEnabled = proxySupported && (
+      submitForm.proxyProtocolReceive ||
+      submitForm.proxyProtocolSend ||
+      submitForm.proxyProtocolExitReceive ||
+      submitForm.proxyProtocolExitSend
+    );
+    const transportTuningSupported = isTunnelTransportTuningSupported(submitForm.mode);
     const payload: any = {
       name: submitForm.name,
       mode: normalizeTunnelModeForForm(submitForm.mode),
@@ -2354,6 +2404,13 @@ function TunnelsContent() {
         ? (hasPrivateHop ? "private" : "public")
         : (regularPrivateConnectHost ? "private" : "public"),
       connectHost: isMultiHopTunnel ? null : (regularPrivateConnectHost || regularIpv6ConnectHost),
+      proxyProtocolReceive: proxySupported && submitForm.proxyProtocolReceive,
+      proxyProtocolSend: proxySupported && submitForm.proxyProtocolSend,
+      proxyProtocolExitReceive: proxySupported && submitForm.proxyProtocolExitReceive,
+      proxyProtocolExitSend: proxySupported && submitForm.proxyProtocolExitSend,
+      proxyProtocolVersion: proxyAnyEnabled ? submitForm.proxyProtocolVersion : 1,
+      tcpFastOpen: transportTuningSupported && submitForm.tcpFastOpen,
+      udpOverTcp: transportTuningSupported && submitForm.udpOverTcp,
       entryGroupId: submitForm.entryGroupId || null,
       entryHostId,
       exitHostId,
@@ -2425,6 +2482,23 @@ function TunnelsContent() {
   const isCreateTypePending = selectedCreateType === "chain" ? createChainMutation.isPending : createMutation.isPending;
   const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
+  const setTunnelMode = (mode: TunnelForm["mode"]) => {
+    const nextMode = normalizeTunnelModeForForm(mode);
+    const proxySupported = isTunnelProxyProtocolSupported(nextMode);
+    const transportTuningSupported = isTunnelTransportTuningSupported(nextMode);
+    if (!proxySupported) setTunnelProxyPanelOpen(false);
+    setForm((prev) => ({
+      ...prev,
+      mode: nextMode,
+      proxyProtocolReceive: proxySupported ? prev.proxyProtocolReceive : false,
+      proxyProtocolSend: proxySupported ? prev.proxyProtocolSend : false,
+      proxyProtocolExitReceive: proxySupported ? prev.proxyProtocolExitReceive : false,
+      proxyProtocolExitSend: proxySupported ? prev.proxyProtocolExitSend : false,
+      proxyProtocolVersion: proxySupported ? prev.proxyProtocolVersion : 1,
+      tcpFastOpen: transportTuningSupported ? prev.tcpFastOpen : false,
+      udpOverTcp: transportTuningSupported ? prev.udpOverTcp : false,
+    }));
+  };
   const renderNginxCertFields = () => (
     <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
       <div className="space-y-2">
@@ -2456,6 +2530,114 @@ function TunnelsContent() {
       </p>
     </div>
   );
+  const renderTunnelRuntimeOptions = () => {
+    const proxySupported = isTunnelProxyProtocolSupported(form.mode);
+    const transportTuningSupported = isTunnelTransportTuningSupported(form.mode);
+    if (!proxySupported && !transportTuningSupported) return null;
+    const proxyAnyEnabled = form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend;
+    const renderProxySwitch = (label: string, field: "proxyProtocolReceive" | "proxyProtocolSend" | "proxyProtocolExitReceive" | "proxyProtocolExitSend") => (
+      <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2">
+        <span className="min-w-0 truncate text-sm">{label}</span>
+        <Switch
+          checked={form[field]}
+          onCheckedChange={(checked) => setForm((prev) => ({ ...prev, [field]: checked }))}
+        />
+      </label>
+    );
+    return (
+      <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+        {proxySupported && (
+          <div className="space-y-2">
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <Label className="text-sm">PROXY Protocol</Label>
+                <span className={`rounded-full border px-2 py-0.5 text-[11px] leading-none ${proxyAnyEnabled ? "border-primary/25 bg-primary/10 text-primary" : "border-border/50 bg-background/60 text-muted-foreground"}`}>
+                  {proxyAnyEnabled ? `已配置 V${form.proxyProtocolVersion}` : tunnelProxyPanelOpen ? "待配置" : "关闭"}
+                </span>
+              </div>
+              <Switch
+                checked={tunnelProxyPanelOpen}
+                onCheckedChange={(checked) => {
+                  setTunnelProxyPanelOpen(checked);
+                  if (!checked) {
+                    setForm((prev) => ({
+                      ...prev,
+                      proxyProtocolReceive: false,
+                      proxyProtocolSend: false,
+                      proxyProtocolExitReceive: false,
+                      proxyProtocolExitSend: false,
+                      proxyProtocolVersion: 1,
+                    }));
+                  }
+                }}
+              />
+            </div>
+            {tunnelProxyPanelOpen && (
+              <div className="space-y-2 border-t border-border/45 pt-2">
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
+                  <div className={segmentedControlClassName}>
+                    <div className="grid grid-cols-2 gap-1">
+                      {([1, 2] as const).map((version) => (
+                        <button
+                          key={version}
+                          type="button"
+                          className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
+                          disabled={!proxyAnyEnabled}
+                          onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
+                          title={!proxyAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
+                        >
+                          V{version}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {renderProxySwitch("入口接收上游", "proxyProtocolReceive")}
+                  {renderProxySwitch("入口发送到出口", "proxyProtocolSend")}
+                  {renderProxySwitch("出口接收入口", "proxyProtocolExitReceive")}
+                  {renderProxySwitch("出口发送到目标", "proxyProtocolExitSend")}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {transportTuningSupported && (
+          <div className="space-y-2 border-t border-border/45 pt-2 first:border-t-0 first:pt-0">
+            <Label className="text-sm">传输优化</Label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">TCP Fast Open</span>
+                  <span className="block truncate text-xs text-muted-foreground">降低 TCP 建连等待</span>
+                </span>
+                <Switch
+                  checked={form.tcpFastOpen}
+                  onCheckedChange={(tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen }))}
+                />
+              </label>
+              <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">mimic UDP 混淆</span>
+                  <span className="block truncate text-xs text-muted-foreground">ForwardX UDP 外观混淆</span>
+                </span>
+                <Switch
+                  checked={form.udpOverTcp}
+                  onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
+                />
+              </label>
+            </div>
+            {form.udpOverTcp && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                mimic TCP 外观伪装会增加封装开销，UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
   const groupViewMode: "card" | "table" = chainViewMode === "table" ? "table" : "card";
   const handleViewModeChange = (nextViewMode: TunnelViewMode) => {
     setViewMode(nextViewMode);
@@ -3225,7 +3407,7 @@ function TunnelsContent() {
                           type="button"
                           onClick={() => {
                             const nextMode = enabledGostTunnelModes.includes(form.mode) ? form.mode : enabledGostTunnelModes[0];
-                            if (nextMode) setForm({ ...form, mode: nextMode });
+                            if (nextMode) setTunnelMode(nextMode);
                           }}
                           disabled={gostRuntimeDisabled}
                           title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
@@ -3237,12 +3419,7 @@ function TunnelsContent() {
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            setForm((prev) => ({
-                              ...prev,
-                              mode: "forwardx",
-                            }))
-                          }
+                          onClick={() => setTunnelMode("forwardx")}
                           disabled={forwardxRuntimeDisabled}
                           title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
                           aria-pressed={form.mode === "forwardx"}
@@ -3253,7 +3430,7 @@ function TunnelsContent() {
                         </button>
                         {nginxTunnelEnabled && <button
                           type="button"
-                          onClick={() => setForm({ ...form, mode: "nginx_stream" })}
+                          onClick={() => setTunnelMode("nginx_stream")}
                           aria-pressed={isNginxTunnelModeValue(form.mode)}
                           className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), false, "px-2")}
                         >
@@ -3270,7 +3447,7 @@ function TunnelsContent() {
                     {gostTunnelModes.includes(form.mode) && (
                       <div className="space-y-2">
                         <Label>GOST 协议</Label>
-                        <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
+                        <Select value={form.mode} onValueChange={(v) => setTunnelMode(v as TunnelForm["mode"])}>
                           <SelectTrigger><SelectValue /></SelectTrigger>
                           <SelectContent>
                             {enabledGostTunnelModes.map((mode) => (
@@ -3281,6 +3458,7 @@ function TunnelsContent() {
                       </div>
                     )}
                     {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
+                    {renderTunnelRuntimeOptions()}
                     {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
                       <div className="space-y-2">
                         <Label>出口组负载模式</Label>
@@ -3529,7 +3707,7 @@ function TunnelsContent() {
                   type="button"
                   onClick={() => {
                     const nextMode = enabledGostTunnelModes.includes(form.mode) ? form.mode : enabledGostTunnelModes[0];
-                    if (nextMode) setForm({ ...form, mode: nextMode });
+                    if (nextMode) setTunnelMode(nextMode);
                   }}
                   disabled={gostRuntimeDisabled}
                   title={enabledGostTunnelModes.length === 0 ? unsupportedProtocolTitle : undefined}
@@ -3541,12 +3719,7 @@ function TunnelsContent() {
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    setForm((prev) => ({
-                      ...prev,
-                      mode: "forwardx",
-                    }))
-                  }
+                  onClick={() => setTunnelMode("forwardx")}
                   disabled={forwardxRuntimeDisabled}
                   title={forwardProtocolSettings.forwardx === false ? unsupportedProtocolTitle : undefined}
                   aria-pressed={form.mode === "forwardx"}
@@ -3557,7 +3730,7 @@ function TunnelsContent() {
                 </button>
                 {nginxTunnelEnabled && <button
                   type="button"
-                  onClick={() => setForm({ ...form, mode: "nginx_stream" })}
+                  onClick={() => setTunnelMode("nginx_stream")}
                   aria-pressed={isNginxTunnelModeValue(form.mode)}
                   className={segmentedOptionClassName(isNginxTunnelModeValue(form.mode), false, "px-2")}
                 >
@@ -3574,7 +3747,7 @@ function TunnelsContent() {
             {gostTunnelModes.includes(form.mode) && (
               <div className="space-y-2">
                 <Label>GOST 协议</Label>
-                <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v as any })}>
+                <Select value={form.mode} onValueChange={(v) => setTunnelMode(v as TunnelForm["mode"])}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {enabledGostTunnelModes.map((mode) => (
@@ -3585,6 +3758,7 @@ function TunnelsContent() {
               </div>
             )}
             {nginxTunnelEnabled && isNginxTunnelModeValue(form.mode) && renderNginxCertFields()}
+            {renderTunnelRuntimeOptions()}
             {nginxTunnelEnabled && form.exitGroupId && form.loadBalanceEnabled && form.loadBalanceExits.length > 0 && isNginxTunnelModeValue(form.mode) && (
               <div className="space-y-2">
                 <Label>出口组负载模式</Label>

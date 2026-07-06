@@ -1295,9 +1295,10 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
 
   let tunnelId: number | null = null;
   let tunnelExitPort: number | null = null;
+  let tunnel: any = null;
   if (member.memberType === "tunnel") {
     tunnelId = Number(member.tunnelId);
-    const tunnel = await getTunnelById(tunnelId);
+    tunnel = await getTunnelById(tunnelId);
     if (!tunnel) throw new Error("Tunnel does not exist");
     if (!tunnel.isEnabled) throw new Error(`Tunnel ${tunnel.name} is disabled`);
     tunnelExitPort = Number(existing?.tunnelExitPort || 0) || null;
@@ -1307,12 +1308,18 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
       if (!tunnelExitPort) throw new Error("Tunnel exit agent has no available port");
     }
   }
+  const protocol = String(templateRule.protocol || "both");
+  const protocolTcpSupported = protocol === "tcp" || protocol === "both";
+  const protocolUdpSupported = protocol === "udp" || protocol === "both";
+  const tunnelMode = String(tunnel?.mode || "").toLowerCase();
+  const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel && tunnelMode !== "nginx_stream" && tunnelMode !== "nginx_tls";
+  const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
 
   const payload: any = {
     hostId,
     name: `[Group:${group.name}] ${templateRule.name}`,
     forwardType: member.memberType === "tunnel" ? "gost" : templateRule.forwardType,
-    protocol: templateRule.protocol,
+    protocol,
     gostMode: "direct",
     gostRelayHost: null,
     gostRelayPort: null,
@@ -1329,15 +1336,15 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
-    proxyProtocolReceive: !!(templateRule as any).proxyProtocolReceive,
-    proxyProtocolSend: !!(templateRule as any).proxyProtocolSend,
-    proxyProtocolExitReceive: member.memberType === "tunnel" ? !!(templateRule as any).proxyProtocolExitReceive : false,
-    proxyProtocolExitSend: member.memberType === "tunnel" ? !!(templateRule as any).proxyProtocolExitSend : false,
-    proxyProtocolVersion: Number((templateRule as any).proxyProtocolVersion) === 2 ? 2 : 1,
-    tcpFastOpen: member.memberType === "tunnel" ? !!(templateRule as any).tcpFastOpen : !!(templateRule as any).tcpFastOpen,
+    proxyProtocolReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolReceive : !!(templateRule as any).proxyProtocolReceive,
+    proxyProtocolSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolSend : !!(templateRule as any).proxyProtocolSend,
+    proxyProtocolExitReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitReceive : false,
+    proxyProtocolExitSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitSend : false,
+    proxyProtocolVersion: member.memberType === "tunnel" ? (tunnelProxySupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1) : (Number((templateRule as any).proxyProtocolVersion) === 2 ? 2 : 1),
+    tcpFastOpen: member.memberType === "tunnel" ? tunnelForwardx && protocolTcpSupported && !!tunnel.tcpFastOpen : !!(templateRule as any).tcpFastOpen,
     zeroCopy: member.memberType === "tunnel" ? false : !!(templateRule as any).zeroCopy,
-    udpOverTcp: member.memberType === "tunnel" ? !!(templateRule as any).udpOverTcp : false,
-    udpOverTcpPort: member.memberType === "tunnel" ? Number((templateRule as any).udpOverTcpPort || 0) || null : null,
+    udpOverTcp: member.memberType === "tunnel" ? tunnelForwardx && protocolUdpSupported && !!tunnel.udpOverTcp : false,
+    udpOverTcpPort: null,
     failoverEnabled: !!(templateRule as any).failoverEnabled,
     failoverStrategy: (templateRule as any).failoverStrategy || "fallback",
     failoverTargets: (templateRule as any).failoverTargets || null,
