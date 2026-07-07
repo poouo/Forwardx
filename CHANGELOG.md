@@ -1,11 +1,23 @@
 # Changelog
 
-## [待发布] - 下一个版本
+## [2.3.219] - 待发布
+
+### 修复
+
+- 修复隧道内转发规则在带 `tunnelId` 的 apply action 下发后，会被本地运行态清理逻辑误分类为隧道 runtime 端口、随后又生成普通规则 remove 动作清掉的问题；隧道规则 action 现在按 `ruleId` 优先归类，避免 apply/remove 循环导致隧道长期黄色不生效。
 
 ### 优化
 
+- 将转发规则顶部“复制规则”升级为“批量管理”，支持按条件筛选/查找所有已有规则、多选/全选，并可将所选规则复制到隧道、端口转发、转发链或转发组，同时支持导出文件与批量删除。
 - 调整转发规则新增流程：新增规则不再直接选择主机创建普通端口转发，需先使用已创建的隧道、转发链或转发组；已有规则的路由类型和上级转发协议保持锁定，避免规则编辑时跨类型切换导致状态不一致。
 - 将 PROXY Protocol 和传输优化配置迁移到隧道新增/编辑中，只有当前隧道协议支持时才展示配置项；转发规则表单不再展示或提交这些参数，隧道规则和隧道转发组成员会从所选隧道继承对应设置。
+- Host management compact cards, standard cards, and table now show system network total from Agent metrics; this value follows OS interface counters and resets after host reboot.
+
+### 版本
+
+- 面板版本待发布为 `2.3.219`。
+- Agent 目标版本保持 `2.2.139`。
+- Android APP 版本保持 `2.3.77`。
 
 ## [2.3.218] - 2026-07-06
 

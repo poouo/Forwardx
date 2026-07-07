@@ -373,6 +373,8 @@ function compactHostMetricSummary(row: any) {
     swapUsed: row?.swapUsed ?? null,
     swapTotal: row?.swapTotal ?? null,
     networkSpeedIn: row?.networkSpeedIn == null ? null : Math.round(Number(row.networkSpeedIn) || 0),
+    networkIn: row?.networkIn == null ? null : Math.max(0, Number(row.networkIn) || 0),
+    networkOut: row?.networkOut == null ? null : Math.max(0, Number(row.networkOut) || 0),
     networkSpeedOut: row?.networkSpeedOut == null ? null : Math.round(Number(row.networkSpeedOut) || 0),
     diskUsage: row?.diskUsage ?? null,
     diskUsed: row?.diskUsed ?? null,
@@ -598,7 +600,7 @@ export const hostsRouter = router({
     }),
     statusSummary: protectedProcedure.query(async ({ ctx }) => {
       const hosts = await getVisibleHostsForUser(ctx.user, { scheduleGeoRefresh: false });
-      return hosts.map(compactHostStatus).filter((host) => host.id > 0);
+      return hosts.map(compactHostStatus).filter((host: ReturnType<typeof compactHostStatus>) => host.id > 0);
     }),
     summary: protectedProcedure.query(async ({ ctx }) => hostQueryCache.get(
       `summary:${ctx.user.id}`,

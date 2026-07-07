@@ -10,6 +10,12 @@ import {
   updateForwardGroupFromInput,
 } from "../services/forwardGroupService";
 
+const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
+const failoverTargetSchema = z.object({
+  targetIp: z.string().min(1).max(253),
+  targetPort: z.number().int().min(1).max(65535),
+});
+
 const memberSchema = z.object({
   memberType: z.enum(["host", "tunnel"]),
   hostId: z.number().nullable().optional(),
@@ -24,9 +30,23 @@ const forwardGroupQueryCache = createQueryCache(300);
 const baseSchema = z.object({
   name: z.string().min(1).max(128),
   remark: z.string().max(255).nullable().optional(),
-  groupMode: z.enum(["failover", "chain", "entry", "exit"]).default("failover"),
+  groupMode: z.enum(["port", "failover", "chain", "entry", "exit"]).default("failover"),
   entryGroupId: z.number().nullable().optional(),
   groupType: z.enum(["host", "tunnel"]),
+  protocol: z.enum(["tcp", "udp", "both"]).optional().default("both"),
+  forwardType: z.enum(["iptables", "nftables", "realm", "socat", "gost", "nginx"]).optional(),
+  proxyProtocolReceive: z.boolean().optional(),
+  proxyProtocolSend: z.boolean().optional(),
+  proxyProtocolExitReceive: z.boolean().optional(),
+  proxyProtocolExitSend: z.boolean().optional(),
+  proxyProtocolVersion: z.number().int().min(1).max(2).optional(),
+  tcpFastOpen: z.boolean().optional(),
+  zeroCopy: z.boolean().optional(),
+  udpOverTcp: z.boolean().optional(),
+  udpOverTcpPort: z.number().int().min(0).max(65535).nullable().optional(),
+  failoverEnabled: z.boolean().optional(),
+  failoverStrategy: failoverStrategySchema.optional(),
+  failoverTargets: z.array(failoverTargetSchema).max(10).optional(),
   domain: z.string().max(255).nullable().optional(),
   recordType: z.enum(["A", "AAAA", "CNAME"]).default("A"),
   failoverSeconds: z.number().int().min(10).max(3600).default(60),

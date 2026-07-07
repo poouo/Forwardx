@@ -1,4 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
 import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
@@ -53,6 +54,7 @@ import { trpc } from "@/lib/trpc";
 import {
   Activity,
   ArrowRight,
+  ArrowRightLeft,
   Globe,
   LayoutGrid,
   List,
@@ -74,9 +76,12 @@ import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState, type Re
 import { toast } from "sonner";
 import {
   FORWARD_PROTOCOL_LABELS,
+  FORWARD_TYPE_LABELS,
+  FORWARD_TYPES,
   isNginxForwardProtocolEnabled,
   normalizeForwardProtocolSettings,
   type ForwardProtocolKey,
+  type ForwardType,
 } from "@shared/forwardTypes";
 import {
   trafficMultiplierFromInput,
@@ -159,6 +164,12 @@ type ChainCreateForm = {
   entryGroupId: number | null;
   hopHostIds: number[];
   hopConnectHosts: Array<string | null>;
+  forwardType: ForwardType;
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
+  proxyProtocolVersion: 1 | 2;
+  tcpFastOpen: boolean;
+  zeroCopy: boolean;
   trafficMultiplier: number;
   isEnabled: boolean;
 };
@@ -305,6 +316,12 @@ const defaultChainCreateForm: ChainCreateForm = {
   entryGroupId: null,
   hopHostIds: [],
   hopConnectHosts: [],
+  forwardType: "iptables",
+  proxyProtocolReceive: false,
+  proxyProtocolSend: false,
+  proxyProtocolVersion: 1,
+  tcpFastOpen: false,
+  zeroCopy: false,
   trafficMultiplier: 1,
   isEnabled: true,
 };
@@ -740,13 +757,14 @@ function getTunnelModeDisplay(mode: unknown, showNginxLabel = true) {
 }
 
 type TunnelViewMode = "card" | "table" | "globe";
-type TunnelSection = "tunnels" | "chains" | "groups" | "entries" | "exits";
-type TunnelGroupMode = "failover" | "entry" | "exit";
+type TunnelSection = "tunnels" | "ports" | "chains" | "groups" | "entries" | "exits";
+type TunnelGroupMode = "port" | "failover" | "entry" | "exit";
 
-const TUNNEL_SECTIONS = ["tunnels", "chains", "groups", "entries", "exits"] as const;
+const TUNNEL_SECTIONS = ["tunnels", "ports", "chains", "groups", "entries", "exits"] as const;
 const TUNNEL_SECTION_ITEMS = [
   { value: "tunnels", label: "隧道链路", icon: Network },
-  { value: "chains", label: "端口转发链", icon: Route },
+  { value: "ports", label: "端口转发", icon: ArrowRightLeft },
+  { value: "chains", label: "转发链", icon: Route },
   { value: "groups", label: "转发组", icon: ShieldCheck },
   { value: "entries", label: "入口组", icon: LogIn },
   { value: "exits", label: "出口组", icon: LogOut },
@@ -1834,6 +1852,7 @@ function groupHostSummary(group: any, hosts: any[] | undefined) {
 }
 
 function TunnelsContent() {
+  const { user } = useAuth();
   const utils = trpc.useUtils();
   const { data: tunnels, isLoading } = trpc.tunnels.list.useQuery(undefined, { refetchInterval: pollingInterval("active") });
   const { data: hosts } = trpc.hosts.list.useQuery();
@@ -1871,6 +1890,20 @@ function TunnelsContent() {
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
   );
+  const allowedForwardTypes = useMemo<ForwardType[]>(() => {
+    const all = [...FORWARD_TYPES];
+    if (!user || user.role === "admin") return all;
+    const raw = (user as any).allowedForwardTypes as string | null | undefined;
+    if (!raw || !raw.trim()) return all;
+    const allowed = new Set(raw.split(",").map((item: string) => item.trim()).filter(Boolean));
+    const filtered = all.filter((type) => allowed.has(type));
+    return filtered.length > 0 ? filtered : all;
+  }, [user]);
+  const availableChainForwardTypes = useMemo<ForwardType[]>(
+    () => allowedForwardTypes.filter((type) => forwardProtocolSettings[type] !== false),
+    [allowedForwardTypes, forwardProtocolSettings]
+  );
+  const defaultChainForwardType = availableChainForwardTypes[0] || "iptables";
   const nginxTunnelEnabled = useMemo(
     () => isNginxForwardProtocolEnabled({
       nginx: false,
@@ -2120,7 +2153,7 @@ function TunnelsContent() {
   };
 
   const resetChainCreateForm = () => {
-    setChainCreateForm(defaultChainCreateForm);
+    setChainCreateForm({ ...defaultChainCreateForm, forwardType: defaultChainForwardType });
   };
 
   const resetTunnelCreateForm = () => {
@@ -2223,6 +2256,12 @@ function TunnelsContent() {
     },
     onError: (e) => toast.error(e.message || "创建失败"),
   });
+
+  useEffect(() => {
+    if (availableChainForwardTypes.length === 0) return;
+    if (availableChainForwardTypes.includes(chainCreateForm.forwardType)) return;
+    setChainCreateForm((prev) => ({ ...prev, forwardType: availableChainForwardTypes[0] }));
+  }, [availableChainForwardTypes, chainCreateForm.forwardType]);
 
   const createChainMutation = trpc.forwardGroups.create.useMutation({
     onSuccess: () => {
@@ -2455,11 +2494,23 @@ function TunnelsContent() {
       return;
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
+    if (!availableChainForwardTypes.includes(chainCreateForm.forwardType)) {
+      toast.error("请选择可用的转发工具");
+      return;
+    }
+    const chainProxyProtocolSupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
+    const chainRealmOptimizationSupported = chainCreateForm.forwardType === "realm";
     createChainMutation.mutate({
       name,
       entryGroupId: chainCreateForm.entryGroupId || null,
       groupMode: "chain",
       groupType: "host",
+      forwardType: chainCreateForm.forwardType,
+      proxyProtocolReceive: chainProxyProtocolSupported && chainCreateForm.proxyProtocolReceive,
+      proxyProtocolSend: chainProxyProtocolSupported && chainCreateForm.proxyProtocolSend,
+      proxyProtocolVersion: chainProxyProtocolSupported && Number(chainCreateForm.proxyProtocolVersion) === 2 ? 2 : 1,
+      tcpFastOpen: chainRealmOptimizationSupported && chainCreateForm.tcpFastOpen,
+      zeroCopy: chainRealmOptimizationSupported && chainCreateForm.zeroCopy,
       domain: null,
       recordType: "A",
       failoverSeconds: 60,
@@ -2482,6 +2533,19 @@ function TunnelsContent() {
   const isCreateTypePending = selectedCreateType === "chain" ? createChainMutation.isPending : createMutation.isPending;
   const gostRuntimeDisabled = enabledGostTunnelModes.length === 0;
   const forwardxRuntimeDisabled = forwardProtocolSettings.forwardx === false;
+  const setChainForwardType = (forwardType: ForwardType) => {
+    const proxySupported = forwardType === "gost" || forwardType === "realm";
+    const realmOptimizationSupported = forwardType === "realm";
+    setChainCreateForm((prev) => ({
+      ...prev,
+      forwardType,
+      proxyProtocolReceive: proxySupported ? prev.proxyProtocolReceive : false,
+      proxyProtocolSend: proxySupported ? prev.proxyProtocolSend : false,
+      proxyProtocolVersion: proxySupported ? prev.proxyProtocolVersion : 1,
+      tcpFastOpen: realmOptimizationSupported ? prev.tcpFastOpen : false,
+      zeroCopy: realmOptimizationSupported ? prev.zeroCopy : false,
+    }));
+  };
   const setTunnelMode = (mode: TunnelForm["mode"]) => {
     const nextMode = normalizeTunnelModeForForm(mode);
     const proxySupported = isTunnelProxyProtocolSupported(nextMode);
@@ -2530,6 +2594,70 @@ function TunnelsContent() {
       </p>
     </div>
   );
+  const renderChainRuntimeOptions = () => {
+    const proxySupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
+    const realmOptimizationSupported = chainCreateForm.forwardType === "realm";
+    return (
+      <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <Label className="text-sm">PROXY Protocol</Label>
+            <Select
+              value={String(chainCreateForm.proxyProtocolVersion)}
+              disabled={!proxySupported}
+              onValueChange={(value) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 }))}
+            >
+              <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">V1</SelectItem>
+                <SelectItem value="2">V2</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
+              <span className="min-w-0 truncate text-sm">接收 PROXY</span>
+              <Switch
+                checked={proxySupported && chainCreateForm.proxyProtocolReceive}
+                disabled={!proxySupported}
+                onCheckedChange={(proxyProtocolReceive) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolReceive }))}
+              />
+            </label>
+            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
+              <span className="min-w-0 truncate text-sm">发送 PROXY</span>
+              <Switch
+                checked={proxySupported && chainCreateForm.proxyProtocolSend}
+                disabled={!proxySupported}
+                onCheckedChange={(proxyProtocolSend) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolSend }))}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="space-y-2 border-t border-border/45 pt-3">
+          <Label className="text-sm">传输优化</Label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
+              <span className="min-w-0 truncate text-sm">TCP Fast Open</span>
+              <Switch
+                checked={realmOptimizationSupported && chainCreateForm.tcpFastOpen}
+                disabled={!realmOptimizationSupported}
+                onCheckedChange={(tcpFastOpen) => setChainCreateForm((prev) => ({ ...prev, tcpFastOpen }))}
+              />
+            </label>
+            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
+              <span className="min-w-0 truncate text-sm">zero-copy</span>
+              <Switch
+                checked={realmOptimizationSupported && chainCreateForm.zeroCopy}
+                disabled={!realmOptimizationSupported}
+                onCheckedChange={(zeroCopy) => setChainCreateForm((prev) => ({ ...prev, zeroCopy }))}
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  };
   const renderTunnelRuntimeOptions = () => {
     const proxySupported = isTunnelProxyProtocolSupported(form.mode);
     const transportTuningSupported = isTunnelTransportTuningSupported(form.mode);
@@ -2685,28 +2813,30 @@ function TunnelsContent() {
   const canCreateTunnel = !!hosts?.length
     && hosts.length >= 2
     && (forwardProtocolSettings.forwardx !== false || enabledGostTunnelModes.length > 0 || enabledNginxTunnelModes.length > 0);
-  const canCreateChain = !!hosts?.length && hosts.length >= 2;
+  const canCreatePort = !!hosts?.length && allowedForwardTypes.some((type) => forwardProtocolSettings[type] !== false);
+  const canCreateChain = !!hosts?.length && hosts.length >= 2 && availableChainForwardTypes.length > 0;
   const canCreateGroup = !!hosts?.length && hosts.length >= 1;
   const canCreateAny = canCreateTunnel || canCreateChain;
-  const activeSectionCreatesGroup = activeSection === "groups" || activeSection === "entries" || activeSection === "exits";
-  const canCreateActive = activeSectionCreatesGroup ? canCreateGroup : canCreateAny;
+  const activeSectionCreatesGroup = activeSection === "ports" || activeSection === "groups" || activeSection === "entries" || activeSection === "exits";
+  const canCreateActive = activeSection === "ports" ? canCreatePort : activeSectionCreatesGroup ? canCreateGroup : canCreateAny;
   const createDisabledTitle = !canCreateActive
-    ? (activeSectionCreatesGroup ? "至少需要 1 台主机" : "至少需要 2 台主机且启用可用隧道协议")
+    ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "至少需要 1 台主机并启用可用转发协议，或至少需要 2 台主机创建隧道链路/转发链")
     : !canCreateTunnel && activeSection === "tunnels"
-      ? "隧道链路暂不可创建，可选择端口转发链"
+      ? "隧道链路暂不可创建，可选择普通端口转发或端口转发链"
       : !canCreateChain && activeSection === "chains"
-        ? "端口转发链暂不可创建，可选择隧道链路"
+        ? (availableChainForwardTypes.length === 0 ? "暂无可用转发工具" : "端口转发链暂不可创建，可选择普通端口转发或隧道链路")
         : undefined;
+
   const openCreateTypeDialog = () => {
     if (activeSectionCreatesGroup) {
-      if (!canCreateGroup) return;
+      if (activeSection === "ports" ? !canCreatePort : !canCreateGroup) return;
       setGroupCreateRequest({
-        mode: activeSection === "entries" ? "entry" : activeSection === "exits" ? "exit" : "failover",
+        mode: activeSection === "ports" ? "port" : activeSection === "entries" ? "entry" : activeSection === "exits" ? "exit" : "failover",
         requestKey: Date.now(),
       });
       return;
     }
-    if (!canCreateAny) return;
+    if (!canCreateTunnel && !canCreateChain) return;
     const preferredType: LinkCreateType = activeSection === "chains" ? "chain" : "tunnel";
     const nextType = preferredType === "chain"
       ? (canCreateChain ? "chain" : "tunnel")
@@ -2715,6 +2845,10 @@ function TunnelsContent() {
     resetTunnelCreateForm();
     resetChainCreateForm();
     setShowCreateTypeDialog(true);
+  };
+  const handleCreateTypeChange = (nextType: LinkCreateType) => {
+    if (nextType === "port") return;
+    setSelectedCreateType(nextType);
   };
   const selectedCreateDisabled = selectedCreateType === "tunnel" ? !canCreateTunnel : !canCreateChain;
   const renderUnsupportedHint = (children: ReactNode) => (
@@ -3130,6 +3264,18 @@ function TunnelsContent() {
           </TunnelSectionTransition>
         </TabsContent>
 
+        <TabsContent value="ports" className="space-y-4">
+          <TunnelSectionTransition transitionKey={`ports-${groupViewMode}-${forwardGroupsLoading || !forwardGroups ? "loading" : "ready"}`}>
+            <ForwardGroupsContent
+              mode="port"
+              embedded
+              viewMode={groupViewMode}
+              onViewModeChange={(nextViewMode) => handleChainViewModeChange(nextViewMode)}
+              hideHeaderActions
+              createRequestKey={groupCreateRequest?.mode === "port" ? groupCreateRequest.requestKey : undefined}
+            />
+          </TunnelSectionTransition>
+        </TabsContent>
         <TabsContent value="chains" className="space-y-4">
           <TunnelSectionTransition transitionKey={activeSectionTransitionKey}>
           {chainViewMode === "globe" ? (
@@ -3288,8 +3434,9 @@ function TunnelsContent() {
             <LinkCreateTypeSelector
               value={selectedCreateType}
               canCreateTunnel={canCreateTunnel}
+              showPort={false}
               canCreateChain={canCreateChain}
-              onValueChange={setSelectedCreateType}
+              onValueChange={handleCreateTypeChange}
             />
           </div>
           <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
@@ -3490,14 +3637,29 @@ function TunnelsContent() {
                   </>
                 ) : (
                   <>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_170px_140px]">
+                    <div className="space-y-2">
+                      <Label>链名称</Label>
+                      <Input
+                        value={chainCreateForm.name}
+                        onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
+                        placeholder="例如: 华东-香港转发链"
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_110px]">
                       <div className="space-y-2">
-                        <Label>链名称</Label>
-                        <Input
-                          value={chainCreateForm.name}
-                          onChange={(e) => setChainCreateForm({ ...chainCreateForm, name: e.target.value })}
-                          placeholder="例如: 华东-香港转发链"
-                        />
+                        <Label>转发工具</Label>
+                        <Select
+                          value={chainCreateForm.forwardType}
+                          disabled={availableChainForwardTypes.length === 0}
+                          onValueChange={(value) => setChainForwardType(value as ForwardType)}
+                        >
+                          <SelectTrigger><SelectValue placeholder="选择转发工具" /></SelectTrigger>
+                          <SelectContent>
+                            {availableChainForwardTypes.map((type) => (
+                              <SelectItem key={type} value={type}>{FORWARD_TYPE_LABELS[type]}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="space-y-2">
                         <Label>流量倍率</Label>
@@ -3513,6 +3675,7 @@ function TunnelsContent() {
                         </label>
                       </div>
                     </div>
+                    {renderChainRuntimeOptions()}
                     <div className="space-y-2">
                       <Label>入口组</Label>
                       <Select

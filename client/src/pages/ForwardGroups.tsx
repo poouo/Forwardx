@@ -43,6 +43,7 @@ import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import {
   Activity,
+  ArrowRightLeft,
   AlertCircle,
   CheckCircle2,
   GripVertical,
@@ -74,12 +75,22 @@ import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } 
 import { addHostNodeMeta, addNodeMetaAliases, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import {
   trafficMultiplierFromInput,
+  formatTrafficMultiplier,
   trafficMultiplierToInputValue,
 } from "@shared/trafficMultiplier";
+import {
+  FORWARD_TYPE_LABELS,
+  FORWARD_TYPES,
+  formatForwardRuleProtocol,
+  normalizeForwardProtocolSettings,
+  normalizeForwardRuleProtocol,
+  type ForwardRuleProtocol,
+  type ForwardType,
+} from "@shared/forwardTypes";
 
 type GroupType = "host" | "tunnel";
-type GroupMode = "failover" | "chain" | "entry" | "exit";
-
+type GroupMode = "port" | "failover" | "chain" | "entry" | "exit";
+type FailoverStrategy = "fallback" | "round_robin" | "random" | "ip_hash";
 type MemberForm = {
   key: string;
   memberType: GroupType;
@@ -94,6 +105,18 @@ type GroupForm = {
   groupMode: GroupMode;
   entryGroupId: number | null;
   groupType: GroupType;
+  protocol: ForwardRuleProtocol;
+  forwardType: ForwardType;
+  proxyProtocolReceive: boolean;
+  proxyProtocolSend: boolean;
+  proxyProtocolVersion: 1 | 2;
+  tcpFastOpen: boolean;
+  zeroCopy: boolean;
+  udpOverTcp: boolean;
+  udpOverTcpPort: number;
+  failoverEnabled: boolean;
+  failoverStrategy: FailoverStrategy;
+  failoverTargetsText: string;
   domain: string;
   recordType: "A" | "AAAA" | "CNAME";
   failoverSeconds: string;
@@ -113,6 +136,18 @@ const makeDefaultForm = (): GroupForm => ({
   groupMode: "failover",
   entryGroupId: null,
   groupType: "host",
+  protocol: "both",
+  forwardType: "iptables",
+  proxyProtocolReceive: false,
+  proxyProtocolSend: false,
+  proxyProtocolVersion: 1,
+  tcpFastOpen: false,
+  zeroCopy: false,
+  udpOverTcp: false,
+  udpOverTcpPort: 0,
+  failoverEnabled: false,
+  failoverStrategy: "fallback",
+  failoverTargetsText: "",
   domain: "",
   recordType: "A",
   failoverSeconds: "60",
@@ -133,7 +168,7 @@ function memberKey(memberType: GroupType, id: number) {
 
 function normalizeGroupMode(mode: unknown): GroupMode {
   const value = String(mode || "failover");
-  return value === "chain" || value === "entry" || value === "exit" ? value : "failover";
+  return value === "port" || value === "chain" || value === "entry" || value === "exit" ? value : "failover";
 }
 
 function isCollectionMode(mode: GroupMode) {
@@ -141,7 +176,7 @@ function isCollectionMode(mode: GroupMode) {
 }
 
 function normalizeChinaHealthTargetInput(value: string) {
-  const target = value.trim().replace(/^tcp:\/\//i, "").replace(/：/g, ":");
+  const target = value.trim().replace(/^tcp:\/\//i, "").replace(/\uFF1A/g, ":");
   if (!target) return "";
   if (target.length > 253 || /[\s'"<>/]/.test(target)) return undefined;
   let host = target;
@@ -439,8 +474,8 @@ function ForwardGroupLatencyDialog({
         <DialogHeader>
           <div className="flex flex-col gap-2 pr-9 sm:flex-row sm:items-start sm:justify-between sm:pr-10">
             <div className="min-w-0">
-              <DialogTitle>转发链延迟 - {groupName}</DialogTitle>
-              <DialogDescription>近 24 小时链路逐跳探测汇总，纯 UDP 规则使用 Ping，其余规则使用 TCPing。</DialogDescription>
+              <DialogTitle>{"\u8f6c\u53d1\u94fe\u5ef6\u8fdf - "}{groupName}</DialogTitle>
+              <DialogDescription>{"\u8fd1 24 \u5c0f\u65f6\u94fe\u8def\u9010\u8df3\u63a2\u6d4b\u6c47\u603b\uff0c\u7eaf UDP \u89c4\u5219\u4f7f\u7528 Ping\uff0c\u5176\u4f59\u89c4\u5219\u4f7f\u7528 TCPing\u3002"}</DialogDescription>
             </div>
             <LatencyPeakCutToggle id={`forward-group-peak-cut-${groupId}`} checked={peakCutEnabled} onCheckedChange={setPeakCutEnabled} className="shrink-0 self-start sm:pt-1" />
           </div>
@@ -473,7 +508,7 @@ function ForwardGroupLatencyDialog({
                       <div className="rounded-md border border-border bg-popover px-3 py-2 text-xs shadow-md">
                         <p className="font-medium">{item.fullLabel}</p>
                         <p className={item.isTimeout ? "text-destructive" : "text-foreground"}>
-                          {item.isTimeout ? "超时/不可达" : `${item.latency}ms`}
+                          {item.isTimeout ? "\u8d85\u65f6/\u4e0d\u53ef\u8fbe" : `${item.latency}ms`}
                         </p>
                       </div>
                     );
@@ -626,7 +661,7 @@ function ForwardGroupSelfTestDialog({
     if (lastFailureToastKey.current !== key) {
       lastFailureToastKey.current = key;
       manualTestRef.current = false;
-      toast.error("转发链链路自测失败", { description: message, duration: 12000 });
+      toast.error("\u8f6c\u53d1\u94fe\u94fe\u8def\u81ea\u6d4b\u5931\u8d25", { description: message, duration: 12000 });
     }
   }, [groupId, hasFreshResult, isFailed, isTesting, latest?.updatedAt, open, parsedMessage.message, status]);
 
@@ -710,6 +745,14 @@ export function ForwardGroupsContent({
   const viewMode = controlledViewMode ?? internalViewMode;
   const telegramSettingsLoaded = settings !== undefined;
   const telegramReady = telegramSettingsLoaded && !!settings?.telegram?.enabled && !!settings?.telegram?.configured;
+  const forwardProtocolSettings = useMemo(
+    () => normalizeForwardProtocolSettings(settings?.forwardProtocols),
+    [settings?.forwardProtocols]
+  );
+  const availableForwardTypes = useMemo(
+    () => FORWARD_TYPES.filter((type) => forwardProtocolSettings[type] !== false),
+    [forwardProtocolSettings]
+  );
   const deleteImpactQuery = trpc.forwardGroups.deleteImpact.useQuery(
     { id: Number(deleteGroup?.id || 0) },
     { enabled: !!deleteGroup },
@@ -718,7 +761,7 @@ export function ForwardGroupsContent({
   const hostById = useMemo(() => new Map<number, any>((hosts || []).map((h: any) => [Number(h.id), h])), [hosts]);
   const tunnelById = useMemo(() => new Map<number, any>((tunnels || []).map((t: any) => [Number(t.id), t])), [tunnels]);
   const groupsByMode = useMemo(() => {
-    const next: Record<GroupMode, any[]> = { failover: [], chain: [], entry: [], exit: [] };
+    const next: Record<GroupMode, any[]> = { port: [], failover: [], chain: [], entry: [], exit: [] };
     for (const group of groups || []) next[normalizeGroupMode(group.groupMode)].push(group);
     return next;
   }, [groups]);
@@ -781,7 +824,7 @@ export function ForwardGroupsContent({
       const enabledMembers = members.filter((member: any) => member.isEnabled !== false);
       const enabledMemberIds = enabledMembers.map((member: any) => Number(member.id || 0)).filter((id: number) => id > 0);
       if (!group.isEnabled) {
-        map.set(Number(group.id), makeState("disabled", "转发组已停用"));
+        map.set(Number(group.id), makeState("disabled", mode === "port" ? "端口转发已停用" : "转发组已停用"));
         continue;
       }
       if (mode === "chain") {
@@ -789,6 +832,12 @@ export function ForwardGroupsContent({
         map.set(Number(group.id), enabledMembers.length >= minMembers
           ? makeState("available", enabledMembers.length > 0 ? "转发链配置可用，链路状态在转发规则内判定。" : "转发链已保存。", enabledMemberIds)
           : makeState("unavailable", Number(group.entryGroupId || 0) > 0 ? "转发链至少需要 1 个链路成员。" : "转发链至少需要 2 个链路成员。"));
+        continue;
+      }
+      if (mode === "port") {
+        map.set(Number(group.id), enabledMembers.length === 1
+          ? makeState("available", "端口转发已保存，可在转发规则中引用。", enabledMemberIds)
+          : makeState("unavailable", "端口转发需要 1 台所属主机。"));
         continue;
       }
       if (mode === "exit") {
@@ -852,6 +901,13 @@ export function ForwardGroupsContent({
     message: "转发组配置不可用。",
     usableMemberIds: new Set<number>(),
   };
+  const isGroupMemberActive = (group: any, member: any) => {
+    if (!group || !member || group.isEnabled === false) return false;
+    const state = getGroupConfigState(group);
+    const memberId = Number(member.id || 0);
+    if (memberId > 0 && state.usableMemberIds.size > 0) return state.usableMemberIds.has(memberId);
+    return member.isEnabled !== false && state.available;
+  };
   const activeCount = visibleGroups.filter((g: any) => {
     return getGroupConfigState(g).available;
   }).length;
@@ -913,6 +969,7 @@ export function ForwardGroupsContent({
       ...initial,
       groupMode: activeGroupMode,
       groupType: "host",
+      forwardType: availableForwardTypes[0] || initial.forwardType,
       domain: activeGroupMode === "failover" || activeGroupMode === "entry" ? initial.domain : "",
       recordType: activeGroupMode === "chain" || activeGroupMode === "exit" ? "A" : initial.recordType,
     });
@@ -936,6 +993,18 @@ export function ForwardGroupsContent({
       groupMode,
       entryGroupId: group.entryGroupId ? Number(group.entryGroupId) : null,
       groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
+      protocol: normalizeForwardRuleProtocol(group.protocol, "both"),
+      forwardType: FORWARD_TYPES.includes(group.forwardType as ForwardType) ? group.forwardType : "iptables",
+      proxyProtocolReceive: !!group.proxyProtocolReceive,
+      proxyProtocolSend: !!group.proxyProtocolSend,
+      proxyProtocolVersion: Number(group.proxyProtocolVersion) === 2 ? 2 : 1,
+      tcpFastOpen: !!group.tcpFastOpen,
+      zeroCopy: !!group.zeroCopy,
+      udpOverTcp: !!group.udpOverTcp,
+      udpOverTcpPort: Number(group.udpOverTcpPort || 0),
+      failoverEnabled: false,
+      failoverStrategy: "fallback",
+      failoverTargetsText: "",
       domain: group.domain || "",
       recordType: group.recordType || "A",
       failoverSeconds: String(Number(group.failoverSeconds || 60)),
@@ -975,7 +1044,7 @@ export function ForwardGroupsContent({
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
-      toast.success("转发组已创建");
+      toast.success(`${currentModeMeta.title}已创建`);
     },
     onError: (e) => toast.error(e.message || "创建失败"),
   });
@@ -985,7 +1054,7 @@ export function ForwardGroupsContent({
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
       closeDialog();
-      toast.success("转发组已更新");
+      toast.success(`${currentModeMeta.title}已更新`);
     },
     onError: (e) => toast.error(e.message || "更新失败"),
   });
@@ -995,7 +1064,7 @@ export function ForwardGroupsContent({
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
       setDeleteGroup(null);
-      toast.success("转发组已删除，引用规则将同步清理");
+      toast.success("已删除，引用规则将同步清理");
     },
     onError: (e) => toast.error(e.message || "删除失败"),
   });
@@ -1004,7 +1073,7 @@ export function ForwardGroupsContent({
     onSuccess: () => {
       utils.forwardGroups.list.invalidate();
       utils.rules.list.invalidate();
-      toast.success("已同步转发组成员规则");
+      toast.success("已同步链路成员规则");
     },
     onError: (e) => toast.error(e.message || "同步失败"),
   });
@@ -1017,7 +1086,7 @@ export function ForwardGroupsContent({
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
-  const effectiveGroupType = form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
+  const effectiveGroupType = form.groupMode === "port" || form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
   const availableMemberOptions = effectiveGroupType === "host"
     ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "", host: h }))
     : (tunnels || []).map((t: any) => ({
@@ -1029,6 +1098,10 @@ export function ForwardGroupsContent({
 
   const addMember = (id: number) => {
     if (!id) return;
+    if (form.groupMode === "port" && form.members.length >= 1) {
+      toast.error("端口转发只能选择 1 台所属主机");
+      return;
+    }
     if ((form.groupMode === "chain" || isCollectionMode(form.groupMode)) && form.members.length >= 5) {
       toast.error(form.groupMode === "chain" ? "端口转发链最多支持 5 台主机" : "入口组/出口组最多支持 5 台主机");
       return;
@@ -1052,6 +1125,21 @@ export function ForwardGroupsContent({
           isEnabled: true,
         },
       ],
+    });
+  };
+
+  const setPortHost = (id: number) => {
+    if (!id) return;
+    setForm({
+      ...form,
+      members: [{
+        key: memberKey("host", id),
+        memberType: "host",
+        hostId: id,
+        tunnelId: null,
+        connectHost: null,
+        isEnabled: true,
+      }],
     });
   };
 
@@ -1161,14 +1249,17 @@ export function ForwardGroupsContent({
   };
 
   const handleSubmit = () => {
+    const isPortMode = form.groupMode === "port";
     const isFailoverMode = form.groupMode === "failover";
     const isChainGroup = form.groupMode === "chain";
     const isEntryGroup = form.groupMode === "entry";
     const isExitGroup = form.groupMode === "exit";
     const supportsChinaHealth = isFailoverMode || isEntryGroup;
     const supportsSwitchNotify = isFailoverMode || isEntryGroup;
-    if (!form.name.trim()) return toast.error(isChainGroup ? "请填写链名称" : "请填写组名称");
-    if (isChainGroup) {
+    if (!form.name.trim()) return toast.error(isPortMode ? "请填写端口转发名称" : isChainGroup ? "请填写链名称" : "请填写组名称");
+    if (isPortMode) {
+      if (form.members.length !== 1) return toast.error("端口转发需要选择 1 台所属主机");
+    } else if (isChainGroup) {
       const minChainMembers = form.entryGroupId ? 1 : 2;
       if (form.members.length < minChainMembers || form.members.length > 5) {
         return toast.error(form.entryGroupId ? "端口转发链需要配置 1-5 台主机" : "端口转发链需要配置 2-5 台主机");
@@ -1207,10 +1298,11 @@ export function ForwardGroupsContent({
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
     const trafficMultiplierValue = Number(form.trafficMultiplier);
-    if (isChainGroup && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
+    if ((isPortMode || isChainGroup) && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
       return toast.error("流量倍率必须在 0.01 - 50 之间");
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
+    const runtimeTcpOptionsSupported = (isPortMode || isChainGroup) && form.protocol !== "udp";
     const chinaHealthTarget = normalizeChinaHealthTargetInput(form.chinaHealthCheckTarget);
     if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
       return toast.error("入口健康度检测目标格式不正确");
@@ -1223,12 +1315,26 @@ export function ForwardGroupsContent({
       name: form.name.trim(),
       remark: null,
       entryGroupId: isChainGroup ? form.entryGroupId || null : null,
-      groupType: isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
+      groupType: isPortMode || isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
       recoverSeconds,
-      trafficMultiplier: isChainGroup ? trafficMultiplier : 100,
+      trafficMultiplier: isPortMode || isChainGroup ? trafficMultiplier : 100,
+      protocol: isPortMode || isChainGroup ? form.protocol : "both",
+      forwardType: isPortMode || isChainGroup ? form.forwardType : form.groupType === "tunnel" ? "gost" : form.forwardType,
+      proxyProtocolReceive: runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm") && form.proxyProtocolReceive,
+      proxyProtocolSend: runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm") && form.proxyProtocolSend,
+      proxyProtocolExitReceive: false,
+      proxyProtocolExitSend: false,
+      proxyProtocolVersion: (isPortMode || isChainGroup) && Number(form.proxyProtocolVersion) === 2 ? 2 : 1,
+      tcpFastOpen: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.tcpFastOpen,
+      zeroCopy: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.zeroCopy,
+      udpOverTcp: false,
+      udpOverTcpPort: null,
+      failoverEnabled: false,
+      failoverStrategy: "fallback",
+      failoverTargets: [],
       chinaHealthCheckEnabled: supportsChinaHealth && form.chinaHealthCheckEnabled,
       chinaHealthCheckTarget: supportsChinaHealth && form.chinaHealthCheckEnabled ? chinaHealthTarget || null : null,
       telegramSwitchNotifyEnabled: supportsSwitchNotify && form.telegramSwitchNotifyEnabled,
@@ -1238,7 +1344,7 @@ export function ForwardGroupsContent({
         hostId: member.hostId,
         tunnelId: member.tunnelId,
         connectHost: isChainGroup || isExitGroup ? member.connectHost || null : null,
-        isEnabled: isChainGroup ? true : member.isEnabled,
+        isEnabled: isPortMode || isChainGroup ? true : member.isEnabled,
         priority: index,
       })),
     };
@@ -1250,6 +1356,11 @@ export function ForwardGroupsContent({
     const mode = normalizeGroupMode(group.groupMode);
     const configState = getGroupConfigState(group);
     if (configState.status === "disabled") return <Badge variant="outline">停用</Badge>;
+    if (mode === "port") {
+      return configState.available
+        ? <Badge className="border-primary/20 bg-primary/10 text-primary hover:bg-primary/15">可引用</Badge>
+        : <Badge variant="destructive">不可用</Badge>;
+    }
     if (mode === "chain") {
       return configState.available
         ? <Badge className="border-primary/20 bg-primary/10 text-primary hover:bg-primary/15">链路</Badge>
@@ -1290,14 +1401,28 @@ export function ForwardGroupsContent({
 
   const groupKindBadge = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "port") return <Badge variant="outline">端口转发</Badge>;
     if (mode === "chain") return <Badge variant="outline">端口转发链</Badge>;
     if (mode === "entry") return <Badge variant="outline">入口组</Badge>;
     if (mode === "exit") return <Badge variant="outline">出口组</Badge>;
     return <Badge variant="outline">{group.groupType === "tunnel" ? "隧道高可用" : "主机高可用"}</Badge>;
   };
 
+  const groupRuntimeBadges = (group: any) => {
+    const mode = normalizeGroupMode(group.groupMode);
+    if (mode !== "port" && mode !== "chain") return null;
+    return (
+      <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{FORWARD_TYPE_LABELS[group.forwardType as ForwardType] || group.forwardType || "iptables"}</Badge>
+        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{formatForwardRuleProtocol(group.protocol || "both")}</Badge>
+        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">倍率 {formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
+      </div>
+    );
+  };
+
   const groupMemberTitle = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
+    if (mode === "port") return "所属主机";
     if (mode === "chain") return "链路顺序";
     if (mode === "entry") return "入口主机";
     if (mode === "exit") return "出口主机";
@@ -1307,18 +1432,14 @@ export function ForwardGroupsContent({
   const groupStatusMessage = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
     const templateRuleCount = Number(group.templateRuleCount || 0);
-    if (mode === "chain" && templateRuleCount > 0) return `已被 ${templateRuleCount} 条转发规则引用`;
+    if ((mode === "port" || mode === "chain") && templateRuleCount > 0) return `已被 ${templateRuleCount} 条转发规则引用`;
+    if (mode === "port") return getGroupConfigState(group).message;
     if (mode === "failover" || mode === "entry" || mode === "exit") return getGroupConfigState(group).message;
     if (group.lastMessage) return group.lastMessage;
     if (mode === "chain") return "等待转发规则引用";
     if (mode === "entry") return "等待 DDNS 同步";
     if (mode === "exit") return "出口组已保存，可作为隧道出口使用";
     return "等待故障转移检查";
-  };
-
-  const isGroupMemberActive = (group: any, member: any) => {
-    if (member.isEnabled === false) return false;
-    return getGroupConfigState(group).usableMemberIds.has(Number(member.id));
   };
 
   const renderMemberConfigIcon = (group: any, member: any) => {
@@ -1329,7 +1450,7 @@ export function ForwardGroupsContent({
 
   const groupDdnsText = (group: any) => {
     const mode = normalizeGroupMode(group.groupMode);
-    if (mode === "chain" || mode === "exit") return "不使用";
+    if (mode === "port" || mode === "chain" || mode === "exit") return "不使用";
     return group.domain || "未配置";
   };
 
@@ -1397,7 +1518,12 @@ export function ForwardGroupsContent({
     }
     storeForwardGroupViewMode(nextViewMode);
   };
+  const isPortMode = activeGroupMode === "port";
   const isChainMode = activeGroupMode === "chain";
+  const runtimeConfigMode = isPortMode || isChainMode;
+  const runtimeTcpOptionsSupported = runtimeConfigMode && form.protocol !== "udp";
+  const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm");
+  const runtimeRealmOptimizationSupported = runtimeTcpOptionsSupported && form.forwardType === "realm";
   const canManualCheck = activeGroupMode === "failover" || activeGroupMode === "entry";
   const modeMeta: Record<GroupMode, {
     title: string;
@@ -1408,6 +1534,15 @@ export function ForwardGroupsContent({
     emptyDescription: string;
     paginationItemName: string;
   }> = {
+    port: {
+      title: "端口转发",
+      description: "管理保存好的单主机端口转发链路。",
+      addButtonText: "添加端口转发",
+      loadingLabel: "正在加载端口转发",
+      emptyTitle: "暂无端口转发",
+      emptyDescription: "创建后可在转发规则中直接选择使用",
+      paginationItemName: "条端口转发",
+    },
     failover: {
       title: "转发组",
       description: "管理 DDNS 故障转移规则。",
@@ -1420,7 +1555,7 @@ export function ForwardGroupsContent({
     chain: {
       title: "端口转发链",
       description: "管理按主机顺序串联的端口转发链路。",
-      addButtonText: "添加转发链",
+      addButtonText: "添加转发组",
       loadingLabel: "正在加载端口转发链",
       emptyTitle: "暂无端口转发链",
       emptyDescription: "创建后可在端口转发规则中作为链路使用",
@@ -1525,6 +1660,7 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
+                      {groupRuntimeBadges(group)}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1555,8 +1691,8 @@ export function ForwardGroupsContent({
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "所属主机" : normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
@@ -1598,6 +1734,7 @@ export function ForwardGroupsContent({
                         {groupKindBadge(group)}
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
+                      {groupRuntimeBadges(group)}
                     </div>
                     <div className="shrink-0">{groupStatusBadge(group)}</div>
                   </div>
@@ -1628,8 +1765,8 @@ export function ForwardGroupsContent({
 
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
-                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
-                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
+                      <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "所属主机" : normalizeGroupMode(group.groupMode) === "chain" ? "入口" : normalizeGroupMode(group.groupMode) === "exit" ? "出口" : "DDNS"}</p>
+                      <p className="mt-1 truncate">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台主机` : groupDdnsText(group)}</p>
                     </div>
                     <div className="min-w-0 rounded-md border border-border/40 bg-background/35 p-2">
                       <p className="text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "链路延迟" : isCollectionMode(normalizeGroupMode(group.groupMode)) ? "用途" : "引用规则"}</p>
@@ -1668,7 +1805,7 @@ export function ForwardGroupsContent({
                     <TableHead>名称</TableHead>
                     <TableHead>类型</TableHead>
                     <TableHead>成员/链路</TableHead>
-                    <TableHead className="hidden md:table-cell">{activeGroupMode === "exit" ? "出口" : activeGroupMode === "entry" ? "DDNS" : "入口"}</TableHead>
+                    <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? "所属主机" : activeGroupMode === "exit" ? "出口" : activeGroupMode === "entry" ? "DDNS" : "入口"}</TableHead>
                     <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : isCollectionMode(activeGroupMode) ? "用途" : "引用规则"}</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -1680,6 +1817,7 @@ export function ForwardGroupsContent({
                       <TableCell>
                         <div className="font-medium">{group.name}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
+                        {groupRuntimeBadges(group)}
                       </TableCell>
                       <TableCell>
                         {groupKindBadge(group)}
@@ -1703,8 +1841,8 @@ export function ForwardGroupsContent({
                         </div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
+                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "转发规则中直接选择" : normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
                       <TableCell className="text-right">
@@ -1756,44 +1894,83 @@ export function ForwardGroupsContent({
         open={showDialog}
         onOpenChange={handleDialogOpenChange}
       >
-        <DialogContent className={`flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden ${isChainMode ? "sm:max-w-xl" : "sm:max-w-3xl"}`}>
+        <DialogContent className={"flex max-h-[92svh] w-[calc(100vw-1rem)] max-w-[95vw] flex-col gap-3 overflow-hidden p-4 sm:p-5 " + (isChainMode || isPortMode ? "sm:max-w-xl" : "sm:max-w-2xl")}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            <div className={`grid gap-3 ${isChainMode ? "sm:grid-cols-[minmax(0,1fr)_170px]" : "sm:grid-cols-2"}`}>
+            <div className={"grid gap-3 " + (isPortMode ? "sm:grid-cols-2" : isChainMode ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
               <div className="space-y-2">
-                <Label>{isChainMode ? "链名称" : "组名称"}</Label>
-                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"} />
+                <Label>{isPortMode ? "端口转发名称" : isChainMode ? "链名称" : "组名称"}</Label>
+                <Input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder={isPortMode ? "例如: 洛杉矶-备用入口" : isChainMode ? "例如: 华东-香港转发链" : "例如: Web 高可用入口"}
+                />
               </div>
-              {isChainMode && (
+
+              {isPortMode && (
                 <div className="space-y-2">
-                  <Label>流量倍率</Label>
-                  <Input type="number" min={0.01} max={50} step={0.01} value={form.trafficMultiplier} onChange={(e) => setForm({ ...form, trafficMultiplier: e.target.value })} placeholder="1" />
+                  <Label>所属主机</Label>
+                  <Select
+                    value={form.members[0]?.hostId ? String(form.members[0].hostId) : ""}
+                    onValueChange={(value) => setPortHost(Number(value))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择所属主机">
+                        {form.members[0]?.hostId ? (
+                          <HostStatusLabel
+                            host={hostById.get(Number(form.members[0].hostId))}
+                            label={memberLabel(form.members[0])}
+                            className="min-w-0"
+                            labelClassName="truncate"
+                          />
+                        ) : null}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableMemberOptions.map((item: any) => (
+                        <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
+                          <HostStatusLabel
+                            host={item.host}
+                            label={(
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <span className="truncate">{item.label}</span>
+                                {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
+                              </span>
+                            )}
+                          />
+                        </SelectItem>
+                      ))}
+                      {availableMemberOptions.length === 0 && (
+                        <SelectItem value="__empty" disabled>没有可选主机</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
+
               {form.groupMode === "failover" && (
-              <div className="space-y-2">
-                <Label>组类型</Label>
-                <Select
-                  value={form.groupType}
-                  onValueChange={(v) => {
-                    const newType = v as GroupType;
-                    // Save current members before switching
-                    savedMembersRef.current[form.groupType] = form.members;
-                    // Restore saved members for the target type (or empty if never added)
-                    const restored = savedMembersRef.current[newType] || [];
-                    setForm({ ...form, groupType: newType, members: restored });
-                  }}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="host">主机端口转发组</SelectItem>
-                    <SelectItem value="tunnel">隧道转发组</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                <div className="space-y-2">
+                  <Label>组类型</Label>
+                  <Select
+                    value={form.groupType}
+                    onValueChange={(v) => {
+                      const newType = v as GroupType;
+                      savedMembersRef.current[form.groupType] = form.members;
+                      const restored = savedMembersRef.current[newType] || [];
+                      setForm({ ...form, groupType: newType, members: restored });
+                    }}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="host">主机端口转发组</SelectItem>
+                      <SelectItem value="tunnel">隧道转发组</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               )}
+
               {isCollectionMode(form.groupMode) && (
                 <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
                   <span className="text-sm">启用</span>
@@ -1803,115 +1980,98 @@ export function ForwardGroupsContent({
             </div>
 
             {(form.groupMode === "failover" || form.groupMode === "entry") && (
-            <>
-            <div className={`grid gap-4 ${form.groupMode === "entry" ? "sm:grid-cols-[minmax(0,1fr)_120px_160px]" : "sm:grid-cols-[minmax(0,1fr)_160px]"}`}>
-              <div className="space-y-2">
-                <Label>{form.groupMode === "entry" ? "入口域名" : "DDNS 域名"}</Label>
-                <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="例如 app.example.com" />
-              </div>
-              <div className="space-y-2">
-                <Label>记录类型</Label>
-                <Select value={form.recordType} onValueChange={(v) => setForm({ ...form, recordType: v as any })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="A">A</SelectItem>
-                    <SelectItem value="AAAA">AAAA</SelectItem>
-                    <SelectItem value="CNAME">CNAME</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {form.groupMode === "entry" && (
-                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
-                  <span className="text-sm">自动解析</span>
-                  <Switch checked={form.ddnsAutoResolveEnabled} onCheckedChange={(ddnsAutoResolveEnabled) => setForm({ ...form, ddnsAutoResolveEnabled })} />
-                </label>
-              )}
-            </div>
+              <>
+                <div className={"grid gap-3 " + (form.groupMode === "entry" ? "sm:grid-cols-[minmax(0,1fr)_120px_140px]" : "sm:grid-cols-[minmax(0,1fr)_120px]")}>
+                  <div className="space-y-2">
+                    <Label>{form.groupMode === "entry" ? "入口域名" : "DDNS 域名"}</Label>
+                    <Input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="例如 app.example.com" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>记录类型</Label>
+                    <Select value={form.recordType} onValueChange={(v) => setForm({ ...form, recordType: v as GroupForm["recordType"] })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="A">A</SelectItem>
+                        <SelectItem value="AAAA">AAAA</SelectItem>
+                        <SelectItem value="CNAME">CNAME</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.groupMode === "entry" && (
+                    <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3 sm:self-end">
+                      <span className="text-sm">自动解析</span>
+                      <Switch checked={form.ddnsAutoResolveEnabled} onCheckedChange={(ddnsAutoResolveEnabled) => setForm({ ...form, ddnsAutoResolveEnabled })} />
+                    </label>
+                  )}
+                </div>
 
-            {form.groupMode === "failover" && <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
-              <div className="grid gap-4 sm:grid-cols-[minmax(0,150px)_minmax(0,150px)_minmax(0,1fr)]">
-                <div className="space-y-2">
-                  <Label>故障转移时间</Label>
-                  <Input
-                    type="number"
-                    min={10}
-                    max={3600}
-                    value={form.failoverSeconds}
-                    onChange={(e) => setForm({ ...form, failoverSeconds: e.target.value })}
-                    placeholder="60"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>恢复观察时间</Label>
-                  <Input
-                    type="number"
-                    min={10}
-                    max={3600}
-                    value={form.recoverSeconds}
-                    onChange={(e) => setForm({ ...form, recoverSeconds: e.target.value })}
-                    placeholder="120"
-                  />
-                </div>
-                <div className="flex items-end gap-3">
-                  <label className="flex h-10 min-w-[142px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                    <span className="whitespace-nowrap text-sm">恢复后切回</span>
-                    <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
-                  </label>
-                  <label className="flex h-10 min-w-[104px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
-                    <span className="whitespace-nowrap text-sm">启用</span>
-                    <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
-                  </label>
-                </div>
-              </div>
-            </div>}
+                {form.groupMode === "failover" && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,130px)_minmax(0,130px)_minmax(0,1fr)]">
+                      <div className="space-y-2">
+                        <Label>故障转移时间</Label>
+                        <Input type="number" min={10} max={3600} value={form.failoverSeconds} onChange={(e) => setForm({ ...form, failoverSeconds: e.target.value })} placeholder="60" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>恢复观察时间</Label>
+                        <Input type="number" min={10} max={3600} value={form.recoverSeconds} onChange={(e) => setForm({ ...form, recoverSeconds: e.target.value })} placeholder="120" />
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <label className="flex h-10 min-w-[128px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                          <span className="whitespace-nowrap text-sm">恢复后切回</span>
+                          <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
+                        </label>
+                        <label className="flex h-10 min-w-[92px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                          <span className="whitespace-nowrap text-sm">启用</span>
+                          <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-            {(form.groupMode === "failover" || form.groupMode === "entry") && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
-              <div className="space-y-1.5">
-                <Input
-                  aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
-                  disabled={!form.chinaHealthCheckEnabled}
-                  value={form.chinaHealthCheckTarget}
-                  onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
-                  placeholder="留空默认 www.189.cn:80，IPv6 用 [地址]:端口"
-                />
-                <p className="text-xs text-muted-foreground">
-                  统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时整体仍视为可用。
-                </p>
-              </div>
-              <div className="space-y-2">
-                <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
-                  <span className="text-sm">入口健康度检测</span>
-                  <Switch
-                    checked={form.chinaHealthCheckEnabled}
-                    onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })}
-                  />
-                </label>
-                <label
-                  className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
-                  title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm">切换告警</span>
-                    <span className="block truncate text-[11px] text-muted-foreground">
-                      {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
-                    </span>
-                  </span>
-                  <Switch
-                    checked={form.telegramSwitchNotifyEnabled}
-                    disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
-                    onCheckedChange={(telegramSwitchNotifyEnabled) => {
-                      if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
-                        toast.error("请先在系统设置中配置并启用 Telegram 机器人");
-                        return;
-                      }
-                      setForm({ ...form, telegramSwitchNotifyEnabled });
-                    }}
-                  />
-                </label>
-              </div>
-            </div>}
-            </>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)]">
+                  <div className="space-y-1.5">
+                    <Input
+                      aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
+                      disabled={!form.chinaHealthCheckEnabled}
+                      value={form.chinaHealthCheckTarget}
+                      onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
+                      placeholder="留空默认 www.189.cn:80，IPv6 用 [地址]:端口"
+                    />
+                    <p className="text-xs text-muted-foreground">统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时整体仍视为可用。</p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                      <span className="text-sm">入口健康度检测</span>
+                      <Switch checked={form.chinaHealthCheckEnabled} onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })} />
+                    </label>
+                    <label
+                      className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
+                      title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm">切换告警</span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
+                        </span>
+                      </span>
+                      <Switch
+                        checked={form.telegramSwitchNotifyEnabled}
+                        disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
+                        onCheckedChange={(telegramSwitchNotifyEnabled) => {
+                          if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
+                            toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+                            return;
+                          }
+                          setForm({ ...form, telegramSwitchNotifyEnabled });
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </>
             )}
 
             {form.groupMode === "chain" && (
@@ -1941,143 +2101,261 @@ export function ForwardGroupsContent({
               </div>
             )}
 
-            <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
-              <Label>{form.groupMode === "chain" ? "链路主机顺序" : form.groupMode === "entry" ? "入口主机" : form.groupMode === "exit" ? "出口主机" : "成员优先级"}</Label>
-              {form.groupMode === "chain" ? (
-                <MultiHopEditor
-                  hosts={hosts || []}
-                  initialHopIds={form.members.map((member) => Number(member.hostId || 0)).filter(Boolean)}
-                  initialHopConnectHosts={form.members.map((member) => member.connectHost || null)}
-                  maxHops={5}
-                  externalEntry={!!form.entryGroupId}
-                  excludedHostIds={entryGroupHostIds(form.entryGroupId)}
-                  onChange={updateChainMemberIds}
-                  onConnectHostsChange={updateChainConnectHosts}
-                />
-              ) : (
-                <>
-                  <div className="flex justify-end">
-                    <Select onValueChange={(v) => addMember(Number(v))}>
-                      <SelectTrigger className="w-full sm:w-64">
-                        <SelectValue placeholder={effectiveGroupType === "host" ? "添加主机成员" : "添加隧道成员"} />
-                      </SelectTrigger>
+            {runtimeConfigMode && (
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_112px] sm:items-end">
+                <div className="space-y-2">
+                  <Label>转发工具</Label>
+                  <Select
+                    value={form.forwardType}
+                    disabled={availableForwardTypes.length === 0}
+                    onValueChange={(value) => {
+                      const forwardType = value as ForwardType;
+                      const tcpSupported = form.protocol !== "udp";
+                      setForm({
+                        ...form,
+                        forwardType,
+                        proxyProtocolReceive: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolReceive,
+                        proxyProtocolSend: tcpSupported && (forwardType === "gost" || forwardType === "realm") && form.proxyProtocolSend,
+                        tcpFastOpen: tcpSupported && forwardType === "realm" && form.tcpFastOpen,
+                        zeroCopy: tcpSupported && forwardType === "realm" && form.zeroCopy,
+                      });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择转发工具" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableForwardTypes.map((type) => (
+                        <SelectItem key={type} value={type}>{FORWARD_TYPE_LABELS[type]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>协议</Label>
+                  <Select
+                    value={form.protocol}
+                    onValueChange={(value) => {
+                      const protocol = normalizeForwardRuleProtocol(value, "both");
+                      const tcpSupported = protocol !== "udp";
+                      setForm({
+                        ...form,
+                        protocol,
+                        proxyProtocolReceive: tcpSupported && form.proxyProtocolReceive,
+                        proxyProtocolSend: tcpSupported && form.proxyProtocolSend,
+                        tcpFastOpen: tcpSupported && form.tcpFastOpen,
+                        zeroCopy: tcpSupported && form.zeroCopy,
+                      });
+                    }}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="both">TCP + UDP</SelectItem>
+                      <SelectItem value="tcp">TCP</SelectItem>
+                      <SelectItem value="udp">UDP</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>流量倍率</Label>
+                  <Input
+                    type="number"
+                    min={0.01}
+                    max={50}
+                    step={0.01}
+                    value={form.trafficMultiplier}
+                    onChange={(event) => setForm({ ...form, trafficMultiplier: event.target.value })}
+                    placeholder="1"
+                  />
+                </div>
+              </div>
+            )}
+
+            {runtimeConfigMode && (
+              <div className="space-y-3 rounded-md border border-border/60 bg-muted/20 p-3">
+                <div className="space-y-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <Label className="text-sm">PROXY Protocol</Label>
+                    <Select
+                      value={String(form.proxyProtocolVersion)}
+                      onValueChange={(value) => setForm({ ...form, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 })}
+                      disabled={!runtimeProxyProtocolSupported}
+                    >
+                      <SelectTrigger className="h-8 w-full sm:w-28"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {availableMemberOptions.map((item: any) => (
-                          <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
-                            {effectiveGroupType === "host" ? (
-                              <HostStatusLabel
-                                host={item.host}
-                                label={(
-                                  <span className="inline-flex min-w-0 items-center gap-1.5">
-                                    <span className="truncate">{item.label}</span>
-                                    {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
-                                  </span>
-                                )}
-                              />
-                            ) : (
-                              <span>{item.label} {item.meta ? `/ ${item.meta}` : ""}</span>
-                            )}
-                          </SelectItem>
-                        ))}
+                        <SelectItem value="1">v1</SelectItem>
+                        <SelectItem value="2">v2</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-2">
-                    {form.members.length > 0 && (
-                      <>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-                          <span className="font-medium text-foreground/70">开关说明</span>
-                          {showExitAddressColumns && (
-                            <>
-                              <span>内网：使用该主机内网 IP</span>
-                              <span>IPv6：使用该主机 IPv6</span>
-                              <span>两者互斥，未配置时不可开启</span>
-                            </>
-                          )}
-                          <span>启用：关闭后该成员不参与当前组</span>
-                        </div>
-                        <div className={`hidden items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid ${showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]"}`}>
-                          <span className="col-span-2">顺序</span>
-                          <span>{effectiveGroupType === "host" ? "主机" : "隧道"}</span>
-                          {showExitAddressColumns && (
-                            <>
-                              <span className="text-center">内网</span>
-                              <span className="text-center">IPv6</span>
-                            </>
-                          )}
-                          <span className="text-center">启用</span>
-                          <span className="text-right">操作</span>
-                        </div>
-                      </>
-                    )}
-                    {form.members.map((member, index) => (
-                      <div
-                        key={member.key}
-                        draggable
-                        onDragStart={() => setDragMemberKey(member.key)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => {
-                          if (dragMemberKey) moveMember(dragMemberKey, member.key);
-                          setDragMemberKey(null);
-                        }}
-                        className={`flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2 sm:grid sm:gap-1.5 ${showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]"}`}
-                      >
-                        <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
-                        <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
-                        {member.memberType === "host" ? (
-                          <HostStatusLabel
-                            host={hostById.get(Number(member.hostId))}
-                            label={memberLabel(member)}
-                            className="min-w-0 flex-1 text-sm font-medium"
-                            labelClassName="truncate"
-                          />
-                        ) : (
-                          <div className="flex min-w-0 items-center gap-2">
-                            <Route className="h-4 w-4 text-primary" />
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
-                            </div>
-                          </div>
-                        )}
-                        {form.groupMode === "exit" && member.memberType === "host" && (
-                          <>
-                            <div className="flex h-7 w-[56px] items-center justify-center">
-                              <Switch
-                                checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostPrivateAddress(hostById.get(Number(member.hostId || 0))))}
-                                disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
-                                onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
-                                aria-label={`为${memberLabel(member)}使用内网IP`}
-                              />
-                            </div>
-                            <div className="flex h-7 w-[56px] items-center justify-center">
-                              <Switch
-                                checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostIpv6Address(hostById.get(Number(member.hostId || 0))))}
-                                disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
-                                onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
-                                aria-label={`为${memberLabel(member)}使用IPv6转发`}
-                              />
-                            </div>
-                          </>
-                        )}
-                        <div className="flex h-7 w-[52px] items-center justify-center">
-                          <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
-                            setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
-                          }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
-                        </div>
-                        <div className="flex h-7 w-9 items-center justify-end">
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                    {form.members.length === 0 && (
-                      <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">还没有成员</div>
-                    )}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                      <span className="text-sm">接收 PROXY</span>
+                      <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolReceive} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })} />
+                    </label>
+                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                      <span className="text-sm">发送 PROXY</span>
+                      <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolSend} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked })} />
+                    </label>
                   </div>
-                </>
-              )}
-            </div>
+                  {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。</p>}
+                </div>
+
+                <div className="space-y-2 border-t border-border/50 pt-3">
+                  <Label className="text-sm">传输优化</Label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                      <span className="text-sm">TCP Fast Open</span>
+                      <Switch checked={runtimeRealmOptimizationSupported && form.tcpFastOpen} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, tcpFastOpen: checked })} />
+                    </label>
+                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                      <span className="text-sm">zero-copy</span>
+                      <Switch checked={runtimeRealmOptimizationSupported && form.zeroCopy} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, zeroCopy: checked })} />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!isPortMode && (
+              <div className={form.groupMode === "chain" ? "space-y-2" : "space-y-3 rounded-lg border border-border/60 p-3"}>
+                <Label>{form.groupMode === "chain" ? "链路主机顺序" : form.groupMode === "entry" ? "入口主机" : form.groupMode === "exit" ? "出口主机" : "成员优先级"}</Label>
+                {form.groupMode === "chain" ? (
+                  <MultiHopEditor
+                    hosts={hosts || []}
+                    initialHopIds={form.members.map((member) => Number(member.hostId || 0)).filter(Boolean)}
+                    initialHopConnectHosts={form.members.map((member) => member.connectHost || null)}
+                    maxHops={5}
+                    externalEntry={!!form.entryGroupId}
+                    excludedHostIds={entryGroupHostIds(form.entryGroupId)}
+                    onChange={updateChainMemberIds}
+                    onConnectHostsChange={updateChainConnectHosts}
+                  />
+                ) : (
+                  <>
+                    <div className="flex justify-end">
+                      <Select onValueChange={(v) => addMember(Number(v))}>
+                        <SelectTrigger className="w-full sm:w-64">
+                          <SelectValue placeholder={effectiveGroupType === "host" ? "添加主机成员" : "添加隧道成员"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableMemberOptions.map((item: any) => (
+                            <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
+                              {effectiveGroupType === "host" ? (
+                                <HostStatusLabel
+                                  host={item.host}
+                                  label={(
+                                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                                      <span className="truncate">{item.label}</span>
+                                      {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
+                                    </span>
+                                  )}
+                                />
+                              ) : (
+                                <span>{item.label} {item.meta ? "/ " + item.meta : ""}</span>
+                              )}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      {form.members.length > 0 && (
+                        <>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/35 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                            <span className="font-medium text-foreground/70">开关说明</span>
+                            {showExitAddressColumns && (
+                              <>
+                                <span>内网：使用该主机内网 IP</span>
+                                <span>IPv6：使用该主机 IPv6</span>
+                                <span>两者互斥，未配置时不可开启</span>
+                              </>
+                            )}
+                            <span>启用：关闭后该成员不参与当前组</span>
+                          </div>
+                          <div className={"hidden items-center gap-1.5 px-2.5 text-[11px] text-muted-foreground sm:grid " + (showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]")}>
+                            <span className="col-span-2">顺序</span>
+                            <span>{effectiveGroupType === "host" ? "主机" : "隧道"}</span>
+                            {showExitAddressColumns && (
+                              <>
+                                <span className="text-center">内网</span>
+                                <span className="text-center">IPv6</span>
+                              </>
+                            )}
+                            <span className="text-center">启用</span>
+                            <span className="text-right">操作</span>
+                          </div>
+                        </>
+                      )}
+                      {form.members.map((member, index) => (
+                        <div
+                          key={member.key}
+                          draggable
+                          onDragStart={() => setDragMemberKey(member.key)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={() => {
+                            if (dragMemberKey) moveMember(dragMemberKey, member.key);
+                            setDragMemberKey(null);
+                          }}
+                          className={"flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-background/70 px-3 py-2 sm:grid sm:gap-1.5 " + (showExitAddressColumns ? "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_56px_56px_52px_36px]" : "sm:grid-cols-[auto_auto_minmax(8rem,1fr)_52px_36px]")}
+                        >
+                          <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />
+                          <span className="flex h-6 w-6 items-center justify-center rounded bg-muted text-xs">{index + 1}</span>
+                          {member.memberType === "host" ? (
+                            <HostStatusLabel
+                              host={hostById.get(Number(member.hostId))}
+                              label={memberLabel(member)}
+                              className="min-w-0 flex-1 text-sm font-medium"
+                              labelClassName="truncate"
+                            />
+                          ) : (
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Route className="h-4 w-4 text-primary" />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium">{memberLabel(member)}</p>
+                              </div>
+                            </div>
+                          )}
+                          {form.groupMode === "exit" && member.memberType === "host" && (
+                            <>
+                              <div className="flex h-7 w-[56px] items-center justify-center">
+                                <Switch
+                                  checked={!!hostPrivateAddress(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostPrivateAddress(hostById.get(Number(member.hostId || 0))))}
+                                  disabled={!hostPrivateAddress(hostById.get(Number(member.hostId || 0)))}
+                                  onCheckedChange={(checked) => updateExitMemberUsePrivate(member.key, checked)}
+                                  aria-label={"为" + memberLabel(member) + "使用内网IP"}
+                                />
+                              </div>
+                              <div className="flex h-7 w-[56px] items-center justify-center">
+                                <Switch
+                                  checked={!!hostIpv6Address(hostById.get(Number(member.hostId || 0))) && sameAddress(member.connectHost, hostIpv6Address(hostById.get(Number(member.hostId || 0))))}
+                                  disabled={!hostIpv6Address(hostById.get(Number(member.hostId || 0)))}
+                                  onCheckedChange={(checked) => updateExitMemberUseIpv6(member.key, checked)}
+                                  aria-label={"为" + memberLabel(member) + "使用IPv6转发"}
+                                />
+                              </div>
+                            </>
+                          )}
+                          <div className="flex h-7 w-[52px] items-center justify-center">
+                            <Switch checked={member.isEnabled} onCheckedChange={(checked) => {
+                              setForm({ ...form, members: form.members.map((m) => m.key === member.key ? { ...m, isEnabled: checked } : m) });
+                            }} title={member.isEnabled ? "关闭后该成员不参与转发组切换" : "开启后该成员可参与转发组切换"} />
+                          </div>
+                          <div className="flex h-7 w-9 items-center justify-end">
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => removeMember(member.key)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                      {form.members.length === 0 && (
+                        <div className="rounded-md border border-dashed border-border/70 p-6 text-center text-sm text-muted-foreground">还没有成员</div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={closeDialog}>取消</Button>
@@ -2107,7 +2385,7 @@ export function ForwardGroupsContent({
       <Dialog open={!!deleteGroup} onOpenChange={(open) => !open && setDeleteGroup(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
+            <DialogTitle>{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "删除端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "删除端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "删除入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "删除出口组" : "删除转发组"}</DialogTitle>
             <DialogDescription>
               确认删除 "{deleteGroup?.name}"？引用它的转发规则会被同步清理，已下发到 Agent 的运行状态也会刷新。
             </DialogDescription>
@@ -2120,7 +2398,7 @@ export function ForwardGroupsContent({
             ) : deleteImpactQuery.data?.forwardRuleCount ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm">
                 <p className="font-medium text-destructive">
-                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
+                  当前{normalizeGroupMode(deleteGroup?.groupMode) === "port" ? "端口转发" : normalizeGroupMode(deleteGroup?.groupMode) === "chain" ? "端口转发链" : normalizeGroupMode(deleteGroup?.groupMode) === "entry" ? "入口组" : normalizeGroupMode(deleteGroup?.groupMode) === "exit" ? "出口组" : "转发组"}仍关联 {deleteImpactQuery.data.forwardRuleCount} 条转发规则
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   包含 {deleteImpactQuery.data.templateRuleCount || 0} 条用户规则和 {deleteImpactQuery.data.childRuleCount || 0} 条成员运行规则。

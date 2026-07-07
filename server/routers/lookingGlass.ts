@@ -225,6 +225,7 @@ export const lookingGlassRouter = router({
   iperf3Start: protectedProcedure
     .input(z.object({
       hostId: z.number().int().positive(),
+      port: z.number().int().min(1).max(65535).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       await assertNetworkTestAllowed(ctx);
@@ -236,6 +237,7 @@ export const lookingGlassRouter = router({
       normalizeAgentPublicAddress(host);
       const { status } = enqueueIperf3AgentTask(input.hostId, {
         op: "start",
+        port: input.port,
       });
       pushAgentRefresh(input.hostId, "iperf3-start");
       return decorateIperf3Status(status, host);

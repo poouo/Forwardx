@@ -325,11 +325,13 @@ function actionPortKey(action: any) {
   const port = Number(action?.sourcePort || 0);
   if (port <= 0) return "";
   const statusType = String(action?.statusType || "").trim();
-  if (statusType === "tunnel" || Number(action?.tunnelId || 0) > 0) {
-    return `tunnel:${Number(action?.tunnelId || 0)}:${port}`;
-  }
-  if (Number(action?.ruleId || 0) > 0 || statusType === "rule") {
+  const ruleId = Number(action?.ruleId || 0);
+  const tunnelId = Number(action?.tunnelId || 0);
+  if (ruleId > 0 || statusType === "rule") {
     return `rule-port:${port}`;
+  }
+  if (tunnelId > 0 || statusType === "tunnel") {
+    return `tunnel:${tunnelId}:${port}`;
   }
   return "";
 }
@@ -3844,10 +3846,13 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       for (const action of actions) {
         const port = Number(action?.sourcePort || 0);
         if (port <= 0) continue;
-        if (String(action?.statusType || "") === "tunnel" || Number(action?.tunnelId || 0) > 0) {
-          tunnelActionPorts.add(port);
-        } else if (String(action?.statusType || "") === "rule" || Number(action?.ruleId || 0) > 0) {
+        const statusType = String(action?.statusType || "");
+        const ruleId = Number(action?.ruleId || 0);
+        const tunnelId = Number(action?.tunnelId || 0);
+        if (ruleId > 0 || statusType === "rule") {
           ruleActionPorts.add(port);
+        } else if (tunnelId > 0 || statusType === "tunnel") {
+          tunnelActionPorts.add(port);
         }
       }
       for (const localRule of localRulesByPort.values()) {
@@ -4089,7 +4094,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const activeWorkActions = supportsDesiredState
       ? orderedActions.filter((action: any) => action.op === "remove" || !action.knownRunning)
       : orderedActions;
-    const hasTunnelApplyActions = activeWorkActions.some((action: any) => action.op === "apply" && (action.statusType === "tunnel" || Number(action.tunnelId) > 0));
+    const hasTunnelApplyActions = activeWorkActions.some((action: any) => (
+      action.op === "apply"
+      && !Number(action.ruleId || 0)
+      && (action.statusType === "tunnel" || Number(action.tunnelId) > 0)
+    ));
     const hasPendingMultiHopRuntime = (hostTunnels as any[]).some((tunnel: any) => {
       const hops = tunnelHopsByTunnelId.get(Number(tunnel.id));
       return !!tunnel?.isEnabled

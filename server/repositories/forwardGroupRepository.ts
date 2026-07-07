@@ -77,13 +77,28 @@ function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncF
     "forwardGroupId",
     "forwardGroupRuleId",
     "forwardGroupMemberId",
+    "proxyProtocolVersion",
+    "failoverSeconds",
+    "recoverSeconds",
   ];
-  const stringKeys = ["forwardType", "protocol", "gostMode", "targetIp"];
+  const stringKeys = ["forwardType", "protocol", "gostMode", "targetIp", "failoverStrategy", "failoverTargets"];
+  const boolKeys = [
+    "proxyProtocolReceive",
+    "proxyProtocolSend",
+    "proxyProtocolExitReceive",
+    "proxyProtocolExitSend",
+    "tcpFastOpen",
+    "zeroCopy",
+    "udpOverTcp",
+    "failoverEnabled",
+    "autoFailback",
+  ];
   return numberKeys.every((key) => nullableNumber(existing?.[key]) === nullableNumber(payload?.[key]))
-    && stringKeys.every((key) => nullableString(existing?.[key]) === nullableString(payload?.[key]));
+    && stringKeys.every((key) => nullableString(existing?.[key]) === nullableString(payload?.[key]))
+    && boolKeys.every((key) => dbBool(existing?.[key]) === dbBool(payload?.[key]));
 }
 
-type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
+type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 type ForwardGroupRecordType = "A" | "AAAA" | "CNAME";
 type ForwardGroupFailoverOptions = {
   forcePriority?: boolean;
@@ -248,7 +263,7 @@ function isSafeHostAddress(value: string) {
 
 function groupModeOf(group: any): ForwardGroupMode {
   const mode = String(group?.groupMode || "failover");
-  return mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
+  return mode === "port" || mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
 }
 
 function isCollectionGroupMode(mode: ForwardGroupMode) {
@@ -260,6 +275,11 @@ function supportsChinaHealthMode(mode: ForwardGroupMode) {
 }
 
 function validateForwardGroupModeMembers(groupMode: ForwardGroupMode, groupType: string, members: ForwardGroupMemberInput[], options: { externalEntry?: boolean } = {}) {
+  if (groupMode === "port") {
+    if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
+    if (String(groupType || "host") !== "host") throw new Error("端口转发仅支持主机成员");
+    if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
+  }
   if (groupMode === "chain") {
     const minMembers = options.externalEntry ? 1 : 2;
     if (members.length < minMembers || members.length > 5) {
@@ -306,6 +326,7 @@ async function normalizeForwardGroupMemberInput(
   index: number,
   options: { externalEntry?: boolean } = {},
 ): Promise<ForwardGroupMemberInput> {
+  if (groupMode === "port") return { ...member, memberType: "host", tunnelId: null, connectHost: null, isEnabled: true };
   if (groupMode === "exit" && member.memberType === "host" && member.hostId) {
     const host = await getHostById(Number(member.hostId));
     if (!host) throw new Error("Host does not exist");
@@ -1136,6 +1157,11 @@ export async function validateForwardGroupRuleConfig(groupId: number, config: Fo
   if (members.length === 0) throw new Error("Forward group has no members");
   const groupMode = groupModeOf(group);
   if (isCollectionGroupMode(groupMode)) throw new Error("Entry/exit groups cannot be used directly as forwarding rules");
+  if (groupMode === "port") {
+    if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
+    if (String(group.groupType || "host") !== "host") throw new Error("端口转发仅支持主机成员");
+    if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
+  }
   if (groupMode === "chain") {
     const enabledMembers = members.filter((member: any) => !!member.isEnabled);
     const entryMembers = await chainEntryMembers(group);
@@ -1311,6 +1337,15 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const protocol = String(templateRule.protocol || "both");
   const protocolTcpSupported = protocol === "tcp" || protocol === "both";
   const protocolUdpSupported = protocol === "udp" || protocol === "both";
+  const isPortGroup = groupModeOf(group) === "port";
+  const directRuntimeSource = isPortGroup ? group : templateRule;
+  const failoverRuntimeSource = templateRule;
+  const directForwardType = String((directRuntimeSource as any).forwardType || "iptables");
+  const directProxySupported = protocolTcpSupported && (directForwardType === "gost" || directForwardType === "realm");
+  const directRealmOptimizationSupported = protocolTcpSupported && directForwardType === "realm";
+  const templateFailoverEnabled = !!(failoverRuntimeSource as any).failoverEnabled && protocol === "tcp";
+  const directFailoverEnabled = templateFailoverEnabled && directForwardType === "gost";
+  const childFailoverEnabled = member.memberType === "tunnel" ? templateFailoverEnabled : directFailoverEnabled;
   const tunnelMode = String(tunnel?.mode || "").toLowerCase();
   const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel && tunnelMode !== "nginx_stream" && tunnelMode !== "nginx_tls";
   const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
@@ -1318,7 +1353,7 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const payload: any = {
     hostId,
     name: `[Group:${group.name}] ${templateRule.name}`,
-    forwardType: member.memberType === "tunnel" ? "gost" : templateRule.forwardType,
+    forwardType: member.memberType === "tunnel" ? "gost" : directForwardType,
     protocol,
     gostMode: "direct",
     gostRelayHost: null,
@@ -1336,21 +1371,21 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
-    proxyProtocolReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolReceive : !!(templateRule as any).proxyProtocolReceive,
-    proxyProtocolSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolSend : !!(templateRule as any).proxyProtocolSend,
+    proxyProtocolReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolReceive : directProxySupported && !!(directRuntimeSource as any).proxyProtocolReceive,
+    proxyProtocolSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolSend : directProxySupported && !!(directRuntimeSource as any).proxyProtocolSend,
     proxyProtocolExitReceive: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitReceive : false,
     proxyProtocolExitSend: member.memberType === "tunnel" ? tunnelProxySupported && protocolTcpSupported && !!tunnel.proxyProtocolExitSend : false,
-    proxyProtocolVersion: member.memberType === "tunnel" ? (tunnelProxySupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1) : (Number((templateRule as any).proxyProtocolVersion) === 2 ? 2 : 1),
-    tcpFastOpen: member.memberType === "tunnel" ? tunnelForwardx && protocolTcpSupported && !!tunnel.tcpFastOpen : !!(templateRule as any).tcpFastOpen,
-    zeroCopy: member.memberType === "tunnel" ? false : !!(templateRule as any).zeroCopy,
+    proxyProtocolVersion: member.memberType === "tunnel" ? (tunnelProxySupported && Number(tunnel.proxyProtocolVersion) === 2 ? 2 : 1) : (directProxySupported && Number((directRuntimeSource as any).proxyProtocolVersion) === 2 ? 2 : 1),
+    tcpFastOpen: member.memberType === "tunnel" ? tunnelForwardx && protocolTcpSupported && !!tunnel.tcpFastOpen : directRealmOptimizationSupported && !!(directRuntimeSource as any).tcpFastOpen,
+    zeroCopy: member.memberType === "tunnel" ? false : directRealmOptimizationSupported && !!(directRuntimeSource as any).zeroCopy,
     udpOverTcp: member.memberType === "tunnel" ? tunnelForwardx && protocolUdpSupported && !!tunnel.udpOverTcp : false,
     udpOverTcpPort: null,
-    failoverEnabled: !!(templateRule as any).failoverEnabled,
-    failoverStrategy: (templateRule as any).failoverStrategy || "fallback",
-    failoverTargets: (templateRule as any).failoverTargets || null,
-    failoverSeconds: Number((templateRule as any).failoverSeconds || 60),
-    recoverSeconds: Number((templateRule as any).recoverSeconds || 120),
-    autoFailback: (templateRule as any).autoFailback !== false,
+    failoverEnabled: childFailoverEnabled,
+    failoverStrategy: (failoverRuntimeSource as any).failoverStrategy || "fallback",
+    failoverTargets: childFailoverEnabled ? (failoverRuntimeSource as any).failoverTargets || null : null,
+    failoverSeconds: Number((failoverRuntimeSource as any).failoverSeconds || 60),
+    recoverSeconds: Number((failoverRuntimeSource as any).recoverSeconds || 120),
+    autoFailback: (failoverRuntimeSource as any).autoFailback !== false,
     isEnabled: true,
     isRunning: false,
     pendingDelete: false,
@@ -1433,11 +1468,17 @@ async function ensureChainRuleForTemplate(
     if (!targetIp) throw new Error("Next chain host has no usable connect address");
   }
 
+  const chainForwardType = String((group as any).forwardType || templateRule.forwardType || "iptables");
+  const protocol = String(templateRule.protocol || "both");
+  const protocolTcpSupported = protocol === "tcp" || protocol === "both";
+  const chainProxyProtocolSupported = protocolTcpSupported && (chainForwardType === "gost" || chainForwardType === "realm");
+  const chainRealmOptimizationSupported = protocolTcpSupported && chainForwardType === "realm";
+
   const payload: any = {
     hostId,
     name: `[Chain:${group.name}] ${overrides.namePrefix || `${index + 1}/${total}`} ${templateRule.name}`,
-    forwardType: templateRule.forwardType,
-    protocol: templateRule.protocol,
+    forwardType: chainForwardType,
+    protocol,
     gostMode: "direct",
     gostRelayHost: null,
     gostRelayPort: null,
@@ -1454,13 +1495,13 @@ async function ensureChainRuleForTemplate(
     blockHttp: false,
     blockSocks: false,
     blockTls: false,
-    proxyProtocolReceive: false,
-    proxyProtocolSend: false,
+    proxyProtocolReceive: chainProxyProtocolSupported && !!(group as any).proxyProtocolReceive,
+    proxyProtocolSend: chainProxyProtocolSupported && !!(group as any).proxyProtocolSend,
     proxyProtocolExitReceive: false,
     proxyProtocolExitSend: false,
-    proxyProtocolVersion: 1,
-    tcpFastOpen: false,
-    zeroCopy: false,
+    proxyProtocolVersion: chainProxyProtocolSupported && Number((group as any).proxyProtocolVersion) === 2 ? 2 : 1,
+    tcpFastOpen: chainRealmOptimizationSupported && !!(group as any).tcpFastOpen,
+    zeroCopy: chainRealmOptimizationSupported && !!(group as any).zeroCopy,
     udpOverTcp: false,
     udpOverTcpPort: null,
     failoverEnabled: false,
@@ -1549,6 +1590,11 @@ export async function syncForwardGroupRules(groupId: number, options: SyncForwar
   const liveMemberIds = new Set((groupMode === "chain" ? activeChainMembers : members).map((m: any) => Number(m.id)));
   const liveTemplateIds = new Set((templates as any[]).map((rule: any) => Number(rule.id)));
 
+  if (groupMode === "port") {
+    if (members.length !== 1) throw new Error("端口转发需要配置 1 台所属主机");
+    if (String(group.groupType || "host") !== "host") throw new Error("端口转发仅支持主机成员");
+    if (members.some((member) => member.memberType !== "host")) throw new Error("端口转发仅支持主机成员");
+  }
   if (groupMode === "chain") {
     const liveChildKeys = new Set<string>();
     const entryMembers = await chainEntryMembers(group);
@@ -2251,7 +2297,7 @@ async function runForwardGroupFailoverForGroups(groups: any[], options: ForwardG
   for (const group of groups as any[]) {
     if (!group.isEnabled) continue;
     const mode = groupModeOf(group);
-    if (mode === "chain") continue;
+    if (mode === "chain" || mode === "port") continue;
     if (mode === "entry") {
       if (group.chinaHealthCheckEnabled) {
         for (const member of sortedMembers(group, true) as any[]) {

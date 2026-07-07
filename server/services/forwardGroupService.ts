@@ -5,8 +5,9 @@ import { pushAgentRefresh } from "../agentEvents";
 import { createHopTestBatch, registerHopTest } from "../hopTestState";
 import { ENV } from "../env";
 import { normalizeTrafficMultiplier } from "../../shared/trafficMultiplier";
+import { normalizeForwardRuleProtocol, type ForwardRuleProtocol } from "../../shared/forwardTypes";
 
-export type ForwardGroupMode = "failover" | "chain" | "entry" | "exit";
+export type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
 export type ForwardGroupType = "host" | "tunnel";
 
 export type ForwardGroupMemberRequest = {
@@ -24,6 +25,20 @@ export type ForwardGroupInput = {
   groupMode?: ForwardGroupMode;
   entryGroupId?: number | null;
   groupType: ForwardGroupType;
+  protocol?: ForwardRuleProtocol;
+  forwardType?: "iptables" | "nftables" | "realm" | "socat" | "gost" | "nginx";
+  proxyProtocolReceive?: boolean;
+  proxyProtocolSend?: boolean;
+  proxyProtocolExitReceive?: boolean;
+  proxyProtocolExitSend?: boolean;
+  proxyProtocolVersion?: number;
+  tcpFastOpen?: boolean;
+  zeroCopy?: boolean;
+  udpOverTcp?: boolean;
+  udpOverTcpPort?: number | null;
+  failoverEnabled?: boolean;
+  failoverStrategy?: "fallback" | "round_robin" | "random" | "ip_hash";
+  failoverTargets?: Array<{ targetIp?: string; targetPort?: number }>;
   domain?: string | null;
   recordType?: "A" | "AAAA" | "CNAME";
   failoverSeconds: number;
@@ -45,8 +60,11 @@ export function normalizeForwardGroupMembers(
   options: { externalEntry?: boolean } = {},
 ) {
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
-  const effectiveGroupType = groupMode === "chain" || isCollectionGroup ? "host" : groupType;
+  const effectiveGroupType = groupMode === "port" || groupMode === "chain" || isCollectionGroup ? "host" : groupType;
   const minChainMembers = options.externalEntry ? 1 : 2;
+  if (groupMode === "port" && members.length !== 1) {
+    throw new Error("端口转发需要配置 1 台所属主机");
+  }
   if (groupMode === "chain" && (members.length < minChainMembers || members.length > 5)) {
     if (options.externalEntry) throw new Error("端口转发链需要配置 1-5 台主机");
     throw new Error("端口转发链需要配置 2-5 台主机");
@@ -70,7 +88,7 @@ export function normalizeForwardGroupMembers(
       tunnelId: effectiveGroupType === "tunnel" ? id : null,
       connectHost: groupMode === "chain" || groupMode === "exit" ? String(member.connectHost || "").trim() || null : null,
       priority: member.priority ?? index,
-      isEnabled: groupMode === "chain" ? true : member.isEnabled ?? true,
+      isEnabled: groupMode === "port" || groupMode === "chain" ? true : member.isEnabled ?? true,
     };
   });
 }
@@ -118,9 +136,9 @@ async function assertTelegramSwitchNotifyReady(enabled: boolean) {
 
 async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: number) {
   const rawMode = input.groupMode;
-  const groupMode: ForwardGroupMode = rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
+  const groupMode: ForwardGroupMode = rawMode === "port" || rawMode === "chain" || rawMode === "entry" || rawMode === "exit" ? rawMode : "failover";
   const isCollectionGroup = groupMode === "entry" || groupMode === "exit";
-  const groupType: ForwardGroupType = groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
+  const groupType: ForwardGroupType = groupMode === "port" || groupMode === "chain" || isCollectionGroup ? "host" : input.groupType;
   const entryGroupId = groupMode === "chain" ? Number(input.entryGroupId || 0) || null : null;
   await assertEntryGroupReference(entryGroupId, userId);
   const domain = groupMode === "entry" || groupMode === "failover" ? input.domain?.trim() || null : null;
@@ -139,16 +157,35 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   await assertTelegramSwitchNotifyReady(telegramSwitchNotifyEnabled);
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
   await db.validateForwardGroupRecordMembers({ groupMode, groupType, recordType }, members as any);
+  const runtimeConfigSupported = groupMode === "port" || groupMode === "chain";
+  const protocol = runtimeConfigSupported ? normalizeForwardRuleProtocol(input.protocol, "both") : "both";
+  const runtimeTcpOptionsSupported = runtimeConfigSupported && protocol !== "udp";
+  const forwardType = runtimeConfigSupported ? (input.forwardType || "iptables") : groupType === "tunnel" ? "gost" : "iptables";
+  const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (forwardType === "gost" || forwardType === "realm");
+  const runtimeRealmOptimizationSupported = runtimeTcpOptionsSupported && forwardType === "realm";
   const commonData = {
     name: input.name,
     remark: isCollectionGroup ? null : input.remark?.trim() || null,
     groupMode,
     entryGroupId,
     groupType,
-    forwardType: groupType === "tunnel" ? "gost" : "iptables",
+    protocol,
+    forwardType,
+    proxyProtocolReceive: runtimeProxyProtocolSupported && !!input.proxyProtocolReceive,
+    proxyProtocolSend: runtimeProxyProtocolSupported && !!input.proxyProtocolSend,
+    proxyProtocolExitReceive: false,
+    proxyProtocolExitSend: false,
+    proxyProtocolVersion: runtimeProxyProtocolSupported && Number(input.proxyProtocolVersion) === 2 ? 2 : 1,
+    tcpFastOpen: runtimeRealmOptimizationSupported && !!input.tcpFastOpen,
+    zeroCopy: runtimeRealmOptimizationSupported && !!input.zeroCopy,
+    udpOverTcp: false,
+    udpOverTcpPort: null,
+    failoverEnabled: false,
+    failoverStrategy: "fallback",
+    failoverTargets: null,
     domain,
     recordType,
-    trafficMultiplier: groupMode === "chain" ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
+    trafficMultiplier: groupMode === "port" || groupMode === "chain" ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
     failoverSeconds: input.failoverSeconds,
     recoverSeconds: input.recoverSeconds,
     chinaHealthCheckEnabled,
@@ -166,7 +203,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     createData: {
       ...commonData,
       sourcePort: 1,
-      protocol: "both",
+      protocol,
       targetIp: "0.0.0.0",
       targetPort: 1,
       userId,
@@ -177,7 +214,8 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
 export async function createForwardGroupFromInput(input: ForwardGroupInput, userId: number) {
   const normalized = await normalizeForwardGroupInput(input, userId);
   const id = await db.createForwardGroup(normalized.createData as any, normalized.members as any);
-  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, { manual: true });
+  if (normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") await db.syncForwardGroupRules(id);
+  else await db.runForwardGroupFailover(id, { manual: true });
   return id;
 }
 
@@ -192,7 +230,8 @@ export async function updateForwardGroupFromInput(id: number, input: ForwardGrou
   await db.updateForwardGroup(id, normalized.data as any, { skipSync: true });
   await db.replaceForwardGroupMembers(id, normalized.members as any);
   if (shouldResetChinaHealth) await db.resetForwardGroupChinaHealth(id);
-  if (normalized.data.groupMode !== "chain") await db.runForwardGroupFailover(id, {
+  if (normalized.data.groupMode === "chain" || normalized.data.groupMode === "port") await db.syncForwardGroupRules(id);
+  else await db.runForwardGroupFailover(id, {
     forcePriority: memberPriorityChanged,
     forceSync: memberPriorityChanged,
     manual: true,

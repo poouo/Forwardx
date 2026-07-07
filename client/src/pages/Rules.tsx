@@ -86,10 +86,11 @@ import {
   type ForwardProtocolKey,
 } from "@shared/forwardTypes";
 import { ruleLatencyProbeMethodForRule } from "@shared/latencyProbe";
-import { formatTrafficMultiplier, normalizeTrafficMultiplier } from "@shared/trafficMultiplier";
+import { formatTrafficMultiplier } from "@shared/trafficMultiplier";
 import { Fragment, lazy, Suspense, useState, useMemo, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
+import { useLocation, useSearch } from "wouter";
 import { TcpingDetailDialog } from "@/components/rules/TcpingDetailDialog";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import {
@@ -212,7 +213,7 @@ type RuleProtocol = "tcp" | "udp" | "both";
 type RuleRouteMode = "local" | "tunnel" | "chain" | "group";
 
 function isForwardGroupRouteModeValue(mode: RuleRouteMode) {
-  return mode === "chain" || mode === "group";
+  return mode === "local" || mode === "chain" || mode === "group";
 }
 
 type RuleFormData = {
@@ -319,7 +320,7 @@ const desktopRuleTypeLabels = {
   group: "转发组",
 } as const;
 const ruleTypeDescriptions = {
-  local: "主机端口直接转发",
+  local: "使用已保存端口转发",
   tunnel: "通过隧道出口转发",
   chain: "按转发链顺序转发",
   group: "使用转发组入口",
@@ -340,14 +341,14 @@ const RULE_TRANSFER_FILE_VERSION = 1;
 const RULE_TRANSFER_MAX_IMPORT_COUNT = 500;
 
 const ruleTransferScopeLabels: Record<RuleTransferScopeType, string> = {
-  local: "主机",
+  local: "端口转发",
   tunnel: "隧道",
   chain: "转发链",
   group: "转发组",
 };
 
 const ruleTransferScopeOptions: Array<{ value: RuleTransferScopeType; label: string }> = [
-  { value: "local", label: "主机" },
+  { value: "local", label: "端口转发" },
   { value: "tunnel", label: "隧道" },
   { value: "chain", label: "转发链" },
   { value: "group", label: "转发组" },
@@ -517,11 +518,13 @@ function storeString(key: string, value: string) {
   }
 }
 
-function getRuleForwardGroupKind(rule: any, forwardGroupById: Map<number, any>): "chain" | "group" | null {
+function getRuleForwardGroupKind(rule: any, forwardGroupById: Map<number, any>): "local" | "chain" | "group" | null {
   const groupId = Number(rule?.forwardGroupId || 0);
   if (!groupId) return null;
   const group = forwardGroupById.get(groupId);
-  return isForwardChainGroup(group) ? "chain" : "group";
+  const mode = normalizeForwardGroupModeForRule(group);
+  if (mode === "port") return "local";
+  return mode === "chain" ? "chain" : "group";
 }
 
 function getRuleCategory(rule: any, forwardGroupById: Map<number, any>): Exclude<RuleCategory, "all"> {
@@ -891,7 +894,7 @@ function formatAddressWithPort(address: string, port: number | string): string {
 
 function normalizeForwardGroupModeForRule(group: any | null | undefined) {
   const mode = String(group?.groupMode || "failover");
-  return mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
+  return mode === "port" || mode === "chain" || mode === "entry" || mode === "exit" ? mode : "failover";
 }
 
 function isForwardChainGroup(group: any | null | undefined) {
@@ -1115,11 +1118,12 @@ function buildKernelForwardWarning({ rule, host, group, hosts = [], hostById, fo
 }
 function isSelectableForwardRuleGroup(group: any | null | undefined) {
   const mode = normalizeForwardGroupModeForRule(group);
-  return mode === "failover" || mode === "chain";
+  return mode === "port" || mode === "failover" || mode === "chain";
 }
 
 function getForwardGroupKindLabel(group: any | null | undefined) {
   const mode = normalizeForwardGroupModeForRule(group);
+  if (mode === "port") return "端口转发";
   if (mode === "chain") return "端口转发链";
   if (mode === "entry") return "入口组";
   if (mode === "exit") return "出口组";
@@ -2107,6 +2111,8 @@ function normalizeFailoverTargetsForSubmit(text: string) {
 
 function RulesContent() {
   const { user } = useAuth();
+  const [, setLocation] = useLocation();
+  const search = useSearch();
   const isMobile = useIsMobile();
   const utils = trpc.useUtils();
   const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(false);
@@ -2119,7 +2125,7 @@ function RulesContent() {
     staleTime: 10000,
     refetchOnWindowFocus: false,
   });
-  const { data: hosts } = trpc.hosts.list.useQuery(undefined, {
+  const { data: hosts, isFetched: hostsFetched } = trpc.hosts.list.useQuery(undefined, {
     staleTime: 60000,
     refetchOnWindowFocus: false,
   });
@@ -2193,10 +2199,14 @@ function RulesContent() {
   const [portStatus, setPortStatus] = useState<"idle" | "checking" | "available" | "used">("idle");
   const [portRangeError, setPortRangeError] = useState<string | null>(null);
   const latestPortCheckRef = useRef(0);
-  const [copySourceHostId, setCopySourceHostId] = useState<string>("");
-  const [copyTargetHostIds, setCopyTargetHostIds] = useState<number[]>([]);
   const [copyRuleIds, setCopyRuleIds] = useState<number[]>([]);
+  const [copyRuleSearch, setCopyRuleSearch] = useState("");
+  const [copyRuleCategory, setCopyRuleCategory] = useState<RuleCategory>("all");
+  const [copyTargetScopeType, setCopyTargetScopeType] = useState<RuleTransferScopeType>("local");
+  const [copyTargetResourceIds, setCopyTargetResourceIds] = useState<number[]>([]);
+  const [copyTargetSearch, setCopyTargetSearch] = useState("");
   const [copyConflictStrategy, setCopyConflictStrategy] = useState<"skip" | "auto" | "error">("skip");
+  const [copyWorking, setCopyWorking] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [exportScopeType, setExportScopeType] = useState<RuleTransferScopeType>("local");
@@ -2253,19 +2263,8 @@ function RulesContent() {
     onError: (err) => toast.error(err.message || "删除失败"),
   });
 
-  const copyMutation = trpc.rules.copyToHosts.useMutation({
-    onSuccess: (data) => {
-      utils.rules.list.invalidate();
-      const copied = data.copied.length;
-      const skipped = data.skipped.length;
-      toast.success(`已复制 ${copied} 条规则${skipped ? `，跳过 ${skipped} 条` : ""}`);
-      setShowCopyDialog(false);
-      setCopyRuleIds([]);
-      setCopyTargetHostIds([]);
-    },
-    onError: (err) => toast.error(err.message || "复制失败"),
-  });
-
+  const batchCreateMutation = trpc.rules.create.useMutation();
+  const batchDeleteMutation = trpc.rules.delete.useMutation();
 
   const importCreateMutation = trpc.rules.create.useMutation();
 
@@ -2278,17 +2277,11 @@ function RulesContent() {
 
   const setRouteMode = (mode: RuleRouteMode) => {
     if (mode === form.routeMode) return;
-    if (mode === "local" && !editingId) {
-      toast.info("普通端口转发请先创建转发组或转发链后再新增规则。");
-      return;
-    }
-    if (editingId) {
-      toast.info("已有规则的路由类型已锁定；如需更换运行协议，请创建新规则。");
-      return;
-    }
     if (mode === "local" && !canUseLocalForward) return;
     if (mode === "tunnel" && !canUseGost) return;
-    const nextGroups = mode === "chain"
+    const nextGroups = mode === "local"
+      ? availablePortForwardGroups
+      : mode === "chain"
       ? availableForwardChainGroups
       : mode === "group"
       ? availableFailoverForwardGroups
@@ -2298,7 +2291,7 @@ function RulesContent() {
       : null;
     if (mode === "tunnel" && !nextTunnel) return;
     if (isForwardGroupRouteModeValue(mode) && nextGroups.length === 0) return;
-    const expectedGroupMode = mode === "chain" ? "chain" : "failover";
+    const expectedGroupMode = mode === "local" ? "port" : mode === "chain" ? "chain" : "failover";
     const nextGroup = isForwardGroupRouteModeValue(mode)
       ? (selectedForwardGroup && normalizeForwardGroupModeForRule(selectedForwardGroup) === expectedGroupMode ? selectedForwardGroup : nextGroups[0])
       : null;
@@ -2317,8 +2310,9 @@ function RulesContent() {
       forwardType: nextForwardType,
       tunnelId: mode === "tunnel" && nextTunnel ? Number(nextTunnel.id) : null,
       forwardGroupId: isForwardGroupRouteModeValue(mode) && nextGroup ? Number(nextGroup.id) : null,
-      hostId: mode === "tunnel" && nextTunnel ? nextTunnel.entryHostId : isForwardGroupRouteModeValue(mode) ? null : prev.hostId,
-      failoverEnabled: mode === "chain" ? false : prev.failoverEnabled,
+      hostId: mode === "tunnel" && nextTunnel ? nextTunnel.entryHostId : isForwardGroupRouteModeValue(mode) ? null : (prev.hostId || hosts?.[0]?.id || null),
+      failoverEnabled: false,
+      failoverTargetsText: "",
     }));
   };
 
@@ -2398,45 +2392,61 @@ function RulesContent() {
     setPortStatus("idle");
   };
 
-  const openCreate = () => {
+  const openCreate = (preferredRouteMode?: RuleRouteMode) => {
     resetForm();
+    const firstPortGroup = canUseLocalForward ? availablePortForwardGroups[0] : null;
+    const firstLocalForwardType = getForwardGroupRuleForwardType(firstPortGroup, defaultForm.forwardType);
     const firstTunnel = canUseGost
       ? supportedTunnels[0]
       : null;
     const firstChain = canUseForwardChain ? availableForwardChainGroups[0] : null;
     const firstGroup = canUseFailoverGroup ? availableFailoverForwardGroups[0] : null;
-    const firstForwardGroup = firstChain || firstGroup;
-    if (firstTunnel || firstForwardGroup) {
+    const firstForwardGroup = firstPortGroup || firstChain || firstGroup;
+    if (preferredRouteMode === "local") {
+      if (!firstPortGroup || !firstLocalForwardType) {
+        toast.error("请先在链路管理中创建可用端口转发");
+        return;
+      }
       setForm({
         ...defaultForm,
         failoverTargetsText: "",
-        routeMode: firstTunnel ? "tunnel" : firstChain ? "chain" : firstGroup ? "group" : "tunnel",
-        hostId: firstTunnel ? firstTunnel.entryHostId : null,
-        forwardType: firstTunnel ? "gost" : firstGroup ? getForwardGroupRuleForwardType(firstGroup, "iptables") : "iptables",
-        tunnelId: firstTunnel ? firstTunnel.id : null,
-        forwardGroupId: !firstTunnel && firstForwardGroup ? Number(firstForwardGroup.id) : null,
+        routeMode: "local",
+        hostId: null,
+        forwardType: firstLocalForwardType,
+        tunnelId: null,
+        forwardGroupId: Number(firstPortGroup.id),
+      });
+      setShowDialog(true);
+      return;
+    }
+    if ((firstPortGroup && firstLocalForwardType) || firstTunnel || firstForwardGroup) {
+      const routeMode: RuleRouteMode = firstPortGroup && firstLocalForwardType ? "local" : firstTunnel ? "tunnel" : firstChain ? "chain" : "group";
+      setForm({
+        ...defaultForm,
+        failoverTargetsText: "",
+        routeMode,
+        hostId: routeMode === "tunnel" && firstTunnel ? firstTunnel.entryHostId : null,
+        forwardType: routeMode === "tunnel" ? "gost" : routeMode === "group" && firstGroup ? getForwardGroupRuleForwardType(firstGroup, "iptables") : routeMode === "local" ? firstLocalForwardType : "iptables",
+        tunnelId: routeMode === "tunnel" && firstTunnel ? firstTunnel.id : null,
+        forwardGroupId: routeMode === "local" && firstPortGroup ? Number(firstPortGroup.id) : routeMode === "chain" && firstChain ? Number(firstChain.id) : routeMode === "group" && firstGroup ? Number(firstGroup.id) : null,
       });
     } else {
-      toast.error("请先创建可用隧道、转发链或转发组后再新增规则。");
+      toast.error("请先创建可用端口转发、隧道、转发链或转发组后再新增规则。");
       return;
     }
     setShowDialog(true);
   };
 
   const openCopyDialog = () => {
-    if (directHostRuleCopyDisabled) {
-      toast.info("直接复制到主机已停用，请先创建转发组或转发链后再新增规则。");
+    if (!transferSourceRules.length) {
+      toast.info("暂无可批量管理的转发规则");
       return;
     }
-    if (!canAdd) {
-      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
-      return;
-    }
-    const initialHostId = filterHost !== "all"
-      ? filterHost
-      : hosts?.[0]?.id ? String(hosts[0].id) : "";
-    setCopySourceHostId(initialHostId);
-    setCopyTargetHostIds([]);
+    setCopyRuleCategory(ruleCategory);
+    setCopyRuleSearch(ruleSearchQuery);
+    setCopyTargetScopeType(canUseLocalForward ? "local" : canUseGost ? "tunnel" : canUseForwardChain ? "chain" : "group");
+    setCopyTargetResourceIds([]);
+    setCopyTargetSearch("");
     setCopyRuleIds([]);
     setCopyConflictStrategy("skip");
     setShowCopyDialog(true);
@@ -2450,7 +2460,7 @@ function RulesContent() {
     setForm({
       hostId: rule.hostId,
       name: rule.name,
-      routeMode: rule.forwardGroupId ? (isForwardChainGroup(editForwardGroup) ? "chain" : "group") : rule.forwardType === "gost" && rule.tunnelId ? "tunnel" : "local",
+      routeMode: rule.forwardGroupId ? (normalizeForwardGroupModeForRule(editForwardGroup) === "port" ? "local" : isForwardChainGroup(editForwardGroup) ? "chain" : "group") : rule.forwardType === "gost" && rule.tunnelId ? "tunnel" : "local",
       forwardType: rule.forwardType,
       protocol: rule.protocol,
       gostMode: "direct" as const,
@@ -2634,6 +2644,10 @@ function RulesContent() {
     () => (forwardGroups || []).filter((group: any) => isSelectableForwardRuleGroup(group) && group.isEnabled && (group.members || []).length > 0),
     [forwardGroups]
   );
+  const availablePortForwardGroups = useMemo(
+    () => availableForwardGroups.filter((group: any) => normalizeForwardGroupModeForRule(group) === "port"),
+    [availableForwardGroups]
+  );
   const availableForwardChainGroups = useMemo(
     () => availableForwardGroups.filter((group: any) => isForwardChainGroup(group)),
     [availableForwardGroups]
@@ -2641,6 +2655,10 @@ function RulesContent() {
   const availableFailoverForwardGroups = useMemo(
     () => availableForwardGroups.filter((group: any) => normalizeForwardGroupModeForRule(group) === "failover"),
     [availableForwardGroups]
+  );
+  const transferPortGroups = useMemo(
+    () => (forwardGroups || []).filter((group: any) => normalizeForwardGroupModeForRule(group) === "port"),
+    [forwardGroups]
   );
   const transferChainGroups = useMemo(
     () => (forwardGroups || []).filter((group: any) => isForwardChainGroup(group)),
@@ -2651,11 +2669,11 @@ function RulesContent() {
     [forwardGroups]
   );
   const getTransferResources = useCallback((type: RuleTransferScopeType): any[] => {
-    if (type === "local") return hosts || [];
+    if (type === "local") return transferPortGroups;
     if (type === "tunnel") return tunnels || [];
     if (type === "chain") return transferChainGroups;
     return transferRuleGroups;
-  }, [hosts, tunnels, transferChainGroups, transferRuleGroups]);
+  }, [tunnels, transferPortGroups, transferChainGroups, transferRuleGroups]);
   const exportResources = useMemo(() => getTransferResources(exportScopeType), [exportScopeType, getTransferResources]);
   const importResources = useMemo(() => getTransferResources(importScopeType), [importScopeType, getTransferResources]);
   useEffect(() => {
@@ -2682,7 +2700,7 @@ function RulesContent() {
     if (!form.forwardGroupId) return null;
     return forwardGroupById.get(Number(form.forwardGroupId)) || null;
   }, [form.forwardGroupId, forwardGroupById]);
-  const routeModeLocked = !!editingId;
+  const routeModeLocked = false;
   const effectiveRouteForwardType = useMemo<ForwardType>(() => {
     if (form.routeMode === "tunnel") return "gost";
     if (isForwardGroupRouteModeValue(form.routeMode)) {
@@ -2708,16 +2726,29 @@ function RulesContent() {
     () => allowedForwardTypes.filter((t) => isProtocolEnabled(t)),
     [allowedForwardTypes, isProtocolEnabled]
   );
-  const hasHostChoices = (hosts?.length || 0) > 0;
-  const canUseLocalForward = hasHostChoices && usableForwardTypes.length > 0;
+  const canUseLocalForward = availablePortForwardGroups.length > 0;
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardChain = availableForwardChainGroups.length > 0;
   const canUseFailoverGroup = availableFailoverForwardGroups.length > 0;
-  const canCreateRule = canUseGost || canUseForwardChain || canUseFailoverGroup;
-  const directHostRuleCopyDisabled = true;
+  const canCreateRule = canUseLocalForward || canUseGost || canUseForwardChain || canUseFailoverGroup;
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (params.get("create") !== "local") return;
+    if (rulePermissionLoading || !hostsFetched || !systemSettingsFetched) return;
+    params.delete("create");
+    const nextSearch = params.toString();
+    setLocation(`/rules${nextSearch ? `?${nextSearch}` : ""}`, { replace: true });
+    if (!canAdd) {
+      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
+      return;
+    }
+    openCreate("local");
+  }, [search, setLocation, rulePermissionLoading, hostsFetched, systemSettingsFetched, canAdd, canUseLocalForward, availablePortForwardGroups]);
+
   const isForwardGroupRouteMode = isForwardGroupRouteModeValue(form.routeMode);
   const telegramBotReady = !!systemSettings?.telegram?.enabled && !!systemSettings?.telegram?.configured;
   const selectedForwardGroupIsChain = form.routeMode === "chain" || isForwardChainGroup(selectedForwardGroup);
+  const selectedForwardGroupIsPort = form.routeMode === "local" || normalizeForwardGroupModeForRule(selectedForwardGroup) === "port";
   const mainBackupForwardType = effectiveRouteForwardType;
   const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
   const canAutoSwitchMainBackupToGost = !selectedForwardGroupIsChain
@@ -2725,8 +2756,10 @@ function RulesContent() {
     && usableForwardTypes.includes("gost")
     && !routeModeLocked
     && user?.role === "admin"
-    && form.routeMode === "local";
+    && form.routeMode === "local"
+    && !selectedForwardGroupIsPort;
   const canUseMainBackup = !selectedForwardGroupIsChain
+    && !selectedForwardGroupIsPort
     && (
       (mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute))
       || canAutoSwitchMainBackupToGost
@@ -2735,11 +2768,12 @@ function RulesContent() {
     ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持出站策略。"
     : selectedForwardGroupIsChain
     ? "端口转发链不支持出站策略。"
-    : user?.role !== "admin" && !mainBackupIsTunnelRoute
+    : user?.role !== "admin" && !mainBackupIsTunnelRoute && !selectedForwardGroupIsPort
     ? "普通端口转发不支持出站策略，请使用隧道转发。"
     : form.protocol !== "tcp"
     ? "出站策略仅支持 TCP 协议。"
     : "";
+  const showMainBackupConfig = canUseMainBackup;
   const kernelForwardWarning = useMemo(() => buildKernelForwardWarning({
     rule: form,
     host: selectedHost,
@@ -2748,15 +2782,6 @@ function RulesContent() {
     hostById,
     forwardGroupById,
   }), [form, selectedHost, selectedForwardGroup, hosts, hostById, forwardGroupById]);
-  const copyableSourceRules = useMemo(() => {
-    if (!rules || !copySourceHostId) return [];
-    return rules.filter((rule: any) => Number(rule.hostId) === Number(copySourceHostId) && !(rule.forwardType === "gost" && rule.tunnelId));
-  }, [copySourceHostId, rules]);
-  const copyTargetHosts = useMemo(() => {
-    if (!hosts) return [];
-    return hosts.filter((host: any) => String(host.id) !== copySourceHostId);
-  }, [copySourceHostId, hosts]);
-
   const checkPort = useCallback(async () => {
     const checkId = latestPortCheckRef.current + 1;
     latestPortCheckRef.current = checkId;
@@ -2822,12 +2847,12 @@ function RulesContent() {
 
   useEffect(() => {
     if (!isForwardGroupRouteMode) return;
-    const candidates = form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups;
+    const candidates = form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups;
     if (!selectedForwardGroup && candidates.length > 0) {
       setForm((prev) => ({ ...prev, forwardGroupId: Number(candidates[0].id) }));
       return;
     }
-    const expectedGroupMode = form.routeMode === "chain" ? "chain" : "failover";
+    const expectedGroupMode = form.routeMode === "local" ? "port" : form.routeMode === "chain" ? "chain" : "failover";
     if (selectedForwardGroup && normalizeForwardGroupModeForRule(selectedForwardGroup) !== expectedGroupMode) {
       setForm((prev) => ({
         ...prev,
@@ -2840,7 +2865,7 @@ function RulesContent() {
     if (selectedForwardGroup && form.forwardType !== groupForwardType) {
       setForm((prev) => ({ ...prev, forwardType: groupForwardType }));
     }
-  }, [availableFailoverForwardGroups, availableForwardChainGroups, form.forwardType, form.routeMode, isForwardGroupRouteMode, selectedForwardGroup]);
+  }, [availablePortForwardGroups, availableFailoverForwardGroups, availableForwardChainGroups, form.forwardType, form.routeMode, isForwardGroupRouteMode, selectedForwardGroup]);
 
   useEffect(() => {
     if (!form.failoverEnabled || canUseMainBackup) return;
@@ -2857,7 +2882,7 @@ function RulesContent() {
   const handleRandomPort = async () => {
     if (isForwardGroupRouteMode) {
       if (!form.forwardGroupId) {
-        toast.error(form.routeMode === "chain" ? "请先选择转发链" : "请先选择转发组");
+        toast.error(form.routeMode === "local" ? "请先选择端口转发" : form.routeMode === "chain" ? "请先选择转发链" : "请先选择转发组");
         return;
       }
     } else if (!form.hostId) {
@@ -2881,28 +2906,157 @@ function RulesContent() {
     setCopyRuleIds((prev) => checked ? Array.from(new Set([...prev, ruleId])) : prev.filter((id) => id !== ruleId));
   };
 
-  const toggleCopyTargetHost = (hostId: number, checked: boolean) => {
-    setCopyTargetHostIds((prev) => checked ? Array.from(new Set([...prev, hostId])) : prev.filter((id) => id !== hostId));
+  const toggleCopyTargetResource = (resourceId: number, checked: boolean) => {
+    setCopyTargetResourceIds((prev) => checked ? Array.from(new Set([...prev, resourceId])) : prev.filter((id) => id !== resourceId));
   };
 
-  const handleCopyRules = () => {
-    if (directHostRuleCopyDisabled) {
-      toast.info("直接复制到主机已停用，请先创建转发组或转发链后再新增规则。");
+  const buildBatchCopyRulePayload = (rule: any, targetType: RuleTransferScopeType, resource: any, sourcePort: number) => {
+    const isTunnelTarget = targetType === "tunnel";
+    const isForwardGroupTarget = !isTunnelTarget;
+    const forwardType = isTunnelTarget ? "gost" : getForwardGroupRuleForwardType(resource, rule.forwardType);
+    const keepFailover = targetType === "group" && !!rule.failoverEnabled;
+    return {
+      hostId: isTunnelTarget ? Number(resource.entryHostId) : undefined,
+      name: String(rule.name || "复制规则").trim().slice(0, 128) || "复制规则",
+      forwardType,
+      protocol: normalizeRuleProtocol(rule.protocol),
+      gostMode: "direct" as const,
+      gostRelayHost: null,
+      gostRelayPort: null,
+      tunnelId: isTunnelTarget ? Number(resource.id) : null,
+      forwardGroupId: isForwardGroupTarget ? Number(resource.id) : null,
+      sourcePort,
+      targetIp: String(rule.targetIp || ""),
+      targetPort: Number(rule.targetPort || 0),
+      telegramErrorNotifyEnabled: telegramBotReady && !!rule.telegramErrorNotifyEnabled,
+      proxyProtocolReceive: !!rule.proxyProtocolReceive,
+      proxyProtocolSend: !!rule.proxyProtocolSend,
+      proxyProtocolExitReceive: !!rule.proxyProtocolExitReceive,
+      proxyProtocolExitSend: !!rule.proxyProtocolExitSend,
+      proxyProtocolVersion: normalizeProxyProtocolVersion(rule.proxyProtocolVersion),
+      tcpFastOpen: !!rule.tcpFastOpen,
+      zeroCopy: !!rule.zeroCopy,
+      udpOverTcp: !!rule.udpOverTcp,
+      udpOverTcpPort: Number(rule.udpOverTcpPort || 0),
+      failoverEnabled: keepFailover,
+      failoverStrategy: normalizeFailoverStrategy(rule.failoverStrategy),
+      failoverTargets: keepFailover ? parseRuleFailoverTargets(rule.failoverTargets) : [],
+      failoverSeconds: normalizePositiveRuleNumber(rule.failoverSeconds, 60),
+      recoverSeconds: normalizePositiveRuleNumber(rule.recoverSeconds, 120),
+      autoFailback: rule.autoFailback !== false,
+    };
+  };
+
+  const getBatchCopyRandomPort = async (targetType: RuleTransferScopeType, resource: any) => {
+    const input = targetType === "tunnel"
+      ? { hostId: Number(resource.entryHostId), tunnelId: Number(resource.id) }
+      : { forwardGroupId: Number(resource.id) };
+    const result = await utils.rules.randomPort.fetch(input as any);
+    return Number(result.port || 0);
+  };
+
+  const createBatchCopyRule = async (rule: any, targetType: RuleTransferScopeType, resource: any) => {
+    const sourcePort = Number(rule.sourcePort || 0);
+    try {
+      await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, sourcePort) as any);
+      return { copied: true, skipped: false };
+    } catch (error: any) {
+      if (copyConflictStrategy === "error") throw error;
+      if (copyConflictStrategy === "auto") {
+        const nextPort = await getBatchCopyRandomPort(targetType, resource);
+        if (!nextPort) throw error;
+        await batchCreateMutation.mutateAsync(buildBatchCopyRulePayload(rule, targetType, resource, nextPort) as any);
+        return { copied: true, skipped: false };
+      }
+      return { copied: false, skipped: true };
+    }
+  };
+
+  const handleCopyRules = async () => {
+    if (!canAdd) {
+      toast.error("您暂无添加转发规则的权限，请联系管理员开通");
       return;
     }
-    if (copyRuleIds.length === 0) {
+    if (copySelectedRules.length === 0) {
       toast.error("请选择要复制的规则");
       return;
     }
-    if (copyTargetHostIds.length === 0) {
-      toast.error("请选择目标主机");
+    if (selectedCopyTargetResources.length === 0) {
+      toast.error("请选择目标" + copyTargetScopeLabel);
       return;
     }
-    copyMutation.mutate({
-      ruleIds: copyRuleIds,
-      targetHostIds: copyTargetHostIds,
-      conflictStrategy: copyConflictStrategy,
-    });
+    setCopyWorking(true);
+    let copied = 0;
+    let skipped = 0;
+    try {
+      for (const resource of selectedCopyTargetResources) {
+        for (const rule of copySelectedRules) {
+          const result = await createBatchCopyRule(rule, copyTargetScopeType, resource);
+          if (result.copied) copied += 1;
+          if (result.skipped) skipped += 1;
+        }
+      }
+      await utils.rules.list.invalidate();
+      await utils.rules.trafficSummary.invalidate();
+      toast.success("已复制 " + copied + " 条规则" + (skipped ? "，跳过 " + skipped + " 条" : ""));
+      if (copied > 0) setShowCopyDialog(false);
+    } catch (error: any) {
+      toast.error("复制失败：已复制 " + copied + " 条" + (skipped ? "，跳过 " + skipped + " 条" : "") + "，" + (error?.message || "请检查目标配置"));
+    } finally {
+      setCopyWorking(false);
+    }
+  };
+
+  const handleBatchExportRules = () => {
+    if (copySelectedRules.length === 0) {
+      toast.error("请选择要导出的规则");
+      return;
+    }
+    const payload = {
+      kind: RULE_TRANSFER_FILE_KIND,
+      version: RULE_TRANSFER_FILE_VERSION,
+      exportedAt: new Date().toISOString(),
+      scope: {
+        type: "batch",
+        name: "批量管理选中规则",
+      },
+      rules: copySelectedRules.map(exportRuleForTransfer),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    anchor.href = url;
+    anchor.download = "forwardx-rules-batch-" + date + ".json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    toast.success("已导出 " + copySelectedRules.length + " 条规则");
+  };
+
+  const handleBatchDeleteRules = async () => {
+    if (copySelectedRules.length === 0) {
+      toast.error("请选择要删除的规则");
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm("确认删除选中的 " + copySelectedRules.length + " 条转发规则？")) return;
+    setCopyWorking(true);
+    let deleted = 0;
+    try {
+      for (const rule of copySelectedRules) {
+        await batchDeleteMutation.mutateAsync({ id: Number(rule.id) });
+        deleted += 1;
+      }
+      setCopyRuleIds((prev) => prev.filter((id) => !copySelectedRules.some((rule: any) => Number(rule.id) === id)));
+      await utils.rules.list.invalidate();
+      await utils.rules.trafficSummary.invalidate();
+      toast.success("已删除 " + deleted + " 条规则");
+    } catch (error: any) {
+      toast.error("删除失败：已删除 " + deleted + " 条，" + (error?.message || "请稍后重试"));
+    } finally {
+      setCopyWorking(false);
+    }
   };
 
   const handleConfirmResetTraffic = () => {
@@ -2926,12 +3080,12 @@ function RulesContent() {
       toast.error("请填写所有必填字段（目标端口必须填写）");
       return;
     }
-    if (!editingId && form.routeMode === "local") {
-      toast.error("普通端口转发请先创建转发组或转发链后再新增规则。");
+    if (isForwardGroupRouteMode && !form.forwardGroupId) {
+      toast.error(form.routeMode === "local" ? "请选择端口转发" : form.routeMode === "chain" ? "请选择转发链" : "请选择转发组");
       return;
     }
-    if (isForwardGroupRouteMode && !form.forwardGroupId) {
-      toast.error(form.routeMode === "chain" ? "请选择转发链" : "请选择转发组");
+    if (form.routeMode === "local" && !canUseLocalForward) {
+      toast.error("暂无可用端口转发");
       return;
     }
     if (form.routeMode === "chain" && !canUseForwardChain) {
@@ -3007,9 +3161,9 @@ function RulesContent() {
       }
     }
     const failoverPayload = {
-      failoverEnabled: selectedForwardGroupIsChain ? false : form.failoverEnabled,
+      failoverEnabled: canUseMainBackup ? form.failoverEnabled : false,
       failoverStrategy: form.failoverStrategy,
-      failoverTargets: selectedForwardGroupIsChain ? [] : form.failoverEnabled ? failoverTargets : [],
+      failoverTargets: canUseMainBackup && form.failoverEnabled ? failoverTargets : [],
       failoverSeconds: form.failoverSeconds || 60,
       recoverSeconds: form.recoverSeconds || 120,
       autoFailback: form.autoFailback,
@@ -3092,6 +3246,59 @@ function RulesContent() {
   }, [baseScopedRules, ruleFilters, scopedRulesReady, selectedScopedRules, selectedScopeQueryEnabled]);
   const filteredRules = stableFilteredRules;
   const transferSourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
+  const copyableSourceRules = useMemo(() => {
+    const batchFilters: RuleFilterState = {
+      ...ruleFilters,
+      filterHost: "all",
+      ruleCategory: copyRuleCategory,
+      searchQuery: copyRuleSearch,
+    };
+    return transferSourceRules
+      .filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId && isRuleSupported(rule))
+      .filter((rule: any) => isForwardRuleVisibleByFilters(rule, batchFilters));
+  }, [copyRuleCategory, copyRuleSearch, isRuleSupported, ruleFilters, transferSourceRules]);
+  const copySelectedRules = useMemo(() => {
+    const selected = new Set(copyRuleIds.map(Number));
+    return transferSourceRules.filter((rule: any) => selected.has(Number(rule.id)) && !rule.forwardGroupRuleId && !rule.forwardGroupMemberId);
+  }, [copyRuleIds, transferSourceRules]);
+  const copyTargetResources = useMemo(() => {
+    if (copyTargetScopeType === "local") return availablePortForwardGroups;
+    if (copyTargetScopeType === "tunnel") return supportedTunnels;
+    if (copyTargetScopeType === "chain") return availableForwardChainGroups;
+    return availableFailoverForwardGroups;
+  }, [availableFailoverForwardGroups, availableForwardChainGroups, availablePortForwardGroups, copyTargetScopeType, supportedTunnels]);
+  const filteredCopyTargetResources = useMemo(() => {
+    const keyword = copyTargetSearch.trim().toLowerCase();
+    if (!keyword) return copyTargetResources;
+    return copyTargetResources.filter((resource: any) => {
+      const values = [
+        resource?.id,
+        resource?.name,
+        resource?.description,
+        resource?.displayRemark,
+        resource?.domain,
+        resource?.forwardType,
+        resource?.groupMode,
+        resource?.groupType,
+        resource?.mode,
+        resource?.listenPort,
+        resource?.entryHostId,
+        resource?.exitHostId,
+        getForwardGroupKindLabel(resource),
+        copyTargetScopeType === "tunnel" ? getTunnelRouteText(resource, hosts || []) : "",
+      ];
+      (resource?.members || []).forEach((member: any) => {
+        values.push(member?.hostId, member?.tunnelId, member?.entryAddress, member?.connectHost, member?.name);
+      });
+      return values.filter((value) => value !== undefined && value !== null && String(value).trim()).join(" ").toLowerCase().includes(keyword);
+    });
+  }, [copyTargetResources, copyTargetScopeType, copyTargetSearch, hosts]);
+  const selectedCopyTargetResources = useMemo(() => {
+    const selected = new Set(copyTargetResourceIds.map(Number));
+    return copyTargetResources.filter((resource: any) => selected.has(Number(resource.id)));
+  }, [copyTargetResourceIds, copyTargetResources]);
+  const copyTargetScopeLabel = ruleTransferScopeLabels[copyTargetScopeType];
+  const copyActionPending = copyWorking || batchCreateMutation.isPending || batchDeleteMutation.isPending;
   const ruleCategoryCounts = useMemo(() => {
     const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
     const baseFilters = {
@@ -3397,13 +3604,7 @@ function RulesContent() {
     const end = Number(item?.portRangeEnd || 0);
     return start > 0 && end > 0 ? `${start}-${end}` : "";
   };
-  const trafficMultiplierBadgeClass = (value: unknown) => {
-    const multiplier = normalizeTrafficMultiplier(value);
-    if (multiplier < 100) return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-    if (multiplier === 100) return "border-border/60 bg-muted/40 text-muted-foreground";
-    if (multiplier <= 300) return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
-    return "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300";
-  };
+  const trafficMultiplierBadgeClass = (_value: unknown) => "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
   const renderTrafficMultiplierBadge = (value: unknown) => (
     <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] font-medium leading-none ${trafficMultiplierBadgeClass(value)}`}>
       {formatTrafficMultiplier(value)}
@@ -3435,9 +3636,13 @@ function RulesContent() {
     </span>
   );
   const getForwardGroupSelectName = (group: any) => String(group?.name || `转发组 #${group?.id || "-"}`);
-  const getForwardGroupSelectText = (group: any) => isForwardChainGroup(group)
-    ? [getForwardGroupSelectName(group), formatTrafficMultiplier((group as any)?.trafficMultiplier)].join(" / ")
-    : `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员`;
+  const getForwardGroupSelectText = (group: any) => {
+    const mode = normalizeForwardGroupModeForRule(group);
+    if (isForwardChainGroup(group) || mode === "port") {
+      return [getForwardGroupSelectName(group), formatTrafficMultiplier((group as any)?.trafficMultiplier)].join(" / ");
+    }
+    return `${getForwardGroupSelectName(group)} / ${getForwardGroupKindLabel(group)} / ${group?.members?.length || 0} 成员`;
+  };
   const getForwardGroupConfigStatus = (group: any): "available" | "pending" | "unavailable" | "error" | "disabled" => {
     if (!group) return "unavailable";
     if (group.isEnabled === false) return "disabled";
@@ -3474,14 +3679,23 @@ function RulesContent() {
     }
     return <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-400 shadow-sm shadow-amber-400/50" aria-hidden="true" />;
   };
-  const renderForwardGroupSelectLabel = (group: any) => (
-    <span className="inline-flex min-w-0 items-center gap-2" title={`${getForwardGroupStatusText(group)} / ${getForwardGroupSelectText(group)}`}>
-      {renderForwardGroupSelectStatusDot(group)}
-      <span className="min-w-0 truncate">{isForwardChainGroup(group) ? getForwardGroupSelectName(group) : getForwardGroupSelectText(group)}</span>
-      {isForwardChainGroup(group) && renderTrafficMultiplierBadge((group as any).trafficMultiplier)}
-      <span className="sr-only">{getForwardGroupStatusText(group)}</span>
-    </span>
-  );
+  const renderForwardGroupSelectLabel = (group: any) => {
+    const mode = normalizeForwardGroupModeForRule(group);
+    const memberCount = Number(group?.members?.length || 0);
+    return (
+      <span className="inline-flex min-w-0 items-center gap-2" title={`${getForwardGroupStatusText(group)} / ${getForwardGroupSelectText(group)}`}>
+        {renderForwardGroupSelectStatusDot(group)}
+        <span className="min-w-0 truncate">{getForwardGroupSelectName(group)}</span>
+        {(isForwardChainGroup(group) || mode === "port") && renderTrafficMultiplierBadge((group as any).trafficMultiplier)}
+        {mode === "failover" && (
+          <span className="shrink-0 rounded border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">
+            {memberCount} 成员
+          </span>
+        )}
+        <span className="sr-only">{getForwardGroupStatusText(group)}</span>
+      </span>
+    );
+  };
   const renderTunnelRoute = (tunnel: any, compact = false) => {
     const hopIds = getTunnelHopIds(tunnel);
     return (
@@ -3757,7 +3971,7 @@ function RulesContent() {
 
   const getTransferResourceLabel = (type: RuleTransferScopeType, resource: any) => {
     if (!resource) return "";
-    if (type === "local") return getHostOptionText(resource);
+    if (type === "local") return resource.name || `端口转发 #${resource.id}`;
     if (type === "tunnel") return `${resource.name || `#${resource.id}`} / ${getTunnelRouteText(resource, hosts || [])}`;
     return resource.name || `#${resource.id}`;
   };
@@ -3766,16 +3980,17 @@ function RulesContent() {
     const values: any[] = [resource?.id];
     if (type === "local") {
       values.push(
-        getHostOptionName(resource),
-        getHostEntryAddressText(resource),
         resource?.name,
-        resource?.ip,
-        resource?.entryIp,
-        resource?.internalIp,
-        resource?.tunnelEntryIp,
-        resource?.networkInterface,
-        resource?.isOnline ? "online 在线" : "offline 离线",
+        resource?.description,
+        resource?.displayRemark,
+        resource?.domain,
+        resource?.forwardType,
+        resource?.groupMode,
+        getForwardGroupKindLabel(resource),
       );
+      (resource?.members || []).forEach((member: any) => {
+        values.push(member?.hostId, member?.entryAddress, member?.connectHost, member?.name);
+      });
     } else if (type === "tunnel") {
       values.push(
         resource?.name,
@@ -3827,20 +4042,12 @@ function RulesContent() {
 
   const renderTransferResourceOption = (type: RuleTransferScopeType, resource: any) => {
     if (type === "local") {
-      const online = !!resource?.isOnline;
+      const members = (resource?.members || []).filter((member: any) => member?.isEnabled !== false);
       return (
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-              online
-                ? "bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.16)]"
-                : "bg-rose-500 shadow-[0_0_0_3px_rgba(244,63,94,0.14)]"
-            }`}
-            aria-hidden="true"
-          />
-          <span className="min-w-0 truncate">{getHostOptionName(resource)}</span>
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
-            {getHostEntryAddressText(resource) || resource?.tunnelEntryIp || resource?.internalIp || ""}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate">{resource.name || `端口转发 #${resource.id}`}</span>
+          <span className="truncate text-xs text-muted-foreground">
+            {members.length > 0 ? members.map((member: any) => member.entryAddress || member.connectHost || (member.hostId ? `主机 #${member.hostId}` : "所属主机")).join(" / ") : getForwardGroupKindLabel(resource)}
           </span>
         </div>
       );
@@ -3941,7 +4148,7 @@ function RulesContent() {
       if (rule.forwardGroupRuleId || rule.forwardGroupMemberId) return false;
       const category = getRuleCategory(rule, forwardGroupById);
       if (category !== type) return false;
-      if (type === "local") return Number(rule.hostId) === id && !rule.tunnelId && !rule.forwardGroupId;
+      if (type === "local") return Number(rule.forwardGroupId) === id;
       if (type === "tunnel") return Number(rule.tunnelId) === id;
       return Number(rule.forwardGroupId) === id;
     });
@@ -5205,11 +5412,11 @@ function RulesContent() {
             variant="outline"
             onClick={openCopyDialog}
             className="gap-2"
-            disabled={directHostRuleCopyDisabled || rulePermissionLoading || !canAdd || !hosts || hosts.length < 2 || !rules || rules.length === 0}
-            title={directHostRuleCopyDisabled ? "直接复制到主机已停用，请使用转发组或转发链新增规则" : !canAdd && !rulePermissionLoading ? "需要管理员授权后才能复制规则" : undefined}
+            disabled={!transferSourceRules.length}
+            title={!transferSourceRules.length ? "暂无可批量管理的转发规则" : undefined}
           >
             <ClipboardCopy className="h-4 w-4" />
-            复制规则
+            批量管理
           </Button>
           <Button
             variant="outline"
@@ -5236,10 +5443,10 @@ function RulesContent() {
             </Button>
           ) : canAdd ? (
             <Button
-              onClick={openCreate}
+              onClick={() => openCreate()}
               className="col-span-2 gap-2 sm:col-span-1"
               disabled={!canCreateRule}
-              title={!canCreateRule ? "暂无可用隧道、转发链或转发组" : undefined}
+              title={!canCreateRule ? "暂无可用主机、隧道、转发链或转发组" : undefined}
             >
               <Plus className="h-4 w-4" />
               添加规则
@@ -5596,10 +5803,10 @@ function RulesContent() {
                 <p className="text-sm mt-1 text-muted-foreground/60">
                   {canCreateRule
                     ? "创建转发规则开始端口转发"
-                    : "请先获得可用隧道、转发链或转发组授权，然后创建转发规则"}
+                    : "请先获得可用主机、隧道、转发链或转发组授权，然后创建转发规则"}
                 </p>
                 {canAdd && canCreateRule && (
-                  <Button onClick={openCreate} variant="outline" className="mt-4 gap-2">
+                  <Button onClick={() => openCreate()} variant="outline" className="mt-4 gap-2">
                     <Plus className="h-4 w-4" />
                     创建第一条规则
                   </Button>
@@ -5653,11 +5860,11 @@ function RulesContent() {
               <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
                 <button
                   type="button"
-                  className={routeModeOptionClass(form.routeMode === "local", (!routeModeLocked || !canUseLocalForward) || (routeModeLocked && form.routeMode !== "local"))}
+                  className={routeModeOptionClass(form.routeMode === "local", !canUseLocalForward || (routeModeLocked && form.routeMode !== "local"))}
                   aria-pressed={form.routeMode === "local"}
                   onClick={() => setRouteMode("local")}
-                  disabled={(!routeModeLocked || !canUseLocalForward) || (routeModeLocked && form.routeMode !== "local")}
-                  title={!routeModeLocked ? "普通端口转发请先创建转发组或转发链" : !canUseLocalForward ? (hasHostChoices ? unsupportedProtocolTitle : "暂无可用主机") : undefined}
+                  disabled={!canUseLocalForward || (routeModeLocked && form.routeMode !== "local")}
+                  title={!canUseLocalForward ? "暂无可用端口转发，请先在链路管理中创建" : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
                   <span className="truncate">端口转发</span>
@@ -5748,10 +5955,10 @@ function RulesContent() {
               <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                   <div className="space-y-2">
-                    <Label>{form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
+                    <Label>{form.routeMode === "local" ? "使用端口转发" : form.routeMode === "chain" ? "使用转发链" : "使用转发组"}</Label>
                     <Select
                       value={form.forwardGroupId ? String(form.forwardGroupId) : "none"}
-                      disabled={(form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).length === 0}
+                      disabled={(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).length === 0}
                       onValueChange={(v) => {
                         const nextGroupId = v === "none" ? null : Number(v);
                         const group = nextGroupId ? forwardGroupById.get(nextGroupId) : null;
@@ -5767,8 +5974,8 @@ function RulesContent() {
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">{form.routeMode === "chain" ? "请选择转发链" : "请选择转发组"}</SelectItem>
-                        {(form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).map((group: any) => (
+                        <SelectItem value="none">{form.routeMode === "local" ? "请选择端口转发" : form.routeMode === "chain" ? "请选择转发链" : "请选择转发组"}</SelectItem>
+                        {(form.routeMode === "local" ? availablePortForwardGroups : form.routeMode === "chain" ? availableForwardChainGroups : availableFailoverForwardGroups).map((group: any) => (
                           <SelectItem key={group.id} value={String(group.id)} textValue={getForwardGroupSelectText(group)}>
                             {renderForwardGroupSelectLabel(group)}
                           </SelectItem>
@@ -5777,8 +5984,8 @@ function RulesContent() {
                     </Select>
                   </div>
                   <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
-                    <Layers3 className="h-3.5 w-3.5" />
-                    {getForwardGroupKindLabel(selectedForwardGroup)}
+                    {form.routeMode === "local" ? <ArrowRightLeft className="h-3.5 w-3.5" /> : form.routeMode === "chain" ? <GitBranch className="h-3.5 w-3.5" /> : <Layers3 className="h-3.5 w-3.5" />}
+                    {FORWARD_TYPE_LABELS[effectiveRouteForwardType] || effectiveRouteForwardType}
                   </Badge>
                 </div>
                 {selectedForwardGroup && (
@@ -5821,21 +6028,7 @@ function RulesContent() {
                   </SelectContent>
                 </Select>
               </div>
-              {form.routeMode === "local" && (
-                <div className="space-y-2">
-                  <Label>所属主机</Label>
-                  {routeModeLocked ? (
-                    <div className="flex h-10 items-center rounded-md border border-border/60 bg-muted/30 px-3 text-sm">
-                      <span className="truncate">{selectedHost ? renderHostStatusLabel(selectedHost) : "主机已删除"}</span>
-                    </div>
-                  ) : (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
-                      普通端口转发请先创建转发组或转发链后再新增规则。
-                    </div>
-                  )}
-                </div>
-              )}
-              {(form.routeMode === "local" || isForwardGroupRouteMode) && (
+              {!isForwardGroupRouteMode && form.routeMode === "local" && (
                 <div className="space-y-2">
                   <Label>转发工具</Label>
                   {!routeModeLocked && form.routeMode === "local" ? (
@@ -5967,13 +6160,11 @@ function RulesContent() {
                 </div>
               </div>
             )}
+            {showMainBackupConfig && (
             <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <Label className="text-sm">出站策略</Label>
-                  {!canUseMainBackup && mainBackupDisabledText && (
-                    <p className="mt-1 text-xs text-amber-600">{mainBackupDisabledText}</p>
-                  )}
                 </div>
                 <Select
                   value={form.failoverEnabled ? form.failoverStrategy : "disabled"}
@@ -6049,6 +6240,7 @@ function RulesContent() {
                 </div>
               )}
             </div>
+            )}
           </div>
           <DialogFooter className="shrink-0 gap-2 border-t border-border/60 bg-background/95 pt-3">
             <Button variant="outline" onClick={() => setShowDialog(false)}>
@@ -6056,7 +6248,7 @@ function RulesContent() {
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && portStatus === "used") || (!editingId && form.routeMode === "local") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
+              disabled={isPending || !form.name || (!isForwardGroupRouteMode && !form.hostId) || !form.targetIp || !form.targetPort || (!isForwardGroupRouteMode && portStatus === "used") || (form.routeMode === "local" && !canUseLocalForward) || (form.routeMode === "tunnel" && !form.tunnelId) || (isForwardGroupRouteMode && !form.forwardGroupId) || (form.failoverEnabled && form.protocol !== "tcp")}
             >
               {isPending ? "处理中..." : editingId ? "保存" : "创建"}
             </Button>
@@ -6203,128 +6395,219 @@ function RulesContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={showCopyDialog} onOpenChange={setShowCopyDialog}>
-        <DialogContent className="sm:max-w-3xl">
+      <Dialog open={showCopyDialog} onOpenChange={(open) => !copyActionPending && setShowCopyDialog(open)}>
+        <DialogContent className="sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle>复制转发规则</DialogTitle>
-            <DialogDescription>复制已有端口转发规则。</DialogDescription>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardCopy className="h-5 w-5" />
+              批量管理转发规则
+            </DialogTitle>
+            <DialogDescription>筛选已有规则后，可批量复制到其他隧道、端口转发、转发链或转发组，也可以导出或删除。</DialogDescription>
           </DialogHeader>
-          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>源主机</Label>
-                <Select
-                  value={copySourceHostId}
-                  onValueChange={(value) => {
-                    setCopySourceHostId(value);
-                    setCopyRuleIds([]);
-                    setCopyTargetHostIds((prev) => prev.filter((id) => String(id) !== value));
-                  }}
-                >
-                  <SelectTrigger><SelectValue placeholder="选择源主机" /></SelectTrigger>
-                  <SelectContent>
-                    {hosts?.map((host: any) => (
-                      <SelectItem key={host.id} value={String(host.id)} textValue={getHostOptionText(host)}>
-                        {renderHostStatusLabel(host)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>端口冲突处理</Label>
-                <Select value={copyConflictStrategy} onValueChange={(value) => setCopyConflictStrategy(value as any)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="skip">跳过冲突规则</SelectItem>
-                    <SelectItem value="auto">自动分配新端口</SelectItem>
-                    <SelectItem value="error">遇到冲突时报错</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>选择规则</Label>
+          <div className="max-h-[72vh] space-y-4 overflow-y-auto pr-1">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+              <div className="space-y-3 rounded-md border border-border/60 bg-background/55 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label>规则筛选</Label>
+                  <div className="text-xs text-muted-foreground">已选择 {copySelectedRules.length} / {copyableSourceRules.length} 条</div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_12rem]">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={copyRuleSearch}
+                      onChange={(event) => setCopyRuleSearch(event.target.value)}
+                      placeholder="查找规则名称 / 端口 / 目标地址 / 转发工具"
+                      className="h-9 pl-8 pr-8 text-xs"
+                    />
+                    {copyRuleSearch ? (
+                      <button
+                        type="button"
+                        aria-label="清空查找"
+                        className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                        onClick={() => setCopyRuleSearch("")}
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                  <Select value={copyRuleCategory} onValueChange={(value) => setCopyRuleCategory(value as RuleCategory)}>
+                    <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部规则</SelectItem>
+                      <SelectItem value="local">端口转发</SelectItem>
+                      <SelectItem value="tunnel">隧道转发</SelectItem>
+                      <SelectItem value="chain">转发链</SelectItem>
+                      <SelectItem value="group">转发组</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="h-7 px-2 text-xs"
+                    className="h-8 px-2 text-xs"
                     onClick={() => setCopyRuleIds(copyableSourceRules.map((rule: any) => Number(rule.id)))}
-                    disabled={copyableSourceRules.length === 0}
+                    disabled={copyableSourceRules.length === 0 || copyActionPending}
                   >
-                    全选
+                    全选当前结果
                   </Button>
-                </div>
-                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
-                  {copyableSourceRules.length > 0 ? copyableSourceRules.map((rule: any) => (
-                    <label key={rule.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/60 p-2">
-                      <input
-                        type="checkbox"
-                        className="mt-1"
-                        checked={copyRuleIds.includes(Number(rule.id))}
-                        onChange={(e) => toggleCopyRule(Number(rule.id), e.target.checked)}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{rule.name}</span>
-                        <span className="mt-1 block text-xs text-muted-foreground">
-                          :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)} / {formatForwardRuleProtocol(rule.protocol)}
-                        </span>
-                      </span>
-                    </label>
-                  )) : (
-                    <div className="py-10 text-center text-sm text-muted-foreground">该主机没有可复制的端口转发规则</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>目标主机</Label>
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => setCopyTargetHostIds(copyTargetHosts.map((host: any) => Number(host.id)))}
-                    disabled={copyTargetHosts.length === 0}
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setCopyRuleIds([])}
+                    disabled={copyRuleIds.length === 0 || copyActionPending}
                   >
-                    全选
+                    清空选择
                   </Button>
                 </div>
-                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
-                  {copyTargetHosts.length > 0 ? copyTargetHosts.map((host: any) => (
-                    <label key={host.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/60 p-2">
+                <div className="max-h-[24rem] space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {copyableSourceRules.length > 0 ? copyableSourceRules.map((rule: any) => {
+                    const category = getRuleCategory(rule, forwardGroupById);
+                    return (
+                      <label key={rule.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/70 p-2 transition-colors hover:bg-muted/40">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={copyRuleIds.includes(Number(rule.id))}
+                          disabled={copyActionPending}
+                          onChange={(event) => toggleCopyRule(Number(rule.id), event.target.checked)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            {renderRuleGroupIcon(category, "h-3.5 w-3.5")}
+                            <span className="min-w-0 truncate text-sm font-medium">{rule.name}</span>
+                            <Badge variant="secondary" className="h-5 shrink-0 px-1.5 text-[10px]">{desktopRuleTypeLabels[category]}</Badge>
+                          </span>
+                          <span className="mt-1 block truncate text-xs text-muted-foreground">
+                            :{rule.sourcePort} -&gt; {rule.targetIp}:{rule.targetPort} / {forwardTypeDisplayLabel(rule.forwardType)} / {formatForwardRuleProtocol(rule.protocol)}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  }) : (
+                    <div className="py-10 text-center text-sm text-muted-foreground">没有匹配的转发规则</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-md border border-border/60 bg-background/55 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Label>复制目标</Label>
+                  <div className="text-xs text-muted-foreground">已选择 {selectedCopyTargetResources.length} 个{copyTargetScopeLabel}</div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[10rem_minmax(0,1fr)]">
+                  <Select
+                    value={copyTargetScopeType}
+                    onValueChange={(value) => {
+                      setCopyTargetScopeType(value as RuleTransferScopeType);
+                      setCopyTargetResourceIds([]);
+                      setCopyTargetSearch("");
+                    }}
+                  >
+                    <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {ruleTransferScopeOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={copyTargetSearch}
+                      onChange={(event) => setCopyTargetSearch(event.target.value)}
+                      placeholder={"查找" + copyTargetScopeLabel}
+                      className="h-9 pl-8 pr-8 text-xs"
+                    />
+                    {copyTargetSearch ? (
+                      <button
+                        type="button"
+                        aria-label="清空目标查找"
+                        className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                        onClick={() => setCopyTargetSearch("")}
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>端口冲突处理</Label>
+                  <Select value={copyConflictStrategy} onValueChange={(value) => setCopyConflictStrategy(value as any)}>
+                    <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="skip">跳过冲突规则</SelectItem>
+                      <SelectItem value="auto">自动分配新端口</SelectItem>
+                      <SelectItem value="error">遇到冲突时报错</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setCopyTargetResourceIds(filteredCopyTargetResources.map((resource: any) => Number(resource.id)))}
+                    disabled={filteredCopyTargetResources.length === 0 || copyActionPending}
+                  >
+                    全选当前目标
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setCopyTargetResourceIds([])}
+                    disabled={copyTargetResourceIds.length === 0 || copyActionPending}
+                  >
+                    清空目标
+                  </Button>
+                </div>
+                <div className="max-h-[19rem] space-y-2 overflow-y-auto rounded-md border border-border/60 p-2">
+                  {filteredCopyTargetResources.length > 0 ? filteredCopyTargetResources.map((resource: any) => (
+                    <label key={resource.id} className="flex cursor-pointer items-start gap-3 rounded-md border border-border/40 bg-background/70 p-2 transition-colors hover:bg-muted/40">
                       <input
                         type="checkbox"
                         className="mt-1"
-                        checked={copyTargetHostIds.includes(Number(host.id))}
-                        onChange={(e) => toggleCopyTargetHost(Number(host.id), e.target.checked)}
+                        checked={copyTargetResourceIds.includes(Number(resource.id))}
+                        disabled={copyActionPending}
+                        onChange={(event) => toggleCopyTargetResource(Number(resource.id), event.target.checked)}
                       />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{renderHostStatusLabel(host)}</span>
-                        <span className="mt-1 block truncate text-xs text-muted-foreground">{getHostEntryAddressText(host) || "-"}</span>
-                      </span>
+                      <span className="min-w-0 flex-1">{renderTransferResourceOption(copyTargetScopeType, resource)}</span>
                     </label>
                   )) : (
-                    <div className="py-10 text-center text-sm text-muted-foreground">没有可选目标主机</div>
+                    <div className="py-10 text-center text-sm text-muted-foreground">没有可选择的{copyTargetScopeLabel}</div>
                   )}
                 </div>
               </div>
             </div>
-
-            <p className="text-xs leading-5 text-muted-foreground">
-              仅复制规则配置，不复制状态和统计。
-            </p>
+            <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs leading-5 text-muted-foreground">
+              复制仅保留规则基础配置和当前目标支持的高级配置；目标不支持的出站策略、链路参数会由现有规则创建逻辑自动忽略。
+            </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCopyDialog(false)}>取消</Button>
-            <Button onClick={handleCopyRules} disabled={copyMutation.isPending || copyRuleIds.length === 0 || copyTargetHostIds.length === 0}>
-              {copyMutation.isPending ? "复制中..." : "开始复制"}
-            </Button>
+          <DialogFooter className="gap-2 sm:justify-between">
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={handleBatchExportRules} disabled={copySelectedRules.length === 0 || copyActionPending}>
+                <Download className="mr-2 h-4 w-4" />
+                导出所选
+              </Button>
+              <Button type="button" variant="destructive" onClick={handleBatchDeleteRules} disabled={copySelectedRules.length === 0 || copyActionPending}>
+                {copyWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                删除所选
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setShowCopyDialog(false)} disabled={copyActionPending}>取消</Button>
+              <Button onClick={handleCopyRules} disabled={!canAdd || copyActionPending || copySelectedRules.length === 0 || selectedCopyTargetResources.length === 0}>
+                {copyActionPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ClipboardCopy className="mr-2 h-4 w-4" />}
+                复制到目标
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

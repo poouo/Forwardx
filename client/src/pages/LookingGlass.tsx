@@ -297,6 +297,7 @@ export default function LookingGlass() {
   const [method, setMethod] = useState<Method>("ping");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("443");
+  const [iperf3Port, setIperf3Port] = useState("");
   const [hostId, setHostId] = useState("");
   const [activeTaskId, setActiveTaskId] = useState("");
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
@@ -504,7 +505,16 @@ export default function LookingGlass() {
       iperf3Stop.mutate({ hostId: Number(hostId) });
       return;
     }
-    iperf3Start.mutate({ hostId: Number(hostId) });
+    const trimmedPort = iperf3Port.trim();
+    const numericPort = trimmedPort ? Number(trimmedPort) : undefined;
+    if (numericPort !== undefined && (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535)) {
+      toast.error("请输入 1-65535 的监听端口，或留空自动分配");
+      return;
+    }
+    iperf3Start.mutate({
+      hostId: Number(hostId),
+      ...(numericPort ? { port: numericPort } : {}),
+    });
   };
 
   const runTest = () => {
@@ -667,8 +677,20 @@ export default function LookingGlass() {
               )}
 
               {isIperf3Method && (
-                <div className="rounded-lg border border-border/40 bg-muted/20 p-3 text-xs text-muted-foreground">
-                  Agent 会自动选择一个可用端口启动 iperf3 服务端，启动后右侧会显示正确的客户端命令。请确保服务器安全组和系统防火墙允许客户端访问该端口。
+                <div className="space-y-2">
+                  <Label htmlFor="looking-glass-iperf3-port">监听端口</Label>
+                  <Input
+                    id="looking-glass-iperf3-port"
+                    value={iperf3Port}
+                    onChange={(event) => setIperf3Port(event.target.value.replace(/\D/g, "").slice(0, 5))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") runTest();
+                    }}
+                    inputMode="numeric"
+                    placeholder="留空自动分配"
+                    className="font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">留空时 Agent 会自动选择可用端口；如需匹配防火墙放行规则，可填写固定监听端口。</p>
                 </div>
               )}
 

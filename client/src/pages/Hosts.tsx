@@ -730,6 +730,31 @@ function formatOptionalBytesPerSecond(value: unknown) {
   return formatBytesPerSecond(bytes);
 }
 
+function formatOptionalBytes(value: unknown) {
+  if (value === null || value === undefined) return "--";
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "--";
+  return formatBytes(bytes);
+}
+
+function metricBytesOrNull(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const bytes = Number(value);
+  return Number.isFinite(bytes) ? Math.max(0, bytes) : null;
+}
+
+
+function systemNetworkTotalTitle(metric: any) {
+  const bytesIn = metricBytesOrNull(metric?.networkIn);
+  const bytesOut = metricBytesOrNull(metric?.networkOut);
+  const total = bytesIn === null && bytesOut === null ? null : (bytesIn ?? 0) + (bytesOut ?? 0);
+  return [
+    "\u7cfb\u7edf\u7d2f\u8ba1\u6d41\u91cf\uff08\u7cfb\u7edf\u91cd\u542f\u540e\u91cd\u7f6e\uff09",
+    `\u5165\u7ad9 ${formatOptionalBytes(bytesIn)}`,
+    `\u51fa\u7ad9 ${formatOptionalBytes(bytesOut)}`,
+    `\u5408\u8ba1 ${formatOptionalBytes(total)}`,
+  ].join("\n");
+}
 function clampPercent(value: unknown) {
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
@@ -2138,7 +2163,7 @@ function HostsContent() {
             <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
-                <Table className="min-w-[1080px]">
+                <Table className="min-w-[1210px]">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-[96px] whitespace-nowrap">状态</TableHead>
@@ -2155,6 +2180,9 @@ function HostsContent() {
                       <TableHead className="w-[136px] whitespace-nowrap">累计流量</TableHead>
                       <TableHead className="w-[136px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />实时网络</span>
+                      </TableHead>
+                      <TableHead className="w-[132px] whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{"\u7cfb\u7edf\u7d2f\u8ba1"}</span>
                       </TableHead>
                       <TableHead className="w-[116px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" />运行时间</span>
@@ -2241,6 +2269,14 @@ function HostsContent() {
                             outValue={formatOptionalBytesPerSecond(latestMetric?.networkSpeedOut)}
                             inTitle="实时入向"
                             outTitle="实时出向"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <HostListFlowPair
+                            inValue={formatOptionalBytes(latestMetric?.networkIn)}
+                            outValue={formatOptionalBytes(latestMetric?.networkOut)}
+                            inTitle={systemNetworkTotalTitle(latestMetric)}
+                            outTitle={systemNetworkTotalTitle(latestMetric)}
                           />
                         </TableCell>
                         <TableCell>
