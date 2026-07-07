@@ -2542,7 +2542,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         };
       }
       if (rule.forwardType === "nftables") {
-        const cmds = buildNftCleanupCmds(rule, { removeStateFiles: false });
+        const cmds = [
+          ...buildNftCleanupCmds(rule, { removeStateFiles: false, cleanupConntrack: true }),
+          ...buildManagedPortCleanupCmds(Number(rule.sourcePort), rule.targetIp, rule.targetPort, rule.protocol),
+        ];
         cmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
         return {
           ruleId: rule.id,

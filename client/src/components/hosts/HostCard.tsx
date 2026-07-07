@@ -40,6 +40,16 @@ function formatNetworkSpeed(value: number | null) {
   return `${formatted.replace(" ", "\u00a0")}/s`;
 }
 
+function metricBytesOrNull(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const bytes = Number(value);
+  return Number.isFinite(bytes) ? Math.max(0, bytes) : null;
+}
+
+function formatOptionalBytes(value: number | null) {
+  return value === null ? "--" : formatBytes(value);
+}
+
 const dayMs = 24 * 60 * 60 * 1000;
 
 function parseHostDateTime(value: unknown) {
@@ -174,6 +184,65 @@ export default function HostCard({
     const outDelta = Math.max(0, Number(latestMetric.networkOut || 0) - Number(previousMetric.networkOut || 0));
     return { in: inDelta / seconds, out: outDelta / seconds };
   }, [latestMetric, previousMetric]);
+  const systemNetworkIn = metricBytesOrNull(latestMetric?.networkIn);
+  const systemNetworkOut = metricBytesOrNull(latestMetric?.networkOut);
+  const systemNetworkTotal = systemNetworkIn === null && systemNetworkOut === null ? null : (systemNetworkIn ?? 0) + (systemNetworkOut ?? 0);
+  const currentTrafficInLabel = formatNetworkSpeed(networkSpeed.in);
+  const currentTrafficOutLabel = formatNetworkSpeed(networkSpeed.out);
+  const systemTrafficInLabel = formatOptionalBytes(systemNetworkIn);
+  const systemTrafficOutLabel = formatOptionalBytes(systemNetworkOut);
+  const currentTrafficTitle = [
+    "当前瞬时流量",
+    `下行 ${currentTrafficInLabel}`,
+    `上行 ${currentTrafficOutLabel}`,
+  ].join("\n");
+  const systemTrafficTitle = [
+    "系统累计流量（系统重启后重置）",
+    `下行 ${systemTrafficInLabel}`,
+    `上行 ${systemTrafficOutLabel}`,
+    `合计 ${formatOptionalBytes(systemNetworkTotal)}`,
+  ].join("\n");
+  const renderTrafficRow = (Icon: typeof ArrowDownToLine, label: string, value: string) => (
+    <div className="flex min-w-0 items-center justify-between gap-2 text-xs">
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-muted-foreground">
+        <Icon className="h-3 w-3 shrink-0" />
+        {label}
+      </span>
+      <span className="min-w-0 truncate text-right font-medium tabular-nums" title={value}>{value}</span>
+    </div>
+  );
+  const renderTrafficColumn = ({
+    label,
+    inValue,
+    outValue,
+    title,
+    className = "",
+  }: {
+    label: string;
+    inValue: string;
+    outValue: string;
+    title: string;
+    className?: string;
+  }) => (
+    <div className={`min-w-0 ${className}`} title={title}>
+      <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <Activity className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 truncate">{label}</span>
+      </div>
+      <div className={compact ? "mt-1.5 space-y-1" : "mt-2 space-y-1.5"}>
+        {renderTrafficRow(ArrowDownToLine, "下行", inValue)}
+        {renderTrafficRow(ArrowUpFromLine, "上行", outValue)}
+      </div>
+    </div>
+  );
+  const renderTrafficSplitBox = () => (
+    <div className={`${compact ? "rounded-md border px-2 py-1.5" : "rounded-md border px-2.5 py-2"} ${trafficPanelClass}`}>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] divide-x divide-border/40">
+        {renderTrafficColumn({ label: "当前", inValue: currentTrafficInLabel, outValue: currentTrafficOutLabel, title: currentTrafficTitle, className: "pr-2" })}
+        {renderTrafficColumn({ label: "累计", inValue: systemTrafficInLabel, outValue: systemTrafficOutLabel, title: systemTrafficTitle, className: "pl-2" })}
+      </div>
+    </div>
+  );
   const remainingTimeLabel = formatRemainingTime(host.purchasedAt, host.stoppedAt);
   const hostName = String(host.name || "-").trim() || "-";
   const osInfoText = compactHostOsInfo(host.osInfo);
@@ -200,9 +269,6 @@ export default function HostCard({
   const cardMinHeightClass = compact ? "min-h-[260px]" : "min-h-[420px]";
   const compactMetricPanelClass = `rounded-md border px-2.5 py-2 ${trafficPanelClass}`;
   const compactMetricItemClass = "grid min-w-0 grid-cols-[18px_minmax(0,1fr)_42px] items-center gap-2 rounded px-1 py-0.5 transition-colors hover:bg-background/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
-  const compactTrafficItemClass = `grid h-9 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5 rounded-md border px-2 ${trafficPanelClass}`;
-  const compactTrafficLabelClass = "flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground";
-  const compactTrafficValueClass = "min-w-0 justify-self-end whitespace-nowrap text-right font-medium leading-none tabular-nums text-[clamp(10px,0.66vw,12px)]";
   const compactMetricItems = [
     {
       key: "cpu",
@@ -500,16 +566,7 @@ export default function HostCard({
                   })}
                 </div>
               </TooltipProvider>
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 text-xs">
-                <div className={compactTrafficItemClass}>
-                  <span className={compactTrafficLabelClass}><ArrowDownToLine className="h-3 w-3 shrink-0" /> 入</span>
-                  <span className={compactTrafficValueClass}>{formatNetworkSpeed(networkSpeed.in)}</span>
-                </div>
-                <div className={compactTrafficItemClass}>
-                  <span className={compactTrafficLabelClass}><ArrowUpFromLine className="h-3 w-3 shrink-0" /> 出</span>
-                  <span className={compactTrafficValueClass}>{formatNetworkSpeed(networkSpeed.out)}</span>
-                </div>
-              </div>
+              {renderTrafficSplitBox()}
               <div className="flex items-center gap-2 text-xs">
                 <Clock className="h-3 w-3 text-muted-foreground" />
                 <span className="text-muted-foreground">运行</span>
@@ -573,19 +630,8 @@ export default function HostCard({
               </div>
               <Progress value={trafficProgress} className={trafficUsageProgressClass} />
             </div>
-            <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowDownToLine className="h-3 w-3" /> 入站</span>
-                  <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.in)}</span>
-                </div>
-              </div>
-              <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="flex items-center gap-1.5 text-muted-foreground"><ArrowUpFromLine className="h-3 w-3" /> 出站</span>
-                  <span className="whitespace-nowrap font-medium tabular-nums">{formatNetworkSpeed(networkSpeed.out)}</span>
-                </div>
-              </div>
+            <div className="pt-1">
+              {renderTrafficSplitBox()}
             </div>
             <div className="flex items-center gap-2 text-xs pt-1">
               <Clock className="h-3 w-3 text-muted-foreground" />

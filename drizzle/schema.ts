@@ -1012,3 +1012,11 @@ export const userTunnelPermissions = table("user_tunnel_permissions", {
 });
 export type UserTunnelPermission = typeof userTunnelPermissions.$inferSelect;
 export type InsertUserTunnelPermission = typeof userTunnelPermissions.$inferInsert;
+export const userForwardGroupPermissions = table("user_forward_group_permissions", {
+  id: serial("id"),
+  userId: int("userId").notNull(),
+  forwardGroupId: int("forwardGroupId").notNull(),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+});
+export type UserForwardGroupPermission = typeof userForwardGroupPermissions.$inferSelect;
+export type InsertUserForwardGroupPermission = typeof userForwardGroupPermissions.$inferInsert;

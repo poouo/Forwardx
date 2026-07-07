@@ -6,6 +6,7 @@ import {
   forwardGroups,
   forwardRules,
   tunnels,
+  userForwardGroupPermissions,
   type InsertForwardGroup,
   type InsertForwardGroupMember,
 } from "../../drizzle/schema";
@@ -64,6 +65,12 @@ function nullableString(value: unknown) {
 
 function dbBool(value: unknown) {
   return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+}
+
+const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+function isMainBackupGostTunnelMode(mode: unknown) {
+  return mainBackupGostTunnelModes.has(String(mode || "").toLowerCase());
 }
 
 function canPreserveChildRuleRuntime(existing: any, payload: any, options: SyncForwardGroupRulesOptions) {
@@ -1345,8 +1352,9 @@ async function ensureMemberRuleForTemplate(group: any, templateRule: any, member
   const directRealmOptimizationSupported = protocolTcpSupported && directForwardType === "realm";
   const templateFailoverEnabled = !!(failoverRuntimeSource as any).failoverEnabled && protocol === "tcp";
   const directFailoverEnabled = templateFailoverEnabled && directForwardType === "gost";
-  const childFailoverEnabled = member.memberType === "tunnel" ? templateFailoverEnabled : directFailoverEnabled;
   const tunnelMode = String(tunnel?.mode || "").toLowerCase();
+  const tunnelFailoverSupported = member.memberType === "tunnel" && isMainBackupGostTunnelMode(tunnelMode);
+  const childFailoverEnabled = member.memberType === "tunnel" ? templateFailoverEnabled && tunnelFailoverSupported : directFailoverEnabled;
   const tunnelProxySupported = member.memberType === "tunnel" && !!tunnel && tunnelMode !== "nginx_stream" && tunnelMode !== "nginx_tls";
   const tunnelForwardx = member.memberType === "tunnel" && tunnelMode === "forwardx";
 
@@ -1841,6 +1849,7 @@ export async function deleteForwardGroup(id: number) {
   }
   await db.delete(forwardGroupEvents).where(eq(forwardGroupEvents.groupId, id));
   await db.delete(forwardGroupMembers).where(eq(forwardGroupMembers.groupId, id));
+  await db.delete(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.forwardGroupId, id));
   await db.delete(forwardGroups).where(eq(forwardGroups.id, id));
 }
 

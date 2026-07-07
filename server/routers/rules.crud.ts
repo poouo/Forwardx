@@ -23,6 +23,11 @@ const strictFailoverTargetSchema = z.object({
 });
 const failoverStrategySchema = z.enum(["fallback", "round_robin", "random", "ip_hash"]);
 const MAX_FAILOVER_TARGETS = 10;
+const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+function isMainBackupGostTunnelMode(mode: unknown) {
+  return mainBackupGostTunnelModes.has(String(mode || "").toLowerCase());
+}
 
 const failoverInputShape = {
   failoverEnabled: z.boolean().optional(),
@@ -232,6 +237,17 @@ function lockedForwardTypeForGroup(group: any, fallback: unknown = "iptables") {
   return normalizeLockedForwardType(group?.forwardType || fallback);
 }
 
+async function forwardGroupTunnelMembersSupportMainBackup(group: any) {
+  const members = Array.isArray(group?.members) ? group.members : [];
+  const tunnelMembers = members.filter((member: any) => member?.isEnabled !== false && Number(member?.tunnelId || 0) > 0);
+  if (tunnelMembers.length === 0) return false;
+  for (const member of tunnelMembers) {
+    const tunnel = await db.getTunnelById(Number(member.tunnelId));
+    if (!isMainBackupGostTunnelMode((tunnel as any)?.mode)) return false;
+  }
+  return true;
+}
+
 function isFailoverHotUpdate(input: Record<string, unknown>, rule: any, nextHostId: number, nextTunnelId: number | null) {
   const changedFields = [
     "sourcePort",
@@ -277,20 +293,24 @@ export function requireMainBackupAllowed(options: {
   protocol?: string | null;
   forwardType?: string | null;
   tunnelId?: number | null;
+  tunnelMode?: string | null;
   isTunnelRoute?: boolean;
   isPortForwardGroup?: boolean;
   isAdmin: boolean;
 }) {
   if (!options.enabled) return;
   if (options.protocol && options.protocol !== "tcp") {
-    throw new Error("主备模式当前仅支持 TCP 协议");
+    throw new Error("出站策略当前仅支持 TCP 协议");
   }
   if (options.forwardType !== "gost") {
-    throw new Error("主备模式仅支持 GOST 端口转发、GOST 隧道和自定义加密隧道");
+    throw new Error("出站策略仅支持 GOST 端口转发和 GOST 隧道");
   }
   const isTunnelRoute = !!options.isTunnelRoute || Number(options.tunnelId || 0) > 0;
+  if (isTunnelRoute && options.tunnelMode !== undefined && !isMainBackupGostTunnelMode(options.tunnelMode)) {
+    throw new Error("出站策略仅支持 GOST 隧道");
+  }
   if (!options.isAdmin && !isTunnelRoute && !options.isPortForwardGroup) {
-    throw new Error("普通用户的普通端口转发不支持主备模式，请使用隧道转发或联系管理员");
+    throw new Error("普通用户的普通端口转发不支持出站策略，请使用 GOST 隧道转发或联系管理员");
   }
 }
 
@@ -459,13 +479,15 @@ export const crudRulesRouter = router({
         }
         const hostId = await db.getForwardGroupDefaultHostId(input.forwardGroupId);
         const forwardType = lockedForwardTypeForGroup(group, input.forwardType);
-        const groupSupportsFailover = !isForwardChain && !isPortGroup && input.protocol === "tcp" && forwardType === "gost";
+        const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
+        const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
+        const groupSupportsFailover = !isForwardChain && input.protocol === "tcp" && forwardType === "gost" && (!groupIsTunnel || groupTunnelSupportsFailover);
         const createFailoverEnabled = groupSupportsFailover ? input.failoverEnabled : false;
         requireMainBackupAllowed({
           enabled: createFailoverEnabled,
           protocol: input.protocol,
           forwardType,
-          isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
+          isTunnelRoute: groupIsTunnel,
           isPortForwardGroup: isPortGroup,
           isAdmin: ctx.user.role === "admin",
         });
@@ -529,17 +551,7 @@ export const crudRulesRouter = router({
         throw new Error("隧道转发必须使用已创建的隧道协议，请先创建隧道后再选择使用。");
       }
       const tunnelId = input.forwardType === "gost" ? input.tunnelId ?? null : null;
-      if (!tunnelId) {
-        throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
-      }
       if (!input.hostId) throw new Error("请选择所属主机");
-      requireMainBackupAllowed({
-        enabled: input.failoverEnabled,
-        protocol: input.protocol,
-        forwardType: input.forwardType,
-        tunnelId,
-        isAdmin: ctx.user.role === "admin",
-      });
       let selectedTunnelForRule: any = null;
       let isTrafficBillingRule = false;
       if (tunnelId) {
@@ -553,7 +565,18 @@ export const crudRulesRouter = router({
       } else {
         const access = await requireHostUseAccess(ctx, input.hostId);
         isTrafficBillingRule = access.isTrafficBillingResource;
+        if (ctx.user.role !== "admin" && !isTrafficBillingRule) {
+          throw new Error("普通端口转发请先创建转发组或转发链后再新增规则。");
+        }
       }
+      requireMainBackupAllowed({
+        enabled: input.failoverEnabled,
+        protocol: input.protocol,
+        forwardType: input.forwardType,
+        tunnelId,
+        tunnelMode: selectedTunnelForRule?.mode,
+        isAdmin: ctx.user.role === "admin",
+      });
       if (ctx.user.role !== "admin") {
         currentUser = await requireForwardAccessReady(ctx.user.id, { allowTrafficBillingRecovery: isTrafficBillingRule });
         await requireTrafficBillingBalanceForRule(ctx.user.id, isTrafficBillingRule);
@@ -877,12 +900,15 @@ export const crudRulesRouter = router({
         }
         const nextForwardType = lockedForwardTypeForGroup(group, input.forwardType ?? (rule as any).forwardType);
         const nextProtocol = input.protocol ?? (rule as any).protocol;
-        const nextMainBackupEnabled = groupChanged ? false : (!isForwardChain && !isPortGroup && nextProtocol === "tcp" && nextForwardType === "gost" ? input.failoverEnabled ?? (rule as any).failoverEnabled : false);
+        const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
+        const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
+        const groupSupportsFailover = !isForwardChain && nextProtocol === "tcp" && nextForwardType === "gost" && (!groupIsTunnel || groupTunnelSupportsFailover);
+        const nextMainBackupEnabled = groupChanged ? false : (groupSupportsFailover ? input.failoverEnabled ?? (rule as any).failoverEnabled : false);
         requireMainBackupAllowed({
           enabled: nextMainBackupEnabled,
           protocol: nextProtocol,
           forwardType: nextForwardType,
-          isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
+          isTunnelRoute: groupIsTunnel,
           isPortForwardGroup: isPortGroup,
           isAdmin: ctx.user.role === "admin",
         });
@@ -1089,6 +1115,7 @@ export const crudRulesRouter = router({
         protocol: nextProtocolForRule,
         forwardType: nextForwardTypeForRule,
         tunnelId: nextTunnelIdForRule,
+        tunnelMode: selectedTunnelForRule?.mode,
         isAdmin: ctx.user.role === "admin",
       });
       const nextRuleEnabled = input.isEnabled ?? (rule as any).isEnabled;
@@ -1426,11 +1453,13 @@ export const crudRulesRouter = router({
           });
           const isForwardChain = (group as any).groupMode === "chain";
           const isPortGroup = (group as any).groupMode === "port";
+          const groupIsTunnel = !isForwardChain && (group as any).groupType === "tunnel";
+          const groupTunnelSupportsFailover = groupIsTunnel ? await forwardGroupTunnelMembersSupportMainBackup(group) : true;
           requireMainBackupAllowed({
-            enabled: isForwardChain || isPortGroup ? false : (rule as any).failoverEnabled,
+            enabled: isForwardChain || (groupIsTunnel && !groupTunnelSupportsFailover) ? false : (rule as any).failoverEnabled,
             protocol: (rule as any).protocol,
             forwardType: !isForwardChain && (group as any).groupType === "tunnel" ? "gost" : (rule as any).forwardType,
-            isTunnelRoute: !isForwardChain && (group as any).groupType === "tunnel",
+            isTunnelRoute: groupIsTunnel,
             isPortForwardGroup: isPortGroup,
             isAdmin: ctx.user.role === "admin",
           });
@@ -1443,10 +1472,11 @@ export const crudRulesRouter = router({
         return { success: true };
       }
       await requireRuleProtocolEnabled(rule);
+      let toggleTunnelForRule: any = null;
       if ((rule as any).tunnelId) {
-        const tunnel = await db.getTunnelById((rule as any).tunnelId);
+        toggleTunnelForRule = await db.getTunnelById((rule as any).tunnelId);
         await db.updateTunnel((rule as any).tunnelId, { isRunning: false } as any);
-        if (tunnel) await pushTunnelEndpointRefresh(tunnel, "forward-rule-toggled");
+        if (toggleTunnelForRule) await pushTunnelEndpointRefresh(toggleTunnelForRule, "forward-rule-toggled");
       }
       if (input.isEnabled) {
         requireMainBackupAllowed({
@@ -1454,6 +1484,7 @@ export const crudRulesRouter = router({
           protocol: (rule as any).protocol,
           forwardType: (rule as any).forwardType,
           tunnelId: (rule as any).tunnelId,
+          tunnelMode: toggleTunnelForRule?.mode,
           isAdmin: ctx.user.role === "admin",
         });
         await assertRulePortWithinEntryPolicy({

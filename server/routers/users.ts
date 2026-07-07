@@ -177,6 +177,19 @@ export const usersRouter = router({
         console.info(`[Users] Updated host permissions userId=${input.userId} count=${input.hostIds.length} ${actorLabel(ctx)}`);
         return { success: true };
       }),
+
+    getForwardGroupPermissions: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getUserManualAllowedForwardGroupIds(input.userId);
+      }),
+    setForwardGroupPermissions: adminProcedure
+      .input(z.object({ userId: z.number(), forwardGroupIds: z.array(z.number()) }))
+      .mutation(async ({ input, ctx }) => {
+        await db.setUserForwardGroupPermissions(input.userId, input.forwardGroupIds);
+        console.info(`[Users] Updated forward group permissions userId=${input.userId} count=${input.forwardGroupIds.length} ${actorLabel(ctx)}`);
+        return { success: true };
+      }),
     /** 获取所有用户的主机权限映射 */
     allHostPermissions: adminProcedure.query(async () => {
       return db.getAllUserHostPermissions();

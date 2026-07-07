@@ -47,7 +47,7 @@ import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { addHostNodeMeta, hostDisplayName } from "@/lib/linkTestNodeMeta";
+import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/linkTestNodeMeta";
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
@@ -1505,6 +1505,45 @@ function TunnelSelfTestDialog({
         || tunnelHopHostName(tunnel, hostId, hosts)
         || `主机 #${hostId}`;
     };
+    const exitDisplayAddressFor = (hostId: number, connectHost?: string | null) => {
+      const configured = String(connectHost || "").trim();
+      if (configured) return configured;
+      return hostAddressCandidates(hostForId(hostId)).join(" / ");
+    };
+    const putNodeMetaAlias = (key: unknown, nodeMeta: any) => {
+      const text = String(key || "").trim();
+      if (!text) return;
+      meta[text] = nodeMeta;
+      meta[text.toLowerCase()] = nodeMeta;
+    };
+    const addExitNodeMetaForHostId = (hostId: number, connectHost?: string | null, aliases: Array<unknown> = []) => {
+      const host = hostForId(hostId);
+      const label = labelForHostId(hostId);
+      const configuredAddress = String(connectHost || "").trim();
+      addHostNodeMeta(meta, host, [label, configuredAddress, ...aliases]);
+      const baseMeta = meta[hostDisplayName(host)] || meta[String(hostId)] || undefined;
+      if (!baseMeta) return;
+      const addressParts = [
+        configuredAddress,
+        ...String(baseMeta.address || "").split(" / "),
+        ...hostAddressCandidates(host),
+      ].map((value) => String(value || "").trim()).filter(Boolean);
+      const nextMeta = {
+        ...baseMeta,
+        label: label || baseMeta.label,
+        address: Array.from(new Set(addressParts)).join(" / ") || baseMeta.address || null,
+      };
+      [
+        label,
+        hostDisplayName(host),
+        hostId,
+        `主机${hostId}`,
+        `主机 #${hostId}`,
+        configuredAddress,
+        ...hostAddressCandidates(host),
+        ...aliases,
+      ].forEach((alias) => putNodeMetaAlias(alias, nextMeta));
+    };
     const addNodeMetaForHostId = (hostId: number) => {
       const host = hostForId(hostId);
       addHostNodeMeta(meta, host, [
@@ -1600,6 +1639,18 @@ function TunnelSelfTestDialog({
           };
         }),
       ].filter((row) => row.hostId > 0);
+      exitRows.forEach((row) => addExitNodeMetaForHostId(row.hostId, row.connectHost, [row.label, row.role]));
+      const exitRowByLabel = new Map(exitRows.map((row) => [row.label, row]));
+      plannedSegments = plannedSegments.map((segment) => {
+        const fromRow = exitRowByLabel.get(segment.from);
+        const toRow = exitRowByLabel.get(segment.to);
+        if (!fromRow && !toRow) return segment;
+        return {
+          ...segment,
+          fromMeta: fromRow ? (meta[fromRow.label] || segment.fromMeta) : segment.fromMeta,
+          toMeta: toRow ? (meta[toRow.label] || segment.toMeta) : segment.toMeta,
+        };
+      });
       const detailByTarget = new Map<string, any>();
       const detailByHostId = new Map<number, any>();
       const detailByIndex = new Map<number, any>();
@@ -1656,6 +1707,8 @@ function TunnelSelfTestDialog({
                       : latestTimeout
                         ? "失败"
                         : "--";
+              const displayAddress = exitDisplayAddressFor(row.hostId, row.connectHost);
+              const addressText = [displayAddress, row.listenPort ? `:${row.listenPort}` : ""].filter(Boolean).join("") || "默认连接地址";
               return (
                 <div key={`${row.role}-${row.hostId}`} className="rounded border border-border/60 bg-background/70 px-2 py-1.5">
                   <div className="flex min-w-0 items-center justify-between gap-3">
@@ -1664,7 +1717,7 @@ function TunnelSelfTestDialog({
                   </div>
                   <div className="mt-1 flex min-w-0 items-center justify-between gap-3 text-[11px] text-muted-foreground">
                     <span>{row.role}</span>
-                    <span className="min-w-0 truncate">{[row.connectHost, row.listenPort ? `:${row.listenPort}` : ""].filter(Boolean).join("") || "默认连接地址"}</span>
+                    <span className="min-w-0 truncate" title={addressText}>{addressText}</span>
                   </div>
                 </div>
               );
@@ -1697,7 +1750,7 @@ function TunnelSelfTestDialog({
       for (const exit of extraExits) {
         const exitHostId = Number(exit?.hostId || 0);
         const exitHost = hostForId(exitHostId);
-        addHostNodeMeta(meta, exitHost, [hostDisplayName(exitHost), `主机${exitHostId}`, `主机 #${exitHostId}`]);
+        addExitNodeMetaForHostId(exitHostId, String(exit?.connectHost || "").trim(), [hostDisplayName(exitHost), `主机${exitHostId}`, `主机 #${exitHostId}`]);
         branchSegments.push({
           from: entryLabel,
           to: hostDisplayName(exitHost) || `主机${exitHostId}`,

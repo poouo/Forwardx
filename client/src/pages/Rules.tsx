@@ -213,8 +213,9 @@ function combinePortPolicies(...policies: PortPolicy[]): PortPolicy {
 type RuleProtocol = "tcp" | "udp" | "both";
 type RuleRouteMode = "local" | "tunnel" | "chain" | "group";
 
-function isForwardGroupRouteModeValue(mode: RuleRouteMode) {
-  return mode === "local" || mode === "chain" || mode === "group";
+
+function isForwardGroupBackedRouteModeValue(mode: RuleRouteMode, forwardGroupId?: number | null) {
+  return mode === "chain" || mode === "group" || (mode === "local" && Number(forwardGroupId || 0) > 0);
 }
 
 type RuleFormData = {
@@ -902,6 +903,18 @@ function normalizeForwardGroupModeForRule(group: any | null | undefined) {
 
 function isForwardChainGroup(group: any | null | undefined) {
   return normalizeForwardGroupModeForRule(group) === "chain";
+}
+
+function isGostTunnelForMainBackup(tunnel: any | null | undefined) {
+  return gostTunnelModes.has(String(tunnel?.mode || "").toLowerCase());
+}
+
+function isForwardGroupMainBackupTunnelSupported(group: any | null | undefined, tunnelById: Map<number, any>) {
+  if (!group || isForwardChainGroup(group) || String(group?.groupType || "") !== "tunnel") return false;
+  const tunnelMembers = (Array.isArray(group.members) ? group.members : [])
+    .filter((member: any) => member?.isEnabled !== false && Number(member?.tunnelId || 0) > 0);
+  if (tunnelMembers.length === 0) return false;
+  return tunnelMembers.every((member: any) => isGostTunnelForMainBackup(tunnelById.get(Number(member.tunnelId))));
 }
 
 
@@ -2295,7 +2308,8 @@ function RulesContent() {
     if (mode === form.routeMode) return;
     if (mode === "local" && !canUseLocalForward) return;
     if (mode === "tunnel" && !canUseGost) return;
-    const nextGroups = mode === "local"
+    const localUsesSavedForward = mode === "local" && canUseSavedLocalForward;
+    const nextGroups = localUsesSavedForward
       ? availablePortForwardGroups
       : mode === "chain"
       ? availableForwardChainGroups
@@ -2305,17 +2319,23 @@ function RulesContent() {
     const nextTunnel = mode === "tunnel"
       ? (selectedTunnel || availableTunnels[0] || supportedTunnels[0])
       : null;
+    const usesForwardGroup = mode === "chain" || mode === "group" || localUsesSavedForward;
+    const nextBillingHost = mode === "local" && !localUsesSavedForward
+      ? (availableTrafficBillingHosts.find((host: any) => Number(host.id) === Number(form.hostId)) || availableTrafficBillingHosts[0] || null)
+      : null;
     if (mode === "tunnel" && !nextTunnel) return;
-    if (isForwardGroupRouteModeValue(mode) && nextGroups.length === 0) return;
+    if (usesForwardGroup && nextGroups.length === 0) return;
+    if (mode === "local" && !usesForwardGroup && !nextBillingHost) return;
     const expectedGroupMode = mode === "local" ? "port" : mode === "chain" ? "chain" : "failover";
-    const nextGroup = isForwardGroupRouteModeValue(mode)
+    const nextGroup = usesForwardGroup
       ? (selectedForwardGroup && normalizeForwardGroupModeForRule(selectedForwardGroup) === expectedGroupMode ? selectedForwardGroup : nextGroups[0])
       : null;
+    const nextDirectForwardType = usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0];
     const nextForwardType = mode === "tunnel"
       ? "gost"
-      : isForwardGroupRouteModeValue(mode)
+      : usesForwardGroup
       ? getForwardGroupRuleForwardType(nextGroup, usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0])
-      : (usableForwardTypes.includes(form.forwardType) ? form.forwardType : usableForwardTypes[0]);
+      : nextDirectForwardType;
     if (!nextForwardType) return;
     latestPortCheckRef.current += 1;
     setPortStatus("idle");
@@ -2325,13 +2345,18 @@ function RulesContent() {
       routeMode: mode,
       forwardType: nextForwardType,
       tunnelId: mode === "tunnel" && nextTunnel ? Number(nextTunnel.id) : null,
-      forwardGroupId: isForwardGroupRouteModeValue(mode) && nextGroup ? Number(nextGroup.id) : null,
-      hostId: mode === "tunnel" && nextTunnel ? nextTunnel.entryHostId : isForwardGroupRouteModeValue(mode) ? null : (prev.hostId || hosts?.[0]?.id || null),
+      forwardGroupId: usesForwardGroup && nextGroup ? Number(nextGroup.id) : null,
+      hostId: mode === "tunnel" && nextTunnel
+        ? nextTunnel.entryHostId
+        : usesForwardGroup
+        ? null
+        : availableTrafficBillingHosts.some((host: any) => Number(host.id) === Number(prev.hostId))
+        ? prev.hostId
+        : (Number(nextBillingHost?.id || 0) || null),
       failoverEnabled: false,
       failoverTargetsText: "",
     }));
   };
-
   const [pendingToggleRuleIds, setPendingToggleRuleIds] = useState<Set<number>>(() => new Set());
   const toggleMutation = trpc.rules.toggle.useMutation({
     onSuccess: () => {
@@ -2410,49 +2435,77 @@ function RulesContent() {
 
   const openCreate = (preferredRouteMode?: RuleRouteMode) => {
     resetForm();
-    const firstPortGroup = canUseLocalForward ? availablePortForwardGroups[0] : null;
-    const firstLocalForwardType = getForwardGroupRuleForwardType(firstPortGroup, defaultForm.forwardType);
+    const firstPortGroup = canUseSavedLocalForward ? availablePortForwardGroups[0] : null;
+    const firstLocalForwardType = firstPortGroup ? getForwardGroupRuleForwardType(firstPortGroup, defaultForm.forwardType) : null;
+    const firstBillingHost = canUseBillingHostLocalForward ? availableTrafficBillingHosts[0] : null;
+    const firstDirectForwardType = usableForwardTypes.includes(defaultForm.forwardType) ? defaultForm.forwardType : usableForwardTypes[0];
     const firstTunnel = canUseGost
       ? supportedTunnels[0]
       : null;
     const firstChain = canUseForwardChain ? availableForwardChainGroups[0] : null;
     const firstGroup = canUseFailoverGroup ? availableFailoverForwardGroups[0] : null;
-    const firstForwardGroup = firstPortGroup || firstChain || firstGroup;
+    const hasSavedLocalForward = !!firstPortGroup && !!firstLocalForwardType;
+    const hasBillingHostLocalForward = !!firstBillingHost && !!firstDirectForwardType;
     if (preferredRouteMode === "local") {
-      if (!firstPortGroup || !firstLocalForwardType) {
-        toast.error("请先在链路管理中创建可用端口转发");
+      if (hasSavedLocalForward) {
+        setForm({
+          ...defaultForm,
+          failoverTargetsText: "",
+          routeMode: "local",
+          hostId: null,
+          forwardType: firstLocalForwardType,
+          tunnelId: null,
+          forwardGroupId: Number(firstPortGroup.id),
+        });
+        setShowDialog(true);
         return;
       }
-      setForm({
-        ...defaultForm,
-        failoverTargetsText: "",
-        routeMode: "local",
-        hostId: null,
-        forwardType: firstLocalForwardType,
-        tunnelId: null,
-        forwardGroupId: Number(firstPortGroup.id),
-      });
-      setShowDialog(true);
+      if (hasBillingHostLocalForward) {
+        setForm({
+          ...defaultForm,
+          failoverTargetsText: "",
+          routeMode: "local",
+          hostId: Number(firstBillingHost.id),
+          forwardType: firstDirectForwardType,
+          tunnelId: null,
+          forwardGroupId: null,
+        });
+        setShowDialog(true);
+        return;
+      }
+      toast.error("请先在链路管理中创建可用端口转发，或确认按量计费主机和余额可用");
       return;
     }
-    if ((firstPortGroup && firstLocalForwardType) || firstTunnel || firstForwardGroup) {
-      const routeMode: RuleRouteMode = firstPortGroup && firstLocalForwardType ? "local" : firstTunnel ? "tunnel" : firstChain ? "chain" : "group";
+    if (hasSavedLocalForward || hasBillingHostLocalForward || firstTunnel || firstChain || firstGroup) {
+      const routeMode: RuleRouteMode = hasSavedLocalForward || hasBillingHostLocalForward ? "local" : firstTunnel ? "tunnel" : firstChain ? "chain" : "group";
+      const localUsesSavedForward = routeMode === "local" && hasSavedLocalForward;
       setForm({
         ...defaultForm,
         failoverTargetsText: "",
         routeMode,
-        hostId: routeMode === "tunnel" && firstTunnel ? firstTunnel.entryHostId : null,
-        forwardType: routeMode === "tunnel" ? "gost" : routeMode === "group" && firstGroup ? getForwardGroupRuleForwardType(firstGroup, "iptables") : routeMode === "local" ? firstLocalForwardType : "iptables",
+        hostId: routeMode === "tunnel" && firstTunnel
+          ? firstTunnel.entryHostId
+          : routeMode === "local" && !localUsesSavedForward && firstBillingHost
+          ? Number(firstBillingHost.id)
+          : null,
+        forwardType: routeMode === "tunnel"
+          ? "gost"
+          : routeMode === "group" && firstGroup
+          ? getForwardGroupRuleForwardType(firstGroup, "iptables")
+          : routeMode === "local" && localUsesSavedForward
+          ? firstLocalForwardType
+          : routeMode === "local"
+          ? firstDirectForwardType
+          : "iptables",
         tunnelId: routeMode === "tunnel" && firstTunnel ? firstTunnel.id : null,
-        forwardGroupId: routeMode === "local" && firstPortGroup ? Number(firstPortGroup.id) : routeMode === "chain" && firstChain ? Number(firstChain.id) : routeMode === "group" && firstGroup ? Number(firstGroup.id) : null,
+        forwardGroupId: routeMode === "local" && localUsesSavedForward && firstPortGroup ? Number(firstPortGroup.id) : routeMode === "chain" && firstChain ? Number(firstChain.id) : routeMode === "group" && firstGroup ? Number(firstGroup.id) : null,
       });
     } else {
-      toast.error("请先创建可用端口转发、隧道、转发链或转发组后再新增规则。");
+      toast.error("请先创建可用端口转发、隧道、转发链、转发组，或确认按量计费主机和余额可用。");
       return;
     }
     setShowDialog(true);
   };
-
   const openCopyDialog = () => {
     if (!transferSourceRules.length && !canAdd) {
       toast.info("暂无可批量管理的转发规则");
@@ -2462,7 +2515,7 @@ function RulesContent() {
     setBatchEditForm(buildEmptyBatchEditForm());
     setCopyRuleCategory(ruleCategory);
     setCopyRuleSearch(ruleSearchQuery);
-    setCopyTargetScopeType(canUseLocalForward ? "local" : canUseGost ? "tunnel" : canUseForwardChain ? "chain" : "group");
+    setCopyTargetScopeType(canUseSavedLocalForward ? "local" : canUseGost ? "tunnel" : canUseForwardChain ? "chain" : "group");
     setCopyTargetResourceIds([]);
     setCopyTargetSearch("");
     setCopyRuleIds([]);
@@ -2529,10 +2582,10 @@ function RulesContent() {
 
   // 获取当前选中主机的端口区间
   const selectedHost = useMemo(() => {
-    if (isForwardGroupRouteModeValue(form.routeMode)) return null;
+    if (isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId)) return null;
     if (!form.hostId || !hosts) return null;
     return hosts.find((h: any) => h.id === form.hostId) || null;
-  }, [form.hostId, form.routeMode, hosts]);
+  }, [form.forwardGroupId, form.hostId, form.routeMode, hosts]);
   const forwardProtocolSettings = useMemo(
     () => normalizeForwardProtocolSettings(systemSettings?.forwardProtocols),
     [systemSettings?.forwardProtocols]
@@ -2719,13 +2772,14 @@ function RulesContent() {
     return forwardGroupById.get(Number(form.forwardGroupId)) || null;
   }, [form.forwardGroupId, forwardGroupById]);
   const routeModeLocked = false;
+  const isForwardGroupRouteMode = isForwardGroupBackedRouteModeValue(form.routeMode, form.forwardGroupId);
   const effectiveRouteForwardType = useMemo<ForwardType>(() => {
     if (form.routeMode === "tunnel") return "gost";
-    if (isForwardGroupRouteModeValue(form.routeMode)) {
+    if (isForwardGroupRouteMode) {
       return getForwardGroupRuleForwardType(selectedForwardGroup, form.forwardType);
     }
     return form.forwardType;
-  }, [form.forwardType, form.routeMode, selectedForwardGroup]);
+  }, [form.forwardGroupId, form.forwardType, form.routeMode, isForwardGroupRouteMode, selectedForwardGroup]);
   /**
    * 当前用户被允许使用的转发方式。
    * - 管理员：不受限制（返回全部）
@@ -2744,7 +2798,17 @@ function RulesContent() {
     () => allowedForwardTypes.filter((t) => isProtocolEnabled(t)),
     [allowedForwardTypes, isProtocolEnabled]
   );
-  const canUseLocalForward = availablePortForwardGroups.length > 0;
+  const trafficBillingHostIds = useMemo(() => {
+    const ids = (trafficBilling?.usableResourceIds?.hostIds || []) as Array<number | string>;
+    return new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0));
+  }, [trafficBilling?.usableResourceIds]);
+  const availableTrafficBillingHosts = useMemo(
+    () => (hosts || []).filter((host: any) => trafficBillingHostIds.has(Number(host.id))),
+    [hosts, trafficBillingHostIds]
+  );
+  const canUseSavedLocalForward = availablePortForwardGroups.length > 0;
+  const canUseBillingHostLocalForward = user?.role !== "admin" && hasTrafficBillingBalance && availableTrafficBillingHosts.length > 0 && usableForwardTypes.length > 0;
+  const canUseLocalForward = canUseSavedLocalForward || canUseBillingHostLocalForward;
   const canUseGost = allowedForwardTypes.includes("gost") && supportedTunnels.length > 0;
   const canUseForwardChain = availableForwardChainGroups.length > 0;
   const canUseFailoverGroup = availableFailoverForwardGroups.length > 0;
@@ -2761,15 +2825,21 @@ function RulesContent() {
       return;
     }
     openCreate("local");
-  }, [search, setLocation, rulePermissionLoading, hostsFetched, systemSettingsFetched, canAdd, canUseLocalForward, availablePortForwardGroups]);
+  }, [search, setLocation, rulePermissionLoading, hostsFetched, systemSettingsFetched, canAdd, canUseLocalForward, canUseSavedLocalForward, canUseBillingHostLocalForward, availablePortForwardGroups, availableTrafficBillingHosts, usableForwardTypes]);
 
-  const isForwardGroupRouteMode = isForwardGroupRouteModeValue(form.routeMode);
   const telegramBotReady = !!systemSettings?.telegram?.enabled && !!systemSettings?.telegram?.configured;
   const selectedForwardGroupIsChain = form.routeMode === "chain" || isForwardChainGroup(selectedForwardGroup);
-  const selectedForwardGroupIsPort = form.routeMode === "local" || normalizeForwardGroupModeForRule(selectedForwardGroup) === "port";
+  const selectedForwardGroupIsPort = normalizeForwardGroupModeForRule(selectedForwardGroup) === "port";
   const mainBackupForwardType = effectiveRouteForwardType;
-  const mainBackupIsTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
+  const mainBackupUsesTunnelRoute = form.routeMode === "tunnel" || (!selectedForwardGroupIsChain && selectedForwardGroup?.groupType === "tunnel");
+  const mainBackupIsTunnelRoute =
+    (form.routeMode === "tunnel" && isGostTunnelForMainBackup(selectedTunnel))
+    || isForwardGroupMainBackupTunnelSupported(selectedForwardGroup, tunnelById);
+  const mainBackupPortForwardSupported = !mainBackupUsesTunnelRoute
+    && mainBackupForwardType === "gost"
+    && (user?.role === "admin" || selectedForwardGroupIsPort);
   const canAutoSwitchMainBackupToGost = !selectedForwardGroupIsChain
+    && !mainBackupUsesTunnelRoute
     && mainBackupForwardType !== "gost"
     && usableForwardTypes.includes("gost")
     && !routeModeLocked
@@ -2777,17 +2847,19 @@ function RulesContent() {
     && form.routeMode === "local"
     && !selectedForwardGroupIsPort;
   const canUseMainBackup = !selectedForwardGroupIsChain
-    && !selectedForwardGroupIsPort
     && (
-      (mainBackupForwardType === "gost" && (user?.role === "admin" || mainBackupIsTunnelRoute))
+      (mainBackupUsesTunnelRoute && mainBackupForwardType === "gost" && mainBackupIsTunnelRoute)
+      || mainBackupPortForwardSupported
       || canAutoSwitchMainBackupToGost
     );
-  const mainBackupDisabledText = mainBackupForwardType !== "gost" && !canAutoSwitchMainBackupToGost
-    ? "仅 GOST 端口转发、GOST 隧道和自定义加密隧道支持出站策略。"
-    : selectedForwardGroupIsChain
+  const mainBackupDisabledText = selectedForwardGroupIsChain
     ? "端口转发链不支持出站策略。"
-    : user?.role !== "admin" && !mainBackupIsTunnelRoute && !selectedForwardGroupIsPort
-    ? "普通端口转发不支持出站策略，请使用隧道转发。"
+    : mainBackupUsesTunnelRoute && !mainBackupIsTunnelRoute
+    ? "当前隧道或转发工具不支持出站策略。"
+    : mainBackupForwardType !== "gost" && !canAutoSwitchMainBackupToGost
+    ? "仅支持 GOST 的隧道或转发工具可以使用出站策略。"
+    : user?.role !== "admin" && !mainBackupUsesTunnelRoute && !selectedForwardGroupIsPort
+    ? "普通用户的普通端口转发不支持出站策略，请使用已保存的 GOST 端口转发或 GOST 隧道。"
     : form.protocol !== "tcp"
     ? "出站策略仅支持 TCP 协议。"
     : "";
@@ -2937,7 +3009,7 @@ function RulesContent() {
 
   const setBatchEditRouteMode = (mode: RuleRouteMode) => {
     if (mode === batchEditForm.routeMode) return;
-    if (mode === "local" && !canUseLocalForward) return;
+    if (mode === "local" && !canUseSavedLocalForward) return;
     if (mode === "tunnel" && !canUseGost) return;
     if (mode === "chain" && !canUseForwardChain) return;
     if (mode === "group" && !canUseFailoverGroup) return;
@@ -3228,7 +3300,7 @@ function RulesContent() {
       return;
     }
     if (form.routeMode === "local" && !canUseLocalForward) {
-      toast.error("暂无可用端口转发");
+      toast.error("暂无可用端口转发或按量计费主机");
       return;
     }
     if (form.routeMode === "chain" && !canUseForwardChain) {
@@ -3562,13 +3634,13 @@ function RulesContent() {
     </div>
   );
   const buildEmptyBatchEditForm = useCallback((): BatchEditFormData => ({
-    routeMode: canUseLocalForward ? "local" : canUseGost ? "tunnel" : canUseForwardChain ? "chain" : canUseFailoverGroup ? "group" : "local",
+    routeMode: canUseSavedLocalForward ? "local" : canUseGost ? "tunnel" : canUseForwardChain ? "chain" : canUseFailoverGroup ? "group" : "local",
     forwardType: defaultForm.forwardType,
     tunnelId: null,
     forwardGroupId: null,
     targetIp: "",
     targetPort: 0,
-  }), [canUseFailoverGroup, canUseForwardChain, canUseGost, canUseLocalForward]);
+  }), [canUseFailoverGroup, canUseForwardChain, canUseGost, canUseSavedLocalForward]);
   const selectedBatchEditTunnel = useMemo(() => {
     if (!batchEditForm.tunnelId || !tunnels) return null;
     return tunnels.find((t: any) => Number(t.id) === Number(batchEditForm.tunnelId)) || null;
@@ -5209,8 +5281,10 @@ function RulesContent() {
     return "border-chart-3/25 bg-chart-3/5 text-chart-3";
   };
 
-  const renderForwardToolBadge = (rule: any) => {
-    const forwardType = String(rule.forwardType || "");
+  const renderForwardToolBadge = (rule: any, group?: any | null) => {
+    const forwardType = group
+      ? getForwardGroupRuleForwardType(group, rule.forwardType)
+      : normalizeRuleForwardType(rule.forwardType);
     const label = forwardTypeDisplayLabel(forwardType);
     return (
       <Badge
@@ -5294,11 +5368,11 @@ function RulesContent() {
         )}
       </Badge>
     );
-    if (isChainRoute) {
+    if (rule.forwardGroupId) {
       return (
         <div className={`flex min-w-0 items-center gap-1 ${compactRow ? "overflow-hidden" : "flex-wrap"}`}>
           {badge}
-          {renderForwardToolBadge(rule)}
+          {renderForwardToolBadge(rule, group)}
           {warningBadge}
         </div>
       );
@@ -5896,7 +5970,7 @@ function RulesContent() {
               onClick={() => openCreate()}
               className="col-span-2 gap-2 sm:col-span-1"
               disabled={!canCreateRule}
-              title={!canCreateRule ? "暂无可用主机、隧道、转发链或转发组" : undefined}
+              title={!canCreateRule ? "暂无可用端口转发、按量计费主机、隧道、转发链或转发组" : undefined}
             >
               <Plus className="h-4 w-4" />
               添加规则
@@ -6314,7 +6388,7 @@ function RulesContent() {
                   aria-pressed={form.routeMode === "local"}
                   onClick={() => setRouteMode("local")}
                   disabled={!canUseLocalForward || (routeModeLocked && form.routeMode !== "local")}
-                  title={!canUseLocalForward ? "暂无可用端口转发，请先在链路管理中创建" : undefined}
+                  title={!canUseLocalForward ? "暂无可用端口转发或按量计费主机" : undefined}
                 >
                   <ArrowRightLeft className="h-4 w-4 shrink-0" />
                   <span className="truncate">端口转发</span>
@@ -6451,6 +6525,54 @@ function RulesContent() {
               </div>
             )}
 
+            {form.routeMode === "local" && !isForwardGroupRouteMode && (
+              <div className="space-y-2 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                  <div className="space-y-2">
+                    <Label>使用主机</Label>
+                    <Select
+                      value={form.hostId ? String(form.hostId) : "none"}
+                      disabled={availableTrafficBillingHosts.length === 0}
+                      onValueChange={(v) => {
+                        const nextHostId = v === "none" ? null : Number(v);
+                        latestPortCheckRef.current += 1;
+                        setPortStatus("idle");
+                        setPortRangeError(null);
+                        setForm({
+                          ...form,
+                          hostId: nextHostId,
+                          tunnelId: null,
+                          forwardGroupId: null,
+                        });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">请选择按量计费主机</SelectItem>
+                        {availableTrafficBillingHosts.map((host: any) => (
+                          <SelectItem key={host.id} value={String(host.id)} textValue={getHostOptionText(host)}>
+                            {renderHostStatusLabel(host)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Badge variant="outline" className="h-9 justify-center gap-1.5 border-emerald-500/30 px-3 text-emerald-600">
+                    <ArrowRightLeft className="h-3.5 w-3.5" />
+                    按量计费
+                  </Badge>
+                </div>
+                {availableTrafficBillingHosts.length === 0 && (
+                  <p className="text-xs text-amber-600">暂无可用按量计费主机，请确认资源授权和余额。</p>
+                )}
+                {selectedHost && (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    {renderHostStatusLabel(selectedHost)}
+                    <span className="rounded bg-background/60 px-1.5 py-0.5">端口 {sourcePortRangeText}</span>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>规则名称</Label>
@@ -7184,7 +7306,7 @@ function RulesContent() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="local" disabled={!canUseLocalForward}>端口转发</SelectItem>
+                          <SelectItem value="local" disabled={!canUseSavedLocalForward}>端口转发</SelectItem>
                           <SelectItem value="tunnel" disabled={!canUseGost}>隧道转发</SelectItem>
                           <SelectItem value="chain" disabled={!canUseForwardChain}>转发链</SelectItem>
                           <SelectItem value="group" disabled={!canUseFailoverGroup}>转发组</SelectItem>

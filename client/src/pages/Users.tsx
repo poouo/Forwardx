@@ -303,18 +303,19 @@ function UsersContent() {
   const [allowGost, setAllowGost] = useState(true);
 
   // Agent 权限
-  const [allowedHostIds, setAllowedHostIds] = useState<number[]>([]);
+  const [allowedForwardGroupIds, setAllowedForwardGroupIds] = useState<number[]>([]);
   const [allowedTunnelIds, setAllowedTunnelIds] = useState<number[]>([]);
   const [trafficBillingHostIds, setTrafficBillingHostIds] = useState<number[]>([]);
   const [trafficBillingTunnelIds, setTrafficBillingTunnelIds] = useState<number[]>([]);
-  const [addAllowedHostId, setAddAllowedHostId] = useState("");
+  const [addAllowedForwardGroupId, setAddAllowedForwardGroupId] = useState("");
   const [addAllowedTunnelId, setAddAllowedTunnelId] = useState("");
   const [addBillingHostId, setAddBillingHostId] = useState("");
   const [addBillingTunnelId, setAddBillingTunnelId] = useState("");
   const { data: allHosts } = trpc.hosts.listAll.useQuery();
   const { data: allTunnels } = trpc.tunnels.listAll.useQuery();
+  const { data: allForwardGroups } = trpc.forwardGroups.list.useQuery();
   const { data: trafficBillingConfigs } = trpc.trafficBilling.configs.useQuery();
-  const { data: userHostPerms } = trpc.users.getHostPermissions.useQuery(
+  const { data: userForwardGroupPerms } = trpc.users.getForwardGroupPermissions.useQuery(
     { userId: trafficUserId! },
     { enabled: showTrafficSettings && !!trafficUserId }
   );
@@ -334,11 +335,17 @@ function UsersContent() {
     {},
     { enabled: currentUser?.role === "admin" }
   );
-  const updateHostPermsMutation = trpc.users.setHostPermissions.useMutation({
+  const clearHostPermsMutation = trpc.users.setHostPermissions.useMutation({
     onSuccess: () => {
       utils.users.list.invalidate();
     },
-    onError: (err) => toast.error(err.message || "更新主机权限失败"),
+    onError: (err) => toast.error(err.message || "清理旧主机授权失败"),
+  });
+  const updateForwardGroupPermsMutation = trpc.users.setForwardGroupPermissions.useMutation({
+    onSuccess: () => {
+      utils.users.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "更新转发组授权失败"),
   });
   const updateTunnelPermsMutation = trpc.users.setTunnelPermissions.useMutation({
     onSuccess: () => {
@@ -356,10 +363,10 @@ function UsersContent() {
 
   // 当权限数据加载完成后同步到状态
   useEffect(() => {
-    if (userHostPerms) {
-      setAllowedHostIds([...userHostPerms]);
+    if (userForwardGroupPerms) {
+      setAllowedForwardGroupIds([...userForwardGroupPerms]);
     }
-  }, [userHostPerms]);
+  }, [userForwardGroupPerms]);
 
   useEffect(() => {
     if (userTunnelPerms) {
@@ -824,11 +831,11 @@ function UsersContent() {
       setAllowSocat(set.has("socat"));
       setAllowGost(set.has("gost"));
     }
-    setAllowedHostIds([]);
+    setAllowedForwardGroupIds([]);
     setAllowedTunnelIds([]);
     setTrafficBillingHostIds([]);
     setTrafficBillingTunnelIds([]);
-    setAddAllowedHostId("");
+    setAddAllowedForwardGroupId("");
     setAddAllowedTunnelId("");
     setAddBillingHostId("");
     setAddBillingTunnelId("");
@@ -864,10 +871,14 @@ function UsersContent() {
       maxIPs,
       allowedForwardTypes,
     });
-    // 同时保存主机权限（改为 tRPC 上的 setHostPermissions）
-    updateHostPermsMutation.mutate({
+    // 保存转发资源授权，并清理旧的主机授权。
+    clearHostPermsMutation.mutate({
       userId: trafficUserId,
-      hostIds: allowedHostIds,
+      hostIds: [],
+    });
+    updateForwardGroupPermsMutation.mutate({
+      userId: trafficUserId,
+      forwardGroupIds: allowedForwardGroupIds,
     });
     updateTunnelPermsMutation.mutate({
       userId: trafficUserId,
@@ -880,11 +891,11 @@ function UsersContent() {
     });
   };
 
-  const addHostPermission = (value: string) => {
-    const hostId = Number(value);
-    if (!Number.isFinite(hostId)) return;
-    setAllowedHostIds(prev => (prev.includes(hostId) ? prev : [...prev, hostId]));
-    setAddAllowedHostId("");
+  const addForwardGroupPermission = (value: string) => {
+    const forwardGroupId = Number(value);
+    if (!Number.isFinite(forwardGroupId)) return;
+    setAllowedForwardGroupIds(prev => (prev.includes(forwardGroupId) ? prev : [...prev, forwardGroupId]));
+    setAddAllowedForwardGroupId("");
   };
 
   const addTunnelPermission = (value: string) => {
@@ -993,8 +1004,22 @@ function UsersContent() {
   const tunnelRouteText = (tunnel: any) => getTunnelRouteText(tunnel, allHosts);
   const billableHostIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "host" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
   const billableTunnelIds = new Set((trafficBillingConfigs?.configs || []).filter((item: any) => item.resourceType === "tunnel" && item.enabled && item.requiresPermission).map((item: any) => Number(item.resourceId)));
-  const selectedAllowedHosts = (allHosts || []).filter((h: any) => allowedHostIds.includes(Number(h.id)));
-  const availableAllowedHosts = (allHosts || []).filter((h: any) => !allowedHostIds.includes(Number(h.id)));
+  const normalizeForwardGroupModeForAuth = (group: any | null | undefined) => {
+    const mode = String(group?.groupMode || "failover");
+    return mode === "port" || mode === "chain" || mode === "failover" ? mode : "other";
+  };
+  const forwardGroupAuthLabel = (group: any | null | undefined) => {
+    const mode = normalizeForwardGroupModeForAuth(group);
+    if (mode === "port") return "端口转发";
+    if (mode === "chain") return "转发链";
+    return "转发组";
+  };
+  const authForwardGroups = (allForwardGroups || []).filter((group: any) => {
+    const mode = normalizeForwardGroupModeForAuth(group);
+    return mode === "port" || mode === "chain" || mode === "failover";
+  });
+  const selectedAllowedForwardGroups = authForwardGroups.filter((group: any) => allowedForwardGroupIds.includes(Number(group.id)));
+  const availableAllowedForwardGroups = authForwardGroups.filter((group: any) => !allowedForwardGroupIds.includes(Number(group.id)));
   const selectedAllowedTunnels = (allTunnels || []).filter((t: any) => allowedTunnelIds.includes(Number(t.id)));
   const availableAllowedTunnels = (allTunnels || []).filter((t: any) => !allowedTunnelIds.includes(Number(t.id)));
   const billableHosts = (allHosts || []).filter((h: any) => billableHostIds.has(Number(h.id)));
@@ -2232,33 +2257,34 @@ function UsersContent() {
             {/* 授权标签页 */}
             <TabsContent value="hosts" className="flex-1 min-h-0 overflow-y-auto pr-1 mt-3 space-y-4 data-[state=inactive]:hidden">
               <p className="text-xs text-muted-foreground">
-                默认不展开全部资源，按需选择要授权给该用户的主机、隧道和计费资源。
+                默认不展开全部资源，按需选择要授权给该用户的端口转发、转发链、转发组、隧道和计费资源。
               </p>
 
               <div className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Label className="text-sm font-medium">端口转发主机</Label>
-                  <Badge variant="outline" className="text-[10px]">{allowedHostIds.length} 台</Badge>
+                  <Label className="text-sm font-medium">转发组授权</Label>
+                  <Badge variant="outline" className="text-[10px]">{allowedForwardGroupIds.length} 条</Badge>
                 </div>
-                <Select value={addAllowedHostId} onValueChange={addHostPermission} disabled={!availableAllowedHosts.length}>
+                <Select value={addAllowedForwardGroupId} onValueChange={addForwardGroupPermission} disabled={!availableAllowedForwardGroups.length}>
                   <SelectTrigger className="h-9 w-full">
-                    <SelectValue placeholder={availableAllowedHosts.length ? "选择要授权的主机" : "暂无可添加主机"} />
+                    <SelectValue placeholder={availableAllowedForwardGroups.length ? "选择要授权的转发资源" : "暂无可添加转发资源"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableAllowedHosts.map((h: any) => (
-                      <SelectItem key={h.id} value={String(h.id)}>
-                        {h.name} {h.ip ? `· ${h.ip}` : ""}
+                    {availableAllowedForwardGroups.map((group: any) => (
+                      <SelectItem key={group.id} value={String(group.id)}>
+                        {group.name} · {forwardGroupAuthLabel(group)} · {String(group.forwardType || "-")}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {selectedAllowedHosts.length > 0 ? (
+                {selectedAllowedForwardGroups.length > 0 ? (
                   <AutoAnimateContainer className="space-y-2">
-                    {selectedAllowedHosts.map((h: any) => (
-                      <div key={h.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
+                    {selectedAllowedForwardGroups.map((group: any) => (
+                      <div key={group.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/50 p-2.5">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-medium truncate">{h.name}</span>
-                          <span className="text-[10px] text-muted-foreground font-mono truncate">{h.ip}</span>
+                          <span className="text-sm font-medium truncate">{group.name}</span>
+                          <Badge variant="outline" className="text-[10px] px-1.5 py-0">{forwardGroupAuthLabel(group)}</Badge>
+                          <span className="text-[10px] text-muted-foreground font-mono truncate">{String(group.forwardType || "-")}</span>
                         </div>
                         <Button
                           type="button"
@@ -2266,7 +2292,7 @@ function UsersContent() {
                           size="icon"
                           className="h-8 w-8 shrink-0"
                           title="移除授权"
-                          onClick={() => setAllowedHostIds(prev => prev.filter(id => id !== Number(h.id)))}
+                          onClick={() => setAllowedForwardGroupIds(prev => prev.filter(id => id !== Number(group.id)))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -2275,7 +2301,7 @@ function UsersContent() {
                   </AutoAnimateContainer>
                 ) : (
                   <p className="rounded-lg border border-dashed border-border/50 px-3 py-2 text-xs text-muted-foreground">
-                    暂未授权主机，可从上方选择添加。
+                    暂未授权转发资源，可从上方选择添加。
                   </p>
                 )}
               </div>

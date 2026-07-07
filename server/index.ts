@@ -76,6 +76,7 @@ async function startServer() {
   const databaseStatus = await initDatabase();
 
   const app = express();
+  app.set("trust proxy", "loopback");
   const panelSsl = await loadPanelSslRuntimeConfig();
   const protocol = panelSsl.enabled ? "https" : "http";
   const server = panelSsl.enabled && panelSsl.options

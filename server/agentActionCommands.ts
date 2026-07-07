@@ -232,9 +232,16 @@ function buildNftPortCleanupCmds(port: number, protocol?: string): string[] {
   if (!Number(port)) return [];
   const protos = forwardRuleProtocols(protocol, "both");
   return protos.map((proto) => {
-    const awk = `awk '/ ${proto} dport ${port}( |$)/ && / dnat / {print $NF}'`;
+    const awk = `awk -v proto='${proto}' -v port='${port}' 'index($0, proto " dport " port) && index($0, " dnat ") {print $NF}'`;
     return `if nft list chain inet ${nftTable} prerouting >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} prerouting 2>/dev/null | ${awk}); do nft delete rule inet ${nftTable} prerouting handle "$h" 2>/dev/null; true; done; fi; true`;
   });
+}
+
+function buildConntrackCleanupCmds(port: number, protocol?: string): string[] {
+  if (!Number(port)) return [];
+  return forwardRuleProtocols(protocol, "both").map((proto) =>
+    `command -v conntrack >/dev/null 2>&1 && conntrack -D -p ${proto} --dport ${port} 2>/dev/null || true`
+  );
 }
 
 function buildNftForwardTargetCleanupCmds(rule: any): string[] {
@@ -271,11 +278,11 @@ function nftDeleteCommentedRulesCmd(chain: string, comment: string) {
   return `if nft list table inet ${nftTable} >/dev/null 2>&1; then for h in $(nft -a list chain inet ${nftTable} ${chain} 2>/dev/null | awk -v exact='comment "${comment}"' -v colon='comment "${comment}:' -v dash='comment "${comment}-' 'index($0, exact) || index($0, colon) || index($0, dash) {print $NF}'); do nft delete rule inet ${nftTable} ${chain} handle "$h" 2>/dev/null; true; done; fi; true`;
 }
 
-export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boolean } = {}): string[] {
+export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boolean; cleanupConntrack?: boolean } = {}): string[] {
   const ruleId = Number(rule.id) || 0;
   const comment = nftComment(rule);
   const cmds = [
-    ...buildNftPortCleanupCmds(Number(rule.sourcePort)),
+    ...buildNftPortCleanupCmds(Number(rule.sourcePort), rule.protocol),
     ...buildNftForwardTargetCleanupCmds(rule),
     ...buildNftPostroutingTargetCleanupCmds(rule),
     nftDeleteCommentedRulesCmd("prerouting", comment),
@@ -289,6 +296,9 @@ export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boo
     nftOptional(`nft flush chain inet ${nftTable} ${nftChain("out", ruleId)}`),
     nftOptional(`nft delete chain inet ${nftTable} ${nftChain("out", ruleId)}`),
   ];
+  if (options.cleanupConntrack) {
+    cmds.push(...buildConntrackCleanupCmds(Number(rule.sourcePort), rule.protocol));
+  }
   if (options.removeStateFiles !== false) {
     cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`);
   }

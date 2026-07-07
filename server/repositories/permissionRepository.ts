@@ -3,6 +3,7 @@ import {
   forwardRules,
   hosts,
   tunnels,
+  userForwardGroupPermissions,
   userHostPermissions,
   userSubscriptions,
   userTunnelPermissions,
@@ -175,13 +176,44 @@ export async function getUserEffectiveAllowedTunnelIds(userId: number): Promise<
   return Array.from(new Set([...rows.map((r: any) => r.tunnelId), ...planRows]));
 }
 
+export async function getUserManualAllowedForwardGroupIds(userId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({ forwardGroupId: userForwardGroupPermissions.forwardGroupId }).from(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId));
+  return rows.map((r: any) => Number(r.forwardGroupId)).filter((id) => Number.isFinite(id) && id > 0);
+}
+
 export async function getUserAllowedForwardGroupIds(userId: number): Promise<number[]> {
-  return _getActiveSubscriptionForwardGroupIds(userId);
+  const manualRows = await getUserManualAllowedForwardGroupIds(userId);
+  const planRows = await _getActiveSubscriptionForwardGroupIds(userId);
+  return Array.from(new Set([...manualRows, ...planRows]));
+}
+
+export async function setUserForwardGroupPermissions(userId: number, forwardGroupIds: number[]) {
+  const db = await getDb();
+  if (!db) return;
+  const uniqueIds = Array.from(new Set(forwardGroupIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)));
+  await db.delete(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.userId, userId));
+  if (uniqueIds.length > 0) {
+    await db.insert(userForwardGroupPermissions).values(uniqueIds.map((forwardGroupId) => ({ userId, forwardGroupId })));
+  }
 }
 
 export async function checkUserForwardGroupPermission(userId: number, forwardGroupId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const rows = await db.select().from(userForwardGroupPermissions).where(
+    and(eq(userForwardGroupPermissions.userId, userId), eq(userForwardGroupPermissions.forwardGroupId, forwardGroupId))
+  ).limit(1);
+  if (rows.length > 0) return true;
   const planForwardGroupIds = await _getActiveSubscriptionForwardGroupIds(userId);
   return planForwardGroupIds.includes(forwardGroupId);
+}
+
+export async function deleteForwardGroupPermissions(forwardGroupId: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(userForwardGroupPermissions).where(eq(userForwardGroupPermissions.forwardGroupId, forwardGroupId));
 }
 
 export async function getTunnelsForUser(userId: number) {

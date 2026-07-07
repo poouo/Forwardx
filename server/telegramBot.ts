@@ -14,6 +14,12 @@ import { APP_VERSION, AGENT_VERSION } from "../shared/versions";
 import { checkPanelUpdateTask, startPanelUpgradeTask } from "./_core/systemRouter";
 import { requireRuleProtocolEnabled } from "./forwardProtocolSettings";
 
+const mainBackupGostTunnelModes = new Set(["tls", "wss", "tcp", "mtls", "mwss", "mtcp"]);
+
+function isMainBackupGostTunnelMode(mode: unknown) {
+  return mainBackupGostTunnelModes.has(String(mode || "").toLowerCase());
+}
+
 type TelegramUser = {
   id: number;
   is_bot?: boolean;
@@ -4851,22 +4857,37 @@ async function refreshUserForwardEndpoints(userId: number, reason: string) {
 
 async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
   let group: any = null;
+  let ruleTunnelForPolicy: any = null;
+  let mainBackupTunnelMode: string | null | undefined = undefined;
   if ((rule as any).isForwardGroupTemplate && (rule as any).forwardGroupId) {
     group = await db.getForwardGroupById(Number((rule as any).forwardGroupId));
     await db.validateForwardGroupRuleConfig(Number((rule as any).forwardGroupId), {
       sourcePort: Number(rule.sourcePort),
       excludeTemplateRuleId: Number(rule.id),
     });
+    if (group?.groupType === "tunnel") {
+      const tunnelMembers = (Array.isArray(group.members) ? group.members : [])
+        .filter((member: any) => member?.isEnabled !== false && Number(member?.tunnelId || 0) > 0);
+      mainBackupTunnelMode = tunnelMembers.length > 0 ? "tls" : "unsupported";
+      for (const member of tunnelMembers) {
+        const tunnel = await db.getTunnelById(Number(member.tunnelId));
+        if (!isMainBackupGostTunnelMode((tunnel as any)?.mode)) {
+          mainBackupTunnelMode = String((tunnel as any)?.mode || "unsupported");
+          break;
+        }
+      }
+    }
   } else {
     let policy = portPolicyFrom(null);
     if (Number((rule as any).tunnelId || 0) > 0) {
-      const tunnel = await db.getTunnelById(Number((rule as any).tunnelId));
-      const entryHost = await db.getHostById(Number((tunnel as any)?.entryHostId || rule.hostId));
+      ruleTunnelForPolicy = await db.getTunnelById(Number((rule as any).tunnelId));
+      mainBackupTunnelMode = ruleTunnelForPolicy?.mode;
+      const entryHost = await db.getHostById(Number((ruleTunnelForPolicy as any)?.entryHostId || rule.hostId));
       policy = combinePortPolicies(
         portPolicyFrom(entryHost as any),
         portPolicyFrom({
-          portRangeStart: (tunnel as any)?.portRangeStart,
-          portRangeEnd: (tunnel as any)?.portRangeEnd,
+          portRangeStart: (ruleTunnelForPolicy as any)?.portRangeStart,
+          portRangeEnd: (ruleTunnelForPolicy as any)?.portRangeEnd,
         }),
       );
     } else {
@@ -4883,7 +4904,9 @@ async function assertRuleCanBeEnabledFromTelegram(user: any, rule: any) {
     protocol: (rule as any).protocol,
     forwardType: group?.groupType === "tunnel" ? "gost" : (rule as any).forwardType,
     tunnelId: (rule as any).tunnelId,
+    tunnelMode: mainBackupTunnelMode,
     isTunnelRoute: group?.groupType === "tunnel",
+    isPortForwardGroup: group?.groupMode === "port",
     isAdmin: user.role === "admin",
   });
   if (user.role !== "admin") {
