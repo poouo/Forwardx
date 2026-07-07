@@ -90,6 +90,7 @@ const legacyTunnelConfigPath = "/etc/forwardx-tunnels/config.json"
 const legacyRuntimeConfigPath = "/etc/forwardx-runtime/config.json"
 const legacyTunnelRuntimeConfigPath = "/etc/forwardx-tunnel-runtime/config.json"
 const desiredStateRecordPath = "/var/lib/forwardx-agent/desired_state_records.json"
+const desiredStateVersionPath = "/var/lib/forwardx-agent/desired_state_agent_version"
 
 var upgradeStarted int32
 var upgradeStartedAt int64
@@ -235,6 +236,7 @@ type localRuntimeStatePayload struct {
 type localRuntimeRuleState struct {
 	Port        int    `json:"port"`
 	RuleID      int    `json:"ruleId"`
+	TunnelID    int    `json:"tunnelId,omitempty"`
 	ForwardType string `json:"forwardType"`
 	TargetIP    string `json:"targetIp,omitempty"`
 	TargetPort  int    `json:"targetPort,omitempty"`
@@ -957,6 +959,7 @@ func readLocalRuntimeStatePayload() localRuntimeStatePayload {
 		rules = append(rules, localRuntimeRuleState{
 			Port:        port,
 			RuleID:      state.RuleID,
+			TunnelID:    state.TunnelID,
 			ForwardType: strings.TrimSpace(state.ForwardType),
 			TargetIP:    strings.TrimSpace(state.TargetIP),
 			TargetPort:  state.TargetPort,
@@ -1079,6 +1082,7 @@ type desiredActionRecord struct {
 
 type runningRule struct {
 	RuleID      int           `json:"ruleId"`
+	TunnelID    int           `json:"tunnelId,omitempty"`
 	SourcePort  int           `json:"sourcePort"`
 	TargetIP    string        `json:"targetIp"`
 	TargetPort  int           `json:"targetPort"`
@@ -1337,6 +1341,7 @@ func main() {
 	}
 
 	_ = register(cfg)
+	resetDesiredActionRecordsAfterAgentUpgrade()
 	go actionWorker()
 	go selfTestPoller(cfg)
 	go agentEventStream(cfg)
@@ -1686,6 +1691,11 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	if resp.RequestLocalState {
 		requestLocalRuntimeStateUpload()
+		next := resp.NextInterval
+		if next <= 0 || next > 2 {
+			next = 2
+		}
+		return next, nil
 	}
 	state := applyHeartbeatState(resp)
 	dnsWatchChanged := updateDNSWatch(state.DNSWatch)
@@ -2464,6 +2474,10 @@ func handleAction(cfg Config, a action) bool {
 	if ok && !skippedStaleRemove && a.Op == "remove" && shouldReportActionStatus(a) && actionRequiresKernelForwardConsistency(a) {
 		removeState(a.SourcePort)
 	}
+	if skippedStaleRemove {
+		requestLocalRuntimeStateUpload()
+		return ok
+	}
 	if !shouldReportActionStatus(a) {
 		return ok
 	}
@@ -2491,6 +2505,11 @@ func shouldSkipRemoveForReassignedPort(a action) bool {
 	}
 	port := strconv.Itoa(a.SourcePort)
 	localRuleID := readRuleIDByPort(port)
+	localRuleTunnelID := readRuleTunnelIDByPort(port)
+	if localRuleID > 0 && localRuleID == a.RuleID && localRuleTunnelID != a.TunnelID && (localRuleTunnelID > 0 || a.TunnelID > 0) {
+		logf("skip stale remove for tunnel reassigned port=%d rule=%d removeTunnel=%d currentTunnel=%d forwardType=%s", a.SourcePort, a.RuleID, a.TunnelID, localRuleTunnelID, a.ForwardType)
+		return true
+	}
 	if localRuleID <= 0 || localRuleID == a.RuleID {
 		return false
 	}
@@ -2923,6 +2942,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
+	localRuleTunnelID := readRuleTunnelIDByPort(port)
 	if localRuleID <= 0 && localForwardType == "" {
 		if fxpMatchesRunning(a.Fxp) {
 			writeState(a)
@@ -2940,7 +2960,7 @@ func cleanupStaleRuntimeBeforeApply(a action) bool {
 		}
 		return false
 	}
-	if localRuleID == a.RuleID && (localForwardType == "" || localForwardType == a.ForwardType) {
+	if localRuleID == a.RuleID && (localRuleTunnelID <= 0 || localRuleTunnelID == a.TunnelID) && (localForwardType == "" || localForwardType == a.ForwardType) {
 		if fxpMatchesRunning(a.Fxp) {
 			writeState(a)
 			return true
@@ -3613,6 +3633,7 @@ func writeState(a action) {
 	resetTrafficStateIfRuleChanged(port, a.RuleID)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(a.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(a.ForwardType), 0644)
+	writeRuleTunnelState(port, a.TunnelID)
 	if a.TargetIP != "" && a.TargetPort > 0 {
 		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n%s\n", a.TargetIP, a.TargetPort, normalizeRuntimeProtocol(a.Protocol))), 0644)
 	}
@@ -3625,6 +3646,18 @@ func writeTunnelState(a action) {
 	_ = os.WriteFile("/var/lib/forwardx-agent/tunnel_"+port+".fwtype", []byte(a.ForwardType), 0644)
 }
 
+func writeRuleTunnelState(port string, tunnelID int) {
+	if strings.TrimSpace(port) == "" {
+		return
+	}
+	path := "/var/lib/forwardx-agent/port_" + port + ".tunnel"
+	if tunnelID > 0 {
+		_ = os.WriteFile(path, []byte(strconv.Itoa(tunnelID)), 0644)
+		return
+	}
+	_ = os.Remove(path)
+}
+
 func writeRunningRuleState(r runningRule) {
 	if r.RuleID <= 0 || r.SourcePort <= 0 {
 		return
@@ -3634,6 +3667,7 @@ func writeRunningRuleState(r runningRule) {
 	resetTrafficStateIfRuleChanged(port, r.RuleID)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".rule", []byte(strconv.Itoa(r.RuleID)), 0644)
 	_ = os.WriteFile("/var/lib/forwardx-agent/port_"+port+".fwtype", []byte(r.ForwardType), 0644)
+	writeRuleTunnelState(port, r.TunnelID)
 	if r.TargetIP != "" && r.TargetPort > 0 {
 		_ = os.WriteFile("/var/lib/forwardx-agent/target_"+port+".info", []byte(fmt.Sprintf("%s\n%d\n%s\n", r.TargetIP, r.TargetPort, normalizeRuntimeProtocol(r.Protocol))), 0644)
 	}
@@ -3654,6 +3688,15 @@ func readForwardTypeByPort(port string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func readRuleTunnelIDByPort(port string) int {
+	b, err := os.ReadFile("/var/lib/forwardx-agent/port_" + port + ".tunnel")
+	if err != nil {
+		return 0
+	}
+	id, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return id
 }
 
 func readTunnelIDByPort(port string) int {
@@ -3934,7 +3977,7 @@ func managedPortCleanupCmdsWithNginx(port string, cleanupNginx bool) []string {
 			iptablesAgentDeleteChain(binary, "mangle", "FWX_OUT_"+port),
 		)
 	}
-	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
+	cmds = append(cmds, "rm -f /var/lib/forwardx-agent/traffic_"+port+".prev /var/lib/forwardx-agent/port_"+port+".rule /var/lib/forwardx-agent/port_"+port+".fwtype /var/lib/forwardx-agent/port_"+port+".tunnel /var/lib/forwardx-agent/target_"+port+".info 2>/dev/null || true")
 	if targetIP, targetPort, _, ok := readTargetInfo(port); ok && iptablesAgentIsIPAddress(targetIP) {
 		target := iptablesAgentAddress(targetIP)
 		tp := strconv.Itoa(targetPort)
@@ -3996,6 +4039,7 @@ func fxpPortCleanupCmds(port string) []string {
 func removeStateByPort(port string) {
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".rule")
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".fwtype")
+	_ = os.Remove("/var/lib/forwardx-agent/port_" + port + ".tunnel")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + port + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + port + ".prev")
 	removeTunnelStateByPort(port)
@@ -4121,6 +4165,7 @@ func removeState(port int) {
 	p := strconv.Itoa(port)
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".rule")
 	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".fwtype")
+	_ = os.Remove("/var/lib/forwardx-agent/port_" + p + ".tunnel")
 	_ = os.Remove("/var/lib/forwardx-agent/target_" + p + ".info")
 	_ = os.Remove("/var/lib/forwardx-agent/traffic_" + p + ".prev")
 	removeTunnelStateByPort(p)

@@ -110,6 +110,7 @@ type AgentStateSignatures = Partial<Record<AgentStateSectionName, string>>;
 type AgentLocalRuntimeRuleState = {
   port: number;
   ruleId: number;
+  tunnelId?: number;
   forwardType: string;
   targetIp?: string;
   targetPort?: number;
@@ -204,6 +205,7 @@ function normalizeAgentLocalRuntimeState(input: any): AgentLocalRuntimeState | n
       .map((item: any) => ({
         port: Number(item?.port || 0),
         ruleId: Number(item?.ruleId || 0),
+        tunnelId: Number(item?.tunnelId || 0) || undefined,
         forwardType: String(item?.forwardType || "").trim(),
         targetIp: String(item?.targetIp || "").trim() || undefined,
         targetPort: Number(item?.targetPort || 0) || undefined,
@@ -2202,7 +2204,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return lines.join("\n");
     };
     const buildNginxPortCleanupCmds = (rule: any) => [
-      `rm -f /var/lib/forwardx-agent/traffic_${Number(rule.sourcePort) || 0}.prev /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.rule /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.fwtype /var/lib/forwardx-agent/target_${Number(rule.sourcePort) || 0}.info 2>/dev/null || true`,
+      `rm -f /var/lib/forwardx-agent/traffic_${Number(rule.sourcePort) || 0}.prev /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.rule /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.fwtype /var/lib/forwardx-agent/port_${Number(rule.sourcePort) || 0}.tunnel /var/lib/forwardx-agent/target_${Number(rule.sourcePort) || 0}.info 2>/dev/null || true`,
       ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
       ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
     ];
@@ -2507,10 +2509,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       }
       return Number(rule.sourcePort) || 0;
     };
-    const runningRules: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
+    const runningRules: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }[] = [];
     const runningRuleSeen = new Set<string>();
     const guardRules: any[] = [];
-    const addRunningRule = (rule: { ruleId: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
+    const addRunningRule = (rule: { ruleId: number; tunnelId?: number; sourcePort: number; targetIp: string; targetPort: number; protocol: string; forwardType: string; failover?: any }) => {
       if (!rule.ruleId || !rule.sourcePort) return;
       const key = `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`;
       if (runningRuleSeen.has(key)) return;
@@ -2576,7 +2578,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
             ...cleanupGuardBackendCmds(rule),
             `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
-            `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
+            `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`,
             ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
             ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
           ],
@@ -2596,7 +2598,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         removeCmds.push(killByPatternCmd(`[s]ocat.*LISTEN:${rule.sourcePort}`));
         removeCmds.push(...cleanupGuardBackendCmds(rule));
         removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
-        removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
+        removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
         removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
         removeCmds.push(...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)));
         return {
@@ -2647,6 +2649,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           ? (await forwardXEntryRoute(tunnel)).key
           : "";
         return {
+          tunnelId: tunnel ? tunnel.id : 0,
+          statusType: tunnel ? "rule" : undefined,
           ruleId: rule.id,
           op: "remove",
           forwardType: rule.forwardType,
@@ -2721,6 +2725,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       return !!local
         && local.ready !== false
         && Number(local.ruleId || 0) === Number(rule.id)
+        && (Number(local.tunnelId || 0) <= 0 || Number(local.tunnelId || 0) === Number(rule?.tunnelId || 0))
         && forwardTypeCompatible(local.forwardType, expectedForwardType)
         && localTextCompatible(local.targetIp, processTarget(rule))
         && localNumberCompatible(local.targetPort, rule.targetPort)
@@ -2752,6 +2757,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         ];
       return {
         ruleId: Number(local.ruleId || 0),
+        tunnelId: Number(local.tunnelId || 0),
         statusType: "rule",
         op: "remove",
         forwardType,
@@ -3048,6 +3054,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           : rule.forwardType;
         addRunningRule({
           ruleId: rule.id,
+          tunnelId: ruleTunnel ? Number(ruleTunnel.id) : 0,
           sourcePort: trafficPort,
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
@@ -3527,6 +3534,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             const useUdpOverTcp = udpOverTcpEnabled(rule, tunnel);
             if (useUdpOverTcp) addMimicRemoteFilterForRoutes(entryRoutes);
             actions.push({
+              tunnelId: tunnel.id,
+              statusType: "rule",
               ruleId: rule.id,
               op: "apply",
               forwardType: "forwardx",
@@ -3635,7 +3644,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               `rm -f ${shQuote(realmConfigPath)} ${shQuote(`${realmConfigPath}.sha256`)} 2>/dev/null || true`,
               // 清理 conntrack 流量状态文件
               `rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`,
-              `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`,
+              `rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`,
               ...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol),
               ...buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule)),
             ],
@@ -3655,7 +3664,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
           removeCmds.push(...cleanupGuardBackendCmds(rule));
           // 清理 conntrack 流量状态文件
           removeCmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev 2>/dev/null || true`);
-          removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule 2>/dev/null || true`);
+          removeCmds.push(`rm -f /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel 2>/dev/null || true`);
           removeCmds.push(...buildCountingCleanupCmds(rule.sourcePort, rule.targetIp, rule.targetPort, rule.protocol));
           for (const c of buildAccessLimitCleanupCmds(rule.sourcePort, accessScopeForRule(rule))) removeCmds.push(c);
           actions.push({
@@ -3709,6 +3718,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
             ...cleanupGuardBackendCmds(rule),
           ];
           actions.push({
+            tunnelId: tunnel ? tunnel.id : 0,
+            statusType: tunnel ? "rule" : undefined,
             ruleId: rule.id,
             op: "remove",
             forwardType: rule.forwardType,
@@ -3778,6 +3789,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!trafficPort) continue;
         addRunningRule({
           ruleId: rule.id,
+          tunnelId: tunnel ? Number(tunnel.id) : 0,
           sourcePort: trafficPort,
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
@@ -3794,6 +3806,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!trafficPort) continue;
         addRunningRule({
           ruleId: rule.id,
+          tunnelId: tunnel ? Number(tunnel.id) : 0,
           sourcePort: trafficPort,
           targetIp: rule.targetIp,
           targetPort: rule.targetPort,
@@ -3828,6 +3841,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (!sourcePort || !targetPort || !nextHost) return null;
         return {
           ruleId: Number(rule.id),
+          tunnelId: Number(tunnel.id),
           sourcePort,
           targetIp: nextHost,
           targetPort,
@@ -4074,28 +4088,32 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       knownRunning: typeof action.knownRunning === "boolean" ? action.knownRunning : desiredKnownRunning(action),
       statusType: action.statusType || (Number(action.ruleId) > 0 ? "rule" : (Number(action.tunnelId) > 0 ? "tunnel" : undefined)),
     }));
-    const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
-    for (const action of normalizedActions) {
-      if (action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
-      const key = `${Number(action.ruleId)}:${Number(action.sourcePort)}`;
-      if (runningRuleKeys.has(key)) continue;
-      addRunningRule({
-        ruleId: Number(action.ruleId),
-        sourcePort: Number(action.sourcePort),
-        targetIp: String(action.targetIp || ""),
-        targetPort: Number(action.targetPort || 0),
-        protocol: action.protocol || "tcp",
-        forwardType: action.forwardType || "unknown",
-        failover: action.failover,
-      });
-      runningRuleKeys.add(key);
+    const deferActionsForLocalState = supportsDesiredState && localRuntimeState.requestLocalState;
+    if (!deferActionsForLocalState) {
+      const runningRuleKeys = new Set(runningRules.map((rule: any) => `${Number(rule.ruleId)}:${Number(rule.sourcePort)}`));
+      for (const action of normalizedActions) {
+        if (action.op !== "apply" || !Number(action.ruleId) || !Number(action.sourcePort)) continue;
+        const key = `${Number(action.ruleId)}:${Number(action.sourcePort)}`;
+        if (runningRuleKeys.has(key)) continue;
+        addRunningRule({
+          ruleId: Number(action.ruleId),
+          tunnelId: Number(action.tunnelId || 0) || undefined,
+          sourcePort: Number(action.sourcePort),
+          targetIp: String(action.targetIp || ""),
+          targetPort: Number(action.targetPort || 0),
+          protocol: action.protocol || "tcp",
+          forwardType: action.forwardType || "unknown",
+          failover: action.failover,
+        });
+        runningRuleKeys.add(key);
+      }
     }
     const actionRank = (action: any) => (
       action.op === "remove" ? 0 : action.statusType === "runtime" ? 1 : 2
     );
     const orderedActions = normalizedActions.slice().sort((a: any, b: any) => actionRank(a) - actionRank(b));
     const activeWorkActions = supportsDesiredState
-      ? orderedActions.filter((action: any) => action.op === "remove" || !action.knownRunning)
+      ? (deferActionsForLocalState ? [] : orderedActions.filter((action: any) => action.op === "remove" || !action.knownRunning))
       : orderedActions;
     const hasTunnelApplyActions = activeWorkActions.some((action: any) => (
       action.op === "apply"
@@ -4125,8 +4143,11 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       const seconds = Number(service?.intervalSeconds || 30);
       return Math.min(min, Number.isFinite(seconds) ? Math.max(5, Math.floor(seconds)) : 30);
     }, 30);
-    const nextInterval = hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval);
+    const nextInterval = localRuntimeState.requestLocalState
+      ? 2
+      : (hasInteractiveTasks ? 2 : Math.min(isHostMetricsWatching(host.id) ? 3 : 30, serviceProbeInterval));
     const sendDesiredState = supportsDesiredState
+      && !deferActionsForLocalState
       && shouldSendDesiredState(Number(host.id), orderedActions, activeWorkActions, responseIssuedAt);
     const desiredState = sendDesiredState ? {
       version: 1,
