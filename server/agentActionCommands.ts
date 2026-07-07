@@ -300,7 +300,7 @@ export function buildNftCleanupCmds(rule: any, options: { removeStateFiles?: boo
     cmds.push(...buildConntrackCleanupCmds(Number(rule.sourcePort), rule.protocol));
   }
   if (options.removeStateFiles !== false) {
-    cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`);
+    cmds.push(`rm -f /var/lib/forwardx-agent/traffic_${rule.sourcePort}.prev /var/lib/forwardx-agent/port_${rule.sourcePort}.rule /var/lib/forwardx-agent/port_${rule.sourcePort}.fwtype /var/lib/forwardx-agent/port_${rule.sourcePort}.tunnel /var/lib/forwardx-agent/target_${rule.sourcePort}.info 2>/dev/null; true`);
   }
   return cmds;
 }
@@ -367,7 +367,7 @@ export function buildManagedPortCleanupCmds(port: number, targetIp?: string, tar
     removeManagedServiceCmd(`forwardx-socat-udp-${port}`),
     removeManagedServiceCmd(`forwardx-realm-${port}`),
     `rm -f /etc/forwardx/realm/forwardx-realm-${port}.toml /etc/forwardx/realm/forwardx-realm-${port}.toml.sha256 2>/dev/null || true`,
-    `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
+    `rm -f /var/lib/forwardx-agent/traffic_${port}.prev /var/lib/forwardx-agent/port_${port}.rule /var/lib/forwardx-agent/port_${port}.fwtype /var/lib/forwardx-agent/port_${port}.tunnel /var/lib/forwardx-agent/target_${port}.info 2>/dev/null || true`,
     ...buildCountingCleanupCmds(port, targetIp, targetPort, protocol),
   ];
 }

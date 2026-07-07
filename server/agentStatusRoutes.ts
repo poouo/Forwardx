@@ -266,6 +266,19 @@ agentRouter.post("/api/agent/rule-status", async (req: Request, res: Response) =
       return;
     }
 
+    const currentRuleTunnelId = Number((rule as any).tunnelId || 0);
+    const reportedRuleTunnelId = Number(tunnelId || 0);
+    if (currentRuleTunnelId !== reportedRuleTunnelId && (currentRuleTunnelId > 0 || reportedRuleTunnelId > 0)) {
+      if (shouldLogStatus(`rule:${ruleId}:stale-tunnel:${host.id}`, `reported=${reportedRuleTunnelId}:current=${currentRuleTunnelId}`, true)) {
+        appendPanelLog(
+          "info",
+          `[Rule] status ignored stale tunnel rule=${ruleId} name=${String((rule as any).name || "-")} reportedTunnel=${reportedRuleTunnelId || "-"} currentTunnel=${currentRuleTunnelId || "-"} ${hostLogText} running=${!!isRunning}${message ? ` message=${message}` : ""}`,
+        );
+      }
+      res.json({ success: true, ignored: true });
+      return;
+    }
+
     const wasRunning = !!(rule as any).isRunning;
     await db.updateRuleRunningStatus(ruleId, !!isRunning);
     if (

@@ -35,6 +35,7 @@ var (
 type localRuleState struct {
 	Port        string
 	RuleID      int
+	TunnelID    int
 	ForwardType string
 	TargetIP    string
 	TargetPort  int
@@ -362,6 +363,7 @@ func readLocalRuleStates() []localRuleState {
 		states = append(states, localRuleState{
 			Port:        port,
 			RuleID:      ruleID,
+			TunnelID:    readRuleTunnelIDByPort(port),
 			ForwardType: readForwardTypeByPort(port),
 			TargetIP:    targetIP,
 			TargetPort:  targetPort,

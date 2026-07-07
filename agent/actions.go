@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const desiredActionFailureRetryInterval = 5 * time.Minute
+const desiredActionFailureRetryInterval = 30 * time.Second
 const desiredRuntimeReadyCacheTTL = 2 * time.Second
 
 type desiredRuntimeReadyCacheEntry struct {
@@ -182,7 +182,7 @@ func desiredActionKey(a action) string {
 		return fmt.Sprintf("tunnel:%d:%d:%s", a.TunnelID, a.SourcePort, a.ForwardType)
 	}
 	if a.RuleID > 0 {
-		return fmt.Sprintf("rule:%d:%d:%s", a.RuleID, a.SourcePort, a.ForwardType)
+		return fmt.Sprintf("rule:%d:%d:%d:%s", a.RuleID, a.TunnelID, a.SourcePort, a.ForwardType)
 	}
 	if a.SourcePort > 0 {
 		return fmt.Sprintf("port:%d:%s", a.SourcePort, a.ForwardType)
@@ -213,7 +213,8 @@ func canAdoptDesiredAction(a action) bool {
 	}
 	localRuleID := readRuleIDByPort(port)
 	localForwardType := readForwardTypeByPort(port)
-	return localRuleID == a.RuleID && desiredForwardTypeCompatible(localForwardType, a.ForwardType) && desiredActionLocalRuntimeReady(a)
+	localTunnelID := readRuleTunnelIDByPort(port)
+	return localRuleID == a.RuleID && (localTunnelID <= 0 || localTunnelID == a.TunnelID) && desiredForwardTypeCompatible(localForwardType, a.ForwardType) && desiredActionLocalRuntimeReady(a)
 }
 
 func desiredActionLocalRuntimeReady(a action) bool {
@@ -431,6 +432,24 @@ func rememberDesiredActionResult(key string, signature string, ok bool) {
 	writeDesiredActionRecords(records)
 }
 
+func resetDesiredActionRecordsAfterAgentUpgrade() {
+	_ = os.MkdirAll("/var/lib/forwardx-agent", 0755)
+	raw, err := os.ReadFile(desiredStateVersionPath)
+	previous := strings.TrimSpace(string(raw))
+	if previous == "" {
+		if _, statErr := os.Stat(desiredStateRecordPath); statErr == nil {
+			_ = os.Remove(desiredStateRecordPath)
+			logf("agent desired state version initialized; retry records cleared")
+		}
+	} else if previous != Version {
+		_ = os.Remove(desiredStateRecordPath)
+		logf("agent version changed from %s to %s; desired state retry records cleared", previous, Version)
+	}
+	if err != nil || previous != Version {
+		_ = os.WriteFile(desiredStateVersionPath, []byte(Version+"\n"), 0644)
+	}
+}
+
 func enqueueActionJob(job actionJob) {
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
@@ -558,6 +577,7 @@ func actionStaleKeys(a action) []string {
 		keys = append(keys, fmt.Sprintf("tunnel:%d:%d", a.TunnelID, a.SourcePort))
 	}
 	if a.RuleID > 0 {
+		keys = append(keys, fmt.Sprintf("rule:%d:%d:%d", a.RuleID, a.TunnelID, a.SourcePort))
 		keys = append(keys, fmt.Sprintf("rule:%d:%d", a.RuleID, a.SourcePort))
 	}
 	if a.SourcePort > 0 {
