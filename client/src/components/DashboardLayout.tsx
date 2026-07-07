@@ -111,11 +111,13 @@ const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
 const POPUP_ANNOUNCEMENT_SESSION_KEY = "forwardx.popupAnnouncement.seen";
 const UPGRADE_ANNOUNCEMENT_VERSION_KEY = "forwardx.upgradeAnnouncement.lastSeenVersion";
+const UPGRADE_ANNOUNCEMENT_DISPLAY_SESSION_KEY = "forwardx.upgradeAnnouncement.displayed";
 const UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS = 5;
 const DEFAULT_DOCKER_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
 
 type PanelUpgradeSession = { targetVersion: string; startedAt: number; mode?: "upgrade" | "rollback" };
+type UpgradeAnnouncementDisplaySession = { key: string; shownAt: number };
 
 function popupAnnouncementSessionKey(userId?: number | null) {
   return `${POPUP_ANNOUNCEMENT_SESSION_KEY}:${Number(userId || 0)}`;
@@ -123,6 +125,10 @@ function popupAnnouncementSessionKey(userId?: number | null) {
 
 function upgradeAnnouncementVersionKey(userId?: number | null) {
   return `${UPGRADE_ANNOUNCEMENT_VERSION_KEY}:${Number(userId || 0)}`;
+}
+
+function upgradeAnnouncementDisplaySessionKey(userId?: number | null) {
+  return `${UPGRADE_ANNOUNCEMENT_DISPLAY_SESSION_KEY}:${Number(userId || 0)}`;
 }
 
 function readSeenPopupAnnouncementIds(userId?: number | null) {
@@ -157,6 +163,15 @@ function clearSeenPopupAnnouncements(userId?: number | null) {
   }
 }
 
+function readLastSeenUpgradeAnnouncementVersion(userId?: number | null) {
+  if (typeof window === "undefined" || !userId) return "";
+  try {
+    return normalizePanelVersion(window.localStorage.getItem(upgradeAnnouncementVersionKey(userId)));
+  } catch {
+    return "";
+  }
+}
+
 function writeLastSeenUpgradeAnnouncementVersion(userId: number, version: string) {
   if (typeof window === "undefined" || !userId) return;
   const normalizedVersion = normalizePanelVersion(version);
@@ -165,6 +180,41 @@ function writeLastSeenUpgradeAnnouncementVersion(userId: number, version: string
     window.localStorage.setItem(upgradeAnnouncementVersionKey(userId), normalizedVersion);
   } catch {
     // Ignore storage failures and fall back to server-side read tracking.
+  }
+}
+
+function readUpgradeAnnouncementDisplaySession(userId?: number | null): UpgradeAnnouncementDisplaySession | null {
+  if (typeof window === "undefined" || !userId) return null;
+  try {
+    const raw = window.sessionStorage.getItem(upgradeAnnouncementDisplaySessionKey(userId));
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    const key = String(value?.key || "");
+    const shownAt = Number(value?.shownAt || 0);
+    if (!key || !Number.isFinite(shownAt) || shownAt <= 0) return null;
+    return { key, shownAt };
+  } catch {
+    return null;
+  }
+}
+
+
+function writeUpgradeAnnouncementDisplaySession(userId: number, session: UpgradeAnnouncementDisplaySession) {
+  if (typeof window === "undefined" || !userId) return;
+  try {
+    window.sessionStorage.setItem(upgradeAnnouncementDisplaySessionKey(userId), JSON.stringify(session));
+  } catch {
+    // Ignore storage failures; the announcement can still be dismissed normally.
+  }
+}
+
+
+function clearUpgradeAnnouncementDisplaySession(userId?: number | null) {
+  if (typeof window === "undefined" || !userId) return;
+  try {
+    window.sessionStorage.removeItem(upgradeAnnouncementDisplaySessionKey(userId));
+  } catch {
+    // Ignore storage failures.
   }
 }
 
@@ -407,6 +457,7 @@ function DashboardLayoutContent({
   const [showMobileUpdateDialog, setShowMobileUpdateDialog] = useState(false);
   const upgradeRefreshTimerRef = useRef<number | null>(null);
   const upgradeRefreshIntervalRef = useRef<number | null>(null);
+  const displayedUpgradeAnnouncementKeyRef = useRef("");
   const [upgradeRefreshScheduled, setUpgradeRefreshScheduled] = useState(false);
   const [upgradeRefreshCountdown, setUpgradeRefreshCountdown] = useState<number | null>(null);
   const [backgroundUpgrade, setBackgroundUpgrade] = useState<PanelUpgradeSession | null>(() => readPanelUpgradeSession());
@@ -486,24 +537,44 @@ function DashboardLayoutContent({
   useEffect(() => {
     if (!isAdmin) {
       setShowUpgradeAnnouncement(false);
+      displayedUpgradeAnnouncementKeyRef.current = "";
+      clearUpgradeAnnouncementDisplaySession(user?.id);
       return;
     }
     const currentVersion = normalizePanelVersion(publicInfo?.version);
     const userId = user?.id;
     if (!userId || !currentVersion || !upgradeAnnouncementFetched) return;
 
+    const seenVersion = readLastSeenUpgradeAnnouncementVersion(userId);
+    if (seenVersion && comparePanelVersions(seenVersion, currentVersion) >= 0) {
+      setShowUpgradeAnnouncement(false);
+      clearUpgradeAnnouncementDisplaySession(userId);
+      utils.announcements.upgradePopup.setData(undefined, undefined);
+      return;
+    }
+
     if (upgradeAnnouncement?.id) {
-      setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
+      const announcementKey = String(userId) + ":" + currentVersion + ":" + String(upgradeAnnouncement.id);
+      if (displayedUpgradeAnnouncementKeyRef.current !== announcementKey) {
+        displayedUpgradeAnnouncementKeyRef.current = announcementKey;
+        const existingDisplay = readUpgradeAnnouncementDisplaySession(userId);
+        const shownAt = existingDisplay?.key === announcementKey ? existingDisplay.shownAt : Date.now();
+        if (existingDisplay?.key !== announcementKey) {
+          writeUpgradeAnnouncementDisplaySession(userId, { key: announcementKey, shownAt });
+        }
+        const elapsedSeconds = Math.floor(Math.max(0, Date.now() - shownAt) / 1000);
+        setUpgradeAnnouncementCountdown(Math.max(0, UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS - elapsedSeconds));
+      }
       setShowUpgradeAnnouncement(true);
       return;
     }
 
     writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
-  }, [isAdmin, publicInfo?.version, upgradeAnnouncement?.id, upgradeAnnouncementFetched, user?.id]);
+    clearUpgradeAnnouncementDisplaySession(userId);
+  }, [isAdmin, publicInfo?.version, upgradeAnnouncement?.id, upgradeAnnouncementFetched, user?.id, utils.announcements.upgradePopup]);
 
   useEffect(() => {
     if (!showUpgradeAnnouncement) return;
-    setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
     const timer = window.setInterval(() => {
       setUpgradeAnnouncementCountdown((value) => (value <= 1 ? 0 : value - 1));
     }, 1000);
@@ -628,12 +699,18 @@ function DashboardLayoutContent({
   });
 
   const dismissUpgradeAnnouncement = trpc.announcements.dismiss.useMutation({
-    onSuccess: () => {
+    onMutate: () => {
       if (user?.id && publicInfo?.version) {
         writeLastSeenUpgradeAnnouncementVersion(user.id, publicInfo.version);
+        clearUpgradeAnnouncementDisplaySession(user.id);
       }
       setShowUpgradeAnnouncement(false);
       setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
+      displayedUpgradeAnnouncementKeyRef.current = "";
+      utils.announcements.upgradePopup.setData(undefined, undefined);
+    },
+    onSuccess: () => {
+      setShowUpgradeAnnouncement(false);
       utils.announcements.upgradePopup.setData(undefined, undefined);
     },
     onError: (error) => {
