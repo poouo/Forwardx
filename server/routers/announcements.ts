@@ -4,13 +4,28 @@ import { appendPanelLog } from "../_core/panelLogger";
 import * as db from "../db";
 import { sendTelegramMessage } from "../telegramBot";
 import { sanitizeHtml } from "../../shared/htmlSanitizer";
+import { APP_VERSION } from "../../shared/versions";
+
+const ANNOUNCEMENT_TYPES = ["normal", "popup", "upgrade_popup"] as const;
 
 const announcementInput = z.object({
   title: z.string().trim().min(1).max(120),
   content: z.string().trim().min(1).max(60000),
-  type: z.enum(["normal", "popup"]).default("normal"),
+  type: z.enum(ANNOUNCEMENT_TYPES).default("normal"),
+  targetVersion: z.string().trim().max(64).optional().nullable(),
   telegramPush: z.boolean().optional().default(false),
 });
+
+function normalizeAnnouncementVersion(version: string | null | undefined) {
+  return String(version || "").trim().replace(/^v/i, "");
+}
+
+function resolveUpgradeAnnouncementVersion(inputVersion: string | null | undefined) {
+  const normalizedVersion = normalizeAnnouncementVersion(inputVersion);
+  if (!normalizedVersion) throw new Error("升级公告需要填写目标版本");
+  if (!/^\d+\.\d+\.\d+$/.test(normalizedVersion)) throw new Error("升级公告版本格式不正确");
+  return normalizedVersion;
+}
 
 function sanitizeAnnouncementContent(content: string) {
   return sanitizeHtml(content);
@@ -67,11 +82,16 @@ async function pushAnnouncementToTelegram(title: string, content: string) {
 
 export const announcementsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    return db.listUserAnnouncements();
+    return db.listUserAnnouncements({ includeUpgradePopups: ctx.user.role === "admin" });
   }),
 
   popup: protectedProcedure.query(async ({ ctx }) => {
     return db.getUnreadPopupAnnouncement(ctx.user.id);
+  }),
+
+  upgradePopup: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.user.role !== "admin") return null;
+    return db.getUnreadUpgradeAnnouncement(ctx.user.id, APP_VERSION);
   }),
 
   dismiss: protectedProcedure
@@ -85,10 +105,12 @@ export const announcementsRouter = router({
     .input(announcementInput)
     .mutation(async ({ input, ctx }) => {
       const content = sanitizeAnnouncementContent(input.content);
+      const targetVersion = input.type === "upgrade_popup" ? resolveUpgradeAnnouncementVersion(input.targetVersion) : null;
       const result = await db.createAnnouncement({
         title: input.title,
         content,
         type: input.type,
+        targetVersion,
         isActive: true,
         startsAt: null,
         expiresAt: null,
@@ -106,10 +128,12 @@ export const announcementsRouter = router({
     .input(announcementInput.extend({ id: z.number().int().positive() }))
     .mutation(async ({ input }) => {
       const content = sanitizeAnnouncementContent(input.content);
+      const targetVersion = input.type === "upgrade_popup" ? resolveUpgradeAnnouncementVersion(input.targetVersion) : null;
       const result = await db.updateAnnouncement(input.id, {
         title: input.title,
         content,
         type: input.type,
+        targetVersion,
         isActive: true,
         startsAt: null,
         expiresAt: null,

@@ -72,7 +72,7 @@ export function SlidingTabsList<T extends string>({
               disabled={item.disabled}
               className={cn(slidingTabTriggerClass, triggerClassName)}
             >
-              {Icon && <Icon className={cn("h-3.5 w-3.5", iconClassName)} />}
+              {Icon && <Icon className={cn("h-3.5 w-3.5 text-current", iconClassName)} />}
               {item.label}
               {item.badge !== undefined && item.badge !== null && (
                 <span className={cn(

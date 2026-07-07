@@ -46,6 +46,7 @@ import {
   ArrowRightLeft,
   AlertCircle,
   CheckCircle2,
+  ChevronRight,
   GripVertical,
   Layers3,
   LayoutGrid,
@@ -81,7 +82,6 @@ import {
 import {
   FORWARD_TYPE_LABELS,
   FORWARD_TYPES,
-  formatForwardRuleProtocol,
   normalizeForwardProtocolSettings,
   normalizeForwardRuleProtocol,
   type ForwardRuleProtocol,
@@ -738,6 +738,7 @@ export function ForwardGroupsContent({
   const [latencyGroup, setLatencyGroup] = useState<{ id: number; name: string } | null>(null);
   const [testGroup, setTestGroup] = useState<{ id: number; name: string } | null>(null);
   const [deleteGroup, setDeleteGroup] = useState<any | null>(null);
+  const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
   const lastCreateRequestKeyRef = useRef(createRequestKey ?? 0);
   const lastEditRequestKeyRef = useRef(0);
   const closeResetTimerRef = useRef<number | null>(null);
@@ -932,6 +933,7 @@ export function ForwardGroupsContent({
     setForm(makeDefaultForm());
     setEditingId(null);
     setDragMemberKey(null);
+    setAdvancedSettingsOpen(false);
     savedMembersRef.current = { host: [], tunnel: [] };
   };
 
@@ -975,6 +977,7 @@ export function ForwardGroupsContent({
     });
     setEditingId(null);
     setDragMemberKey(null);
+    setAdvancedSettingsOpen(false);
     savedMembersRef.current = { host: [], tunnel: [] };
     setShowDialog(true);
   };
@@ -988,11 +991,42 @@ export function ForwardGroupsContent({
   const openEdit = (group: any) => {
     clearCloseResetTimer();
     const groupMode = normalizeGroupMode(group.groupMode);
+    const normalizedMembers = (group.members || []).reduce((acc: MemberForm[], member: any) => {
+      if (member.memberType === "host") {
+        const hostId = member.hostId ? Number(member.hostId) : null;
+        if (!hostId) return acc;
+        acc.push({
+          key: memberKey("host", hostId),
+          memberType: "host",
+          hostId,
+          tunnelId: null,
+          connectHost: member.connectHost || null,
+          isEnabled: !!member.isEnabled,
+        });
+        return acc;
+      }
+
+      if (groupMode !== "failover") return acc;
+
+      const tunnel = tunnelById.get(Number(member.tunnelId || 0));
+      const hostId = tunnel?.entryHostId ? Number(tunnel.entryHostId) : null;
+      if (!hostId || acc.some((item) => item.hostId === hostId)) return acc;
+      acc.push({
+        key: memberKey("host", hostId),
+        memberType: "host",
+        hostId,
+        tunnelId: null,
+        connectHost: null,
+        isEnabled: !!member.isEnabled,
+      });
+      return acc;
+    }, []);
+
     setForm({
       name: group.name || "",
       groupMode,
       entryGroupId: group.entryGroupId ? Number(group.entryGroupId) : null,
-      groupType: group.groupType === "tunnel" && groupMode === "failover" ? "tunnel" : "host",
+      groupType: "host",
       protocol: normalizeForwardRuleProtocol(group.protocol, "both"),
       forwardType: FORWARD_TYPES.includes(group.forwardType as ForwardType) ? group.forwardType : "iptables",
       proxyProtocolReceive: !!group.proxyProtocolReceive,
@@ -1016,16 +1050,10 @@ export function ForwardGroupsContent({
       ddnsAutoResolveEnabled: group.ddnsAutoResolveEnabled !== false,
       autoFailback: !!group.autoFailback,
       isEnabled: !!group.isEnabled,
-      members: (group.members || []).map((member: any) => ({
-        key: memberKey(member.memberType, Number(member.memberType === "host" ? member.hostId : member.tunnelId)),
-        memberType: member.memberType,
-        hostId: member.hostId ? Number(member.hostId) : null,
-        tunnelId: member.tunnelId ? Number(member.tunnelId) : null,
-        connectHost: member.connectHost || null,
-        isEnabled: !!member.isEnabled,
-      })),
+      members: normalizedMembers,
     });
     setEditingId(Number(group.id));
+    setAdvancedSettingsOpen(false);
     setShowDialog(true);
   };
 
@@ -1086,7 +1114,7 @@ export function ForwardGroupsContent({
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
-  const effectiveGroupType = form.groupMode === "port" || form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
+  const effectiveGroupType = form.groupMode === "failover" || form.groupMode === "port" || form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
   const availableMemberOptions = effectiveGroupType === "host"
     ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "", host: h }))
     : (tunnels || []).map((t: any) => ({
@@ -1298,11 +1326,12 @@ export function ForwardGroupsContent({
       return toast.error("恢复观察时间需为 10-3600 秒的整数");
     }
     const trafficMultiplierValue = Number(form.trafficMultiplier);
-    if ((isPortMode || isChainGroup) && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
+    if ((isPortMode || isChainGroup || isFailoverMode) && (!Number.isFinite(trafficMultiplierValue) || trafficMultiplierValue < 0.01 || trafficMultiplierValue > 50)) {
       return toast.error("流量倍率必须在 0.01 - 50 之间");
     }
     const trafficMultiplier = trafficMultiplierFromInput(trafficMultiplierValue);
-    const runtimeTcpOptionsSupported = (isPortMode || isChainGroup) && form.protocol !== "udp";
+    const runtimeConfigSupported = isPortMode || isChainGroup || isFailoverMode;
+    const runtimeTcpOptionsSupported = runtimeConfigSupported && form.protocol !== "udp";
     const chinaHealthTarget = normalizeChinaHealthTargetInput(form.chinaHealthCheckTarget);
     if (supportsChinaHealth && form.chinaHealthCheckEnabled && chinaHealthTarget === undefined) {
       return toast.error("入口健康度检测目标格式不正确");
@@ -1315,19 +1344,19 @@ export function ForwardGroupsContent({
       name: form.name.trim(),
       remark: null,
       entryGroupId: isChainGroup ? form.entryGroupId || null : null,
-      groupType: isPortMode || isChainGroup || isEntryGroup || isExitGroup ? "host" : form.groupType,
+      groupType: "host",
       domain: isFailoverMode || isEntryGroup ? form.domain.trim() || null : null,
       recordType: isChainGroup || isExitGroup ? "A" : form.recordType,
       failoverSeconds,
       recoverSeconds,
-      trafficMultiplier: isPortMode || isChainGroup ? trafficMultiplier : 100,
-      protocol: isPortMode || isChainGroup ? form.protocol : "both",
-      forwardType: isPortMode || isChainGroup ? form.forwardType : form.groupType === "tunnel" ? "gost" : form.forwardType,
+      trafficMultiplier: runtimeConfigSupported ? trafficMultiplier : 100,
+      protocol: runtimeConfigSupported ? form.protocol : "both",
+      forwardType: form.forwardType,
       proxyProtocolReceive: runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm") && form.proxyProtocolReceive,
       proxyProtocolSend: runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm") && form.proxyProtocolSend,
       proxyProtocolExitReceive: false,
       proxyProtocolExitSend: false,
-      proxyProtocolVersion: (isPortMode || isChainGroup) && Number(form.proxyProtocolVersion) === 2 ? 2 : 1,
+      proxyProtocolVersion: runtimeConfigSupported && Number(form.proxyProtocolVersion) === 2 ? 2 : 1,
       tcpFastOpen: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.tcpFastOpen,
       zeroCopy: runtimeTcpOptionsSupported && form.forwardType === "realm" && form.zeroCopy,
       udpOverTcp: false,
@@ -1414,7 +1443,6 @@ export function ForwardGroupsContent({
     return (
       <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{FORWARD_TYPE_LABELS[group.forwardType as ForwardType] || group.forwardType || "iptables"}</Badge>
-        <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">{formatForwardRuleProtocol(group.protocol || "both")}</Badge>
         <Badge variant="secondary" className="h-5 rounded px-1.5 font-normal">倍率 {formatTrafficMultiplier(group.trafficMultiplier)}</Badge>
       </div>
     );
@@ -1520,10 +1548,13 @@ export function ForwardGroupsContent({
   };
   const isPortMode = activeGroupMode === "port";
   const isChainMode = activeGroupMode === "chain";
-  const runtimeConfigMode = isPortMode || isChainMode;
+  const runtimeConfigMode = isPortMode || isChainMode || activeGroupMode === "failover";
   const runtimeTcpOptionsSupported = runtimeConfigMode && form.protocol !== "udp";
   const runtimeProxyProtocolSupported = runtimeTcpOptionsSupported && (form.forwardType === "gost" || form.forwardType === "realm");
   const runtimeRealmOptimizationSupported = runtimeTcpOptionsSupported && form.forwardType === "realm";
+  const advancedSettingsConfigured = runtimeProxyProtocolSupported
+    ? (form.proxyProtocolReceive || form.proxyProtocolSend || form.tcpFastOpen || form.zeroCopy)
+    : (form.tcpFastOpen || form.zeroCopy);
   const canManualCheck = activeGroupMode === "failover" || activeGroupMode === "entry";
   const modeMeta: Record<GroupMode, {
     title: string;
@@ -1606,7 +1637,7 @@ export function ForwardGroupsContent({
         </div>
         {!hideHeaderActions && <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className={`h-3 w-3 ${isChainMode ? "text-primary" : "text-emerald-500"}`} />
+            <Activity className="h-3 w-3 text-current" />
             <AnimatedStatValue
               value={`${activeCount} / ${modeTotal} ${activeGroupMode === "failover" || activeGroupMode === "entry" ? "健康" : "启用"}`}
               loading={isLoading || !groups}
@@ -1931,15 +1962,7 @@ export function ForwardGroupsContent({
                     <SelectContent>
                       {availableMemberOptions.map((item: any) => (
                         <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
-                          <HostStatusLabel
-                            host={item.host}
-                            label={(
-                              <span className="inline-flex min-w-0 items-center gap-1.5">
-                                <span className="truncate">{item.label}</span>
-                                {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
-                              </span>
-                            )}
-                          />
+                          <HostStatusLabel host={item.host} label={item.label} />
                         </SelectItem>
                       ))}
                       {availableMemberOptions.length === 0 && (
@@ -1950,7 +1973,7 @@ export function ForwardGroupsContent({
                 </div>
               )}
 
-              {form.groupMode === "failover" && (
+              {false && form.groupMode === "failover" && (
                 <div className="space-y-2">
                   <Label>组类型</Label>
                   <Select
@@ -2005,7 +2028,7 @@ export function ForwardGroupsContent({
                   )}
                 </div>
 
-                {form.groupMode === "failover" && (
+                {false && form.groupMode === "failover" && (
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,130px)_minmax(0,130px)_minmax(0,1fr)]">
@@ -2031,6 +2054,7 @@ export function ForwardGroupsContent({
                   </div>
                 )}
 
+                {form.groupMode === "entry" && (
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)]">
                   <div className="space-y-1.5">
                     <Input
@@ -2071,6 +2095,7 @@ export function ForwardGroupsContent({
                     </label>
                   </div>
                 </div>
+                )}
               </>
             )}
 
@@ -2102,7 +2127,7 @@ export function ForwardGroupsContent({
             )}
 
             {runtimeConfigMode && (
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px_112px] sm:items-end">
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_112px] sm:items-end">
                 <div className="space-y-2">
                   <Label>转发工具</Label>
                   <Select
@@ -2132,31 +2157,6 @@ export function ForwardGroupsContent({
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>协议</Label>
-                  <Select
-                    value={form.protocol}
-                    onValueChange={(value) => {
-                      const protocol = normalizeForwardRuleProtocol(value, "both");
-                      const tcpSupported = protocol !== "udp";
-                      setForm({
-                        ...form,
-                        protocol,
-                        proxyProtocolReceive: tcpSupported && form.proxyProtocolReceive,
-                        proxyProtocolSend: tcpSupported && form.proxyProtocolSend,
-                        tcpFastOpen: tcpSupported && form.tcpFastOpen,
-                        zeroCopy: tcpSupported && form.zeroCopy,
-                      });
-                    }}
-                  >
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="both">TCP + UDP</SelectItem>
-                      <SelectItem value="tcp">TCP</SelectItem>
-                      <SelectItem value="udp">UDP</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
                   <Label>流量倍率</Label>
                   <Input
                     type="number"
@@ -2172,48 +2172,68 @@ export function ForwardGroupsContent({
             )}
 
             {runtimeConfigMode && (
-              <div className="space-y-3 rounded-md border border-border/60 bg-muted/20 p-3">
-                <div className="space-y-2">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <Label className="text-sm">PROXY Protocol</Label>
-                    <Select
-                      value={String(form.proxyProtocolVersion)}
-                      onValueChange={(value) => setForm({ ...form, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 })}
-                      disabled={!runtimeProxyProtocolSupported}
-                    >
-                      <SelectTrigger className="h-8 w-full sm:w-28"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1">v1</SelectItem>
-                        <SelectItem value="2">v2</SelectItem>
-                      </SelectContent>
-                    </Select>
+              <div className="rounded-lg border border-border/60 bg-muted/20">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+                  onClick={() => setAdvancedSettingsOpen((open) => !open)}
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">高级设置</div>
+                    <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                      <span className="text-sm">接收 PROXY</span>
-                      <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolReceive} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })} />
-                    </label>
-                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                      <span className="text-sm">发送 PROXY</span>
-                      <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolSend} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked })} />
-                    </label>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={advancedSettingsConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
+                      {advancedSettingsConfigured ? "已配置" : "可选"}
+                    </Badge>
+                    <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${advancedSettingsOpen ? "rotate-90" : ""}`} />
                   </div>
-                  {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。</p>}
-                </div>
+                </button>
+                {advancedSettingsOpen && (
+                  <div className="space-y-3 border-t border-border/50 px-3 pb-3 pt-2">
+                    <div className="space-y-2">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <Label className="text-sm">PROXY Protocol</Label>
+                        <Select
+                          value={String(form.proxyProtocolVersion)}
+                          onValueChange={(value) => setForm({ ...form, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 })}
+                          disabled={!runtimeProxyProtocolSupported}
+                        >
+                          <SelectTrigger className="h-8 w-full sm:w-28"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="1">v1</SelectItem>
+                            <SelectItem value="2">v2</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                          <span className="text-sm">接收 PROXY</span>
+                          <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolReceive} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolReceive: checked })} />
+                        </label>
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                          <span className="text-sm">发送 PROXY</span>
+                          <Switch checked={runtimeProxyProtocolSupported && form.proxyProtocolSend} disabled={!runtimeProxyProtocolSupported} onCheckedChange={(checked) => setForm({ ...form, proxyProtocolSend: checked })} />
+                        </label>
+                      </div>
+                      {!runtimeProxyProtocolSupported && <p className="text-xs text-muted-foreground">PROXY Protocol 仅支持 TCP 且转发工具为 GOST 或 Realm。</p>}
+                    </div>
 
-                <div className="space-y-2 border-t border-border/50 pt-3">
-                  <Label className="text-sm">传输优化</Label>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                      <span className="text-sm">TCP Fast Open</span>
-                      <Switch checked={runtimeRealmOptimizationSupported && form.tcpFastOpen} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, tcpFastOpen: checked })} />
-                    </label>
-                    <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
-                      <span className="text-sm">zero-copy</span>
-                      <Switch checked={runtimeRealmOptimizationSupported && form.zeroCopy} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, zeroCopy: checked })} />
-                    </label>
+                    <div className="space-y-2 border-t border-border/50 pt-3">
+                      <Label className="text-sm">传输优化</Label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                          <span className="text-sm">TCP Fast Open</span>
+                          <Switch checked={runtimeRealmOptimizationSupported && form.tcpFastOpen} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, tcpFastOpen: checked })} />
+                        </label>
+                        <label className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/50 bg-background/55 px-2.5 py-2">
+                          <span className="text-sm">zero-copy</span>
+                          <Switch checked={runtimeRealmOptimizationSupported && form.zeroCopy} disabled={!runtimeRealmOptimizationSupported} onCheckedChange={(checked) => setForm({ ...form, zeroCopy: checked })} />
+                        </label>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -2242,15 +2262,7 @@ export function ForwardGroupsContent({
                           {availableMemberOptions.map((item: any) => (
                             <SelectItem key={item.id} value={String(item.id)} textValue={item.label}>
                               {effectiveGroupType === "host" ? (
-                                <HostStatusLabel
-                                  host={item.host}
-                                  label={(
-                                    <span className="inline-flex min-w-0 items-center gap-1.5">
-                                      <span className="truncate">{item.label}</span>
-                                      {item.meta ? <span className="shrink-0 text-muted-foreground">/ {item.meta}</span> : null}
-                                    </span>
-                                  )}
-                                />
+                                <HostStatusLabel host={item.host} label={item.label} />
                               ) : (
                                 <span>{item.label} {item.meta ? "/ " + item.meta : ""}</span>
                               )}
@@ -2354,6 +2366,75 @@ export function ForwardGroupsContent({
                     </div>
                   </>
                 )}
+              </div>
+            )}
+
+            {form.groupMode === "failover" && (
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">单位：秒，范围 10-3600。</p>
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,130px)_minmax(0,130px)_minmax(0,1fr)]">
+                    <div className="space-y-2">
+                      <Label>故障转移时间</Label>
+                      <Input type="number" min={10} max={3600} value={form.failoverSeconds} onChange={(e) => setForm({ ...form, failoverSeconds: e.target.value })} placeholder="60" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>恢复观察时间</Label>
+                      <Input type="number" min={10} max={3600} value={form.recoverSeconds} onChange={(e) => setForm({ ...form, recoverSeconds: e.target.value })} placeholder="120" />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <label className="flex h-10 min-w-[128px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                        <span className="whitespace-nowrap text-sm">恢复后切回</span>
+                        <Switch checked={form.autoFailback} onCheckedChange={(autoFailback) => setForm({ ...form, autoFailback })} />
+                      </label>
+                      <label className="flex h-10 min-w-[92px] flex-1 items-center justify-between gap-3 rounded-md border border-border/60 px-3">
+                        <span className="whitespace-nowrap text-sm">启用</span>
+                        <Switch checked={form.isEnabled} onCheckedChange={(isEnabled) => setForm({ ...form, isEnabled })} />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,200px)]">
+                  <div className="space-y-1.5">
+                    <Input
+                      aria-label="入口健康度 TCPing 目标，留空默认 www.189.cn:80"
+                      disabled={!form.chinaHealthCheckEnabled}
+                      value={form.chinaHealthCheckTarget}
+                      onChange={(e) => setForm({ ...form, chinaHealthCheckTarget: e.target.value })}
+                      placeholder="留空默认 www.189.cn:80，IPv6 请写 [地址]:端口"
+                    />
+                    <p className="text-xs text-muted-foreground">统一使用 TCPing 剔除不健康入口；IPv6 建议填写 [地址]:端口，至少一个成员可达时仍视为可用。</p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex h-10 items-center justify-between rounded-md border border-border/60 px-3">
+                      <span className="text-sm">入口健康度检测</span>
+                      <Switch checked={form.chinaHealthCheckEnabled} onCheckedChange={(chinaHealthCheckEnabled) => setForm({ ...form, chinaHealthCheckEnabled })} />
+                    </label>
+                    <label
+                      className="flex min-h-10 items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
+                      title={telegramReady ? "自动切换时发送 Telegram 告警，手动保存、排序和同步不会提醒。" : telegramSettingsLoaded ? "请先在系统设置中配置并启用 Telegram 机器人。" : "正在确认 Telegram 配置。"}
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm">切换告警</span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {telegramReady ? "仅自动切换提醒" : telegramSettingsLoaded ? "需先配置 Telegram" : "正在确认配置"}
+                        </span>
+                      </span>
+                      <Switch
+                        checked={form.telegramSwitchNotifyEnabled}
+                        disabled={telegramSettingsLoaded && !telegramReady && !form.telegramSwitchNotifyEnabled}
+                        onCheckedChange={(telegramSwitchNotifyEnabled) => {
+                          if (telegramSwitchNotifyEnabled && telegramSettingsLoaded && !telegramReady) {
+                            toast.error("请先在系统设置中配置并启用 Telegram 机器人");
+                            return;
+                          }
+                          setForm({ ...form, telegramSwitchNotifyEnabled });
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
               </div>
             )}
           </div>

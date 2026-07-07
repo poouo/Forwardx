@@ -18,6 +18,7 @@ import { randomAvataaarsValue } from "../shared/avatar";
 import { migrateLegacyUserAvatars } from "./repositories/userRepository";
 import { cleanOldTrafficStatBuckets, cleanOldTrafficStats, ensureTrafficStatBucketsBackfilled, ensureUserTrafficCountersBackfilled } from "./repositories/metricsRepository";
 import { getSetting, setSetting } from "./repositories/settingsRepository";
+import { ensureBundledDeveloperAnnouncements } from "./repositories/announcementRepository";
 import { backfillManualEntitlementsFromEffectiveUsers } from "./repositories/billingRepository";
 import { backfillTrafficBillingRuleUsageFromStats } from "./repositories/trafficBillingRepository";
 import { purgeSettledPendingForwardRuleDeletes } from "./repositories/forwardRuleRepository";
@@ -140,6 +141,9 @@ export async function initDatabase() {
     });
     await seedDevPanelData().catch((error) => {
       console.warn("[DevPanel] Seed data skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await ensureBundledDeveloperAnnouncements().catch((error) => {
+      console.warn("[Announcement] Bundled developer announcements skipped:", error instanceof Error ? error.message : String(error));
     });
     await maintainCurrentPostgresqlDatabase().catch((error) => {
       console.warn("[PostgreSQL] Startup health check skipped:", error instanceof Error ? error.message : String(error));

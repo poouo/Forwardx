@@ -157,7 +157,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
   await assertTelegramSwitchNotifyReady(telegramSwitchNotifyEnabled);
   const recordType = groupMode === "chain" || groupMode === "exit" ? "A" : input.recordType || "A";
   await db.validateForwardGroupRecordMembers({ groupMode, groupType, recordType }, members as any);
-  const runtimeConfigSupported = groupMode === "port" || groupMode === "chain";
+  const runtimeConfigSupported = groupMode === "port" || groupMode === "chain" || groupMode === "failover";
   const protocol = runtimeConfigSupported ? normalizeForwardRuleProtocol(input.protocol, "both") : "both";
   const runtimeTcpOptionsSupported = runtimeConfigSupported && protocol !== "udp";
   const forwardType = runtimeConfigSupported ? (input.forwardType || "iptables") : groupType === "tunnel" ? "gost" : "iptables";
@@ -185,7 +185,7 @@ async function normalizeForwardGroupInput(input: ForwardGroupInput, userId?: num
     failoverTargets: null,
     domain,
     recordType,
-    trafficMultiplier: groupMode === "port" || groupMode === "chain" ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
+    trafficMultiplier: runtimeConfigSupported ? normalizeTrafficMultiplier(input.trafficMultiplier) : 100,
     failoverSeconds: input.failoverSeconds,
     recoverSeconds: input.recoverSeconds,
     chinaHealthCheckEnabled,

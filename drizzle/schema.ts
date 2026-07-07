@@ -973,7 +973,8 @@ export const announcements = table("announcements", {
   id: serial("id"),
   title: text("title").notNull(),
   content: text("content").notNull(),
-  type: varchar("type", { length: 32 }).notNull().default("normal"), // normal | popup
+  type: varchar("type", { length: 32 }).notNull().default("normal"), // normal | popup | upgrade_popup
+  targetVersion: text("targetVersion"),
   isActive: boolean("isActive").notNull().default(true),
   startsAt: epoch("startsAt"),
   expiresAt: epoch("expiresAt"),

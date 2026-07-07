@@ -59,7 +59,7 @@ export const plansRouter = router({
     .mutation(async ({ input }) => {
       const { hostIds, tunnelIds, forwardGroupIds, trafficAddons, ...data } = input;
       if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) {
-        throw new Error("套餐至少需要绑定一个主机、隧道或转发组");
+        throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
       }
       return db.createSubscriptionPlan({
         ...data,
@@ -75,7 +75,7 @@ export const plansRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { id, hostIds, tunnelIds, forwardGroupIds, trafficAddons, syncExistingSubscribers, ...data } = input;
       if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) {
-        throw new Error("套餐至少需要绑定一个主机、隧道或转发组");
+        throw new Error("套餐至少需要绑定一个端口转发、隧道、转发链或转发组");
       }
       if (!syncExistingSubscribers) {
         await db.freezePlanSubscriberSnapshots(id);

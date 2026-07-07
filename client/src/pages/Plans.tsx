@@ -17,7 +17,6 @@ import { Textarea } from "@/components/ui/textarea";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import TrafficBillingConfigManager from "@/components/TrafficBillingConfigManager";
 import { useUrlTab } from "@/hooks/useUrlTab";
-import { planResourceParts } from "@/lib/planDisplay";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -61,6 +60,8 @@ type PlanManageTab = "plans" | "billing";
 type PlanDialogTab = "settings" | "resources";
 type PlanListViewMode = "card" | "table";
 type PlanResourceKey = "hostIds" | "tunnelIds" | "forwardGroupIds";
+type ForwardGroupMode = "port" | "failover" | "chain" | "entry" | "exit";
+type PlanResourcePart = { label: string; count: number };
 const PLAN_MANAGE_TABS = ["plans", "billing"] as const;
 const PLAN_MANAGE_TAB_ITEMS = [
   { value: "plans", label: "订阅套餐", icon: Package },
@@ -216,6 +217,7 @@ function PlanStatusQuickToggle({
 
 function PlanCard({
   plan,
+  resourceParts,
   onEdit,
   onDelete,
   toggling,
@@ -223,6 +225,7 @@ function PlanCard({
   onToggleStoreVisible,
 }: {
   plan: any;
+  resourceParts: PlanResourcePart[];
   onEdit: () => void;
   onDelete: () => void;
   toggling?: boolean;
@@ -247,7 +250,7 @@ function PlanCard({
         <MobileInfoRow label="价格">{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</MobileInfoRow>
         <MobileInfoRow label="资源">
           <div className="flex flex-wrap justify-end gap-1">
-            {planResourceParts(plan).map((item) => (
+            {resourceParts.map((item) => (
               <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
             ))}
           </div>
@@ -283,10 +286,70 @@ function tunnelTitle(tunnel: any, hosts: any[]) {
   return `${tunnel?.name || `隧道 #${tunnel?.id || "-"}`} / ${getTunnelRouteText(tunnel, hosts)} / ${String(tunnel?.mode || "").toUpperCase()}`;
 }
 
-function forwardGroupTypeText(group: any) {
+function legacyForwardGroupTypeText(group: any) {
   if (group?.groupMode === "chain") return "端口转发链";
   if (group?.groupType === "tunnel") return "隧道组";
   return "主机组";
+}
+
+function forwardGroupMode(group: any): ForwardGroupMode {
+  const mode = String(group?.groupMode || "failover");
+  return mode === "port" || mode === "failover" || mode === "chain" || mode === "entry" || mode === "exit"
+    ? mode
+    : "failover";
+}
+
+function isPortForwardGroup(group: any) {
+  return forwardGroupMode(group) === "port";
+}
+
+function isChainForwardGroup(group: any) {
+  return forwardGroupMode(group) === "chain";
+}
+
+function isStandardForwardGroup(group: any) {
+  return forwardGroupMode(group) === "failover";
+}
+
+function forwardGroupTypeText(group: any) {
+  const mode = forwardGroupMode(group);
+  if (mode === "port") return "端口转发";
+  if (mode === "chain") return "转发链";
+  if (mode === "entry") return "入口组";
+  if (mode === "exit") return "出口组";
+  if (group?.groupType === "tunnel") return "隧道转发组";
+  return "转发组";
+}
+
+function planResourcePartsForDisplay(plan: any, forwardGroupMap: Map<number, any>): PlanResourcePart[] {
+  const counts = {
+    ports: Number(plan?.hostIds?.length || 0),
+    tunnels: Number(plan?.tunnelIds?.length || 0),
+    chains: 0,
+    groups: 0,
+    otherForwardResources: 0,
+  };
+
+  for (const rawId of Array.isArray(plan?.forwardGroupIds) ? plan.forwardGroupIds : []) {
+    const group = forwardGroupMap.get(Number(rawId));
+    if (isPortForwardGroup(group)) {
+      counts.ports += 1;
+    } else if (isChainForwardGroup(group)) {
+      counts.chains += 1;
+    } else if (isStandardForwardGroup(group)) {
+      counts.groups += 1;
+    } else {
+      counts.otherForwardResources += 1;
+    }
+  }
+
+  return [
+    { label: "端口转发", count: counts.ports },
+    { label: "隧道", count: counts.tunnels },
+    { label: "转发链", count: counts.chains },
+    { label: "转发组", count: counts.groups },
+    { label: "转发资源", count: counts.otherForwardResources },
+  ].filter((item) => item.count > 0);
 }
 
 function selectedResourceItems(ids: number[], items: any[], fallbackType: string) {
@@ -380,6 +443,59 @@ function PlanResourcePicker({
           </Select>
         </>
       )}
+    </div>
+  );
+}
+
+function PlanSelectedResourceList({
+  title,
+  countText,
+  selectedItems,
+  emptyText,
+  note,
+  onRemove,
+  getId,
+  renderSelected,
+}: {
+  title: string;
+  countText: string;
+  selectedItems: any[];
+  emptyText: string;
+  note?: string;
+  onRemove: (id: number) => void;
+  getId: (item: any) => number;
+  renderSelected: (item: any) => ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <Label className="text-sm font-medium">{title}</Label>
+        <Badge variant="outline" className="h-6 shrink-0 rounded-full px-2 text-xs">{countText}</Badge>
+      </div>
+      {selectedItems.length > 0 ? (
+        <div className="space-y-1.5">
+          {selectedItems.map((item) => (
+            <div key={getId(item)} className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+              <div className="min-w-0 flex-1">{renderSelected(item)}</div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 text-destructive"
+                title="删除"
+                onClick={() => onRemove(getId(item))}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+          {emptyText}
+        </div>
+      )}
+      {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
     </div>
   );
 }
@@ -593,20 +709,32 @@ export default function Plans() {
   const trafficBillingConfigs = trafficBillingData?.configs || [];
   const trafficBillingCharged = Number(trafficBillingSummary?.totalAmountCents || 0);
   const trafficBillingGb = Number(trafficBillingSummary?.totalBilledGb || 0);
-  const planResourceSummary = useMemo(() => {
+  const forwardGroupMap = useMemo(
+    () => new Map(forwardGroups.map((group: any) => [Number(group.id), group])),
+    [forwardGroups],
+  );
+  const planResourceSummary: any = useMemo(() => {
     return plans.reduce(
-      (summary: { hosts: number; tunnels: number; groups: number }, plan: any) => ({
-        hosts: summary.hosts + (plan.hostIds?.length || 0),
-        tunnels: summary.tunnels + (plan.tunnelIds?.length || 0),
-        groups: summary.groups + (plan.forwardGroupIds?.length || 0),
-      }),
-      { hosts: 0, tunnels: 0, groups: 0 },
+      (summary: { ports: number; tunnels: number; chains: number; groups: number; otherForwardResources: number }, plan: any) => {
+        for (const item of planResourcePartsForDisplay(plan, forwardGroupMap)) {
+          if (item.label === "端口转发") summary.ports += item.count;
+          if (item.label === "隧道") summary.tunnels += item.count;
+          if (item.label === "转发链") summary.chains += item.count;
+          if (item.label === "转发组") summary.groups += item.count;
+          if (item.label === "转发资源") summary.otherForwardResources += item.count;
+        }
+        return summary;
+      },
+      { ports: 0, tunnels: 0, chains: 0, groups: 0, otherForwardResources: 0 },
     );
-  }, [plans]);
-  const planResourceTotal = planResourceSummary.hosts + planResourceSummary.tunnels + planResourceSummary.groups;
+  }, [forwardGroupMap, plans]);
+  const planResourceTotal = planResourceSummary.ports + planResourceSummary.tunnels + planResourceSummary.chains + planResourceSummary.groups + planResourceSummary.otherForwardResources;
   const selectedHostIds = useMemo(() => new Set(form.hostIds.map(Number)), [form.hostIds]);
   const selectedTunnelIds = useMemo(() => new Set(form.tunnelIds.map(Number)), [form.tunnelIds]);
   const selectedForwardGroupIds = useMemo(() => new Set(form.forwardGroupIds.map(Number)), [form.forwardGroupIds]);
+  const portForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isPortForwardGroup(group)), [forwardGroups]);
+  const chainForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isChainForwardGroup(group)), [forwardGroups]);
+  const standardForwardGroups = useMemo(() => forwardGroups.filter((group: any) => isStandardForwardGroup(group)), [forwardGroups]);
   const selectedHosts = useMemo(() => selectedResourceItems(form.hostIds, hosts, "主机"), [form.hostIds, hosts]);
   const selectedTunnels = useMemo(() => selectedResourceItems(form.tunnelIds, tunnels, "隧道"), [form.tunnelIds, tunnels]);
   const selectedForwardGroups = useMemo(() => selectedResourceItems(form.forwardGroupIds, forwardGroups, "转发组"), [form.forwardGroupIds, forwardGroups]);
@@ -616,8 +744,58 @@ export default function Plans() {
   );
   const selectedAssignPlanDurationDays = Number((selectedAssignPlan as any)?.durationDays || 0);
   const assignPlanIsMonthly = selectedAssignPlanDurationDays === 30;
+  const selectedPortForwardIds = useMemo(
+    () => form.forwardGroupIds.map(Number).filter((id) => isPortForwardGroup(forwardGroupMap.get(id))),
+    [form.forwardGroupIds, forwardGroupMap],
+  );
+  const selectedChainForwardIds = useMemo(
+    () => form.forwardGroupIds.map(Number).filter((id) => isChainForwardGroup(forwardGroupMap.get(id))),
+    [form.forwardGroupIds, forwardGroupMap],
+  );
+  const selectedStandardForwardGroupIds = useMemo(
+    () => form.forwardGroupIds.map(Number).filter((id) => isStandardForwardGroup(forwardGroupMap.get(id))),
+    [form.forwardGroupIds, forwardGroupMap],
+  );
+  const selectedOtherForwardResourceIds = useMemo(
+    () =>
+      form.forwardGroupIds
+        .map(Number)
+        .filter((id) => {
+          const group = forwardGroupMap.get(id);
+          return !group || (!isPortForwardGroup(group) && !isChainForwardGroup(group) && !isStandardForwardGroup(group));
+        }),
+    [form.forwardGroupIds, forwardGroupMap],
+  );
+  const selectedPortForwards = useMemo(
+    () => selectedResourceItems(selectedPortForwardIds, portForwardGroups, "端口转发"),
+    [portForwardGroups, selectedPortForwardIds],
+  );
+  const selectedChains = useMemo(
+    () => selectedResourceItems(selectedChainForwardIds, chainForwardGroups, "转发链"),
+    [chainForwardGroups, selectedChainForwardIds],
+  );
+  const selectedManagedForwardGroups = useMemo(
+    () => selectedResourceItems(selectedStandardForwardGroupIds, standardForwardGroups, "转发组"),
+    [selectedStandardForwardGroupIds, standardForwardGroups],
+  );
+  const selectedOtherForwardResources = useMemo(
+    () => selectedResourceItems(selectedOtherForwardResourceIds, forwardGroups, "转发资源"),
+    [forwardGroups, selectedOtherForwardResourceIds],
+  );
   const availableHosts = useMemo(() => hosts.filter((host: any) => !selectedHostIds.has(Number(host.id))), [hosts, selectedHostIds]);
   const availableTunnels = useMemo(() => tunnels.filter((tunnel: any) => !selectedTunnelIds.has(Number(tunnel.id))), [tunnels, selectedTunnelIds]);
+  const availablePortForwards = useMemo(
+    () => portForwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))),
+    [portForwardGroups, selectedForwardGroupIds],
+  );
+  const availableChains = useMemo(
+    () => chainForwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))),
+    [chainForwardGroups, selectedForwardGroupIds],
+  );
+  const availableManagedForwardGroups = useMemo(
+    () => standardForwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))),
+    [selectedForwardGroupIds, standardForwardGroups],
+  );
   const availableForwardGroups = useMemo(() => forwardGroups.filter((group: any) => !selectedForwardGroupIds.has(Number(group.id))), [forwardGroups, selectedForwardGroupIds]);
 
   const openPlanCreate = () => {
@@ -651,6 +829,8 @@ export default function Plans() {
     }
     if (form.hostIds.length === 0 && form.tunnelIds.length === 0 && form.forwardGroupIds.length === 0) {
       setPlanDialogTab("resources");
+      toast.error("至少选择一个端口转发、隧道、转发链或转发组");
+      return;
       return toast.error("至少选择一个主机、隧道或转发组");
     }
     const data = payload(form);
@@ -783,10 +963,10 @@ export default function Plans() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
               <AnimatedStatValue
-                value={`其中 ${activePlans} 个处于启用状态。`}
+                value={`其中 ${activePlans} 个处于启用状态`}
                 loading={isLoading}
                 cacheKey="plans.activeCount"
-                fallbackValue="其中 0 个处于启用状态。"
+                fallbackValue="其中 0 个处于启用状态"
               />
             </CardContent>
           </Card>
@@ -803,7 +983,8 @@ export default function Plans() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
-              {planResourceSummary.hosts} 台主机 · {planResourceSummary.tunnels} 条隧道 · {planResourceSummary.groups} 个转发组
+              {planResourceSummary.ports} 个端口转发 · {planResourceSummary.tunnels} 条隧道 · {planResourceSummary.chains} 条转发链 · {planResourceSummary.groups} 个转发组
+              {planResourceSummary.otherForwardResources > 0 ? ` · ${planResourceSummary.otherForwardResources} 个兼容资源` : ""}
             </CardContent>
           </Card>
           <Card>
@@ -892,6 +1073,7 @@ export default function Plans() {
                           <PlanCard
                             key={plan.id}
                             plan={plan}
+                            resourceParts={planResourcePartsForDisplay(plan, forwardGroupMap)}
                             toggling={statusUpdatingPlanId === Number(plan.id)}
                             onEdit={() => openPlanEdit(plan)}
                             onDelete={() => deletePlan.mutate({ id: plan.id })}
@@ -926,7 +1108,7 @@ export default function Plans() {
                                 <TableCell>{money(plan.priceCents, plan.currency)} / {durationLabel(plan.durationDays)}</TableCell>
                                 <TableCell>
                                   <div className="flex flex-wrap gap-1">
-                                    {planResourceParts(plan).map((item) => (
+                                    {planResourcePartsForDisplay(plan, forwardGroupMap).map((item) => (
                                       <Badge key={item.label} variant="outline">{item.label} {item.count}</Badge>
                                     ))}
                                   </div>
@@ -1098,80 +1280,136 @@ export default function Plans() {
 
               <TabsContent value="resources" className="mt-3 space-y-3">
                 <div className="space-y-3">
-            <PlanResourcePicker
-              title="转发主机"
-              countText={`${form.hostIds.length} 台`}
-              loading={hostsLoading}
-              loadingLabel="正在加载主机资源"
-              selectedItems={selectedHosts}
-              availableItems={availableHosts}
-              addPlaceholder="选择要添加的主机"
-              emptyText="暂未添加主机，可从下方选择添加。"
-              allAddedText={hosts.length > 0 ? "主机已全部添加" : "暂无可添加主机"}
-              onAdd={(id) => addPlanResource("hostIds", id)}
-              onRemove={(id) => removePlanResource("hostIds", id)}
-              getId={(host) => Number(host.id)}
-              renderOption={(host) => (
-                <span className="flex min-w-0 flex-col">
-                  <span className="truncate">{hostTitle(host)}</span>
-                  {hostMeta(host) && <span className="truncate text-xs text-muted-foreground">{hostMeta(host)}</span>}
-                </span>
-              )}
-              renderSelected={(host) => (
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{hostTitle(host)}</p>
-                  {(missingResourceHint(host) || hostMeta(host)) && (
-                    <p className={`truncate text-xs text-muted-foreground ${missingResourceHint(host) ? "" : "font-mono"}`}>
-                      {missingResourceHint(host) || hostMeta(host)}
-                    </p>
+                  {true ? (
+                    <>
+                      {selectedHosts.length > 0 ? (
+                        <PlanSelectedResourceList
+                          title="历史主机绑定（兼容）"
+                          countText={`${selectedHosts.length} 台`}
+                          selectedItems={selectedHosts}
+                          emptyText="当前没有历史主机绑定。"
+                          note="仅用于兼容旧套餐，已不再支持新增主机绑定。"
+                          onRemove={(id) => removePlanResource("hostIds", id)}
+                          getId={(host) => Number(host.id)}
+                          renderSelected={(host) => (
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{hostTitle(host)}</p>
+                              {(missingResourceHint(host) || hostMeta(host)) && (
+                                <p className={`truncate text-xs text-muted-foreground ${missingResourceHint(host) ? "" : "font-mono"}`}>
+                                  {missingResourceHint(host) || hostMeta(host)}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        />
+                      ) : null}
+                      <PlanResourcePicker
+                        title="端口转发"
+                        countText={`${selectedPortForwards.length} 个`}
+                        loading={forwardGroupsLoading}
+                        loadingLabel="正在加载端口转发资源"
+                        selectedItems={selectedPortForwards}
+                        availableItems={availablePortForwards}
+                        addPlaceholder="选择要添加的端口转发"
+                        emptyText="暂未添加端口转发，可从下方选择添加。"
+                        allAddedText={portForwardGroups.length > 0 ? "端口转发已全部添加" : "暂无可添加端口转发"}
+                        onAdd={(id) => addPlanResource("forwardGroupIds", id)}
+                        onRemove={(id) => removePlanResource("forwardGroupIds", id)}
+                        getId={(group) => Number(group.id)}
+                        renderOption={(group) => `${group.name || `端口转发 #${group.id}`} / ${forwardGroupTypeText(group)}`}
+                        renderSelected={(group) => (
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{group.name || `端口转发 #${group.id}`}</p>
+                            <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
+                          </div>
+                        )}
+                      />
+                      <PlanResourcePicker
+                        title="隧道转发"
+                        countText={`${form.tunnelIds.length} 条`}
+                        loading={tunnelsLoading}
+                        loadingLabel="正在加载隧道资源"
+                        selectedItems={selectedTunnels}
+                        availableItems={availableTunnels}
+                        addPlaceholder="选择要添加的隧道"
+                        emptyText="暂未添加隧道，可从下方选择添加。"
+                        allAddedText={tunnels.length > 0 ? "隧道已全部添加" : "暂无可添加隧道"}
+                        onAdd={(id) => addPlanResource("tunnelIds", id)}
+                        onRemove={(id) => removePlanResource("tunnelIds", id)}
+                        getId={(tunnel) => Number(tunnel.id)}
+                        renderOption={(tunnel) => tunnelTitle(tunnel, hosts)}
+                        renderSelected={(tunnel) => (
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{tunnel.name || `隧道 #${tunnel.id}`}</p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {missingResourceHint(tunnel) || `${getTunnelRouteText(tunnel, hosts)} / ${String(tunnel.mode || "").toUpperCase()}`}
+                            </p>
+                          </div>
+                        )}
+                      />
+                      <PlanResourcePicker
+                        title="转发链"
+                        countText={`${selectedChains.length} 条`}
+                        loading={forwardGroupsLoading}
+                        loadingLabel="正在加载转发链资源"
+                        selectedItems={selectedChains}
+                        availableItems={availableChains}
+                        addPlaceholder="选择要添加的转发链"
+                        emptyText="暂未添加转发链，可从下方选择添加。"
+                        allAddedText={chainForwardGroups.length > 0 ? "转发链已全部添加" : "暂无可添加转发链"}
+                        onAdd={(id) => addPlanResource("forwardGroupIds", id)}
+                        onRemove={(id) => removePlanResource("forwardGroupIds", id)}
+                        getId={(group) => Number(group.id)}
+                        renderOption={(group) => `${group.name || `转发链 #${group.id}`} / ${forwardGroupTypeText(group)}`}
+                        renderSelected={(group) => (
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{group.name || `转发链 #${group.id}`}</p>
+                            <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
+                          </div>
+                        )}
+                      />
+                      <PlanResourcePicker
+                        title="转发组"
+                        countText={`${selectedManagedForwardGroups.length} 个`}
+                        loading={forwardGroupsLoading}
+                        loadingLabel="正在加载转发组资源"
+                        selectedItems={selectedManagedForwardGroups}
+                        availableItems={availableManagedForwardGroups}
+                        addPlaceholder="选择要添加的转发组"
+                        emptyText="暂未添加转发组，可从下方选择添加。"
+                        allAddedText={standardForwardGroups.length > 0 ? "转发组已全部添加" : "暂无可添加转发组"}
+                        onAdd={(id) => addPlanResource("forwardGroupIds", id)}
+                        onRemove={(id) => removePlanResource("forwardGroupIds", id)}
+                        getId={(group) => Number(group.id)}
+                        renderOption={(group) => `${group.name || `转发组 #${group.id}`} / ${forwardGroupTypeText(group)}`}
+                        renderSelected={(group) => (
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{group.name || `转发组 #${group.id}`}</p>
+                            <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
+                          </div>
+                        )}
+                      />
+                      {selectedOtherForwardResources.length > 0 ? (
+                        <PlanSelectedResourceList
+                          title="其他转发资源（兼容）"
+                          countText={`${selectedOtherForwardResources.length} 个`}
+                          selectedItems={selectedOtherForwardResources}
+                          emptyText="当前没有兼容转发资源。"
+                          note="旧数据会继续保留，但这里不再支持新增入口组或出口组。"
+                          onRemove={(id) => removePlanResource("forwardGroupIds", id)}
+                          getId={(group) => Number(group.id)}
+                          renderSelected={(group) => (
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{group.name || `转发资源 #${group.id}`}</p>
+                              <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
+                            </div>
+                          )}
+                        />
+                      ) : null}
+                    </>
+                  ) : (
+                    <></>
                   )}
-                </div>
-              )}
-            />
-            <PlanResourcePicker
-              title="隧道转发"
-              countText={`${form.tunnelIds.length} 条`}
-              loading={tunnelsLoading}
-              loadingLabel="正在加载隧道资源"
-              selectedItems={selectedTunnels}
-              availableItems={availableTunnels}
-              addPlaceholder="选择要添加的隧道"
-              emptyText="暂未添加隧道，可从下方选择添加。"
-              allAddedText={tunnels.length > 0 ? "隧道已全部添加" : "暂无可添加隧道"}
-              onAdd={(id) => addPlanResource("tunnelIds", id)}
-              onRemove={(id) => removePlanResource("tunnelIds", id)}
-              getId={(tunnel) => Number(tunnel.id)}
-              renderOption={(tunnel) => tunnelTitle(tunnel, hosts)}
-              renderSelected={(tunnel) => (
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{tunnel.name || `隧道 #${tunnel.id}`}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {missingResourceHint(tunnel) || `${getTunnelRouteText(tunnel, hosts)} / ${String(tunnel.mode || "").toUpperCase()}`}
-                  </p>
-                </div>
-              )}
-            />
-            <PlanResourcePicker
-              title="转发组"
-              countText={`${form.forwardGroupIds.length} 个`}
-              loading={forwardGroupsLoading}
-              loadingLabel="正在加载转发组资源"
-              selectedItems={selectedForwardGroups}
-              availableItems={availableForwardGroups}
-              addPlaceholder="选择要添加的转发组"
-              emptyText="暂未添加转发组，可从下方选择添加。"
-              allAddedText={forwardGroups.length > 0 ? "转发组已全部添加" : "暂无可添加转发组"}
-              onAdd={(id) => addPlanResource("forwardGroupIds", id)}
-              onRemove={(id) => removePlanResource("forwardGroupIds", id)}
-              getId={(group) => Number(group.id)}
-              renderOption={(group) => `${group.name || `转发组 #${group.id}`} / ${forwardGroupTypeText(group)}`}
-              renderSelected={(group) => (
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{group.name || `转发组 #${group.id}`}</p>
-                  <p className="truncate text-xs text-muted-foreground">{missingResourceHint(group) || forwardGroupTypeText(group)}</p>
-                </div>
-              )}
-            />
           </div>
 
           <div className="space-y-3 rounded-lg border border-border/60 p-3">

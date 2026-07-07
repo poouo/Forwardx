@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import DashboardLayout from "@/components/DashboardLayout";
 import DataSectionLoading from "@/components/DataSectionLoading";
@@ -13,14 +14,25 @@ import { Textarea } from "@/components/ui/textarea";
 import { renderMixedHtml, describeContentFormat } from "@/lib/htmlContent";
 import { trpc } from "@/lib/trpc";
 import { Eye, Megaphone, Pencil, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
 import { toast } from "sonner";
 
-const emptyForm = {
+type AnnouncementType = "normal" | "popup" | "upgrade_popup";
+
+type AnnouncementForm = {
+  id: number;
+  title: string;
+  content: string;
+  type: AnnouncementType;
+  targetVersion: string;
+  telegramPush: boolean;
+};
+
+const emptyForm: AnnouncementForm = {
   id: 0,
   title: "",
   content: "",
-  type: "normal" as "normal" | "popup",
+  type: "normal",
+  targetVersion: "",
   telegramPush: false,
 };
 
@@ -32,6 +44,16 @@ function dateText(value?: string | Date | null) {
 
 function renderAnnouncementHtml(content: string) {
   return { __html: renderMixedHtml(content) };
+}
+
+function normalizeVersionText(version: string | null | undefined) {
+  return String(version || "").trim().replace(/^v/i, "");
+}
+
+function announcementTypeLabel(type: AnnouncementType) {
+  if (type === "popup") return "登录弹窗";
+  if (type === "upgrade_popup") return "升级公告";
+  return "普通公告";
 }
 
 function announcementSuccessMessage(action: string, data: any) {
@@ -47,15 +69,20 @@ export default function Announcements() {
   const { data: announcements = [], isLoading } = trpc.announcements.list.useQuery();
   const [open, setOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<AnnouncementForm>(emptyForm);
+
+  const invalidateAnnouncementQueries = () => {
+    utils.announcements.list.invalidate();
+    utils.announcements.popup.invalidate();
+    utils.announcements.upgradePopup.invalidate();
+  };
 
   const createAnnouncement = trpc.announcements.create.useMutation({
     onSuccess: (data) => {
       toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("创建", data) : "公告已创建");
       setOpen(false);
       setForm(emptyForm);
-      utils.announcements.list.invalidate();
-      utils.announcements.popup.invalidate();
+      invalidateAnnouncementQueries();
     },
     onError: (error) => toast.error(error.message || "创建失败"),
   });
@@ -65,8 +92,7 @@ export default function Announcements() {
       toast.success(data?.telegramPush?.requested ? announcementSuccessMessage("更新", data) : "公告已更新");
       setOpen(false);
       setForm(emptyForm);
-      utils.announcements.list.invalidate();
-      utils.announcements.popup.invalidate();
+      invalidateAnnouncementQueries();
     },
     onError: (error) => toast.error(error.message || "更新失败"),
   });
@@ -74,8 +100,7 @@ export default function Announcements() {
   const deleteAnnouncement = trpc.announcements.delete.useMutation({
     onSuccess: () => {
       toast.success("公告已删除");
-      utils.announcements.list.invalidate();
-      utils.announcements.popup.invalidate();
+      invalidateAnnouncementQueries();
     },
     onError: (error) => toast.error(error.message || "删除失败"),
   });
@@ -85,6 +110,7 @@ export default function Announcements() {
       title: form.title.trim(),
       content: form.content.trim(),
       type: form.type,
+      targetVersion: form.type === "upgrade_popup" ? form.targetVersion.trim() : null,
       telegramPush: form.telegramPush,
     };
     if (form.id) updateAnnouncement.mutate({ ...payload, id: form.id });
@@ -92,11 +118,13 @@ export default function Announcements() {
   };
 
   const edit = (item: any) => {
+    const type: AnnouncementType = item.type === "popup" || item.type === "upgrade_popup" ? item.type : "normal";
     setForm({
       id: item.id,
       title: item.title || "",
       content: item.content || "",
-      type: item.type === "popup" ? "popup" : "normal",
+      type,
+      targetVersion: item.targetVersion || "",
       telegramPush: false,
     });
     setOpen(true);
@@ -108,7 +136,9 @@ export default function Announcements() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? "公告管理" : "公告"}</h1>
-            <p className="text-sm text-muted-foreground">{isAdmin ? "管理登录弹窗公告和普通公告。" : "查看管理员发布的公告信息。"}</p>
+            <p className="text-sm text-muted-foreground">
+              {isAdmin ? "管理普通公告、登录弹窗和升级公告。" : "查看管理员发布的公告信息。"}
+            </p>
           </div>
           {isAdmin && (
             <Button onClick={() => { setForm(emptyForm); setOpen(true); }}>
@@ -122,7 +152,9 @@ export default function Announcements() {
         ) : (
           <div className="grid gap-4">
             {announcements.map((item: any) => {
-              const isPopup = item.type === "popup";
+              const type: AnnouncementType = item.type === "popup" || item.type === "upgrade_popup" ? item.type : "normal";
+              const isPopup = type === "popup";
+              const isUpgradePopup = type === "upgrade_popup";
               return (
                 <Card key={item.id}>
                   <CardHeader>
@@ -131,16 +163,24 @@ export default function Announcements() {
                         <CardTitle className="flex flex-wrap items-center gap-2">
                           <Megaphone className="h-5 w-5" />
                           {item.title}
-                          <Badge variant={isPopup ? "default" : "outline"}>{isPopup ? "登录弹窗" : "普通公告"}</Badge>
+                          <Badge variant={isPopup || isUpgradePopup ? "default" : "outline"}>{announcementTypeLabel(type)}</Badge>
                         </CardTitle>
-                        {!isPopup && (
+                        {isUpgradePopup ? (
+                          <CardDescription className="mt-2">
+                            目标版本：{item.targetVersion ? `v${normalizeVersionText(item.targetVersion)}` : "-"}
+                          </CardDescription>
+                        ) : !isPopup ? (
                           <CardDescription className="mt-2">发布时间：{dateText(item.createdAt || item.updatedAt)}</CardDescription>
-                        )}
+                        ) : null}
                       </div>
                       {isAdmin && (
                         <div className="flex gap-2">
-                          <Button variant="outline" size="icon" onClick={() => edit(item)}><Pencil className="h-4 w-4" /></Button>
-                          <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteAnnouncement.mutate({ id: item.id })}><Trash2 className="h-4 w-4" /></Button>
+                          <Button variant="outline" size="icon" onClick={() => edit(item)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="text-destructive" onClick={() => deleteAnnouncement.mutate({ id: item.id })}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -153,7 +193,10 @@ export default function Announcements() {
             })}
             {announcements.length === 0 && (
               <Card>
-                <CardHeader><CardTitle>暂无公告</CardTitle><CardDescription>当前没有可查看的公告。</CardDescription></CardHeader>
+                <CardHeader>
+                  <CardTitle>暂无公告</CardTitle>
+                  <CardDescription>当前没有可查看的公告。</CardDescription>
+                </CardHeader>
               </Card>
             )}
           </div>
@@ -167,9 +210,46 @@ export default function Announcements() {
             </DialogHeader>
             <div className="grid gap-4">
               <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2"><Label>标题</Label><Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
-                <div className="space-y-2"><Label>类型</Label><Select value={form.type} onValueChange={(type: "normal" | "popup") => setForm({ ...form, type })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="normal">普通公告</SelectItem><SelectItem value="popup">登录弹窗</SelectItem></SelectContent></Select></div>
+                <div className="space-y-2">
+                  <Label>标题</Label>
+                  <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>类型</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(type: AnnouncementType) => setForm((current) => ({
+                      ...current,
+                      type,
+                      targetVersion: type === "upgrade_popup" ? current.targetVersion : "",
+                    }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="normal">普通公告</SelectItem>
+                      <SelectItem value="popup">登录弹窗</SelectItem>
+                      <SelectItem value="upgrade_popup">升级公告</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
+
+              {form.type === "upgrade_popup" && (
+                <div className="space-y-2">
+                  <Label>目标版本</Label>
+                  <Input
+                    placeholder="例如 2.3.218"
+                    value={form.targetVersion}
+                    onChange={(e) => setForm({ ...form, targetVersion: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    仅在用户升级到该版本后，如果该版本配置了升级公告，才会弹出一次。
+                  </p>
+                </div>
+              )}
+
               <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <Label>同步 Telegram 推送</Label>
@@ -183,20 +263,24 @@ export default function Announcements() {
                   onCheckedChange={(telegramPush) => setForm({ ...form, telegramPush })}
                 />
               </div>
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <Label>内容</Label>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      支持文字、Markdown 和 HTML。
-                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">支持文字、Markdown 和 HTML。</p>
                   </div>
                   <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => setPreviewOpen(true)} disabled={!form.content.trim()}>
                     <Eye className="h-4 w-4" />
                     预览
                   </Button>
                 </div>
-                <Textarea id="announcement-content" className="min-h-56 font-mono text-xs leading-5" value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
+                <Textarea
+                  id="announcement-content"
+                  className="min-h-56 font-mono text-xs leading-5"
+                  value={form.content}
+                  onChange={(e) => setForm({ ...form, content: e.target.value })}
+                />
                 <p className="text-xs text-muted-foreground">
                   {form.content.length.toLocaleString()} / 60,000 字符，{describeContentFormat(form.content)}
                 </p>
@@ -204,7 +288,18 @@ export default function Announcements() {
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-              <Button onClick={submit} disabled={!form.title.trim() || !form.content.trim() || createAnnouncement.isPending || updateAnnouncement.isPending}>保存</Button>
+              <Button
+                onClick={submit}
+                disabled={
+                  !form.title.trim() ||
+                  !form.content.trim() ||
+                  (form.type === "upgrade_popup" && !form.targetVersion.trim()) ||
+                  createAnnouncement.isPending ||
+                  updateAnnouncement.isPending
+                }
+              >
+                保存
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -5,7 +5,7 @@ import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
-import LinkCreateTypeSelector, { type LinkCreateType } from "@/components/LinkCreateTypeSelector";
+import type { LinkCreateType } from "@/components/LinkCreateTypeSelector";
 import { LinkTestProbeView, getLinkTestTotalLatency, hasPendingLinkTestDetails, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +55,7 @@ import {
   Activity,
   ArrowRight,
   ArrowRightLeft,
+  ChevronRight,
   Globe,
   LayoutGrid,
   List,
@@ -1862,6 +1863,7 @@ function TunnelsContent() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TunnelForm>(defaultForm);
   const [tunnelProxyPanelOpen, setTunnelProxyPanelOpen] = useState(false);
+  const [tunnelAdvancedOpen, setTunnelAdvancedOpen] = useState(false);
   const [latencyTunnel, setLatencyTunnel] = useState<{ id: number; name: string } | null>(null);
   const [testTunnel, setTestTunnel] = useState<{ id: number; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<TunnelViewMode>(() => getStoredTunnelViewMode());
@@ -1872,8 +1874,9 @@ function TunnelsContent() {
     storageKey: TUNNEL_SECTION_STORAGE_KEY,
   });
   const [showCreateTypeDialog, setShowCreateTypeDialog] = useState(false);
-  const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("tunnel");
+  const [selectedCreateType, setSelectedCreateType] = useState<LinkCreateType>("chain");
   const [chainCreateForm, setChainCreateForm] = useState<ChainCreateForm>(defaultChainCreateForm);
+  const [chainAdvancedOpen, setChainAdvancedOpen] = useState(false);
   const [chainEditRequest, setChainEditRequest] = useState<{ id: number; requestKey: number } | null>(null);
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ mode: TunnelGroupMode; requestKey: number } | null>(null);
   const [deleteTunnel, setDeleteTunnel] = useState<any | null>(null);
@@ -2149,11 +2152,13 @@ function TunnelsContent() {
     const fallbackMode = resolveDefaultTunnelMode();
     setForm({ ...defaultForm, mode: fallbackMode });
     setTunnelProxyPanelOpen(false);
+    setTunnelAdvancedOpen(false);
     setEditingId(null);
   };
 
   const resetChainCreateForm = () => {
     setChainCreateForm({ ...defaultChainCreateForm, forwardType: defaultChainForwardType });
+    setChainAdvancedOpen(false);
   };
 
   const resetTunnelCreateForm = () => {
@@ -2171,6 +2176,7 @@ function TunnelsContent() {
       loadBalanceExits: [],
       exitGroupId: null,
     });
+    setTunnelAdvancedOpen(false);
   };
 
   const openEdit = (tunnel: any) => {
@@ -2241,6 +2247,7 @@ function TunnelsContent() {
     };
     setForm(exitGroupId ? applyExitGroupToForm(nextForm, exitGroupId) : nextForm);
     setTunnelProxyPanelOpen(proxyAnyEnabled);
+    setTunnelAdvancedOpen(false);
     setEditingId(tunnel.id);
     setShowDialog(true);
   };
@@ -2597,64 +2604,86 @@ function TunnelsContent() {
   const renderChainRuntimeOptions = () => {
     const proxySupported = chainCreateForm.forwardType === "gost" || chainCreateForm.forwardType === "realm";
     const realmOptimizationSupported = chainCreateForm.forwardType === "realm";
+    const advancedConfigured = (proxySupported && (chainCreateForm.proxyProtocolReceive || chainCreateForm.proxyProtocolSend))
+      || (realmOptimizationSupported && (chainCreateForm.tcpFastOpen || chainCreateForm.zeroCopy));
     return (
-      <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-3">
-        <div className="space-y-2">
-          <div className="flex min-w-0 items-center justify-between gap-3">
-            <Label className="text-sm">PROXY Protocol</Label>
-            <Select
-              value={String(chainCreateForm.proxyProtocolVersion)}
-              disabled={!proxySupported}
-              onValueChange={(value) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 }))}
-            >
-              <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">V1</SelectItem>
-                <SelectItem value="2">V2</SelectItem>
-              </SelectContent>
-            </Select>
+      <div className="rounded-lg border border-border/60 bg-muted/20">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+          onClick={() => setChainAdvancedOpen((open) => !open)}
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium">高级设置</div>
+            <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
-              <span className="min-w-0 truncate text-sm">接收 PROXY</span>
-              <Switch
-                checked={proxySupported && chainCreateForm.proxyProtocolReceive}
-                disabled={!proxySupported}
-                onCheckedChange={(proxyProtocolReceive) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolReceive }))}
-              />
-            </label>
-            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
-              <span className="min-w-0 truncate text-sm">发送 PROXY</span>
-              <Switch
-                checked={proxySupported && chainCreateForm.proxyProtocolSend}
-                disabled={!proxySupported}
-                onCheckedChange={(proxyProtocolSend) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolSend }))}
-              />
-            </label>
+          <div className="flex items-center gap-2">
+            <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
+              {advancedConfigured ? "已配置" : "可选"}
+            </Badge>
+            <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${chainAdvancedOpen ? "rotate-90" : ""}`} />
           </div>
-        </div>
+        </button>
+        {chainAdvancedOpen && (
+          <div className="space-y-3 border-t border-border/45 px-3 pb-3 pt-2">
+            <div className="space-y-2">
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <Label className="text-sm">PROXY Protocol</Label>
+                <Select
+                  value={String(chainCreateForm.proxyProtocolVersion)}
+                  disabled={!proxySupported}
+                  onValueChange={(value) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolVersion: Number(value) === 2 ? 2 : 1 }))}
+                >
+                  <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">V1</SelectItem>
+                    <SelectItem value="2">V2</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
+                  <span className="min-w-0 truncate text-sm">接收 PROXY</span>
+                  <Switch
+                    checked={proxySupported && chainCreateForm.proxyProtocolReceive}
+                    disabled={!proxySupported}
+                    onCheckedChange={(proxyProtocolReceive) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolReceive }))}
+                  />
+                </label>
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!proxySupported ? "仅 GOST 和 Realm 支持" : undefined}>
+                  <span className="min-w-0 truncate text-sm">发送 PROXY</span>
+                  <Switch
+                    checked={proxySupported && chainCreateForm.proxyProtocolSend}
+                    disabled={!proxySupported}
+                    onCheckedChange={(proxyProtocolSend) => setChainCreateForm((prev) => ({ ...prev, proxyProtocolSend }))}
+                  />
+                </label>
+              </div>
+            </div>
 
-        <div className="space-y-2 border-t border-border/45 pt-3">
-          <Label className="text-sm">传输优化</Label>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
-              <span className="min-w-0 truncate text-sm">TCP Fast Open</span>
-              <Switch
-                checked={realmOptimizationSupported && chainCreateForm.tcpFastOpen}
-                disabled={!realmOptimizationSupported}
-                onCheckedChange={(tcpFastOpen) => setChainCreateForm((prev) => ({ ...prev, tcpFastOpen }))}
-              />
-            </label>
-            <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
-              <span className="min-w-0 truncate text-sm">zero-copy</span>
-              <Switch
-                checked={realmOptimizationSupported && chainCreateForm.zeroCopy}
-                disabled={!realmOptimizationSupported}
-                onCheckedChange={(zeroCopy) => setChainCreateForm((prev) => ({ ...prev, zeroCopy }))}
-              />
-            </label>
+            <div className="space-y-2 border-t border-border/45 pt-3">
+              <Label className="text-sm">传输优化</Label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
+                  <span className="min-w-0 truncate text-sm">TCP Fast Open</span>
+                  <Switch
+                    checked={realmOptimizationSupported && chainCreateForm.tcpFastOpen}
+                    disabled={!realmOptimizationSupported}
+                    onCheckedChange={(tcpFastOpen) => setChainCreateForm((prev) => ({ ...prev, tcpFastOpen }))}
+                  />
+                </label>
+                <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2" title={!realmOptimizationSupported ? "仅 Realm 支持" : undefined}>
+                  <span className="min-w-0 truncate text-sm">zero-copy</span>
+                  <Switch
+                    checked={realmOptimizationSupported && chainCreateForm.zeroCopy}
+                    disabled={!realmOptimizationSupported}
+                    onCheckedChange={(zeroCopy) => setChainCreateForm((prev) => ({ ...prev, zeroCopy }))}
+                  />
+                </label>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     );
   };
@@ -2663,6 +2692,8 @@ function TunnelsContent() {
     const transportTuningSupported = isTunnelTransportTuningSupported(form.mode);
     if (!proxySupported && !transportTuningSupported) return null;
     const proxyAnyEnabled = form.proxyProtocolReceive || form.proxyProtocolSend || form.proxyProtocolExitReceive || form.proxyProtocolExitSend;
+    const advancedConfigured = proxyAnyEnabled || form.tcpFastOpen || form.udpOverTcp;
+    const shouldCollapseAdvanced = proxySupported && transportTuningSupported;
     const renderProxySwitch = (label: string, field: "proxyProtocolReceive" | "proxyProtocolSend" | "proxyProtocolExitReceive" | "proxyProtocolExitSend") => (
       <label className="flex min-h-10 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-2.5 py-2">
         <span className="min-w-0 truncate text-sm">{label}</span>
@@ -2672,95 +2703,125 @@ function TunnelsContent() {
         />
       </label>
     );
-    return (
-      <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
-        {proxySupported && (
-          <div className="space-y-2">
-            <div className="flex min-w-0 items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-                <Label className="text-sm">PROXY Protocol</Label>
-                <span className={`rounded-full border px-2 py-0.5 text-[11px] leading-none ${proxyAnyEnabled ? "border-primary/25 bg-primary/10 text-primary" : "border-border/50 bg-background/60 text-muted-foreground"}`}>
-                  {proxyAnyEnabled ? `已配置 V${form.proxyProtocolVersion}` : tunnelProxyPanelOpen ? "待配置" : "关闭"}
-                </span>
+    const proxyOptions = proxySupported ? (
+      <div className="space-y-2">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <Label className="text-sm">PROXY Protocol</Label>
+            <span className={`rounded-full border px-2 py-0.5 text-[11px] leading-none ${proxyAnyEnabled ? "border-primary/25 bg-primary/10 text-primary" : "border-border/50 bg-background/60 text-muted-foreground"}`}>
+              {proxyAnyEnabled ? `已配置 V${form.proxyProtocolVersion}` : tunnelProxyPanelOpen ? "待配置" : "关闭"}
+            </span>
+          </div>
+          <Switch
+            checked={tunnelProxyPanelOpen}
+            onCheckedChange={(checked) => {
+              setTunnelProxyPanelOpen(checked);
+              if (!checked) {
+                setForm((prev) => ({
+                  ...prev,
+                  proxyProtocolReceive: false,
+                  proxyProtocolSend: false,
+                  proxyProtocolExitReceive: false,
+                  proxyProtocolExitSend: false,
+                  proxyProtocolVersion: 1,
+                }));
+              }
+            }}
+          />
+        </div>
+        {tunnelProxyPanelOpen && (
+          <div className="space-y-2 border-t border-border/45 pt-2">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
+              <div className={segmentedControlClassName}>
+                <div className="grid grid-cols-2 gap-1">
+                  {([1, 2] as const).map((version) => (
+                    <button
+                      key={version}
+                      type="button"
+                      className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
+                      disabled={!proxyAnyEnabled}
+                      onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
+                      title={!proxyAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
+                    >
+                      V{version}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <Switch
-                checked={tunnelProxyPanelOpen}
-                onCheckedChange={(checked) => {
-                  setTunnelProxyPanelOpen(checked);
-                  if (!checked) {
-                    setForm((prev) => ({
-                      ...prev,
-                      proxyProtocolReceive: false,
-                      proxyProtocolSend: false,
-                      proxyProtocolExitReceive: false,
-                      proxyProtocolExitSend: false,
-                      proxyProtocolVersion: 1,
-                    }));
-                  }
-                }}
-              />
             </div>
-            {tunnelProxyPanelOpen && (
-              <div className="space-y-2 border-t border-border/45 pt-2">
-                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">入口和出口独立配置</span>
-                  <div className={segmentedControlClassName}>
-                    <div className="grid grid-cols-2 gap-1">
-                      {([1, 2] as const).map((version) => (
-                        <button
-                          key={version}
-                          type="button"
-                          className={segmentedOptionClassName(form.proxyProtocolVersion === version)}
-                          disabled={!proxyAnyEnabled}
-                          onClick={() => setForm((prev) => ({ ...prev, proxyProtocolVersion: version }))}
-                          title={!proxyAnyEnabled ? "开启任一 PROXY Protocol 开关后可选择版本" : undefined}
-                        >
-                          V{version}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {renderProxySwitch("入口接收上游", "proxyProtocolReceive")}
-                  {renderProxySwitch("入口发送到出口", "proxyProtocolSend")}
-                  {renderProxySwitch("出口接收入口", "proxyProtocolExitReceive")}
-                  {renderProxySwitch("出口发送到目标", "proxyProtocolExitSend")}
-                </div>
-              </div>
-            )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {renderProxySwitch("入口接收上游", "proxyProtocolReceive")}
+              {renderProxySwitch("入口发送到出口", "proxyProtocolSend")}
+              {renderProxySwitch("出口接收入口", "proxyProtocolExitReceive")}
+              {renderProxySwitch("出口发送到目标", "proxyProtocolExitSend")}
+            </div>
           </div>
         )}
-        {transportTuningSupported && (
-          <div className="space-y-2 border-t border-border/45 pt-2 first:border-t-0 first:pt-0">
-            <Label className="text-sm">传输优化</Label>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">TCP Fast Open</span>
-                  <span className="block truncate text-xs text-muted-foreground">降低 TCP 建连等待</span>
-                </span>
-                <Switch
-                  checked={form.tcpFastOpen}
-                  onCheckedChange={(tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen }))}
-                />
-              </label>
-              <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">mimic UDP 混淆</span>
-                  <span className="block truncate text-xs text-muted-foreground">ForwardX UDP 外观混淆</span>
-                </span>
-                <Switch
-                  checked={form.udpOverTcp}
-                  onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
-                />
-              </label>
-            </div>
-            {form.udpOverTcp && (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
-                mimic TCP 外观伪装会增加封装开销，UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。
-              </div>
-            )}
+      </div>
+    ) : null;
+    const transportOptions = transportTuningSupported ? (
+      <div className="space-y-2 border-t border-border/45 pt-2 first:border-t-0 first:pt-0">
+        <Label className="text-sm">传输优化</Label>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium">TCP Fast Open</span>
+              <span className="block truncate text-xs text-muted-foreground">降低 TCP 建连等待</span>
+            </span>
+            <Switch
+              checked={form.tcpFastOpen}
+              onCheckedChange={(tcpFastOpen) => setForm((prev) => ({ ...prev, tcpFastOpen }))}
+            />
+          </label>
+          <label className="flex min-h-12 items-center justify-between gap-2 rounded-md border border-border/50 bg-background/60 px-3 py-2">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium">mimic UDP 混淆</span>
+              <span className="block truncate text-xs text-muted-foreground">ForwardX UDP 外观混淆</span>
+            </span>
+            <Switch
+              checked={form.udpOverTcp}
+              onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
+            />
+          </label>
+        </div>
+        {form.udpOverTcp && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+            mimic TCP 外观伪装会增加封装开销，UDP 业务明显丢包时建议把业务 MTU 调整到 1200-1300。
+          </div>
+        )}
+      </div>
+    ) : null;
+    if (!shouldCollapseAdvanced) {
+      return (
+        <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+          {proxyOptions}
+          {transportOptions}
+        </div>
+      );
+    }
+    return (
+      <div className="rounded-lg border border-border/60 bg-muted/20">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+          onClick={() => setTunnelAdvancedOpen((open) => !open)}
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium">高级设置</div>
+            <div className="text-xs text-muted-foreground">PROXY Protocol、传输优化</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant={advancedConfigured ? "secondary" : "outline"} className="h-5 px-1.5 text-[10px] font-normal">
+              {advancedConfigured ? "已配置" : "可选"}
+            </Badge>
+            <ChevronRight className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 ${tunnelAdvancedOpen ? "rotate-90" : ""}`} />
+          </div>
+        </button>
+        {tunnelAdvancedOpen && (
+          <div className="space-y-2 border-t border-border/45 px-3 pb-3 pt-2">
+            {proxyOptions}
+            {transportOptions}
           </div>
         )}
       </div>
@@ -2816,9 +2877,16 @@ function TunnelsContent() {
   const canCreatePort = !!hosts?.length && allowedForwardTypes.some((type) => forwardProtocolSettings[type] !== false);
   const canCreateChain = !!hosts?.length && hosts.length >= 2 && availableChainForwardTypes.length > 0;
   const canCreateGroup = !!hosts?.length && hosts.length >= 1;
-  const canCreateAny = canCreateTunnel || canCreateChain;
   const activeSectionCreatesGroup = activeSection === "ports" || activeSection === "groups" || activeSection === "entries" || activeSection === "exits";
-  const canCreateActive = activeSection === "ports" ? canCreatePort : activeSectionCreatesGroup ? canCreateGroup : canCreateAny;
+  const canCreateActive = activeSection === "tunnels"
+    ? canCreateTunnel
+    : activeSection === "chains"
+      ? canCreateChain
+      : activeSection === "ports"
+        ? canCreatePort
+        : activeSectionCreatesGroup
+          ? canCreateGroup
+          : false;
   const createDisabledTitle = !canCreateActive
     ? (activeSection === "ports" ? (!hosts?.length ? "至少需要 1 台主机" : "暂无可用端口转发协议") : activeSectionCreatesGroup ? "至少需要 1 台主机" : "至少需要 1 台主机并启用可用转发协议，或至少需要 2 台主机创建隧道链路/转发链")
     : !canCreateTunnel && activeSection === "tunnels"
@@ -2836,19 +2904,18 @@ function TunnelsContent() {
       });
       return;
     }
-    if (!canCreateTunnel && !canCreateChain) return;
-    const preferredType: LinkCreateType = activeSection === "chains" ? "chain" : "tunnel";
-    const nextType = preferredType === "chain"
-      ? (canCreateChain ? "chain" : "tunnel")
-      : (canCreateTunnel ? "tunnel" : "chain");
-    setSelectedCreateType(nextType);
-    resetTunnelCreateForm();
-    resetChainCreateForm();
-    setShowCreateTypeDialog(true);
-  };
-  const handleCreateTypeChange = (nextType: LinkCreateType) => {
-    if (nextType === "port") return;
-    setSelectedCreateType(nextType);
+    if (activeSection === "tunnels") {
+      if (!canCreateTunnel) return;
+      resetTunnelCreateForm();
+      setShowDialog(true);
+      return;
+    }
+    if (activeSection === "chains") {
+      if (!canCreateChain) return;
+      setSelectedCreateType("chain");
+      resetChainCreateForm();
+      setShowCreateTypeDialog(true);
+    }
   };
   const selectedCreateDisabled = selectedCreateType === "tunnel" ? !canCreateTunnel : !canCreateChain;
   const renderUnsupportedHint = (children: ReactNode) => (
@@ -2907,7 +2974,7 @@ function TunnelsContent() {
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
           <Badge variant="outline" className="justify-center gap-1.5 px-3 py-1.5 text-xs">
-            <Activity className={`h-3 w-3 ${headerStat.iconClass}`} />
+            <Activity className="h-3 w-3 text-current" />
             <AnimatedStatValue
               value={headerStat.value}
               loading={headerStat.loading}
@@ -3430,15 +3497,6 @@ function TunnelsContent() {
           <DialogHeader className="shrink-0 px-3.5 pb-2 pt-3.5 pr-12 sm:px-4 sm:pr-12 sm:pt-4">
             <DialogTitle>新增链路</DialogTitle>
           </DialogHeader>
-          <div className="shrink-0 border-b border-border/50 px-3.5 pb-2 sm:px-4">
-            <LinkCreateTypeSelector
-              value={selectedCreateType}
-              canCreateTunnel={canCreateTunnel}
-              showPort={false}
-              canCreateChain={canCreateChain}
-              onValueChange={handleCreateTypeChange}
-            />
-          </div>
           <div className="dialog-scroll-area min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3.5 py-2.5 sm:px-4">
                 {selectedCreateType === "tunnel" ? (
                   <>

@@ -688,7 +688,6 @@ export default function LookingGlass() {
                     }}
                     inputMode="numeric"
                     placeholder="留空自动分配"
-                    className="font-mono"
                   />
                   <p className="text-xs text-muted-foreground">留空时 Agent 会自动选择可用端口；如需匹配防火墙放行规则，可填写固定监听端口。</p>
                 </div>

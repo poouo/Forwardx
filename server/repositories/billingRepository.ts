@@ -1293,7 +1293,7 @@ export async function applySubscriptionToUser(userId: number, planId: number, so
   const hostIds = (plan as any).hostIds || [];
   const tunnelIds = (plan as any).tunnelIds || [];
   const forwardGroupIds = (plan as any).forwardGroupIds || [];
-  if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐未绑定任何主机、隧道或转发组");
+  if (hostIds.length === 0 && tunnelIds.length === 0 && forwardGroupIds.length === 0) throw new Error("套餐未绑定任何端口转发、隧道、转发链或转发组");
   const now = startsAt || new Date();
   const durationDays = overrideDurationDays === null || overrideDurationDays === undefined
     ? Number(plan.durationDays)

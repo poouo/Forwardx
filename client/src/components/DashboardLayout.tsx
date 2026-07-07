@@ -109,10 +109,73 @@ const PANEL_UPGRADE_SESSION_KEY = "forwardx.panel.upgrade";
 const PANEL_UPGRADE_NOTICE_DISMISSED_KEY = "forwardx.panel.upgrade.dismissedVersion";
 const PANEL_UPGRADE_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const MOBILE_APP_UPDATE_SESSION_KEY = "forwardx.mobile.updateNotice";
+const POPUP_ANNOUNCEMENT_SESSION_KEY = "forwardx.popupAnnouncement.seen";
+const UPGRADE_ANNOUNCEMENT_VERSION_KEY = "forwardx.upgradeAnnouncement.lastSeenVersion";
+const UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS = 5;
 const DEFAULT_DOCKER_UPGRADE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-panel-docker.sh | sudo bash -s -- upgrade";
 
 type PanelUpgradeSession = { targetVersion: string; startedAt: number; mode?: "upgrade" | "rollback" };
+
+function popupAnnouncementSessionKey(userId?: number | null) {
+  return `${POPUP_ANNOUNCEMENT_SESSION_KEY}:${Number(userId || 0)}`;
+}
+
+function upgradeAnnouncementVersionKey(userId?: number | null) {
+  return `${UPGRADE_ANNOUNCEMENT_VERSION_KEY}:${Number(userId || 0)}`;
+}
+
+function readSeenPopupAnnouncementIds(userId?: number | null) {
+  if (typeof window === "undefined" || !userId) return [] as number[];
+  try {
+    const raw = window.sessionStorage.getItem(popupAnnouncementSessionKey(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+function markPopupAnnouncementSeen(userId?: number | null, announcementId?: number | null) {
+  if (typeof window === "undefined" || !userId || !announcementId) return;
+  try {
+    const next = Array.from(new Set([...readSeenPopupAnnouncementIds(userId), Number(announcementId)]));
+    window.sessionStorage.setItem(popupAnnouncementSessionKey(userId), JSON.stringify(next));
+  } catch {
+    // Ignore storage failures so popup behavior still works with server-side dismiss.
+  }
+}
+
+function clearSeenPopupAnnouncements(userId?: number | null) {
+  if (typeof window === "undefined" || !userId) return;
+  try {
+    window.sessionStorage.removeItem(popupAnnouncementSessionKey(userId));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function readLastSeenUpgradeAnnouncementVersion(userId?: number | null) {
+  if (typeof window === "undefined" || !userId) return "";
+  try {
+    return normalizePanelVersion(window.localStorage.getItem(upgradeAnnouncementVersionKey(userId)));
+  } catch {
+    return "";
+  }
+}
+
+function writeLastSeenUpgradeAnnouncementVersion(userId: number, version: string) {
+  if (typeof window === "undefined" || !userId) return;
+  const normalizedVersion = normalizePanelVersion(version);
+  if (!normalizedVersion) return;
+  try {
+    window.localStorage.setItem(upgradeAnnouncementVersionKey(userId), normalizedVersion);
+  } catch {
+    // Ignore storage failures and fall back to server-side read tracking.
+  }
+}
 
 function readCachedSiteLogo() {
   if (typeof window === "undefined") return "";
@@ -298,6 +361,11 @@ function DashboardLayoutContent({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const { data: upgradeAnnouncement, isFetched: upgradeAnnouncementFetched } = trpc.announcements.upgradePopup.useQuery(undefined, {
+    enabled: !!user && isAdmin,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
   const { data: telegramStatus } = trpc.telegram.status.useQuery(undefined, {
     enabled: !!user,
     refetchInterval: (query) => {
@@ -339,6 +407,8 @@ function DashboardLayoutContent({
     />
   );
   const [showAnnouncement, setShowAnnouncement] = useState(false);
+  const [showUpgradeAnnouncement, setShowUpgradeAnnouncement] = useState(false);
+  const [upgradeAnnouncementCountdown, setUpgradeAnnouncementCountdown] = useState(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
   const [showTelegramDialog, setShowTelegramDialog] = useState(false);
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [checkingMobileUpdate, setCheckingMobileUpdate] = useState(false);
@@ -416,8 +486,45 @@ function DashboardLayoutContent({
   }, []);
 
   useEffect(() => {
-    if (popupAnnouncement?.id) setShowAnnouncement(true);
-  }, [popupAnnouncement?.id]);
+    if (!popupAnnouncement?.id || !user?.id) return;
+    if (readSeenPopupAnnouncementIds(user.id).includes(Number(popupAnnouncement.id))) return;
+    markPopupAnnouncementSeen(user.id, popupAnnouncement.id);
+    setShowAnnouncement(true);
+  }, [popupAnnouncement?.id, user?.id]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setShowUpgradeAnnouncement(false);
+      return;
+    }
+    const currentVersion = normalizePanelVersion(publicInfo?.version);
+    const userId = user?.id;
+    if (!userId || !currentVersion || !upgradeAnnouncementFetched) return;
+
+    const lastSeenVersion = readLastSeenUpgradeAnnouncementVersion(userId);
+    if (!lastSeenVersion) {
+      writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
+      return;
+    }
+    if (lastSeenVersion === currentVersion) return;
+
+    if (upgradeAnnouncement?.id) {
+      setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
+      setShowUpgradeAnnouncement(true);
+      return;
+    }
+
+    writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
+  }, [isAdmin, publicInfo?.version, upgradeAnnouncement?.id, upgradeAnnouncementFetched, user?.id]);
+
+  useEffect(() => {
+    if (!showUpgradeAnnouncement) return;
+    setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
+    const timer = window.setInterval(() => {
+      setUpgradeAnnouncementCountdown((value) => (value <= 1 ? 0 : value - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showUpgradeAnnouncement, upgradeAnnouncement?.id]);
 
   useEffect(() => {
     if (!publicInfo) return;
@@ -519,11 +626,44 @@ function DashboardLayoutContent({
   ]);
 
   const dismissAnnouncement = trpc.announcements.dismiss.useMutation({
+    onMutate: () => {
+      setShowAnnouncement(false);
+      markPopupAnnouncementSeen(user?.id, popupAnnouncement?.id);
+      utils.announcements.popup.setData(undefined, undefined);
+    },
     onSuccess: () => {
       setShowAnnouncement(false);
+      utils.announcements.popup.setData(undefined, undefined);
+    },
+    onError: (error) => {
+      toast.error(error.message || "关闭公告失败");
+    },
+    onSettled: () => {
       utils.announcements.popup.invalidate();
     },
   });
+
+  const dismissUpgradeAnnouncement = trpc.announcements.dismiss.useMutation({
+    onSuccess: () => {
+      if (user?.id && publicInfo?.version) {
+        writeLastSeenUpgradeAnnouncementVersion(user.id, publicInfo.version);
+      }
+      setShowUpgradeAnnouncement(false);
+      setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
+      utils.announcements.upgradePopup.setData(undefined, undefined);
+    },
+    onError: (error) => {
+      toast.error(error.message || "关闭升级公告失败");
+    },
+    onSettled: () => {
+      utils.announcements.upgradePopup.invalidate();
+    },
+  });
+
+  const handleLogout = useCallback(() => {
+    clearSeenPopupAnnouncements(user?.id);
+    logout();
+  }, [logout, user?.id]);
 
   // Change password dialog state
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -1290,7 +1430,7 @@ function DashboardLayoutContent({
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={logout}
+                onClick={handleLogout}
                 className="cursor-pointer text-destructive focus:text-destructive"
               >
                 <LogOut className="mr-2 h-4 w-4" />
@@ -1916,6 +2056,32 @@ function DashboardLayoutContent({
           />
           <DialogFooter>
             <Button onClick={() => popupAnnouncement?.id && dismissAnnouncement.mutate({ id: popupAnnouncement.id })}>我知道了</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showUpgradeAnnouncement} onOpenChange={(open) => {
+        if (open) setShowUpgradeAnnouncement(true);
+      }}>
+        <DialogContent className="sm:max-w-lg [&>button]:hidden">
+          <DialogTitle className="flex items-center gap-2">
+            <Megaphone className="h-5 w-5" />
+            {upgradeAnnouncement?.title || "鍗囩骇鍏憡"}
+          </DialogTitle>
+          <DialogDescription>
+            宸叉娴嬪埌闈㈡澘宸插崌绾с€傝闃呰鏈鐗堟湰鍏憡锛?{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS} 绉掑悗鍙‘璁よ繘鍏ラ〉闈€?
+          </DialogDescription>
+          <div
+            className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
+            dangerouslySetInnerHTML={{ __html: renderMixedHtml(upgradeAnnouncement?.content || "") }}
+          />
+          <DialogFooter>
+            <Button
+              onClick={() => upgradeAnnouncement?.id && dismissUpgradeAnnouncement.mutate({ id: upgradeAnnouncement.id })}
+              disabled={upgradeAnnouncementCountdown > 0 || dismissUpgradeAnnouncement.isPending}
+            >
+              {upgradeAnnouncementCountdown > 0 ? `${upgradeAnnouncementCountdown}S` : "鎴戠煡閬撲簡"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
