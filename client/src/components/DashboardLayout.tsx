@@ -157,15 +157,6 @@ function clearSeenPopupAnnouncements(userId?: number | null) {
   }
 }
 
-function readLastSeenUpgradeAnnouncementVersion(userId?: number | null) {
-  if (typeof window === "undefined" || !userId) return "";
-  try {
-    return normalizePanelVersion(window.localStorage.getItem(upgradeAnnouncementVersionKey(userId)));
-  } catch {
-    return "";
-  }
-}
-
 function writeLastSeenUpgradeAnnouncementVersion(userId: number, version: string) {
   if (typeof window === "undefined" || !userId) return;
   const normalizedVersion = normalizePanelVersion(version);
@@ -500,13 +491,6 @@ function DashboardLayoutContent({
     const currentVersion = normalizePanelVersion(publicInfo?.version);
     const userId = user?.id;
     if (!userId || !currentVersion || !upgradeAnnouncementFetched) return;
-
-    const lastSeenVersion = readLastSeenUpgradeAnnouncementVersion(userId);
-    if (!lastSeenVersion) {
-      writeLastSeenUpgradeAnnouncementVersion(userId, currentVersion);
-      return;
-    }
-    if (lastSeenVersion === currentVersion) return;
 
     if (upgradeAnnouncement?.id) {
       setUpgradeAnnouncementCountdown(UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS);
@@ -2066,10 +2050,10 @@ function DashboardLayoutContent({
         <DialogContent className="sm:max-w-lg [&>button]:hidden">
           <DialogTitle className="flex items-center gap-2">
             <Megaphone className="h-5 w-5" />
-            {upgradeAnnouncement?.title || "鍗囩骇鍏憡"}
+            {upgradeAnnouncement?.title || "升级公告"}
           </DialogTitle>
           <DialogDescription>
-            宸叉娴嬪埌闈㈡澘宸插崌绾с€傝闃呰鏈鐗堟湰鍏憡锛?{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS} 绉掑悗鍙‘璁よ繘鍏ラ〉闈€?
+            已检测到面板已升级。请阅读本次版本公告，{UPGRADE_ANNOUNCEMENT_COUNTDOWN_SECONDS}S 后可确认进入页面。
           </DialogDescription>
           <div
             className="max-h-[50svh] overflow-y-auto rounded-lg border bg-background/45 p-4 text-sm leading-6"
@@ -2080,7 +2064,7 @@ function DashboardLayoutContent({
               onClick={() => upgradeAnnouncement?.id && dismissUpgradeAnnouncement.mutate({ id: upgradeAnnouncement.id })}
               disabled={upgradeAnnouncementCountdown > 0 || dismissUpgradeAnnouncement.isPending}
             >
-              {upgradeAnnouncementCountdown > 0 ? `${upgradeAnnouncementCountdown}S` : "鎴戠煡閬撲簡"}
+              {upgradeAnnouncementCountdown > 0 ? `${upgradeAnnouncementCountdown}S` : "我知道了"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -81,8 +81,8 @@ async function pushAnnouncementToTelegram(title: string, content: string) {
 }
 
 export const announcementsRouter = router({
-  list: protectedProcedure.query(async ({ ctx }) => {
-    return db.listUserAnnouncements({ includeUpgradePopups: ctx.user.role === "admin" });
+  list: protectedProcedure.query(async () => {
+    return db.listUserAnnouncements();
   }),
 
   popup: protectedProcedure.query(async ({ ctx }) => {

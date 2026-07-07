@@ -16,7 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { Eye, Megaphone, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-type AnnouncementType = "normal" | "popup" | "upgrade_popup";
+type AnnouncementType = "normal" | "popup";
 
 type AnnouncementForm = {
   id: number;
@@ -46,13 +46,8 @@ function renderAnnouncementHtml(content: string) {
   return { __html: renderMixedHtml(content) };
 }
 
-function normalizeVersionText(version: string | null | undefined) {
-  return String(version || "").trim().replace(/^v/i, "");
-}
-
 function announcementTypeLabel(type: AnnouncementType) {
   if (type === "popup") return "登录弹窗";
-  if (type === "upgrade_popup") return "升级公告";
   return "普通公告";
 }
 
@@ -110,7 +105,7 @@ export default function Announcements() {
       title: form.title.trim(),
       content: form.content.trim(),
       type: form.type,
-      targetVersion: form.type === "upgrade_popup" ? form.targetVersion.trim() : null,
+      targetVersion: null,
       telegramPush: form.telegramPush,
     };
     if (form.id) updateAnnouncement.mutate({ ...payload, id: form.id });
@@ -118,7 +113,7 @@ export default function Announcements() {
   };
 
   const edit = (item: any) => {
-    const type: AnnouncementType = item.type === "popup" || item.type === "upgrade_popup" ? item.type : "normal";
+    const type: AnnouncementType = item.type === "popup" ? "popup" : "normal";
     setForm({
       id: item.id,
       title: item.title || "",
@@ -137,7 +132,7 @@ export default function Announcements() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{isAdmin ? "公告管理" : "公告"}</h1>
             <p className="text-sm text-muted-foreground">
-              {isAdmin ? "管理普通公告、登录弹窗和升级公告。" : "查看管理员发布的公告信息。"}
+              {isAdmin ? "管理普通公告和登录弹窗。" : "查看管理员发布的公告信息。"}
             </p>
           </div>
           {isAdmin && (
@@ -152,9 +147,8 @@ export default function Announcements() {
         ) : (
           <div className="grid gap-4">
             {announcements.map((item: any) => {
-              const type: AnnouncementType = item.type === "popup" || item.type === "upgrade_popup" ? item.type : "normal";
+              const type: AnnouncementType = item.type === "popup" ? "popup" : "normal";
               const isPopup = type === "popup";
-              const isUpgradePopup = type === "upgrade_popup";
               return (
                 <Card key={item.id}>
                   <CardHeader>
@@ -163,13 +157,9 @@ export default function Announcements() {
                         <CardTitle className="flex flex-wrap items-center gap-2">
                           <Megaphone className="h-5 w-5" />
                           {item.title}
-                          <Badge variant={isPopup || isUpgradePopup ? "default" : "outline"}>{announcementTypeLabel(type)}</Badge>
+                          <Badge variant={isPopup ? "default" : "outline"}>{announcementTypeLabel(type)}</Badge>
                         </CardTitle>
-                        {isUpgradePopup ? (
-                          <CardDescription className="mt-2">
-                            目标版本：{item.targetVersion ? `v${normalizeVersionText(item.targetVersion)}` : "-"}
-                          </CardDescription>
-                        ) : !isPopup ? (
+                        {!isPopup ? (
                           <CardDescription className="mt-2">发布时间：{dateText(item.createdAt || item.updatedAt)}</CardDescription>
                         ) : null}
                       </div>
@@ -221,7 +211,7 @@ export default function Announcements() {
                     onValueChange={(type: AnnouncementType) => setForm((current) => ({
                       ...current,
                       type,
-                      targetVersion: type === "upgrade_popup" ? current.targetVersion : "",
+                      targetVersion: "",
                     }))}
                   >
                     <SelectTrigger>
@@ -230,25 +220,10 @@ export default function Announcements() {
                     <SelectContent>
                       <SelectItem value="normal">普通公告</SelectItem>
                       <SelectItem value="popup">登录弹窗</SelectItem>
-                      <SelectItem value="upgrade_popup">升级公告</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
-
-              {form.type === "upgrade_popup" && (
-                <div className="space-y-2">
-                  <Label>目标版本</Label>
-                  <Input
-                    placeholder="例如 2.3.218"
-                    value={form.targetVersion}
-                    onChange={(e) => setForm({ ...form, targetVersion: e.target.value })}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    仅在用户升级到该版本后，如果该版本配置了升级公告，才会弹出一次。
-                  </p>
-                </div>
-              )}
 
               <div className="flex flex-col gap-3 rounded-lg border border-border/40 bg-muted/15 p-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -293,7 +268,6 @@ export default function Announcements() {
                 disabled={
                   !form.title.trim() ||
                   !form.content.trim() ||
-                  (form.type === "upgrade_popup" && !form.targetVersion.trim()) ||
                   createAnnouncement.isPending ||
                   updateAnnouncement.isPending
                 }

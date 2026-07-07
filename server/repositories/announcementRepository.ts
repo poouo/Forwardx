@@ -97,9 +97,8 @@ export async function deleteAnnouncement(id: number) {
   await db.delete(announcements).where(eq(announcements.id, id));
 }
 
-export async function listUserAnnouncements(options: { includeUpgradePopups?: boolean } = {}) {
+export async function listUserAnnouncements() {
   const rows = await listAnnouncements(false);
-  if (options.includeUpgradePopups) return rows;
   return rows.filter((row: any) => row?.type !== "upgrade_popup");
 }
 
