@@ -57,6 +57,15 @@ export const rulesRouter = router({
       }
       return rule;
     }),
+  reorder: protectedProcedure
+    .input(z.object({
+      category: z.enum(["local", "tunnel", "chain", "group"]),
+      ids: z.array(z.number().int().positive()).min(1),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await db.reorderForwardRules(input.category, input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id);
+      return { success: true };
+    }),
   ...portsRulesRouter._def.procedures,
   ...copyRulesRouter._def.procedures,
   ...crudRulesRouter._def.procedures,

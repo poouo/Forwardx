@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,7 @@ var (
 	tcpingTunnelCursor       int
 	tcpingForwardGroupCursor int
 	tcpingServiceCursor      int
+	tcpingCollectRunning     int32
 )
 
 type localRuleState struct {
@@ -139,7 +141,9 @@ func collectTraffic(cfg Config) time.Duration {
 	}
 	if len(stats) > 0 || hostTraffic != nil {
 		if err := post(cfg, "/api/agent/traffic", payload, &map[string]any{}); err != nil {
-			if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
+			if isTransientAgentCommError(err) {
+				logAgentCommError("traffic-report", err)
+			} else if shouldLogAgentReport("traffic-report-failed", agentReportLogInterval) {
 				logf("traffic report failed watched=%d stats=%d: %v", watched, len(stats), err)
 			}
 		} else if agentVerboseLogs && len(stats) > 0 && shouldLogAgentReport("traffic-report-ok", 5*time.Minute) {
@@ -293,7 +297,9 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 	if len(results) > 0 || len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0 {
 		payload := map[string]any{"results": results, "tunnels": tunnels, "forwardGroups": forwardGroups, "services": services}
 		if err := post(cfg, "/api/agent/tcping", payload, &map[string]any{}); err != nil {
-			if shouldLogAgentReport("tcping-report-failed", agentReportLogInterval) {
+			if isTransientAgentCommError(err) {
+				logAgentCommError("tcping-report", err)
+			} else if shouldLogAgentReport("tcping-report-failed", agentReportLogInterval) {
 				logf("tcping report failed rules=%d tunnels=%d groups=%d services=%d: %v", len(results), len(tunnels), len(forwardGroups), len(services), err)
 			}
 		} else if agentVerboseLogs && (len(tunnels) > 0 || len(forwardGroups) > 0 || len(services) > 0) {
@@ -303,6 +309,25 @@ func collectTCPing(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupP
 			}
 		}
 	}
+}
+
+func scheduleTCPingCollection(cfg Config, probes []tunnelProbe, groupProbes []forwardGroupProbe, serviceProbes []hostProbeServiceProbe, force bool) bool {
+	if !atomic.CompareAndSwapInt32(&tcpingCollectRunning, 0, 1) {
+		logVerbosef("tcping collect skip because previous run is still active")
+		return true
+	}
+	probesCopy := append([]tunnelProbe(nil), probes...)
+	groupProbesCopy := append([]forwardGroupProbe(nil), groupProbes...)
+	serviceProbesCopy := append([]hostProbeServiceProbe(nil), serviceProbes...)
+	go func() {
+		started := time.Now()
+		defer atomic.StoreInt32(&tcpingCollectRunning, 0)
+		collectTCPing(cfg, probesCopy, groupProbesCopy, serviceProbesCopy, force)
+		if elapsed := time.Since(started); elapsed >= 5*time.Second && shouldLogAgentReport("tcping-collect-slow-async", 5*time.Minute) {
+			logf("tcping collect slow duration=%s tunnels=%d groups=%d services=%d force=%v", elapsed.Round(time.Millisecond), len(probesCopy), len(groupProbesCopy), len(serviceProbesCopy), force)
+		}
+	}()
+	return true
 }
 
 func summarizeTCPingReport(results, tunnels, forwardGroups, services []map[string]any) (int, int, string) {

@@ -478,8 +478,8 @@ export async function getForwardGroups(userId?: number) {
   const db = await getDb();
   if (!db) return [];
   const groupRows = userId
-    ? await db.select().from(forwardGroups).where(eq(forwardGroups.userId, userId)).orderBy(desc(forwardGroups.createdAt))
-    : await db.select().from(forwardGroups).orderBy(desc(forwardGroups.createdAt));
+    ? await db.select().from(forwardGroups).where(eq(forwardGroups.userId, userId)).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id))
+    : await db.select().from(forwardGroups).orderBy(asc(forwardGroups.sortOrder), desc(forwardGroups.createdAt), desc(forwardGroups.id));
   if (groupRows.length === 0) return [];
   const ids = groupRows.map((g: any) => Number(g.id));
   const members = await db
@@ -1714,9 +1714,13 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
     externalEntry: groupMode === "chain" && Number((data as any).entryGroupId || 0) > 0,
   })));
   await validateForwardGroupRecordMembers({ ...data, groupMode }, normalizedMembers as any);
+  const sortOrder = (data as any).sortOrder === undefined
+    ? await nextForwardGroupSortOrder(Number((data as any).userId || 0), groupMode)
+    : Math.max(0, Math.floor(Number((data as any).sortOrder) || 0));
   const id = await insertAndGetId("forward_groups", {
     ...data,
     groupMode,
+    sortOrder,
     forwardType: (data as any).forwardType || "iptables",
     sourcePort: Number((data as any).sourcePort || 1),
     protocol: (data as any).protocol || "both",
@@ -1746,6 +1750,40 @@ export async function createForwardGroup(data: InsertForwardGroup, members: Forw
         ? "出口组已创建；可在隧道中作为出口组选择。"
         : "Forward group created; use it from forwarding rules to generate member routes.");
   return id;
+}
+
+async function nextForwardGroupSortOrder(userId: number, groupMode: ForwardGroupMode) {
+  const q = quoteIdentifier;
+  const params: any[] = [groupMode];
+  let where = ` WHERE ${q("groupMode")} = ?`;
+  if (userId > 0) {
+    where += ` AND ${q("userId")} = ?`;
+    params.push(userId);
+  }
+  const rows = await queryRaw<{ nextSortOrder: number }>(
+    `SELECT COALESCE(MAX(${q("sortOrder")}), -1) + 1 AS ${q("nextSortOrder")} FROM ${q("forward_groups")}${where}`,
+    params,
+  ).catch(() => []);
+  const value = Number(rows[0]?.nextSortOrder || 0);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+export async function reorderForwardGroups(groupMode: ForwardGroupMode, ids: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const mode = groupModeOf({ groupMode });
+  const orderedIds = ids.map((id) => Math.floor(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const rows = await db.select({
+    id: forwardGroups.id,
+    groupMode: forwardGroups.groupMode,
+  }).from(forwardGroups).where(inArray(forwardGroups.id, orderedIds));
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在的转发项目");
+  if ((rows as any[]).some((row) => groupModeOf(row) !== mode)) throw new Error("排序项目类型不一致");
+  const q = quoteIdentifier;
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(`UPDATE ${q("forward_groups")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+  }
 }
 
 export async function updateForwardGroup(id: number, data: Partial<InsertForwardGroup>, options: { skipSync?: boolean } = {}) {

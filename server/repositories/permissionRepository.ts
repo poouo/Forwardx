@@ -15,6 +15,16 @@ import { getUserUsableTrafficBillingResourceIds } from "./trafficBillingReposito
 
 // ==================== User-Host Permissions ====================
 
+function compareTunnelDisplayOrder(a: any, b: any) {
+  const sortA = Number(a?.sortOrder || 0);
+  const sortB = Number(b?.sortOrder || 0);
+  if (sortA !== sortB) return sortA - sortB;
+  const createdA = Number(a?.createdAt || 0);
+  const createdB = Number(b?.createdAt || 0);
+  if (createdA !== createdB) return createdB - createdA;
+  return Number(b?.id || 0) - Number(a?.id || 0);
+}
+
 /** 获取某用户被授权的主机ID列表 */
 export async function getUserAllowedHostIds(userId: number): Promise<number[]> {
   const db = await getDb();
@@ -225,7 +235,7 @@ export async function getTunnelsForUser(userId: number) {
     getUserUsableTrafficBillingResourceIds(userId),
   ]);
   const allAllowedTunnelIds = Array.from(new Set([...allowedTunnelIds, ...billingResourceIds.tunnelIds]));
-  if (allAllowedTunnelIds.length === 0) return owned.sort((a: any, b: any) => Number(b.createdAt) - Number(a.createdAt));
+  if (allAllowedTunnelIds.length === 0) return owned.sort(compareTunnelDisplayOrder);
   const ids = new Set(allAllowedTunnelIds);
   const all = await db.select().from(tunnels);
   const merged = new Map<number, any>();
@@ -233,7 +243,7 @@ export async function getTunnelsForUser(userId: number) {
   for (const tunnel of all) {
     if (ids.has(tunnel.id)) merged.set(tunnel.id, tunnel);
   }
-  return Array.from(merged.values()).sort((a: any, b: any) => Number(b.createdAt) - Number(a.createdAt));
+  return Array.from(merged.values()).sort(compareTunnelDisplayOrder);
 }
 
 export async function setUserTunnelPermissions(userId: number, tunnelIds: number[]) {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestICMPEchoRequestChecksum(t *testing.T) {
@@ -30,5 +32,18 @@ func TestCPUUsageFromTimes(t *testing.T) {
 
 	if got := cpuUsageFromTimes(cpuTimes{Idle: 125, Total: 300}); got != 75 {
 		t.Fatalf("unexpected cpu usage: got %d want 75", got)
+	}
+}
+
+func TestScheduleTCPingCollectionDoesNotBlockWhenBusy(t *testing.T) {
+	atomic.StoreInt32(&tcpingCollectRunning, 1)
+	defer atomic.StoreInt32(&tcpingCollectRunning, 0)
+
+	started := time.Now()
+	if !scheduleTCPingCollection(Config{}, nil, nil, nil, false) {
+		t.Fatal("busy tcping collection should be treated as handled")
+	}
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("busy tcping schedule blocked for %s", elapsed)
 	}
 }

@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import {
   hostProbeServices,
   hostProbeServiceStats,
@@ -22,6 +22,7 @@ export type HostProbeServiceInput = {
   excludeHostIds?: number[];
   intervalSeconds?: number;
   isEnabled?: boolean;
+  sortOrder?: number;
   userId: number;
 };
 
@@ -54,10 +55,14 @@ function normalizeIntervalSeconds(value: unknown) {
   return Math.max(5, Math.floor(Number(value) || 30));
 }
 
+function normalizeSortOrder(value: unknown) {
+  return Math.max(0, Math.floor(Number(value) || 0));
+}
+
 function normalizeServiceInput(input: HostProbeServiceInput): InsertHostProbeService {
   const method = input.method === "ping" ? "ping" : "tcping";
   const hostScope = input.hostScope === "exclude" || input.hostScope === "specific" ? input.hostScope : "all";
-  return {
+  const payload = {
     name: input.name.trim(),
     method,
     targetIp: input.targetIp.trim(),
@@ -71,6 +76,8 @@ function normalizeServiceInput(input: HostProbeServiceInput): InsertHostProbeSer
     createdAt: nowDate(),
     updatedAt: nowDate(),
   } as InsertHostProbeService;
+  if (input.sortOrder !== undefined) (payload as any).sortOrder = normalizeSortOrder(input.sortOrder);
+  return payload;
 }
 
 export function mapHostProbeService(row: any) {
@@ -80,6 +87,7 @@ export function mapHostProbeService(row: any) {
     targetPort: row?.targetPort == null ? null : Number(row.targetPort),
     intervalSeconds: normalizeIntervalSeconds(row?.intervalSeconds),
     isEnabled: rowBool(row?.isEnabled),
+    sortOrder: normalizeSortOrder(row?.sortOrder),
     userId: Number(row?.userId || 0),
     hostIds: parseIds(row?.hostIds),
     excludeHostIds: parseIds(row?.excludeHostIds),
@@ -92,8 +100,8 @@ export async function getHostProbeServices(userId?: number) {
   const db = await getDb();
   if (!db) return [];
   const rows = userId
-    ? await db.select().from(hostProbeServices).where(eq(hostProbeServices.userId, userId)).orderBy(desc(hostProbeServices.createdAt))
-    : await db.select().from(hostProbeServices).orderBy(desc(hostProbeServices.createdAt));
+    ? await db.select().from(hostProbeServices).where(eq(hostProbeServices.userId, userId)).orderBy(asc(hostProbeServices.sortOrder), desc(hostProbeServices.createdAt), desc(hostProbeServices.id))
+    : await db.select().from(hostProbeServices).orderBy(asc(hostProbeServices.sortOrder), desc(hostProbeServices.createdAt), desc(hostProbeServices.id));
   return rows.map(mapHostProbeService);
 }
 
@@ -126,6 +134,37 @@ export async function deleteHostProbeService(id: number) {
   await db.delete(hostProbeServices).where(eq(hostProbeServices.id, id));
 }
 
+export async function reorderHostProbeServices(ids: number[], userId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const orderedIds = Array.from(ids || [])
+    .map((id) => Math.floor(Number(id)))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const q = quoteIdentifier;
+  const list = inList(orderedIds);
+  const params: any[] = [...list.params];
+  let userWhere = "";
+  if (userId) {
+    userWhere = ` AND ${q("userId")} = ?`;
+    params.push(userId);
+  }
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")} FROM ${q("host_probe_services")} WHERE ${q("id")} IN ${list.sql}${userWhere}`,
+    params,
+  );
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含无权操作或不存在的服务");
+  const now = Math.floor(Date.now() / 1000);
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(
+      `UPDATE ${q("host_probe_services")}
+          SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ?
+        WHERE ${q("id")} = ?`,
+      [index, now, id],
+    );
+  }
+}
+
 function serviceAppliesToHost(service: any, hostId: number) {
   const id = Number(hostId);
   if (!id || !service?.isEnabled) return false;
@@ -138,7 +177,7 @@ function serviceAppliesToHost(service: any, hostId: number) {
 export async function getHostProbeTasksForHost(hostId: number) {
   const db = await getDb();
   if (!db) return [];
-  const rows = await db.select().from(hostProbeServices).where(eq(hostProbeServices.isEnabled, true)).orderBy(desc(hostProbeServices.createdAt));
+  const rows = await db.select().from(hostProbeServices).where(eq(hostProbeServices.isEnabled, true)).orderBy(asc(hostProbeServices.sortOrder), desc(hostProbeServices.createdAt), desc(hostProbeServices.id));
   return rows
     .map(mapHostProbeService)
     .filter((service: any) => serviceAppliesToHost(service, hostId))

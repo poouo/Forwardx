@@ -215,7 +215,7 @@ https://ddns.example.com/update?domain={{domain}}&type={{type}}&value={{value}}&
 配置路径：
 
 ```text
-链路管理 -> 转发组 -> 入口组
+链路管理 -> 入口组
 ```
 
 记录类型要求：

@@ -36,6 +36,12 @@ export const agentTokensRouter = router({
       await db.updateAgentTokenDescription(input.id, description);
       return { success: true };
     }),
+  reorder: protectedProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(2000) }))
+    .mutation(async ({ input, ctx }) => {
+      await db.reorderAgentTokens(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id);
+      return { success: true };
+    }),
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {

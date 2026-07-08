@@ -1,7 +1,6 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
-import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -44,6 +43,7 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { countryFeatureHasCode, normalizeCountryCode, type CountryFeatureLike } from "@/lib/countryFeatures";
 import { applyLatencyPeakCut, clipLatencyForChart, getLatencyStabilityStats, getLatencyYAxisMax, getLatencyYAxisTicks, isLatencySeriesCacheFresh } from "@/lib/latencyChart";
 import { useUrlTab } from "@/hooks/useUrlTab";
@@ -51,6 +51,7 @@ import { addHostNodeMeta, hostAddressCandidates, hostDisplayName } from "@/lib/l
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelExitNames, getTunnelHopIds, getTunnelLoadBalanceExitNames, getTunnelRouteText, tunnelHopHostName } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   Activity,
   ArrowRight,
@@ -2142,7 +2143,8 @@ function TunnelsContent() {
       })),
     };
   };
-  const tunnelPagination = usePersistentPagination(tunnels || [], {
+  const tunnelItems = tunnels || [];
+  const tunnelPagination = usePersistentPagination(tunnelItems, {
     storageKey: "forwardx.tunnels.page",
     pageSize: 12,
     isReady: !isLoading && !!tunnels,
@@ -2353,6 +2355,38 @@ function TunnelsContent() {
       toast.success("隧道已删除");
     },
     onError: (e) => toast.error(e.message || "删除失败"),
+  });
+
+  const reorderTunnelsMutation = trpc.tunnels.reorder.useMutation({
+    onMutate: async ({ ids }) => {
+      await utils.tunnels.list.cancel();
+      const previous = utils.tunnels.list.getData();
+      if (previous) {
+        const order = new Map(ids.map((id, index) => [Number(id), index]));
+        utils.tunnels.list.setData(
+          undefined,
+          [...previous]
+          .sort((a: any, b: any) => (order.get(Number(a.id)) ?? Number.MAX_SAFE_INTEGER) - (order.get(Number(b.id)) ?? Number.MAX_SAFE_INTEGER))
+          .map((tunnel: any) => order.has(Number(tunnel.id)) ? { ...tunnel, sortOrder: order.get(Number(tunnel.id)) } : tunnel) as any,
+        );
+      }
+      return { previous };
+    },
+    onError: (e, _variables, context) => {
+      if (context?.previous) utils.tunnels.list.setData(undefined, context.previous as any);
+      toast.error(e.message || "排序保存失败");
+    },
+    onSettled: () => {
+      utils.tunnels.list.invalidate();
+    },
+  });
+  const tunnelSortable = useSortableReorder({
+    items: tunnelItems,
+    getId: (tunnel: any) => Number(tunnel.id),
+    disabled: tunnelItems.length < 2,
+    onReorder: (nextTunnels) => {
+      reorderTunnelsMutation.mutate({ ids: nextTunnels.map((tunnel: any) => Number(tunnel.id)) });
+    },
   });
 
   const handleSubmit = () => {
@@ -2993,14 +3027,16 @@ function TunnelsContent() {
     return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
   };
 
-  const renderTunnelLatencyBreakdown = (tunnel: any, compact = false) => {
+  const renderTunnelLatencyBreakdown = (tunnel: any, compact = false, maxItems?: number) => {
     const items = tunnelDisplayLatencyList(tunnel);
     if (items.length === 0) {
       return <span className={compact ? "text-xs text-muted-foreground" : "text-muted-foreground"}>未测试</span>;
     }
+    const visibleItems = maxItems ? items.slice(0, maxItems) : items;
+    const hiddenCount = maxItems ? Math.max(0, items.length - maxItems) : 0;
     return (
-      <div className="space-y-1">
-        {items.map((item) => (
+      <div className={cn("space-y-1", maxItems && "max-h-[2.35rem] overflow-hidden")}>
+        {visibleItems.map((item) => (
           <div key={item.key} className="flex min-w-0 items-center justify-between gap-2 whitespace-nowrap text-xs">
             <span className="min-w-0 truncate text-muted-foreground">{item.label}</span>
             <LatencyRating
@@ -3012,8 +3048,19 @@ function TunnelsContent() {
             />
           </div>
         ))}
+        {hiddenCount > 0 && (
+          <div className="text-[10px] leading-none text-muted-foreground">还有 {hiddenCount} 条延迟明细</div>
+        )}
       </div>
     );
+  };
+  const tunnelTableRouteText = (tunnel: any) => {
+    const route = getTunnelRouteText(tunnel, hosts);
+    const entryGroup = Number(tunnel?.entryGroupId || 0) > 0 ? entryGroupById.get(Number(tunnel.entryGroupId)) : null;
+    const entryGroupLabel = entryGroup ? String(entryGroup.name || "入口组").trim() : "";
+    const extraExitNames = getTunnelLoadBalanceExitNames(tunnel, hosts);
+    const exitText = extraExitNames.length > 0 ? `出口 ${extraExitNames.join(" / ")}` : "";
+    return [entryGroupLabel ? `入口组 ${entryGroupLabel}` : "", route, exitText].filter(Boolean).join(" ｜ ");
   };
 
   return (
@@ -3103,13 +3150,25 @@ function TunnelsContent() {
       ) : tunnels && tunnels.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <AutoAnimateContainer className="standard-card-grid gap-4">
+          <SortableReorderContext sortable={tunnelSortable} ids={pagedTunnels.map((tunnel: any) => Number(tunnel.id))} strategy="rect">
+          <div className="standard-card-grid gap-4">
             {pagedTunnels.map((tunnel: any) => {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
               return (
-                <Card key={tunnel.id} className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
-                  <CardContent className="action-card-content space-y-3 p-4">
+                <SortableItem key={tunnel.id} id={Number(tunnel.id)} disabled={tunnelSortable.disabled}>
+                {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                  <Card
+                    {...itemProps}
+                    className={cn(
+                      "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+                      !supported && "opacity-70",
+                      isDragging && "opacity-55 ring-1 ring-primary/35",
+                      isDropTarget && "ring-1 ring-primary/45",
+                    )}
+                    title={!supported ? unsupportedProtocolTitle : undefined}
+                  >
+                    <CardContent className="action-card-content space-y-3 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
@@ -3124,16 +3183,23 @@ function TunnelsContent() {
                           )}
                         </div>
                       </div>
-                      {supported ? (
-                        <Switch
-                          checked={tunnel.isEnabled}
-                          onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
-                          className="scale-75"
-                          title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
+                      <div className="flex shrink-0 items-center gap-1">
+                        <SortableDragHandle
+                          dragHandleProps={handleProps}
+                          visible={isDragging}
+                          className="bg-card/70"
                         />
-                      ) : (
-                        renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
-                      )}
+                        {supported ? (
+                          <Switch
+                            checked={tunnel.isEnabled}
+                            onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
+                            className="scale-75"
+                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
+                          />
+                        ) : (
+                          renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
+                        )}
+                      </div>
                     </div>
 
                     <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
@@ -3174,20 +3240,35 @@ function TunnelsContent() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
+                    </CardContent>
+                  </Card>
+                )}
+                </SortableItem>
               );
             })}
-          </AutoAnimateContainer>
+          </div>
+          </SortableReorderContext>
         ) : (
           <>
-          <AutoAnimateContainer className="grid gap-3 sm:hidden">
+          <SortableReorderContext sortable={tunnelSortable} ids={pagedTunnels.map((tunnel: any) => Number(tunnel.id))} strategy="vertical" restrictToList>
+          <div className="grid gap-3 sm:hidden">
             {pagedTunnels.map((tunnel: any) => {
               const supported = isTunnelSupported(tunnel);
               const protocolKey = getTunnelProtocolKey(tunnel);
               return (
-                <Card key={tunnel.id} className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
-                  <CardContent className="action-card-content space-y-3 p-4">
+                <SortableItem key={tunnel.id} id={Number(tunnel.id)} disabled={tunnelSortable.disabled}>
+                {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                  <Card
+                    {...itemProps}
+                    className={cn(
+                      "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+                      !supported && "opacity-70",
+                      isDragging && "opacity-55 ring-1 ring-primary/35",
+                      isDropTarget && "ring-1 ring-primary/45",
+                    )}
+                    title={!supported ? unsupportedProtocolTitle : undefined}
+                  >
+                    <CardContent className="action-card-content space-y-3 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-2">
                         <div className="mt-1 flex h-4 w-4 shrink-0 items-center justify-center">
@@ -3202,16 +3283,23 @@ function TunnelsContent() {
                           )}
                         </div>
                       </div>
-                      {supported ? (
-                        <Switch
-                          checked={tunnel.isEnabled}
-                          onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
-                          className="scale-75"
-                          title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
+                      <div className="flex shrink-0 items-center gap-1">
+                        <SortableDragHandle
+                          dragHandleProps={handleProps}
+                          visible={isDragging}
+                          className="bg-card/70"
                         />
-                      ) : (
-                        renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
-                      )}
+                        {supported ? (
+                          <Switch
+                            checked={tunnel.isEnabled}
+                            onCheckedChange={(checked) => updateMutation.mutate({ id: tunnel.id, isEnabled: checked })}
+                            className="scale-75"
+                            title={tunnel.isEnabled ? "关闭后该隧道将停止下发和转发" : "开启后该隧道将重新下发并恢复转发"}
+                          />
+                        ) : (
+                          renderUnsupportedHint(<span className="inline-flex"><Switch checked={false} disabled className="scale-75" /></span>)
+                        )}
+                      </div>
                     </div>
 
                     <div className="space-y-2 rounded-md bg-muted/25 p-2.5 text-xs">
@@ -3252,17 +3340,21 @@ function TunnelsContent() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
+                    </CardContent>
+                  </Card>
+                )}
+                </SortableItem>
               );
             })}
-          </AutoAnimateContainer>
+          </div>
+          </SortableReorderContext>
           <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-[44px] px-2" aria-label="排序" />
                     <TableHead className="w-[72px] whitespace-nowrap text-center">状态</TableHead>
                     <TableHead>隧道名称</TableHead>
                     <TableHead>链路</TableHead>
@@ -3272,41 +3364,60 @@ function TunnelsContent() {
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
-                <AutoAnimateContainer as={TableBody}>
+                <SortableReorderContext sortable={tunnelSortable} ids={pagedTunnels.map((tunnel: any) => Number(tunnel.id))} strategy="vertical" restrictToList>
+                <TableBody>
                   {pagedTunnels.map((tunnel: any) => {
                     const supported = isTunnelSupported(tunnel);
                     const protocolKey = getTunnelProtocolKey(tunnel);
                     return (
-                    <TableRow key={tunnel.id} className={!supported ? "opacity-70" : ""} title={!supported ? unsupportedProtocolTitle : undefined}>
-                      <TableCell>
+                    <SortableItem key={tunnel.id} id={Number(tunnel.id)} disabled={tunnelSortable.disabled} itemKind="row">
+                    {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                    <TableRow
+                      {...itemProps}
+                      className={cn(
+                        "group/sortable h-[72px]",
+                        !supported && "opacity-70",
+                        isDragging && "opacity-55",
+                        isDropTarget && "bg-primary/5",
+                      )}
+                      title={!supported ? unsupportedProtocolTitle : undefined}
+                    >
+                      <TableCell className="w-[44px] px-2">
+                        <SortableDragHandle
+                          dragHandleProps={handleProps}
+                          visible={isDragging}
+                          className="mx-auto"
+                        />
+                      </TableCell>
+                      <TableCell className="py-3">
                         <div className="flex items-center justify-center">
                           {renderTunnelStatusDot(tunnel, supported)}
                         </div>
                       </TableCell>
-                      <TableCell>
-                        <span className="font-medium">{tunnel.name}</span>
+                      <TableCell className="max-w-[11rem] py-3">
+                        <span className="line-clamp-2 font-medium leading-snug">{tunnel.name}</span>
                         {!supported && (
                           <span className="mt-1 block text-[11px] text-destructive">
                             {tunnelProtocolLabel(protocolKey)} 当前不支持
                           </span>
                         )}
                       </TableCell>
-                      <TableCell>
-                        <div className="flex min-w-0 items-center gap-2 text-xs">
-                          {renderTunnelRoute(tunnel)}
+                      <TableCell className="py-3">
+                        <div className="line-clamp-2 max-w-[25rem] text-xs leading-5 text-muted-foreground" title={tunnelTableRouteText(tunnel)}>
+                          {tunnelTableRouteText(tunnel)}
                         </div>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">
+                      <TableCell className="hidden py-3 md:table-cell">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px]">
                             {getTunnelModeDisplay(tunnel.mode, nginxTunnelEnabled)}
                           </Badge>
                         </div>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">
-                        {renderTunnelLatencyBreakdown(tunnel, true)}
+                      <TableCell className="hidden py-3 md:table-cell">
+                        {renderTunnelLatencyBreakdown(tunnel, true, 2)}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="py-3">
                         {supported ? (
                           <Switch
                             checked={tunnel.isEnabled}
@@ -3357,9 +3468,12 @@ function TunnelsContent() {
                         </div>
                       </TableCell>
                     </TableRow>
+                    )}
+                    </SortableItem>
                     );
                   })}
-                </AutoAnimateContainer>
+                </TableBody>
+                </SortableReorderContext>
               </Table>
             </div>
           </CardContent>

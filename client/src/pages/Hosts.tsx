@@ -25,6 +25,7 @@ import {
   metricUsageProgressClass,
 } from "@/components/hosts/hostDisplay";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -629,7 +630,6 @@ type HostFormData = {
   ip: string;
   hostType: "master" | "slave";
   networkInterface: string;
-  sortOrder: string;
   entryIp: string;
   tunnelEntryIp: string;
   portRangeStart: number | null;
@@ -658,7 +658,6 @@ const defaultFormData: HostFormData = {
   ip: "",
   hostType: "slave",
   networkInterface: "",
-  sortOrder: "",
   entryIp: "",
   tunnelEntryIp: "",
   portRangeStart: null,
@@ -1288,7 +1287,9 @@ function HostsContent() {
     staleTime: 30_000,
   });
   const enabledHostGroups = useMemo(
-    () => (hostGroups as HostGroupView[]).filter((group) => group.isEnabled !== false),
+    () => [...(hostGroups as HostGroupView[])]
+      .filter((group) => group.isEnabled !== false)
+      .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.id || 0) - Number(b.id || 0)),
     [hostGroups],
   );
   const selectedHostGroup = useMemo(
@@ -1298,10 +1299,31 @@ function HostsContent() {
     [enabledHostGroups, selectedHostGroupId],
   );
   const filteredDisplayHosts = useMemo(() => {
-    if (selectedHostGroupId === "all") return displayHosts;
-    const selectedIds = new Set(hostGroupHostIds(selectedHostGroup));
-    return displayHosts.filter((host: any) => selectedIds.has(Number(host.id)));
-  }, [displayHosts, selectedHostGroup, selectedHostGroupId]);
+    const hostsById = new Map(displayHosts.map((host: any) => [Number(host.id), host]));
+    if (selectedHostGroupId !== "all") {
+      return hostGroupHostIds(selectedHostGroup)
+        .map((hostId) => hostsById.get(hostId))
+        .filter(Boolean);
+    }
+    if (enabledHostGroups.length === 0) return displayHosts;
+    const orderedHosts: any[] = [];
+    const usedHostIds = new Set<number>();
+    for (const group of enabledHostGroups) {
+      for (const hostId of hostGroupHostIds(group)) {
+        if (usedHostIds.has(hostId)) continue;
+        const host = hostsById.get(hostId);
+        if (!host) continue;
+        usedHostIds.add(hostId);
+        orderedHosts.push(host);
+      }
+    }
+    for (const host of displayHosts) {
+      const hostId = Number(host.id);
+      if (usedHostIds.has(hostId)) continue;
+      orderedHosts.push(host);
+    }
+    return orderedHosts;
+  }, [displayHosts, enabledHostGroups, selectedHostGroup, selectedHostGroupId]);
   const hasFilteredDisplayHosts = filteredDisplayHosts.length > 0;
   const isHostGroupFiltered = selectedHostGroupId !== "all";
   const filteredHostIds = useMemo(
@@ -1515,7 +1537,6 @@ function HostsContent() {
       ip: host.ip,
       hostType: host.hostType,
       networkInterface: host.networkInterface || "",
-      sortOrder: String(normalizeHostSortOrder(host.sortOrder)),
       entryIp: host.entryIp || "",
       tunnelEntryIp: host.tunnelEntryIp || "",
       portRangeStart: host.portRangeStart ?? null,
@@ -1568,7 +1589,6 @@ function HostsContent() {
     }
 
     const ni = (form.networkInterface || "").trim();
-    const sortOrder = normalizeHostSortOrder(form.sortOrder);
     const purchasedAt = parseDateTimeLocal(form.purchasedAt);
     const stoppedAt = parseDateTimeLocal(form.stoppedAt);
     if (form.purchasedAt && !purchasedAt) { toast.error("机器购买时间格式不正确"); return; }
@@ -1624,7 +1644,6 @@ function HostsContent() {
         name,
         hostType: form.hostType,
         networkInterface: ni || null,
-        sortOrder,
         entryIp: entry || null,
         tunnelEntryIp: tunnelEntry || null,
         portRangeStart: ps ?? null,
@@ -1640,7 +1659,6 @@ function HostsContent() {
         ip,
         hostType: form.hostType,
         networkInterface: ni || undefined,
-        sortOrder,
         entryIp: entry || undefined,
         tunnelEntryIp: tunnelEntry || undefined,
         portRangeStart: ps ?? null,
@@ -1676,6 +1694,45 @@ function HostsContent() {
     () => pagedHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
     [pagedHosts]
   );
+  const reorderHostsMutation = trpc.hosts.reorder.useMutation({
+    onSuccess: () => {
+      utils.hosts.list.invalidate();
+      toast.success("主机顺序已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新主机顺序失败"),
+  });
+  const reorderHostGroupMembersMutation = trpc.hosts.reorderHostGroupMembers.useMutation({
+    onSuccess: () => {
+      utils.hosts.hostGroups.invalidate();
+      toast.success("分组主机顺序已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新分组主机顺序失败"),
+  });
+  const hostSortGroupId = selectedHostGroupId === "all" ? null : Number(selectedHostGroupId);
+  const hostSortMode: "hosts" | "group" | null = selectedHostGroupId !== "all" && selectedHostGroup
+    ? "group"
+    : selectedHostGroupId === "all" && enabledHostGroups.length === 0 && !(user?.role === "admin" && isHostGroupsLoading)
+      ? "hosts"
+      : null;
+  const canDragFilteredHosts = user?.role === "admin" || filteredDisplayHosts.every((host: any) => Number(host.userId) === Number(user?.id));
+  const hostSortingEnabled = !!hostSortMode
+    && canDragFilteredHosts
+    && viewMode !== "map"
+    && viewMode !== "flat-map"
+    && filteredDisplayHosts.length > 1;
+  const hostSortable = useSortableReorder({
+    items: filteredDisplayHosts,
+    getId: (host: any) => Number(host.id),
+    disabled: !hostSortingEnabled,
+    onReorder: (nextHosts) => {
+      const hostIds = nextHosts.map((host: any) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0);
+      if (hostSortMode === "group" && hostSortGroupId) {
+        reorderHostGroupMembersMutation.mutate({ groupId: hostSortGroupId, hostIds });
+        return;
+      }
+      if (hostSortMode === "hosts") reorderHostsMutation.mutate({ ids: hostIds });
+    },
+  });
   const hostCardListMotionKey = useMemo(
     () => [
       viewMode,
@@ -1719,6 +1776,26 @@ function HostsContent() {
     for (const row of hostLatestMetricRows as any[]) map.set(Number(row.hostId), [row]);
     return map;
   }, [hostLatestMetricRows]);
+  const renderHostCard = (host: any, options: { dragHandle?: any; sortableClassName?: string; compact?: boolean } = {}) => (
+    <HostCard
+      key={host.id}
+      host={host}
+      onEdit={openEdit}
+      onDelete={(id) => deleteMutation.mutate({ id })}
+      onUpgrade={requestAgentUpgrade}
+      canUpgrade={user?.role === "admin"}
+      onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
+      onViewProbeLatency={setProbeLatencyHost}
+      resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
+      traffic={hostTrafficById.get(host.id)}
+      metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
+      latestAgentVersion={latestAgentVersion}
+      refreshInterval={hostLiveRefreshInterval}
+      compact={options.compact ?? viewMode === "compact-card"}
+      dragHandle={options.dragHandle}
+      sortableClassName={options.sortableClassName}
+    />
+  );
   const requestResetHostTraffic = (host: any) => {
     const hostId = Number(host?.id);
     if (!Number.isInteger(hostId) || hostId <= 0) return;
@@ -2050,23 +2127,7 @@ function HostsContent() {
           <>
             <HostWorldMap hosts={filteredDisplayHosts} onEdit={openEdit} />
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
-              {pagedHosts.map((host) => (
-                <HostCard
-                  key={host.id}
-                  host={host}
-                  onEdit={openEdit}
-                  onDelete={(id) => deleteMutation.mutate({ id })}
-                  onUpgrade={requestAgentUpgrade}
-                  canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
-                  onViewProbeLatency={setProbeLatencyHost}
-                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                  traffic={hostTrafficById.get(host.id)}
-                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
-                  latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostLiveRefreshInterval}
-                />
-              ))}
+              {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
             </AutoAnimateContainer>
             <div className="md:hidden">
               <PersistentPagination pagination={hostPagination} itemName="台主机" />
@@ -2085,23 +2146,7 @@ function HostsContent() {
               <HostFlatMap hosts={filteredDisplayHosts} onEdit={openEdit} />
             </Suspense>
             <AutoAnimateContainer className="grid grid-cols-1 gap-4 md:hidden">
-              {pagedHosts.map((host) => (
-                <HostCard
-                  key={host.id}
-                  host={host}
-                  onEdit={openEdit}
-                  onDelete={(id) => deleteMutation.mutate({ id })}
-                  onUpgrade={requestAgentUpgrade}
-                  canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
-                  onViewProbeLatency={setProbeLatencyHost}
-                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                  traffic={hostTrafficById.get(host.id)}
-                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
-                  latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostLiveRefreshInterval}
-                />
-              ))}
+              {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
             </AutoAnimateContainer>
             <div className="md:hidden">
               <PersistentPagination pagination={hostPagination} itemName="台主机" />
@@ -2109,63 +2154,74 @@ function HostsContent() {
           </>
         ) : viewMode === "card" || viewMode === "compact-card" ? (
           /* ========== 卡片式布局 ========== */
-          <AutoAnimateContainer
-            key={`host-card-mode-${hostCardListMotionKey}`}
-            duration={220}
-            layout={false}
-            className={
-              viewMode === "compact-card"
-                ? "standard-card-grid-compact host-card-grid-static host-card-grid-static-compact gap-3"
-                : "standard-card-grid host-card-grid-static host-card-grid-static-standard gap-4"
-            }
-          >
-            {pagedHosts.map((host) => (
-              <HostCard
-                key={host.id}
-                host={host}
-                onEdit={openEdit}
-                onDelete={(id) => deleteMutation.mutate({ id })}
-                onUpgrade={requestAgentUpgrade}
-                canUpgrade={user?.role === "admin"}
-                onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
-                onViewProbeLatency={setProbeLatencyHost}
-                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                traffic={hostTrafficById.get(host.id)}
-                metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
-                latestAgentVersion={latestAgentVersion}
-                refreshInterval={hostLiveRefreshInterval}
-                compact={viewMode === "compact-card"}
-              />
-            ))}
-          </AutoAnimateContainer>
+          hostSortingEnabled ? (
+            <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="rect">
+              <div
+                key={`host-card-mode-sortable-${hostCardListMotionKey}`}
+                className={viewMode === "compact-card" ? "standard-card-grid-compact gap-3" : "standard-card-grid gap-4"}
+              >
+                {pagedHosts.map((host) => (
+                  <SortableItem key={host.id} id={Number(host.id)} disabled={hostSortable.disabled}>
+                    {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                      <div {...itemProps}>
+                        {renderHostCard(host, {
+                          compact: viewMode === "compact-card",
+                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="-ml-2" />,
+                          sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
+                        })}
+                      </div>
+                    )}
+                  </SortableItem>
+                ))}
+              </div>
+            </SortableReorderContext>
+          ) : (
+            <AutoAnimateContainer
+              key={`host-card-mode-${hostCardListMotionKey}`}
+              duration={220}
+              layout={false}
+              className={
+                viewMode === "compact-card"
+                  ? "standard-card-grid-compact host-card-grid-static host-card-grid-static-compact gap-3"
+                  : "standard-card-grid host-card-grid-static host-card-grid-static-standard gap-4"
+              }
+            >
+              {pagedHosts.map((host) => renderHostCard(host, { compact: viewMode === "compact-card" }))}
+            </AutoAnimateContainer>
+          )
         ) : (
           /* ========== 表格式布局 ========== */
           <>
-            <AutoAnimateContainer className="grid grid-cols-1 gap-3 sm:hidden">
-              {pagedHosts.map((host) => (
-                <HostCard
-                  key={host.id}
-                  host={host}
-                  onEdit={openEdit}
-                  onDelete={(id) => deleteMutation.mutate({ id })}
-                  onUpgrade={requestAgentUpgrade}
-                  canUpgrade={user?.role === "admin"}
-                  onResetTraffic={user?.role === "admin" ? requestResetHostTraffic : undefined}
-                  onViewProbeLatency={setProbeLatencyHost}
-                resetTrafficPending={resetTrafficHostId === host.id && resetHostTrafficMutation.isPending}
-                  traffic={hostTrafficById.get(host.id)}
-                  metrics={hostLatestMetricSeriesById.get(host.id) ?? null}
-                  latestAgentVersion={latestAgentVersion}
-                  refreshInterval={hostLiveRefreshInterval}
-                />
-              ))}
-            </AutoAnimateContainer>
+            {hostSortingEnabled ? (
+              <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
+                <div className="grid grid-cols-1 gap-3 sm:hidden">
+                  {pagedHosts.map((host) => (
+                    <SortableItem key={host.id} id={Number(host.id)} disabled={hostSortable.disabled}>
+                      {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                        <div {...itemProps}>
+                          {renderHostCard(host, {
+                            compact: false,
+                            dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} className="-ml-2" />,
+                            sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
+                          })}
+                        </div>
+                      )}
+                    </SortableItem>
+                  ))}
+                </div>
+              </SortableReorderContext>
+            ) : (
+              <AutoAnimateContainer className="grid grid-cols-1 gap-3 sm:hidden">
+                {pagedHosts.map((host) => renderHostCard(host, { compact: false }))}
+              </AutoAnimateContainer>
+            )}
             <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
-                <Table className="min-w-[1210px]">
+                <Table className="min-w-[1254px]">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-[44px]" />
                       <TableHead className="w-[96px] whitespace-nowrap">状态</TableHead>
                       <TableHead className="w-[300px] min-w-[300px]">设备名称</TableHead>
                       <TableHead className="w-[130px] whitespace-nowrap">
@@ -2193,7 +2249,8 @@ function HostsContent() {
                       <TableHead className="w-[178px] text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <AutoAnimateContainer as={TableBody}>
+                  <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
+                  <TableBody>
                     {pagedHosts.map((host) => {
                       const traffic = hostTrafficById.get(host.id);
                       const latestMetric = hostLatestMetricById.get(host.id);
@@ -2205,7 +2262,21 @@ function HostsContent() {
                       const memoryDetail = formatMetricSizeDetail(latestMetric?.memoryUsed, host.memoryTotal);
                       const diskDetail = formatMetricSizeDetail(latestMetric?.diskUsed, latestMetric?.diskTotal);
                       return (
-                      <TableRow key={host.id} className="align-middle hover:bg-muted/25">
+                      <SortableItem key={host.id} id={Number(host.id)} disabled={!hostSortingEnabled || hostSortable.disabled} itemKind="row">
+                        {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                      <TableRow
+                        {...itemProps}
+                        className={cn(
+                          "group/sortable align-middle hover:bg-muted/25",
+                          isDragging && "opacity-55 ring-1 ring-primary/35",
+                          isDropTarget && "ring-1 ring-primary/45",
+                        )}
+                      >
+                        <TableCell className="w-[44px] px-2">
+                          {hostSortingEnabled && (
+                            <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
+                          )}
+                        </TableCell>
                         <TableCell className="w-[96px] whitespace-nowrap">
                           <HostListStatusBadge host={host} />
                         </TableCell>
@@ -2351,9 +2422,12 @@ function HostsContent() {
                           </div>
                         </TableCell>
                       </TableRow>
+                        )}
+                      </SortableItem>
                     );
                     })}
-                  </AutoAnimateContainer>
+                  </TableBody>
+                  </SortableReorderContext>
                 </Table>
                 </div>
               </CardContent>
@@ -2637,19 +2711,6 @@ function HostsContent() {
                         placeholder="eth0, ens33, bond0"
                         value={form.networkInterface}
                         onChange={(e) => setForm({ ...form, networkInterface: e.target.value })}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-sm">排序 <span className="text-xs text-muted-foreground">0-200，可留空</span></Label>
-                      <Input
-                        className="h-8"
-                        type="number"
-                        min={0}
-                        max={200}
-                        step={1}
-                        placeholder="0"
-                        value={form.sortOrder}
-                        onChange={(e) => setForm({ ...form, sortOrder: e.target.value })}
                       />
                     </div>
                   </div>

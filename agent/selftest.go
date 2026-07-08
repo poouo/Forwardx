@@ -5,21 +5,33 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+const selfTestWorkerConcurrency = 8
+const selfTestQueueCapacity = 256
+
+type selfTestJob struct {
+	cfg  Config
+	test selfTest
+}
+
+var selfTestQueue = make(chan selfTestJob, selfTestQueueCapacity)
+var selfTestWorkersOnce sync.Once
 
 func selfTestPoller(cfg Config) {
 	activeUntil := time.Time{}
 	for {
 		var resp selfTestResp
 		if err := post(cfg, "/api/agent/selftest-pull", map[string]any{}, &resp); err != nil {
-			logf("selftest pull error: %v", err)
+			logAgentCommError("selftest-pull", err)
 		} else {
 			if len(resp.SelfTests) > 0 {
 				activeUntil = time.Now().Add(selfTestActiveWindow)
 			}
 			for _, t := range resp.SelfTests {
-				go handleSelfTest(cfg, t)
+				enqueueSelfTest(cfg, t)
 			}
 		}
 		interval := selfTestIdlePollInterval
@@ -27,6 +39,27 @@ func selfTestPoller(cfg Config) {
 			interval = selfTestActivePollInterval
 		}
 		time.Sleep(interval)
+	}
+}
+
+func enqueueSelfTest(cfg Config, t selfTest) {
+	selfTestWorkersOnce.Do(startSelfTestWorkers)
+	select {
+	case selfTestQueue <- selfTestJob{cfg: cfg, test: t}:
+	default:
+		if shouldLogAgentReport("selftest-queue-full", agentReportLogInterval) {
+			logf("selftest queue full; dropping test=%d target=%s", t.TestID, t.TargetIP)
+		}
+	}
+}
+
+func startSelfTestWorkers() {
+	for i := 0; i < selfTestWorkerConcurrency; i++ {
+		go func() {
+			for job := range selfTestQueue {
+				handleSelfTest(job.cfg, job.test)
+			}
+		}()
 	}
 }
 
@@ -53,7 +86,7 @@ func handleSelfTest(cfg Config, t selfTest) {
 			"message":         msg,
 		}
 		if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
-			logf("selftest report failed test=%d target=%s: %v", t.TestID, t.TargetIP, err)
+			logSelfTestReportError(t.TestID, t.TargetIP, err)
 		}
 		return
 	}
@@ -80,6 +113,16 @@ func handleSelfTest(cfg Config, t selfTest) {
 		payload["resolvedTargetIp"] = resolvedTarget
 	}
 	if err := post(cfg, "/api/agent/selftest-result", payload, &map[string]any{}); err != nil {
-		logf("selftest report failed test=%d target=%s: %v", t.TestID, target, err)
+		logSelfTestReportError(t.TestID, target, err)
+	}
+}
+
+func logSelfTestReportError(testID int, target string, err error) {
+	if isTransientAgentCommError(err) {
+		logAgentCommError("selftest-result", err)
+		return
+	}
+	if shouldLogAgentReport("selftest-report-failed", agentReportLogInterval) {
+		logf("selftest report failed test=%d target=%s: %v", testID, target, err)
 	}
 }

@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -39,7 +40,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 type AgentTokenManagerProps = {
@@ -221,15 +222,19 @@ function AgentTokenCard({
   onOpenScript,
   onEdit,
   onDelete,
+  dragHandle,
+  sortableClassName,
 }: {
   tokenItem: any;
   loadingScriptTokenId: number | null;
   onOpenScript: (id: number) => void;
   onEdit: (tokenItem: any) => void;
   onDelete: (tokenItem: any) => void;
+  dragHandle?: any;
+  sortableClassName?: string;
 }) {
   return (
-    <Card className="action-card border-border/40 bg-card/60 backdrop-blur-md">
+    <Card className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", sortableClassName)}>
       <CardContent className="action-card-content space-y-4 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -243,7 +248,10 @@ function AgentTokenCard({
               </div>
             </div>
           </div>
-          <TokenStatusBadge tokenItem={tokenItem} />
+          <div className="flex shrink-0 items-center gap-1">
+            {dragHandle}
+            <TokenStatusBadge tokenItem={tokenItem} />
+          </div>
         </div>
 
         <code className="block break-all rounded-md border border-border/40 bg-background/60 px-3 py-2 font-mono text-xs">
@@ -371,6 +379,7 @@ export default function AgentTokenManager({
       refetchOnWindowFocus: true,
     }
   );
+  const tokenItems = useMemo(() => (tokens as any[] | undefined) || [], [tokens]);
 
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
   const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
@@ -416,6 +425,21 @@ export default function AgentTokenManager({
       setEditDescription("");
     },
     onError: (err) => toast.error(err.message || "更新 Token 备注失败"),
+  });
+  const reorderTokenMutation = trpc.agentTokens.reorder.useMutation({
+    onSuccess: () => {
+      utils.agentTokens.list.invalidate();
+      toast.success("Token 顺序已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新 Token 顺序失败"),
+  });
+  const tokenSortable = useSortableReorder({
+    items: tokenItems,
+    getId: (tokenItem: any) => Number(tokenItem.id),
+    disabled: tokenItems.length < 2,
+    onReorder: (nextTokens) => {
+      reorderTokenMutation.mutate({ ids: nextTokens.map((tokenItem: any) => Number(tokenItem.id)) });
+    },
   });
 
   const openScriptDialog = async (tokenId: number) => {
@@ -563,39 +587,58 @@ export default function AgentTokenManager({
             <div className="p-4">
               <DataSectionLoading label="正在加载 Agent Token" />
             </div>
-          ) : tokens && tokens.length > 0 ? (
+          ) : tokenItems.length > 0 ? (
             <>
               {viewMode === "card" ? (
-                <AutoAnimateContainer key="agent-token-card-view" className="standard-card-grid card-mode-transition gap-4 p-3" duration={220}>
-                  {(tokens as any[]).map((tokenItem: any) => (
-                    <AgentTokenCard
-                      key={tokenItem.id}
-                      tokenItem={tokenItem}
-                      loadingScriptTokenId={loadingScriptTokenId}
-                      onOpenScript={openScriptDialog}
-                      onEdit={openEditToken}
-                      onDelete={setTokenToDelete}
-                    />
-                  ))}
-                </AutoAnimateContainer>
+                <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="rect">
+                  <div key="agent-token-card-view" className="standard-card-grid card-mode-transition gap-4 p-3">
+                    {tokenItems.map((tokenItem: any) => (
+                      <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled}>
+                        {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                          <div {...itemProps}>
+                            <AgentTokenCard
+                              tokenItem={tokenItem}
+                              loadingScriptTokenId={loadingScriptTokenId}
+                              onOpenScript={openScriptDialog}
+                              onEdit={openEditToken}
+                              onDelete={setTokenToDelete}
+                              dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
+                              sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
+                            />
+                          </div>
+                        )}
+                      </SortableItem>
+                    ))}
+                  </div>
+                </SortableReorderContext>
               ) : (
               <div key="agent-token-table-view" className="card-mode-transition">
-              <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
-                {(tokens as any[]).map((tokenItem: any) => (
-                  <AgentTokenCard
-                    key={tokenItem.id}
-                    tokenItem={tokenItem}
-                    loadingScriptTokenId={loadingScriptTokenId}
-                    onOpenScript={openScriptDialog}
-                    onEdit={openEditToken}
-                    onDelete={setTokenToDelete}
-                  />
-                ))}
-              </div>
+              <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
+                <div className="grid grid-cols-1 gap-4 p-3 sm:hidden">
+                  {tokenItems.map((tokenItem: any) => (
+                    <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled}>
+                      {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                        <div {...itemProps}>
+                          <AgentTokenCard
+                            tokenItem={tokenItem}
+                            loadingScriptTokenId={loadingScriptTokenId}
+                            onOpenScript={openScriptDialog}
+                            onEdit={openEditToken}
+                            onDelete={setTokenToDelete}
+                            dragHandle={<SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />}
+                            sortableClassName={cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45")}
+                          />
+                        </div>
+                      )}
+                    </SortableItem>
+                  ))}
+                </div>
+              </SortableReorderContext>
               <div className="hidden overflow-x-auto sm:block">
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-[44px]" />
                       <TableHead>Token</TableHead>
                       <TableHead className="hidden sm:table-cell">描述</TableHead>
                       <TableHead>主机状态</TableHead>
@@ -604,9 +647,22 @@ export default function AgentTokenManager({
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
+                  <SortableReorderContext sortable={tokenSortable} ids={tokenItems.map((tokenItem: any) => Number(tokenItem.id))} strategy="vertical" restrictToList>
                   <TableBody>
-                    {(tokens as any[]).map((tokenItem: any) => (
-                      <TableRow key={tokenItem.id}>
+                    {tokenItems.map((tokenItem: any) => (
+                      <SortableItem key={tokenItem.id} id={Number(tokenItem.id)} disabled={tokenSortable.disabled} itemKind="row">
+                        {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                      <TableRow
+                        {...itemProps}
+                        className={cn(
+                          "group/sortable",
+                          isDragging && "opacity-55 ring-1 ring-primary/35",
+                          isDropTarget && "ring-1 ring-primary/45",
+                        )}
+                      >
+                        <TableCell className="w-[44px] px-2">
+                          <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <code className="text-xs bg-muted/40 px-2 py-1 rounded font-mono">
@@ -638,8 +694,11 @@ export default function AgentTokenManager({
                           />
                         </TableCell>
                       </TableRow>
+                        )}
+                      </SortableItem>
                     ))}
                   </TableBody>
+                  </SortableReorderContext>
                 </Table>
               </div>
               </div>

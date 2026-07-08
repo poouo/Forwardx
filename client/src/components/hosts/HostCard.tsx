@@ -21,7 +21,7 @@ import {
   Server,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import {
   formatBytes,
   formatUptime,
@@ -92,6 +92,8 @@ type HostCardProps = {
   latestAgentVersion?: string;
   refreshInterval: number | false;
   compact?: boolean;
+  dragHandle?: ReactNode;
+  sortableClassName?: string;
 };
 
 export default function HostCard({
@@ -108,6 +110,8 @@ export default function HostCard({
   latestAgentVersion,
   refreshInterval,
   compact = false,
+  dragHandle,
+  sortableClassName,
 }: HostCardProps) {
   const confirmDialog = useConfirmDialog();
   const hasExternalMetrics = externalMetrics !== undefined;
@@ -202,11 +206,10 @@ export default function HostCard({
     `上行 ${systemTrafficOutLabel}`,
     `合计 ${formatOptionalBytes(systemNetworkTotal)}`,
   ].join("\n");
-  const renderTrafficRow = (Icon: typeof ArrowDownToLine, label: string, value: string) => (
+  const renderTrafficRow = (Icon: typeof ArrowDownToLine, value: string) => (
     <div className="flex min-w-0 items-center justify-between gap-2 text-xs">
-      <span className="inline-flex shrink-0 items-center gap-1.5 text-muted-foreground">
+      <span className="inline-flex shrink-0 items-center text-muted-foreground">
         <Icon className="h-3 w-3 shrink-0" />
-        {label}
       </span>
       <span className="min-w-0 truncate text-right font-medium tabular-nums" title={value}>{value}</span>
     </div>
@@ -230,13 +233,13 @@ export default function HostCard({
         <span className="min-w-0 truncate">{label}</span>
       </div>
       <div className={compact ? "mt-1.5 space-y-1" : "mt-2 space-y-1.5"}>
-        {renderTrafficRow(ArrowDownToLine, "下行", inValue)}
-        {renderTrafficRow(ArrowUpFromLine, "上行", outValue)}
+        {renderTrafficRow(ArrowDownToLine, inValue)}
+        {renderTrafficRow(ArrowUpFromLine, outValue)}
       </div>
     </div>
   );
   const renderTrafficSplitBox = () => (
-    <div className={`${compact ? "rounded-md border px-2 py-1.5" : "rounded-md border px-2.5 py-2"} ${trafficPanelClass}`}>
+    <div className={`rounded-md border px-2.5 py-2 ${trafficPanelClass}`}>
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] divide-x divide-border/40">
         {renderTrafficColumn({ label: "当前", inValue: currentTrafficInLabel, outValue: currentTrafficOutLabel, title: currentTrafficTitle, className: "pr-2" })}
         {renderTrafficColumn({ label: "累计", inValue: systemTrafficInLabel, outValue: systemTrafficOutLabel, title: systemTrafficTitle, className: "pl-2" })}
@@ -329,7 +332,7 @@ export default function HostCard({
   }, [host.id, metrics]);
 
   return (
-    <Card className={`${cardMinHeightClass} host-card-shell backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,opacity] duration-200 ease-out ${
+    <Card className={`${cardMinHeightClass} host-card-shell ${dragHandle ? "group/sortable" : ""} ${sortableClassName || ""} backdrop-blur-md transition-[min-height,border-color,background-color,box-shadow,opacity] duration-200 ease-out ${
       isOnline
         ? "border-border/40 bg-card/60 hover:border-border/60"
         : "border-muted-foreground/20 bg-muted/35 shadow-none hover:border-muted-foreground/30"
@@ -339,6 +342,7 @@ export default function HostCard({
           <div className="flex min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
+              {dragHandle}
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {onViewProbeLatency && (
@@ -403,6 +407,7 @@ export default function HostCard({
           <div className="flex min-w-0 items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <Monitor className="h-4 w-4 shrink-0 text-muted-foreground" />
+              {dragHandle}
             </div>
             <div className="flex shrink-0 items-center justify-end gap-1">
               {onViewProbeLatency && (

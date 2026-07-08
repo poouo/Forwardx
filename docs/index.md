@@ -19,7 +19,7 @@ features:
   - title: 多主机管理
     details: 通过 Agent 管理多台 Linux 服务器，统一查看在线状态、系统资源、入口地址和版本。
   - title: 转发规则
-    details: 支持 TCP、UDP、TCP+UDP，按主机、隧道、端口转发链或转发组创建业务入口。
+    details: 支持 TCP、UDP、TCP+UDP，按端口转发、隧道、端口转发链或转发组创建业务入口。
   - title: 链路编排
     details: 支持隧道链路、端口转发链、入口组、出口组和转发组，适合多入口、多中转和多出口场景。
   - title: 流量延迟

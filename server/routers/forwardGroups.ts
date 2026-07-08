@@ -89,6 +89,16 @@ export const forwardGroupsRouter = router({
     return db.filterForwardGroupFieldsForUse((groups as any[]).filter((group: any) => allowed.has(Number(group.id))));
   }),
 
+  reorderGroups: adminProcedure
+    .input(z.object({
+      groupMode: z.enum(["port", "failover", "chain", "entry", "exit"]),
+      ids: z.array(z.number().int().positive()).min(1),
+    }))
+    .mutation(async ({ input }) => {
+      await db.reorderForwardGroups(input.groupMode, input.ids);
+      return { success: true };
+    }),
+
   latencySeries: protectedProcedure
     .input(z.object({
       groupId: z.number(),

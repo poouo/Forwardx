@@ -1,6 +1,5 @@
 import DashboardLayout from "@/components/DashboardLayout";
 import AnimatedStatValue from "@/components/AnimatedStatValue";
-import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LatencyPeakCutToggle } from "@/components/LatencyPeakCutToggle";
 import { LatencyStabilityStats } from "@/components/LatencyStabilityStats";
@@ -38,9 +37,11 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
 import MultiHopEditor from "@/components/MultiHopEditor";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { pollingInterval } from "@/lib/polling";
 import { getTunnelRouteText } from "@/lib/tunnelDisplay";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import {
   Activity,
   ArrowRightLeft,
@@ -1114,6 +1115,48 @@ export function ForwardGroupsContent({
     onError: (e) => toast.error(e.message || "执行失败"),
   });
 
+  const reorderGroupsMutation = trpc.forwardGroups.reorderGroups.useMutation({
+    onMutate: async ({ groupMode, ids }) => {
+      await utils.forwardGroups.list.cancel();
+      const previous = utils.forwardGroups.list.getData();
+      if (previous) {
+        const order = new Map(ids.map((id, index) => [Number(id), index]));
+        const orderedModeGroups = previous
+          .filter((group: any) => normalizeGroupMode(group.groupMode) === groupMode)
+          .sort((a: any, b: any) => (order.get(Number(a.id)) ?? Number.MAX_SAFE_INTEGER) - (order.get(Number(b.id)) ?? Number.MAX_SAFE_INTEGER))
+          .map((group: any) => order.has(Number(group.id)) ? { ...group, sortOrder: order.get(Number(group.id)) } : group);
+        let modeIndex = 0;
+        utils.forwardGroups.list.setData(
+          undefined,
+          previous.map((group: any) => (
+            normalizeGroupMode(group.groupMode) === groupMode
+              ? orderedModeGroups[modeIndex++] || group
+              : group
+          )) as any,
+        );
+      }
+      return { previous };
+    },
+    onError: (e, _variables, context) => {
+      if (context?.previous) utils.forwardGroups.list.setData(undefined, context.previous as any);
+      toast.error(e.message || "排序保存失败");
+    },
+    onSettled: () => {
+      utils.forwardGroups.list.invalidate();
+    },
+  });
+  const groupSortable = useSortableReorder({
+    items: visibleGroups,
+    getId: (group: any) => Number(group.id),
+    disabled: visibleGroups.length < 2,
+    onReorder: (nextGroups) => {
+      reorderGroupsMutation.mutate({
+        groupMode: activeGroupMode,
+        ids: nextGroups.map((group: any) => Number(group.id)),
+      });
+    },
+  });
+
   const effectiveGroupType = form.groupMode === "failover" || form.groupMode === "port" || form.groupMode === "chain" || isCollectionMode(form.groupMode) ? "host" : form.groupType;
   const availableMemberOptions = effectiveGroupType === "host"
     ? (hosts || []).map((h: any) => ({ id: Number(h.id), label: h.name, meta: h.entryIp || h.ip || "", host: h }))
@@ -1429,12 +1472,7 @@ export function ForwardGroupsContent({
   };
 
   const groupKindBadge = (group: any) => {
-    const mode = normalizeGroupMode(group.groupMode);
-    if (mode === "port") return <Badge variant="outline">端口转发</Badge>;
-    if (mode === "chain") return <Badge variant="outline">端口转发链</Badge>;
-    if (mode === "entry") return <Badge variant="outline">入口组</Badge>;
-    if (mode === "exit") return <Badge variant="outline">出口组</Badge>;
-    return <Badge variant="outline">{group.groupType === "tunnel" ? "隧道高可用" : "主机高可用"}</Badge>;
+    return null;
   };
 
   const groupRuntimeBadges = (group: any) => {
@@ -1504,6 +1542,36 @@ export function ForwardGroupsContent({
     const connectLabel = normalizeGroupMode(group.groupMode) === "exit" ? memberConnectLabel(member) : "";
     const suffix = connectLabel ? ` · ${connectLabel}` : "";
     return `${index + 1}. ${prefix}${memberLabel(member)}${suffix}`;
+  };
+
+  const renderTableMembersSummary = (group: any) => {
+    const members = Array.isArray(group.members) ? group.members : [];
+    if (members.length === 0) return <span className="text-xs text-muted-foreground">暂无成员</span>;
+    const visibleMembers = members.slice(0, 2);
+    const hiddenCount = Math.max(0, members.length - visibleMembers.length);
+    return (
+      <div className="flex max-w-xs flex-wrap gap-1.5 overflow-hidden">
+        {visibleMembers.map((member: any, index: number) => (
+          <span
+            key={member.id}
+            className={`inline-flex max-w-[14rem] items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
+              isGroupMemberActive(group, member)
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                : "border-border bg-muted/20 text-muted-foreground"
+            }`}
+            title={memberHealthTitle(group, member)}
+          >
+            {renderMemberConfigIcon(group, member)}
+            <span className="truncate">{memberDecoratedLabel(group, member, index)}</span>
+          </span>
+        ))}
+        {hiddenCount > 0 && (
+          <span className="inline-flex items-center rounded border border-border bg-muted/20 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+            +{hiddenCount}
+          </span>
+        )}
+      </div>
+    );
   };
 
   const renderChainLatencySummary = (group: any) => {
@@ -1680,10 +1748,21 @@ export function ForwardGroupsContent({
       ) : visibleGroups.length > 0 ? (
         <>
         {viewMode === "card" ? (
-          <AutoAnimateContainer className="standard-card-grid gap-4">
-            {pagedGroups.map((group: any) => (
-              <Card key={group.id} className="action-card border-border/40 bg-card/60">
-                <CardContent className="action-card-content space-y-3 p-4">
+          <SortableReorderContext sortable={groupSortable} ids={pagedGroups.map((group: any) => Number(group.id))} strategy="rect">
+          <div className="standard-card-grid gap-4">
+            {pagedGroups.map((group: any) => {
+              return (
+              <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
+              {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                <Card
+                  {...itemProps}
+                  className={cn(
+                    "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
+                    isDragging && "opacity-55 ring-1 ring-primary/35",
+                    isDropTarget && "ring-1 ring-primary/45",
+                  )}
+                >
+                  <CardContent className="action-card-content space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1693,7 +1772,14 @@ export function ForwardGroupsContent({
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
                       {groupRuntimeBadges(group)}
                     </div>
-                    <div className="shrink-0">{groupStatusBadge(group)}</div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <SortableDragHandle
+                        dragHandleProps={handleProps}
+                        visible={isDragging}
+                        className="bg-card/70"
+                      />
+                      {groupStatusBadge(group)}
+                    </div>
                   </div>
 
                   <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
@@ -1748,16 +1834,31 @@ export function ForwardGroupsContent({
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </CardContent>
-              </Card>
-            ))}
-          </AutoAnimateContainer>
+                  </CardContent>
+                </Card>
+              )}
+              </SortableItem>
+              );
+            })}
+          </div>
+          </SortableReorderContext>
         ) : (
           <>
+          <SortableReorderContext sortable={groupSortable} ids={pagedGroups.map((group: any) => Number(group.id))} strategy="vertical" restrictToList>
           <div className="grid gap-3 sm:hidden">
-            {pagedGroups.map((group: any) => (
-              <Card key={group.id} className="action-card border-border/40 bg-card/60">
-                <CardContent className="action-card-content space-y-3 p-4">
+            {pagedGroups.map((group: any) => {
+              return (
+              <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
+              {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                <Card
+                  {...itemProps}
+                  className={cn(
+                    "group/sortable relative action-card border-border/40 bg-card/60 transition-[box-shadow,opacity]",
+                    isDragging && "opacity-55 ring-1 ring-primary/35",
+                    isDropTarget && "ring-1 ring-primary/45",
+                  )}
+                >
+                  <CardContent className="action-card-content space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1767,7 +1868,14 @@ export function ForwardGroupsContent({
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{groupStatusMessage(group)}</p>
                       {groupRuntimeBadges(group)}
                     </div>
-                    <div className="shrink-0">{groupStatusBadge(group)}</div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <SortableDragHandle
+                        dragHandleProps={handleProps}
+                        visible={isDragging}
+                        className="bg-card/70"
+                      />
+                      {groupStatusBadge(group)}
+                    </div>
                   </div>
 
                   <div className="space-y-2 rounded-md bg-muted/25 p-2.5">
@@ -1822,61 +1930,64 @@ export function ForwardGroupsContent({
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              )}
+              </SortableItem>
+              );
+            })}
           </div>
+          </SortableReorderContext>
           <Card className="hidden border-border/40 bg-card/60 sm:block">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-[44px] px-2" aria-label="排序" />
                     <TableHead>状态</TableHead>
                     <TableHead>名称</TableHead>
-                    <TableHead>类型</TableHead>
                     <TableHead>成员/链路</TableHead>
                     <TableHead className="hidden md:table-cell">{activeGroupMode === "port" ? "所属主机" : activeGroupMode === "exit" ? "出口" : activeGroupMode === "entry" ? "DDNS" : "入口"}</TableHead>
                     <TableHead className="hidden md:table-cell">{isChainMode ? "链路延迟" : isCollectionMode(activeGroupMode) ? "用途" : "引用规则"}</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
+                <SortableReorderContext sortable={groupSortable} ids={pagedGroups.map((group: any) => Number(group.id))} strategy="vertical" restrictToList>
                 <TableBody>
-                  {pagedGroups.map((group: any) => (
-                    <TableRow key={group.id}>
-                      <TableCell>{groupStatusBadge(group)}</TableCell>
-                      <TableCell>
-                        <div className="font-medium">{group.name}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
-                        {groupRuntimeBadges(group)}
+                  {pagedGroups.map((group: any) => {
+                    return (
+                    <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled} itemKind="row">
+                    {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                    <TableRow
+                      {...itemProps}
+                      className={cn(
+                        "group/sortable h-[72px]",
+                        isDragging && "opacity-55",
+                        isDropTarget && "bg-primary/5",
+                      )}
+                    >
+                      <TableCell className="w-[44px] px-2">
+                        <SortableDragHandle
+                          dragHandleProps={handleProps}
+                          visible={isDragging}
+                          className="mx-auto"
+                        />
                       </TableCell>
-                      <TableCell>
-                        {groupKindBadge(group)}
+                      <TableCell className="py-3">{groupStatusBadge(group)}</TableCell>
+                      <TableCell className="max-w-[13rem] py-3">
+                        <div className="line-clamp-1 font-medium">{group.name}</div>
+                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{groupStatusMessage(group)}</div>
                       </TableCell>
-                      <TableCell>
-                        <div className="flex max-w-xs flex-wrap gap-1.5">
-                          {(group.members || []).map((member: any, index: number) => (
-                            <span
-                              key={member.id}
-                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] ${
-                                isGroupMemberActive(group, member)
-                                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                                  : "border-border bg-muted/20 text-muted-foreground"
-                              }`}
-                              title={memberHealthTitle(group, member)}
-                            >
-                              {renderMemberConfigIcon(group, member)}
-                              {memberDecoratedLabel(group, member, index)}
-                            </span>
-                          ))}
-                        </div>
+                      <TableCell className="py-3">
+                        {renderTableMembersSummary(group)}
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">
-                        <div className="text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "转发规则中直接选择" : normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
+                      <TableCell className="hidden max-w-[16rem] py-3 md:table-cell">
+                        <div className="line-clamp-1 text-sm">{normalizeGroupMode(group.groupMode) === "port" ? ((group.members || []).length ? memberLabel((group.members || [])[0]) : "未选择") : normalizeGroupMode(group.groupMode) === "chain" ? chainEntryText(group) : normalizeGroupMode(group.groupMode) === "exit" ? `${(group.members || []).length} 台出口主机` : group.domain || "未配置域名"}</div>
+                        <div className="mt-1 line-clamp-1 text-xs text-muted-foreground">{normalizeGroupMode(group.groupMode) === "port" ? "转发规则中直接选择" : normalizeGroupMode(group.groupMode) === "chain" ? "规则使用时监听入口端口" : normalizeGroupMode(group.groupMode) === "exit" ? "隧道出口组" : group.lastDdnsValue || "未切换"}</div>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="hidden py-3 md:table-cell">{normalizeGroupMode(group.groupMode) === "chain" ? renderChainLatencySummary(group) : isCollectionMode(normalizeGroupMode(group.groupMode)) ? (normalizeGroupMode(group.groupMode) === "entry" ? "固定入口" : "固定出口") : Number(group.templateRuleCount || 0)}</TableCell>
+                      <TableCell className="py-3 text-right">
                         <div className="flex justify-end gap-1">
                           {chainLatencyActions(group)}
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => syncMutation.mutate({ id: group.id })}>
@@ -1896,8 +2007,12 @@ export function ForwardGroupsContent({
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    )}
+                    </SortableItem>
+                    );
+                  })}
                 </TableBody>
+                </SortableReorderContext>
               </Table>
             </div>
           </CardContent>
