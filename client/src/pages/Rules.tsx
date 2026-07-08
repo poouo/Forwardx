@@ -5,6 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { LatencyRating } from "@/components/LatencyRating";
 import { LinkTestProbeView, parseLinkTestMessage, type LinkTestPlannedSegment } from "@/components/LinkTestLatencySummary";
 import { PersistentPagination, usePersistentPagination } from "@/components/PersistentPagination";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,6 +44,7 @@ import {
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { trpc } from "@/lib/trpc";
 import { pollingInterval } from "@/lib/polling";
+import { cn } from "@/lib/utils";
 import {
   Plus,
   Trash2,
@@ -403,6 +405,10 @@ const RULE_GROUP_COLLAPSED_STORAGE_KEY = "forwardx.rules.groupCollapsed";
 const RULE_CATEGORY_STORAGE_KEY = "forwardx.rules.category";
 const RULE_FILTER_USER_STORAGE_KEY = "forwardx.rules.filterUser";
 const RULE_FILTER_HOST_STORAGE_KEY = "forwardx.rules.filterHost";
+const RULE_SORT_CATEGORY_ORDER: RuleTransferScopeType[] = ["local", "tunnel", "chain", "group"];
+const RULE_SORT_CATEGORY_RANK = new Map<RuleTransferScopeType, number>(
+  RULE_SORT_CATEGORY_ORDER.map((category, index) => [category, index]),
+);
 const RULE_PAGE_SIZE_OPTIONS: RulePageSize[] = [12, 24, 36, 48];
 const RULE_GLOBE_EARTH_IMAGE_URL = "/globe/earth-dark.jpg";
 const RULE_GLOBE_COUNTRIES_URL = "/globe/ne_110m_admin_0_countries.geojson";
@@ -553,6 +559,13 @@ type RuleFilterState = {
   userById: Map<number, any>;
   forwardGroupById: Map<number, any>;
   getRuleEntryHostId: (rule: any) => number;
+};
+
+type RuleSortableRenderState = {
+  itemProps: any;
+  handleProps: any;
+  isDragging: boolean;
+  isDropTarget: boolean;
 };
 
 function RuleGroupItems({
@@ -2291,6 +2304,42 @@ function RulesContent() {
     onError: (err) => toast.error(err.message || "删除失败"),
   });
 
+  const reorderRulesMutation = trpc.rules.reorder.useMutation({
+    onMutate: async ({ ids }) => {
+      await utils.rules.list.cancel();
+      if (effectiveRulesQuery) {
+        await utils.rules.list.cancel(effectiveRulesQuery as any);
+      }
+      const previousDefault = utils.rules.list.getData();
+      const previousScoped = effectiveRulesQuery ? utils.rules.list.getData(effectiveRulesQuery as any) : undefined;
+      const order = new Map(ids.map((id, index) => [Number(id), index]));
+      const applyOrder = (items?: any[]) => (
+        items?.map((rule: any) => {
+          const id = Number(rule.id);
+          return order.has(id) ? { ...rule, sortOrder: order.get(id) } : rule;
+        })
+      );
+      const nextDefault = applyOrder(previousDefault as any[] | undefined);
+      const nextScoped = applyOrder(previousScoped as any[] | undefined);
+      if (nextDefault) utils.rules.list.setData(undefined, nextDefault as any);
+      if (effectiveRulesQuery && nextScoped) utils.rules.list.setData(effectiveRulesQuery as any, nextScoped as any);
+      return { previousDefault, previousScoped };
+    },
+    onError: (err, _variables, context) => {
+      if (context?.previousDefault) utils.rules.list.setData(undefined, context.previousDefault as any);
+      if (effectiveRulesQuery && context?.previousScoped) {
+        utils.rules.list.setData(effectiveRulesQuery as any, context.previousScoped as any);
+      }
+      toast.error(err.message || "排序保存失败");
+    },
+    onSettled: () => {
+      utils.rules.list.invalidate();
+      if (effectiveRulesQuery) {
+        utils.rules.list.invalidate(effectiveRulesQuery as any);
+      }
+    },
+  });
+
   const batchCreateMutation = trpc.rules.create.useMutation();
   const batchUpdateMutation = trpc.rules.update.useMutation();
   const batchDeleteMutation = trpc.rules.delete.useMutation();
@@ -3892,22 +3941,23 @@ function RulesContent() {
     });
     return { bytesIn, bytesOut, connections };
   }, [totalTrafficSummaryRows]);
-  const sortedFilteredRules = useMemo(() => {
-    return [...filteredRules].sort((a: any, b: any) => {
-      const aHostId = getRuleEntryHostIdForSort(a);
-      const bHostId = getRuleEntryHostIdForSort(b);
-      const aHostName = String(hosts?.find((host: any) => Number(host.id) === aHostId)?.name || "").toLowerCase();
-      const bHostName = String(hosts?.find((host: any) => Number(host.id) === bHostId)?.name || "").toLowerCase();
-      const hostCompare = (aHostName || `~${aHostId}`).localeCompare(bHostName || `~${bHostId}`, "zh-CN");
-      if (hostCompare !== 0) return hostCompare;
-      if (aHostId !== bHostId) return aHostId - bHostId;
-      const categoryCompare = getRuleCategory(a, forwardGroupById).localeCompare(getRuleCategory(b, forwardGroupById));
+  const compareRulesBySavedOrder = useCallback((a: any, b: any) => {
+    const aCategory = getRuleCategory(a, forwardGroupById);
+    const bCategory = getRuleCategory(b, forwardGroupById);
+    if (ruleCategory === "all") {
+      const categoryCompare = (RULE_SORT_CATEGORY_RANK.get(aCategory) ?? 99) - (RULE_SORT_CATEGORY_RANK.get(bCategory) ?? 99);
       if (categoryCompare !== 0) return categoryCompare;
-      const portCompare = Number(a.sourcePort || 0) - Number(b.sourcePort || 0);
-      if (portCompare !== 0) return portCompare;
-      return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
-    });
-  }, [filteredRules, forwardGroupById, getRuleEntryHostIdForSort, hosts]);
+    }
+    const aSortOrder = Number.isFinite(Number(a.sortOrder)) ? Number(a.sortOrder) : Number.MAX_SAFE_INTEGER;
+    const bSortOrder = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : Number.MAX_SAFE_INTEGER;
+    if (aSortOrder !== bSortOrder) return aSortOrder - bSortOrder;
+    const createdCompare = new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    if (createdCompare !== 0) return createdCompare;
+    return Number(b.id || 0) - Number(a.id || 0);
+  }, [forwardGroupById, ruleCategory]);
+  const sortedFilteredRules = useMemo(() => {
+    return [...filteredRules].sort(compareRulesBySavedOrder);
+  }, [compareRulesBySavedOrder, filteredRules]);
   const trafficTotalsCacheScope = useMemo(
     () => [
       user?.role === "admin" ? filterUser : `user-${user?.id || "self"}`,
@@ -3934,6 +3984,33 @@ function RulesContent() {
     isReady: !isLoading && !!rules,
   });
   const pagedRules = rulePagination.items;
+  const ruleSortingEnabled = ruleCategory !== "all" && effectiveViewMode !== "globe";
+  const ruleSortableItems = useMemo(() => {
+    if (ruleCategory === "all") return [];
+    const sourceRules = selectedScopeQueryEnabled ? selectedScopedRules || [] : baseScopedRules;
+    const categoryFilters: RuleFilterState = {
+      ...ruleFilters,
+      filterHost: "all",
+      searchQuery: "",
+      ruleCategory,
+    };
+    return sourceRules
+      .filter((rule: any) => !rule.forwardGroupRuleId && !rule.forwardGroupMemberId)
+      .filter((rule: any) => isForwardRuleVisibleByFilters(rule, categoryFilters))
+      .sort(compareRulesBySavedOrder);
+  }, [baseScopedRules, compareRulesBySavedOrder, ruleCategory, ruleFilters, selectedScopedRules, selectedScopeQueryEnabled]);
+  const ruleSortable = useSortableReorder({
+    items: ruleSortableItems,
+    getId: (rule: any) => Number(rule.id),
+    disabled: !ruleSortingEnabled || ruleSortableItems.length < 2,
+    onReorder: (nextRules) => {
+      if (ruleCategory === "all") return;
+      reorderRulesMutation.mutate({
+        category: ruleCategory,
+        ids: nextRules.map((rule: any) => Number(rule.id)),
+      });
+    },
+  });
   const desktopRuleGroups = useMemo(() => {
     const groups = [
       { type: "local" as const, label: desktopRuleTypeLabels.local, rules: [] as any[] },
@@ -5654,9 +5731,18 @@ function RulesContent() {
     });
   };
 
-  const ruleCardGridClass = effectiveRuleCardSize === "compact"
+  const groupedRuleCardGridClass = effectiveRuleCardSize === "compact"
     ? "standard-card-grid-compact rule-card-grid-static rule-card-grid-static-compact gap-3"
     : "standard-card-grid rule-card-grid-static rule-card-grid-static-standard gap-4";
+  const sortableRuleCardGridClass = effectiveRuleCardSize === "compact"
+    ? "standard-card-grid-compact gap-3"
+    : "standard-card-grid gap-4";
+  const groupedRuleMobileGridClass = effectiveRuleCardSize === "compact"
+    ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2"
+    : "grid rule-card-grid-static rule-card-grid-static-standard gap-3";
+  const sortableRuleMobileGridClass = effectiveRuleCardSize === "compact"
+    ? "grid gap-2"
+    : "grid gap-3";
   const ruleContentModeKey = effectiveViewMode === "card" ? "card" : displayMode;
   const ruleContentTransitionKey = `${ruleCategory}-${ruleContentModeKey}-${isLoading ? "loading" : filteredRules.length > 0 ? "list" : "empty"}`;
 
@@ -5685,11 +5771,30 @@ function RulesContent() {
     );
   };
 
-  const renderRuleTableRow = (rule: any) => {
+  const renderRuleTableRow = (rule: any, sortable?: RuleSortableRenderState) => {
     const supported = isRuleSupported(rule);
     const protocolKey = getRuleProtocolKey(rule);
     return (
-      <TableRow key={rule.id} className={`animate-in fade-in-0 duration-150 ${!supported ? "opacity-70" : ""}`} title={!supported ? unsupportedProtocolTitle : undefined}>
+      <TableRow
+        key={rule.id}
+        {...(sortable?.itemProps || {})}
+        className={cn(
+          "group/sortable animate-in fade-in-0 duration-150",
+          !supported && "opacity-70",
+          sortable?.isDragging && "opacity-55",
+          sortable?.isDropTarget && "bg-primary/5",
+        )}
+        title={!supported ? unsupportedProtocolTitle : undefined}
+      >
+        {sortable && (
+          <TableCell className="w-[44px] px-2 py-2">
+            <SortableDragHandle
+              dragHandleProps={sortable.handleProps}
+              visible={sortable.isDragging}
+              className="mx-auto"
+            />
+          </TableCell>
+        )}
         <TableCell className="px-3 py-2">
           <div className="flex items-center justify-center">
             {supported ? renderStatusDot(rule) : <span className="h-2.5 w-2.5 rounded-full bg-destructive/60" />}
@@ -5739,14 +5844,20 @@ function RulesContent() {
     );
   };
 
-  const renderRuleCard = (rule: any) => {
+  const renderRuleCard = (rule: any, sortable?: RuleSortableRenderState) => {
     const supported = isRuleSupported(rule);
     const protocolKey = getRuleProtocolKey(rule);
     if (effectiveRuleCardSize === "compact") {
       return (
         <Card
           key={rule.id}
-          className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
+          {...(sortable?.itemProps || {})}
+          className={cn(
+            "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+            !supported && "opacity-70",
+            sortable?.isDragging && "opacity-55 ring-1 ring-primary/35",
+            sortable?.isDropTarget && "ring-1 ring-primary/45",
+          )}
           title={!supported ? unsupportedProtocolTitle : undefined}
         >
           <CardContent className="action-card-content space-y-2.5 p-3">
@@ -5762,7 +5873,16 @@ function RulesContent() {
                   </div>
                 </div>
               </div>
-              {renderRuleEnabledSwitch(rule)}
+              <div className="flex shrink-0 items-center gap-1">
+                {sortable && (
+                  <SortableDragHandle
+                    dragHandleProps={sortable.handleProps}
+                    visible={sortable.isDragging}
+                    className="bg-card/70"
+                  />
+                )}
+                {renderRuleEnabledSwitch(rule)}
+              </div>
             </div>
 
             <div className="min-w-0">
@@ -5811,7 +5931,13 @@ function RulesContent() {
     return (
       <Card
         key={rule.id}
-        className={`action-card border-border/40 bg-card/60 backdrop-blur-md ${!supported ? "opacity-70" : ""}`}
+        {...(sortable?.itemProps || {})}
+        className={cn(
+          "group/sortable relative action-card border-border/40 bg-card/60 backdrop-blur-md transition-[box-shadow,opacity]",
+          !supported && "opacity-70",
+          sortable?.isDragging && "opacity-55 ring-1 ring-primary/35",
+          sortable?.isDropTarget && "ring-1 ring-primary/45",
+        )}
         title={!supported ? unsupportedProtocolTitle : undefined}
       >
         <CardContent className="action-card-content space-y-3 p-4">
@@ -5840,7 +5966,16 @@ function RulesContent() {
                 )}
               </div>
             </div>
-            {renderRuleEnabledSwitch(rule)}
+            <div className="flex shrink-0 items-center gap-1">
+              {sortable && (
+                <SortableDragHandle
+                  dragHandleProps={sortable.handleProps}
+                  visible={sortable.isDragging}
+                  className="bg-card/70"
+                />
+              )}
+              {renderRuleEnabledSwitch(rule)}
+            </div>
           </div>
 
           <div className="min-w-0">
@@ -6212,7 +6347,7 @@ function RulesContent() {
                     return (
                       <section key={group.type} className="space-y-2">
                         {renderRuleGroupHeader(group)}
-                        <RuleGroupItems open={!collapsed} layout={false} className={ruleCardGridClass}>
+                        <RuleGroupItems open={!collapsed} layout={false} className={groupedRuleCardGridClass}>
                           {group.rules.map((rule: any) => renderRuleCard(rule))}
                         </RuleGroupItems>
                       </section>
@@ -6220,37 +6355,52 @@ function RulesContent() {
                   })}
                 </AutoAnimateContainer>
               ) : (
-                <AutoAnimateContainer layout={false} className={ruleCardGridClass}>
-                  {pagedRules.map((rule: any) => renderRuleCard(rule))}
-                </AutoAnimateContainer>
+                <SortableReorderContext sortable={ruleSortable} ids={pagedRules.map((rule: any) => Number(rule.id))} strategy="rect">
+                  <div className={sortableRuleCardGridClass}>
+                    {pagedRules.map((rule: any) => (
+                      <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled}>
+                        {(sortable) => renderRuleCard(rule, sortable)}
+                      </SortableItem>
+                    ))}
+                  </div>
+                </SortableReorderContext>
               )}
             </RuleCardModeTransition>
           ) : (
             <>
               <RuleCardModeTransition mode={effectiveRuleCardSize} className="sm:hidden">
-                <AutoAnimateContainer layout={false} className={effectiveRuleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
-                  {shouldGroupRuleCards ? (
-                    desktopRuleGroups.map((group) => {
+                {shouldGroupRuleCards ? (
+                  <AutoAnimateContainer layout={false} className={groupedRuleMobileGridClass}>
+                    {desktopRuleGroups.map((group) => {
                       const collapsed = !!ruleGroupCollapsed[group.type];
                       return (
                         <section key={group.type} className="space-y-2">
                           {renderRuleGroupHeader(group)}
-                          <RuleGroupItems open={!collapsed} layout={false} className={effectiveRuleCardSize === "compact" ? "grid rule-card-grid-static rule-card-grid-static-compact gap-2" : "grid rule-card-grid-static rule-card-grid-static-standard gap-3"}>
+                          <RuleGroupItems open={!collapsed} layout={false} className={groupedRuleMobileGridClass}>
                             {group.rules.map((rule: any) => renderRuleCard(rule))}
                           </RuleGroupItems>
                         </section>
                       );
-                    })
-                  ) : (
-                    pagedRules.map((rule: any) => renderRuleCard(rule))
-                  )}
-                </AutoAnimateContainer>
+                    })}
+                  </AutoAnimateContainer>
+                ) : (
+                  <SortableReorderContext sortable={ruleSortable} ids={pagedRules.map((rule: any) => Number(rule.id))} strategy="vertical" restrictToList>
+                    <div className={sortableRuleMobileGridClass}>
+                      {pagedRules.map((rule: any) => (
+                        <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled}>
+                          {(sortable) => renderRuleCard(rule, sortable)}
+                        </SortableItem>
+                      ))}
+                    </div>
+                  </SortableReorderContext>
+                )}
               </RuleCardModeTransition>
               <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
                 <CardContent className="p-0">
                   <div className="overflow-x-auto">
-                    <Table className={user?.role === "admin" ? "min-w-[1720px] table-fixed" : "min-w-[1610px] table-fixed"}>
+                    <Table className={cn(ruleSortingEnabled ? (user?.role === "admin" ? "min-w-[1764px]" : "min-w-[1654px]") : (user?.role === "admin" ? "min-w-[1720px]" : "min-w-[1610px]"), "table-fixed")}>
                       <colgroup>
+                        {ruleSortingEnabled && <col className="w-[44px]" />}
                         <col className="w-[56px]" />
                         <col className="w-[110px]" />
                         {user?.role === "admin" && <col className="w-[110px]" />}
@@ -6267,6 +6417,7 @@ function RulesContent() {
                       </colgroup>
                       <TableHeader>
                         <TableRow className="hover:bg-transparent">
+                          {ruleSortingEnabled && <TableHead className="w-[44px] px-2" aria-label="排序" />}
                           <TableHead className="whitespace-nowrap text-center">状态</TableHead>
                           <TableHead>规则</TableHead>
                           {user?.role === "admin" && <TableHead>用户</TableHead>}
@@ -6282,9 +6433,9 @@ function RulesContent() {
                           <TableHead className="text-right">操作</TableHead>
                         </TableRow>
                       </TableHeader>
-                      <TableBody>
-                        {shouldGroupRuleCards ? (
-                          desktopRuleGroups.map((group) => {
+                      {shouldGroupRuleCards ? (
+                        <TableBody>
+                          {desktopRuleGroups.map((group) => {
                             const collapsed = !!ruleGroupCollapsed[group.type];
                             return (
                               <Fragment key={group.type}>
@@ -6296,11 +6447,19 @@ function RulesContent() {
                                 {!collapsed && group.rules.map((rule: any) => renderRuleTableRow(rule))}
                               </Fragment>
                             );
-                          })
-                        ) : (
-                          pagedRules.map((rule: any) => renderRuleTableRow(rule))
-                        )}
-                      </TableBody>
+                          })}
+                        </TableBody>
+                      ) : (
+                        <SortableReorderContext sortable={ruleSortable} ids={pagedRules.map((rule: any) => Number(rule.id))} strategy="vertical" restrictToList>
+                          <TableBody>
+                            {pagedRules.map((rule: any) => (
+                              <SortableItem key={rule.id} id={Number(rule.id)} disabled={ruleSortable.disabled} itemKind="row">
+                                {(sortable) => renderRuleTableRow(rule, sortable)}
+                              </SortableItem>
+                            ))}
+                          </TableBody>
+                        </SortableReorderContext>
+                      )}
                     </Table>
                   </div>
                 </CardContent>

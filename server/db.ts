@@ -9,7 +9,7 @@
 import { eq } from "drizzle-orm";
 import { users } from "../drizzle/schema";
 import { hashPassword } from "./password";
-import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate } from "./dbRuntime";
+import { connectDatabase, executeRaw, getDb, getDatabaseKind, insertAndGetId, nowDate, queryRaw } from "./dbRuntime";
 import { ensureDatabaseSchema } from "./dbSchema";
 import { boolLiteral, castInteger, quoteIdentifier } from "./dbCompat";
 import { maintainCurrentPostgresqlDatabase } from "./postgresqlMaintenance";
@@ -100,6 +100,83 @@ async function backfillRateLimitsToMbps() {
   console.log("[Database] Backfilled tunnel rate limits from legacy byte-rate storage to Mbps values");
 }
 
+async function backfillLinkManagementSortOrder() {
+  const marker = "link-management-sort-order-v1";
+  if (await getSetting(marker)) return;
+  const q = quoteIdentifier;
+  const fillTableOrder = async (table: string, whereSql = "", params: any[] = []) => {
+    const rows = await queryRaw<{ id: number }>(
+      `SELECT ${q("id")} FROM ${q(table)}${whereSql} ORDER BY ${q("createdAt")} DESC, ${q("id")} DESC`,
+      params,
+    );
+    for (const [index, row] of rows.entries()) {
+      await executeRaw(`UPDATE ${q(table)} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, Number(row.id)]);
+    }
+  };
+  await fillTableOrder("tunnels");
+  for (const mode of ["port", "chain", "failover", "entry", "exit"]) {
+    await fillTableOrder("forward_groups", ` WHERE ${q("groupMode")} = ?`, [mode]);
+  }
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  console.log("[Database] Backfilled link management display order");
+}
+
+async function backfillForwardRuleSortOrder() {
+  const marker = "forward-rule-sort-order-v1";
+  if (await getSetting(marker)) return;
+  const q = quoteIdentifier;
+  const categorySql = `CASE
+    WHEN g.${q("groupMode")} = 'port' THEN 'local'
+    WHEN g.${q("groupMode")} = 'chain' THEN 'chain'
+    WHEN r.${q("forwardGroupId")} IS NOT NULL AND r.${q("forwardGroupId")} <> 0 THEN 'group'
+    WHEN r.${q("tunnelId")} IS NOT NULL AND r.${q("tunnelId")} <> 0 THEN 'tunnel'
+    ELSE 'local'
+  END`;
+  const rows = await queryRaw<{ id: number; userId: number; category: string }>(
+    `SELECT
+        r.${q("id")} AS ${q("id")},
+        r.${q("userId")} AS ${q("userId")},
+        ${categorySql} AS ${q("category")}
+       FROM ${q("forward_rules")} r
+       LEFT JOIN ${q("forward_groups")} g ON g.${q("id")} = r.${q("forwardGroupId")}
+      WHERE r.${q("pendingDelete")} = ${boolLiteral(false)}
+        AND r.${q("forwardGroupRuleId")} IS NULL
+        AND r.${q("id")} NOT IN (
+          SELECT ${q("ruleId")} FROM ${q("forward_group_members")} WHERE ${q("ruleId")} IS NOT NULL
+        )
+      ORDER BY r.${q("userId")} ASC, ${categorySql} ASC, r.${q("createdAt")} DESC, r.${q("id")} DESC`,
+  );
+  const counters = new Map<string, number>();
+  for (const row of rows) {
+    const key = `${Number(row.userId || 0)}:${String(row.category || "local")}`;
+    const index = counters.get(key) || 0;
+    counters.set(key, index + 1);
+    await executeRaw(`UPDATE ${q("forward_rules")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, Number(row.id)]);
+  }
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  console.log("[Database] Backfilled forward rule display order");
+}
+
+async function backfillHostManagementSortOrder() {
+  const marker = "host-management-sort-order-v1";
+  if (await getSetting(marker)) return;
+  const q = quoteIdentifier;
+  const fillTableOrder = async (table: string) => {
+    const rows = await queryRaw<{ id: number }>(
+      `SELECT ${q("id")} FROM ${q(table)} ORDER BY ${q("createdAt")} DESC, ${q("id")} DESC`,
+    );
+    for (const [index, row] of rows.entries()) {
+      await executeRaw(`UPDATE ${q(table)} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, Number(row.id)]);
+    }
+  };
+  // Hosts and groups already had sortOrder in previous versions; do not overwrite
+  // user-defined ordering during upgrade. Services and tokens gain ordering now.
+  await fillTableOrder("host_probe_services");
+  await fillTableOrder("agent_tokens");
+  await setSetting(marker, String(Math.floor(Date.now() / 1000)));
+  console.log("[Database] Backfilled host management display order");
+}
+
 export async function initDatabase() {
   try {
     const db = await connectDatabase();
@@ -120,6 +197,15 @@ export async function initDatabase() {
     });
     await backfillRateLimitsToMbps().catch((error) => {
       console.warn("[Database] Rate limit unit backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillLinkManagementSortOrder().catch((error) => {
+      console.warn("[Database] Link management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillForwardRuleSortOrder().catch((error) => {
+      console.warn("[Database] Forward rule sort order backfill skipped:", error instanceof Error ? error.message : String(error));
+    });
+    await backfillHostManagementSortOrder().catch((error) => {
+      console.warn("[Database] Host management sort order backfill skipped:", error instanceof Error ? error.message : String(error));
     });
     await backfillTrafficBillingRuleUsageFromStats().catch((error) => {
       console.warn("[TrafficBilling] Rule usage backfill skipped:", error instanceof Error ? error.message : String(error));

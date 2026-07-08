@@ -1,4 +1,4 @@
-import { protectedProcedure, router } from "../_core/trpc";
+import { adminProcedure, protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import crypto from "crypto";
 import * as db from "../db";
@@ -419,6 +419,12 @@ export const tunnelsRouter = router({
       if (ctx.user.role !== "admin") throw new Error("鏃犳潈璁块棶");
       return attachTunnelEndpointHosts(await db.getTunnels() as any[]);
     }),
+    reorder: adminProcedure
+      .input(z.object({ ids: z.array(z.number().int().positive()).min(1) }))
+      .mutation(async ({ input }) => {
+        await db.reorderTunnels(input.ids);
+        return { success: true };
+      }),
     latencySeries: protectedProcedure
     .input(z.object({
       tunnelId: z.number(),

@@ -21,6 +21,13 @@ type desiredRuntimeReadyCacheEntry struct {
 var desiredRuntimeReadyMu sync.Mutex
 var desiredNginxRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
 var desiredGostRuntimeReadyCache = map[int]desiredRuntimeReadyCacheEntry{}
+var actionSerialMu sync.Mutex
+var actionSerialLocks = map[string]*actionSerialLock{}
+
+type actionSerialLock struct {
+	mu   sync.Mutex
+	refs int
+}
 
 func reserveQueuedAction(a action) bool {
 	if key := actionQueueKey(a); key != "" && a.IssuedAt > 0 {
@@ -454,6 +461,9 @@ func enqueueActionJob(job actionJob) {
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
 	}
+	if job.protectedPort == "" {
+		job.protectedPort = protectActionPort(actionProtectedPort(job.action))
+	}
 	pending := atomic.LoadInt64(&actionPendingCount)
 	if pending >= actionQueueBacklogLogThreshold && shouldLogAgentReport("action-queue-backlog", agentReportLogInterval) {
 		logf("action queue backlog pendingActions=%d queued=%d capacity=%d next=%s", pending, len(actionQueue), actionQueueCapacity, actionLogSummary(job.action))
@@ -471,12 +481,22 @@ func enqueueActionJob(job actionJob) {
 }
 
 func actionWorker() {
+	workers := actionWorkerConcurrency
+	if workers < 1 {
+		workers = 1
+	}
+	for i := 0; i < workers; i++ {
+		go actionWorkerLoop(i + 1)
+	}
+}
+
+func actionWorkerLoop(workerID int) {
 	for job := range actionQueue {
 		func() {
 			if !job.enqueuedAt.IsZero() {
 				waited := time.Since(job.enqueuedAt)
-				if waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-queue-wait:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
-					logf("action queue wait slow waited=%s pendingActions=%d queued=%d %s", waited.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+				if waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-queue-wait-slow", agentReportLogInterval) {
+					logf("action queue wait slow worker=%d waited=%s pendingActions=%d queued=%d %s", workerID, waited.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 				}
 			}
 			if job.done != nil {
@@ -487,24 +507,131 @@ func actionWorker() {
 					wakeHeartbeat()
 				}
 			}()
+			defer releaseProtectedActionPort(job.protectedPort)
 			defer releaseQueuedAction(job.action)
 			if isOlderAction(job.action, false) {
 				return
+			}
+			serialKey := actionSerialKey(job.action)
+			unlock := acquireActionSerialLock(serialKey)
+			if unlock != nil {
+				defer unlock()
 			}
 			started := time.Now()
 			ok := handleAction(job.cfg, job.action)
 			elapsed := time.Since(started)
 			if elapsed >= actionSlowHandleThreshold && shouldLogAgentReport("action-handle-slow:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
-				logf("action handle slow duration=%s ok=%v pendingActions=%d queued=%d %s", elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+				logf("action handle slow worker=%d duration=%s ok=%v pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), ok, atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 			}
 			if !ok && shouldLogAgentReport("action-handle-failed:"+actionDiagnosticKey(job.action), agentReportLogInterval) {
-				logf("action handle failed duration=%s pendingActions=%d queued=%d %s", elapsed.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
+				logf("action handle failed worker=%d duration=%s pendingActions=%d queued=%d %s", workerID, elapsed.Round(time.Millisecond), atomic.LoadInt64(&actionPendingCount), len(actionQueue), actionLogSummary(job.action))
 			}
 			if job.desiredKey != "" && job.desiredSignature != "" {
 				rememberDesiredActionResult(job.desiredKey, job.desiredSignature, ok)
 			}
 		}()
 	}
+}
+
+func actionSerialKey(a action) string {
+	statusType := strings.TrimSpace(a.StatusType)
+	if statusType == "runtime" {
+		name := strings.TrimSpace(a.ForwardType)
+		if name == "" {
+			name = "runtime"
+		}
+		return "runtime:" + name
+	}
+	if validActionPort(a.SourcePort) {
+		return fmt.Sprintf("port:%d", a.SourcePort)
+	}
+	if a.RuleID > 0 {
+		return fmt.Sprintf("rule:%d", a.RuleID)
+	}
+	if a.TunnelID > 0 {
+		return fmt.Sprintf("tunnel:%d", a.TunnelID)
+	}
+	return ""
+}
+
+func acquireActionSerialLock(key string) func() {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	actionSerialMu.Lock()
+	lock := actionSerialLocks[key]
+	if lock == nil {
+		lock = &actionSerialLock{}
+		actionSerialLocks[key] = lock
+	}
+	lock.refs++
+	actionSerialMu.Unlock()
+
+	startedAt := time.Now()
+	lock.mu.Lock()
+	if waited := time.Since(startedAt); waited >= actionQueueSlowWaitThreshold && shouldLogAgentReport("action-serial-wait:"+key, agentReportLogInterval) {
+		logf("action serial wait slow key=%s waited=%s", key, waited.Round(time.Millisecond))
+	}
+	return func() {
+		lock.mu.Unlock()
+		actionSerialMu.Lock()
+		lock.refs--
+		if lock.refs <= 0 {
+			delete(actionSerialLocks, key)
+		}
+		actionSerialMu.Unlock()
+	}
+}
+
+func actionProtectedPort(a action) string {
+	if !validActionPort(a.SourcePort) || strings.TrimSpace(a.StatusType) == "runtime" {
+		return ""
+	}
+	return fmt.Sprintf("%d", a.SourcePort)
+}
+
+func validActionPort(port int) bool {
+	return port > 0 && port <= 65535
+}
+
+func protectActionPort(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return ""
+	}
+	protectedActionPortMu.Lock()
+	protectedActionPorts[port]++
+	protectedActionPortMu.Unlock()
+	return port
+}
+
+func releaseProtectedActionPort(port string) {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return
+	}
+	protectedActionPortMu.Lock()
+	count := protectedActionPorts[port]
+	if count <= 1 {
+		delete(protectedActionPorts, port)
+	} else {
+		protectedActionPorts[port] = count - 1
+	}
+	protectedActionPortMu.Unlock()
+}
+
+func snapshotProtectedActionPorts() map[string]bool {
+	protectedActionPortMu.Lock()
+	defer protectedActionPortMu.Unlock()
+	if len(protectedActionPorts) == 0 {
+		return nil
+	}
+	ports := make(map[string]bool, len(protectedActionPorts))
+	for port := range protectedActionPorts {
+		ports[port] = true
+	}
+	return ports
 }
 
 func waitForActionBatch(done []<-chan struct{}, timeout time.Duration) {
@@ -580,7 +707,7 @@ func actionStaleKeys(a action) []string {
 		keys = append(keys, fmt.Sprintf("rule:%d:%d:%d", a.RuleID, a.TunnelID, a.SourcePort))
 		keys = append(keys, fmt.Sprintf("rule:%d:%d", a.RuleID, a.SourcePort))
 	}
-	if a.SourcePort > 0 {
+	if validActionPort(a.SourcePort) {
 		keys = append(keys, fmt.Sprintf("port:%d", a.SourcePort))
 	}
 	return keys
@@ -613,8 +740,7 @@ func isOlderAction(a action, remember bool) bool {
 	}
 	actionEpochMu.Unlock()
 	if a.IssuedAt < latest {
-		key := fmt.Sprintf("action-stale:%s", strings.Join(keys, ","))
-		if shouldLogAgentReport(key, agentReportLogInterval) {
+		if shouldLogAgentReport("action-stale-drop", agentReportLogInterval) {
 			logf("action stale drop op=%s statusType=%s rule=%d tunnel=%d port=%d issuedAt=%d latest=%d", a.Op, a.StatusType, a.RuleID, a.TunnelID, a.SourcePort, a.IssuedAt, latest)
 		}
 		return true

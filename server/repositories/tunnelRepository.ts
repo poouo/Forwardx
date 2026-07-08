@@ -12,7 +12,7 @@ import {
   forwardGroupMembers,
   forwardGroups,
 } from "../../drizzle/schema";
-import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { combinePortPolicies, pickAvailablePort, portPolicyFrom } from "../portPolicy";
 import { getHostById } from "./hostRepository";
@@ -23,8 +23,8 @@ import { sqlBool } from "./repositoryUtils";
 export async function getTunnels(userId?: number) {
   const db = await getDb();
   if (!db) return [];
-  if (userId) return db.select().from(tunnels).where(eq(tunnels.userId, userId)).orderBy(desc(tunnels.createdAt));
-  return db.select().from(tunnels).orderBy(desc(tunnels.createdAt));
+  if (userId) return db.select().from(tunnels).where(eq(tunnels.userId, userId)).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
+  return db.select().from(tunnels).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
 }
 
 export async function getTunnelsByHost(hostId: number) {
@@ -54,7 +54,7 @@ export async function getTunnelsByHost(hostId: number) {
     ...entryGroupRows.map((row: any) => Number(row.id)),
   ].filter((id) => Number.isFinite(id) && id > 0)));
   if (ids.length === 0) return [];
-  return db.select().from(tunnels).where(sql`${tunnels.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`).orderBy(desc(tunnels.createdAt));
+  return db.select().from(tunnels).where(sql`${tunnels.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`).orderBy(asc(tunnels.sortOrder), desc(tunnels.createdAt), desc(tunnels.id));
 }
 
 export async function getTunnelById(id: number) {
@@ -67,13 +67,42 @@ export async function getTunnelById(id: number) {
 export async function createTunnel(data: InsertTunnel) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return insertAndGetId("tunnels", data as any);
+  const payload = { ...data } as any;
+  if (payload.sortOrder === undefined) {
+    payload.sortOrder = await nextTunnelSortOrder(Number(payload.userId || 0));
+  }
+  return insertAndGetId("tunnels", payload);
 }
 
 export async function updateTunnel(id: number, data: Partial<InsertTunnel>) {
   const db = await getDb();
   if (!db) return;
   await db.update(tunnels).set({ ...data, updatedAt: nowDate() }).where(eq(tunnels.id, id));
+}
+
+async function nextTunnelSortOrder(userId: number) {
+  const q = quoteIdentifier;
+  const where = userId > 0 ? ` WHERE ${q("userId")} = ?` : "";
+  const params = userId > 0 ? [userId] : [];
+  const rows = await queryRaw<{ nextSortOrder: number }>(
+    `SELECT COALESCE(MAX(${q("sortOrder")}), -1) + 1 AS ${q("nextSortOrder")} FROM ${q("tunnels")}${where}`,
+    params,
+  ).catch(() => []);
+  const value = Number(rows[0]?.nextSortOrder || 0);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+export async function reorderTunnels(ids: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const orderedIds = ids.map((id) => Math.floor(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const rows = await db.select({ id: tunnels.id }).from(tunnels).where(sql`${tunnels.id} IN (${sql.join(orderedIds.map((id) => sql`${id}`), sql`, `)})`);
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在的隧道");
+  const q = quoteIdentifier;
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(`UPDATE ${q("tunnels")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+  }
 }
 
 function hostEntryAddress(host: any) {

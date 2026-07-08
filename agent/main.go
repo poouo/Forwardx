@@ -9,6 +9,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -55,8 +56,12 @@ const agentMemoryCacheRetention = 24 * time.Hour
 const agentReportLogMaxKeys = 2048
 const agentSlowRequestThreshold = 1500 * time.Millisecond
 const agentReportLogInterval = 30 * time.Second
+const transientAgentCommLogInterval = 5 * time.Minute
+const agentEventStreamReconnectMinDelay = 3 * time.Second
+const agentEventStreamReconnectMaxDelay = 30 * time.Second
 const actionBacklogKeepaliveInterval = 10 * time.Second
 const actionQueueCapacity = 4096
+const actionWorkerConcurrency = 4
 const actionQueueBacklogLogThreshold = 50
 const actionQueueSlowWaitThreshold = 3 * time.Second
 const actionSlowHandleThreshold = 15 * time.Second
@@ -140,6 +145,8 @@ var heartbeatWakeCh = make(chan struct{}, 1)
 var agentVerboseLogs = isEnvTruthy(os.Getenv(agentVerboseEnv))
 var queuedActionMu sync.Mutex
 var queuedActionKeys = map[string]int64{}
+var protectedActionPortMu sync.Mutex
+var protectedActionPorts = map[string]int{}
 var compactAgentReports atomic.Bool
 var heartbeatStaticReport heartbeatStaticSnapshot
 var heartbeatStateMu sync.Mutex
@@ -156,6 +163,7 @@ type actionJob struct {
 	desiredKey       string
 	desiredSignature string
 	enqueuedAt       time.Time
+	protectedPort    string
 }
 
 type heartbeatStaticSnapshot struct {
@@ -1347,23 +1355,13 @@ func main() {
 	go agentEventStream(cfg)
 	for {
 		if pending := atomic.LoadInt64(&actionPendingCount); pending > 0 {
-			if shouldLogAgentReport("heartbeat-backlog", agentReportLogInterval) {
-				logf("heartbeat busy keepalive pendingActions=%d interval=%s", pending, actionBacklogKeepaliveInterval)
+			if shouldLogAgentReport("heartbeat-pending-continue", agentReportLogInterval) {
+				logf("heartbeat continue while actions pending=%d queued=%d workers=%d", pending, len(actionQueue), actionWorkerConcurrency)
 			}
-			if err := heartbeatKeepalive(cfg); err != nil {
-				if shouldLogAgentReport("heartbeat-keepalive-error", agentReportLogInterval) {
-					logf("heartbeat keepalive error while actions pending=%d: %v", atomic.LoadInt64(&actionPendingCount), err)
-				}
-			}
-			select {
-			case <-heartbeatWakeCh:
-			case <-time.After(actionBacklogKeepaliveInterval):
-			}
-			continue
 		}
 		nextInterval, err := heartbeat(cfg)
-		if err != nil && shouldLogAgentReport("heartbeat-error", agentReportLogInterval) {
-			logf("heartbeat error: %v", err)
+		if err != nil {
+			logAgentCommError("heartbeat", err)
 		}
 		if nextInterval <= 0 {
 			nextInterval = cfg.Interval
@@ -1719,13 +1717,16 @@ func heartbeat(cfg Config) (int, error) {
 		waitForActionBatch(actionDone, 20*time.Second)
 	}
 	for _, t := range resp.SelfTests {
-		go handleSelfTest(cfg, t)
+		enqueueSelfTest(cfg, t)
 	}
 	for _, task := range resp.LookingGlassTests {
 		go handleLookingGlassTask(cfg, task)
 	}
 	for _, task := range resp.Iperf3Tasks {
 		go handleIperf3Task(cfg, task)
+	}
+	for port := range snapshotProtectedActionPorts() {
+		pendingActionPorts[port] = true
 	}
 	syncRunningRuleState(state.RunningRules, pendingActionPorts)
 	for _, r := range state.RunningRules {
@@ -1739,8 +1740,9 @@ func heartbeat(cfg Config) (int, error) {
 	}
 	tcpingInterval := tcpingDueInterval(state.HostProbeServices)
 	if resp.ForceTCPing || lastTCPingAt.IsZero() || time.Since(lastTCPingAt) >= tcpingInterval {
-		collectTCPing(cfg, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing)
-		lastTCPingAt = time.Now()
+		if scheduleTCPingCollection(cfg, state.TunnelProbes, state.ForwardGroupProbes, state.HostProbeServices, resp.ForceTCPing) {
+			lastTCPingAt = time.Now()
+		}
 	}
 	if dnsWatchChanged && resp.NextInterval > 2 {
 		return 2, nil
@@ -1862,20 +1864,32 @@ func tcpingDueInterval(serviceProbes []hostProbeServiceProbe) time.Duration {
 func handleLookingGlassTask(cfg Config, task lookingGlassTask) {
 	result := runLookingGlassTask(cfg, task)
 	if err := post(cfg, "/api/agent/looking-glass-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
-		logf("looking glass result report failed task=%s method=%s target=%s: %v", task.TaskID, task.Method, task.ResolvedAddress, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("looking-glass-result", err)
+		} else {
+			logf("looking glass result report failed task=%s method=%s target=%s: %v", task.TaskID, task.Method, task.ResolvedAddress, err)
+		}
 	}
 }
 
 func reportLookingGlassProgress(cfg Config, result lookingGlassResult) {
 	if err := post(cfg, "/api/agent/looking-glass-progress", map[string]any{"result": result}, &map[string]any{}); err != nil {
-		logf("looking glass progress report failed task=%s method=%s target=%s: %v", result.TaskID, result.Method, result.ResolvedAddress, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("looking-glass-progress", err)
+		} else {
+			logf("looking glass progress report failed task=%s method=%s target=%s: %v", result.TaskID, result.Method, result.ResolvedAddress, err)
+		}
 	}
 }
 
 func handleIperf3Task(cfg Config, task iperf3Task) {
 	result := runIperf3Task(cfg, task)
 	if err := post(cfg, "/api/agent/iperf3-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
-		logf("iperf3 result report failed task=%s op=%s port=%d: %v", task.TaskID, task.Op, task.Port, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("iperf3-result", err)
+		} else {
+			logf("iperf3 result report failed task=%s op=%s port=%d: %v", task.TaskID, task.Op, task.Port, err)
+		}
 	}
 }
 
@@ -1884,7 +1898,11 @@ func reportIperf3Result(cfg Config, result iperf3Result) {
 		result.UpdatedAt = time.Now().Format(time.RFC3339Nano)
 	}
 	if err := post(cfg, "/api/agent/iperf3-result", map[string]any{"result": result}, &map[string]any{}); err != nil {
-		logf("iperf3 status report failed task=%s op=%s port=%d: %v", result.TaskID, result.Op, result.Port, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("iperf3-status", err)
+		} else {
+			logf("iperf3 status report failed task=%s op=%s port=%d: %v", result.TaskID, result.Op, result.Port, err)
+		}
 	}
 }
 
@@ -2311,12 +2329,24 @@ func mapBool(ok bool, yes string, no string) string {
 }
 
 func agentEventStream(cfg Config) {
+	delay := agentEventStreamReconnectMinDelay
 	for {
+		startedAt := time.Now()
 		if err := runAgentEventStream(cfg); err != nil {
-			logf("agent event stream error: %v", err)
+			logAgentCommError("event-stream", err)
 			syncSystemTimeForCommError(err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(delay)
+			if time.Since(startedAt) >= agentEventStreamReconnectMaxDelay {
+				delay = agentEventStreamReconnectMinDelay
+			} else {
+				delay *= 2
+				if delay > agentEventStreamReconnectMaxDelay {
+					delay = agentEventStreamReconnectMaxDelay
+				}
+			}
+			continue
 		}
+		delay = agentEventStreamReconnectMinDelay
 	}
 }
 
@@ -2332,8 +2362,16 @@ func runAgentEventStream(cfg Config) error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
 
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			Proxy:             http.ProxyFromEnvironment,
+			ForceAttemptHTTP2: false,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -2374,7 +2412,10 @@ func runAgentEventStream(cfg Config) error {
 			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return io.EOF
 }
 
 func decodeEventData(raw string, token string, out any) error {
@@ -2493,7 +2534,11 @@ func reportActionStatus(cfg Config, a action, running bool, message string) {
 	payload := map[string]any{"ruleId": a.RuleID, "tunnelId": a.TunnelID, "statusType": a.StatusType, "isRunning": running, "message": message}
 	var out map[string]any
 	if err := post(cfg, "/api/agent/rule-status", payload, &out); err != nil {
-		logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("rule-status", err)
+		} else if shouldLogAgentReport("rule-status-report-failed", agentReportLogInterval) {
+			logf("rule-status report failed statusType=%s rule=%d tunnel=%d running=%v: %v", a.StatusType, a.RuleID, a.TunnelID, running, err)
+		}
 	} else if !running || agentVerboseLogs {
 		logf("rule-status report ok statusType=%s rule=%d tunnel=%d running=%v", a.StatusType, a.RuleID, a.TunnelID, running)
 	}
@@ -2882,7 +2927,7 @@ func logActionPortHandoff(a action) {
 }
 
 func cleanupStaleRuntimeBeforeApply(a action) bool {
-	if a.Op != "apply" || a.SourcePort <= 0 {
+	if a.Op != "apply" || !validActionPort(a.SourcePort) {
 		return false
 	}
 	port := strconv.Itoa(a.SourcePort)
@@ -3006,7 +3051,7 @@ func actionUsesSharedNginxRuntime(a action) bool {
 }
 
 func actionPortOwnedBySharedNginx(a action) bool {
-	return actionUsesSharedNginxRuntime(a) && a.SourcePort > 0 && nginxRuntimeConfigUsesPort(nginxConfigPath, a.SourcePort)
+	return actionUsesSharedNginxRuntime(a) && validActionPort(a.SourcePort) && nginxRuntimeConfigUsesPort(nginxConfigPath, a.SourcePort)
 }
 
 func managedPortCleanupCmdsForApply(port string, keepSharedNginx bool) []string {
@@ -3037,7 +3082,7 @@ func cleanupUnknownManagedListener(port string, listenPort int, forwardType stri
 }
 
 func cleanupGostRuntimeIfPortBusy(port int) {
-	if port <= 0 {
+	if !validActionPort(port) {
 		return
 	}
 	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
@@ -3760,9 +3805,7 @@ func syncRunningRuleState(rules []runningRule, protectedPorts map[string]bool) {
 		port := strings.TrimSuffix(strings.TrimPrefix(name, "port_"), ".rule")
 		if !wanted[port] {
 			if protectedPorts[port] {
-				if shouldLogAgentReport("reconcile-pending:"+port, agentReportLogInterval) {
-					logf("reconcile skip pending action port=%s", port)
-				}
+				logVerbosef("reconcile skip pending action port=%s", port)
 				continue
 			}
 			reconcileRemovePort(port)
@@ -6091,7 +6134,11 @@ func reportProtocolBlock(cfg Config, rule guardRule, proto string) {
 		"protocol":   proto,
 	}
 	if err := post(cfg, "/api/agent/protocol-block", payload, &map[string]any{}); err != nil {
-		logf("protocol block report failed rule=%d protocol=%s: %v", rule.RuleID, proto, err)
+		if isTransientAgentCommError(err) {
+			logAgentCommError("protocol-block", err)
+		} else {
+			logf("protocol block report failed rule=%d protocol=%s: %v", rule.RuleID, proto, err)
+		}
 	} else {
 		logf("protocol block reported rule=%d tunnel=%d protocol=%s", rule.RuleID, rule.TunnelID, proto)
 	}
@@ -6150,7 +6197,9 @@ func postOnce(cfg Config, path string, payload any, out any) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
-		if shouldLogAgentReport("post-error:"+path, agentReportLogInterval) {
+		if isTransientAgentCommError(err) {
+			logAgentCommError("post:"+path, err)
+		} else if shouldLogAgentReport("post-error:"+path, agentReportLogInterval) {
 			logf("agent request failed path=%s duration=%s error=%v", path, time.Since(startedAt).Round(time.Millisecond), err)
 		}
 		return err
@@ -6221,6 +6270,71 @@ func formatPanelErrorBody(body []byte) string {
 		return trimmed
 	}
 	return strings.Join(parts, "；")
+}
+
+func logAgentCommError(scope string, err error) {
+	if err == nil {
+		return
+	}
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "unknown"
+	}
+	if isTransientAgentCommError(err) {
+		if shouldLogAgentReport("agent-comm-transient:"+scope, transientAgentCommLogInterval) {
+			logf("agent communication temporary issue scope=%s; will retry: %v", scope, err)
+		}
+		return
+	}
+	if shouldLogAgentReport("agent-comm-error:"+scope, agentReportLogInterval) {
+		logf("agent communication error scope=%s: %v", scope, err)
+	}
+}
+
+func isTransientAgentCommError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if msg == "" {
+		return false
+	}
+	permanentMarkers := []string{
+		"400 bad request",
+		"401 unauthorized",
+		"403 forbidden",
+		"mac verification failed",
+		"invalid encrypted request",
+		"decryption failed",
+	}
+	for _, marker := range permanentMarkers {
+		if strings.Contains(msg, marker) {
+			return false
+		}
+	}
+	transientMarkers := []string{
+		"520",
+		"502 bad gateway",
+		"503 service unavailable",
+		"504 gateway timeout",
+		"internal_error",
+		"stream error",
+		"connection reset",
+		"connection refused",
+		"connection aborted",
+		"unexpected eof",
+		"eof",
+		"timeout",
+		"temporarily unavailable",
+		"tls handshake timeout",
+		"no such host",
+	}
+	for _, marker := range transientMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isClockSyncCandidateError(err error) bool {

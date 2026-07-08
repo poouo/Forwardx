@@ -1,6 +1,6 @@
-import AutoAnimateContainer from "@/components/AutoAnimateContainer";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import HostStatusLabel from "@/components/HostStatusLabel";
+import { SortableDragHandle, SortableItem, SortableReorderContext, useSortableReorder } from "@/components/SortableDragHandle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import { FolderKanban, Loader2, Pencil, Plus, Power, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -219,6 +220,21 @@ export default function HostGroupManager({
     },
     onError: (err) => toast.error(err.message || "删除分组失败"),
   });
+  const reorderGroupsMutation = trpc.hosts.reorderHostGroups.useMutation({
+    onSuccess: () => {
+      utils.hosts.hostGroups.invalidate();
+      toast.success("分组顺序已更新");
+    },
+    onError: (err) => toast.error(err.message || "更新分组顺序失败"),
+  });
+  const groupSortable = useSortableReorder({
+    items: sortedGroups,
+    getId: (group) => Number(group.id),
+    disabled: sortedGroups.length < 2,
+    onReorder: (nextGroups) => {
+      reorderGroupsMutation.mutate({ ids: nextGroups.map((group) => Number(group.id)) });
+    },
+  });
 
   useEffect(() => {
     if (createSignal <= 0) return;
@@ -303,10 +319,10 @@ export default function HostGroupManager({
     </Card>
   );
 
-  const renderGroupCard = (group: HostGroupView) => {
+  const renderGroupCard = (group: HostGroupView, options: { dragHandle?: any; sortableClassName?: string } = {}) => {
     const hostIds = groupHostIds(group);
     return (
-      <Card key={group.id} className="action-card border-border/40 bg-card/60 backdrop-blur-md">
+      <Card key={group.id} className={cn("action-card group/sortable border-border/40 bg-card/60 backdrop-blur-md", options.sortableClassName)}>
         <CardContent className="action-card-content space-y-4 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -320,7 +336,10 @@ export default function HostGroupManager({
                 </div>
               </div>
             </div>
-            <HostGroupEnabledSwitch group={group} disabled={pendingToggleGroupIds.has(Number(group.id))} onToggle={toggleGroupEnabled} />
+            <div className="flex shrink-0 items-center gap-1">
+              {options.dragHandle}
+              <HostGroupEnabledSwitch group={group} disabled={pendingToggleGroupIds.has(Number(group.id))} onToggle={toggleGroupEnabled} />
+            </div>
           </div>
 
           <HostGroupHostPreview hostIds={hostIds} hostsById={hostsById} />
@@ -336,22 +355,40 @@ export default function HostGroupManager({
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground sm:text-sm">
-        按业务、地区或用途整理主机，主机排序仍使用主机管理中的序号。
+        按业务、地区或用途整理主机，分组顺序可直接拖动调整。
       </p>
 
       {isLoading ? (
         <DataSectionLoading label="正在加载主机分组" minHeight="min-h-[220px]" />
       ) : viewMode === "table" ? (
         <div key="host-group-table-view" className="card-mode-transition">
-          <AutoAnimateContainer className="grid grid-cols-1 gap-4 sm:hidden" duration={220}>
-            {sortedGroups.length === 0 ? renderEmptyState() : sortedGroups.map(renderGroupCard)}
-          </AutoAnimateContainer>
+          {sortedGroups.length === 0 ? (
+            <div className="sm:hidden">{renderEmptyState()}</div>
+          ) : (
+            <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+              <div className="grid grid-cols-1 gap-4 sm:hidden">
+                {sortedGroups.map((group) => (
+                  <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
+                    {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                      <div {...itemProps}>
+                        {renderGroupCard(group, {
+                          dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />,
+                          sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
+                        })}
+                      </div>
+                    )}
+                  </SortableItem>
+                ))}
+              </div>
+            </SortableReorderContext>
+          )}
           <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <Table className="min-w-[840px]">
+                <Table className="min-w-[884px]">
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-[44px]" />
                       <TableHead className="w-[220px]">分组</TableHead>
                       <TableHead className="w-[96px]">状态</TableHead>
                       <TableHead className="w-[96px]">主机数</TableHead>
@@ -362,14 +399,28 @@ export default function HostGroupManager({
                   <TableBody>
                     {sortedGroups.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={6}>
                           {renderEmptyState("border-0 bg-transparent shadow-none")}
                         </TableCell>
                       </TableRow>
-                    ) : sortedGroups.map((group) => {
+                    ) : (
+                      <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="vertical" restrictToList>
+                        {sortedGroups.map((group) => {
                       const hostIds = groupHostIds(group);
                       return (
-                        <TableRow key={group.id}>
+                        <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled} itemKind="row">
+                          {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                        <TableRow
+                          {...itemProps}
+                          className={cn(
+                            "group/sortable",
+                            isDragging && "opacity-55 ring-1 ring-primary/35",
+                            isDropTarget && "ring-1 ring-primary/45",
+                          )}
+                        >
+                          <TableCell className="w-[44px] px-2">
+                            <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
+                          </TableCell>
                           <TableCell>
                             <div className="flex min-w-0 items-center gap-2">
                               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -385,8 +436,12 @@ export default function HostGroupManager({
                           </TableCell>
                           <TableCell className="text-right">{groupActionButtons(group)}</TableCell>
                         </TableRow>
+                          )}
+                        </SortableItem>
                       );
                     })}
+                      </SortableReorderContext>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -394,9 +449,26 @@ export default function HostGroupManager({
           </Card>
         </div>
       ) : (
-        <AutoAnimateContainer key="host-group-card-view" className="standard-card-grid gap-4" duration={220}>
-          {sortedGroups.length === 0 ? renderEmptyState("col-span-full") : sortedGroups.map(renderGroupCard)}
-        </AutoAnimateContainer>
+        sortedGroups.length === 0 ? (
+          renderEmptyState("col-span-full")
+        ) : (
+          <SortableReorderContext sortable={groupSortable} ids={sortedGroups.map((group) => Number(group.id))} strategy="rect">
+            <div key="host-group-card-view" className="standard-card-grid gap-4">
+              {sortedGroups.map((group) => (
+                <SortableItem key={group.id} id={Number(group.id)} disabled={groupSortable.disabled}>
+                  {({ itemProps, handleProps, isDragging, isDropTarget }) => (
+                    <div {...itemProps}>
+                      {renderGroupCard(group, {
+                        dragHandle: <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />,
+                        sortableClassName: cn(isDragging && "opacity-55 ring-1 ring-primary/35", isDropTarget && "ring-1 ring-primary/45"),
+                      })}
+                    </div>
+                  )}
+                </SortableItem>
+              ))}
+            </div>
+          </SortableReorderContext>
+        )
       )}
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !pending && setDialogOpen(open)}>

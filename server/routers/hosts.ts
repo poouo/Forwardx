@@ -80,6 +80,7 @@ const hostGroupInputSchema = z.object({
   isEnabled: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(200).optional(),
 });
+const reorderIdsSchema = z.array(z.number().int().positive()).min(1).max(2000);
 
 function normalizeHostProbeServiceInput(input: z.infer<typeof hostProbeServiceInputSchema>) {
   if (input.method === "tcping" && !input.targetPort) throw new Error("TCPing 服务需要填写目标端口");
@@ -101,7 +102,7 @@ function normalizeHostGroupInput(input: z.infer<typeof hostGroupInputSchema>) {
     name: input.name.trim(),
     hostIds: Array.from(new Set((input.hostIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))),
     isEnabled: input.isEnabled !== false,
-    sortOrder: Math.max(0, Math.floor(Number(input.sortOrder) || 0)),
+    sortOrder: input.sortOrder === undefined ? undefined : Math.max(0, Math.floor(Number(input.sortOrder) || 0)),
   };
 }
 
@@ -676,6 +677,12 @@ export const hostsRouter = router({
         await db.deleteHostProbeService(input.id);
         return { success: true };
       }),
+    reorderProbeServices: adminProcedure
+      .input(z.object({ ids: reorderIdsSchema }))
+      .mutation(async ({ input }) => {
+        await db.reorderHostProbeServices(input.ids);
+        return { success: true };
+      }),
     hostGroups: adminProcedure.query(async () => db.getHostGroups()),
     createHostGroup: adminProcedure
       .input(hostGroupInputSchema)
@@ -701,6 +708,21 @@ export const hostsRouter = router({
         const group = await db.getHostGroupById(input.id);
         if (!group) throw new Error("主机分组不存在");
         await db.deleteHostGroup(input.id);
+        return { success: true };
+      }),
+    reorderHostGroups: adminProcedure
+      .input(z.object({ ids: reorderIdsSchema }))
+      .mutation(async ({ input }) => {
+        await db.reorderHostGroups(input.ids);
+        return { success: true };
+      }),
+    reorderHostGroupMembers: adminProcedure
+      .input(z.object({ groupId: z.number().int().positive(), hostIds: reorderIdsSchema }))
+      .mutation(async ({ input }) => {
+        const group = await db.getHostGroupById(input.groupId);
+        if (!group) throw new Error("主机分组不存在");
+        await assertHostGroupHostIdsExist(input.hostIds);
+        await db.reorderHostGroupMembers(input.groupId, input.hostIds);
         return { success: true };
       }),
     /** 获取所有主机列表（管理员用，用于权限分配） */
@@ -791,6 +813,12 @@ export const hostsRouter = router({
           userId: ctx.user.id,
         });
         return { id, agentToken };
+      }),
+    reorder: protectedProcedure
+      .input(z.object({ ids: reorderIdsSchema }))
+      .mutation(async ({ input, ctx }) => {
+        await db.reorderHosts(input.ids, ctx.user.role === "admin" ? undefined : ctx.user.id);
+        return { success: true };
       }),
     update: protectedProcedure
       .input(z.object({

@@ -1,11 +1,69 @@
 ﻿﻿import { and, desc, eq, sql } from "drizzle-orm";
 import { forwardGroupMembers, forwardGroups, forwardRuleTunnelExits, forwardRules, InsertForwardRule, tunnels } from "../../drizzle/schema";
 import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { queryRaw } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier } from "../dbCompat";
 import { describePortPolicy, isPortAllowedByPolicy, portPolicyFrom, portPolicyHasRestriction, type PortPolicySource } from "../portPolicy";
 import { sqlBool } from "./repositoryUtils";
 
 // ==================== Forward Rule Queries ====================
+
+export type ForwardRuleSortCategory = "local" | "tunnel" | "chain" | "group";
+
+function forwardRuleCategoryFromRow(row: any): ForwardRuleSortCategory {
+  const groupMode = String(row?.groupMode || "").toLowerCase();
+  if (groupMode === "port") return "local";
+  if (groupMode === "chain") return "chain";
+  if (Number(row?.forwardGroupId || 0) > 0) return "group";
+  if (Number(row?.tunnelId || 0) > 0) return "tunnel";
+  return "local";
+}
+
+function forwardRuleCategorySql(ruleAlias = "r", groupAlias = "g") {
+  const q = quoteIdentifier;
+  return `CASE
+    WHEN ${groupAlias}.${q("groupMode")} = 'port' THEN 'local'
+    WHEN ${groupAlias}.${q("groupMode")} = 'chain' THEN 'chain'
+    WHEN ${ruleAlias}.${q("forwardGroupId")} IS NOT NULL AND ${ruleAlias}.${q("forwardGroupId")} <> 0 THEN 'group'
+    WHEN ${ruleAlias}.${q("tunnelId")} IS NOT NULL AND ${ruleAlias}.${q("tunnelId")} <> 0 THEN 'tunnel'
+    ELSE 'local'
+  END`;
+}
+
+async function forwardRuleCategoryForPayload(rule: Partial<InsertForwardRule>): Promise<ForwardRuleSortCategory> {
+  const groupId = Number((rule as any).forwardGroupId || 0);
+  if (groupId > 0) {
+    const q = quoteIdentifier;
+    const rows = await queryRaw<{ groupMode: string }>(
+      `SELECT ${q("groupMode")} AS ${q("groupMode")} FROM ${q("forward_groups")} WHERE ${q("id")} = ? LIMIT 1`,
+      [groupId],
+    ).catch(() => []);
+    const mode = String(rows[0]?.groupMode || "").toLowerCase();
+    if (mode === "port") return "local";
+    if (mode === "chain") return "chain";
+    return "group";
+  }
+  return Number((rule as any).tunnelId || 0) > 0 ? "tunnel" : "local";
+}
+
+async function nextForwardRuleSortOrder(userId: number, category: ForwardRuleSortCategory) {
+  const q = quoteIdentifier;
+  const rows = await queryRaw<{ nextSortOrder: number }>(
+    `SELECT COALESCE(MAX(r.${q("sortOrder")}), -1) + 1 AS ${q("nextSortOrder")}
+       FROM ${q("forward_rules")} r
+       LEFT JOIN ${q("forward_groups")} g ON g.${q("id")} = r.${q("forwardGroupId")}
+      WHERE r.${q("userId")} = ?
+        AND r.${q("pendingDelete")} = ?
+        AND r.${q("forwardGroupRuleId")} IS NULL
+        AND r.${q("id")} NOT IN (
+          SELECT ${q("ruleId")} FROM ${q("forward_group_members")} WHERE ${q("ruleId")} IS NOT NULL
+        )
+        AND ${forwardRuleCategorySql("r", "g")} = ?`,
+    [userId, boolValue(false), category],
+  ).catch(() => []);
+  const value = Number(rows[0]?.nextSortOrder || 0);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
 
 export async function getForwardRules(userId?: number, hostId?: number) {
   const db = await getDb();
@@ -17,7 +75,7 @@ export async function getForwardRules(userId?: number, hostId?: number) {
   ];
   if (userId) conds.push(eq(forwardRules.userId, userId));
   if (hostId) conds.push(eq(forwardRules.hostId, hostId));
-  return db.select().from(forwardRules).where(and(...conds)).orderBy(desc(forwardRules.createdAt));
+  return db.select().from(forwardRules).where(and(...conds)).orderBy(sql`${forwardRules.sortOrder} ASC`, desc(forwardRules.createdAt), desc(forwardRules.id));
 }
 
 export async function getForwardRulesForUserSync(userId: number) {
@@ -27,7 +85,7 @@ export async function getForwardRulesForUserSync(userId: number) {
     eq(forwardRules.userId, userId),
     eq(forwardRules.pendingDelete, false),
     eq(forwardRules.isForwardGroupTemplate, false),
-  )).orderBy(desc(forwardRules.createdAt));
+  )).orderBy(sql`${forwardRules.sortOrder} ASC`, desc(forwardRules.createdAt), desc(forwardRules.id));
 }
 
 export async function getForwardRulesForAgent(hostId?: number) {
@@ -126,7 +184,49 @@ export async function getForwardGroupChildRulesForMember(memberId: number) {
 export async function createForwardRule(rule: InsertForwardRule) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return insertAndGetId("forward_rules", rule as any);
+  const payload = { ...(rule as any) };
+  if (payload.sortOrder === undefined && !payload.forwardGroupRuleId && !payload.forwardGroupMemberId) {
+    payload.sortOrder = await nextForwardRuleSortOrder(Number(payload.userId || 0), await forwardRuleCategoryForPayload(payload));
+  }
+  return insertAndGetId("forward_rules", payload);
+}
+
+export async function reorderForwardRules(category: ForwardRuleSortCategory, ids: number[], userId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const orderedIds = ids.map((id) => Math.floor(Number(id))).filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const idList = inList(orderedIds);
+  const q = quoteIdentifier;
+  const params: any[] = [...idList.params, boolValue(false)];
+  let userWhere = "";
+  if (userId) {
+    userWhere = ` AND r.${q("userId")} = ?`;
+    params.push(userId);
+  }
+  const rows = await queryRaw<any>(
+    `SELECT
+        r.${q("id")} AS ${q("id")},
+        r.${q("userId")} AS ${q("userId")},
+        r.${q("tunnelId")} AS ${q("tunnelId")},
+        r.${q("forwardGroupId")} AS ${q("forwardGroupId")},
+        g.${q("groupMode")} AS ${q("groupMode")}
+       FROM ${q("forward_rules")} r
+       LEFT JOIN ${q("forward_groups")} g ON g.${q("id")} = r.${q("forwardGroupId")}
+      WHERE r.${q("id")} IN ${idList.sql}
+        AND r.${q("pendingDelete")} = ?
+        AND r.${q("forwardGroupRuleId")} IS NULL
+        AND r.${q("id")} NOT IN (
+          SELECT ${q("ruleId")} FROM ${q("forward_group_members")} WHERE ${q("ruleId")} IS NOT NULL
+        )
+        ${userWhere}`,
+    params,
+  );
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含不存在或无权访问的规则");
+  if (rows.some((row: any) => forwardRuleCategoryFromRow(row) !== category)) throw new Error("排序规则类型不一致");
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(`UPDATE ${q("forward_rules")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+  }
 }
 
 export async function updateForwardRule(id: number, data: Partial<InsertForwardRule>) {

@@ -24,12 +24,18 @@ type DevResources = {
   tunnels: {
     primaryTunnelId: number;
     multiEntryMultiExitTunnelId: number;
+    sgUsWssTunnelId: number;
+    relayTcpTunnelId: number;
   };
   groups: {
     entryGroupId: number;
     exitGroupId: number;
     failoverGroupId: number;
     chainGroupId: number;
+    apiFailoverGroupId: number;
+    mediaFailoverGroupId: number;
+    apiChainGroupId: number;
+    longChainGroupId: number;
   };
 };
 
@@ -565,6 +571,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastTestStatus: "success",
     lastTestMessage: "Primary dev tunnel healthy",
     lastTestAt: nowDate(),
+    sortOrder: 0,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -602,6 +609,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastStatus: "healthy",
     lastMessage: "HK entry active, SG entry standby",
     isEnabled: true,
+    sortOrder: 0,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -655,6 +663,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastStatus: "healthy",
     lastMessage: "HK path currently active",
     isEnabled: true,
+    sortOrder: 0,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -722,6 +731,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastStatus: "healthy",
     lastMessage: "Three exits available",
     isEnabled: true,
+    sortOrder: 0,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -764,6 +774,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastStatus: "healthy",
     lastMessage: "Multi-entry chain ready",
     isEnabled: true,
+    sortOrder: 0,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -812,6 +823,7 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     lastTestStatus: "success",
     lastTestMessage: "Dev multi-entry/multi-exit probe succeeded",
     lastTestAt: nowDate(),
+    sortOrder: 1,
     createdAt: nowDate(),
     updatedAt: nowDate(),
   });
@@ -867,32 +879,477 @@ async function seedTunnelsAndGroups(adminId: number, hostIds: number[]): Promise
     });
   }
 
+  const sgUsWssTunnelId = await insertAndGetId("tunnels", {
+    userId: adminId,
+    name: "SG -> US WSS tunnel",
+    entryHostId: hostIds[2],
+    exitHostId: hostIds[3],
+    mode: "wss",
+    certDomain: "sg-us.dev.forwardx.local",
+    secret: "dev-wss-secret",
+    listenPort: 25001,
+    rateLimitMbps: 120,
+    trafficMultiplier: 150,
+    portRangeStart: 25000,
+    portRangeEnd: 25999,
+    networkType: "public",
+    connectHost: "172.86.92.18",
+    proxyProtocolReceive: true,
+    proxyProtocolSend: true,
+    proxyProtocolVersion: 2,
+    isEnabled: true,
+    isRunning: false,
+    lastLatencyMs: 156,
+    lastTestStatus: "failed",
+    lastTestMessage: "US backup node is offline in dev data",
+    lastTestAt: nowDate(),
+    sortOrder: 2,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await insertAndGetId("tunnel_latency_stats", {
+    tunnelId: sgUsWssTunnelId,
+    seriesKey: "total",
+    seriesLabel: "Total",
+    latencyMs: 156,
+    isTimeout: true,
+    recordedAt: nowDate(),
+  });
+
+  const relayTcpTunnelId = await insertAndGetId("tunnels", {
+    userId: adminId,
+    name: "HK -> SG -> JP TCP relay",
+    entryHostId: hostIds[0],
+    exitHostId: hostIds[1],
+    mode: "tcp",
+    secret: "dev-tcp-relay-secret",
+    listenPort: 25101,
+    rateLimitMbps: 500,
+    trafficMultiplier: 85,
+    portRangeStart: 25100,
+    portRangeEnd: 25199,
+    networkType: "private",
+    connectHost: "fd00:10:10::20",
+    tcpFastOpen: true,
+    isEnabled: true,
+    isRunning: true,
+    lastLatencyMs: 74,
+    lastTestStatus: "success",
+    lastTestMessage: "Three-hop relay probe succeeded",
+    lastTestAt: nowDate(),
+    sortOrder: 3,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  for (const [seq, hostId, listenPort, connectHost] of [
+    [0, hostIds[0], 25101, null],
+    [1, hostIds[2], 25102, "10.10.3.10"],
+    [2, hostIds[1], 25101, "fd00:10:10::20"],
+  ] as const) {
+    await insertAndGetId("tunnel_hops", {
+      tunnelId: relayTcpTunnelId,
+      seq,
+      hostId,
+      listenPort,
+      connectHost,
+    });
+  }
+  for (const [seriesKey, seriesLabel, latencyMs] of [
+    ["total", "Total", 74],
+    ["hop-hk-sg", "HK entry -> SG relay", 28],
+    ["hop-sg-jp", "SG relay -> JP exit", 46],
+  ] as const) {
+    await insertAndGetId("tunnel_latency_stats", {
+      tunnelId: relayTcpTunnelId,
+      seriesKey,
+      seriesLabel,
+      latencyMs,
+      isTimeout: false,
+      recordedAt: nowDate(),
+    });
+  }
+
+  const addForwardGroupMembers = async (
+    groupId: number,
+    members: Array<{
+      hostId: number;
+      connectHost?: string | null;
+      priority?: number;
+      latency?: number | null;
+      status?: string;
+      chinaStatus?: string;
+      chinaLatency?: number | null;
+      enabled?: boolean;
+    }>,
+  ) => {
+    const ids: number[] = [];
+    for (const [index, member] of members.entries()) {
+      const priority = member.priority ?? index + 1;
+      const status = member.status || "healthy";
+      ids.push(await insertAndGetId("forward_group_members", {
+        groupId,
+        memberType: "host",
+        hostId: member.hostId,
+        connectHost: member.connectHost ?? null,
+        priority,
+        isEnabled: member.enabled ?? true,
+        healthStatus: status,
+        lastLatencyMs: member.latency ?? null,
+        chinaHealthStatus: member.chinaStatus || status,
+        chinaHealthLatencyMs: member.chinaLatency ?? (member.latency == null ? null : member.latency + 14),
+        failureSince: status === "healthy" ? null : minutesAgo(10 + priority),
+        healthySince: status === "healthy" ? minutesAgo(20 + priority * 4) : null,
+        lastCheckedAt: nowDate(),
+        createdAt: nowDate(),
+        updatedAt: nowDate(),
+      }));
+    }
+    return ids;
+  };
+
+  const addGroupLatency = async (groupId: number, latencyMs: number | null, isTimeout = false) => {
+    await insertAndGetId("forward_group_latency_stats", {
+      groupId,
+      latencyMs,
+      isTimeout,
+      recordedAt: nowDate(),
+    });
+  };
+
+  const portForwardGroups = [
+    {
+      name: "Port forward - HK web",
+      remark: "Single-host port forward item used for drag testing.",
+      hostId: hostIds[0],
+      sortOrder: 0,
+      forwardType: "iptables",
+      sourcePort: 15280,
+      protocol: "tcp",
+      targetIp: "10.60.0.80",
+      targetPort: 80,
+      lastStatus: "healthy",
+      lastMessage: "HK web forwarding ready",
+      latency: 16,
+    },
+    {
+      name: "Port forward - JP game",
+      remark: "TCP and UDP port forward with a wider card body.",
+      hostId: hostIds[1],
+      sortOrder: 1,
+      forwardType: "realm",
+      sourcePort: 21002,
+      protocol: "both",
+      targetIp: "10.61.0.25",
+      targetPort: 25565,
+      trafficMultiplier: 120,
+      proxyProtocolSend: true,
+      lastStatus: "healthy",
+      lastMessage: "JP game route is healthy",
+      latency: 42,
+    },
+    {
+      name: "Port forward - SG UDP",
+      remark: "UDP over TCP sample for compact-card drag testing.",
+      hostId: hostIds[2],
+      sortOrder: 2,
+      forwardType: "gost",
+      sourcePort: 32002,
+      protocol: "udp",
+      targetIp: "10.62.0.53",
+      targetPort: 53,
+      udpOverTcp: true,
+      udpOverTcpPort: 32003,
+      lastStatus: "healthy",
+      lastMessage: "SG DNS relay ready",
+      latency: 31,
+    },
+  ];
+  for (const group of portForwardGroups) {
+    const groupId = await insertAndGetId("forward_groups", {
+      userId: adminId,
+      name: group.name,
+      remark: group.remark,
+      groupType: "host",
+      groupMode: "port",
+      forwardType: group.forwardType,
+      sourcePort: group.sourcePort,
+      protocol: group.protocol,
+      targetIp: group.targetIp,
+      targetPort: group.targetPort,
+      trafficMultiplier: group.trafficMultiplier ?? 100,
+      proxyProtocolSend: !!group.proxyProtocolSend,
+      udpOverTcp: !!group.udpOverTcp,
+      udpOverTcpPort: group.udpOverTcpPort ?? null,
+      lastStatus: group.lastStatus,
+      lastMessage: group.lastMessage,
+      isEnabled: true,
+      sortOrder: group.sortOrder,
+      createdAt: nowDate(),
+      updatedAt: nowDate(),
+    });
+    await addForwardGroupMembers(groupId, [{ hostId: group.hostId, latency: group.latency }]);
+  }
+
+  const backupEntryGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Backup entry group",
+    remark: "Extra entry group so entry tab can test drag sorting.",
+    groupType: "host",
+    groupMode: "entry",
+    forwardType: "iptables",
+    domain: "backup-entry.dev.forwardx.local",
+    recordType: "A",
+    sourcePort: 10002,
+    protocol: "both",
+    targetIp: "198.51.100.20",
+    targetPort: 443,
+    lastDdnsValue: "8.219.73.16",
+    lastStatus: "healthy",
+    lastMessage: "SG entry preferred, HK entry standby",
+    isEnabled: true,
+    sortOrder: 1,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(backupEntryGroupId, [
+    { hostId: hostIds[2], latency: 24, priority: 1 },
+    { hostId: hostIds[0], latency: 28, priority: 2 },
+  ]);
+
+  const dualStackEntryGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Dual-stack entry group",
+    remark: "AAAA entry data with one healthy IPv6 member.",
+    groupType: "host",
+    groupMode: "entry",
+    forwardType: "iptables",
+    domain: "v6-entry.dev.forwardx.local",
+    recordType: "AAAA",
+    sourcePort: 10003,
+    protocol: "tcp",
+    targetIp: "2001:db8:30::10",
+    targetPort: 443,
+    lastDdnsValue: "2a0e:97c0:3f4:1::41d",
+    lastStatus: "healthy",
+    lastMessage: "IPv6 entry available",
+    isEnabled: true,
+    sortOrder: 2,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(dualStackEntryGroupId, [
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 38, priority: 1 },
+    { hostId: hostIds[3], latency: null, status: "failed", chinaStatus: "failed", priority: 2 },
+  ]);
+
+  const ipv6ExitGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "IPv6 exit pool",
+    remark: "Extra exit group with mixed connect addresses.",
+    groupType: "host",
+    groupMode: "exit",
+    forwardType: "nginx_stream",
+    sourcePort: 24447,
+    protocol: "tcp",
+    targetIp: "10.30.0.47",
+    targetPort: 443,
+    lastStatus: "healthy",
+    lastMessage: "IPv6 exit primary is healthy",
+    isEnabled: true,
+    sortOrder: 1,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(ipv6ExitGroupId, [
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 41, priority: 1 },
+    { hostId: hostIds[2], connectHost: "10.10.3.10", latency: 59, priority: 2 },
+  ]);
+
+  const emergencyExitGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Emergency exit pool",
+    remark: "Contains an offline member to create different card heights.",
+    groupType: "host",
+    groupMode: "exit",
+    forwardType: "nginx_stream",
+    sourcePort: 24448,
+    protocol: "both",
+    targetIp: "10.30.0.48",
+    targetPort: 8443,
+    lastStatus: "degraded",
+    lastMessage: "US backup offline, HK emergency exit still enabled",
+    isEnabled: true,
+    sortOrder: 2,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(emergencyExitGroupId, [
+    { hostId: hostIds[3], connectHost: "172.86.92.18", latency: null, status: "failed", chinaStatus: "failed", priority: 1 },
+    { hostId: hostIds[0], connectHost: "10.10.1.10", latency: 22, priority: 2 },
+  ]);
+
+  const apiFailoverGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "API failover group",
+    remark: "Additional forward group used to test drag sorting.",
+    groupType: "host",
+    groupMode: "failover",
+    entryGroupId: backupEntryGroupId,
+    forwardType: "nginx_stream",
+    sourcePort: 16443,
+    protocol: "tcp",
+    targetIp: "10.70.0.44",
+    targetPort: 443,
+    chinaHealthCheckEnabled: true,
+    chinaHealthCheckTarget: "www.qq.com:80",
+    lastStatus: "healthy",
+    lastMessage: "JP node currently active",
+    isEnabled: true,
+    sortOrder: 1,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  const apiFailoverMembers = await addForwardGroupMembers(apiFailoverGroupId, [
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 39, priority: 1 },
+    { hostId: hostIds[2], connectHost: "10.10.3.10", latency: 47, priority: 2 },
+  ]);
+  await executeRaw(
+    `UPDATE ${quoteDbIdentifier("forward_groups")}
+        SET ${quoteDbIdentifier("activeMemberId")} = ?
+      WHERE ${quoteDbIdentifier("id")} = ?`,
+    [apiFailoverMembers[0], apiFailoverGroupId],
+  );
+  await addGroupLatency(apiFailoverGroupId, 47);
+
+  const mediaFailoverGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Media failover group",
+    remark: "Degraded failover data with one offline node.",
+    groupType: "host",
+    groupMode: "failover",
+    entryGroupId: entryGroupId,
+    forwardType: "realm",
+    sourcePort: 19350,
+    protocol: "both",
+    targetIp: "10.71.0.35",
+    targetPort: 1935,
+    failoverStrategy: "round_robin",
+    lastStatus: "degraded",
+    lastMessage: "SG active, US backup unavailable",
+    isEnabled: true,
+    sortOrder: 2,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  const mediaFailoverMembers = await addForwardGroupMembers(mediaFailoverGroupId, [
+    { hostId: hostIds[2], connectHost: "10.10.3.10", latency: 35, priority: 1 },
+    { hostId: hostIds[3], connectHost: "172.86.92.18", latency: null, status: "failed", chinaStatus: "failed", priority: 2 },
+  ]);
+  await executeRaw(
+    `UPDATE ${quoteDbIdentifier("forward_groups")}
+        SET ${quoteDbIdentifier("activeMemberId")} = ?
+      WHERE ${quoteDbIdentifier("id")} = ?`,
+    [mediaFailoverMembers[0], mediaFailoverGroupId],
+  );
+  await addGroupLatency(mediaFailoverGroupId, 35);
+
+  const apiChainGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "API edge chain",
+    remark: "No entry group; full chain is visible for card-height testing.",
+    groupType: "host",
+    groupMode: "chain",
+    forwardType: "gost",
+    sourcePort: 18181,
+    protocol: "tcp",
+    targetIp: "10.80.0.81",
+    targetPort: 8081,
+    proxyProtocolReceive: true,
+    proxyProtocolSend: true,
+    proxyProtocolVersion: 2,
+    lastStatus: "healthy",
+    lastMessage: "HK -> SG -> JP chain ready",
+    isEnabled: true,
+    sortOrder: 1,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(apiChainGroupId, [
+    { hostId: hostIds[0], connectHost: null, latency: 18, priority: 1 },
+    { hostId: hostIds[2], connectHost: "10.10.3.10", latency: 31, priority: 2 },
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 44, priority: 3 },
+  ]);
+  await addGroupLatency(apiChainGroupId, 76);
+
+  const longChainGroupId = await insertAndGetId("forward_groups", {
+    userId: adminId,
+    name: "Long relay chain",
+    remark: "Entry-group chain with a degraded tail member.",
+    groupType: "host",
+    groupMode: "chain",
+    entryGroupId: backupEntryGroupId,
+    forwardType: "realm",
+    sourcePort: 18282,
+    protocol: "both",
+    targetIp: "10.81.0.82",
+    targetPort: 8082,
+    tcpFastOpen: true,
+    zeroCopy: true,
+    lastStatus: "degraded",
+    lastMessage: "Chain works, US tail is marked offline for UI testing",
+    isEnabled: true,
+    sortOrder: 2,
+    createdAt: nowDate(),
+    updatedAt: nowDate(),
+  });
+  await addForwardGroupMembers(longChainGroupId, [
+    { hostId: hostIds[0], connectHost: "10.10.1.10", latency: 20, priority: 1 },
+    { hostId: hostIds[1], connectHost: "fd00:10:10::20", latency: 43, priority: 2 },
+    { hostId: hostIds[3], connectHost: "172.86.92.18", latency: null, status: "failed", chinaStatus: "failed", priority: 3 },
+  ]);
+  await addGroupLatency(longChainGroupId, 112, true);
+
   return {
     tunnels: {
       primaryTunnelId,
       multiEntryMultiExitTunnelId,
+      sgUsWssTunnelId,
+      relayTcpTunnelId,
     },
     groups: {
       entryGroupId,
       exitGroupId,
       failoverGroupId,
       chainGroupId,
+      apiFailoverGroupId,
+      mediaFailoverGroupId,
+      apiChainGroupId,
+      longChainGroupId,
     },
   };
 }
 
 async function seedRules(hostIds: number[], resources: DevResources, usersSeed: DevUsers): Promise<DevRules> {
   const rules = [
-    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Website TCP forward", forwardType: "iptables", protocol: "tcp", sourcePort: 15201, targetIp: "2a0e:97c0:3f4:1::41d", targetPort: 5201, isRunning: true },
-    { userId: usersSeed.adminId, hostId: hostIds[1], name: "Game TCP+UDP forward", forwardType: "realm", protocol: "both", sourcePort: 21001, targetIp: "10.10.3.88", targetPort: 25565, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true, proxyProtocolExitSend: true },
-    { userId: usersSeed.adminId, hostId: hostIds[2], name: "UDP over TCP sample", forwardType: "gost", protocol: "both", sourcePort: 32000, targetIp: "172.16.8.30", targetPort: 19132, udpOverTcp: true, udpOverTcpPort: 32001, isRunning: true },
-    { userId: usersSeed.adminId, hostId: hostIds[3], name: "Offline backup rule", forwardType: "socat", protocol: "tcp", sourcePort: 30080, targetIp: "192.168.9.20", targetPort: 80, isRunning: false, disabledByUser: true },
-    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev multi-entry/multi-exit tunnel", forwardType: "gost", protocol: "both", sourcePort: 24443, targetIp: "10.30.0.44", targetPort: 443, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId, tunnelExitPort: 24444, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true },
-    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev group template", forwardType: "nginx_stream", protocol: "both", sourcePort: 15566, targetIp: "10.20.0.88", targetPort: 25565, forwardGroupId: resources.groups.failoverGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, isRunning: false },
-    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev chain template", forwardType: "realm", protocol: "tcp", sourcePort: 18080, targetIp: "10.40.0.80", targetPort: 8080, forwardGroupId: resources.groups.chainGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, isRunning: false },
-    { userId: usersSeed.activeUserId, hostId: hostIds[1], name: "User tunnel demo", forwardType: "gost", protocol: "tcp", sourcePort: 26001, targetIp: "203.0.113.10", targetPort: 443, tunnelId: resources.tunnels.primaryTunnelId, tunnelExitPort: 26002, isRunning: true, failoverEnabled: true, failoverTargets: JSON.stringify([{ targetIp: "203.0.113.11", targetPort: 443 }]) },
-    { userId: usersSeed.pausedUserId, hostId: hostIds[2], name: "Traffic billing pause demo", forwardType: "realm", protocol: "both", sourcePort: 27500, targetIp: "198.18.1.25", targetPort: 27015, isRunning: false, disabledByUser: true },
-    { userId: usersSeed.expiredUserId, hostId: hostIds[3], name: "Expired account demo", forwardType: "socat", protocol: "tcp", sourcePort: 29500, targetIp: "192.0.2.81", targetPort: 8443, isRunning: false, disabledByUser: true },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Website TCP forward", forwardType: "iptables", protocol: "tcp", sourcePort: 15201, targetIp: "2a0e:97c0:3f4:1::41d", targetPort: 5201, sortOrder: 0, isRunning: true },
+    { userId: usersSeed.adminId, hostId: hostIds[1], name: "Game TCP+UDP forward", forwardType: "realm", protocol: "both", sourcePort: 21001, targetIp: "10.10.3.88", targetPort: 25565, sortOrder: 1, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true, proxyProtocolExitSend: true },
+    { userId: usersSeed.adminId, hostId: hostIds[2], name: "UDP over TCP sample", forwardType: "gost", protocol: "both", sourcePort: 32000, targetIp: "172.16.8.30", targetPort: 19132, sortOrder: 2, udpOverTcp: true, udpOverTcpPort: 32001, isRunning: true },
+    { userId: usersSeed.adminId, hostId: hostIds[3], name: "Offline backup rule", forwardType: "socat", protocol: "tcp", sourcePort: 30080, targetIp: "192.168.9.20", targetPort: 80, sortOrder: 3, isRunning: false, disabledByUser: true },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Local API mirror", forwardType: "nginx_stream", protocol: "tcp", sourcePort: 15443, targetIp: "10.64.0.43", targetPort: 443, sortOrder: 4, isRunning: true, tcpFastOpen: true, zeroCopy: true },
+    { userId: usersSeed.adminId, hostId: hostIds[2], name: "Local metrics UDP", forwardType: "realm", protocol: "udp", sourcePort: 18125, targetIp: "10.64.0.125", targetPort: 8125, sortOrder: 5, isRunning: true },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev multi-entry/multi-exit tunnel", forwardType: "gost", protocol: "both", sourcePort: 24443, targetIp: "10.30.0.44", targetPort: 443, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId, tunnelExitPort: 24444, sortOrder: 0, isRunning: true, proxyProtocolSend: true, proxyProtocolExitReceive: true },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Primary TLS tunnel rule", forwardType: "gost", protocol: "tcp", sourcePort: 24080, targetIp: "10.30.0.80", targetPort: 80, tunnelId: resources.tunnels.primaryTunnelId, tunnelExitPort: 24081, sortOrder: 1, isRunning: true },
+    { userId: usersSeed.adminId, hostId: hostIds[2], name: "SG WSS tunnel standby", forwardType: "gost", protocol: "tcp", sourcePort: 25080, targetIp: "10.90.0.80", targetPort: 80, tunnelId: resources.tunnels.sgUsWssTunnelId, tunnelExitPort: 25081, sortOrder: 2, isRunning: false, disabledByTunnel: true },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Relay TCP tunnel rule", forwardType: "gost", protocol: "both", sourcePort: 25180, targetIp: "10.91.0.80", targetPort: 8080, tunnelId: resources.tunnels.relayTcpTunnelId, tunnelExitPort: 25181, sortOrder: 3, isRunning: true, failoverEnabled: true, failoverTargets: JSON.stringify([{ targetIp: "10.91.0.81", targetPort: 8080 }]) },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev group template", forwardType: "nginx_stream", protocol: "both", sourcePort: 15566, targetIp: "10.20.0.88", targetPort: 25565, forwardGroupId: resources.groups.failoverGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, sortOrder: 0, isRunning: false },
+    { userId: usersSeed.adminId, hostId: hostIds[1], name: "API failover template", forwardType: "nginx_stream", protocol: "tcp", sourcePort: 16443, targetIp: "10.70.0.44", targetPort: 443, forwardGroupId: resources.groups.apiFailoverGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, sortOrder: 1, isRunning: false, proxyProtocolSend: true },
+    { userId: usersSeed.adminId, hostId: hostIds[2], name: "Media failover template", forwardType: "realm", protocol: "both", sourcePort: 19350, targetIp: "10.71.0.35", targetPort: 1935, forwardGroupId: resources.groups.mediaFailoverGroupId, isForwardGroupTemplate: true, sortOrder: 2, isRunning: false },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Dev chain template", forwardType: "realm", protocol: "tcp", sourcePort: 18080, targetIp: "10.40.0.80", targetPort: 8080, forwardGroupId: resources.groups.chainGroupId, isForwardGroupTemplate: true, telegramErrorNotifyEnabled: true, sortOrder: 0, isRunning: false },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "API edge chain template", forwardType: "gost", protocol: "tcp", sourcePort: 18181, targetIp: "10.80.0.81", targetPort: 8081, forwardGroupId: resources.groups.apiChainGroupId, isForwardGroupTemplate: true, sortOrder: 1, isRunning: false, proxyProtocolReceive: true, proxyProtocolSend: true, proxyProtocolVersion: 2 },
+    { userId: usersSeed.adminId, hostId: hostIds[0], name: "Long relay chain template", forwardType: "realm", protocol: "both", sourcePort: 18282, targetIp: "10.81.0.82", targetPort: 8082, forwardGroupId: resources.groups.longChainGroupId, isForwardGroupTemplate: true, sortOrder: 2, isRunning: false, tcpFastOpen: true, zeroCopy: true },
+    { userId: usersSeed.activeUserId, hostId: hostIds[1], name: "User tunnel demo", forwardType: "gost", protocol: "tcp", sourcePort: 26001, targetIp: "203.0.113.10", targetPort: 443, tunnelId: resources.tunnels.primaryTunnelId, tunnelExitPort: 26002, sortOrder: 0, isRunning: true, failoverEnabled: true, failoverTargets: JSON.stringify([{ targetIp: "203.0.113.11", targetPort: 443 }]) },
+    { userId: usersSeed.pausedUserId, hostId: hostIds[2], name: "Traffic billing pause demo", forwardType: "realm", protocol: "both", sourcePort: 27500, targetIp: "198.18.1.25", targetPort: 27015, sortOrder: 0, isRunning: false, disabledByUser: true },
+    { userId: usersSeed.expiredUserId, hostId: hostIds[3], name: "Expired account demo", forwardType: "socat", protocol: "tcp", sourcePort: 29500, targetIp: "192.0.2.81", targetPort: 8443, sortOrder: 0, isRunning: false, disabledByUser: true },
   ] as const;
 
   const allRuleIds: number[] = [];
@@ -911,13 +1368,20 @@ async function seedRules(hostIds: number[], resources: DevResources, usersSeed: 
     }));
   }
 
-  const multiExitRuleId = allRuleIds[4];
-  await reconcileForwardRuleTunnelExits(
-    { id: multiExitRuleId, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId },
-    { id: resources.tunnels.multiEntryMultiExitTunnelId, mode: "tls", loadBalanceEnabled: true },
-  );
-  await syncForwardGroupRules(resources.groups.failoverGroupId, { preserveRuntime: true });
-  await syncForwardGroupRules(resources.groups.chainGroupId, { preserveRuntime: true, validatePorts: false });
+  const ruleIdByName = new Map(rules.map((rule, index) => [rule.name, allRuleIds[index]]));
+  const multiExitRuleId = ruleIdByName.get("Dev multi-entry/multi-exit tunnel");
+  if (multiExitRuleId) {
+    await reconcileForwardRuleTunnelExits(
+      { id: multiExitRuleId, tunnelId: resources.tunnels.multiEntryMultiExitTunnelId },
+      { id: resources.tunnels.multiEntryMultiExitTunnelId, mode: "tls", loadBalanceEnabled: true },
+    );
+  }
+  for (const groupId of [resources.groups.failoverGroupId, resources.groups.apiFailoverGroupId, resources.groups.mediaFailoverGroupId]) {
+    await syncForwardGroupRules(groupId, { preserveRuntime: true });
+  }
+  for (const groupId of [resources.groups.chainGroupId, resources.groups.apiChainGroupId, resources.groups.longChainGroupId]) {
+    await syncForwardGroupRules(groupId, { preserveRuntime: true, validatePorts: false });
+  }
 
   for (const [index, ruleId] of allRuleIds.entries()) {
     const rule = rules[index];
@@ -952,11 +1416,11 @@ async function seedRules(hostIds: number[], resources: DevResources, usersSeed: 
 
   return {
     allRuleIds,
-    adminRuleIds: allRuleIds.slice(0, 7),
+    adminRuleIds: allRuleIds.filter((_, index) => rules[index].userId === usersSeed.adminId),
     userRuleIds: {
-      activeUserRuleId: allRuleIds[7],
-      pausedUserRuleId: allRuleIds[8],
-      expiredUserRuleId: allRuleIds[9],
+      activeUserRuleId: ruleIdByName.get("User tunnel demo") || 0,
+      pausedUserRuleId: ruleIdByName.get("Traffic billing pause demo") || 0,
+      expiredUserRuleId: ruleIdByName.get("Expired account demo") || 0,
     },
   };
 }

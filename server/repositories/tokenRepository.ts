@@ -1,6 +1,7 @@
-﻿import { desc, eq } from "drizzle-orm";
+﻿import { asc, desc, eq } from "drizzle-orm";
 import { agentTokens, hosts, InsertAgentToken } from "../../drizzle/schema";
-import { getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
+import { inList, quoteIdentifier } from "../dbCompat";
 
 // ==================== Agent Token Queries ====================
 
@@ -67,12 +68,37 @@ export async function getAgentTokens(userId?: number) {
     .from(agentTokens)
     .leftJoin(hosts, eq(agentTokens.hostId, hosts.id));
   const rows = userId
-    ? await query.where(eq(agentTokens.userId, userId)).orderBy(desc(agentTokens.createdAt))
-    : await query.orderBy(desc(agentTokens.createdAt));
+    ? await query.where(eq(agentTokens.userId, userId)).orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id))
+    : await query.orderBy(asc(agentTokens.sortOrder), desc(agentTokens.createdAt), desc(agentTokens.id));
   return rows.map((row: any) => ({
     ...row.token,
     host: row.host?.id ? withComputedOnline(row.host) : null,
   }));
+}
+
+export async function reorderAgentTokens(ids: number[], userId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const orderedIds = Array.from(ids || [])
+    .map((id) => Math.floor(Number(id)))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const q = quoteIdentifier;
+  const list = inList(orderedIds);
+  const params: any[] = [...list.params];
+  let userWhere = "";
+  if (userId) {
+    userWhere = ` AND ${q("userId")} = ?`;
+    params.push(userId);
+  }
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")} FROM ${q("agent_tokens")} WHERE ${q("id")} IN ${list.sql}${userWhere}`,
+    params,
+  );
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含无权操作或不存在的 Token");
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(`UPDATE ${q("agent_tokens")} SET ${q("sortOrder")} = ? WHERE ${q("id")} = ?`, [index, id]);
+  }
 }
 
 export async function markAgentTokenUsed(token: string, hostId: number) {

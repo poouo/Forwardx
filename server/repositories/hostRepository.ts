@@ -19,7 +19,7 @@ import {
   tunnels,
   userHostPermissions,
 } from "../../drizzle/schema";
-import { executeRaw, getDb, insertAndGetId, nowDate } from "../dbRuntime";
+import { executeRaw, getDb, insertAndGetId, nowDate, queryRaw } from "../dbRuntime";
 import { boolValue, inList, quoteIdentifier, sqlCountAll } from "../dbCompat";
 import { sqlBool } from "./repositoryUtils";
 
@@ -65,6 +65,31 @@ export async function updateHost(id: number, data: Partial<InsertHost>) {
   const db = await getDb();
   if (!db) return;
   await db.update(hosts).set({ ...data, updatedAt: nowDate() }).where(eq(hosts.id, id));
+}
+
+export async function reorderHosts(ids: number[], userId?: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const orderedIds = Array.from(ids)
+    .map((id) => Math.floor(Number(id)))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  if (orderedIds.length === 0 || new Set(orderedIds).size !== orderedIds.length) throw new Error("排序数据无效");
+  const idList = inList(orderedIds);
+  const q = quoteIdentifier;
+  const params: any[] = [...idList.params];
+  let userWhere = "";
+  if (userId) {
+    userWhere = ` AND ${q("userId")} = ?`;
+    params.push(userId);
+  }
+  const rows = await queryRaw<{ id: number }>(
+    `SELECT ${q("id")} FROM ${q("hosts")} WHERE ${q("id")} IN ${idList.sql}${userWhere}`,
+    params,
+  );
+  if (rows.length !== orderedIds.length) throw new Error("排序中包含无权操作或不存在的主机");
+  for (const [index, id] of orderedIds.entries()) {
+    await executeRaw(`UPDATE ${q("hosts")} SET ${q("sortOrder")} = ?, ${q("updatedAt")} = ? WHERE ${q("id")} = ?`, [index, Math.floor(Date.now() / 1000), id]);
+  }
 }
 
 export async function deleteHost(id: number) {
