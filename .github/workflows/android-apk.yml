@@ -12,6 +12,8 @@ on:
           - release
           - debug
   push:
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -24,7 +26,7 @@ concurrency:
 
 jobs:
   build-android-apk:
-    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,10 +56,14 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
         run: |
+          PANEL_VERSION="v$(node -p "require('./package.json').version")"
           ANDROID_VERSION="v$(node -e "const fs=require('fs');const text=fs.readFileSync('shared/versions.ts','utf8');const match=text.match(/ANDROID_APP_VERSION\\s*=\\s*['\\\"]v?([^'\\\"]+)['\\\"]/);if(!match)throw new Error('ANDROID_APP_VERSION not found');process.stdout.write(match[1]);")"
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION="$GITHUB_REF_NAME"
+            PUBLISH_RELEASE=true
+          elif [[ "$EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            VERSION="$PANEL_VERSION"
             PUBLISH_RELEASE=true
           else
             VERSION="$ANDROID_VERSION"
