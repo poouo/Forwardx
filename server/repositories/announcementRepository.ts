@@ -8,7 +8,7 @@ const CURRENT_DEVELOPER_UPGRADE_ANNOUNCEMENT: {
   title: string;
   content: string;
 } | null = {
-  targetVersion: "2.3.220",
+  targetVersion: "2.3.221",
   title: "开发者公告：转发规则创建方式调整",
   content: [
     "这次版本把转发入口拆得更清楚了：新增规则时，不再建议直接挂在主机上随手建普通转发，而是先选已经建好的「端口转发」「隧道转发」「端口转发链」或「转发组」。",

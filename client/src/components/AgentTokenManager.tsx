@@ -55,6 +55,13 @@ type AgentTokenManagerProps = {
 };
 
 export type AgentTokenViewMode = "card" | "table";
+type InstallAddressMode = "public" | "current";
+type InstallAddressOption = {
+  id: InstallAddressMode;
+  label: string;
+  description: string;
+  url: string;
+};
 
 const AGENT_TOKEN_VIEW_MODE_STORAGE_KEY = "forwardx.agentTokens.viewMode";
 const HOST_ONLINE_TTL_MS = 90 * 1000;
@@ -103,6 +110,10 @@ function isLoopbackPanelUrl(value: string) {
 
 function normalizeConfigUrl(value: string) {
   return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function panelUrlKey(value: string) {
+  return normalizeConfigUrl(value).toLowerCase();
 }
 
 function tokenHostAddress(host: any) {
@@ -322,6 +333,57 @@ function CommandRow({
   );
 }
 
+function InstallAddressSelector({
+  options,
+  selectedId,
+  onChange,
+}: {
+  options: InstallAddressOption[];
+  selectedId: InstallAddressMode;
+  onChange: (value: InstallAddressMode) => void;
+}) {
+  if (options.length <= 1) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-border/50 bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">安装连接地址</p>
+          <p className="text-xs text-muted-foreground">
+            需要 IP+端口直连时，请用 IP+端口打开面板后选择“当前访问地址”。
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {options.map((option) => {
+          const active = option.id === selectedId;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(option.id)}
+              className={cn(
+                "min-w-0 rounded-md border px-3 py-2 text-left transition-colors",
+                active
+                  ? "border-primary/50 bg-primary/10 text-primary"
+                  : "border-border/50 bg-background/70 hover:bg-muted/50",
+              )}
+            >
+              <span className="block text-sm font-medium">{option.label}</span>
+              <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground" title={option.url}>
+                {option.url}
+              </span>
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                {option.description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function AgentTokenManager({
   createSignal,
   className,
@@ -346,6 +408,7 @@ export default function AgentTokenManager({
   const [editDescription, setEditDescription] = useState("");
   const [tokenToDelete, setTokenToDelete] = useState<any | null>(null);
   const [internalViewMode, setInternalViewMode] = useState<AgentTokenViewMode>(() => getStoredAgentTokenViewMode());
+  const [installAddressMode, setInstallAddressMode] = useState<InstallAddressMode>("public");
   const lastCreateSignalRef = useRef(0);
   const viewMode = controlledViewMode ?? internalViewMode;
 
@@ -382,9 +445,46 @@ export default function AgentTokenManager({
   const tokenItems = useMemo(() => (tokens as any[] | undefined) || [], [tokens]);
 
   const { data: systemSettings } = trpc.system.getSettings.useQuery();
-  const panelUrl = (systemSettings?.panelPublicUrl && systemSettings.panelPublicUrl.trim())
-    || (typeof window !== "undefined" ? window.location.origin : "");
-  const panelUrlUsesLoopback = isLoopbackPanelUrl(panelUrl);
+  const configuredPanelUrl = normalizeConfigUrl(systemSettings?.panelPublicUrl || "");
+  const currentPanelUrl = typeof window !== "undefined" ? normalizeConfigUrl(window.location.origin) : "";
+  const panelUrl = configuredPanelUrl || currentPanelUrl;
+  const installAddressOptions = useMemo<InstallAddressOption[]>(() => {
+    const options: InstallAddressOption[] = [];
+    if (configuredPanelUrl) {
+      options.push({
+        id: "public",
+        label: "公开域名",
+        description: "使用系统设置中的面板公开地址。",
+        url: configuredPanelUrl,
+      });
+    }
+    if (currentPanelUrl && (!configuredPanelUrl || panelUrlKey(currentPanelUrl) !== panelUrlKey(configuredPanelUrl))) {
+      options.push({
+        id: "current",
+        label: configuredPanelUrl ? "当前访问地址" : "默认地址",
+        description: configuredPanelUrl ? "按当前浏览器访问的 IP/端口直连。" : "未配置公开域名时使用当前访问地址。",
+        url: currentPanelUrl,
+      });
+    }
+    if (options.length === 0 && panelUrl) {
+      options.push({
+        id: "current",
+        label: "默认地址",
+        description: "使用当前可用面板地址。",
+        url: panelUrl,
+      });
+    }
+    return options;
+  }, [configuredPanelUrl, currentPanelUrl, panelUrl]);
+  useEffect(() => {
+    if (installAddressOptions.length === 0) return;
+    if (!installAddressOptions.some((option) => option.id === installAddressMode)) {
+      setInstallAddressMode(installAddressOptions[0].id);
+    }
+  }, [installAddressMode, installAddressOptions]);
+  const activeInstallAddress = installAddressOptions.find((option) => option.id === installAddressMode) || installAddressOptions[0];
+  const commandPanelUrl = activeInstallAddress?.url || panelUrl;
+  const panelUrlUsesLoopback = isLoopbackPanelUrl(commandPanelUrl);
   const githubAcceleratorUrl = normalizeConfigUrl(systemSettings?.githubAccelerator?.url || "");
   const githubAcceleratorActive = !!systemSettings?.githubAccelerator?.enabled && !!githubAcceleratorUrl;
   const agentPreferPanelInstall = !!systemSettings?.agentPreferPanelInstall;
@@ -508,7 +608,8 @@ export default function AgentTokenManager({
     }
   };
 
-  const getAgentScriptCommand = (args: string) => {
+  const getAgentScriptCommand = (args: string, targetPanelUrl = commandPanelUrl) => {
+    const installPanelUrl = normalizeConfigUrl(targetPanelUrl) || panelUrl;
     const env = [
       githubAcceleratorActive ? "GITHUB_ACCELERATOR_ENABLED=true" : "",
       githubAcceleratorActive ? `GITHUB_ACCELERATOR_URL=${shellQuote(githubAcceleratorUrl)}` : "",
@@ -517,11 +618,11 @@ export default function AgentTokenManager({
     const bashPrefix = env ? `${env} bash` : "bash";
     const withPipefail = (pipeline: string) => `bash -c ${shellQuote(`set -o pipefail; ${pipeline}`)}`;
     const curlScriptArgs = "--connect-timeout 15 --speed-limit 1024 --speed-time 60";
-    const panelCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${panelUrl}/api/agent/install.sh" | PANEL_URL=${shellQuote(panelUrl)} ${bashPrefix} -s -- ${args}`);
+    const panelCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${installPanelUrl}/api/agent/install.sh" | PANEL_URL=${shellQuote(installPanelUrl)} ${bashPrefix} -s -- ${args}`);
     const githubScriptUrl = githubAcceleratorActive
       ? `${githubAcceleratorUrl}/https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh`
       : "https://raw.githubusercontent.com/poouo/Forwardx/main/scripts/install-agent.sh";
-    const githubCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${githubScriptUrl}" | PANEL_URL=${shellQuote(panelUrl)} ${bashPrefix} -s -- ${args}`);
+    const githubCommand = withPipefail(`curl -fsSL ${curlScriptArgs} "${githubScriptUrl}" | PANEL_URL=${shellQuote(installPanelUrl)} ${bashPrefix} -s -- ${args}`);
     if (agentPreferPanelInstall) {
       return `${panelCommand} || ${githubCommand}`;
     }
@@ -774,6 +875,11 @@ export default function AgentTokenManager({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <InstallAddressSelector
+              options={installAddressOptions}
+              selectedId={installAddressMode}
+              onChange={setInstallAddressMode}
+            />
             {panelUrlUsesLoopback && (
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />
@@ -896,6 +1002,11 @@ export default function AgentTokenManager({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            <InstallAddressSelector
+              options={installAddressOptions}
+              selectedId={installAddressMode}
+              onChange={setInstallAddressMode}
+            />
             {panelUrlUsesLoopback && (
               <Alert className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                 <AlertTriangle className="h-4 w-4" />

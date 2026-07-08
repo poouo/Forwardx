@@ -1,6 +1,6 @@
 {
   "name": "forwardx",
-  "version": "2.3.220",
+  "version": "2.3.221",
   "description": "ForwardX 转发管理面板：多主机端口转发、加密隧道、转发组、用户权限、套餐和流量计费统一管理系统",
   "license": "AGPL-3.0-only",
   "private": true,

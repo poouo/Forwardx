@@ -5,7 +5,7 @@
 ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agent 管理服务器入口、隧道链路、端口转发规则、端口转发链、入口组/出口组、DDNS 故障转移、用户权限、套餐订阅、余额和流量统计，适合把多台服务器统一组织成可观测、可切换、可授权、可计费的网络入口平台。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.220-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
+[![Version](https://img.shields.io/badge/version-2.3.221-brightgreen.svg)](https://github.com/poouo/Forwardx/releases)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -13,7 +13,7 @@ ForwardX 是一套中文化的多主机转发管理系统。它通过轻量 Agen
 
 - 在线教程：https://poouo.github.io/Forwardx/
 - TG 群组：https://t.me/ForwardX_panel
-- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.220/forwardx-android-v2.3.78.apk
+- Android APK 最新下载：https://github.com/poouo/Forwardx/releases/download/v2.3.221/forwardx-android-v2.3.79.apk
 - GitHub Releases：https://github.com/poouo/Forwardx/releases
 
 ## 项目定位
@@ -179,6 +179,8 @@ Docker 部署默认会把数据库配置保存到数据卷中的 `/data/database
 
 在面板「系统设置 -> Agent Token」中创建 Token，然后在被管理的 Linux 主机上执行：
 
+如果已配置面板公开域名，Agent Token 的安装命令弹窗会默认使用公开域名；需要 IP+端口直连时，可用 IP+端口打开面板后在弹窗中选择“当前访问地址”。
+
 ```bash
 curl -fsSL http://你的面板地址:9810/api/agent/install.sh | bash -s -- install YOUR_AGENT_TOKEN
 ```
@@ -322,7 +324,7 @@ pnpm check:versions
 ForwardX Android 客户端用于手机端访问面板，登录时填写面板地址、账号和密码即可。
 
 下载地址：
-https://github.com/poouo/Forwardx/releases/download/v2.3.220/forwardx-android-v2.3.78.apk
+https://github.com/poouo/Forwardx/releases/download/v2.3.221/forwardx-android-v2.3.79.apk
 
 常用命令：
 
