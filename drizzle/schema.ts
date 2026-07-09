@@ -999,6 +999,46 @@ export const announcementReads = table("announcement_reads", {
 export type AnnouncementRead = typeof announcementReads.$inferSelect;
 export type InsertAnnouncementRead = typeof announcementReads.$inferInsert;
 
+export const plugins = table("plugins", {
+  id: serial("id"),
+  pluginId: varchar("pluginId", { length: 128 }).notNull().unique(),
+  name: text("name").notNull(),
+  version: varchar("version", { length: 64 }).notNull().default("0.0.0"),
+  description: text("description"),
+  author: text("author"),
+  homepage: text("homepage"),
+  repository: text("repository"),
+  sourceType: varchar("sourceType", { length: 32 }).notNull().default("github"), // github | upload | local
+  sourceUrl: text("sourceUrl"),
+  branch: varchar("branch", { length: 128 }),
+  manifestPath: text("manifestPath"),
+  manifestJson: text("manifestJson").notNull(),
+  permissionsJson: text("permissionsJson"),
+  extensionPointsJson: text("extensionPointsJson"),
+  status: varchar("status", { length: 32 }).notNull().default("disabled"), // enabled | disabled | error
+  installedAt: epoch("installedAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+  lastCheckedAt: epoch("lastCheckedAt"),
+  latestVersion: varchar("latestVersion", { length: 64 }),
+  lastError: text("lastError"),
+});
+export type Plugin = typeof plugins.$inferSelect;
+export type InsertPlugin = typeof plugins.$inferInsert;
+
+export const pluginAssets = table("plugin_assets", {
+  id: serial("id"),
+  pluginId: varchar("pluginId", { length: 128 }).notNull(),
+  path: text("path").notNull(),
+  contentType: varchar("contentType", { length: 128 }),
+  size: int("size").notNull().default(0),
+  sha256: varchar("sha256", { length: 64 }),
+  content: text("content"),
+  createdAt: epoch("createdAt").notNull().default(nowDefault()),
+  updatedAt: epoch("updatedAt").notNull().default(nowDefault()),
+});
+export type PluginAsset = typeof pluginAssets.$inferSelect;
+export type InsertPluginAsset = typeof pluginAssets.$inferInsert;
+
 // ===== 用户-主机权限表（管理员指定用户可使用哪些 Agent/主机） =====
 export const userHostPermissions = table("user_host_permissions", {
   id: serial("id"),

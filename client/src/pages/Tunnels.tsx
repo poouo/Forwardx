@@ -2338,11 +2338,13 @@ function TunnelsContent() {
   });
 
   const updateMutation = trpc.tunnels.update.useMutation({
-    onSuccess: () => {
+    onSuccess: (result: any) => {
       utils.tunnels.list.invalidate();
+      utils.rules.list.invalidate();
       setShowDialog(false);
       resetForm();
-      toast.success("隧道已更新");
+      const syncedRuleCount = Number(result?.syncedRuleCount || 0);
+      toast.success(syncedRuleCount > 0 ? `隧道已更新，已同步 ${syncedRuleCount} 条引用规则` : "隧道已更新");
     },
     onError: (e) => toast.error(e.message || "更新失败"),
   });

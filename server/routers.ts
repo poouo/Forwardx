@@ -10,6 +10,7 @@ import { forwardGroupsRouter } from "./routers/forwardGroups";
 import { hostsRouter } from "./routers/hosts";
 import { lookingGlassRouter } from "./routers/lookingGlass";
 import { plansRouter } from "./routers/plans";
+import { pluginsRouter } from "./routers/plugins";
 import { rulesRouter } from "./routers/rules";
 import { setupRouter } from "./routers/setup";
 import { telegramRouter } from "./routers/telegram";
@@ -23,6 +24,7 @@ export const appRouter = router({
   payment: paymentRouter,
   billing: billingRouter,
   plans: plansRouter,
+  plugins: pluginsRouter,
   auth: authRouter,
   dashboard: dashboardRouter,
   users: usersRouter,

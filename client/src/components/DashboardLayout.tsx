@@ -58,6 +58,7 @@ import {
   Image,
   Globe2,
   BellOff,
+  Puzzle,
   type LucideIcon,
 } from "lucide-react";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -101,6 +102,7 @@ const adminMenuItems: SidebarNavItem[] = [
   { icon: WalletCards, label: "账单与兑换", path: "/billing", menuKey: "billing" },
   { icon: Package, label: "套餐管理", path: "/plans", menuKey: "plans" },
   { icon: Users, label: "用户管理", path: "/users", menuKey: "users" },
+  { icon: Puzzle, label: "插件", path: "/plugins", menuKey: "plugins" },
   lookingGlassMenuItem,
   { icon: Settings, label: "系统设置", path: "/settings", menuKey: "settings" },
 ];
@@ -1020,7 +1022,10 @@ function DashboardLayoutContent({
   };
 
   const hiddenNormalUserMainPaths = ["/hosts", "/tunnels"];
-  const isSidebarNavItemVisible = (item: SidebarNavItem) => !item.menuKey || sidebarMenuSettings[item.menuKey] !== false;
+  const isSidebarNavItemVisible = (item: SidebarNavItem) => {
+    if (item.menuKey === "plugins" && publicInfo?.pluginsEnabled !== true) return false;
+    return !item.menuKey || sidebarMenuSettings[item.menuKey] !== false;
+  };
   const filterSidebarNavItems = (items: SidebarNavItem[]) => items.filter(isSidebarNavItemVisible);
   const visibleMainMenuItems = filterSidebarNavItems(
     isAdmin

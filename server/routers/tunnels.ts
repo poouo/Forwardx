@@ -644,13 +644,8 @@ export const tunnelsRouter = router({
         const existingHopHostIds = (existingHops || []).map((hop: any) => Number(hop.hostId)).filter((id: number) => Number.isFinite(id) && id > 0);
         const existingHopConnectHosts = normalizeHopConnectHostsForCompare(existingHops || []);
         const nextModeForRuntime = normalizeTunnelMode(input.mode ?? (tunnel as any).mode);
-        if (input.mode !== undefined && nextModeForRuntime !== normalizeTunnelMode((tunnel as any).mode)) {
-          const usedRules = await db.getForwardRulesByTunnel(input.id);
-          const activeRules = (usedRules as any[]).filter((rule) => !rule?.pendingDelete);
-          if (activeRules.length > 0) {
-            throw new Error("该隧道已有转发规则使用，不能直接修改隧道协议；请新建隧道后把规则切换过去。");
-          }
-        }
+        const referencedRules = await db.getForwardRulesByTunnel(input.id);
+        const activeReferencedRuleCount = (referencedRules as any[]).filter((rule) => !rule?.pendingDelete).length;
         await requireTunnelProtocolEnabled({ ...tunnel, mode: nextModeForRuntime });
         if ((input as any).entryGroupId !== undefined) await requireEntryGroupAccess(ctx, (input as any).entryGroupId);
         const requestedHopHostIds = Array.isArray((input as any).hopHostIds)
@@ -825,6 +820,9 @@ export const tunnelsRouter = router({
         await db.updateTunnel(id, data as any);
         if (runtimeOptionsChanged || modeChanged) {
           await db.updateForwardRuleRuntimeOptionsByTunnel(id, data as any);
+          if (modeChanged && activeReferencedRuleCount > 0) {
+            appendPanelLog("info", `[Tunnel] mode changed tunnel=${id} from=${normalizeTunnelMode((tunnel as any).mode)} to=${nextModeForRuntime}; synced ${activeReferencedRuleCount} referenced rule(s)`);
+          }
         }
         const shouldWriteHops = !!hopHostIds || (hopConnectHostsProvided && !switchToRegular && existingHopHostIds.length >= 3);
         const hopIdsToWrite = hopHostIds || existingHopHostIds;
@@ -900,7 +898,7 @@ export const tunnelsRouter = router({
           ];
           await refreshTunnelRuntimeHosts(id, affectedHostIds, hopChanged ? "tunnel-hop-updated" : "tunnel-updated");
         }
-        return { success: true, reset: keyChanged };
+        return { success: true, reset: keyChanged, syncedRuleCount: modeChanged ? activeReferencedRuleCount : 0 };
       }),
     deleteImpact: protectedProcedure
       .input(z.object({ id: z.number() }))

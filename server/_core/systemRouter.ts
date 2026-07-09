@@ -1545,6 +1545,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     twoFactorEnabled: all.twoFactorEnabled === "true",
     lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
     allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
+    pluginsEnabled: all.pluginsEnabled === "true",
     publicHostMonitor: {
       enabled: all.publicHostMonitorEnabled === "true",
       path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
@@ -1676,6 +1677,7 @@ export const systemRouter = router({
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
       allowMultiDeviceLogin: all.allowMultiDeviceLogin === "true",
+      pluginsEnabled: all.pluginsEnabled === "true",
       publicHostMonitor: {
         enabled: all.publicHostMonitorEnabled === "true",
         path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
@@ -1713,6 +1715,7 @@ export const systemRouter = router({
       registrationEnabled: all.registrationEnabled !== "false",
       twoFactorEnabled: all.twoFactorEnabled === "true",
       lookingGlassUserEnabled: all.lookingGlassUserEnabled !== "false",
+      pluginsEnabled: all.pluginsEnabled === "true",
       personalizationBackgroundConfig: readPersonalizationBackground(all),
       homepageEnabled: all.homepageEnabled !== "false",
       homepageCustomEnabled: all.homepageCustomEnabled === "true",
@@ -1927,6 +1930,7 @@ export const systemRouter = router({
         twoFactorEnabled: z.boolean().optional(),
         lookingGlassUserEnabled: z.boolean().optional(),
         allowMultiDeviceLogin: z.boolean().optional(),
+        pluginsEnabled: z.boolean().optional(),
         publicHostMonitor: z.object({
           enabled: z.boolean().optional(),
           path: z.string().max(128).optional(),
@@ -2060,6 +2064,10 @@ export const systemRouter = router({
       if (input.allowMultiDeviceLogin !== undefined) {
         await db.setSetting("allowMultiDeviceLogin", input.allowMultiDeviceLogin ? "true" : "false");
         console.info(`[Settings] multi-device login ${input.allowMultiDeviceLogin ? "enabled" : "disabled"}`);
+      }
+      if (input.pluginsEnabled !== undefined) {
+        await db.setSetting("pluginsEnabled", input.pluginsEnabled ? "true" : "false");
+        console.info(`[Settings] plugins ${input.pluginsEnabled ? "enabled" : "disabled"}`);
       }
       if (input.publicHostMonitor) {
         const next: Record<string, string | null> = {};
