@@ -103,19 +103,26 @@ export const pluginsRouter = router({
       return pluginRepo.runPluginAction(input.pluginId, input.actionId);
     }),
 
-  chinaRegionWhitelistUsage: adminProcedure.query(async () => {
-    return pluginRepo.getChinaRegionWhitelistUsage();
-  }),
-
-  saveChinaRegionWhitelistUsage: adminProcedure
+  usage: adminProcedure
     .input(z.object({
+      pluginId: z.string().trim().min(1).max(128),
+      usageViewId: z.string().trim().min(1).max(128).optional(),
+    }))
+    .query(async ({ input }) => {
+      return pluginRepo.getPluginUsage(input.pluginId, input.usageViewId);
+    }),
+
+  saveUsage: adminProcedure
+    .input(z.object({
+      pluginId: z.string().trim().min(1).max(128),
+      usageViewId: z.string().trim().min(1).max(128).optional(),
       enabled: z.boolean(),
       hostIds: z.array(z.number().int().positive()).max(512),
       assetPaths: z.array(z.string().trim().min(1).max(240)).max(96),
       note: z.string().max(500).optional(),
     }))
     .mutation(async ({ input }) => {
-      return pluginRepo.saveChinaRegionWhitelistUsage({
+      return pluginRepo.savePluginUsage(input.pluginId, input.usageViewId, {
         enabled: input.enabled,
         hostIds: input.hostIds,
         assetPaths: input.assetPaths,

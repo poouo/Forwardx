@@ -1,25 +1,26 @@
 {
   "schemaVersion": 1,
   "id": "china-region-whitelist",
-  "name": "中国区域白名单",
+  "name": "ForwardX 中国区域白名单",
   "version": "0.1.0",
-  "description": "下载并维护中国区域 IP/域名白名单数据，并可同步到选中的主机。",
-  "author": "GHUNLIL",
+  "description": "为 ForwardX 面板适配的中国区域白名单数据插件，可选择主机并同步到 Agent 本地。",
+  "author": "poouo",
+  "logo": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMTAiIHkxPSI4IiB4Mj0iNTYiIHkyPSI1OCI+PHN0b3Agc3RvcC1jb2xvcj0iIzM0ZDM5OSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBmNzY2ZSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE4IiBmaWxsPSIjZWNmZWZmIi8+PHBhdGggZD0iTTMyIDggNTAgMTZ2MTRjMCAxMi41LTcuNCAyMC44LTE4IDI2LTEwLjYtNS4yLTE4LTEzLjUtMTgtMjZWMTZsMTgtOFoiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMjMgMzRoOHYtOGgxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjIzIiBjeT0iMzQiIHI9IjQiIGZpbGw9IiNmZmYiLz48Y2lyY2xlIGN4PSIzMSIgY3k9IjI2IiByPSI0IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDEiIGN5PSIyNiIgcj0iNCIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==",
   "releaseDate": "2026-07-09",
   "updatedAt": "2026-07-09",
-  "changelog": "首个插件版本，支持从 GHUNLIL/china-region-whitelist 同步 data 目录白名单数据，并在插件内选择主机生效。",
+  "changelog": "首个插件版本，提供 ForwardX 内置中国区域白名单数据，并支持在插件内选择主机生效。",
   "tags": ["whitelist", "china-region", "data"],
   "license": "Unknown",
-  "homepage": "https://github.com/GHUNLIL/china-region-whitelist",
+  "homepage": "https://github.com/poouo/Forwardx",
   "repository": "https://github.com/poouo/Forwardx",
   "features": [
     {
       "title": "白名单数据",
-      "description": "同步国家、地区、ASN 等白名单数据文件。"
+      "description": "提供面板内置维护的中国区域 IP、域名、云服务和区域标识数据。"
     },
     {
       "title": "在线刷新",
-      "description": "安装后可手动刷新 GitHub 数据源。"
+      "description": "安装后可从 ForwardX 内置插件目录刷新数据资产。"
     },
     {
       "title": "本地下载",
@@ -32,6 +33,43 @@
   ],
   "permissions": ["data:whitelist"],
   "extensionPoints": ["data.whitelist"],
+  "usageViews": [
+    {
+      "id": "sync-to-hosts",
+      "type": "host-asset-sync",
+      "storageKey": "chinaRegionWhitelistUsage",
+      "title": "主机白名单同步",
+      "description": "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /etc/forwardx/plugins/china-region-whitelist。",
+      "enableLabel": "启用同步",
+      "targetDirectory": "/etc/forwardx/plugins/china-region-whitelist",
+      "disabledTitle": "插件未启用",
+      "disabledDescription": "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。",
+      "hostSelector": {
+        "title": "生效主机",
+        "description": "只会下发到选中的 Agent 主机。",
+        "selectedLabel": "已选",
+        "emptyText": "暂无可选主机",
+        "selectAllLabel": "全选",
+        "clearLabel": "清空"
+      },
+      "assetSelector": {
+        "title": "同步内容",
+        "description": "按需选择要写入主机本地目录的数据文件。",
+        "selectedLabel": "已选",
+        "emptyText": "还没有可同步文件，请先到“动作”里刷新白名单数据。",
+        "clearLabel": "清空"
+      },
+      "noteField": {
+        "label": "备注",
+        "placeholder": "例如：同步到国内入口主机，供后续规则或脚本读取"
+      },
+      "footer": {
+        "title": "当前方式：同步文件到主机本地目录。",
+        "description": "保存后，目标主机下次 Agent 心跳会收到更新。",
+        "submitLabel": "保存使用配置"
+      }
+    }
+  ],
   "pages": [
     {
       "id": "overview",
@@ -45,7 +83,7 @@
       "id": "refresh-whitelist-source",
       "label": "刷新白名单数据",
       "type": "data.whitelist.refresh",
-      "description": "从 GHUNLIL/china-region-whitelist 重新同步 data 目录中的白名单文件。",
+      "description": "从 ForwardX 内置插件目录重新同步 data 目录中的白名单文件。",
       "confirmRequired": true
     }
   ],
@@ -54,12 +92,41 @@
       "path": "README.md",
       "label": "插件说明",
       "contentType": "text/markdown;charset=utf-8"
+    },
+    {
+      "path": "data/country/CN.txt",
+      "label": "中国大陆 IPv4 白名单",
+      "description": "按国家维度维护的中国大陆 IPv4 CIDR 数据，适合给主机脚本或规则生成器读取。",
+      "contentType": "text/plain;charset=utf-8"
+    },
+    {
+      "path": "data/domains/china-sites.txt",
+      "label": "常用国内域名白名单",
+      "description": "常见国内站点和服务域名，用于域名级白名单匹配或自定义脚本处理。",
+      "contentType": "text/plain;charset=utf-8"
+    },
+    {
+      "path": "data/asn/cloud-services.txt",
+      "label": "国内云服务 ASN",
+      "description": "常见云服务商 ASN 标识，便于在主机侧结合网络工具生成策略。",
+      "contentType": "text/plain;charset=utf-8"
+    },
+    {
+      "path": "data/regions/CN-mainland.txt",
+      "label": "中国区域标识",
+      "description": "按区域维度整理的 CN 及省级标识，供插件或脚本做区域分组。",
+      "contentType": "text/plain;charset=utf-8"
     }
   ],
   "data": {
     "type": "china-region-whitelist",
-    "repository": "https://github.com/GHUNLIL/china-region-whitelist",
+    "repository": "https://github.com/poouo/Forwardx",
     "branch": "main",
-    "autoDiscover": true
+    "files": [
+      "data/country/CN.txt",
+      "data/domains/china-sites.txt",
+      "data/asn/cloud-services.txt",
+      "data/regions/CN-mainland.txt"
+    ]
   }
 }

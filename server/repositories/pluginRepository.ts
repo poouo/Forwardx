@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import fs from "fs/promises";
+import path from "path";
 import zlib from "zlib";
 import { eq } from "drizzle-orm";
 import { hosts, pluginAssets, plugins } from "../../drizzle/schema";
@@ -9,6 +11,7 @@ import {
   PLUGIN_EXTENSION_POINTS,
   PLUGIN_MANIFEST_VERSION,
   PLUGIN_PERMISSION_KEYS,
+  PLUGIN_USAGE_VIEW_TYPES,
   PLUGIN_SECURITY_MODEL,
   PLUGIN_SETTING_FIELD_TYPES,
   PLUGIN_PAGE_CONTENT_TYPES,
@@ -20,6 +23,8 @@ import {
   type PluginPermissionKey,
   type PluginSettingField,
   type PluginStoreItem,
+  type PluginUsageSelectorCopy,
+  type PluginUsageViewDefinition,
 } from "../../shared/pluginTypes";
 import { executeRaw, getDatabaseKind, getDb, insertAndGetId, nowDate } from "../dbRuntime";
 
@@ -34,17 +39,19 @@ const MAX_PLUGIN_FIELDS = 50;
 const MAX_PLUGIN_PAGES = 12;
 const MAX_PLUGIN_ACTIONS = 20;
 const MAX_PLUGIN_FEATURES = 12;
+const MAX_PLUGIN_USAGE_VIEWS = 8;
 const MAX_PLUGIN_PACKAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PLUGIN_PACKAGE_FILES = 160;
 const PACKAGE_MANIFEST_CANDIDATES = ["forwardx-plugin.json", "plugin.json", ".forwardx/plugin.json"];
 const AUTO_DISCOVER_DATA_ROOTS = ["data/"];
 const DATA_ASSET_EXTENSIONS = new Set([".txt", ".list", ".dat", ".json", ".tsv", ".csv", ".md", ".conf", ".yaml", ".yml"]);
 export const CHINA_REGION_WHITELIST_PLUGIN_ID = "china-region-whitelist";
-export const CHINA_REGION_WHITELIST_SYNC_DIR = "/etc/forwardx/plugins/china-region-whitelist";
-const CHINA_REGION_WHITELIST_USAGE_KEY = "chinaRegionWhitelistUsage";
+const CHINA_REGION_WHITELIST_LOCAL_DIR = path.resolve(process.cwd(), "plugins", "china-region-whitelist");
 const MAX_WHITELIST_USAGE_HOSTS = 256;
 const MAX_WHITELIST_USAGE_ASSETS = 16;
 const MAX_WHITELIST_USAGE_SYNC_BYTES = 1024 * 1024;
+const OFFICIAL_STORE_CACHE_TTL_MS = 10 * 60 * 1000;
+const PLUGIN_WARN_THROTTLE_MS = 5 * 60 * 1000;
 const PACKAGE_ASSET_EXTENSIONS = new Set([
   ...DATA_ASSET_EXTENSIONS,
   ".html",
@@ -53,6 +60,9 @@ const PACKAGE_ASSET_EXTENSIONS = new Set([
   ".svg",
 ]);
 const SKIPPED_DATA_PATH_PREFIXES = [".github/", "node_modules/", "dist/", "build/", "tests/", "tools/"];
+let officialStoreCache: { items: PluginStoreItem[]; checkedAt: number } | null = null;
+let officialStoreFetchInFlight: Promise<PluginStoreItem[]> | null = null;
+const pluginWarnCache = new Map<string, number>();
 
 type GithubTreeItem = {
   path?: string;
@@ -79,7 +89,7 @@ type PluginPackageFile = {
   content: Buffer;
 };
 
-export type ChinaRegionWhitelistUsageConfig = {
+export type HostAssetSyncUsageConfig = {
   enabled: boolean;
   hostIds: number[];
   assetPaths: string[];
@@ -128,7 +138,7 @@ function normalizeUsageAssetPaths(values: unknown) {
   return paths;
 }
 
-function normalizeChinaRegionWhitelistUsage(value: unknown): ChinaRegionWhitelistUsageConfig {
+function normalizeHostAssetSyncUsage(value: unknown): HostAssetSyncUsageConfig {
   const raw = value && typeof value === "object" ? value as any : {};
   return {
     enabled: raw.enabled === true,
@@ -139,6 +149,27 @@ function normalizeChinaRegionWhitelistUsage(value: unknown): ChinaRegionWhitelis
     cleanupHostIds: normalizePositiveIds(raw.cleanupHostIds),
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined,
   };
+}
+
+function usageStorageKey(plugin: { pluginId?: string | null; manifest?: ForwardxPluginManifest }, usageViewId = "default") {
+  const view = (plugin.manifest?.usageViews || []).find((item) => item.id === usageViewId)
+    || (plugin.manifest?.usageViews || []).find((item) => item.type === "host-asset-sync");
+  return view?.storageKey || `${normalizePluginId(plugin.pluginId)}.${normalizePluginId(view?.id || usageViewId)}.usage`;
+}
+
+function normalizeUsageStorageKey(value: unknown) {
+  const key = String(value || "").trim().replace(/[^A-Za-z0-9._-]+/g, "").slice(0, 80);
+  return key || undefined;
+}
+
+function hostAssetSyncDir(pluginId: string, view?: PluginUsageViewDefinition | null) {
+  const configured = String(view?.targetDirectory || "").trim();
+  if (configured && configured.startsWith("/")) return configured.replace(/\/+$/, "");
+  return `/etc/forwardx/plugins/${assertPluginId(pluginId)}`;
+}
+
+function firstHostAssetSyncView(manifest?: ForwardxPluginManifest) {
+  return (manifest?.usageViews || []).find((item) => item.type === "host-asset-sync") || null;
 }
 
 function safeAgentPluginAssetName(assetPath: string) {
@@ -153,6 +184,14 @@ function formatByteLimit(bytes: number) {
   if (bytes >= 1024 * 1024) return `${Math.floor(bytes / 1024 / 1024)}MB`;
   if (bytes >= 1024) return `${Math.floor(bytes / 1024)}KB`;
   return `${bytes}B`;
+}
+
+function warnPluginThrottled(key: string, message: string) {
+  const now = Date.now();
+  const last = pluginWarnCache.get(key) || 0;
+  if (now - last < PLUGIN_WARN_THROTTLE_MS) return;
+  pluginWarnCache.set(key, now);
+  console.warn(message);
 }
 
 function uniqueValidPermissions(values: unknown): PluginPermissionKey[] {
@@ -312,6 +351,69 @@ function normalizePluginActions(value: unknown): PluginActionDefinition[] {
   });
 }
 
+function normalizeUsageSelectorCopy(value: unknown): PluginUsageSelectorCopy | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as any;
+  const copy: PluginUsageSelectorCopy = {
+    title: normalizeOptionalText(raw.title, 100),
+    description: normalizeOptionalText(raw.description, 240),
+    selectedLabel: normalizeOptionalText(raw.selectedLabel, 80),
+    emptyText: normalizeOptionalText(raw.emptyText, 160),
+    selectAllLabel: normalizeOptionalText(raw.selectAllLabel, 40),
+    clearLabel: normalizeOptionalText(raw.clearLabel, 40),
+  };
+  return Object.values(copy).some(Boolean) ? copy : undefined;
+}
+
+function normalizeUsageNoteField(value: unknown) {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as any;
+  const field = {
+    label: normalizeOptionalText(raw.label, 80),
+    placeholder: normalizeOptionalText(raw.placeholder, 180),
+  };
+  return Object.values(field).some(Boolean) ? field : undefined;
+}
+
+function normalizeUsageFooter(value: unknown) {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as any;
+  const footer = {
+    title: normalizeOptionalText(raw.title, 120),
+    description: normalizeOptionalText(raw.description, 240),
+    submitLabel: normalizeOptionalText(raw.submitLabel, 80),
+  };
+  return Object.values(footer).some(Boolean) ? footer : undefined;
+}
+
+function normalizePluginUsageViews(value: unknown): PluginUsageViewDefinition[] {
+  if (!Array.isArray(value)) return [];
+  const allowedTypes = new Set<string>(PLUGIN_USAGE_VIEW_TYPES);
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PLUGIN_USAGE_VIEWS).flatMap((item: any) => {
+    const id = normalizePluginId(item?.id).slice(0, 80);
+    if (!id || seen.has(id)) return [];
+    const type = String(item?.type || "").trim();
+    if (!allowedTypes.has(type)) return [];
+    seen.add(id);
+    return [{
+      id,
+      type: type as PluginUsageViewDefinition["type"],
+      title: String(item?.title || id).trim().slice(0, 120) || id,
+      description: normalizeOptionalText(item?.description, 300),
+      storageKey: normalizeUsageStorageKey(item?.storageKey),
+      enableLabel: normalizeOptionalText(item?.enableLabel, 80),
+      targetDirectory: normalizeOptionalText(item?.targetDirectory, 240),
+      disabledTitle: normalizeOptionalText(item?.disabledTitle, 100),
+      disabledDescription: normalizeOptionalText(item?.disabledDescription, 240),
+      hostSelector: normalizeUsageSelectorCopy(item?.hostSelector),
+      assetSelector: normalizeUsageSelectorCopy(item?.assetSelector),
+      noteField: normalizeUsageNoteField(item?.noteField),
+      footer: normalizeUsageFooter(item?.footer),
+    }];
+  });
+}
+
 function normalizePluginAssets(value: unknown) {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -435,6 +537,7 @@ function normalizeManifest(input: any, fallback?: Partial<ForwardxPluginManifest
     settingsSchema: normalizeSettingFields(merged.settingsSchema),
     pages: normalizePluginPages(merged.pages),
     actions: normalizePluginActions(merged.actions),
+    usageViews: normalizePluginUsageViews(merged.usageViews),
     assets: normalizePluginAssets(merged.assets),
     data: normalizePluginData(merged.data),
   };
@@ -652,6 +755,69 @@ function pluginPackageManifest(files: PluginPackageFile[]) {
   throw new Error("插件包内未找到 forwardx-plugin.json");
 }
 
+async function collectLocalPluginFiles(rootDir: string, relativeDir = ""): Promise<PluginPackageFile[]> {
+  let entries: Awaited<ReturnType<typeof fs.readdir>>;
+  try {
+    entries = await fs.readdir(path.join(rootDir, relativeDir), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: PluginPackageFile[] = [];
+  for (const entry of entries) {
+    if (files.length >= MAX_PLUGIN_PACKAGE_FILES) break;
+    const relativePath = normalizeAssetPath(path.posix.join(relativeDir.replace(/\\/g, "/"), entry.name));
+    if (entry.isDirectory()) {
+      files.push(...await collectLocalPluginFiles(rootDir, relativePath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const lower = relativePath.toLowerCase();
+    if (!PACKAGE_MANIFEST_CANDIDATES.includes(lower) && !isPackageAssetCandidate(relativePath) && !isDataAssetCandidate(relativePath)) continue;
+    const fullPath = path.join(rootDir, relativePath);
+    const stat = await fs.stat(fullPath);
+    if (!PACKAGE_MANIFEST_CANDIDATES.includes(lower) && stat.size > MAX_PLUGIN_ASSET_BYTES) continue;
+    files.push({ path: relativePath, content: await fs.readFile(fullPath) });
+  }
+  return files;
+}
+
+async function localChinaRegionWhitelistFiles() {
+  const files = await collectLocalPluginFiles(CHINA_REGION_WHITELIST_LOCAL_DIR);
+  if (!files.some((file) => file.path === "forwardx-plugin.json")) {
+    throw new Error("内置白名单插件文件缺失");
+  }
+  return files;
+}
+
+async function syncLocalChinaRegionWhitelistAssets(pluginId = CHINA_REGION_WHITELIST_PLUGIN_ID): Promise<AssetSyncResult> {
+  const files = await localChinaRegionWhitelistFiles();
+  const dataFiles = files
+    .filter((file) => isDataAssetCandidate(file.path, file.content.byteLength))
+    .sort((a, b) => a.path.localeCompare(b.path, "zh-Hans-CN"))
+    .slice(0, MAX_PLUGIN_ASSETS);
+  const result: AssetSyncResult = {
+    total: dataFiles.length,
+    synced: 0,
+    skipped: 0,
+    paths: [],
+    errors: [],
+  };
+  for (const file of dataFiles) {
+    try {
+      await upsertPluginAsset(pluginId, file.path, file.content.toString("utf8"), contentTypeForPath(file.path));
+      result.synced += 1;
+      result.paths.push(file.path);
+    } catch (error) {
+      result.skipped += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      result.errors.push(`${file.path}: ${message}`);
+      warnPluginThrottled(`local-sync:${pluginId}:${file.path}`, `[Plugin] local asset sync skipped plugin=${pluginId} path=${file.path}: ${message}`);
+    }
+  }
+  await prunePluginDataAssets(pluginId, result.paths);
+  return result;
+}
+
 async function fetchGithubTree(repository: string, branch: string): Promise<GithubTreeItem[]> {
   const text = await fetchText(githubTreeApiUrl(repository, branch));
   const parsed = JSON.parse(text);
@@ -688,6 +854,11 @@ async function tryFetchGithubManifest(repository: string, branch: string, prefer
 }
 
 async function fetchOfficialStoreItems(): Promise<PluginStoreItem[]> {
+  if (officialStoreCache && Date.now() - officialStoreCache.checkedAt < OFFICIAL_STORE_CACHE_TTL_MS) {
+    return officialStoreCache.items;
+  }
+  if (officialStoreFetchInFlight) return officialStoreFetchInFlight;
+  officialStoreFetchInFlight = (async () => {
   try {
     const text = await fetchText(githubRawUrl(FORWARDX_REPO_URL, "main", OFFICIAL_STORE_PATH));
     const parsed = JSON.parse(text);
@@ -696,11 +867,18 @@ async function fetchOfficialStoreItems(): Promise<PluginStoreItem[]> {
       const next = normalizeStoreItem(item);
       return next ? [next] : [];
     });
-    return normalized.length ? normalized : BUILTIN_PLUGIN_STORE_ITEMS;
+    const result = normalized.length ? normalized : BUILTIN_PLUGIN_STORE_ITEMS;
+    officialStoreCache = { items: result, checkedAt: Date.now() };
+    return result;
   } catch (error) {
-    console.warn(`[Plugin] official store fallback: ${error instanceof Error ? error.message : String(error)}`);
+    warnPluginThrottled("official-store", `[Plugin] official store fallback: ${error instanceof Error ? error.message : String(error)}`);
+    officialStoreCache = { items: BUILTIN_PLUGIN_STORE_ITEMS, checkedAt: Date.now() };
     return BUILTIN_PLUGIN_STORE_ITEMS;
+  } finally {
+    officialStoreFetchInFlight = null;
   }
+  })();
+  return officialStoreFetchInFlight;
 }
 
 async function findStoreFallbackItem(input: { id?: string | null; repository?: string | null }) {
@@ -720,7 +898,7 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
     version: storeItem.version || "0.0.0",
     description: storeItem.description,
     features: storeItem.features,
-    author: storeItem.author || "ForwardX",
+    author: storeItem.author || "poouo",
     logo: storeItem.logo,
     releaseDate: storeItem.releaseDate,
     updatedAt: storeItem.updatedAt,
@@ -736,7 +914,7 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
         id: "overview",
         title: "插件说明",
         contentType: "markdown",
-        content: "该插件来自 GitHub 白名单仓库，用于下载并维护中国区域 IP/域名白名单数据。插件只同步数据文件，不执行仓库内脚本。",
+        content: "该插件由 ForwardX 内置适配，用于维护面板可直接下发到 Agent 的中国区域白名单数据。插件只同步项目内置数据文件，不执行第三方脚本。",
       },
     ],
     actions: [
@@ -744,14 +922,45 @@ function builtinFallbackManifest(storeItem: PluginStoreItem): ForwardxPluginMani
         id: "refresh-whitelist-source",
         label: "刷新白名单数据",
         type: "data.whitelist.refresh",
-        description: "从 GitHub 重新同步 data 目录中的白名单文件。",
+        description: "从 ForwardX 内置插件数据重新同步 data 目录中的白名单文件。",
         confirmRequired: true,
+      },
+    ],
+    usageViews: [
+      {
+        id: "sync-to-hosts",
+        type: "host-asset-sync",
+        storageKey: "chinaRegionWhitelistUsage",
+        title: "主机白名单同步",
+        description: "选择主机和白名单数据后，Agent 会把文件同步到目标主机的 /etc/forwardx/plugins/china-region-whitelist。",
+        enableLabel: "启用同步",
+        targetDirectory: "/etc/forwardx/plugins/china-region-whitelist",
+        hostSelector: {
+          title: "生效主机",
+          selectedLabel: "已选",
+          selectAllLabel: "全选",
+          clearLabel: "清空",
+        },
+        assetSelector: {
+          title: "同步内容",
+          selectedLabel: "已选",
+          clearLabel: "清空",
+        },
+        noteField: {
+          label: "备注",
+          placeholder: "例如：同步到国内入口主机，供后续规则或脚本读取",
+        },
+        footer: {
+          title: "当前方式：同步文件到主机本地目录。",
+          description: "保存后，目标主机下次 Agent 心跳会收到更新。",
+          submitLabel: "保存使用配置",
+        },
       },
     ],
     data: {
       type: "china-region-whitelist",
-      repository: storeItem.repository,
-      branch: storeItem.branch || "main",
+      repository: storeItem.packageRepository || FORWARDX_REPO_URL,
+      branch: storeItem.packageBranch || storeItem.branch || "main",
       autoDiscover: true,
     },
   });
@@ -833,6 +1042,18 @@ async function upsertPluginAsset(pluginId: string, assetPath: string, content: s
       "INSERT INTO plugin_assets (pluginId, path, contentType, size, sha256, content, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE contentType=VALUES(contentType), size=VALUES(size), sha256=VALUES(sha256), content=VALUES(content), updatedAt=VALUES(updatedAt)",
       [pluginId, cleanPath, contentType, size, hash, content, nowSec, nowSec],
     );
+  }
+}
+
+async function prunePluginDataAssets(pluginId: string, keepPaths: string[]) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const keep = new Set(keepPaths.map((item) => normalizeAssetPath(item)));
+  const rows = await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, pluginId));
+  for (const row of rows as any[]) {
+    const assetPath = String(row?.path || "");
+    if (!assetPath.startsWith("data/") || keep.has(assetPath)) continue;
+    await db.delete(pluginAssets).where(eq(pluginAssets.id, row.id));
   }
 }
 
@@ -977,13 +1198,18 @@ export async function listPluginAssets(pluginId: string) {
   return await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, id));
 }
 
-export async function getChinaRegionWhitelistUsage() {
+export async function getPluginUsage(pluginId: string, usageViewId?: string | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const plugin = await getPlugin(CHINA_REGION_WHITELIST_PLUGIN_ID);
-  if (!plugin) throw new Error("请先安装中国区域白名单插件");
+  const id = assertPluginId(pluginId);
+  const plugin = await getPlugin(id);
+  if (!plugin) throw new Error("插件不存在");
+  const usageView = (plugin.manifest.usageViews || []).find((item) => item.id === usageViewId)
+    || firstHostAssetSyncView(plugin.manifest);
+  if (!usageView || usageView.type !== "host-asset-sync") throw new Error("插件没有声明可用的主机同步使用页");
   const settings = pluginSettingsValues(plugin.manifest);
-  const usage = normalizeChinaRegionWhitelistUsage(settings[CHINA_REGION_WHITELIST_USAGE_KEY]);
+  const usage = normalizeHostAssetSyncUsage(settings[usageStorageKey(plugin, usageView.id)]);
+  const declaredAssets = new Map((plugin.manifest.assets || []).map((asset: any) => [String(asset.path || ""), asset]));
   const [hostRows, assetRows] = await Promise.all([
     db.select({
       id: hosts.id,
@@ -992,32 +1218,39 @@ export async function getChinaRegionWhitelistUsage() {
       isOnline: hosts.isOnline,
       lastHeartbeat: hosts.lastHeartbeat,
     }).from(hosts),
-    db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, CHINA_REGION_WHITELIST_PLUGIN_ID)),
+    db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, id)),
   ]);
   const assets = assetRows
     .filter((asset: any) => String(asset?.path || "").startsWith("data/"))
     .map((asset: any) => ({
       path: asset.path,
+      label: declaredAssets.get(String(asset.path || ""))?.label || asset.path,
+      description: declaredAssets.get(String(asset.path || ""))?.description || "",
       size: asset.size,
       sha256: asset.sha256,
       updatedAt: asset.updatedAt,
       contentType: asset.contentType,
     }))
     .sort((a: any, b: any) => String(a.path).localeCompare(String(b.path), "zh-Hans-CN"));
-  return { plugin, usage, hosts: hostRows, assets };
+  return { plugin, usageView, usage, hosts: hostRows, assets };
 }
 
-export async function saveChinaRegionWhitelistUsage(input: Partial<ChinaRegionWhitelistUsageConfig>) {
+export async function savePluginUsage(pluginId: string, usageViewId: string | null | undefined, input: Partial<HostAssetSyncUsageConfig>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const plugin = await getPlugin(CHINA_REGION_WHITELIST_PLUGIN_ID);
-  if (!plugin) throw new Error("请先安装中国区域白名单插件");
-  const previousUsage = normalizeChinaRegionWhitelistUsage(pluginSettingsValues(plugin.manifest)[CHINA_REGION_WHITELIST_USAGE_KEY]);
+  const id = assertPluginId(pluginId);
+  const plugin = await getPlugin(id);
+  if (!plugin) throw new Error("插件不存在");
+  const usageView = (plugin.manifest.usageViews || []).find((item) => item.id === usageViewId)
+    || firstHostAssetSyncView(plugin.manifest);
+  if (!usageView || usageView.type !== "host-asset-sync") throw new Error("插件没有声明可保存的主机同步使用页");
+  const key = usageStorageKey(plugin, usageView.id);
+  const previousUsage = normalizeHostAssetSyncUsage(pluginSettingsValues(plugin.manifest)[key]);
   const knownHosts = await db.select({ id: hosts.id }).from(hosts);
   const knownHostIds = new Set(knownHosts.map((host: any) => Number(host.id)));
-  const knownAssetRows = await db.select({ path: pluginAssets.path, size: pluginAssets.size }).from(pluginAssets).where(eq(pluginAssets.pluginId, CHINA_REGION_WHITELIST_PLUGIN_ID));
+  const knownAssetRows = await db.select({ path: pluginAssets.path, size: pluginAssets.size }).from(pluginAssets).where(eq(pluginAssets.pluginId, id));
   const knownAssetPaths = new Set(knownAssetRows.map((asset: any) => String(asset.path || "")).filter((path) => path.startsWith("data/")));
-  const nextUsage = normalizeChinaRegionWhitelistUsage({
+  const nextUsage = normalizeHostAssetSyncUsage({
     enabled: input.enabled === true,
     hostIds: normalizePositiveIds(input.hostIds).filter((hostId) => knownHostIds.has(hostId)),
     assetPaths: normalizeUsageAssetPaths(input.assetPaths).filter((path) => knownAssetPaths.has(path)),
@@ -1041,73 +1274,86 @@ export async function saveChinaRegionWhitelistUsage(input: Partial<ChinaRegionWh
     .slice(0, MAX_WHITELIST_USAGE_HOSTS);
   const manifest = { ...(plugin.manifest as any) } as ForwardxPluginManifest;
   const settings = pluginSettingsValues(manifest);
-  settings[CHINA_REGION_WHITELIST_USAGE_KEY] = nextUsage;
+  settings[key] = nextUsage;
   (manifest as any).settingsValues = settings;
   await db.update(plugins).set({ manifestJson: JSON.stringify(manifest, null, 2), updatedAt: nowDate(), lastError: null } as any)
-    .where(eq(plugins.pluginId, CHINA_REGION_WHITELIST_PLUGIN_ID));
-  return getChinaRegionWhitelistUsage();
+    .where(eq(plugins.pluginId, id));
+  return getPluginUsage(id, usageView.id);
 }
 
-export async function buildChinaRegionWhitelistAgentSyncCommands(hostId: number) {
+export async function buildPluginHostAssetSyncActions(hostId: number) {
   const db = await getDb();
   if (!db) return [];
-  const plugin = await getPlugin(CHINA_REGION_WHITELIST_PLUGIN_ID);
-  if (!plugin) return [];
-  const settings = pluginSettingsValues(plugin.manifest);
-  const usage = normalizeChinaRegionWhitelistUsage(settings[CHINA_REGION_WHITELIST_USAGE_KEY]);
-  const hasUsageConfig = usage.enabled || usage.hostIds.length > 0 || usage.assetPaths.length > 0 || !!usage.note || !!usage.cleanupHostIds?.length;
-  if (!hasUsageConfig) return [];
   const currentHostId = Number(hostId);
-  const shouldCleanup = usage.cleanupHostIds?.includes(currentHostId)
-    || ((plugin.status !== "enabled" || !usage.enabled || usage.assetPaths.length === 0) && usage.hostIds.includes(currentHostId));
-  if (shouldCleanup) {
-    return [
-      `rm -rf ${JSON.stringify(CHINA_REGION_WHITELIST_SYNC_DIR)} 2>/dev/null || true`,
-    ];
-  }
-  if (plugin.status !== "enabled" || !usage.enabled || !usage.hostIds.includes(currentHostId) || usage.assetPaths.length === 0) return [];
-  const rows = await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, CHINA_REGION_WHITELIST_PLUGIN_ID));
-  const byPath = new Map(rows.map((asset: any) => [String(asset.path || ""), asset]));
-  let totalBytes = 0;
-  const skippedPaths: string[] = [];
-  const files = usage.assetPaths.flatMap((assetPath) => {
-    const asset = byPath.get(assetPath) as any;
-    const content = String(asset?.content || "");
-    if (!asset || !content) return [];
-    const size = Buffer.byteLength(content, "utf8");
-    if (totalBytes + size > MAX_WHITELIST_USAGE_SYNC_BYTES) {
-      skippedPaths.push(assetPath);
-      return [];
+  if (!Number.isInteger(currentHostId) || currentHostId <= 0) return [];
+  const pluginRows = await db.select().from(plugins);
+  const tasks: Array<{ pluginId: string; usageViewId: string; forwardType: string; commands: string[] }> = [];
+  for (const row of pluginRows) {
+    const plugin = normalizePluginRow(row);
+    const usageView = firstHostAssetSyncView(plugin.manifest);
+    if (!usageView) continue;
+    const settings = pluginSettingsValues(plugin.manifest);
+    const usage = normalizeHostAssetSyncUsage(settings[usageStorageKey(plugin, usageView.id)]);
+    const hasUsageConfig = usage.enabled || usage.hostIds.length > 0 || usage.assetPaths.length > 0 || !!usage.note || !!usage.cleanupHostIds?.length;
+    if (!hasUsageConfig) continue;
+    const targetDir = hostAssetSyncDir(plugin.pluginId, usageView);
+    const shouldCleanup = usage.cleanupHostIds?.includes(currentHostId)
+      || ((plugin.status !== "enabled" || !usage.enabled || usage.assetPaths.length === 0) && usage.hostIds.includes(currentHostId));
+    if (shouldCleanup) {
+      tasks.push({
+        pluginId: plugin.pluginId,
+        usageViewId: usageView.id,
+        forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`,
+        commands: [`rm -rf ${JSON.stringify(targetDir)} 2>/dev/null || true`],
+      });
+      continue;
     }
-    totalBytes += size;
-    return [{
-      source: assetPath,
-      fileName: safeAgentPluginAssetName(assetPath),
-      sha256: String(asset.sha256 || sha256(content)),
-      size,
-      content,
-    }];
-  });
-  const manifest = {
-    pluginId: CHINA_REGION_WHITELIST_PLUGIN_ID,
-    mode: usage.mode,
-    note: usage.note || "",
-    updatedAt: usage.updatedAt || "",
-    files: files.map(({ content: _content, ...file }) => file),
-    skipped: skippedPaths,
-  };
-  const commands = [
-    `mkdir -p ${JSON.stringify(CHINA_REGION_WHITELIST_SYNC_DIR)}`,
-    `rm -f ${JSON.stringify(CHINA_REGION_WHITELIST_SYNC_DIR)}/* 2>/dev/null || true`,
-  ];
-  for (const file of files) {
-    const encoded = Buffer.from(file.content, "utf8").toString("base64");
-    const target = `${CHINA_REGION_WHITELIST_SYNC_DIR}/${file.fileName}`;
-    commands.push(`printf '%s' '${encoded}' | base64 -d > ${JSON.stringify(target)}`);
+    if (plugin.status !== "enabled" || !usage.enabled || !usage.hostIds.includes(currentHostId) || usage.assetPaths.length === 0) continue;
+    const rows = await db.select().from(pluginAssets).where(eq(pluginAssets.pluginId, plugin.pluginId));
+    const byPath = new Map(rows.map((asset: any) => [String(asset.path || ""), asset]));
+    let totalBytes = 0;
+    const skippedPaths: string[] = [];
+    const files = usage.assetPaths.flatMap((assetPath) => {
+      const asset = byPath.get(assetPath) as any;
+      const content = String(asset?.content || "");
+      if (!asset || !content) return [];
+      const size = Buffer.byteLength(content, "utf8");
+      if (totalBytes + size > MAX_WHITELIST_USAGE_SYNC_BYTES) {
+        skippedPaths.push(assetPath);
+        return [];
+      }
+      totalBytes += size;
+      return [{
+        source: assetPath,
+        fileName: safeAgentPluginAssetName(assetPath),
+        sha256: String(asset.sha256 || sha256(content)),
+        size,
+        content,
+      }];
+    });
+    const manifest = {
+      pluginId: plugin.pluginId,
+      usageViewId: usageView.id,
+      mode: usage.mode,
+      note: usage.note || "",
+      updatedAt: usage.updatedAt || "",
+      files: files.map(({ content: _content, ...file }) => file),
+      skipped: skippedPaths,
+    };
+    const commands = [
+      `mkdir -p ${JSON.stringify(targetDir)}`,
+      `rm -f ${JSON.stringify(targetDir)}/* 2>/dev/null || true`,
+    ];
+    for (const file of files) {
+      const encoded = Buffer.from(file.content, "utf8").toString("base64");
+      const target = `${targetDir}/${file.fileName}`;
+      commands.push(`printf '%s' '${encoded}' | base64 -d > ${JSON.stringify(target)}`);
+    }
+    const manifestEncoded = Buffer.from(JSON.stringify(manifest, null, 2), "utf8").toString("base64");
+    commands.push(`printf '%s' '${manifestEncoded}' | base64 -d > ${JSON.stringify(`${targetDir}/manifest.json`)}`);
+    tasks.push({ pluginId: plugin.pluginId, usageViewId: usageView.id, forwardType: `plugin-${plugin.pluginId}-${usageView.id}-sync`, commands });
   }
-  const manifestEncoded = Buffer.from(JSON.stringify(manifest, null, 2), "utf8").toString("base64");
-  commands.push(`printf '%s' '${manifestEncoded}' | base64 -d > ${JSON.stringify(`${CHINA_REGION_WHITELIST_SYNC_DIR}/manifest.json`)}`);
-  return commands;
+  return tasks;
 }
 
 export async function installPluginFromGithub(input: {
@@ -1175,13 +1421,39 @@ export async function installPluginFromPackage(input: {
   for (const file of files.slice(0, MAX_PLUGIN_PACKAGE_FILES)) {
     const lower = file.path.toLowerCase();
     if (PACKAGE_MANIFEST_CANDIDATES.includes(lower)) continue;
-    if (!isPackageAssetCandidate(file.path, file.content.byteLength)) continue;
+    if (!isPackageAssetCandidate(file.path, file.content.byteLength) && !isDataAssetCandidate(file.path, file.content.byteLength)) continue;
     await upsertPluginAsset(manifest.id, file.path, file.content.toString("utf8"), contentTypeForPath(file.path));
   }
   const sourceRepository = input.sourceUrl || manifest.repository;
-  if (sourceRepository && manifest.data?.type) {
+  if (input.sourceType !== "local" && sourceRepository && manifest.data?.type) {
     await syncGithubDeclaredAssets(manifest, sourceRepository, input.branch || "main", manifestFile.path);
   }
+  return await getPlugin(manifest.id);
+}
+
+export async function installChinaRegionWhitelistPluginFromLocal() {
+  const files = await localChinaRegionWhitelistFiles();
+  const manifestFile = pluginPackageManifest(files);
+  const manifest = normalizeManifest(manifestFile.manifest, { repository: FORWARDX_REPO_URL });
+  await upsertPlugin(manifest, {
+    sourceType: "local",
+    sourceUrl: null,
+    branch: null,
+    manifestPath: manifestFile.path,
+  });
+  await upsertPluginAsset(manifest.id, "source.json", JSON.stringify({
+    source: "forwardx-bundled",
+    installedAt: new Date().toISOString(),
+    manifestPath: manifestFile.path,
+    files: files.map((file) => ({ path: file.path, size: file.content.byteLength })),
+  }, null, 2), "application/json");
+  for (const file of files.slice(0, MAX_PLUGIN_PACKAGE_FILES)) {
+    const lower = file.path.toLowerCase();
+    if (PACKAGE_MANIFEST_CANDIDATES.includes(lower)) continue;
+    if (!isPackageAssetCandidate(file.path, file.content.byteLength)) continue;
+    await upsertPluginAsset(manifest.id, file.path, file.content.toString("utf8"), contentTypeForPath(file.path));
+  }
+  await syncLocalChinaRegionWhitelistAssets(manifest.id);
   return await getPlugin(manifest.id);
 }
 
@@ -1204,6 +1476,9 @@ export async function installPluginFromPackageUrl(input: {
 }
 
 export async function installPluginFromStoreItem(item: PluginStoreItem) {
+  if (item.id === CHINA_REGION_WHITELIST_PLUGIN_ID) {
+    return installChinaRegionWhitelistPluginFromLocal();
+  }
   const packageRepository = String(item.packageRepository || "").trim();
   const packageBranch = String(item.packageBranch || item.branch || "main").trim() || "main";
   if (item.packageUrl) {
@@ -1285,6 +1560,18 @@ export async function checkPluginUpdate(pluginId: string) {
   if (!db) throw new Error("Database not available");
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
+  if (plugin.pluginId === CHINA_REGION_WHITELIST_PLUGIN_ID) {
+    const files = await localChinaRegionWhitelistFiles();
+    const manifestFile = pluginPackageManifest(files);
+    const manifest = normalizeManifest(manifestFile.manifest, { repository: FORWARDX_REPO_URL });
+    await db.update(plugins).set({
+      latestVersion: manifest.version,
+      manifestPath: manifestFile.path,
+      lastCheckedAt: nowDate(),
+      lastError: null,
+    } as any).where(eq(plugins.pluginId, plugin.pluginId));
+    return { currentVersion: plugin.version, latestVersion: manifest.version, hasUpdate: manifest.version !== plugin.version };
+  }
   if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
     throw new Error("只有 GitHub 来源插件支持在线检查更新");
   }
@@ -1318,6 +1605,11 @@ export async function refreshPluginAssets(pluginId: string) {
   if (!db) throw new Error("Database not available");
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
+  if (plugin.pluginId === CHINA_REGION_WHITELIST_PLUGIN_ID) {
+    const syncResult = await syncLocalChinaRegionWhitelistAssets(plugin.pluginId);
+    await db.update(plugins).set({ lastCheckedAt: nowDate(), lastError: null, updatedAt: nowDate() } as any).where(eq(plugins.pluginId, plugin.pluginId));
+    return syncResult;
+  }
   if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
     throw new Error("只有 GitHub 来源插件支持刷新数据");
   }
@@ -1330,6 +1622,9 @@ export async function refreshPluginAssets(pluginId: string) {
 export async function updatePluginFromGithub(pluginId: string) {
   const plugin = await getPlugin(pluginId);
   if (!plugin) throw new Error("插件不存在");
+  if (plugin.pluginId === CHINA_REGION_WHITELIST_PLUGIN_ID) {
+    return installChinaRegionWhitelistPluginFromLocal();
+  }
   if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
     throw new Error("只有 GitHub 来源插件支持在线更新");
   }
@@ -1394,7 +1689,7 @@ export async function runPluginAction(pluginId: string, actionId: string) {
     return { ok: true, message: "动作已执行（noop）" };
   }
   if (action.type === "data.asset.refresh" || action.type === "data.whitelist.refresh") {
-    if (plugin.sourceType !== "github" || !plugin.sourceUrl) {
+    if (plugin.pluginId !== CHINA_REGION_WHITELIST_PLUGIN_ID && (plugin.sourceType !== "github" || !plugin.sourceUrl)) {
       throw new Error("该动作仅支持 GitHub 来源插件");
     }
     const [updateResult, syncResult] = await Promise.all([

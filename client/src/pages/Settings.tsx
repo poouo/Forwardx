@@ -73,7 +73,6 @@ import {
   Image as ImageIcon,
   Monitor,
   PanelLeft,
-  Puzzle,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useMemo, useRef, useState, useEffect } from "react";
@@ -2708,7 +2707,6 @@ type SystemSettingsSaveKey =
   | "registration"
   | "twoFactor"
   | "sessionPolicy"
-  | "pluginsFeature"
   | "ddns"
   | "hostMonitor"
   | "forwardProtocols"
@@ -3577,7 +3575,6 @@ function SystemInfoSection() {
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [lookingGlassUserEnabled, setLookingGlassUserEnabled] = useState(true);
-  const [pluginsEnabled, setPluginsEnabled] = useState(false);
   const [forwardProtocols, setForwardProtocols] = useState<ForwardProtocolSettings>(() => normalizeForwardProtocolSettings());
   const [sidebarMenu, setSidebarMenu] = useState<SidebarMenuSettings>(() => normalizeSidebarMenuSettings());
   const [githubAcceleratorEnabled, setGithubAcceleratorEnabled] = useState(false);
@@ -3640,10 +3637,12 @@ function SystemInfoSection() {
       setRegistrationEnabled(settings.registrationEnabled ?? true);
       setTwoFactorEnabled(!!settings.twoFactorEnabled);
       setLookingGlassUserEnabled(settings.lookingGlassUserEnabled ?? true);
-      setPluginsEnabled(!!settings.pluginsEnabled);
       setAllowMultiDeviceLogin(!!settings.allowMultiDeviceLogin);
       setForwardProtocols(normalizeForwardProtocolSettings(settings.forwardProtocols));
-      setSidebarMenu(normalizeSidebarMenuSettings(settings.sidebarMenu));
+      setSidebarMenu(normalizeSidebarMenuSettings({
+        ...settings.sidebarMenu,
+        plugins: settings.pluginsEnabled === true || settings.sidebarMenu?.plugins === true,
+      }));
       setGithubAcceleratorEnabled(!!settings.githubAccelerator?.enabled);
       setGithubAcceleratorUrlInput(settings.githubAccelerator?.url || "");
       setAgentPreferPanelInstall(!!settings.agentPreferPanelInstall);
@@ -4001,25 +4000,6 @@ function SystemInfoSection() {
     saveSystemSettings("sessionPolicy", { allowMultiDeviceLogin });
   };
 
-  const handleSavePluginFeature = () => {
-    const nextSidebarMenu = normalizeSidebarMenuSettings({
-      ...settings?.sidebarMenu,
-      ...sidebarMenu,
-      plugins: pluginsEnabled,
-    });
-    setSidebarMenu(nextSidebarMenu);
-    saveSystemSettings(
-      "pluginsFeature",
-      { pluginsEnabled, sidebarMenu: nextSidebarMenu },
-      {
-        onSuccess: () => {
-          utils.system.getSettings.invalidate();
-          utils.system.publicInfo.invalidate();
-        },
-      },
-    );
-  };
-
   const resetForwardProtocolDraft = () => {
     setForwardProtocols(normalizeForwardProtocolSettings(settings?.forwardProtocols));
   };
@@ -4043,7 +4023,10 @@ function SystemInfoSection() {
   };
 
   const resetSidebarMenuDraft = () => {
-    setSidebarMenu(normalizeSidebarMenuSettings(settings?.sidebarMenu));
+    setSidebarMenu(normalizeSidebarMenuSettings({
+      ...settings?.sidebarMenu,
+      plugins: settings?.pluginsEnabled === true,
+    }));
   };
 
   const openSidebarMenuDialog = () => {
@@ -4057,12 +4040,14 @@ function SystemInfoSection() {
   };
 
   const handleSaveSidebarMenu = () => {
+    const nextSidebarMenu = normalizeSidebarMenuSettings(sidebarMenu);
     saveSystemSettings(
       "sidebarMenu",
-      { sidebarMenu },
+      { sidebarMenu: nextSidebarMenu, pluginsEnabled: nextSidebarMenu.plugins },
       {
         onSuccess: () => {
           setShowSidebarMenuDialog(false);
+          utils.system.getSettings.invalidate();
           utils.system.publicInfo.invalidate();
         },
       },
@@ -4988,35 +4973,6 @@ function SystemInfoSection() {
         </Card>
 
         <Card className="border-border/40 bg-card/60 backdrop-blur-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Puzzle className="h-4 w-4 text-primary" />
-              插件功能
-            </CardTitle>
-            <CardDescription>
-              开启后左侧导航会显示插件入口。
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-muted/20 p-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">启用插件</p>
-                <p className="text-xs text-muted-foreground">
-                  支持从商店、GitHub 或上传 JSON 插件包安装。
-                </p>
-              </div>
-              <Switch className="shrink-0" checked={pluginsEnabled} onCheckedChange={setPluginsEnabled} />
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={handleSavePluginFeature} disabled={isSavingSetting("pluginsFeature")}>
-                {isSavingSetting("pluginsFeature") && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isSavingSetting("pluginsFeature") ? "保存中..." : "保存插件开关"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/40 bg-card/60 backdrop-blur-md">
           <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1.5">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -5126,7 +5082,7 @@ function SystemInfoSection() {
               左侧导航栏菜单展示设置
             </DialogTitle>
             <DialogDescription>
-              关闭后对应入口不再显示在左侧导航栏中。
+              关闭后对应入口不再显示在左侧导航栏中，插件入口也在这里统一控制。
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-2 sm:grid-cols-2">

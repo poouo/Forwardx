@@ -1,0 +1,21 @@
+# ForwardX built-in China domain whitelist.
+baidu.com
+qq.com
+taobao.com
+tmall.com
+jd.com
+aliyun.com
+tencent.com
+weixin.qq.com
+bilibili.com
+163.com
+126.com
+sina.com.cn
+weibo.com
+douyin.com
+bytedance.com
+mi.com
+huawei.com
+alipay.com
+amap.com
+smzdm.com

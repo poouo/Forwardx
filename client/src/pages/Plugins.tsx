@@ -49,17 +49,16 @@ type PluginSettingField = {
   options?: Array<{ label: string; value: string }>;
 };
 
-type ChinaWhitelistUsageDraft = {
+type PluginUsageDraft = {
   enabled: boolean;
   hostIds: number[];
   assetPaths: string[];
   note: string;
 };
 
-const chinaWhitelistPluginId = "china-region-whitelist";
-const chinaWhitelistMaxSyncBytes = 1024 * 1024;
+const pluginHostAssetSyncMaxBytes = 1024 * 1024;
 
-const defaultChinaWhitelistUsage: ChinaWhitelistUsageDraft = {
+const defaultPluginUsage: PluginUsageDraft = {
   enabled: false,
   hostIds: [],
   assetPaths: [],
@@ -302,7 +301,7 @@ export default function Plugins() {
   const [uploadFileName, setUploadFileName] = useState("");
   const [uploadEncoding, setUploadEncoding] = useState<"text" | "base64">("text");
   const [settingDraft, setSettingDraft] = useState<Record<string, unknown>>({});
-  const [chinaWhitelistDraft, setChinaWhitelistDraft] = useState<ChinaWhitelistUsageDraft>(defaultChinaWhitelistUsage);
+  const [usageDraft, setUsageDraft] = useState<PluginUsageDraft>(defaultPluginUsage);
   const [activePageId, setActivePageId] = useState("");
   const [activeAssetPath, setActiveAssetPath] = useState("");
 
@@ -311,18 +310,21 @@ export default function Plugins() {
     [plugins, selectedPluginId],
   );
   const selectedManifest = getPluginManifest(selectedPlugin);
-  const isChinaWhitelistPlugin = selectedPlugin?.pluginId === chinaWhitelistPluginId;
   const settingFields = (selectedManifest.settingsSchema || []) as PluginSettingField[];
   const pluginPages = Array.isArray(selectedManifest.pages) ? selectedManifest.pages : [];
   const pluginActions = Array.isArray(selectedManifest.actions) ? selectedManifest.actions : [];
+  const pluginUsageViews = Array.isArray(selectedManifest.usageViews) ? selectedManifest.usageViews : [];
+  const hostAssetSyncUsageView = pluginUsageViews.find((view: any) => view?.type === "host-asset-sync");
+  const hasUsageView = !!hostAssetSyncUsageView;
 
   const { data: assets = [], isLoading: assetsLoading } = trpc.plugins.assets.useQuery(
     { pluginId: selectedPlugin?.pluginId || "" },
     { enabled: !!selectedPlugin?.pluginId },
   );
-  const { data: chinaWhitelistUsage, isLoading: chinaWhitelistUsageLoading } = trpc.plugins.chinaRegionWhitelistUsage.useQuery(undefined, {
-    enabled: isChinaWhitelistPlugin,
-  });
+  const { data: pluginUsage, isLoading: pluginUsageLoading } = trpc.plugins.usage.useQuery(
+    { pluginId: selectedPlugin?.pluginId || "", usageViewId: hostAssetSyncUsageView?.id },
+    { enabled: !!selectedPlugin?.pluginId && hasUsageView },
+  );
 
   const selectedAsset = assets.find((asset: any) => asset.path === activeAssetPath) || assets[0];
   const selectedPage = pluginPages.find((page: any) => page.id === activePageId) || pluginPages[0];
@@ -335,7 +337,9 @@ export default function Plugins() {
     await Promise.all([
       utils.plugins.list.invalidate(),
       utils.plugins.store.invalidate(),
-      isChinaWhitelistPlugin ? utils.plugins.chinaRegionWhitelistUsage.invalidate() : Promise.resolve(),
+      hasUsageView && selectedPlugin?.pluginId
+        ? utils.plugins.usage.invalidate({ pluginId: selectedPlugin.pluginId, usageViewId: hostAssetSyncUsageView?.id })
+        : Promise.resolve(),
       selectedPlugin?.pluginId ? utils.plugins.assets.invalidate({ pluginId: selectedPlugin.pluginId }) : Promise.resolve(),
     ]);
   };
@@ -409,7 +413,7 @@ export default function Plugins() {
     onError: (error) => toast.error(error.message || "保存失败"),
   });
 
-  const saveChinaWhitelistUsageMutation = trpc.plugins.saveChinaRegionWhitelistUsage.useMutation({
+  const saveUsageMutation = trpc.plugins.saveUsage.useMutation({
     onSuccess: async () => {
       toast.success("使用配置已保存");
       await invalidatePluginQueries();
@@ -452,18 +456,18 @@ export default function Plugins() {
   }, [selectedPlugin?.pluginId, selectedPlugin?.manifestJson]);
 
   useEffect(() => {
-    if (!isChinaWhitelistPlugin) {
-      setChinaWhitelistDraft(defaultChinaWhitelistUsage);
+    if (!hasUsageView) {
+      setUsageDraft(defaultPluginUsage);
       return;
     }
-    const usage = (chinaWhitelistUsage as any)?.usage;
-    setChinaWhitelistDraft({
+    const usage = (pluginUsage as any)?.usage;
+    setUsageDraft({
       enabled: !!usage?.enabled,
       hostIds: Array.isArray(usage?.hostIds) ? usage.hostIds.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0) : [],
       assetPaths: Array.isArray(usage?.assetPaths) ? usage.assetPaths.map((item: unknown) => String(item || "")).filter(Boolean) : [],
       note: String(usage?.note || ""),
     });
-  }, [isChinaWhitelistPlugin, (chinaWhitelistUsage as any)?.usage?.updatedAt, selectedPlugin?.pluginId]);
+  }, [hasUsageView, (pluginUsage as any)?.usage?.updatedAt, selectedPlugin?.pluginId, hostAssetSyncUsageView?.id]);
 
   useEffect(() => {
     if (!selectedPage || pluginPages.some((page: any) => page.id === activePageId)) return;
@@ -484,7 +488,7 @@ export default function Plugins() {
     || checkUpdateMutation.isPending
     || updateFromGithubMutation.isPending
     || saveSettingMutation.isPending
-    || saveChinaWhitelistUsageMutation.isPending
+    || saveUsageMutation.isPending
     || runActionMutation.isPending;
 
   const handleGithubInstall = () => {
@@ -558,24 +562,27 @@ export default function Plugins() {
     }
   };
 
-  const handleSaveChinaWhitelistUsage = () => {
-    if (chinaWhitelistDraft.enabled && chinaWhitelistDraft.hostIds.length === 0) {
+  const handleSaveUsage = () => {
+    if (!selectedPlugin || !hostAssetSyncUsageView) return;
+    if (usageDraft.enabled && usageDraft.hostIds.length === 0) {
       toast.error("请选择至少一台生效主机");
       return;
     }
-    if (chinaWhitelistDraft.enabled && chinaWhitelistDraft.assetPaths.length === 0) {
+    if (usageDraft.enabled && usageDraft.assetPaths.length === 0) {
       toast.error("请选择至少一个白名单文件");
       return;
     }
-    if (chinaWhitelistDraft.enabled && selectedChinaWhitelistSize > chinaWhitelistMaxSyncBytes) {
-      toast.error(`同步文件总大小不能超过 ${formatBytes(chinaWhitelistMaxSyncBytes)}`);
+    if (usageDraft.enabled && selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes) {
+      toast.error(`同步文件总大小不能超过 ${formatBytes(pluginHostAssetSyncMaxBytes)}`);
       return;
     }
-    saveChinaWhitelistUsageMutation.mutate({
-      enabled: chinaWhitelistDraft.enabled,
-      hostIds: chinaWhitelistDraft.hostIds,
-      assetPaths: chinaWhitelistDraft.assetPaths,
-      note: chinaWhitelistDraft.note,
+    saveUsageMutation.mutate({
+      pluginId: selectedPlugin.pluginId,
+      usageViewId: hostAssetSyncUsageView.id,
+      enabled: usageDraft.enabled,
+      hostIds: usageDraft.hostIds,
+      assetPaths: usageDraft.assetPaths,
+      note: usageDraft.note,
     });
   };
 
@@ -617,11 +624,11 @@ export default function Plugins() {
     URL.revokeObjectURL(url);
   };
 
-  const chinaWhitelistHosts = ((chinaWhitelistUsage as any)?.hosts || []) as any[];
-  const chinaWhitelistAssets = ((chinaWhitelistUsage as any)?.assets || []) as any[];
-  const selectedChinaWhitelistAssets = chinaWhitelistAssets.filter((asset) => chinaWhitelistDraft.assetPaths.includes(String(asset.path || "")));
-  const selectedChinaWhitelistSize = selectedChinaWhitelistAssets.reduce((sum, asset) => sum + Number(asset.size || 0), 0);
-  const chinaWhitelistSizeExceeded = selectedChinaWhitelistSize > chinaWhitelistMaxSyncBytes;
+  const usageHosts = ((pluginUsage as any)?.hosts || []) as any[];
+  const usageAssets = ((pluginUsage as any)?.assets || []) as any[];
+  const selectedUsageAssets = usageAssets.filter((asset) => usageDraft.assetPaths.includes(String(asset.path || "")));
+  const selectedUsageAssetsSize = selectedUsageAssets.reduce((sum, asset) => sum + Number(asset.size || 0), 0);
+  const usageSizeExceeded = selectedUsageAssetsSize > pluginHostAssetSyncMaxBytes;
 
   if (publicInfo?.pluginsEnabled !== true) {
     return (
@@ -632,7 +639,7 @@ export default function Plugins() {
               <Puzzle className="h-5 w-5" />
               插件功能未开启
             </CardTitle>
-            <CardDescription>请先在系统设置中开启插件功能。</CardDescription>
+            <CardDescription>请先在系统设置的管理菜单开关中开启“插件”。</CardDescription>
           </CardHeader>
         </Card>
       </DashboardLayout>
@@ -925,9 +932,9 @@ export default function Plugins() {
                 </CardHeader>
                 <CardContent>
                   <Tabs defaultValue="overview" className="space-y-4">
-                    <TabsList className={cn("grid w-full", isChinaWhitelistPlugin ? "grid-cols-6" : "grid-cols-5")}>
+                    <TabsList className={cn("grid w-full", hasUsageView ? "grid-cols-6" : "grid-cols-5")}>
                       <TabsTrigger value="overview">概览</TabsTrigger>
-                      {isChinaWhitelistPlugin && <TabsTrigger value="usage">使用</TabsTrigger>}
+                      {hasUsageView && <TabsTrigger value="usage">使用</TabsTrigger>}
                       <TabsTrigger value="settings">设置</TabsTrigger>
                       <TabsTrigger value="pages">页面</TabsTrigger>
                       <TabsTrigger value="assets">资产</TabsTrigger>
@@ -1017,33 +1024,35 @@ export default function Plugins() {
                       )}
                     </TabsContent>
 
-                    {isChinaWhitelistPlugin && (
+                    {hasUsageView && (
                       <TabsContent value="usage" className="space-y-4">
-                        {chinaWhitelistUsageLoading ? (
+                        {pluginUsageLoading ? (
                           <DataSectionLoading label="正在加载使用配置" minHeight="min-h-[220px]" />
                         ) : (
                           <>
                             <div className="rounded-xl border border-border/40 bg-muted/20 p-4">
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
-                                  <p className="text-base font-medium">主机使用配置</p>
-                                  <p className="mt-1 text-sm text-muted-foreground">
-                                    选中的白名单文件会同步到目标主机的 /etc/forwardx/plugins/china-region-whitelist。
-                                  </p>
+                                  <p className="text-base font-medium">{hostAssetSyncUsageView?.title || "主机使用配置"}</p>
+                                  {(hostAssetSyncUsageView?.description || hostAssetSyncUsageView?.targetDirectory) && (
+                                    <p className="mt-1 text-sm text-muted-foreground">
+                                      {hostAssetSyncUsageView?.description || `选中的文件会同步到目标主机的 ${hostAssetSyncUsageView?.targetDirectory}。`}
+                                    </p>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-3 rounded-full border border-border/40 bg-background/70 px-3 py-2">
-                                  <span className="text-sm text-muted-foreground">启用</span>
+                                  <span className="text-sm text-muted-foreground">{hostAssetSyncUsageView?.enableLabel || "启用"}</span>
                                   <Switch
-                                    checked={chinaWhitelistDraft.enabled}
-                                    onCheckedChange={(enabled) => setChinaWhitelistDraft((current) => ({ ...current, enabled }))}
+                                    checked={usageDraft.enabled}
+                                    onCheckedChange={(enabled) => setUsageDraft((current) => ({ ...current, enabled }))}
                                   />
                                 </div>
                               </div>
                               {selectedPlugin.status !== "enabled" && (
                                 <Alert className="mt-4 border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300">
                                   <AlertTriangle className="h-4 w-4" />
-                                  <AlertTitle>插件未启用</AlertTitle>
-                                  <AlertDescription>可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。</AlertDescription>
+                                  <AlertTitle>{hostAssetSyncUsageView?.disabledTitle || "插件未启用"}</AlertTitle>
+                                  <AlertDescription>{hostAssetSyncUsageView?.disabledDescription || "可以先保存配置，启用插件后会在 Agent 心跳时同步到主机。"}</AlertDescription>
                                 </Alert>
                               )}
                             </div>
@@ -1052,40 +1061,45 @@ export default function Plugins() {
                               <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <div>
-                                    <p className="font-medium">生效主机</p>
-                                    <p className="text-xs text-muted-foreground">已选 {chinaWhitelistDraft.hostIds.length} 台</p>
+                                    <p className="font-medium">{hostAssetSyncUsageView?.hostSelector?.title || "生效主机"}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {hostAssetSyncUsageView?.hostSelector?.selectedLabel || "已选"} {usageDraft.hostIds.length} 台
+                                    </p>
+                                    {hostAssetSyncUsageView?.hostSelector?.description && (
+                                      <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.hostSelector.description}</p>
+                                    )}
                                   </div>
                                   <div className="flex gap-2">
                                     <Button
                                       type="button"
                                       variant="outline"
                                       size="sm"
-                                      onClick={() => setChinaWhitelistDraft((current) => ({
+                                      onClick={() => setUsageDraft((current) => ({
                                         ...current,
-                                        hostIds: chinaWhitelistHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
+                                        hostIds: usageHosts.map((host) => Number(host.id)).filter((id) => Number.isInteger(id) && id > 0),
                                       }))}
                                     >
-                                      全选
+                                      {hostAssetSyncUsageView?.hostSelector?.selectAllLabel || "全选"}
                                     </Button>
                                     <Button
                                       type="button"
                                       variant="ghost"
                                       size="sm"
-                                      onClick={() => setChinaWhitelistDraft((current) => ({ ...current, hostIds: [] }))}
+                                      onClick={() => setUsageDraft((current) => ({ ...current, hostIds: [] }))}
                                     >
-                                      清空
+                                      {hostAssetSyncUsageView?.hostSelector?.clearLabel || "清空"}
                                     </Button>
                                   </div>
                                 </div>
                                 <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                                  {chinaWhitelistHosts.length ? chinaWhitelistHosts.map((host) => {
+                                  {usageHosts.length ? usageHosts.map((host) => {
                                     const hostId = Number(host.id);
-                                    const active = chinaWhitelistDraft.hostIds.includes(hostId);
+                                    const active = usageDraft.hostIds.includes(hostId);
                                     return (
                                       <button
                                         key={host.id}
                                         type="button"
-                                        onClick={() => setChinaWhitelistDraft((current) => ({
+                                        onClick={() => setUsageDraft((current) => ({
                                           ...current,
                                           hostIds: toggleNumberItem(current.hostIds, hostId),
                                         }))}
@@ -1106,7 +1120,7 @@ export default function Plugins() {
                                     );
                                   }) : (
                                     <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                                      暂无可选主机
+                                      {hostAssetSyncUsageView?.hostSelector?.emptyText || "暂无可选主机"}
                                     </div>
                                   )}
                                 </div>
@@ -1115,33 +1129,36 @@ export default function Plugins() {
                               <div className="space-y-3 rounded-xl border border-border/40 bg-muted/20 p-4">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <div>
-                                    <p className="font-medium">同步内容</p>
+                                    <p className="font-medium">{hostAssetSyncUsageView?.assetSelector?.title || "同步内容"}</p>
                                     <p className="text-xs text-muted-foreground">
-                                      已选 {chinaWhitelistDraft.assetPaths.length} 个文件，
-                                      <span className={cn(chinaWhitelistSizeExceeded && "text-destructive")}>
-                                        {formatBytes(selectedChinaWhitelistSize)}
+                                      {hostAssetSyncUsageView?.assetSelector?.selectedLabel || "已选"} {usageDraft.assetPaths.length} 个文件，
+                                      <span className={cn(usageSizeExceeded && "text-destructive")}>
+                                        {formatBytes(selectedUsageAssetsSize)}
                                       </span>
-                                      / {formatBytes(chinaWhitelistMaxSyncBytes)}
+                                      / {formatBytes(pluginHostAssetSyncMaxBytes)}
                                     </p>
+                                    {hostAssetSyncUsageView?.assetSelector?.description && (
+                                      <p className="mt-1 text-xs text-muted-foreground">{hostAssetSyncUsageView.assetSelector.description}</p>
+                                    )}
                                   </div>
                                   <Button
                                     type="button"
                                     variant="ghost"
                                     size="sm"
-                                    onClick={() => setChinaWhitelistDraft((current) => ({ ...current, assetPaths: [] }))}
+                                    onClick={() => setUsageDraft((current) => ({ ...current, assetPaths: [] }))}
                                   >
-                                    清空
+                                    {hostAssetSyncUsageView?.assetSelector?.clearLabel || "清空"}
                                   </Button>
                                 </div>
                                 <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                                  {chinaWhitelistAssets.length ? chinaWhitelistAssets.map((asset) => {
+                                  {usageAssets.length ? usageAssets.map((asset) => {
                                     const path = String(asset.path || "");
-                                    const active = chinaWhitelistDraft.assetPaths.includes(path);
+                                    const active = usageDraft.assetPaths.includes(path);
                                     return (
                                       <button
                                         key={path}
                                         type="button"
-                                        onClick={() => setChinaWhitelistDraft((current) => ({
+                                        onClick={() => setUsageDraft((current) => ({
                                           ...current,
                                           assetPaths: toggleStringItem(current.assetPaths, path),
                                         }))}
@@ -1151,19 +1168,20 @@ export default function Plugins() {
                                         )}
                                       >
                                         <div className="min-w-0">
-                                          <p className="truncate font-mono text-xs">{path}</p>
-                                          <p className="mt-0.5 text-xs text-muted-foreground">{formatBytes(asset.size || 0)}</p>
+                                          <p className="truncate text-sm font-medium">{asset.label || path}</p>
+                                          {asset.description && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{asset.description}</p>}
+                                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{path} · {formatBytes(asset.size || 0)}</p>
                                         </div>
                                         {active && <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />}
                                       </button>
                                     );
                                   }) : (
                                     <div className="rounded-lg border border-dashed border-border/60 p-6 text-center text-sm text-muted-foreground">
-                                      还没有同步到白名单文件，请先到“动作”里刷新白名单数据
+                                      {hostAssetSyncUsageView?.assetSelector?.emptyText || "还没有可同步文件，请先到“动作”里刷新插件资产"}
                                     </div>
                                   )}
                                 </div>
-                                {chinaWhitelistSizeExceeded && (
+                                {usageSizeExceeded && (
                                   <p className="text-xs text-destructive">
                                     当前选择超过 Agent 单次同步限制，请减少文件数量后保存。
                                   </p>
@@ -1172,27 +1190,27 @@ export default function Plugins() {
                             </div>
 
                             <div className="space-y-2">
-                              <Label>备注</Label>
+                              <Label>{hostAssetSyncUsageView?.noteField?.label || "备注"}</Label>
                               <Textarea
-                                value={chinaWhitelistDraft.note}
-                                onChange={(event) => setChinaWhitelistDraft((current) => ({ ...current, note: event.target.value }))}
-                                placeholder="例如：同步到国内入口主机，供后续规则或脚本读取"
+                                value={usageDraft.note}
+                                onChange={(event) => setUsageDraft((current) => ({ ...current, note: event.target.value }))}
+                                placeholder={hostAssetSyncUsageView?.noteField?.placeholder || "例如：说明这个配置会用在哪些主机或脚本里"}
                                 className="min-h-20"
                               />
                             </div>
 
                             <div className="flex flex-col gap-3 rounded-xl border border-border/40 bg-background/60 p-4 sm:flex-row sm:items-center sm:justify-between">
                               <div className="text-sm text-muted-foreground">
-                                <p>当前方式：同步文件到主机本地目录。</p>
-                                <p className="mt-1">保存后，目标主机下次 Agent 心跳会收到更新。</p>
+                                <p>{hostAssetSyncUsageView?.footer?.title || "当前方式：同步文件到主机本地目录。"}</p>
+                                <p className="mt-1">{hostAssetSyncUsageView?.footer?.description || "保存后，目标主机下次 Agent 心跳会收到更新。"}</p>
                               </div>
                               <Button
                                 className="gap-2"
-                                onClick={handleSaveChinaWhitelistUsage}
-                                disabled={saveChinaWhitelistUsageMutation.isPending || chinaWhitelistSizeExceeded}
+                                onClick={handleSaveUsage}
+                                disabled={saveUsageMutation.isPending || usageSizeExceeded}
                               >
-                                {saveChinaWhitelistUsageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
-                                保存使用配置
+                                {saveUsageMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Server className="h-4 w-4" />}
+                                {hostAssetSyncUsageView?.footer?.submitLabel || "保存使用配置"}
                               </Button>
                             </div>
                           </>

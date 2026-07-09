@@ -1,0 +1,10 @@
+# ForwardX built-in China cloud service ASN whitelist.
+AS37963 Alibaba Cloud
+AS45102 Alibaba US Technology
+AS45090 Tencent Cloud
+AS132203 Tencent Cloud Computing
+AS55990 Huawei Cloud
+AS136958 Huawei Cloud Service
+AS58519 China Telecom Cloud
+AS140979 China Mobile Cloud
+AS137718 JD Cloud

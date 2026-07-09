@@ -18,6 +18,8 @@ docs/.vitepress/.temp/
 *.db-wal
 *.db-shm
 data/
+!plugins/**/data/
+!plugins/**/data/**
 .dev/
 
 # IDE

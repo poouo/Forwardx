@@ -39,7 +39,7 @@ import { handleHostAddressChanged, hostIngressAddress, refreshAgentsAffectedByHo
 import { getTunnelAutoHopAggregate } from "./tunnelAutoLatencyState";
 import { isHostStatusOnline, notifyHostOnlineIfNeeded } from "./hostStatusNotifier";
 import { linkProbeMethodForRule, normalizeLinkProbeMethod } from "@shared/latencyProbe";
-import { buildChinaRegionWhitelistAgentSyncCommands } from "./repositories/pluginRepository";
+import { buildPluginHostAssetSyncActions } from "./repositories/pluginRepository";
 import {
   forwardRuleProtocols,
   isForwardRuleProtocolTcpEnabled,
@@ -58,7 +58,7 @@ const dnsRuntimeGenerationByKey = new Map<string, number>();
 const agentActionBatchCache = new Map<number, { signature: string; issuedAt: number; seenAt: number }>();
 const agentDesiredStateSendCache = new Map<number, { signature: string; sentAt: number }>();
 const agentRuntimeSyncActionCache = new Map<number, { signature: string; sentAt: number }>();
-const agentPluginSyncActionCache = new Map<number, { signature: string; sentAt: number }>();
+const agentPluginSyncActionCache = new Map<string, { signature: string; sentAt: number }>();
 // 孤儿端口迟滞：hostId -> (port -> 连续判定为孤儿的心跳次数)。
 // 一个上报端口若其 ruleId 属于面板已知的本机启用规则，则该端口极可能只是运行态推导
 // 的瞬时缺口（如隧道出口端口某轮未算出），必须连续多轮都判孤儿才真正下发拆除，
@@ -281,7 +281,9 @@ export function invalidateAgentDesiredStateCache(hostId: number) {
   agentDesiredStateSendCache.delete(id);
   agentLocalRuntimeStateCache.delete(id);
   agentRuntimeSyncActionCache.delete(id);
-  agentPluginSyncActionCache.delete(id);
+  for (const key of Array.from(agentPluginSyncActionCache.keys())) {
+    if (key.startsWith(`${id}:`)) agentPluginSyncActionCache.delete(key);
+  }
   agentOrphanPortStreakCache.delete(id);
 }
 
@@ -353,10 +355,11 @@ function shouldSendRuntimeSyncAction(hostId: number, action: any, force: boolean
 function shouldSendPluginSyncAction(hostId: number, action: any, now: number) {
   const id = Number(hostId);
   if (!Number.isFinite(id) || id <= 0) return true;
+  const cacheKey = `${id}:${String(action?.forwardType || "plugin-sync")}`;
   const signature = stableActionSignature([action]);
-  const cached = agentPluginSyncActionCache.get(id);
+  const cached = agentPluginSyncActionCache.get(cacheKey);
   if (!cached || cached.signature !== signature || now - cached.sentAt >= AGENT_PLUGIN_SYNC_RESEND_MS) {
-    agentPluginSyncActionCache.set(id, { signature, sentAt: now });
+    agentPluginSyncActionCache.set(cacheKey, { signature, sentAt: now });
     return true;
   }
   return false;
@@ -4117,20 +4120,20 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       releaseVersion: (host as any).agentUpgradeReleaseVersion || null,
     } : null;
 
-    const pluginSyncCommands = await buildChinaRegionWhitelistAgentSyncCommands(Number(host.id));
-    if (pluginSyncCommands.length > 0) {
+    const pluginSyncTasks = await buildPluginHostAssetSyncActions(Number(host.id));
+    for (const pluginSyncTask of pluginSyncTasks) {
       const pluginSyncAction = {
         statusType: "runtime",
         ruleId: 0,
         tunnelId: 0,
         op: "apply",
-        forwardType: "plugin-china-region-whitelist-sync",
+        forwardType: pluginSyncTask.forwardType,
         sourcePort: 0,
         targetIp: "",
         targetPort: 0,
         protocol: "tcp",
         knownRunning: false,
-        commands: pluginSyncCommands,
+        commands: pluginSyncTask.commands,
       } as any;
       if (shouldSendPluginSyncAction(Number(host.id), pluginSyncAction, responseIssuedAt)) {
         actions.push(pluginSyncAction);

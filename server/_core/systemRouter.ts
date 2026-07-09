@@ -97,6 +97,14 @@ const sidebarMenuSettingsSchema = z.object(
     SIDEBAR_MENU_KEYS.map((key) => [key, z.boolean().optional()])
   ) as Record<typeof SIDEBAR_MENU_KEYS[number], z.ZodOptional<z.ZodBoolean>>
 );
+
+function readSidebarMenuSettings(all: Record<string, string | undefined>) {
+  const normalized = normalizeSidebarMenuSettings(
+    parseSidebarMenuSettings(all.sidebarMenu),
+  );
+  normalized.plugins = all.pluginsEnabled === "true";
+  return normalized;
+}
 const panelLogLevelSchema = z.enum(["all", "log", "info", "warn", "error"]);
 const ddnsProviderSchema = z.enum(["disabled", "cloudflare", "webhook", "huaweicloud", "aliyun", "tencentcloud"]);
 const RESERVED_PUBLIC_HOST_MONITOR_PATHS = new Set([
@@ -1557,9 +1565,7 @@ function publicSystemSettings(all: Record<string, string | null>, activeProtocol
     forwardProtocols: normalizeForwardProtocolSettings(
       parseForwardProtocolSettings(all.forwardProtocols),
     ),
-    sidebarMenu: normalizeSidebarMenuSettings(
-      parseSidebarMenuSettings(all.sidebarMenu),
-    ),
+    sidebarMenu: readSidebarMenuSettings(all),
     tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
     githubAccelerator: {
       enabled: all.githubAcceleratorEnabled === "true",
@@ -1683,9 +1689,7 @@ export const systemRouter = router({
         path: normalizePublicHostMonitorPath(all.publicHostMonitorPath),
         title: normalizePublicHostMonitorTitle(all.publicHostMonitorTitle),
       },
-      sidebarMenu: normalizeSidebarMenuSettings(
-        parseSidebarMenuSettings(all.sidebarMenu),
-      ),
+      sidebarMenu: readSidebarMenuSettings(all),
     }));
   }),
 
@@ -1723,9 +1727,7 @@ export const systemRouter = router({
       forwardProtocols: normalizeForwardProtocolSettings(
         parseForwardProtocolSettings(all.forwardProtocols),
       ),
-      sidebarMenu: normalizeSidebarMenuSettings(
-        parseSidebarMenuSettings(all.sidebarMenu),
-      ),
+      sidebarMenu: readSidebarMenuSettings(all),
       tunnelRuntimeDefault: all.tunnelRuntimeDefault === "gost" ? "gost" : "forwardx",
       githubAccelerator: {
         enabled: all.githubAcceleratorEnabled === "true",
