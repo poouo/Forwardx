@@ -23,6 +23,7 @@ import LoginPage from "@/pages/Login";
 import LookingGlassPage from "@/pages/LookingGlass";
 import PaymentsPage from "@/pages/Payments";
 import PlansPage from "@/pages/Plans";
+import PluginsPage from "@/pages/Plugins";
 import ProfilePage from "@/pages/Profile";
 import RulesPage from "@/pages/Rules";
 import SettingsPage from "@/pages/Settings";
@@ -66,6 +67,22 @@ function LookingGlassRoute() {
   return <LookingGlassPage />;
 }
 
+function PluginsRoute() {
+  const { user, loading } = useAuth();
+  const publicInfo = trpc.system.publicInfo.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  if (loading) return null;
+  if (user && publicInfo.isLoading && !publicInfo.data) return null;
+  if (!user) return <Redirect to="/login" />;
+  if (user.role !== "admin") return <Redirect to="/" />;
+  if (publicInfo.data?.pluginsEnabled !== true) return <Redirect to="/settings" />;
+  return <PluginsPage />;
+}
+
 function Router() {
   return (
     <Switch>
@@ -85,6 +102,7 @@ function Router() {
       <Route path="/billing">{() => <AdminRoute component={BillingPage} />}</Route>
       <Route path="/traffic-billing">{() => <AdminRoute component={TrafficBillingPage} />}</Route>
       <Route path="/plans">{() => <AdminRoute component={PlansPage} />}</Route>
+      <Route path="/plugins" component={PluginsRoute} />
       <Route path="/store">{routeComponent(StorePage)}</Route>
       <Route path="/subscriptions">{routeComponent(SubscriptionsPage)}</Route>
       <Route path="/wallet">{routeComponent(WalletPage)}</Route>

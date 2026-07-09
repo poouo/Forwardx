@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "updatedAt": "2026-07-09",
+  "items": [
+    {
+      "id": "china-region-whitelist",
+      "name": "中国区域白名单",
+      "description": "下载并维护中国区域 IP/域名白名单数据，并可同步到选中的主机。",
+      "version": "0.1.0",
+      "releaseDate": "2026-07-09",
+      "updatedAt": "2026-07-09",
+      "changelog": "支持从 GHUNLIL/china-region-whitelist 同步 data 目录白名单文件，并在插件内选择主机生效。",
+      "features": [
+        {
+          "title": "白名单数据",
+          "description": "同步国家、地区、ASN 等白名单数据文件。"
+        },
+        {
+          "title": "在线刷新",
+          "description": "安装后可手动刷新 GitHub 数据源。"
+        },
+        {
+          "title": "本地下载",
+          "description": "同步后的文件可在插件资产中预览和下载。"
+        },
+        {
+          "title": "主机同步",
+          "description": "在插件使用页选择主机和文件后，Agent 会同步到主机本地目录。"
+        }
+      ],
+      "tags": ["whitelist", "china-region", "data"],
+      "license": "Unknown",
+      "repository": "https://github.com/GHUNLIL/china-region-whitelist",
+      "branch": "main",
+      "manifestPath": "plugins/china-region-whitelist/forwardx-plugin.json",
+      "homepage": "https://github.com/GHUNLIL/china-region-whitelist",
+      "author": "GHUNLIL",
+      "packageRepository": "https://github.com/poouo/Forwardx",
+      "packageBranch": "main",
+      "category": "data",
+      "permissions": ["data:whitelist"],
+      "extensionPoints": ["data.whitelist"],
+      "official": true
+    }
+  ]
+}

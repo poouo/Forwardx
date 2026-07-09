@@ -6,6 +6,7 @@ export const SIDEBAR_MENU_KEYS = [
   "billing",
   "plans",
   "users",
+  "plugins",
   "lookingGlass",
   "settings",
 ] as const;
@@ -21,12 +22,13 @@ export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
   billing: "账单与兑换",
   plans: "套餐管理",
   users: "用户管理",
+  plugins: "插件",
   lookingGlass: "网络测试",
   settings: "系统设置",
 };
 
 export const DEFAULT_SIDEBAR_MENU_SETTINGS: SidebarMenuSettings = SIDEBAR_MENU_KEYS.reduce((acc, key) => {
-  acc[key] = true;
+  acc[key] = key !== "plugins";
   return acc;
 }, {} as SidebarMenuSettings);
 
