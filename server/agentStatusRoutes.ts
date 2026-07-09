@@ -15,16 +15,28 @@ function isForwardXTunnel(tunnel: any) {
   return String(tunnel?.mode || "").toLowerCase() === "forwardx";
 }
 
-const statusLogCache = new Map<string, string>();
+const STATUS_IMPORTANT_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const STATUS_LOG_CACHE_MAX_SIZE = 5000;
+const statusLogCache = new Map<string, { value: string; loggedAt: number }>();
 
-function shouldLogStatus(key: string, value: string, important = false) {
-  if (important) {
-    statusLogCache.set(key, value);
+function shouldLogStatus(key: string, value: string, important = false, minIntervalMs = STATUS_IMPORTANT_LOG_INTERVAL_MS) {
+  const now = Date.now();
+  if (statusLogCache.size > STATUS_LOG_CACHE_MAX_SIZE) {
+    for (const [cacheKey, cached] of statusLogCache) {
+      if (now - cached.loggedAt > minIntervalMs * 2) statusLogCache.delete(cacheKey);
+    }
+  }
+
+  const cached = statusLogCache.get(key);
+  if (cached == null || cached.value !== value) {
+    statusLogCache.set(key, { value, loggedAt: now });
     return true;
   }
-  if (statusLogCache.get(key) === value) return false;
-  statusLogCache.set(key, value);
-  return true;
+  if (important && now - cached.loggedAt >= minIntervalMs) {
+    cached.loggedAt = now;
+    return true;
+  }
+  return false;
 }
 
 function hostBlocksProtocol(host: any, protocol: string) {

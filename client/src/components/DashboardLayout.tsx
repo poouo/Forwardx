@@ -102,7 +102,7 @@ const adminMenuItems: SidebarNavItem[] = [
   { icon: WalletCards, label: "账单与兑换", path: "/billing", menuKey: "billing" },
   { icon: Package, label: "套餐管理", path: "/plans", menuKey: "plans" },
   { icon: Users, label: "用户管理", path: "/users", menuKey: "users" },
-  { icon: Puzzle, label: "插件", path: "/plugins", menuKey: "plugins" },
+  { icon: Puzzle, label: "插件管理", path: "/plugins", menuKey: "plugins" },
   lookingGlassMenuItem,
   { icon: Settings, label: "系统设置", path: "/settings", menuKey: "settings" },
 ];

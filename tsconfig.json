@@ -12,6 +12,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@/*": ["./client/src/*"],
       "@shared/*": ["./shared/*"]

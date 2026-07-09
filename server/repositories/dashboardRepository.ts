@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { forwardRules, hosts } from "../../drizzle/schema";
+import { forwardGroups, forwardRules, hosts } from "../../drizzle/schema";
 import { getDb } from "../dbRuntime";
 import { sqlCountAll } from "../dbCompat";
 import { getTotalTraffic, getTrafficSummaryByRule } from "./metricsRepository";
@@ -30,6 +30,7 @@ type RuleTrafficMeta = {
   forwardGroupId: number | null;
   forwardGroupRuleId: number | null;
   forwardGroupMemberId: number | null;
+  forwardGroupMode: string | null;
   isForwardGroupTemplate: boolean;
 };
 
@@ -74,6 +75,7 @@ function getRuleTrafficBucket(rule: RuleTrafficMeta | undefined): RuleTrafficBuc
     rule?.forwardGroupRuleId ||
     rule?.forwardGroupMemberId
   ) {
+    if (rule?.forwardGroupMode === "port") return "portRules";
     return "forwardGroupRules";
   }
   if (rule?.tunnelId) return "tunnelRules";
@@ -154,9 +156,11 @@ export async function getDashboardTrafficBreakdown(opts: {
         forwardGroupId: forwardRules.forwardGroupId,
         forwardGroupRuleId: forwardRules.forwardGroupRuleId,
         forwardGroupMemberId: forwardRules.forwardGroupMemberId,
+        forwardGroupMode: forwardGroups.groupMode,
         isForwardGroupTemplate: forwardRules.isForwardGroupTemplate,
       })
       .from(forwardRules)
+      .leftJoin(forwardGroups, eq(forwardGroups.id, forwardRules.forwardGroupId))
       .where(sql`${forwardRules.id} IN (${sql.join(ruleIds.map((id) => sql`${id}`), sql`, `)})`)
     : [];
 
@@ -169,6 +173,7 @@ export async function getDashboardTrafficBreakdown(opts: {
       forwardGroupId: row.forwardGroupId ? Number(row.forwardGroupId) : null,
       forwardGroupRuleId: row.forwardGroupRuleId ? Number(row.forwardGroupRuleId) : null,
       forwardGroupMemberId: row.forwardGroupMemberId ? Number(row.forwardGroupMemberId) : null,
+      forwardGroupMode: row.forwardGroupMode ? String(row.forwardGroupMode) : null,
       isForwardGroupTemplate: !!row.isForwardGroupTemplate,
     });
   }

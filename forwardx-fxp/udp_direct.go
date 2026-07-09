@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,16 +15,11 @@ import (
 
 const (
 	fxpUDPMagic      = "FXPU"
-	fxpUDPVersion    = byte(1)
+	fxpUDPVersion    = byte(2)
 	fxpUDPTypeData   = byte(1)
 	fxpUDPTypeReturn = byte(2)
-	fxpUDPHeaderSize = 36
-	fxpUDPMaxPayload = 65535 - fxpUDPHeaderSize - 16
-)
-
-var (
-	fxpUDPContext = []byte("forwardx-fxp-v2 udp datagram")
-	fxpUDPAD      = []byte("forwardx-fxp-v2 udp header")
+	fxpUDPHeaderSize = 24
+	fxpUDPMaxPayload = 65535 - fxpUDPHeaderSize
 )
 
 type fxpUDPPacket struct {
@@ -45,7 +38,6 @@ type udpDirectEntrySession struct {
 	remoteAddr    *net.UDPAddr
 	endpoint      exitEndpoint
 	endpointIndex int
-	aead          cipher.AEAD
 	cfg           config
 	inLimiter     *limiter
 	outLimiter    *limiter
@@ -66,7 +58,6 @@ type udpDirectExitSession struct {
 	conn         *net.UDPConn
 	target       *net.UDPConn
 	send         chan []byte
-	aead         cipher.AEAD
 	cfg          config
 	ruleID       int
 	targetIP     string
@@ -83,14 +74,12 @@ type udpDirectRelaySession struct {
 	upstreamAddr   *net.UDPAddr
 	downstreamAddr *net.UDPAddr
 	conn           *net.UDPConn
-	upstreamAEAD   cipher.AEAD
-	downstreamAEAD cipher.AEAD
-	downstreamSend chan []byte
-	upstreamSend   chan []byte
 	cfg            config
 	ruleID         int
 	endpoint       exitEndpoint
 	endpointIndex  int
+	downstreamSend chan []byte
+	upstreamSend   chan []byte
 	done           chan struct{}
 	closeOnce      sync.Once
 	lastActivity   atomic.Int64
@@ -126,15 +115,14 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 			}
 			return err
 		}
-		payload := append([]byte(nil), buf[:n]...)
-		if fxpUDPHasMagic(payload) {
+		if fxpUDPHasMagic(buf[:n]) {
 			handledReturn := false
-			if sessionID, ok := fxpUDPSessionID(payload); ok {
+			if sessionID, ok := fxpUDPSessionID(buf[:n]); ok {
 				sessionsMu.Lock()
 				session := sessionsByID[sessionID]
 				sessionsMu.Unlock()
 				if session != nil && udpAddrEqual(addr, session.remoteAddr) {
-					packet, err := openFXPUDPPacket(session.aead, payload)
+					packet, err := openFXPUDPPacket(buf[:n])
 					if err == nil && packet.packetType == fxpUDPTypeReturn && packetMatchesConfig(packet, cfg) {
 						session.handleResponse(packet.payload)
 						handledReturn = true
@@ -145,6 +133,7 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 				continue
 			}
 		}
+		payload := append([]byte(nil), buf[:n]...)
 		key := addr.String()
 		sessionsMu.Lock()
 		session := sessionsByClient[key]
@@ -185,7 +174,7 @@ func serveEntryUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 }
 
 func newUDPDirectEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, inLimiter, outLimiter *limiter, remove func(*udpDirectEntrySession)) (*udpDirectEntrySession, error) {
-	endpoint, index, remoteAddr, aead, err := pickUDPDirectEndpoint(selector, cfg)
+	endpoint, index, remoteAddr, err := pickUDPDirectEndpoint(selector, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +191,6 @@ func newUDPDirectEntrySession(conn *net.UDPConn, clientAddr *net.UDPAddr, cfg co
 		remoteAddr:    remoteAddr,
 		endpoint:      endpoint,
 		endpointIndex: index,
-		aead:          aead,
 		cfg:           cfg,
 		inLimiter:     inLimiter,
 		outLimiter:    outLimiter,
@@ -252,7 +240,7 @@ func (s *udpDirectEntrySession) writeLoop() {
 				s.close()
 				return
 			}
-			packet, err := sealFXPUDPPacket(s.aead, fxpUDPPacket{
+			packet, err := sealFXPUDPPacket(fxpUDPPacket{
 				packetType: fxpUDPTypeData,
 				tunnelID:   s.cfg.TunnelID,
 				ruleID:     s.cfg.RuleID,
@@ -339,10 +327,6 @@ func (s *udpDirectEntrySession) close() {
 }
 
 func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
-	aead, err := newFXPUDPAEAD(cfg.Key)
-	if err != nil {
-		return err
-	}
 	sessions := map[string]*udpDirectExitSession{}
 	var sessionsMu sync.Mutex
 	removeSession := func(session *udpDirectExitSession) {
@@ -367,7 +351,7 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 			}
 			return err
 		}
-		packet, err := openFXPUDPPacket(aead, buf[:n])
+		packet, err := openFXPUDPPacket(buf[:n])
 		if err != nil || packet.packetType != fxpUDPTypeData || !packetMatchesConfig(packet, cfg) {
 			continue
 		}
@@ -389,7 +373,7 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 			closeStale.close()
 		}
 		if session == nil {
-			created, err := newUDPDirectExitSession(conn, peerAddr, cfg, aead, packet.ruleID, packet.sessionID, targetIP, targetPort, removeSession)
+			created, err := newUDPDirectExitSession(conn, peerAddr, cfg, packet.ruleID, packet.sessionID, targetIP, targetPort, removeSession)
 			if err != nil {
 				log.Printf("exit udp direct session create failed tunnel=%d rule=%d peer=%s target=%s:%d: %v", cfg.TunnelID, packet.ruleID, peerAddr, targetIP, targetPort, err)
 				continue
@@ -413,7 +397,7 @@ func serveExitUDPDirect(conn *net.UDPConn, cfg config) error {
 	}
 }
 
-func newUDPDirectExitSession(conn *net.UDPConn, peerAddr *net.UDPAddr, cfg config, aead cipher.AEAD, ruleID int, sessionID uint64, targetIP string, targetPort int, remove func(*udpDirectExitSession)) (*udpDirectExitSession, error) {
+func newUDPDirectExitSession(conn *net.UDPConn, peerAddr *net.UDPAddr, cfg config, ruleID int, sessionID uint64, targetIP string, targetPort int, remove func(*udpDirectExitSession)) (*udpDirectExitSession, error) {
 	targetAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(targetIP, strconv.Itoa(targetPort)))
 	if err != nil {
 		return nil, err
@@ -430,7 +414,6 @@ func newUDPDirectExitSession(conn *net.UDPConn, peerAddr *net.UDPAddr, cfg confi
 		conn:       conn,
 		target:     target,
 		send:       make(chan []byte, fxpUDPDirectQueueSize),
-		aead:       aead,
 		cfg:        cfg,
 		ruleID:     ruleID,
 		targetIP:   targetIP,
@@ -506,7 +489,7 @@ func (s *udpDirectExitSession) readTargetLoop() {
 		if n <= 0 {
 			continue
 		}
-		packet, err := sealFXPUDPPacket(s.aead, fxpUDPPacket{
+		packet, err := sealFXPUDPPacket(fxpUDPPacket{
 			packetType: fxpUDPTypeReturn,
 			tunnelID:   s.cfg.TunnelID,
 			ruleID:     s.ruleID,
@@ -556,10 +539,6 @@ func (s *udpDirectExitSession) close() {
 }
 
 func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSelector) error {
-	upstreamAEAD, err := newFXPUDPAEAD(cfg.Key)
-	if err != nil {
-		return err
-	}
 	sessionsByUpstream := map[string]*udpDirectRelaySession{}
 	sessionsByID := map[uint64]*udpDirectRelaySession{}
 	var sessionsMu sync.Mutex
@@ -588,11 +567,10 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 			}
 			return err
 		}
-		raw := append([]byte(nil), buf[:n]...)
-		if !fxpUDPHasMagic(raw) {
+		if !fxpUDPHasMagic(buf[:n]) {
 			continue
 		}
-		sessionID, ok := fxpUDPSessionID(raw)
+		sessionID, ok := fxpUDPSessionID(buf[:n])
 		if !ok {
 			continue
 		}
@@ -600,13 +578,13 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 		session := sessionsByID[sessionID]
 		sessionsMu.Unlock()
 		if session != nil && udpAddrEqual(addr, session.downstreamAddr) {
-			packet, err := openFXPUDPPacket(session.downstreamAEAD, raw)
+			packet, err := openFXPUDPPacket(buf[:n])
 			if err == nil && packet.packetType == fxpUDPTypeReturn && packetMatchesConfig(packet, cfg) {
 				session.forwardToUpstream(packet.payload)
 			}
 			continue
 		}
-		packet, err := openFXPUDPPacket(upstreamAEAD, raw)
+		packet, err := openFXPUDPPacket(buf[:n])
 		if err != nil || packet.packetType != fxpUDPTypeData || !packetMatchesConfig(packet, cfg) {
 			continue
 		}
@@ -615,7 +593,7 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 		session = sessionsByUpstream[key]
 		sessionsMu.Unlock()
 		if session == nil {
-			created, err := newUDPDirectRelaySession(conn, addr, cfg, selector, upstreamAEAD, packet.ruleID, packet.sessionID, removeSession)
+			created, err := newUDPDirectRelaySession(conn, addr, cfg, selector, packet.ruleID, packet.sessionID, removeSession)
 			if err != nil {
 				log.Printf("relay udp direct session create failed tunnel=%d rule=%d upstream=%s: %v", cfg.TunnelID, packet.ruleID, addr, err)
 				continue
@@ -643,8 +621,8 @@ func serveRelayUDPDirect(conn *net.UDPConn, cfg config, selector *exitEndpointSe
 	}
 }
 
-func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, upstreamAEAD cipher.AEAD, ruleID int, sessionID uint64, remove func(*udpDirectRelaySession)) (*udpDirectRelaySession, error) {
-	endpoint, index, downstreamAddr, downstreamAEAD, err := pickUDPDirectEndpoint(selector, cfg)
+func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg config, selector *exitEndpointSelector, ruleID int, sessionID uint64, remove func(*udpDirectRelaySession)) (*udpDirectRelaySession, error) {
+	endpoint, index, downstreamAddr, err := pickUDPDirectEndpoint(selector, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -654,8 +632,6 @@ func newUDPDirectRelaySession(conn *net.UDPConn, upstreamAddr *net.UDPAddr, cfg 
 		upstreamAddr:   upstreamAddr,
 		downstreamAddr: downstreamAddr,
 		conn:           conn,
-		upstreamAEAD:   upstreamAEAD,
-		downstreamAEAD: downstreamAEAD,
 		cfg:            cfg,
 		ruleID:         ruleID,
 		endpoint:       endpoint,
@@ -702,7 +678,7 @@ func (s *udpDirectRelaySession) downstreamWriteLoop() {
 }
 
 func (s *udpDirectRelaySession) writeDownstream(payload []byte) {
-	packet, err := sealFXPUDPPacket(s.downstreamAEAD, fxpUDPPacket{
+	packet, err := sealFXPUDPPacket(fxpUDPPacket{
 		packetType: fxpUDPTypeData,
 		tunnelID:   s.cfg.TunnelID,
 		ruleID:     s.ruleID,
@@ -744,7 +720,7 @@ func (s *udpDirectRelaySession) upstreamWriteLoop() {
 }
 
 func (s *udpDirectRelaySession) writeUpstream(payload []byte) {
-	packet, err := sealFXPUDPPacket(s.upstreamAEAD, fxpUDPPacket{
+	packet, err := sealFXPUDPPacket(fxpUDPPacket{
 		packetType: fxpUDPTypeReturn,
 		tunnelID:   s.cfg.TunnelID,
 		ruleID:     s.ruleID,
@@ -791,9 +767,9 @@ func (s *udpDirectRelaySession) close() {
 	})
 }
 
-func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndpoint, int, *net.UDPAddr, cipher.AEAD, error) {
+func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndpoint, int, *net.UDPAddr, error) {
 	if selector == nil || selector.count() == 0 {
-		return exitEndpoint{}, -1, nil, nil, errors.New("no exit endpoints")
+		return exitEndpoint{}, -1, nil, errors.New("no exit endpoints")
 	}
 	attempted := map[int]bool{}
 	var lastErr error
@@ -809,82 +785,49 @@ func pickUDPDirectEndpoint(selector *exitEndpointSelector, cfg config) (exitEndp
 			selector.markFailure(index, err)
 			continue
 		}
-		key := endpoint.Key
-		if key == "" {
-			key = cfg.Key
-		}
-		aead, err := newFXPUDPAEAD(key)
-		if err != nil {
-			lastErr = err
-			selector.markFailure(index, err)
-			continue
-		}
 		selector.markHealthy(index)
-		return endpoint, index, addr, aead, nil
+		return endpoint, index, addr, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no exit endpoint available")
 	}
-	return exitEndpoint{}, -1, nil, nil, lastErr
+	return exitEndpoint{}, -1, nil, lastErr
 }
 
-func newFXPUDPAEAD(key string) (cipher.AEAD, error) {
-	master := sha256.Sum256([]byte(key))
-	material := blake3Derive(master[:], []byte("udp"), fxpUDPContext, fxpMasterContext, 32)
-	return newAEAD(material)
-}
-
-func sealFXPUDPPacket(aead cipher.AEAD, packet fxpUDPPacket) ([]byte, error) {
-	if aead == nil {
-		return nil, errors.New("nil udp aead")
-	}
+func sealFXPUDPPacket(packet fxpUDPPacket) ([]byte, error) {
 	if len(packet.payload) > fxpUDPMaxPayload {
 		return nil, fmt.Errorf("udp payload too large: %d", len(packet.payload))
 	}
-	out := make([]byte, fxpUDPHeaderSize)
+	out := make([]byte, fxpUDPHeaderSize+len(packet.payload))
 	copy(out[0:4], []byte(fxpUDPMagic))
 	out[4] = fxpUDPVersion
 	out[5] = packet.packetType
 	binary.BigEndian.PutUint32(out[8:12], uint32(packet.tunnelID))
 	binary.BigEndian.PutUint32(out[12:16], uint32(packet.ruleID))
 	binary.BigEndian.PutUint64(out[16:24], packet.sessionID)
-	if _, err := rand.Read(out[24:36]); err != nil {
-		return nil, err
-	}
-	ciphertext := aead.Seal(nil, out[24:36], packet.payload, fxpUDPAssociatedData(out[:fxpUDPHeaderSize]))
-	out = append(out, ciphertext...)
+	copy(out[fxpUDPHeaderSize:], packet.payload)
 	return out, nil
 }
 
-func openFXPUDPPacket(aead cipher.AEAD, raw []byte) (fxpUDPPacket, error) {
-	if len(raw) < fxpUDPHeaderSize+16 {
+func openFXPUDPPacket(raw []byte) (fxpUDPPacket, error) {
+	if len(raw) < fxpUDPHeaderSize {
 		return fxpUDPPacket{}, errors.New("udp packet too small")
 	}
 	if !fxpUDPHasMagic(raw) || raw[4] != fxpUDPVersion {
 		return fxpUDPPacket{}, errors.New("invalid udp packet header")
 	}
-	plain, err := aead.Open(nil, raw[24:36], raw[fxpUDPHeaderSize:], fxpUDPAssociatedData(raw[:fxpUDPHeaderSize]))
-	if err != nil {
-		return fxpUDPPacket{}, err
-	}
+	payload := append([]byte(nil), raw[fxpUDPHeaderSize:]...)
 	return fxpUDPPacket{
 		packetType: raw[5],
 		tunnelID:   int(binary.BigEndian.Uint32(raw[8:12])),
 		ruleID:     int(binary.BigEndian.Uint32(raw[12:16])),
 		sessionID:  binary.BigEndian.Uint64(raw[16:24]),
-		payload:    plain,
+		payload:    payload,
 	}, nil
 }
 
 func fxpUDPHasMagic(raw []byte) bool {
 	return len(raw) >= fxpUDPHeaderSize && string(raw[0:4]) == fxpUDPMagic
-}
-
-func fxpUDPAssociatedData(header []byte) []byte {
-	ad := make([]byte, 0, len(fxpUDPAD)+len(header))
-	ad = append(ad, fxpUDPAD...)
-	ad = append(ad, header...)
-	return ad
 }
 
 func fxpUDPSessionID(raw []byte) (uint64, bool) {

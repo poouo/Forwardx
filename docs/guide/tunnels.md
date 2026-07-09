@@ -64,6 +64,8 @@
 - ForwardX 自定义隧道的传输优化或 mimic UDP 混淆。
 
 不同隧道类型支持的高级设置不同，界面只会展示当前类型可用的配置项。
+启用 mimic UDP 混淆前，需要在参与链路的 Agent 主机安装 mimic/mimic-dkms；Agent 安装脚本会作为可选项提示是否安装，默认 `n`，只有输入 `Y` 才会执行。
+
 
 ## Nginx 隧道注意事项
 

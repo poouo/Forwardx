@@ -2868,10 +2868,19 @@ function TunnelsContent() {
               <span className="block truncate text-sm font-medium">mimic UDP 混淆</span>
               <span className="block truncate text-xs text-muted-foreground">ForwardX UDP 外观混淆</span>
             </span>
-            <Switch
-              checked={form.udpOverTcp}
-              onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
-            />
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Switch
+                    checked={form.udpOverTcp}
+                    onCheckedChange={(udpOverTcp) => setForm((prev) => ({ ...prev, udpOverTcp }))}
+                  />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-72">
+                  需要在参与链路的 Agent 主机自行安装 mimic/mimic-dkms；Agent 安装时可输入 Y 安装，未安装时开启会下发失败提示。
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </label>
         </div>
         {form.udpOverTcp && (

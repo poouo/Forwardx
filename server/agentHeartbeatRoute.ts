@@ -87,6 +87,8 @@ const AGENT_DESIRED_STATE_VERSION = "2.2.134";
 const AGENT_ACTION_BATCH_REUSE_MS = 45 * 1000;
 const AGENT_DESIRED_STATE_ACTIVE_RESEND_MS = 60 * 1000;
 const AGENT_RUNTIME_SYNC_REPAIR_RESEND_MS = 60 * 1000;
+const AGENT_RUNTIME_RECOVERY_COOLDOWN_MS = 60 * 1000;
+const AGENT_REBOOT_DETECTION_GRACE_MS = 1000;
 const AGENT_PLUGIN_SYNC_RESEND_MS = 5 * 60 * 1000;
 const SHARED_RUNTIME_FORWARD_TYPES = new Set([
   "gost",
@@ -143,6 +145,7 @@ type AgentLocalRuntimeState = {
   services: AgentLocalRuntimeServiceState[];
 };
 const agentLocalRuntimeStateCache = new Map<number, { signature: string; state: AgentLocalRuntimeState; updatedAt: number }>();
+const agentRuntimeRecoveryByHost = new Map<number, number>();
 
 function stableActionSignature(actions: any[]) {
   return JSON.stringify(actions.map((action: any) => ({
@@ -286,6 +289,39 @@ export function invalidateAgentDesiredStateCache(hostId: number) {
   }
   agentOrphanPortStreakCache.delete(id);
 }
+function heartbeatTimestampMs(value: unknown) {
+  if (!value) return 0;
+  const timestamp = new Date(value as any).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function heartbeatUptimeSeconds(value: unknown) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+}
+
+function heartbeatIndicatesAgentReboot(previousHost: any, uptime: unknown, nowMs = Date.now()) {
+  const lastHeartbeatMs = heartbeatTimestampMs(previousHost?.lastHeartbeat);
+  const uptimeSeconds = heartbeatUptimeSeconds(uptime);
+  if (lastHeartbeatMs <= 0 || uptimeSeconds <= 0) return false;
+  const bootedAtMs = nowMs - uptimeSeconds * 1000;
+  return bootedAtMs > lastHeartbeatMs + AGENT_REBOOT_DETECTION_GRACE_MS;
+}
+
+async function resetAgentRuntimeStateForRecovery(hostId: number, reason: string) {
+  const id = Number(hostId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const now = Date.now();
+  const last = agentRuntimeRecoveryByHost.get(id) || 0;
+  if (now - last < AGENT_RUNTIME_RECOVERY_COOLDOWN_MS) return;
+  agentRuntimeRecoveryByHost.set(id, now);
+  await db.resetAgentRuntimeStateForHost(id);
+  clearTunnelRuntimeStatusForHost(id);
+  invalidateAgentDesiredStateCache(id);
+  await refreshAgentsAffectedByHostAddress(id, reason);
+  appendPanelLog("info", `[AgentRecovery] host=${id} reason=${reason} runtime state marked for reapply`);
+}
+
 
 /**
  * 取得某主机的"孤儿端口迟滞计数"Map（port -> 连续判定为孤儿的心跳次数），不存在则创建。
@@ -646,6 +682,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     const upgradedProtocolGuardBackendAgent = !!nextAgentVersion
       && isAgentVersionAtLeast(nextAgentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION)
       && !isAgentVersionAtLeast(previousHost.agentVersion, AGENT_PROTOCOL_GUARD_BACKEND_VERSION);
+    const recoveredFromOffline = wasOnline === false;
+    const rebootDetected = heartbeatIndicatesAgentReboot(previousHost, uptime);
     const effectiveAgentVersion = nextAgentVersion || String((host as any).agentVersion || "");
     const supportsDesiredState = isAgentVersionAtLeast(effectiveAgentVersion, AGENT_DESIRED_STATE_VERSION);
 
@@ -667,7 +705,7 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
       } : {}),
     } as any);
     Object.assign(host as any, reportedAddress);
-    if (!wasOnline) {
+    if (recoveredFromOffline) {
       void notifyHostOnlineIfNeeded(host).catch((error) => {
         console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -675,16 +713,15 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
     if (addressChanged) {
       await handleHostAddressChanged(host.id, host, previousHost, "agent-address-changed");
     }
+    if (recoveredFromOffline || rebootDetected) {
+      await resetAgentRuntimeStateForRecovery(host.id, recoveredFromOffline ? "agent-reconnected" : "agent-reboot-detected");
+    }
     if (upgradedFirewallCounterAgent) {
-      await db.resetAgentRuntimeStateForHost(host.id);
-      clearTunnelRuntimeStatusForHost(host.id);
-      await refreshAgentsAffectedByHostAddress(host.id, "agent-firewall-counter-upgrade");
+      await resetAgentRuntimeStateForRecovery(host.id, "agent-firewall-counter-upgrade");
       appendPanelLog("info", `[AgentUpgrade] host=${host.id} agent=${nextAgentVersion} runtime state marked for firewall counter refresh`);
     }
     if (upgradedProtocolGuardBackendAgent) {
-      await db.resetAgentRuntimeStateForHost(host.id);
-      clearTunnelRuntimeStatusForHost(host.id);
-      await refreshAgentsAffectedByHostAddress(host.id, "agent-protocol-guard-backend-upgrade");
+      await resetAgentRuntimeStateForRecovery(host.id, "agent-protocol-guard-backend-upgrade");
       appendPanelLog("info", `[AgentUpgrade] host=${host.id} agent=${nextAgentVersion} runtime state marked for protocol guard backend refresh`);
     }
     if (dnsChangedReports.length > 0) {
@@ -1311,6 +1348,14 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         failoverSeconds: Number(rule.failoverSeconds || 60),
         recoverSeconds: Number(rule.recoverSeconds || 120),
         autoFailback: rule.autoFailback !== false,
+        // The failover proxy is an extra hop between the forwarder (gost) and the
+        // real target. When PROXY Protocol send is enabled, gost prepends a header
+        // carrying the real client IP when writing to this proxy, so the proxy must
+        // receive/parse it and re-emit it to the target. Otherwise the target would
+        // only ever see the proxy's own 127.0.0.1 address.
+        proxyProtocolReceive: proxyProtocolEnabled(rule, "send"),
+        proxyProtocolSend: proxyProtocolEnabled(rule, "send"),
+        proxyProtocolVersion: proxyProtocolVersion(rule),
       };
     };
     const failoverTargetAddr = (rule: any) => {
@@ -2057,6 +2102,10 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
         if (exitPorts.length === 0) return [];
         const policy = await tunnelProtocolPolicy(tunnel);
         const targetAddr = shouldUseProtocolGuard(rule, policy) ? `127.0.0.1:${guardListenPort(rule)}` : failoverTargetAddr(rule);
+        // Dial the real target with the rule's own protocol. A UDP-only rule must reach the
+        // target over UDP; forwarding it over a hardcoded TCP dialer silently breaks delivery.
+        // "both" still uses a single forward node here, so it stays TCP (pre-existing limitation).
+        const targetDialType = normalizeForwardRuleProtocol(rule.protocol) === "udp" ? "udp" : "tcp";
         return exitPorts.map((exitPort) => {
           const exitSendProxyMetadata = maybeProxyProtocolMetadata(rule, "exitSend");
           return {
@@ -2072,8 +2121,8 @@ agentRouter.post("/api/agent/heartbeat", async (req: Request, res: Response) => 
               nodes: [{
                 name: `target-${rule.id}`,
                 addr: targetAddr,
-                connector: { type: "tcp" },
-                dialer: { type: "tcp" },
+                connector: { type: targetDialType },
+                dialer: { type: targetDialType },
               }],
             },
           };

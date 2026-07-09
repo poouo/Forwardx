@@ -22,7 +22,7 @@ export const SIDEBAR_MENU_LABELS: Record<SidebarMenuKey, string> = {
   billing: "账单与兑换",
   plans: "套餐管理",
   users: "用户管理",
-  plugins: "插件",
+  plugins: "插件管理",
   lookingGlass: "网络测试",
   settings: "系统设置",
 };

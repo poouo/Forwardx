@@ -37,6 +37,27 @@ const AGENT_FIREWALL_COUNTER_REFRESH_VERSION = "2.2.108";
 const AGENT_PROTOCOL_GUARD_BACKEND_VERSION = "2.2.127";
 const lastRuntimeRecoveryByHost = new Map<number, number>();
 
+const AGENT_STREAM_AUTH_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const agentStreamAuthLogCache = new Map<string, number>();
+
+function agentErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function isAgentStreamAuthFailure(error: unknown, message = agentErrorMessage(error)) {
+  if (error instanceof SyntaxError) return true;
+  return /mac verification failed|request timestamp out of window|encrypted request replay detected|no token candidates available|invalid iv length/i.test(message);
+}
+
+function shouldLogAgentStreamAuthFailure(message: string) {
+  const key = message.toLowerCase();
+  const now = Date.now();
+  const last = agentStreamAuthLogCache.get(key) || 0;
+  if (now - last < AGENT_STREAM_AUTH_LOG_INTERVAL_MS) return false;
+  agentStreamAuthLogCache.set(key, now);
+  return true;
+}
+
 function migratedAgentPayload(panelUrl: string) {
   return {
     success: false,
@@ -62,6 +83,7 @@ async function resetAgentRuntimeStateAfterReconnect(hostId: number, reason: stri
   lastRuntimeRecoveryByHost.set(hostId, now);
   await db.resetAgentRuntimeStateForHost(hostId);
   clearTunnelRuntimeStatusForHost(hostId);
+  invalidateAgentDesiredStateCache(hostId);
   await refreshAgentsAffectedByHostAddress(hostId, reason);
   appendPanelLog("info", `[AgentRecovery] host=${hostId} reason=${reason} runtime state marked for reapply`);
 }
@@ -125,6 +147,7 @@ async function openAgentEventStream(input: {
       await db.clearHostAgentUpgradeRequest(host.id);
     }
     if (!wasOnline) {
+      await resetAgentRuntimeStateAfterReconnect(host.id, "agent-reconnected");
       void notifyHostOnlineIfNeeded(host).catch((error) => {
         console.warn(`[HostStatus] Online notify failed host=${host.id}: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -190,6 +213,14 @@ agentRouter.get("/api/stream", async (req: Request, res: Response) => {
       agentVersion: resolved.payload?.agentVersion,
     });
   } catch (error) {
+    const message = agentErrorMessage(error);
+    if (isAgentStreamAuthFailure(error, message)) {
+      if (shouldLogAgentStreamAuthFailure(message)) {
+        appendPanelLog("warn", "[Agent Stream] rejected encrypted stream request: " + message);
+      }
+      res.status(401).json({ error: "Unauthorized", message });
+      return;
+    }
     console.error("[Agent Stream] Error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -285,6 +316,7 @@ agentApiRouter.post("/api/agent/register", async (req: Request, res: Response) =
         );
       }
       if (!wasOnline) {
+        await resetAgentRuntimeStateAfterReconnect(existingHost.id, "agent-reconnected");
         void notifyHostOnlineIfNeeded({ ...existingHost, ip: primaryIp !== "unknown" ? primaryIp : existingHost.ip, ipv4: nextIpv4, ipv6: nextIpv6 }).catch((error) => {
           console.warn(`[HostStatus] Online notify failed host=${existingHost.id}: ${error instanceof Error ? error.message : String(error)}`);
         });

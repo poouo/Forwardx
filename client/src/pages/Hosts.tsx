@@ -59,6 +59,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SlidingTabsList, type SlidingTabItem } from "@/components/ui/sliding-tabs";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import DataSectionLoading from "@/components/DataSectionLoading";
 import { countryFeatureHasCode, normalizeCountryCode } from "@/lib/countryFeatures";
 import { normalizeForwardProtocolSettings } from "@shared/forwardTypes";
@@ -88,12 +89,15 @@ import {
   Download,
   Gauge,
   AlertTriangle,
+  Filter,
   Loader2,
   MemoryStick,
   RefreshCw,
+  Search,
   Key,
   Rows3,
   RotateCcw,
+  XCircle,
   ActivitySquare,
   FolderKanban,
   Wifi,
@@ -785,6 +789,12 @@ function parseHostDateTime(value: unknown) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function formatHostDateTimeText(value: unknown) {
+  const ms = parseHostDateTime(value);
+  if (ms === null) return "--";
+  return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+}
+
 function formatHostRemainingDays(purchasedAt: unknown, stoppedAt: unknown) {
   const purchasedMs = parseHostDateTime(purchasedAt);
   const stoppedMs = parseHostDateTime(stoppedAt);
@@ -793,6 +803,19 @@ function formatHostRemainingDays(purchasedAt: unknown, stoppedAt: unknown) {
   if (remainingMs <= 0) return "已到期";
   if (remainingMs < hostListDayMs) return "不足1天";
   return `${Math.ceil(remainingMs / hostListDayMs)}天`;
+}
+
+function formatHostUptimeTitle(uptime: unknown, uptimeText: string) {
+  const seconds = Number(uptime);
+  if (!Number.isFinite(seconds) || seconds < 0) return "运行时间：--";
+  const startedAt = new Date(Date.now() - seconds * 1000);
+  return `运行时间：${uptimeText}\n启动时间：${startedAt.toLocaleString("zh-CN", { hour12: false })}`;
+}
+
+function formatHostExpiryTitle(stoppedAt: unknown, remainingDays: string) {
+  const stoppedAtText = formatHostDateTimeText(stoppedAt);
+  if (stoppedAtText === "--") return "到期时间：--";
+  return `到期时间：${stoppedAtText}\n剩余时间：${remainingDays}`;
 }
 
 function hostRemainingClass(value: string) {
@@ -809,7 +832,7 @@ function compactHostOsInfo(value: unknown) {
     .trim() || "-";
 }
 
-function HostListResourceMetric({
+function HostListResourceRow({
   icon: Icon,
   label,
   value,
@@ -827,20 +850,72 @@ function HostListResourceMetric({
   const progressClass = percent === null
     ? "h-1.5 bg-muted [&>div]:bg-muted-foreground/20"
     : metricUsageProgressClass(progressValue, isOnline);
+  const tooltip = [
+    `${label}: ${formatUsagePercent(value)}`,
+    detail,
+  ].filter(Boolean).join("\n");
   return (
-    <div className="min-w-[112px] space-y-1.5">
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <Icon className="h-3.5 w-3.5 shrink-0" />
-        <span className="font-medium">{label}</span>
-        <span className="ml-auto font-semibold tabular-nums text-foreground">{formatUsagePercent(value)}</span>
-      </div>
-      <Progress value={progressValue} className={progressClass} />
-      {detail && (
-        <div className="truncate text-[10px] leading-none text-muted-foreground/70" title={detail}>
-          {detail}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="grid cursor-help grid-cols-[3rem_minmax(70px,1fr)_2.75rem] items-center gap-1.5 rounded-sm px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" tabIndex={0} aria-label={tooltip}>
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{label}</span>
+          </div>
+          <Progress value={progressValue} className={cn(progressClass, "min-w-[70px]")} />
+          <span className="text-right text-[11px] font-semibold tabular-nums text-foreground">{formatUsagePercent(value)}</span>
         </div>
-      )}
-    </div>
+      </TooltipTrigger>
+      <TooltipContent collisionPadding={12} className="max-w-[260px] whitespace-pre-line text-xs">
+        {tooltip || `${label}: --`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function HostListResourceBundle({
+  cpuValue,
+  cpuDetail,
+  memoryValue,
+  memoryDetail,
+  diskValue,
+  diskDetail,
+  isOnline,
+}: {
+  cpuValue: unknown;
+  cpuDetail?: string;
+  memoryValue: unknown;
+  memoryDetail?: string;
+  diskValue: unknown;
+  diskDetail?: string;
+  isOnline: boolean;
+}) {
+  return (
+    <TooltipProvider delayDuration={120}>
+      <div className="min-w-[204px] space-y-0.5">
+        <HostListResourceRow
+          icon={Cpu}
+          label="CPU"
+          value={cpuValue}
+          detail={cpuDetail}
+          isOnline={isOnline}
+        />
+        <HostListResourceRow
+          icon={MemoryStick}
+          label="RAM"
+          value={memoryValue}
+          detail={memoryDetail}
+          isOnline={isOnline}
+        />
+        <HostListResourceRow
+          icon={HardDrive}
+          label="Disk"
+          value={diskValue}
+          detail={diskDetail}
+          isOnline={isOnline}
+        />
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -856,7 +931,7 @@ function HostListFlowPair({
   outTitle?: string;
 }) {
   return (
-    <div className="min-w-[118px] space-y-1 text-xs tabular-nums">
+    <div className="min-w-[104px] space-y-1 text-xs tabular-nums">
       <div className="flex items-center gap-1.5 text-emerald-500" title={inTitle || inValue}>
         <ArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{inValue}</span>
@@ -1149,6 +1224,29 @@ function hostGroupHostIds(group: HostGroupView | null | undefined) {
     .filter((id) => Number.isInteger(id) && id > 0)));
 }
 
+function hostMatchesTextFilter(host: any, query: string) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return true;
+  const haystack = [
+    host?.id,
+    host?.name,
+    host?.ip,
+    host?.ipv4,
+    host?.ipv6,
+    host?.entryIp,
+    host?.tunnelEntryIp,
+    host?.osInfo,
+    host?.cpuInfo,
+    host?.agentVersion,
+    host?.hostType,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function HostGroupFilterBar({
   groups,
   hosts,
@@ -1282,6 +1380,7 @@ function HostsContent() {
   const isInitialLoadingWithoutCache = isLoading && !hasDisplayHosts;
   const [selectedHostGroupId, setSelectedHostGroupId] = useState<number | "all">("all");
   const [hostGroupCreateSignal, setHostGroupCreateSignal] = useState(0);
+  const [hostSearchQuery, setHostSearchQuery] = useState("");
   const { data: hostGroups = [], isLoading: isHostGroupsLoading } = trpc.hosts.hostGroups.useQuery(undefined, {
     enabled: user?.role === "admin",
     staleTime: 30_000,
@@ -1298,7 +1397,7 @@ function HostsContent() {
       : enabledHostGroups.find((group) => Number(group.id) === Number(selectedHostGroupId)) || null,
     [enabledHostGroups, selectedHostGroupId],
   );
-  const filteredDisplayHosts = useMemo(() => {
+  const groupFilteredDisplayHosts = useMemo(() => {
     const hostsById = new Map(displayHosts.map((host: any) => [Number(host.id), host]));
     if (selectedHostGroupId !== "all") {
       return hostGroupHostIds(selectedHostGroup)
@@ -1324,6 +1423,12 @@ function HostsContent() {
     }
     return orderedHosts;
   }, [displayHosts, enabledHostGroups, selectedHostGroup, selectedHostGroupId]);
+  const normalizedHostSearchQuery = hostSearchQuery.trim().toLowerCase();
+  const isHostTextFiltered = normalizedHostSearchQuery.length > 0;
+  const filteredDisplayHosts = useMemo(() => {
+    if (!normalizedHostSearchQuery) return groupFilteredDisplayHosts;
+    return groupFilteredDisplayHosts.filter((host: any) => hostMatchesTextFilter(host, normalizedHostSearchQuery));
+  }, [groupFilteredDisplayHosts, normalizedHostSearchQuery]);
   const hasFilteredDisplayHosts = filteredDisplayHosts.length > 0;
   const isHostGroupFiltered = selectedHostGroupId !== "all";
   const filteredHostIds = useMemo(
@@ -1331,20 +1436,21 @@ function HostsContent() {
     [filteredDisplayHosts],
   );
   const filteredHostIdKey = useMemo(() => filteredHostIds.join(","), [filteredHostIds]);
+  const hasHostDisplayFilter = isHostGroupFiltered || isHostTextFiltered;
   const { data: hostSummary, isLoading: isHostSummaryLoading } = trpc.hosts.summary.useQuery(undefined, {
     enabled: activeManageTab === "hosts",
     refetchInterval: hostLiveRefreshInterval || pollingInterval("slow"),
   });
   const { data: groupSummaryTrafficRows = [], isLoading: isGroupSummaryTrafficLoading } = trpc.hosts.trafficSummary.useQuery(
     { hostIds: filteredHostIds },
-    { enabled: activeManageTab === "hosts" && isHostGroupFiltered && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
+    { enabled: activeManageTab === "hosts" && hasHostDisplayFilter && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
   );
   const { data: groupSummaryMetricRows = [], isLoading: isGroupSummaryMetricLoading } = trpc.hosts.latestMetricsSummary.useQuery(
     { hostIds: filteredHostIds },
-    { enabled: activeManageTab === "hosts" && isHostGroupFiltered && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
+    { enabled: activeManageTab === "hosts" && hasHostDisplayFilter && filteredHostIds.length > 0, refetchInterval: hostLiveRefreshInterval || pollingInterval("slow") },
   );
   const groupHostSummary = useMemo(() => {
-    if (!isHostGroupFiltered) return null;
+    if (!hasHostDisplayFilter) return null;
     let currentTrafficIn = 0;
     let currentTrafficOut = 0;
     let totalTrafficIn = 0;
@@ -1365,9 +1471,9 @@ function HostsContent() {
       totalTrafficIn,
       totalTrafficOut,
     };
-  }, [filteredDisplayHosts, groupSummaryMetricRows, groupSummaryTrafficRows, isHostGroupFiltered]);
+  }, [filteredDisplayHosts, groupSummaryMetricRows, groupSummaryTrafficRows, hasHostDisplayFilter]);
   const effectiveHostSummary = groupHostSummary || hostSummary;
-  const isEffectiveHostSummaryLoading = isHostGroupFiltered
+  const isEffectiveHostSummaryLoading = hasHostDisplayFilter
     ? (isGroupSummaryTrafficLoading || isGroupSummaryMetricLoading)
     : isHostSummaryLoading;
   const [tokenCreateSignal, setTokenCreateSignal] = useState(0);
@@ -1737,10 +1843,11 @@ function HostsContent() {
     () => [
       viewMode,
       hostCardModeTransitionKey,
+      normalizedHostSearchQuery || "search-all",
       selectedHostGroupId === "all" ? "all" : `group-${selectedHostGroupId}`,
       hostPagination.currentPage,
     ].join(":"),
-    [hostCardModeTransitionKey, hostPagination.currentPage, selectedHostGroupId, viewMode],
+    [hostCardModeTransitionKey, hostPagination.currentPage, normalizedHostSearchQuery, selectedHostGroupId, viewMode],
   );
   useEffect(() => {
     if (!hostLiveRefreshInterval || !filteredHostIds.length) return;
@@ -2045,6 +2152,37 @@ function HostsContent() {
         </div>
       </div>
 
+      {activeManageTab === "hosts" && (
+        <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-3">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">筛选:</span>
+          </div>
+          <div className="relative w-full sm:w-[260px] lg:w-[320px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={hostSearchQuery}
+              onChange={(event) => setHostSearchQuery(event.target.value)}
+              placeholder={"搜索主机 / IP / 系统 / Agent 版本"}
+              className="h-8 w-full pl-8 pr-8 text-xs"
+            />
+            {hostSearchQuery ? (
+              <button
+                type="button"
+                aria-label="清空搜索"
+                className="absolute right-2 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={() => setHostSearchQuery("")}
+              >
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {filteredDisplayHosts.length} / {groupFilteredDisplayHosts.length} {"\u53f0"}
+          </span>
+        </div>
+      )}
+
       <Tabs
         value={activeManageTab}
         onValueChange={(value) => setActiveManageTab(value as HostManageTab)}
@@ -2218,35 +2356,23 @@ function HostsContent() {
             <Card className="hidden border-border/40 bg-card/60 backdrop-blur-md sm:block">
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
-                <Table className="min-w-[1254px]">
+                <Table className="w-max min-w-[900px] table-auto">
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="w-[44px]" />
-                      <TableHead className="w-[96px] whitespace-nowrap">状态</TableHead>
-                      <TableHead className="w-[300px] min-w-[300px]">设备名称</TableHead>
-                      <TableHead className="w-[130px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><Cpu className="h-3.5 w-3.5" />CPU</span>
+                      <TableHead className="w-[128px] whitespace-nowrap text-center">状态</TableHead>
+                      <TableHead className="w-[280px] min-w-[280px]">设备名称</TableHead>
+                      <TableHead className="w-[218px] whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5"><Gauge className="h-3.5 w-3.5" />{"\u8d44\u6e90"}</span>
                       </TableHead>
-                      <TableHead className="w-[140px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><MemoryStick className="h-3.5 w-3.5" />RAM</span>
-                      </TableHead>
-                      <TableHead className="w-[140px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><HardDrive className="h-3.5 w-3.5" />磁盘</span>
-                      </TableHead>
-                      <TableHead className="w-[136px] whitespace-nowrap">累计流量</TableHead>
-                      <TableHead className="w-[136px] whitespace-nowrap">
+                      <TableHead className="w-[116px] whitespace-nowrap">累计流量</TableHead>
+                      <TableHead className="w-[116px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Wifi className="h-3.5 w-3.5" />实时网络</span>
                       </TableHead>
-                      <TableHead className="w-[132px] whitespace-nowrap">
+                      <TableHead className="w-[116px] whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" />{"\u7cfb\u7edf\u7d2f\u8ba1"}</span>
                       </TableHead>
-                      <TableHead className="w-[116px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" />运行时间</span>
-                      </TableHead>
-                      <TableHead className="w-[100px] whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5" />到期</span>
-                      </TableHead>
-                      <TableHead className="w-[178px] text-right">操作</TableHead>
+                      <TableHead className="w-[168px] text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <SortableReorderContext sortable={hostSortable} ids={pagedHostIds} strategy="vertical" restrictToList>
@@ -2259,6 +2385,9 @@ function HostsContent() {
                       const agentNeedsUpdate = isAgentVersionBehind(host.agentVersion, latestAgentVersion);
                       const remainingDays = formatHostRemainingDays(host.purchasedAt, host.stoppedAt);
                       const primaryAddressText = hostPrimaryAddressText(host);
+                      const uptimeText = latestMetric?.uptime == null ? "--" : formatUptime(latestMetric.uptime);
+                      const uptimeTitle = formatHostUptimeTitle(latestMetric?.uptime, uptimeText);
+                      const expiryTitle = formatHostExpiryTitle(host.stoppedAt, remainingDays);
                       const memoryDetail = formatMetricSizeDetail(latestMetric?.memoryUsed, host.memoryTotal);
                       const diskDetail = formatMetricSizeDetail(latestMetric?.diskUsed, latestMetric?.diskTotal);
                       return (
@@ -2277,10 +2406,20 @@ function HostsContent() {
                             <SortableDragHandle dragHandleProps={handleProps} visible={isDragging} />
                           )}
                         </TableCell>
-                        <TableCell className="w-[96px] whitespace-nowrap">
-                          <HostListStatusBadge host={host} />
+                        <TableCell className="w-[128px] whitespace-nowrap text-center">
+                          <div className="flex flex-col items-center justify-center gap-1.5 text-center">
+                            <HostListStatusBadge host={host} />
+                            <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium tabular-nums text-muted-foreground" title={uptimeTitle}>
+                              <Clock className="h-3.5 w-3.5 shrink-0" />
+                              <span>{uptimeText}</span>
+                            </div>
+                            <div className="flex items-center justify-center gap-1.5 text-[11px] font-semibold tabular-nums" title={expiryTitle}>
+                              <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className={hostRemainingClass(remainingDays)}>{remainingDays}</span>
+                            </div>
+                          </div>
                         </TableCell>
-                        <TableCell className="w-[300px] min-w-[300px]">
+                        <TableCell className="w-[280px] min-w-[280px]">
                           <div className="flex min-w-0 items-center gap-3">
                             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/60 text-muted-foreground shadow-sm">
                               <Server className="h-4 w-4" />
@@ -2318,13 +2457,15 @@ function HostsContent() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <HostListResourceMetric icon={Cpu} label="CPU" value={latestMetric?.cpuUsage} isOnline={!!host.isOnline} />
-                        </TableCell>
-                        <TableCell>
-                          <HostListResourceMetric icon={MemoryStick} label="RAM" value={latestMetric?.memoryUsage} detail={memoryDetail} isOnline={!!host.isOnline} />
-                        </TableCell>
-                        <TableCell>
-                          <HostListResourceMetric icon={HardDrive} label="Disk" value={latestMetric?.diskUsage} detail={diskDetail} isOnline={!!host.isOnline} />
+                          <HostListResourceBundle
+                            cpuValue={latestMetric?.cpuUsage}
+                            cpuDetail={host.cpuInfo ? String(host.cpuInfo) : undefined}
+                            memoryValue={latestMetric?.memoryUsage}
+                            memoryDetail={memoryDetail}
+                            diskValue={latestMetric?.diskUsage}
+                            diskDetail={diskDetail}
+                            isOnline={!!host.isOnline}
+                          />
                         </TableCell>
                         <TableCell>
                           <HostListFlowPair
@@ -2349,18 +2490,6 @@ function HostsContent() {
                             inTitle={systemNetworkTotalTitle(latestMetric)}
                             outTitle={systemNetworkTotalTitle(latestMetric)}
                           />
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium tabular-nums text-muted-foreground">
-                            <Clock className="h-3.5 w-3.5 shrink-0" />
-                            <span>{latestMetric?.uptime == null ? "--" : formatUptime(latestMetric.uptime)}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold tabular-nums">
-                            <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className={hostRemainingClass(remainingDays)}>{remainingDays}</span>
-                          </div>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
@@ -2443,9 +2572,9 @@ function HostsContent() {
               <div className="h-16 w-16 rounded-2xl bg-muted/30 flex items-center justify-center mb-4">
                 <Server className="h-8 w-8 opacity-40" />
               </div>
-              <p className="text-lg font-medium">{isHostGroupFiltered ? "当前分组暂无主机" : "暂无主机"}</p>
+              <p className="text-lg font-medium">{isHostTextFiltered ? "未找到匹配主机" : isHostGroupFiltered ? "当前分组暂无主机" : "暂无主机"}</p>
               <p className="text-sm mt-1 text-muted-foreground/60">
-                {isHostGroupFiltered ? "可以在分组管理中为该分组添加主机" : user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
+                {isHostTextFiltered ? "调整筛选内容或清空搜索" : isHostGroupFiltered ? "可以在分组管理中为该分组添加主机" : user?.role === "admin" ? "点击添加主机生成 Agent 安装命令" : "请联系管理员添加主机"}
               </p>
             </div>
           </CardContent>

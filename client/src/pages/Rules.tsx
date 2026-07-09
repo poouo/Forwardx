@@ -811,8 +811,8 @@ function getTunnelDisplay(tunnel: any | null | undefined, showNginxLabel = true)
   }
   if (gostTunnelModes.has(mode)) {
     return {
-      shortLabel: "gost",
-      badgeLabel: "隧道 / gost",
+      shortLabel: "GOST",
+      badgeLabel: "隧道 / GOST",
       toolLabel: "GOST 隧道",
     };
   }
@@ -4060,11 +4060,18 @@ function RulesContent() {
     </span>
   );
   const getTunnelSelectName = (tunnel: any) => String(tunnel?.name || `隧道 #${tunnel?.id || "-"}`);
+  const getTunnelSelectModeLabel = (tunnel: any) => getTunnelDisplay(tunnel, true).shortLabel;
   const getTunnelSelectText = (tunnel: any) => [
     getTunnelSelectName(tunnel),
+    getTunnelSelectModeLabel(tunnel),
     getPortRangeText(tunnel),
     formatTrafficMultiplier((tunnel as any)?.trafficMultiplier),
   ].filter(Boolean).join(" / ");
+  const renderTunnelModeBadge = (tunnel: any) => (
+    <span className="shrink-0 rounded border border-chart-4/30 bg-chart-4/10 px-1.5 py-0.5 text-[11px] font-medium leading-none text-chart-4">
+      {getTunnelSelectModeLabel(tunnel)}
+    </span>
+  );
   const getTunnelStatusText = (tunnel: any) => {
     if (tunnel?.isRunning) return "运行中";
     if (tunnel?.isEnabled) return "已启用";
@@ -4079,6 +4086,7 @@ function RulesContent() {
     <span className="inline-flex min-w-0 items-center gap-2" title={`${getTunnelStatusText(tunnel)} / ${getTunnelSelectText(tunnel)}`}>
       {renderTunnelSelectStatusDot(tunnel)}
       <span className="min-w-0 truncate">{getTunnelSelectName(tunnel)}</span>
+      {renderTunnelModeBadge(tunnel)}
       {getPortRangeText(tunnel) && <span className="shrink-0 rounded border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">{getPortRangeText(tunnel)}</span>}
       {renderTrafficMultiplierBadge((tunnel as any).trafficMultiplier)}
       <span className="sr-only">{getTunnelStatusText(tunnel)}</span>
