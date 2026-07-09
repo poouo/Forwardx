@@ -21,15 +21,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.22.x"
+          cache-dependency-path: |
+            agent/go.mod
+            forwardx-fxp/go.mod
+            forwardx-fxp/go.sum
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -55,11 +59,14 @@ jobs:
         run: bash scripts/build-agent-release.sh
 
       - name: Upload Agent binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release.outputs.version }}
-          body_path: RELEASE_NOTES.md
-          files: |
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          files=(
             dist/agent/forwardx-agent-linux-amd64
             dist/agent/forwardx-agent-linux-arm64
             dist/agent/forwardx-fxp-linux-amd64
@@ -67,4 +74,35 @@ jobs:
             dist/agent/forwardx-runtime-linux-amd64
             dist/agent/forwardx-runtime-linux-arm64
             dist/agent/SHA256SUMS
-          fail_on_unmatched_files: true
+          )
+
+          for file in "${files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing release artifact: $file" >&2
+              exit 1
+            fi
+          done
+
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_VERSION" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$RELEASE_VERSION" --target "$GITHUB_SHA" --notes-file RELEASE_NOTES.md
+          fi
+
+          upload_with_retry() {
+            local attempt=1
+            local max_attempts=5
+            local delay=8
+            until gh release upload "$RELEASE_VERSION" "${files[@]}" --clobber; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "GitHub Release upload failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              echo "GitHub Release upload failed, retrying in ${delay}s (attempt ${attempt}/${max_attempts})..." >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          upload_with_retry
